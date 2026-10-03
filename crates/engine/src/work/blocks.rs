@@ -1,4 +1,4 @@
-//! The blocks tier: scanning blocks for tenants (docs/scanner_microtasks.md).
+//! The blocks tier: scanning blocks for tenants (`docs/scanner_microtasks.md`).
 //!
 //! Tenants are grouped by their cursor (the highest block scanned for them).
 //! A unit takes one group and scans the next few blocks for it: one fetch
@@ -23,7 +23,7 @@
 //! them at a time): a block too large for one answer, or for the node's
 //! link to send in time, is scanned a page of transactions at a time from
 //! its outline (its transactions' ids), a page per step, across as many
-//! units and rounds as it takes (docs/engine_scaling.md section 4). Blocks
+//! units and rounds as it takes (`docs/engine_scaling.md` section 4). Blocks
 //! around it are fetched whole. Headers are read first only for an hour
 //! after a sign that blocks may be large: a block request that ran out of
 //! time or came back too large, or a block within a quarter of the size
@@ -52,6 +52,7 @@ use super::{bounded, Progress, Round, Wait};
 const BLOCK_TIMESTAMP_DRIFT_SECONDS: i64 = 2 * 60 * 60;
 
 /// Proof that a block was scanned in full for a tenant, with the results.
+///
 /// Moving a tenant's cursor takes one (`Store::advance_scanned_cursor`), and
 /// only this module can build one: from a [`BlockScan`] that got through
 /// every transaction of the block for that tenant.
@@ -64,9 +65,9 @@ pub struct ScannedBlock {
 impl ScannedBlock {
     /// A proof without a scan, for the store's own tests.
     #[cfg(test)]
-    pub(crate) fn for_test(tenant_id: &crate::store::TenantId, height: u64) -> Self {
+    pub(crate) fn for_test(tenant_id: &TenantId, height: u64) -> Self {
         Self {
-            tenant_id: shared::ids::TenantId::new(tenant_id.to_string()),
+            tenant_id: TenantId::new(tenant_id.to_string()),
             height,
             scans: Vec::new(),
         }
@@ -97,7 +98,7 @@ pub(crate) struct BlockState {
     carried: parking_lot::Mutex<Option<Carried>>,
 }
 
-/// A large block being scanned a page at a time (docs/engine_scaling.md
+/// A large block being scanned a page at a time (`docs/engine_scaling.md`
 /// section 4).
 #[derive(Clone)]
 struct Paged {
@@ -111,7 +112,7 @@ struct Paged {
 
 impl Default for BlockState {
     fn default() -> Self {
-        BlockState::with_progress(crate::scaling::new_progress())
+        Self::with_progress(crate::scaling::new_progress())
     }
 }
 
@@ -122,14 +123,13 @@ impl BlockState {
         self.carried
             .lock()
             .as_ref()
-            .map(|carried| carried.cache.blocks.keys().copied().collect())
-            .unwrap_or_default()
+            .map_or_default(|carried| carried.cache.blocks.keys().copied().collect())
     }
 
     /// State whose progress (sizing, the block in progress, recent blocks)
     /// is `progress`, which `/status` reads.
     pub(crate) fn with_progress(progress: crate::scaling::SharedProgress) -> Self {
-        BlockState {
+        Self {
             catch_up_turn: AtomicBool::new(false),
             progress,
             paged: parking_lot::Mutex::new(None),
@@ -137,7 +137,7 @@ impl BlockState {
         }
     }
 
-    /// The time a round needs (docs/engine_scaling.md section 4): the base,
+    /// The time a round needs (`docs/engine_scaling.md` section 4): the base,
     /// unless the smallest unit of a large block in progress (one page of
     /// one transaction, fetched and scanned for `stores` stores) is
     /// expected to need more than the round's share for blocks. Then half
@@ -266,7 +266,7 @@ impl BlockState {
 }
 
 /// Fetches `count` blocks from `from`, given the time the node's link needs
-/// for that many (docs/engine_scaling.md section 2).
+/// for that many (`docs/engine_scaling.md` section 2).
 async fn fetch_chunk(
     daemon: &dyn crate::daemon::MoneroDaemonClient,
     from: u64,
@@ -299,7 +299,7 @@ impl BlocksRound {
     /// if its blocks came from the node this round reads, trimmed to the
     /// memory budget as it is now (the setting may have been lowered).
     pub(crate) fn resume(state: &BlockState, inputs: &super::RoundInputs<'_>) -> Self {
-        let mut round = BlocksRound::default();
+        let mut round = Self::default();
         let Some(mut carried) = state.carried.lock().take() else {
             return round;
         };
@@ -332,7 +332,7 @@ pub(super) async fn carry(round: &mut Round<'_>) {
         return;
     }
     let node = round.inputs.daemon.node();
-    let lowest_cursor = match (node, round.tip, round.chain.rewound) {
+    let lowest_cursor = match (node, round.tip, round.chain.rewound()) {
         (Some(_), Some(_), false) => round
             .db(|s, network| -> Result<Option<u64>, ScannerError> {
                 if s.reorg_job(network)?.is_some() {
@@ -449,7 +449,7 @@ impl BlockCache {
     fn insert(&mut self, block: ChainBlock, bytes: usize) -> Arc<ChainBlock> {
         let block = Arc::new(block);
         let cached = Cached {
-            block: block.clone(),
+            block: Arc::clone(&block),
             bytes,
             scanned: false,
         };
@@ -466,7 +466,9 @@ impl BlockCache {
 
     /// Block `height`, if held.
     fn get(&self, height: u64) -> Option<Arc<ChainBlock>> {
-        self.blocks.get(&height).map(|cached| cached.block.clone())
+        self.blocks
+            .get(&height)
+            .map(|cached| Arc::clone(&cached.block))
     }
 
     /// A group's scan of block `height` committed, for the whole group.
@@ -520,12 +522,20 @@ impl BlockCache {
     }
 
     /// Lets go of every block; returns the bytes let go of unscanned.
+    #[expect(
+        clippy::needless_collect,
+        reason = "collecting ends the borrow of `self.blocks` that `remove` needs"
+    )]
     fn clear(&mut self) -> u64 {
         let heights: Vec<u64> = self.blocks.keys().copied().collect();
         heights.into_iter().map(|height| self.remove(height)).sum()
     }
 
     /// Keeps only blocks in `heights`; returns the bytes let go of unscanned.
+    #[expect(
+        clippy::needless_collect,
+        reason = "collecting ends the borrow of `self.blocks` that `remove` needs"
+    )]
     fn retain(&mut self, heights: std::ops::RangeInclusive<u64>) -> u64 {
         let outside: Vec<u64> = self
             .blocks
@@ -601,7 +611,7 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Result<Progress, ScannerE
     let Some(tip) = round.tip else {
         return Ok(Progress::Blocked(Wait::ChainHeightUnknown));
     };
-    if round.chain.rewound {
+    if round.chain.rewound() {
         return Ok(Progress::Blocked(Wait::RewoundThisRound));
     }
     let repair = !round.blocks.repaired;
@@ -698,7 +708,7 @@ async fn serve_catch_up(
 /// First run on a network: start just below the node's tip rather than
 /// replaying history (a payment gateway watches for new payments). One block
 /// of margin, for a node reporting a tip it can't serve yet.
-async fn seed(round: &mut Round<'_>, tip: u64) -> Result<Progress, ScannerError> {
+async fn seed(round: &Round<'_>, tip: u64) -> Result<Progress, ScannerError> {
     let seed = tip.saturating_sub(1);
     match bounded(round.inputs.daemon.get_block_hash(seed)).await {
         Ok(hash) => {
@@ -736,10 +746,7 @@ async fn advance_group(
     until: Instant,
 ) -> Result<Reached, ScannerError> {
     let mut cursor = cursor;
-    let mut high_water = round
-        .db(|s, network| s.max_scanned_height(network))
-        .await?
-        .unwrap_or(cursor);
+    let mut high_water = round.db(Store::max_scanned_height).await?.unwrap_or(cursor);
     // Tenants already given block `cursor + 1` this unit, a page at a
     // time, while the rest of the group at `cursor` waits for its page.
     let mut given: Vec<TenantId> = Vec::new();
@@ -851,6 +858,7 @@ async fn advance_group(
 }
 
 /// Where a group's unit left it.
+#[derive(Clone, Copy)]
 struct Reached {
     cursor: u64,
     diverged: bool,
@@ -862,7 +870,7 @@ struct Plan {
     page: Page,
     /// Tenants at the parent cursor with something in scope, and their
     /// windows.
-    members: Vec<(crate::store::TenantId, Vec<u32>)>,
+    members: Vec<(TenantId, Vec<u32>)>,
     /// The recorded hashes of this block and its parent, if any.
     recorded: Option<String>,
     parent: Option<String>,
@@ -964,7 +972,7 @@ async fn scan_block(
                 Page::Last
             };
             let mut windows = s.scan_windows(&ids, since, grace)?;
-            let members: Vec<(crate::store::TenantId, Vec<u32>)> = ids
+            let members: Vec<(TenantId, Vec<u32>)> = ids
                 .into_iter()
                 .filter_map(|id| windows.remove(&id).map(|w| (id, w)))
                 .collect();
@@ -983,7 +991,7 @@ async fn scan_block(
             })
         })
         .await?;
-    let scannable: Vec<(crate::store::TenantId, WalletHandle, ScanIndices)> = plan
+    let scannable: Vec<(TenantId, WalletHandle, ScanIndices)> = plan
         .members
         .into_iter()
         .filter_map(|(id, window)| {
@@ -1034,7 +1042,7 @@ async fn scan_block(
             "the node's block doesn't extend the recorded chain",
         ));
     }
-    let (hash, prev_hash) = (hash.to_string(), prev_hash.to_string());
+    let (hash, prev_hash) = (hash.to_owned(), prev_hash.to_owned());
 
     let mut scan = BlockScan::new(&scannable, &plan.checkpoints, &hash, source.tx_count());
     let mut progressed = on_timeout == OnTimeout::Stop;
@@ -1113,7 +1121,7 @@ async fn scan_block(
     };
     let now = round.now;
     let committed = round
-        .db(move |s, network| commit(s, network, &commit_block, scanned, now))
+        .db(move |s, network| commit(s, network, &commit_block, &scanned, now))
         .await?;
     if committed {
         round
@@ -1146,7 +1154,7 @@ impl BlockScan {
     /// Every tenant starts at its checkpoint for this very block, else at
     /// the first transaction.
     fn new(
-        scannable: &[(crate::store::TenantId, WalletHandle, ScanIndices)],
+        scannable: &[(TenantId, WalletHandle, ScanIndices)],
         checkpoints: &HashMap<TenantId, BlockCheckpoint>,
         hash: &str,
         tx_count: usize,
@@ -1174,13 +1182,10 @@ impl BlockScan {
     /// `start..end`, each with how many of those it is already past.
     fn due<'a>(
         &self,
-        scannable: &'a [(crate::store::TenantId, WalletHandle, ScanIndices)],
+        scannable: &'a [(TenantId, WalletHandle, ScanIndices)],
         start: usize,
         end: usize,
-    ) -> Vec<(
-        &'a (crate::store::TenantId, WalletHandle, ScanIndices),
-        usize,
-    )> {
+    ) -> Vec<(&'a (TenantId, WalletHandle, ScanIndices), usize)> {
         scannable
             .iter()
             .filter(|(id, _, _)| !self.failed.contains(id))
@@ -1220,7 +1225,7 @@ impl BlockScan {
 
     /// What to write down if the unit stops here: each tenant that got
     /// anywhere, how far, and its matches so far.
-    fn into_checkpoint(mut self) -> Vec<(crate::store::TenantId, usize, Vec<ScanResult>)> {
+    fn into_checkpoint(mut self) -> Vec<(TenantId, usize, Vec<ScanResult>)> {
         self.next_tx
             .into_iter()
             .filter(|(id, next)| !self.failed.contains(id) && *next > 0)
@@ -1252,7 +1257,7 @@ fn checkpoint(
     network: monero::Network,
     height: u64,
     hash: &str,
-    progress: Vec<(crate::store::TenantId, usize, Vec<ScanResult>)>,
+    progress: Vec<(TenantId, usize, Vec<ScanResult>)>,
     now: i64,
 ) -> Result<(), ScannerError> {
     s.in_transaction(|s| -> Result<(), ScannerError> {
@@ -1262,7 +1267,7 @@ fn checkpoint(
                 &tenant_id,
                 &BlockCheckpoint {
                     height,
-                    hash: hash.to_string(),
+                    hash: hash.to_owned(),
                     next_tx,
                 },
             )?;
@@ -1300,7 +1305,7 @@ fn commit(
     s: &Store,
     network: monero::Network,
     block: &CommitBlock,
-    scanned: Vec<ScannedBlock>,
+    scanned: &[ScannedBlock],
     now: i64,
 ) -> Result<bool, ScannerError> {
     s.in_transaction(|s| -> Result<bool, ScannerError> {
@@ -1321,8 +1326,8 @@ fn commit(
                 }
             }
         }
-        let moved = s.advance_scanned_cursors(network, height, &scanned)?;
-        for scanned in &scanned {
+        let moved = s.advance_scanned_cursors(network, height, scanned)?;
+        for scanned in scanned {
             // A checkpoint's staged matches go either way: promoted if the
             // cursor moved, dropped if a rewind moved it meanwhile (they are
             // for a chain it no longer stands on). Only tenants that have one
@@ -1427,15 +1432,15 @@ impl Source {
     /// The block's id and its parent's.
     fn identity(&self) -> (&str, &str) {
         match self {
-            Source::Whole(block) => (&block.hash, &block.prev_hash),
-            Source::Pages(paged) => (&paged.outline.hash, &paged.outline.prev_hash),
+            Self::Whole(block) => (&block.hash, &block.prev_hash),
+            Self::Pages(paged) => (&paged.outline.hash, &paged.outline.prev_hash),
         }
     }
 
     fn tx_count(&self) -> usize {
         match self {
-            Source::Whole(block) => block.txs.len(),
-            Source::Pages(paged) => paged.outline.txids.len(),
+            Self::Whole(block) => block.txs.len(),
+            Self::Pages(paged) => paged.outline.txids.len(),
         }
     }
 }
@@ -1445,7 +1450,7 @@ impl Source {
 struct ScanAt<'s> {
     height: u64,
     until: Option<Instant>,
-    scannable: &'s [(crate::store::TenantId, WalletHandle, ScanIndices)],
+    scannable: &'s [(TenantId, WalletHandle, ScanIndices)],
 }
 
 /// Scans transactions `offset..offset + txs.len()` of the block for every
@@ -1508,7 +1513,7 @@ async fn scan_txs(
 }
 
 /// Scans a large block a page of transactions at a time
-/// (docs/engine_scaling.md section 4), from the first transaction some
+/// (`docs/engine_scaling.md` section 4), from the first transaction some
 /// tenant still needs: a page is fetched, scanned for every tenant due it
 /// and dropped before the next. `Ok(false)` if the unit's time ran out
 /// first.
@@ -1962,7 +1967,7 @@ mod tests {
             }
             *state.carried.lock() = Some(Carried { cache, node });
         };
-        let store = crate::store::Store::open_in_memory().unwrap().into_shared();
+        let store = Store::open_in_memory().unwrap().into_shared();
         let db = crate::store::Db::over_shared(store);
         let custody = crate::key_custody::PlainKeyCustody::default();
         let daemon = crate::daemon::fake::FakeDaemonClient::new();

@@ -1,5 +1,5 @@
 //! Waking a network's scan loops as soon as its node has news, instead of at
-//! the next poll (docs/monero_zmq.md).
+//! the next poll (`docs/monero_zmq.md`).
 //!
 //! The loops still poll: an announcement only says "ask now". What is
 //! scanned and recorded always comes from the node's RPC answers, on the
@@ -21,9 +21,10 @@ use tokio::sync::Notify;
 /// a burst of pool transactions is taken in a few passes, not one each.
 const MIN_GAP: Duration = Duration::from_millis(20);
 
-/// What a network's node has announced since its loops last looked. Each
-/// is a single stored wake-up: announcements made while a pass is running
-/// end the wait that follows it at once, however many there were.
+/// What a network's node has announced since its loops last looked.
+///
+/// Each is a single stored wake-up: announcements made while a pass is
+/// running end the wait that follows it at once, however many there were.
 ///
 /// Also what `/status` reports about the announcements: each publisher
 /// listened to, and how many waits they cut short.
@@ -88,10 +89,9 @@ impl NodeWakes {
             let mut publisher = previous
                 .iter()
                 .position(|p| p.endpoint == *endpoint)
-                .map(|at| previous.swap_remove(at))
-                .unwrap_or_default();
-            publisher.node = node.clone();
-            publisher.endpoint = endpoint.clone();
+                .map_or_default(|at| previous.swap_remove(at));
+            publisher.node.clone_from(node);
+            publisher.endpoint.clone_from(endpoint);
             publisher.connected = false;
             publisher.connected_since = None;
             publishers.push(publisher);
@@ -127,8 +127,8 @@ async fn wait(notify: &Notify, interval: Duration) -> bool {
     tokio::time::sleep(gap).await;
     tokio::select! {
         biased;
-        _ = notify.notified() => true,
-        _ = tokio::time::sleep(interval - gap) => false,
+        () = notify.notified() => true,
+        () = tokio::time::sleep(interval.saturating_sub(gap)) => false,
     }
 }
 
@@ -140,8 +140,8 @@ mod subscriber {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use futures_util::StreamExt;
-    use zeromq::{Socket, SocketEvent, SocketRecv, SubSocket};
+    use futures_util::StreamExt as _;
+    use zeromq::{Socket as _, SocketEvent, SocketRecv as _, SubSocket};
 
     use super::NodeWakes;
     use crate::engine_settings::EngineSettings;
@@ -203,16 +203,16 @@ mod subscriber {
             wakes.listen_to(&configured);
             let listeners: Vec<_> = configured
                 .into_iter()
-                .map(|(_, endpoint)| listen(network, endpoint, wakes.clone()))
+                .map(|(_, endpoint)| listen(network, endpoint, Arc::clone(&wakes)))
                 .collect();
             // Each listener runs until the settings change; with none, this
             // only waits for that.
             let listening = async {
                 futures_util::future::join_all(listeners).await;
-                std::future::pending::<()>().await
+                std::future::pending::<()>().await;
             };
             tokio::select! {
-                _ = listening => {}
+                () = listening => {}
                 changed = saved.changed() => {
                     if changed.is_err() {
                         return;
@@ -224,6 +224,7 @@ mod subscriber {
 
     /// Listens to one publisher, connecting again (after a growing pause)
     /// whenever it can't be reached or the connection fails. Never returns.
+    #[expect(clippy::infinite_loop, reason = "listens for the life of the process")]
     pub(super) async fn listen(network: monero::Network, endpoint: String, wakes: Arc<NodeWakes>) {
         let mut retry = FIRST_RETRY;
         loop {
@@ -231,7 +232,7 @@ mod subscriber {
             wakes.publisher(&endpoint, |p| {
                 p.connected = false;
                 p.connected_since = None;
-                p.last_error = Some(error.to_string());
+                p.last_error = Some(error.clone());
                 p.last_error_at = Some(shared::time::now_unix());
             });
             shared::throttled!(
@@ -285,7 +286,7 @@ mod subscriber {
                 },
                 event = events.next() => match event {
                     Some(SocketEvent::Disconnected(_)) | None => {
-                        return "the node closed the connection".to_string();
+                        return "the node closed the connection".to_owned();
                     }
                     Some(_) => continue,
                 },
@@ -312,6 +313,7 @@ mod subscriber {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[tokio::test(start_paused = true)]
     async fn a_wait_runs_its_interval_when_nothing_is_announced() {
@@ -323,10 +325,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_announcement_ends_the_wait_after_the_minimum_gap() {
-        let wakes = std::sync::Arc::new(NodeWakes::default());
+        let wakes = Arc::new(NodeWakes::default());
         let started = tokio::time::Instant::now();
         let waiter = tokio::spawn({
-            let wakes = wakes.clone();
+            let wakes = Arc::clone(&wakes);
             async move { wakes.chain_or(Duration::from_secs(1)).await }
         });
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -376,7 +378,10 @@ mod tests {
             None,
             "nothing to report without a publisher"
         );
-        wakes.publishers.lock().push(Default::default());
+        wakes
+            .publishers
+            .lock()
+            .push(shared::announcements::Publisher::default());
         let reported = wakes.announcements().unwrap();
         assert_eq!((reported.pool_passes_woken, reported.rounds_woken), (1, 0));
     }
@@ -385,7 +390,7 @@ mod tests {
     #[test]
     fn a_publisher_still_configured_keeps_its_figures_and_one_removed_goes() {
         let wakes = NodeWakes::default();
-        let pair = |node: &str, endpoint: &str| (node.to_string(), endpoint.to_string());
+        let pair = |node: &str, endpoint: &str| (node.to_owned(), endpoint.to_owned());
         wakes.listen_to(&[pair("a:1", "tcp://a:2"), pair("b:1", "tcp://b:2")]);
         wakes.publisher("tcp://a:2", |p| {
             p.connected = true;
@@ -405,7 +410,7 @@ mod tests {
         use std::sync::Arc;
         use std::time::Duration;
 
-        use zeromq::{PubSocket, Socket, SocketSend, ZmqMessage};
+        use zeromq::{PubSocket, Socket as _, SocketSend as _, ZmqMessage};
 
         use super::super::subscriber::{
             announcement, listen, Announcement, CHAIN_TOPIC, POOL_TOPIC,
@@ -441,7 +446,7 @@ mod tests {
                 .unwrap()
                 .to_string();
             let node = |zmq_pub: Option<String>| crate::settings::MoneroNodeSetting {
-                host: "127.0.0.1".to_string(),
+                host: "127.0.0.1".to_owned(),
                 port: 9,
                 ssl: false,
                 accept_self_signed_certs: true,
@@ -468,7 +473,7 @@ mod tests {
             let wakes = Arc::new(NodeWakes::default());
             let subscriber = tokio::spawn(super::super::run_subscriber(
                 monero::Network::Stagenet,
-                wakes.clone(),
+                Arc::clone(&wakes),
                 settings,
             ));
             assert!(
@@ -524,7 +529,11 @@ mod tests {
                 .unwrap()
                 .to_string();
             let wakes = Arc::new(NodeWakes::default());
-            let listener = tokio::spawn(listen(monero::Network::Stagenet, endpoint, wakes.clone()));
+            let listener = tokio::spawn(listen(
+                monero::Network::Stagenet,
+                endpoint,
+                Arc::clone(&wakes),
+            ));
             // Connecting wakes both, for whatever was missed meanwhile.
             assert!(wakes.pool_or(Duration::from_secs(5)).await);
             assert!(wakes.chain_or(Duration::from_secs(5)).await);

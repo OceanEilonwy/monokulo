@@ -1,6 +1,6 @@
 //! The scanner's tuning: how long a round is, how it is shared out, and how
-//! much work one unit, request or call takes on (docs/scanner_microtasks.md,
-//! docs/engine_scaling.md).
+//! much work one unit, request or call takes on (`docs/scanner_microtasks.md`,
+//! `docs/engine_scaling.md`).
 //!
 //! These are design values, not settings. The engine runs
 //! [`ScanTuning::DEFAULT`], checked at build time; nothing reads them from
@@ -68,7 +68,7 @@ pub struct ScanTuning {
     /// runs every 250 ms).
     ///
     /// 10 s is measured, not guessed (`cargo xtask stress rounds`,
-    /// docs/engine_stress.md, round length sweep). Each round pays about
+    /// `docs/engine_stress.md`, round length sweep). Each round pays about
     /// one round trip of its own, and each block request one more on top of
     /// its share of the Blocks tier's time:
     ///
@@ -93,7 +93,7 @@ pub struct ScanTuning {
     /// the share ([`Self::reserved`]), not written down beside it.
     pub shares: TierShares,
     /// The most a round may be raised to for one page of a large block
-    /// (docs/engine_scaling.md section 4).
+    /// (`docs/engine_scaling.md` section 4).
     pub max_round_budget: Duration,
     /// Most tenants one block scan covers and one commit moves. A larger
     /// group is given the same block a page at a time before it moves on,
@@ -127,11 +127,11 @@ pub struct ScanTuning {
     /// One response's share of the scan memory budget is one in this many:
     /// the raw answer and its parse copies are held at once, so each answer
     /// is kept to a fraction of what the block cache may hold
-    /// (docs/engine_scaling.md section 3).
+    /// (`docs/engine_scaling.md` section 3).
     pub response_share_of_budget: u64,
     /// A block that would take longer than this to fetch whole over its
     /// node's link is scanned a page of transactions at a time instead
-    /// (docs/engine_scaling.md section 4): well inside the two minutes
+    /// (`docs/engine_scaling.md` section 4): well inside the two minutes
     /// after which a block counts as slow.
     pub whole_block_max_secs: f64,
 }
@@ -153,25 +153,25 @@ pub enum TuningError {
 impl TuningError {
     pub const fn message(self) -> &'static str {
         match self {
-            TuningError::SharesNotWholeRound => "tier shares must cover the whole round",
-            TuningError::NoRound => "a round must have some time",
-            TuningError::ShareTooSmall => {
+            Self::SharesNotWholeRound => "tier shares must cover the whole round",
+            Self::NoRound => "a round must have some time",
+            Self::ShareTooSmall => {
                 "the blocks, mempool and settlement shares must each be some time: each is a call's deadline"
             }
-            TuningError::RoundOverMaximum => {
+            Self::RoundOverMaximum => {
                 "the round must not exceed the most it may be raised to"
             }
-            TuningError::RaisedRoundSlow => {
+            Self::RaisedRoundSlow => {
                 "a raised round must not by itself make a block count as slow"
             }
-            TuningError::HeadersOverOneRequest => "a headers fetch must be one request",
-            TuningError::WholeBlockOutOfRange => {
+            Self::HeadersOverOneRequest => "a headers fetch must be one request",
+            Self::WholeBlockOutOfRange => {
                 "a block's whole-fetch limit must be above 0 s and let it finish before it counts as slow"
             }
-            TuningError::ZeroCount => {
+            Self::ZeroCount => {
                 "page, unit, batch, concurrency and request sizes must be at least one"
             }
-            TuningError::AlphaOutOfRange => {
+            Self::AlphaOutOfRange => {
                 "the running average's weight must be above 0 and at most 1"
             }
         }
@@ -188,7 +188,7 @@ impl std::error::Error for TuningError {}
 
 impl ScanTuning {
     /// What the engine runs.
-    pub const DEFAULT: ScanTuning = ScanTuning {
+    pub const DEFAULT: Self = Self {
         round_budget: Duration::from_secs(10),
         shares: TierShares {
             chain: 20,
@@ -225,7 +225,7 @@ impl ScanTuning {
     }
 
     /// How long one block request should take over the node's measured link
-    /// (docs/engine_scaling.md section 2): the Blocks tier's share of a
+    /// (`docs/engine_scaling.md` section 2): the Blocks tier's share of a
     /// round, so 4 s by default.
     ///
     /// It is a time and not a size because the scheduler divides time, not
@@ -353,7 +353,7 @@ impl ScanTuning {
 
 impl Default for ScanTuning {
     fn default() -> Self {
-        ScanTuning::DEFAULT
+        Self::DEFAULT
     }
 }
 
@@ -396,7 +396,9 @@ mod tests {
         ] {
             let total: Duration = Tier::ALL.iter().map(|tier| t.share_of(*tier, budget)).sum();
             assert!(
-                total <= budget && budget - total < Duration::from_nanos(Tier::ALL.len() as u64)
+                total <= budget
+                    && budget.checked_sub(total).unwrap()
+                        < Duration::from_nanos(Tier::ALL.len() as u64)
             );
         }
     }

@@ -1,4 +1,4 @@
-//! Proof-of-work checking (docs/proof_of_work.md): following the heaviest
+//! Proof-of-work checking (`docs/proof_of_work.md)`: following the heaviest
 //! chain whose every block's proof of work the engine checked itself, from
 //! an anchor its nodes agreed on.
 //!
@@ -20,6 +20,7 @@
 pub mod anchor;
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -79,11 +80,11 @@ pub struct ProofTuning {
 }
 
 impl ProofTuning {
-    pub const DEFAULT: ProofTuning = ProofTuning {
+    pub const DEFAULT: Self = Self {
         anchor_depth: 720,
         // 30 days.
         keep_blocks: 21_600,
-        caught_for: Duration::from_secs(60 * 60),
+        caught_for: Duration::from_hours(1),
         anchor_retry: Duration::from_secs(60),
         anchor_samples: 64,
         blocks_per_round: 256,
@@ -114,22 +115,22 @@ impl ProofTuning {
     /// Refuses a tuning checking can't run with.
     pub fn validate(&self) -> Result<(), String> {
         if self.anchor_depth == 0 {
-            return Err("anchor_depth must be at least 1".to_string());
+            return Err("anchor_depth must be at least 1".to_owned());
         }
         if self.anchor_samples == 0 {
-            return Err("anchor_samples must be at least 1 (the anchor itself)".to_string());
+            return Err("anchor_samples must be at least 1 (the anchor itself)".to_owned());
         }
         if self.blocks_per_round == 0 || self.fetch_concurrency == 0 {
-            return Err("blocks_per_round and fetch_concurrency must be at least 1".to_string());
+            return Err("blocks_per_round and fetch_concurrency must be at least 1".to_owned());
         }
         if self.call_timeout.is_zero() || self.poll.is_zero() || self.anchor_retry.is_zero() {
-            return Err("call_timeout, poll and anchor_retry must be more than zero".to_string());
+            return Err("call_timeout, poll and anchor_retry must be more than zero".to_owned());
         }
         if self.min_difficulty_mainnet == 0
             || self.min_difficulty_stagenet == 0
             || self.min_difficulty_testnet == 0
         {
-            return Err("a network's difficulty floor must be at least 1".to_string());
+            return Err("a network's difficulty floor must be at least 1".to_owned());
         }
         Ok(())
     }
@@ -184,14 +185,14 @@ impl Finding {
     }
 }
 
-/// Why a round couldn't do its work: the database, or RandomX itself. The
+/// Why a round couldn't do its work: the database, or `RandomX` itself. The
 /// round is retried; nothing is held against any node.
 #[derive(Debug, thiserror::Error)]
 pub enum ProofError {
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
-    Hash(#[from] crate::pow::hasher::HashError),
+    Hash(#[from] pow::hasher::HashError),
     #[error("{0}")]
     Missing(String),
 }
@@ -315,7 +316,7 @@ impl Follower {
         if self.known_off {
             return;
         }
-        if let Err(error) = self.db(db, |s, network| s.disable_proof(network)).await {
+        if let Err(error) = self.db(db, Store::disable_proof).await {
             shared::throttled!(
                 format!("proof-off:{:?}", self.network),
                 warn,
@@ -338,7 +339,7 @@ impl Follower {
         now: i64,
     ) -> Result<RoundReport, ProofError> {
         self.known_off = false;
-        let mut state = self.db(db, |s, network| s.proof_network(network)).await?;
+        let mut state = self.db(db, Store::proof_network).await?;
         if state.is_none() {
             state = self
                 .db(db, move |s, network| {
@@ -348,14 +349,13 @@ impl Follower {
                 .await?;
             tracing::info!(network = ?self.network, "proof-of-work checking turned on: orders settle on proven blocks only");
         }
-        let hasher = match &self.hasher {
-            Some(hasher) => hasher.clone(),
-            None => {
-                let name = format!("randomx {}", shared::network::network_str(self.network));
-                let hasher = Hasher::start(&name)?;
-                self.hasher = Some(hasher.clone());
-                hasher
-            }
+        let hasher = if let Some(hasher) = &self.hasher {
+            hasher.clone()
+        } else {
+            let name = format!("randomx {}", shared::network::network_str(self.network));
+            let hasher = Hasher::start(&name)?;
+            self.hasher = Some(hasher.clone());
+            hasher
         };
         let nodes: Vec<NodeRef<'_>> = client
             .nodes()
@@ -377,7 +377,7 @@ impl Follower {
                 Ok(new) => {
                     self.next_anchor = None;
                     self.anchor_failures = 0;
-                    let top = new.window.last().map(|b| b.height).unwrap_or_default();
+                    let top = new.window.last().map_or_default(|b| b.height);
                     let (agreed, total) = (new.agreed, new.nodes);
                     self.db(db, move |s, network| s.write_anchor(network, &new, now))
                         .await?;
@@ -388,10 +388,10 @@ impl Follower {
                         nodes = total,
                         "proof-of-work checking anchored"
                     );
-                    self.db(db, |s, network| s.proof_network(network))
+                    self.db(db, Store::proof_network)
                         .await?
                         .and_then(|state| state.anchor)
-                        .ok_or_else(|| ProofError::Missing("the anchor just written".to_string()))?
+                        .ok_or_else(|| ProofError::Missing("the anchor just written".to_owned()))?
                 }
                 Err(problem) => {
                     self.anchor_failures = self.anchor_failures.saturating_add(1);
@@ -435,7 +435,7 @@ impl Follower {
         // its first bad block.
         let mut order: Vec<usize> = (0..nodes.len()).collect();
         order.sort_by_key(|&i| std::cmp::Reverse(tips[i].as_ref().map_or(0, |t| t.height)));
-        let mut findings: Vec<Option<Finding>> = (0..nodes.len()).map(|_| None).collect();
+        let mut findings: Vec<Option<Finding>> = std::iter::repeat_n(None, nodes.len()).collect();
         let mut backlogged = false;
         for i in order {
             // Each node its own: one can't use up another's.
@@ -465,13 +465,13 @@ impl Follower {
         self.exclude(client, &nodes, &findings);
 
         let tip = self
-            .db(db, |s, network| s.proven_tip(network))
+            .db(db, Store::proven_tip)
             .await?
-            .ok_or_else(|| ProofError::Missing("a proven chain after anchoring".to_string()))?;
+            .ok_or_else(|| ProofError::Missing("a proven chain after anchoring".to_owned()))?;
         let keep_from = tip.height.saturating_sub(self.tuning.kept());
         self.db(db, move |s, network| s.prune_proven(network, keep_from))
             .await?;
-        let ceiling = self.db(db, |s, network| s.proof_ceiling(network)).await?;
+        let ceiling = self.db(db, Store::proof_ceiling).await?;
         self.status = Some(self.describe(
             client, &anchor, &tip, ceiling, &nodes, findings, &hasher, now,
         ));
@@ -480,7 +480,10 @@ impl Follower {
 
     /// Looks at one node whose tip is `height` (`hash`, if it said), and
     /// checks its chain past the proven one, within `budget` blocks.
-    #[allow(clippy::too_many_arguments)] // one node's look, with the round's shared handles
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one node's look, with the round's shared handles"
+    )]
     async fn look_at(
         &mut self,
         db: &Db,
@@ -505,7 +508,7 @@ impl Follower {
         match (&hash, finding.verdict) {
             (Some(hash), NodeVerdict::Lighter | NodeVerdict::Caught) => {
                 self.settled
-                    .insert(node.label.to_string(), (hash.clone(), finding.clone()));
+                    .insert(node.label.to_owned(), (hash.clone(), finding.clone()));
             }
             _ => {
                 self.settled.remove(node.label);
@@ -514,7 +517,10 @@ impl Follower {
         Ok(finding)
     }
 
-    #[allow(clippy::too_many_arguments)] // one node's look, with the round's shared handles
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one node's look, with the round's shared handles"
+    )]
     async fn look_afresh(
         &mut self,
         db: &Db,
@@ -527,13 +533,13 @@ impl Follower {
         now: i64,
     ) -> Result<Finding, ProofError> {
         let ours = self
-            .db(db, |s, network| s.proven_tip(network))
+            .db(db, Store::proven_tip)
             .await?
-            .ok_or_else(|| ProofError::Missing("a proven chain".to_string()))?;
+            .ok_or_else(|| ProofError::Missing("a proven chain".to_owned()))?;
         let floor = self
-            .db(db, |s, network| s.proven_floor(network))
+            .db(db, Store::proven_floor)
             .await?
-            .ok_or_else(|| ProofError::Missing("a proven chain".to_string()))?;
+            .ok_or_else(|| ProofError::Missing("a proven chain".to_owned()))?;
         // The lowest block with a whole window below it: the deepest a
         // branch can leave the proven chain and still be checked.
         let deepest = floor.height + DIFFICULTY_BLOCKS as u64 - 1;
@@ -632,7 +638,10 @@ impl Follower {
     /// chain leaves ours costs it nothing to bend); the rest have every rule
     /// but the hash checked in order, then are hashed, then their time is
     /// checked against the clock (a bad proof is caught whatever its time).
-    #[allow(clippy::too_many_arguments)] // one branch's check, with the round's shared handles
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one branch's check, with the round's shared handles"
+    )]
     async fn check_branch(
         &mut self,
         db: &Db,
@@ -787,17 +796,17 @@ impl Follower {
                     None => keyed.push((key, vec![at])),
                 }
             }
-            let mut hashes = vec![[0u8; 32]; pending.len()];
+            let mut pow_hashes = vec![[0u8; 32]; pending.len()];
             for (key, members) in keyed {
                 let inputs = members
                     .iter()
                     .map(|&at| fresh[pending[at].0].pow_input.clone())
                     .collect();
                 for (at, hash) in members.iter().zip(hasher.hash(key, inputs).await?) {
-                    hashes[*at] = hash;
+                    pow_hashes[*at] = hash;
                 }
             }
-            for ((i, difficulty, block), hash) in pending.into_iter().zip(&hashes) {
+            for ((i, difficulty, block), hash) in pending.into_iter().zip(&pow_hashes) {
                 let candidate = &fresh[i];
                 let checked = pow::accept(&window, candidate, difficulty, hash)
                     .and_then(|_| pow::check_time(candidate, now_secs));
@@ -854,7 +863,7 @@ impl Follower {
         let (from, blocks) = (parent.clone(), std::mem::take(branch));
         // Blocks above the parent are replaced: a switch, not an extension.
         let switched = self
-            .db(db, |s, network| s.proven_tip(network))
+            .db(db, Store::proven_tip)
             .await?
             .is_some_and(|tip| tip.height > from.height);
         let written = self
@@ -931,7 +940,7 @@ impl Follower {
                         _ => now,
                     };
                     self.off_chain.insert(
-                        node.label.to_string(),
+                        node.label.to_owned(),
                         OffChain {
                             verdict: finding.verdict,
                             detail: finding.detail.clone().unwrap_or_default(),
@@ -962,7 +971,10 @@ impl Follower {
         }
     }
 
-    #[allow(clippy::too_many_arguments)] // the round's facts, gathered once
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the round's facts, gathered once"
+    )]
     fn describe(
         &self,
         client: &FallbackDaemonClient,
@@ -997,7 +1009,7 @@ impl Follower {
         } else if none_on_chain {
             (
                 ProofState::Held,
-                "No node serves the proven chain or a valid heavier one. Nothing new settles until one does.".to_string(),
+                "No node serves the proven chain or a valid heavier one. Nothing new settles until one does.".to_owned(),
             )
         } else {
             let excluded = (0..nodes.len()).filter(|&i| client.is_excluded(i)).count();
@@ -1007,10 +1019,11 @@ impl Follower {
                 ceiling.unwrap_or(0)
             );
             if excluded > 0 {
-                summary.push_str(&format!(
+                let _ = write!(
+                    summary,
                     " {excluded} node{} left out of scanning for serving another chain.",
                     if excluded == 1 { "" } else { "s" }
-                ));
+                );
             }
             (ProofState::Following, summary)
         };
@@ -1032,7 +1045,7 @@ impl Follower {
                 .zip(findings)
                 .enumerate()
                 .map(|(i, (node, finding))| NodeProof {
-                    node: node.label.to_string(),
+                    node: node.label.to_owned(),
                     height: finding.height,
                     verdict: finding.verdict,
                     detail: finding
@@ -1059,10 +1072,16 @@ fn hashing(hasher: &Hasher) -> Hashing {
 }
 
 /// Runs proof-of-work checking for `network` for the life of its node
-/// setting: a round whenever its node announces a block or the poll
-/// interval passes, at once while work is left. Each round reads whether
-/// checking is on, so the setting applies from the next round; off, the
-/// RandomX memory is freed.
+/// setting.
+///
+/// A round runs whenever its node announces a block or the poll interval
+/// passes, at once while work is left. Each round reads whether checking is
+/// on, so the setting applies from the next round; off, the `RandomX`
+/// memory is freed.
+#[expect(
+    clippy::infinite_loop,
+    reason = "a supervised loop: `shared::supervise` restarts one that returns"
+)]
 pub async fn run_loop(
     network: monero::Network,
     db: Db,

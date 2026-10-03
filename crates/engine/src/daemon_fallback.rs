@@ -1,8 +1,11 @@
-//! `FallbackDaemonClient`: a `MoneroDaemonClient` that wraps an ordered list of other
-//! `MoneroDaemonClient`s (typically one real `RpcDaemonClient` per configured
-//! `[monero_node.<network>]` primary node plus its `fallbacks`) and fails over
-//! between them, so a single flaky or down public node doesn't stop payment
-//! detection on that network. See `docs/DESIGN.md` §7.1 and `config::MoneroNodeConfig::fallbacks`.
+//! `FallbackDaemonClient`: a `MoneroDaemonClient` that fails over between nodes.
+//!
+//! It wraps an ordered list of other `MoneroDaemonClient`s (typically one real
+//! `RpcDaemonClient` per configured `[monero_node.<network>]` primary node plus
+//! its `fallbacks`), so a single flaky or down public node doesn't stop payment
+//! detection on that network.
+//!
+//! See `docs/DESIGN.md` §7.1 and `config::MoneroNodeConfig::fallbacks`.
 //!
 //! ## Failover policy
 //!
@@ -32,10 +35,11 @@ use tokio::time::Instant;
 
 use crate::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
 
-/// One entry in a [`FallbackDaemonClient`]'s ordered node list - the real client plus
-/// a human-readable label (e.g. `"host:port"`) purely for the log events
-/// on failover, so an operator's logs say *which* configured node just went down or
-/// recovered rather than an opaque index.
+/// One entry in a [`FallbackDaemonClient`]'s ordered node list.
+///
+/// The real client plus a human-readable label (e.g. `"host:port"`) purely
+/// for the log events on failover, so an operator's logs say *which*
+/// configured node just went down or recovered rather than an opaque index.
 pub struct FallbackNode {
     pub label: String,
     pub client: std::sync::Arc<dyn MoneroDaemonClient>,
@@ -46,17 +50,18 @@ pub struct FallbackNode {
 /// failure in a row, doubling up to 5 minutes. A node in cooldown is still
 /// tried when every node is in cooldown, so recovery is never blocked.
 const FIRST_COOLDOWN: Duration = Duration::from_secs(5);
-const MAX_COOLDOWN: Duration = Duration::from_secs(5 * 60);
+const MAX_COOLDOWN: Duration = Duration::from_mins(5);
 
 /// Longest one node gets within a call: the client's own request timeout
 /// (`daemon_rpc::REQUEST_TIMEOUT`). A node is never cut off short of what
 /// its own client would give it; the shrinking deadline limits how many
 /// nodes a call gets to try instead.
 const MAX_ATTEMPT: Duration = crate::daemon_rpc::REQUEST_TIMEOUT;
-/// Longest one call may take across all the nodes it tries, so a call with
-/// every node dead fails in bounded time rather than one full request
-/// timeout per node: two full attempts, so a primary that hangs still
-/// leaves one fallback its turn.
+/// Longest one call may take across all the nodes it tries.
+///
+/// A call with every node dead then fails in bounded time rather than one
+/// full request timeout per node: two full attempts, so a primary that hangs
+/// still leaves one fallback its turn.
 pub const CALL_DEADLINE: Duration = MAX_ATTEMPT.saturating_mul(2);
 /// Added to a node's own timeout where a layer above waits on it, so the
 /// node's own error (naming the node and the timeout) arrives first.
@@ -77,7 +82,7 @@ pub struct FallbackDaemonClient {
     current: AtomicUsize,
     /// Nodes proof-of-work checking caught serving blocks that break the
     /// rules, or a chain with less work than the one proven
-    /// (docs/proof_of_work.md): never pinned or tried while excluded.
+    /// (`docs/proof_of_work.md)`: never pinned or tried while excluded.
     excluded: Mutex<Vec<bool>>,
 }
 
@@ -221,7 +226,7 @@ impl FallbackDaemonClient {
     /// all is a real (if avoidable) misconfiguration, not a logic bug worth crashing
     /// the process over.
     fn note_all_failed() -> DaemonError {
-        DaemonError::Request("no Monero daemon nodes configured".to_string())
+        DaemonError::Request("no Monero daemon nodes configured".to_owned())
     }
 
     /// A handle that sends every call to one node, for the length of one scan
@@ -247,7 +252,7 @@ impl FallbackDaemonClient {
 
     /// [`Self::failover`] with a deadline of `total` for the whole call and
     /// `per_node(node)` for each attempt: a block request is given what each
-    /// node's own link needs (docs/engine_scaling.md section 2).
+    /// node's own link needs (`docs/engine_scaling.md` section 2).
     async fn failover_within<'a, T, F, Fut>(
         &'a self,
         total: Duration,
@@ -356,10 +361,10 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
         Some(crate::daemon::NodeKey(self.idx))
     }
     async fn get_height(&self) -> Result<u64, DaemonError> {
-        self.one(|c| c.get_height()).await
+        self.one(MoneroDaemonClient::get_height).await
     }
     async fn get_tip(&self) -> Result<ChainTip, DaemonError> {
-        self.one(|c| c.get_tip()).await
+        self.one(MoneroDaemonClient::get_tip).await
     }
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
         self.one(|c| c.get_block_hash(height)).await
@@ -422,7 +427,7 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     /// The pinned node's two answers. It is judged by the tip's.
     async fn get_tip_and_mempool(&self) -> (Result<ChainTip, DaemonError>, PoolAnswer) {
         let both = self
-            .one(|c| async move {
+            .one(async |c| {
                 let (tip, pool) = c.get_tip_and_mempool().await;
                 tip.map(|tip| (tip, pool))
             })
@@ -436,7 +441,7 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
         }
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
-        self.one(|c| c.get_mempool_txids()).await
+        self.one(MoneroDaemonClient::get_mempool_txids).await
     }
     async fn get_transactions_with_ids(
         &self,
@@ -500,11 +505,11 @@ impl MoneroDaemonClient for FallbackDaemonClient {
     }
 
     async fn get_height(&self) -> Result<u64, DaemonError> {
-        self.failover(|c| c.get_height()).await
+        self.failover(MoneroDaemonClient::get_height).await
     }
 
     async fn get_tip(&self) -> Result<ChainTip, DaemonError> {
-        self.failover(|c| c.get_tip()).await
+        self.failover(MoneroDaemonClient::get_tip).await
     }
 
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
@@ -590,7 +595,7 @@ impl MoneroDaemonClient for FallbackDaemonClient {
     /// asked for on its own, from whichever node answers.
     async fn get_tip_and_mempool(&self) -> (Result<ChainTip, DaemonError>, PoolAnswer) {
         let both = self
-            .failover(|c| async move {
+            .failover(async |c| {
                 let (tip, pool) = c.get_tip_and_mempool().await;
                 tip.map(|tip| (tip, pool))
             })
@@ -603,7 +608,7 @@ impl MoneroDaemonClient for FallbackDaemonClient {
     }
 
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
-        self.failover(|c| c.get_mempool_txids()).await
+        self.failover(MoneroDaemonClient::get_mempool_txids).await
     }
 
     async fn get_transactions_with_ids(
@@ -675,7 +680,7 @@ impl MoneroDaemonClient for FallbackDaemonClient {
             }
         }
         best.map(Some).ok_or_else(|| {
-            DaemonError::Request("no nodes reachable to locate a transaction".to_string())
+            DaemonError::Request("no nodes reachable to locate a transaction".to_owned())
         })
     }
 
@@ -717,7 +722,7 @@ impl MoneroDaemonClient for FallbackDaemonClient {
     async fn is_key_image_spent_corroborated(
         &self,
         key_images: &[String],
-    ) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
+    ) -> Result<Vec<KeyImageStatus>, DaemonError> {
         // Every node at once: the answer waits for the slowest node, not
         // for each in turn.
         let nodes = self.trusted();
@@ -747,7 +752,7 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         }
         if responses.is_empty() {
             return Err(DaemonError::Request(
-                "no nodes reachable to check key image status".to_string(),
+                "no nodes reachable to check key image status".to_owned(),
             ));
         }
 
@@ -758,7 +763,7 @@ impl MoneroDaemonClient for FallbackDaemonClient {
                 votes[0]
             } else {
                 tracing::warn!(
-                    key_image = key_images.get(i).map(String::as_str).unwrap_or("?"),
+                    key_image = key_images.get(i).map_or("?", String::as_str),
                     "monero daemon fallback: nodes disagree on a key image - treating the status as disputed until \
                      they agree"
                 );
@@ -811,7 +816,7 @@ mod tests {
             if self.healthy.load(Ordering::Relaxed) {
                 Ok(1)
             } else {
-                Err(DaemonError::Request("flaky node is down".to_string()))
+                Err(DaemonError::Request("flaky node is down".to_owned()))
             }
         }
 
@@ -853,8 +858,8 @@ mod tests {
     fn node(label: &str, client: Arc<FlakyDaemonClient>) -> (FallbackNode, Arc<FlakyDaemonClient>) {
         (
             FallbackNode {
-                label: label.to_string(),
-                client: client.clone(),
+                label: label.to_owned(),
+                client: Arc::<FlakyDaemonClient>::clone(&client),
             },
             client,
         )
@@ -1009,7 +1014,7 @@ mod tests {
         async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
             if self.unreachable {
                 return Err(DaemonError::Request(
-                    "key image daemon is unreachable".to_string(),
+                    "key image daemon is unreachable".to_owned(),
                 ));
             }
             Ok(self.location)
@@ -1020,7 +1025,7 @@ mod tests {
         ) -> Result<Vec<KeyImageStatus>, DaemonError> {
             if self.unreachable {
                 return Err(DaemonError::Request(
-                    "key image daemon is unreachable".to_string(),
+                    "key image daemon is unreachable".to_owned(),
                 ));
             }
             assert_eq!(
@@ -1034,7 +1039,7 @@ mod tests {
 
     fn ki_node(label: &str, client: KeyImageDaemonClient) -> FallbackNode {
         FallbackNode {
-            label: label.to_string(),
+            label: label.to_owned(),
             client: Arc::new(client),
         }
     }
@@ -1074,10 +1079,10 @@ mod tests {
             ki_node("a", KeyImageDaemonClient::unreachable()),
             ki_node("b", KeyImageDaemonClient::unreachable()),
         ]);
-        assert!(none_reachable
+        none_reachable
             .locate_transaction_corroborated("tx")
             .await
-            .is_err());
+            .unwrap_err();
         let single = FallbackDaemonClient::new(vec![ki_node(
             "only",
             KeyImageDaemonClient::placing(TxLocation::NotFound),
@@ -1108,7 +1113,7 @@ mod tests {
             ),
         ]);
         let result = client
-            .is_key_image_spent_corroborated(&["ki1".to_string()])
+            .is_key_image_spent_corroborated(&["ki1".to_owned()])
             .await
             .unwrap();
         assert_eq!(result, vec![KeyImageStatus::SpentInBlockchain]);
@@ -1131,7 +1136,7 @@ mod tests {
             ),
         ]);
         let result = client
-            .is_key_image_spent_corroborated(&["ki1".to_string()])
+            .is_key_image_spent_corroborated(&["ki1".to_owned()])
             .await
             .unwrap();
         assert_eq!(
@@ -1155,7 +1160,7 @@ mod tests {
         ]);
         assert_eq!(
             client
-                .is_key_image_spent_corroborated(&["ki1".to_string()])
+                .is_key_image_spent_corroborated(&["ki1".to_owned()])
                 .await
                 .unwrap(),
             vec![KeyImageStatus::Disputed]
@@ -1169,7 +1174,7 @@ mod tests {
             KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain]),
         )]);
         let result = client
-            .is_key_image_spent_corroborated(&["ki1".to_string()])
+            .is_key_image_spent_corroborated(&["ki1".to_owned()])
             .await
             .unwrap();
         assert_eq!(
@@ -1189,7 +1194,7 @@ mod tests {
             ),
         ]);
         let result = client
-            .is_key_image_spent_corroborated(&["ki1".to_string()])
+            .is_key_image_spent_corroborated(&["ki1".to_owned()])
             .await
             .unwrap();
         assert_eq!(
@@ -1206,7 +1211,7 @@ mod tests {
             ki_node("b", KeyImageDaemonClient::unreachable()),
         ]);
         let err = client
-            .is_key_image_spent_corroborated(&["ki1".to_string()])
+            .is_key_image_spent_corroborated(&["ki1".to_owned()])
             .await
             .unwrap_err();
         assert!(matches!(err, DaemonError::Request(_)));
@@ -1225,7 +1230,7 @@ mod tests {
             ),
         ]);
         let result = client
-            .is_key_image_spent_corroborated(&["ki1".to_string()])
+            .is_key_image_spent_corroborated(&["ki1".to_owned()])
             .await
             .unwrap();
         assert_eq!(result, vec![KeyImageStatus::Unspent]);
@@ -1252,7 +1257,7 @@ mod tests {
             ),
         ]);
         let result = client
-            .is_key_image_spent_corroborated(&["ki1".to_string(), "ki2".to_string()])
+            .is_key_image_spent_corroborated(&["ki1".to_owned(), "ki2".to_owned()])
             .await
             .unwrap();
         assert_eq!(
@@ -1334,7 +1339,7 @@ mod tests {
             tokio::time::sleep(self.delay).await;
             Ok(vec![ChainBlock {
                 height: start_height,
-                hash: self.label.to_string(),
+                hash: self.label.to_owned(),
                 prev_hash: String::new(),
                 timestamp: 0,
                 txs: Vec::new(),
@@ -1371,7 +1376,7 @@ mod tests {
     }
 
     /// A block request gets what each node's link needs
-    /// (docs/engine_scaling.md section 2): a slow primary that will deliver
+    /// (`docs/engine_scaling.md` section 2): a slow primary that will deliver
     /// within its own timeout isn't cut off at the fixed 15 s, and a primary
     /// that hangs still leaves its fallback a turn.
     #[tokio::test(start_paused = true)]
@@ -1416,13 +1421,13 @@ mod tests {
         let (b_node, b) = node("b", Arc::new(FlakyDaemonClient::new(false)));
         let client = FallbackDaemonClient::new(vec![a_node, b_node]);
 
-        assert!(client.get_height().await.is_err());
+        client.get_height().await.unwrap_err();
         assert!(client.in_cooldown(0) && client.in_cooldown(1));
         tokio::time::advance(FIRST_COOLDOWN + Duration::from_millis(1)).await;
         assert!(!client.in_cooldown(0), "the first cooldown is short");
 
         // A second failure in a row doubles it.
-        assert!(client.get_height().await.is_err());
+        client.get_height().await.unwrap_err();
         tokio::time::advance(FIRST_COOLDOWN + Duration::from_millis(1)).await;
         assert!(
             client.in_cooldown(0),
@@ -1502,7 +1507,7 @@ mod tests {
             },
         ]);
         let started = Instant::now();
-        assert!(all_hanging.get_height().await.is_err());
+        all_hanging.get_height().await.unwrap_err();
         assert!(
             started.elapsed() <= CALL_DEADLINE + MAX_ATTEMPT,
             "took {:?}",
@@ -1544,7 +1549,7 @@ mod tests {
         assert_eq!(b.call_count(), 1);
     }
 
-    /// A node proof-of-work checking caught (docs/proof_of_work.md) is
+    /// A node proof-of-work checking caught (`docs/proof_of_work.md`) is
     /// never pinned or failed over to, even when every other node is down;
     /// it is back once let back in; and every node can't be excluded at
     /// once.
@@ -1564,7 +1569,7 @@ mod tests {
         // With the others down, calls fail rather than go to it.
         assert!(client.set_excluded(&[0, 2]));
         b.set_healthy(false);
-        assert!(client.get_height().await.is_err());
+        client.get_height().await.unwrap_err();
         assert_eq!(a.call_count(), 0, "never sent to a caught node");
 
         assert!(!client.set_excluded(&[0, 1, 2]), "never every node");

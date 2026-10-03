@@ -8,6 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::sync::Arc;
 
 use monero::blockdata::transaction::TxOutTarget;
 use monero::Transaction;
@@ -41,7 +42,7 @@ pub(crate) fn parse_payment_key_images(raw: &str) -> Result<Vec<String>> {
         .map_err(|e| ScannerError::InvalidPaymentEvidence(e.to_string()))?;
     if images.is_empty() {
         return Err(ScannerError::InvalidPaymentEvidence(
-            "empty key-image list".to_string(),
+            "empty key-image list".to_owned(),
         ));
     }
     if images
@@ -49,7 +50,7 @@ pub(crate) fn parse_payment_key_images(raw: &str) -> Result<Vec<String>> {
         .any(|image| image.len() != 64 || !image.bytes().all(|byte| byte.is_ascii_hexdigit()))
     {
         return Err(ScannerError::InvalidPaymentEvidence(
-            "malformed key image".to_string(),
+            "malformed key image".to_owned(),
         ));
     }
     Ok(images)
@@ -66,18 +67,20 @@ fn key_images_json_of(tx: &crate::daemon::ScanTx) -> String {
 }
 
 /// The result of scanning one transaction against one wallet - pure `KeyCustody`
-/// output, no `Store` involved. Deliberately separate from persisting it (see
-/// `record_scan_match`): `rusqlite::Connection` is `Send` but not `Sync`, so a
-/// `&Store` reference held across an `.await` (as combining these two steps into
-/// one async function would require, since `KeyCustody::scan_tx_outputs` awaits)
-/// makes the containing future `!Send` - fine for a future only ever `.await`ed
-/// directly inside another task (every test in this file does that), but fatal the
-/// moment anything containing it is handed to `tokio::spawn`, which requires the
-/// whole future to be `Send + 'static`. `engine::run_scan_tick` is spawned in
-/// production (`main.rs`), so this split isn't a style preference - the combined
-/// version simply cannot be spawned. Caught by the compiler, not a test, the first
-/// time this code was actually wired into a spawned task rather than awaited
-/// directly in a test.
+/// output, no `Store` involved.
+///
+/// Deliberately separate from persisting it (see `record_scan_match`):
+/// `rusqlite::Connection` is `Send` but not `Sync`, so a `&Store` reference held
+/// across an `.await` (as combining these two steps into one async function would
+/// require, since `KeyCustody::scan_tx_outputs` awaits) makes the containing
+/// future `!Send` - fine for a future only ever `.await`ed directly inside another
+/// task (every test in this file does that), but fatal the moment anything
+/// containing it is handed to `tokio::spawn`, which requires the whole future to
+/// be `Send + 'static`. `engine::run_scan_tick` is spawned in production
+/// (`main.rs`), so this split isn't a style preference - the combined version
+/// simply cannot be spawned. Caught by the compiler, not a test, the first time
+/// this code was actually wired into a spawned task rather than awaited directly
+/// in a test.
 pub struct ScanResult {
     pub matches: Vec<MatchedOutput>,
     pub txid: String,
@@ -113,14 +116,14 @@ impl ScanResult {
         let output_keys = matches
             .iter()
             .filter_map(|m| {
-                let (TxOutTarget::ToKey { key } | TxOutTarget::ToTaggedKey { key, .. }) =
+                let (TxOutTarget::ToKey { key } | TxOutTarget::ToTaggedKey { key, view_tag: _ }) =
                     &prefix.outputs.get(m.output_index)?.target;
                 Some((m.output_index, hex::encode(key)))
             })
             .collect();
-        ScanResult {
+        Self {
             matches,
-            txid: txid.to_string(),
+            txid: txid.to_owned(),
             key_images_json: key_images_json_of(tx),
             output_keys,
         }
@@ -190,7 +193,7 @@ pub(crate) async fn scan_txs_for_tenants(
     tuning: &crate::work::ScanTuning,
     tier: crate::work::Tier,
 ) -> Vec<(crate::store::TenantId, Result<Vec<ScanResult>>)> {
-    use futures_util::stream::{self, StreamExt};
+    use futures_util::stream::{self, StreamExt as _};
     let deadline = tuning.reserved(tier);
     // By index: a closure over borrowed tuples trips a rustc limitation that
     // makes the future not `Send`.
@@ -257,7 +260,7 @@ pub(crate) async fn scan_for_tenants(
     let tenants: Vec<_> = tenants.iter().map(|tenant| (*tenant, 0)).collect();
     scan_txs_for_tenants(
         key_custody,
-        std::slice::from_ref(&txid.to_string()),
+        std::slice::from_ref(&txid.to_owned()),
         std::slice::from_ref(&tx),
         &inputs,
         &tenants,
@@ -270,18 +273,19 @@ pub(crate) async fn scan_for_tenants(
     .collect()
 }
 
-/// Persists a `ScanResult` against one tenant. Purely synchronous - no `.await`
-/// anywhere in this function, so a `&Store` parameter here is never an issue.
-/// Returns the set of order ids touched, so the caller knows which orders need
-/// `Store::recompute_order_status`.
+/// Persists a `ScanResult` against one tenant.
+///
+/// Purely synchronous - no `.await` anywhere in this function, so a `&Store`
+/// parameter here is never an issue. Returns the set of order ids touched, so
+/// the caller knows which orders need `Store::recompute_order_status`.
 pub fn record_scan_match(
     store: &Store,
     tenant_id: &crate::store::TenantId,
     scan: &ScanResult,
     seen_at: i64,
     block_height: Option<u64>,
-) -> Result<HashSet<crate::store::OrderId>> {
-    let mut touched = HashSet::new();
+) -> Result<std::collections::BTreeSet<crate::store::OrderId>> {
+    let mut touched = std::collections::BTreeSet::new();
     for m in &scan.matches {
         let Some(order) = store.find_order_by_minor_index(tenant_id, m.subaddress_index.minor)?
         else {
@@ -342,7 +346,7 @@ pub(crate) fn stage_block_match(
             );
             continue;
         };
-        store.stage_partial_match(crate::store::StagedMatch {
+        store.stage_partial_match(&crate::store::StagedMatch {
             network,
             tenant_id,
             order_id: &order.id,
@@ -361,9 +365,9 @@ pub(crate) fn stage_block_match(
 /// outputs; one past `i64::MAX` is refused rather than wrapped.
 fn output_index(index: usize) -> Result<i64> {
     i64::try_from(index).map_err(|e| {
-        ScannerError::Store(crate::store::StoreError::Sqlite(
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e)),
-        ))
+        ScannerError::Store(StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(
+            Box::new(e),
+        )))
     })
 }
 
@@ -387,10 +391,10 @@ pub struct VanishedPoolReport {
 #[derive(Default)]
 pub(crate) struct VanishedHints {
     /// Where each transaction is, by txid.
-    locations: std::collections::HashMap<String, TxLocation>,
+    locations: HashMap<String, TxLocation>,
     /// For payments whose transaction is nowhere: whether a double spend is
     /// proven, by payment id.
-    proven: std::collections::HashMap<i64, bool>,
+    proven: HashMap<i64, bool>,
 }
 
 /// Asks the node about every payment in `unconfirmed` whose transaction isn't
@@ -419,7 +423,7 @@ pub(crate) async fn vanished_hints(
     hints.locations = daemon.locate_transactions(&txids).await?;
     // The key images of every payment that is nowhere, asked about together.
     let mut images: Vec<String> = Vec::new();
-    let mut spans: Vec<(i64, std::ops::Range<usize>)> = Vec::new();
+    let mut spans: Vec<(i64, Range<usize>)> = Vec::new();
     for payment in unconfirmed {
         if hints.locations.get(&payment.txid) != Some(&TxLocation::NotFound) {
             continue;
@@ -451,7 +455,7 @@ pub(crate) async fn check_vanished_candidates(
     unconfirmed: Vec<crate::store::OrderPaymentRow>,
     hints: &VanishedHints,
 ) -> Result<VanishedPoolReport> {
-    let mut dirty_orders = HashSet::new();
+    let mut dirty_orders = std::collections::BTreeSet::new();
     let mut double_spent_orders = HashSet::new();
     let mut unresolved = Vec::new();
 
@@ -552,7 +556,7 @@ fn enqueue_webhook_event(
     // The caller has just written this order in the same transaction.
     let tenant_id = store
         .get_order_tenant_id(order_id)?
-        .ok_or(crate::store::StoreError::NotFound)?;
+        .ok_or(StoreError::NotFound)?;
     let webhooks: Vec<_> = store
         .list_webhooks(&tenant_id)?
         .into_iter()
@@ -564,7 +568,7 @@ fn enqueue_webhook_event(
 
     let mut envelope: serde_json::Map<String, serde_json::Value> = fields
         .iter()
-        .map(|(name, value)| ((*name).to_string(), serde_json::Value::from(*value)))
+        .map(|(name, value)| ((*name).to_owned(), serde_json::Value::from(*value)))
         .collect();
     envelope.insert("event_id".into(), serde_json::json!(new_event_id()));
     envelope.insert("event".into(), serde_json::json!(event_type));
@@ -582,8 +586,9 @@ fn new_event_id() -> String {
 }
 
 /// Recomputes an order's status and, on an actual transition, enqueues an
-/// `order.<status>` webhook event for every one of its tenant's webhooks. This is
-/// the *only* place status-transition webhooks are enqueued - see
+/// `order.<status>` webhook event for every one of its tenant's webhooks.
+///
+/// This is the *only* place status-transition webhooks are enqueued - see
 /// `docs/DESIGN.md` §11 for why that's a transition-triggered event, never a
 /// per-confirmation-count tick.
 ///
@@ -821,12 +826,13 @@ fn unvoid_as_false_positive(
     })
 }
 
-/// How far back the upkeep tier's void recheck (`work::upkeep`, `docs/DESIGN.md`
-/// §7.7) looks for voided payments to recheck. Bounded deliberately: a void that turns out to have been a false
-/// accusation is exactly as worth correcting a day later as a minute later - unlike
-/// zero-conf detection, there is no latency requirement to trade away here - and an
-/// old, long-settled void is not worth the cost of rechecking forever: if it were
-/// wrong, the merchant and customer have long since moved on regardless.
+/// How far back the upkeep tier's void recheck (`work::upkeep`, `docs/DESIGN.md` §7.7) looks for voided
+/// payments to recheck.
+///
+/// Bounded deliberately: a void that turns out to have been a false accusation is exactly as worth correcting a
+/// day later as a minute later (unlike zero-conf detection, there is no latency requirement to trade away here),
+/// and an old, long-settled void is not worth the cost of rechecking forever: if it were wrong, the merchant
+/// and customer have long since moved on regardless.
 pub const DOUBLE_SPEND_RECHECK_WINDOW_SECS: i64 = 48 * 3600;
 
 /// Rechecks one voided payment and restores it if fresh, corroborated
@@ -924,9 +930,9 @@ pub(crate) async fn recheck_voided_payment(
 pub(crate) async fn voided_key_image_statuses(
     daemon: &dyn MoneroDaemonClient,
     payments: &[crate::store::OrderPaymentRow],
-) -> Result<std::collections::HashMap<i64, Vec<KeyImageStatus>>> {
+) -> Result<HashMap<i64, Vec<KeyImageStatus>>> {
     let mut images: Vec<String> = Vec::new();
-    let mut spans: Vec<(i64, std::ops::Range<usize>)> = Vec::new();
+    let mut spans: Vec<(i64, Range<usize>)> = Vec::new();
     for payment in payments {
         if let Ok(own) = parse_payment_key_images(&payment.key_images_json) {
             spans.push((payment.id, images.len()..images.len() + own.len()));
@@ -934,11 +940,11 @@ pub(crate) async fn voided_key_image_statuses(
         }
     }
     if spans.len() < 2 {
-        return Ok(Default::default());
+        return Ok(HashMap::default());
     }
     let statuses = crate::work::bounded(daemon.is_key_image_spent_corroborated(&images)).await?;
     if statuses.len() != images.len() {
-        return Ok(Default::default());
+        return Ok(HashMap::default());
     }
     Ok(spans
         .into_iter()
@@ -1022,7 +1028,7 @@ pub(crate) fn scan_in_pages(
 }
 
 /// How many transactions the next page of a large block holds
-/// (docs/engine_scaling.md section 4): the fewest of what fits the response
+/// (`docs/engine_scaling.md` section 4): the fewest of what fits the response
 /// cap and what the link delivers in a target call (its round trip and the
 /// transactions' bytes), at `avg_tx_bytes` a transaction, and what the scan
 /// gets through in the same time when a transaction costs
@@ -1072,7 +1078,7 @@ pub(crate) fn next_page(
 
 /// The bytes-per-block estimate after a block request that ran out of time
 /// or came back too large: doubled, so the next request asks for half as
-/// many blocks (docs/engine_scaling.md section 2). Successes bring it back
+/// many blocks (`docs/engine_scaling.md` section 2). Successes bring it back
 /// down through [`update_avg_bytes_per_block`].
 pub(crate) fn avg_after_failed_fetch(avg_bytes_per_block: f64) -> f64 {
     (avg_bytes_per_block * 2.0).min(1e12)
@@ -1090,15 +1096,18 @@ pub(crate) fn update_avg_bytes_per_block(
 ) -> f64 {
     let observed_avg = chunk_bytes as f64 / block_count as f64;
     let alpha = tuning.chunk_ewma_alpha;
-    alpha * observed_avg + (1.0 - alpha) * avg_bytes_per_block
+    (1.0 - alpha).mul_add(avg_bytes_per_block, alpha * observed_avg)
 }
 
-/// One scan round for one network (docs/scanner_microtasks.md): reorg
-/// detection and reconciliation, new and lagging blocks, the mempool, status
-/// recomputes and upkeep, each a bounded unit with a share of the round's
-/// time. `network` scopes everything to one chain: the `daemon` passed in must
-/// be the client for that same network, and `tenants` are the tenants whose
-/// keys are registered (only those on `network` are ever scanned).
+/// One scan round for one network (`docs/scanner_microtasks.md`).
+///
+/// Reorg detection and reconciliation, new and lagging blocks, the mempool,
+/// status recomputes and upkeep, each a bounded unit with a share of the
+/// round's time.
+///
+/// `network` scopes everything to one chain: the `daemon` passed in must be
+/// the client for that same network, and `tenants` are the tenants whose keys
+/// are registered (only those on `network` are ever scanned).
 ///
 /// On first run (no `scanned_blocks` history at all), seeds at the current chain
 /// tip rather than replaying the entire chain from genesis - this is a payment
@@ -1142,7 +1151,10 @@ pub async fn run_scan_tick(
 
 /// `run_scan_tick` with the scheduler's in-memory state kept by the caller
 /// between rounds. For tests and tools, like `run_scan_tick`.
-#[allow(clippy::too_many_arguments)] // one round's genuinely independent inputs
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one round's genuinely independent inputs"
+)]
 pub async fn run_scan_tick_with(
     state: &crate::work::ScanState,
     store: &crate::store::SharedStore,
@@ -1154,7 +1166,7 @@ pub async fn run_scan_tick_with(
     expired_order_grace_period_seconds: i64,
     scan_chunk_memory_budget_mb: u32,
 ) -> Result<()> {
-    let db = crate::store::Db::over_shared(store.clone());
+    let db = crate::store::Db::over_shared(Arc::clone(store));
     let network = crate::network::parse_network(network)
         .map_err(|e| ScannerError::Internal(e.to_string()))?;
     let inputs = crate::work::RoundInputs {
@@ -1174,11 +1186,12 @@ pub async fn run_scan_tick_with(
 
 /// Registers the keys of every enabled tenant on `network` that has none
 /// registered yet, from its sealed key material, and adds the handles to
-/// `wallet_handles`. Registration at boot can fail (a key-custody backend
-/// that wasn't up yet), and until a tenant's keys are registered its
-/// payments can't be detected; this lets the scan loop keep retrying rather
-/// than waiting for an API call to register them lazily. Returns how many
-/// were registered.
+/// `wallet_handles`.
+///
+/// Registration at boot can fail (a key-custody backend that wasn't up
+/// yet), and until a tenant's keys are registered its payments can't be
+/// detected; this lets the scan loop keep retrying rather than waiting for
+/// an API call to register them lazily. Returns how many were registered.
 ///
 /// Uses the same "first handle in wins" rule as
 /// `http::resolve_wallet_handle`, which may be registering the same tenant
@@ -1197,7 +1210,7 @@ pub async fn register_missing_wallets_checking_state(
     handled_epoch: Option<&std::sync::atomic::AtomicU64>,
     network: monero::Network,
 ) -> usize {
-    let db = crate::store::Db::over_shared(store.clone());
+    let db = crate::store::Db::over_shared(Arc::clone(store));
     register_missing_wallets_reporting(&db, key_custody, wallet_handles, handled_epoch, network)
         .await
         .registered
@@ -1292,7 +1305,7 @@ pub async fn register_missing_wallets_reporting(
         let offset = {
             let mut offsets = NEXT_REGISTRATION_OFFSET.lock();
             let next = offsets
-                .entry(crate::network::network_str(network).to_string())
+                .entry(crate::network::network_str(network).to_owned())
                 .or_default();
             let offset = *next % missing.len();
             *next = next.wrapping_add(REGISTRATIONS_PER_PASS);
@@ -1328,10 +1341,10 @@ pub async fn register_missing_wallets_reporting(
                     .write()
                     .entry(tenant.id.clone())
                     .or_insert(handle);
-                if winner != handle {
-                    let _ = key_custody.remove_wallet(handle).await;
-                } else {
+                if winner == handle {
                     registered += 1;
+                } else {
+                    let _ = key_custody.remove_wallet(handle).await;
                 }
             }
             Ok(Err(e)) => {
@@ -1492,9 +1505,9 @@ pub(crate) mod tests {
 
     #[test]
     fn stored_key_image_evidence_must_be_parseable_and_nonempty() {
-        assert!(parse_payment_key_images("not json").is_err());
-        assert!(parse_payment_key_images("[]").is_err());
-        assert!(parse_payment_key_images("[\"image\"]").is_err());
+        parse_payment_key_images("not json").unwrap_err();
+        parse_payment_key_images("[]").unwrap_err();
+        parse_payment_key_images("[\"image\"]").unwrap_err();
         let image = "a".repeat(64);
         assert_eq!(
             parse_payment_key_images(&serde_json::json!([image.clone()]).to_string()).unwrap(),
@@ -1503,9 +1516,7 @@ pub(crate) mod tests {
     }
     use crate::daemon::fake::{tx_id_hex, FakeDaemonClient};
     use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
-    use crate::key_custody::{
-        KeyCustodyError, MatchedOutput, Network, PlainKeyCustody, SubaddressIndex, WalletMaterial,
-    };
+    use crate::key_custody::{Network, PlainKeyCustody, SubaddressIndex, WalletMaterial};
     use crate::store::{NewOrder, NewTenant};
     use monero::consensus::encode::deserialize;
     use monero::{Address, PrivateKey, PublicKey};
@@ -1779,7 +1790,7 @@ pub(crate) mod tests {
             let nth = self.calls.fetch_add(1, Ordering::SeqCst);
             if nth >= self.fail_from.load(Ordering::SeqCst) {
                 if self.delay_ms > 0 {
-                    tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+                    tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
                 }
                 return Err(DaemonError::Request(format!(
                     "simulated {method:?} failure on call {nth}"
@@ -1859,7 +1870,10 @@ pub(crate) mod tests {
     }
 
     /// Scans a whole transaction for one store and records what it pays.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a test helper over one scan's inputs"
+    )]
     async fn scan_transaction_for_tenant(
         store: &Store,
         key_custody: &dyn KeyCustody,
@@ -1869,7 +1883,7 @@ pub(crate) mod tests {
         minor_range: Range<u32>,
         seen_at: i64,
         block_height: Option<u64>,
-    ) -> Result<HashSet<crate::store::OrderId>> {
+    ) -> Result<std::collections::BTreeSet<crate::store::OrderId>> {
         let scan = scan_transaction(key_custody, handle, tx, minor_range).await?;
         record_scan_match(store, tenant_id, &scan, seen_at, block_height)
     }
@@ -1915,7 +1929,7 @@ pub(crate) mod tests {
             height: tip,
             hash: tip_hash,
         } = daemon.get_tip().await?;
-        let db = crate::store::Db::over_shared(store.clone());
+        let db = crate::store::Db::over_shared(Arc::clone(store));
         let parsed = crate::network::parse_network(network)
             .map_err(|e| ScannerError::Internal(e.to_string()))?;
         let chain = Chain::new(&db, daemon, parsed, reorg_check_depth, now).with_tip_hash(tip_hash);
@@ -1923,7 +1937,7 @@ pub(crate) mod tests {
             chain.open(fork).await?;
         }
         let reorg_detected_at = store.lock().reorg_job(parsed)?.map(|job| job.fork_height);
-        let mut dirty_orders = HashSet::new();
+        let mut dirty_orders = std::collections::BTreeSet::new();
         let mut double_spent_orders = HashSet::new();
         let mut attempted = HashSet::new();
         let mut failure = None;
@@ -1947,7 +1961,7 @@ pub(crate) mod tests {
                         failure.get_or_insert(error);
                     }
                 }
-                Ok(None | Some(JobStep::Waiting) | Some(JobStep::Rewound)) => break,
+                Ok(None | Some(JobStep::Waiting | JobStep::Rewound)) => break,
                 Err(error) => {
                     failure.get_or_insert(error);
                     break;
@@ -2020,7 +2034,7 @@ pub(crate) mod tests {
 
         let created = store
             .create_tenant(
-                NewTenant {
+                &NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![],
                     primary_address: "4fixture".into(),
@@ -2055,7 +2069,7 @@ pub(crate) mod tests {
             .unwrap();
 
         let order = store
-            .create_order(NewOrder {
+            .create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override,
                 tenant_id: tenant_id.clone(),
@@ -2100,7 +2114,7 @@ pub(crate) mod tests {
 
         let created = store
             .create_tenant(
-                NewTenant {
+                &NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![],
                     primary_address: "4fixture".into(),
@@ -2131,7 +2145,7 @@ pub(crate) mod tests {
             .unwrap();
 
         let order = store
-            .create_order(NewOrder {
+            .create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: tenant_id.clone(),
@@ -2165,11 +2179,11 @@ pub(crate) mod tests {
         // the grace-period widening needs to matter at all (a still-`pending`
         // order is already covered by the base four-status clause regardless).
         let (_, status) = store
-            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 0, now)
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.clone()), 0, now)
             .unwrap();
         assert_eq!(
             status,
-            crate::status::OrderStatus::Expired,
+            OrderStatus::Expired,
             "test setup must actually produce an expired order"
         );
 
@@ -2192,14 +2206,14 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(
-            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap().len(),
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.clone())).unwrap().len(),
             1,
             "a late payment within the grace period must still be matched by ordinary live scanning"
         );
         let order = s
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
@@ -2209,7 +2223,7 @@ pub(crate) mod tests {
         // `Expired` with the payment silently uncounted).
         assert_eq!(
             order.status,
-            crate::status::OrderStatus::Unconfirmed,
+            OrderStatus::Unconfirmed,
             "the order must reflect the late payment, not remain stuck at Expired"
         );
     }
@@ -2221,11 +2235,11 @@ pub(crate) mod tests {
             setup_with_expiry(now - 10_000).await;
 
         let (_, status) = store
-            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 0, now)
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.clone()), 0, now)
             .unwrap();
         assert_eq!(
             status,
-            crate::status::OrderStatus::Expired,
+            OrderStatus::Expired,
             "test setup must actually produce an expired order"
         );
 
@@ -2250,22 +2264,18 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(
-            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap().len(),
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.clone())).unwrap().len(),
             0,
             "a payment arriving after the grace period has elapsed must not be matched by ordinary live scanning"
         );
         let order = s
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
-        assert_eq!(
-            order.status,
-            crate::status::OrderStatus::Expired,
-            "must remain untouched"
-        );
+        assert_eq!(order.status, OrderStatus::Expired, "must remain untouched");
     }
 
     /// One transaction scanned for two stores. The store it pays gets the
@@ -2372,11 +2382,11 @@ pub(crate) mod tests {
             found,
             [
                 (
-                    "fresh".to_string(),
+                    "fresh".to_owned(),
                     vec![tx_id_hex(&txs[0]), tx_id_hex(&txs[2])]
                 ),
-                ("resumed".to_string(), vec![tx_id_hex(&txs[2])]),
-                ("finished".to_string(), vec![]),
+                ("resumed".to_owned(), vec![tx_id_hex(&txs[2])]),
+                ("finished".to_owned(), vec![]),
             ]
         );
     }
@@ -2410,34 +2420,34 @@ pub(crate) mod tests {
             store
                 .in_transaction(|s| -> Result<()> {
                     s.save_block_checkpoint(
-                        monero::Network::Mainnet,
-                        &shared::ids::TenantId::new(tenant_id.to_string()),
+                        Network::Mainnet,
+                        &shared::ids::TenantId::new(tenant_id.clone()),
                         &checkpoint(hash),
                     )?;
                     stage_block_match(
                         s,
-                        monero::Network::Mainnet,
-                        &shared::ids::TenantId::new(tenant_id.to_string()),
+                        Network::Mainnet,
+                        &shared::ids::TenantId::new(tenant_id.clone()),
                         &scan,
                         1500,
                     )
                 })
-                .unwrap()
+                .unwrap();
         };
 
         stage("old_hash");
         assert_eq!(
             store
                 .block_checkpoint(
-                    monero::Network::Mainnet,
-                    &shared::ids::TenantId::new(tenant_id.to_string())
+                    Network::Mainnet,
+                    &shared::ids::TenantId::new(tenant_id.clone())
                 )
                 .unwrap(),
             Some(checkpoint("old_hash"))
         );
         assert!(
             store
-                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()
                 .is_empty(),
             "an unfinished block must not announce payment"
@@ -2445,8 +2455,8 @@ pub(crate) mod tests {
         assert!(
             store
                 .take_staged_payments(
-                    monero::Network::Mainnet,
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    Network::Mainnet,
+                    &shared::ids::TenantId::new(tenant_id.clone()),
                     "new_hash"
                 )
                 .unwrap()
@@ -2456,8 +2466,8 @@ pub(crate) mod tests {
         assert_eq!(
             store
                 .block_checkpoint(
-                    monero::Network::Mainnet,
-                    &shared::ids::TenantId::new(tenant_id.to_string())
+                    Network::Mainnet,
+                    &shared::ids::TenantId::new(tenant_id.clone())
                 )
                 .unwrap(),
             None
@@ -2467,8 +2477,8 @@ pub(crate) mod tests {
         stage("new_hash");
         let staged = store
             .take_staged_payments(
-                monero::Network::Mainnet,
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                Network::Mainnet,
+                &shared::ids::TenantId::new(tenant_id.clone()),
                 "new_hash",
             )
             .unwrap();
@@ -2482,8 +2492,8 @@ pub(crate) mod tests {
         assert!(
             store
                 .take_staged_payments(
-                    monero::Network::Mainnet,
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    Network::Mainnet,
+                    &shared::ids::TenantId::new(tenant_id.clone()),
                     "new_hash"
                 )
                 .unwrap()
@@ -2517,8 +2527,8 @@ pub(crate) mod tests {
         let order = store
             .lock()
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
@@ -2558,8 +2568,8 @@ pub(crate) mod tests {
             store
                 .lock()
                 .get_order(
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
-                    &shared::ids::OrderId::new(order_id.to_string())
+                    &shared::ids::TenantId::new(tenant_id.clone()),
+                    &shared::ids::OrderId::new(order_id.clone())
                 )
                 .unwrap()
                 .unwrap()
@@ -2587,8 +2597,8 @@ pub(crate) mod tests {
             store
                 .lock()
                 .get_order(
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
-                    &shared::ids::OrderId::new(order_id.to_string())
+                    &shared::ids::TenantId::new(tenant_id.clone()),
+                    &shared::ids::OrderId::new(order_id.clone())
                 )
                 .unwrap()
                 .unwrap()
@@ -2621,16 +2631,13 @@ pub(crate) mod tests {
         let settled = store
             .lock()
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
         assert!(
-            matches!(
-                settled.status,
-                crate::status::OrderStatus::Paid | crate::status::OrderStatus::Overpaid
-            ),
+            matches!(settled.status, OrderStatus::Paid | OrderStatus::Overpaid),
             "expected a terminal status after 10 confirmations, got {:?}",
             settled.status
         );
@@ -2661,8 +2668,8 @@ pub(crate) mod tests {
         let frozen = store
             .lock()
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
@@ -2682,7 +2689,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &tx,
             0..3,
             1500,
@@ -2693,10 +2700,10 @@ pub(crate) mod tests {
 
         assert_eq!(
             touched,
-            HashSet::from([crate::store::OrderId::new(order_id.clone())])
+            std::collections::BTreeSet::from([crate::store::OrderId::new(order_id.clone())])
         );
         let payments = store
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert_eq!(payments.len(), 1);
         assert!(payments[0].amount_piconero > 0);
@@ -2713,7 +2720,7 @@ pub(crate) mod tests {
                 &store,
                 &key_custody,
                 handle,
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
                 &tx,
                 0..3,
                 1500,
@@ -2724,7 +2731,7 @@ pub(crate) mod tests {
         }
         assert_eq!(
             store
-                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()
                 .len(),
             1
@@ -2740,7 +2747,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &tx,
             0..3,
             1500,
@@ -2749,7 +2756,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         store
-            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
+            .set_scanned_block(Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
 
         let daemon = FakeDaemonClient::new();
@@ -2771,12 +2778,12 @@ pub(crate) mod tests {
         assert_eq!(report.reorg_detected_at, Some(50));
         assert!(report
             .dirty_orders
-            .contains(&shared::ids::OrderId::new(order_id.to_string())));
+            .contains(&shared::ids::OrderId::new(order_id.clone())));
         assert!(report.double_spent_orders.is_empty());
 
         let payments = store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert_eq!(payments[0].block_height, Some(51));
         assert!(payments[0].voided_at.is_none());
@@ -2798,7 +2805,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &tx,
             0..3,
             1500,
@@ -2807,7 +2814,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         store
-            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
+            .set_scanned_block(Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
 
         let daemon = FakeDaemonClient::new();
@@ -2832,13 +2839,13 @@ pub(crate) mod tests {
 
         let store = store.lock();
         let payments = store
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert!(payments[0].voided_at.is_some());
         let order = store
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
@@ -2858,7 +2865,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &tx,
             0..3,
             1500,
@@ -2867,7 +2874,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         store
-            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
+            .set_scanned_block(Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
 
         let daemon = FakeDaemonClient::new();
@@ -2886,7 +2893,7 @@ pub(crate) mod tests {
 
         let payments = store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert!(
             payments[0].voided_at.is_none(),
@@ -2898,7 +2905,7 @@ pub(crate) mod tests {
     async fn no_reorg_when_hashes_still_match_is_a_cheap_no_op() {
         let store = Store::open_in_memory().unwrap();
         store
-            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50")
+            .set_scanned_block(Network::Mainnet, 50, "hash_50")
             .unwrap();
         let store = store.into_shared();
         let daemon = FakeDaemonClient::new();
@@ -2929,7 +2936,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let webhook = store
             .create_webhook(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -2957,12 +2964,12 @@ pub(crate) mod tests {
         let s = store.lock();
         let order = s
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
-        assert_eq!(order.status, crate::status::OrderStatus::Unconfirmed);
+        assert_eq!(order.status, OrderStatus::Unconfirmed);
         assert!(order.amount_received_piconero > 0);
 
         let due = s
@@ -2989,7 +2996,7 @@ pub(crate) mod tests {
             .unwrap();
         let tenant = store
             .create_tenant(
-                NewTenant {
+                &NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![],
                     primary_address: "4x".into(),
@@ -3013,7 +3020,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         let order = store
-            .create_order(NewOrder {
+            .create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: tenant.tenant.id.clone(),
@@ -3073,7 +3080,7 @@ pub(crate) mod tests {
             .unwrap();
         let tenant_b = store
             .create_tenant(
-                NewTenant {
+                &NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![],
                     primary_address: "4b".into(),
@@ -3137,7 +3144,7 @@ pub(crate) mod tests {
             .unwrap();
         let stagenet_tenant = store
             .create_tenant(
-                NewTenant {
+                &NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![],
                     primary_address: "5stagenet".into(),
@@ -3151,7 +3158,7 @@ pub(crate) mod tests {
         // A genuinely pending order on stagenet - if the network filter didn't
         // work, this tenant would be scanned too.
         store
-            .create_order(NewOrder {
+            .create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: stagenet_tenant.tenant.id.clone(),
@@ -3266,7 +3273,7 @@ pub(crate) mod tests {
                 .unwrap(); // 100 confirmations
             assert!(matches!(
                 new_status,
-                crate::status::OrderStatus::Paid | crate::status::OrderStatus::Overpaid
+                OrderStatus::Paid | OrderStatus::Overpaid
             ));
         }
 
@@ -3317,10 +3324,7 @@ pub(crate) mod tests {
         .unwrap();
 
         assert_eq!(
-            store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(10)
         );
     }
@@ -3359,10 +3363,7 @@ pub(crate) mod tests {
         // Falls back to seeding one behind the (unfetchable) reported tip, i.e.
         // height 10, which *does* exist.
         assert_eq!(
-            store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(10)
         );
 
@@ -3381,10 +3382,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(11)
         );
     }
@@ -3410,12 +3408,12 @@ pub(crate) mod tests {
             }],
             txid: "tx_with_an_undecryptable_output".into(),
             key_images_json: "[]".into(),
-            output_keys: Default::default(),
+            output_keys: HashMap::default(),
         };
 
         let touched = record_scan_match(
             &store,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &scan,
             1500,
             Some(50),
@@ -3427,7 +3425,7 @@ pub(crate) mod tests {
         );
         assert!(
             store
-                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()
                 .is_empty(),
             "nothing may be persisted for an output whose amount could not be recovered"
@@ -3437,12 +3435,12 @@ pub(crate) mod tests {
         // still free to record it properly.
         let order = store
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id),
+                &shared::ids::OrderId::new(order_id),
             )
             .unwrap()
             .unwrap();
-        assert_eq!(order.status, crate::status::OrderStatus::Pending);
+        assert_eq!(order.status, OrderStatus::Pending);
         assert_eq!(order.amount_received_piconero, 0);
     }
 
@@ -3488,13 +3486,13 @@ pub(crate) mod tests {
             "a storage failure is reported, not swallowed"
         );
         assert_eq!(
-            store.lock().max_scanned_height(monero::Network::Mainnet).unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(1),
             "block 2's match failed to record - marking it scanned would lose that payment permanently"
         );
         assert!(store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()
             .is_empty());
 
@@ -3517,15 +3515,12 @@ pub(crate) mod tests {
         .unwrap();
 
         assert_eq!(
-            store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(2)
         );
         let payments = store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert_eq!(payments.len(), 1);
         assert_eq!(payments[0].block_height, Some(2));
@@ -3543,7 +3538,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await; // confirmations_required = 10
         let webhook = store
             .create_webhook(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -3571,14 +3566,14 @@ pub(crate) mod tests {
             let s = store.lock();
             let order = s
                 .get_order(
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
-                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &shared::ids::TenantId::new(tenant_id.clone()),
+                    &shared::ids::OrderId::new(order_id.clone()),
                 )
                 .unwrap()
                 .unwrap();
             assert_eq!(
                 order.status,
-                crate::status::OrderStatus::Confirming,
+                OrderStatus::Confirming,
                 "one confirmation, ten required"
             );
         }
@@ -3602,14 +3597,14 @@ pub(crate) mod tests {
         let s = store.lock();
         let order = s
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
         assert_eq!(
             order.status,
-            crate::status::OrderStatus::Overpaid, // the fixture tx pays more than this order's trivially-small expected amount
+            OrderStatus::Overpaid, // the fixture tx pays more than this order's trivially-small expected amount
             "10 confirmations deep - nothing new matched, but the chain moved"
         );
         assert_eq!(order.confirmations, 10);
@@ -3624,7 +3619,7 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(
             events,
-            vec!["order.confirming".to_string(), "order.overpaid".to_string()],
+            vec!["order.confirming".to_owned(), "order.overpaid".to_owned()],
             "exactly one event per real transition, in order, with no repeats from the per-tick recompute"
         );
     }
@@ -3638,7 +3633,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
         let webhook = store
             .create_webhook(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -3648,13 +3643,13 @@ pub(crate) mod tests {
 
         // A second order on the same tenant, already past its deadline and never paid.
         let stale = store
-            .create_order(NewOrder {
+            .create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: shared::ids::TenantId::new(tenant_id.clone()),
                 merchant_order_id: None,
                 minor_index: store
-                    .allocate_minor_index(&shared::ids::TenantId::new(tenant_id.to_string()))
+                    .allocate_minor_index(&shared::ids::TenantId::new(tenant_id.clone()))
                     .unwrap(),
                 address: "sub_expired".into(),
                 xmr_amount_piconero: 1_000_000,
@@ -3663,7 +3658,7 @@ pub(crate) mod tests {
                 expires_at: crate::now_unix() - 1,
             })
             .unwrap();
-        assert_eq!(stale.status, crate::status::OrderStatus::Pending);
+        assert_eq!(stale.status, OrderStatus::Pending);
         let store = store.into_shared();
 
         let daemon = FakeDaemonClient::new();
@@ -3683,14 +3678,11 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(
-            s.get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &stale.id
-            )
-            .unwrap()
-            .unwrap()
-            .status,
-            crate::status::OrderStatus::Expired
+            s.get_order(&shared::ids::TenantId::new(tenant_id.clone()), &stale.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            OrderStatus::Expired
         );
         let expired_events = s
             .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
@@ -3701,7 +3693,7 @@ pub(crate) mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             expired_events,
-            vec!["order.expired".to_string()],
+            vec!["order.expired".to_owned()],
             "queued for the store's own webhook"
         );
     }
@@ -3717,7 +3709,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let webhook = store
             .create_webhook(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -3730,7 +3722,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &tx,
             0..3,
             1500,
@@ -3739,14 +3731,14 @@ pub(crate) mod tests {
         .await
         .unwrap();
         store
-            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
+            .set_scanned_block(Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
         let (_, status) = store
-            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 100, 1600)
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.clone()), 100, 1600)
             .unwrap();
         assert_eq!(
             status,
-            crate::status::OrderStatus::Overpaid,
+            OrderStatus::Overpaid,
             "51 confirmations deep before the reorg"
         );
 
@@ -3775,13 +3767,13 @@ pub(crate) mod tests {
         let s = store.lock();
         assert_eq!(
             s.get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string())
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone())
             )
             .unwrap()
             .unwrap()
             .status,
-            crate::status::OrderStatus::Confirming
+            OrderStatus::Confirming
         );
         let due = s
             .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
@@ -3809,7 +3801,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &tx,
             0..3,
             1500,
@@ -3818,7 +3810,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         store
-            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
+            .set_scanned_block(Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
         let store = store.into_shared();
 
@@ -3840,14 +3832,14 @@ pub(crate) mod tests {
             "the node failure must surface, not be swallowed"
         );
         assert_eq!(
-            store.lock().get_scanned_block_hash(monero::Network::Mainnet, 50).unwrap(),
-            Some("hash_50_v1".to_string()),
+            store.lock().get_scanned_block_hash(Network::Mainnet, 50).unwrap(),
+            Some("hash_50_v1".to_owned()),
             "the stored hash must still describe the old chain, or nothing will ever notice the reorg again"
         );
         assert_eq!(
             store
                 .lock()
-                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()[0]
                 .block_height,
             Some(50),
@@ -3863,7 +3855,7 @@ pub(crate) mod tests {
         assert_eq!(
             store
                 .lock()
-                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()[0]
                 .block_height,
             Some(51)
@@ -3882,7 +3874,7 @@ pub(crate) mod tests {
         // A scanner that has already worked its way up to height 51 on the old chain.
         for h in 40..=51 {
             store
-                .set_scanned_block(monero::Network::Mainnet, h, &format!("old_{h}"))
+                .set_scanned_block(Network::Mainnet, h, &format!("old_{h}"))
                 .unwrap();
         }
         let store = store.into_shared();
@@ -3910,12 +3902,12 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+                s.max_scanned_height(Network::Mainnet).unwrap(),
                 Some(49),
                 "the high-water mark must fall back below the reorg point"
             );
             assert!(
-                s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                s.get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                     .unwrap()
                     .is_empty(),
                 "nothing found yet - this tick only rewound"
@@ -3936,12 +3928,12 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(
-            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            s.max_scanned_height(Network::Mainnet).unwrap(),
             Some(51),
             "and forward scanning caught back up"
         );
         let payments = s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert_eq!(
             payments.len(),
@@ -3967,7 +3959,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &tx,
             0..3,
             1500,
@@ -3976,7 +3968,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         store
-            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
+            .set_scanned_block(Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
         let store = store.into_shared();
 
@@ -3996,7 +3988,7 @@ pub(crate) mod tests {
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
         assert!(store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()[0]
             .voided_at
             .is_some());
@@ -4006,7 +3998,7 @@ pub(crate) mod tests {
         // height 50 between the two reconciliations; do that by hand here.)
         store
             .lock()
-            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v2")
+            .set_scanned_block(Network::Mainnet, 50, "hash_50_v2")
             .unwrap();
         daemon.reorg_from(50, vec![("hash_50_v3", vec![tx.clone()])]);
 
@@ -4016,11 +4008,11 @@ pub(crate) mod tests {
         assert_eq!(report.reorg_detected_at, Some(50));
         assert!(report
             .dirty_orders
-            .contains(&shared::ids::OrderId::new(order_id.to_string())));
+            .contains(&shared::ids::OrderId::new(order_id.clone())));
 
         let s = store.lock();
         let payment = s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()
             .remove(0);
         assert!(
@@ -4032,8 +4024,8 @@ pub(crate) mod tests {
         // order, and that remains true regardless of how the chain settled.
         assert!(s
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string())
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone())
             )
             .unwrap()
             .unwrap()
@@ -4051,7 +4043,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         store
             .create_webhook(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -4162,9 +4154,7 @@ pub(crate) mod tests {
         // on counting towards their order at a height that no longer exists) and
         // block H of the replacement chain is never rescanned.
         let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
-        store
-            .set_scanned_block(monero::Network::Mainnet, 1, "h1")
-            .unwrap();
+        store.set_scanned_block(Network::Mainnet, 1, "h1").unwrap();
         let store = store.into_shared();
 
         let inner = FakeDaemonClient::new();
@@ -4191,13 +4181,13 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+                s.max_scanned_height(Network::Mainnet).unwrap(),
                 Some(2),
                 "the range must stop at the height that could not be read, not step over it"
             );
             for h in 3..=5 {
                 assert!(
-                    s.get_scanned_block_hash(monero::Network::Mainnet, h)
+                    s.get_scanned_block_hash(Network::Mainnet, h)
                         .unwrap()
                         .is_none(),
                     "block {h} must not be recorded once the range was abandoned at 3"
@@ -4223,13 +4213,10 @@ pub(crate) mod tests {
         .unwrap();
 
         let s = store.lock();
-        assert_eq!(
-            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
-            Some(5)
-        );
+        assert_eq!(s.max_scanned_height(Network::Mainnet).unwrap(), Some(5));
         for h in 1..=5 {
             assert!(
-                s.get_scanned_block_hash(monero::Network::Mainnet, h)
+                s.get_scanned_block_hash(Network::Mainnet, h)
                     .unwrap()
                     .is_some(),
                 "block {h} must be recorded"
@@ -4256,7 +4243,7 @@ pub(crate) mod tests {
         // relies on.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         store
-            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
+            .set_scanned_block(Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
         let store = store.into_shared();
 
@@ -4288,12 +4275,12 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.get_scanned_block_hash(monero::Network::Mainnet, 50).unwrap().as_deref(),
+                s.get_scanned_block_hash(Network::Mainnet, 50).unwrap().as_deref(),
                 Some("hash_50_v1"),
                 "with no anchor available, the losing chain's hash must stay put so the reorg stays detectable"
             );
             assert!(
-                s.max_scanned_height(monero::Network::Mainnet).unwrap().is_some(),
+                s.max_scanned_height(Network::Mainnet).unwrap().is_some(),
                 "the window must never be emptied by a rewind that cannot re-anchor - an empty window reads \
                  as 'never scanned' and re-seeds at the tip"
             );
@@ -4315,10 +4302,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(49),
             "the rewind must now land on the common ancestor"
         );
@@ -4337,12 +4321,9 @@ pub(crate) mod tests {
         .await
         .unwrap();
         let s = store.lock();
-        assert_eq!(
-            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
-            Some(51)
-        );
+        assert_eq!(s.max_scanned_height(Network::Mainnet).unwrap(), Some(51));
         let payments = s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert_eq!(
             payments.len(),
@@ -4370,13 +4351,13 @@ pub(crate) mod tests {
         daemon.set_mempool(vec![fixture_tx()]); // the payment arrives zero-conf
         store
             .lock()
-            .set_scanned_block(monero::Network::Mainnet, 1, "h1")
+            .set_scanned_block(Network::Mainnet, 1, "h1")
             .unwrap();
 
         let webhook = store
             .lock()
             .create_webhook(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -4415,7 +4396,7 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+                s.max_scanned_height(Network::Mainnet).unwrap(),
                 Some(1),
                 "block 2 must stay unscanned so the next tick retries it"
             );
@@ -4423,20 +4404,20 @@ pub(crate) mod tests {
             // recorded, the status was recomputed off it, and the transition was
             // announced.
             let payments = s
-                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap();
             assert_eq!(payments.len(), 1);
             assert_eq!(payments[0].block_height, None, "still mempool-only");
             let order = s
                 .get_order(
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
-                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &shared::ids::TenantId::new(tenant_id.clone()),
+                    &shared::ids::OrderId::new(order_id.clone()),
                 )
                 .unwrap()
                 .unwrap();
             assert_ne!(
                 order.status,
-                crate::status::OrderStatus::Pending,
+                OrderStatus::Pending,
                 "the mempool match's status recompute must not have been discarded"
             );
             let due = s
@@ -4467,10 +4448,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(2)
         );
     }
@@ -4491,7 +4469,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         // A scanner whose entire history is one block: height 50, on the old chain.
         store
-            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
+            .set_scanned_block(Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
         let store = store.into_shared();
 
@@ -4515,7 +4493,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store.lock().max_scanned_height(monero::Network::Mainnet).unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(49),
             "the rewind must leave the high-water mark at the common ancestor, not at nothing at all"
         );
@@ -4533,12 +4511,9 @@ pub(crate) mod tests {
         .unwrap();
 
         let s = store.lock();
-        assert_eq!(
-            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
-            Some(51)
-        );
+        assert_eq!(s.max_scanned_height(Network::Mainnet).unwrap(), Some(51));
         let payments = s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert_eq!(
             payments.len(),
@@ -4561,7 +4536,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await; // confirmations_required = 10
         store
             .create_webhook(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -4575,7 +4550,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &tx,
             0..3,
             1500,
@@ -4584,14 +4559,14 @@ pub(crate) mod tests {
         .await
         .unwrap();
         store
-            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
+            .set_scanned_block(Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
         let (_, status) = store
-            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 50, 1600)
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.clone()), 50, 1600)
             .unwrap();
         assert_eq!(
             status,
-            crate::status::OrderStatus::Confirming,
+            OrderStatus::Confirming,
             "one confirmation, ten required"
         );
         let store = store.into_shared();
@@ -4632,8 +4607,8 @@ pub(crate) mod tests {
         let s = store.lock();
         let order = s
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
@@ -4673,7 +4648,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &tx,
             0..3,
             1500,
@@ -4682,7 +4657,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         store
-            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v1")
+            .set_scanned_block(Network::Mainnet, 50, "hash_50_v1")
             .unwrap();
         let store = store.into_shared();
 
@@ -4701,7 +4676,7 @@ pub(crate) mod tests {
         assert_eq!(
             store
                 .lock()
-                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()[0]
                 .block_height,
             None,
@@ -4716,7 +4691,7 @@ pub(crate) mod tests {
         }
         store
             .lock()
-            .set_scanned_block(monero::Network::Mainnet, 50, "hash_50_v2")
+            .set_scanned_block(Network::Mainnet, 50, "hash_50_v2")
             .unwrap();
         daemon.reorg_from(50, vec![("hash_50_v3", vec![])]);
 
@@ -4727,14 +4702,14 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert!(s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()[0]
             .voided_at
             .is_some());
         let order = s
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
@@ -4753,7 +4728,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         store
             .create_webhook(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -4792,20 +4767,20 @@ pub(crate) mod tests {
             store
                 .lock()
                 .get_order(
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
-                    &shared::ids::OrderId::new(order_id.to_string())
+                    &shared::ids::TenantId::new(tenant_id.clone()),
+                    &shared::ids::OrderId::new(order_id.clone())
                 )
                 .unwrap()
                 .unwrap()
                 .status,
-            crate::status::OrderStatus::Pending,
+            OrderStatus::Pending,
             "the status must not have advanced past a transition nothing will ever announce"
         );
 
         assert_eq!(
             store
                 .lock()
-                .pending_payment_recomputes_page(monero::Network::Mainnet, "", 10_000)
+                .pending_payment_recomputes_page(Network::Mainnet, "", 10_000)
                 .unwrap(),
             vec![order_id.clone()]
         );
@@ -4830,13 +4805,13 @@ pub(crate) mod tests {
         let s = store.lock();
         assert_eq!(
             s.get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string())
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone())
             )
             .unwrap()
             .unwrap()
             .status,
-            crate::status::OrderStatus::Confirming
+            OrderStatus::Confirming
         );
         let due = s
             .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
@@ -4844,7 +4819,7 @@ pub(crate) mod tests {
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].event_type, "order.confirming");
         assert!(s
-            .pending_payment_recomputes_page(monero::Network::Mainnet, "", 10_000)
+            .pending_payment_recomputes_page(Network::Mainnet, "", 10_000)
             .unwrap()
             .is_empty());
     }
@@ -4887,8 +4862,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_time_locked_output_is_not_credited() {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-        let tenant = shared::ids::TenantId::new(tenant_id.to_string());
-        let order = shared::ids::OrderId::new(order_id.to_string());
+        let tenant = shared::ids::TenantId::new(tenant_id.clone());
+        let order = shared::ids::OrderId::new(order_id.clone());
         for lock in [1u64, 1_000_000, 1_700_000_000] {
             let mut locked = fixture_tx();
             locked.prefix.unlock_time = monero::VarInt(lock);
@@ -4943,7 +4918,7 @@ pub(crate) mod tests {
         }
         for h in recorded_from..=height {
             store
-                .set_scanned_block(monero::Network::Mainnet, h, &format!("{prefix}_{h}"))
+                .set_scanned_block(Network::Mainnet, h, &format!("{prefix}_{h}"))
                 .unwrap();
         }
         daemon
@@ -4957,12 +4932,16 @@ pub(crate) mod tests {
         tip: u64,
         tx_at: Option<(u64, Transaction)>,
     ) {
-        reorg_to_chain(daemon, fork, tip, "new", tx_at)
+        reorg_to_chain(daemon, fork, tip, "new", tx_at);
     }
 
     /// `reorg_to_new_chain` with a caller-chosen hash prefix, for tests that switch
     /// between more than two chains and need each one's hashes to be distinct from
     /// every other's.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "callers build the transaction for the new chain and hand it over"
+    )]
     fn reorg_to_chain(
         daemon: &FakeDaemonClient,
         fork: u64,
@@ -5054,7 +5033,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &fixture_tx(),
             0..3,
             1500,
@@ -5071,7 +5050,7 @@ pub(crate) mod tests {
         assert_eq!(report.reorg_detected_at, Some(80));
         let payments = store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert_eq!(
             payments[0].block_height,
@@ -5094,7 +5073,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await; // confirmations_required = 10
         store
             .create_webhook(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -5108,7 +5087,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &tx,
             0..3,
             1500,
@@ -5117,11 +5096,11 @@ pub(crate) mod tests {
         .await
         .unwrap();
         let (_, status) = store
-            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 100, 1600)
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.clone()), 100, 1600)
             .unwrap();
         assert_eq!(
             status,
-            crate::status::OrderStatus::Overpaid,
+            OrderStatus::Overpaid,
             "18 confirmations deep before the reorg"
         );
 
@@ -5142,8 +5121,8 @@ pub(crate) mod tests {
         let s = store.lock();
         let order = s
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
@@ -5151,7 +5130,7 @@ pub(crate) mod tests {
             order.amount_received_piconero, 0,
             "the orphaned payment must stop counting"
         );
-        assert_eq!(order.status, crate::status::OrderStatus::Pending);
+        assert_eq!(order.status, OrderStatus::Pending);
         assert!(order.double_spend_detected_at.is_some());
         let events: Vec<String> = s
             .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
@@ -5160,7 +5139,7 @@ pub(crate) mod tests {
             .map(|d| d.event_type)
             .collect();
         assert!(
-            events.contains(&"order.pending".to_string()),
+            events.contains(&"order.pending".to_owned()),
             "a merchant told `overpaid` must be told when that stops being true: {events:?}"
         );
     }
@@ -5184,7 +5163,7 @@ pub(crate) mod tests {
         }
         for h in 50..=52 {
             store
-                .set_scanned_block(monero::Network::Mainnet, h, &format!("old_{h}"))
+                .set_scanned_block(Network::Mainnet, h, &format!("old_{h}"))
                 .unwrap();
         }
         // The fork is at 45 - five blocks below anything this scanner recorded - and
@@ -5204,10 +5183,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(49),
             "the rewind must land just below the oldest recorded block, never on an empty window"
         );
@@ -5224,12 +5200,9 @@ pub(crate) mod tests {
         .await
         .unwrap();
         let s = store.lock();
-        assert_eq!(
-            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
-            Some(52)
-        );
+        assert_eq!(s.max_scanned_height(Network::Mainnet).unwrap(), Some(52));
         let payments = s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert_eq!(
             payments.len(),
@@ -5262,9 +5235,9 @@ pub(crate) mod tests {
     /// only one of them is ever credited - see
     /// `an_output_reusing_a_credited_one_time_key_is_not_credited_twice`), and
     /// different inputs, hence different key images. Pays the fixture's
-    /// amount to the fixture's subaddress, in the clear (no RingCT part).
+    /// amount to the fixture's subaddress, in the clear (no `RingCT` part).
     fn independent_payment_tx(seed: u8) -> Transaction {
-        use monero::blockdata::transaction::{ExtraField, SubField, TxOut, TxOutTarget};
+        use monero::blockdata::transaction::{ExtraField, SubField, TxOut};
         use monero::cryptonote::onetime_key::KeyGenerator;
         let view_pair = monero::ViewPair {
             view: PrivateKey::from_slice(&fixture_view_key()).unwrap(),
@@ -5278,8 +5251,13 @@ pub(crate) mod tests {
         let r = PrivateKey::from_slice(&r_bytes).unwrap();
         let sender = KeyGenerator::from_random(view, spend, r);
         let mut tx = fixture_tx_variant(0x1000 + seed as u64);
-        for input in tx.prefix.inputs.iter_mut() {
-            if let monero::blockdata::transaction::TxIn::ToKey { k_image, .. } = input {
+        for input in &mut tx.prefix.inputs {
+            if let monero::blockdata::transaction::TxIn::ToKey {
+                k_image,
+                amount: _,
+                key_offsets: _,
+            } = input
+            {
                 let mut bytes = k_image.image.to_bytes();
                 bytes[0] ^= seed;
                 k_image.image = monero::cryptonote::hash::Hash(bytes);
@@ -5303,8 +5281,13 @@ pub(crate) mod tests {
     /// only one of the two outputs can ever be spent.
     fn key_reusing_tx(seed: u8) -> Transaction {
         let mut tx = fixture_tx_variant(0x2000 + seed as u64);
-        for input in tx.prefix.inputs.iter_mut() {
-            if let monero::blockdata::transaction::TxIn::ToKey { k_image, .. } = input {
+        for input in &mut tx.prefix.inputs {
+            if let monero::blockdata::transaction::TxIn::ToKey {
+                k_image,
+                amount: _,
+                key_offsets: _,
+            } = input
+            {
                 let mut bytes = k_image.image.to_bytes();
                 bytes[1] ^= seed;
                 k_image.image = monero::cryptonote::hash::Hash(bytes);
@@ -5321,8 +5304,8 @@ pub(crate) mod tests {
         // it can't decide), and only one is ever counted
         // (`store::conflicts`).
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-        let tenant = shared::ids::TenantId::new(tenant_id.to_string());
-        let order = shared::ids::OrderId::new(order_id.to_string());
+        let tenant = shared::ids::TenantId::new(tenant_id.clone());
+        let order = shared::ids::OrderId::new(order_id.clone());
         let first = fixture_tx();
         let reused = key_reusing_tx(1);
         assert_ne!(tx_id_hex(&first), tx_id_hex(&reused));
@@ -5412,8 +5395,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_copy_vanishing_from_the_pool_is_not_voided_as_a_double_spend() {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-        let tenant = shared::ids::TenantId::new(tenant_id.to_string());
-        let order = shared::ids::OrderId::new(order_id.to_string());
+        let tenant = shared::ids::TenantId::new(tenant_id);
+        let order = shared::ids::OrderId::new(order_id);
         let (real, copy) = (fixture_tx(), key_reusing_tx(1));
         for tx in [&copy, &real] {
             scan_transaction_for_tenant(
@@ -5436,7 +5419,7 @@ pub(crate) mod tests {
         }
         let unconfirmed = store.get_all_payments(&order).unwrap();
         let store = store.into_shared();
-        let db = crate::store::Db::over_shared(store.clone());
+        let db = crate::store::Db::over_shared(Arc::clone(&store));
         let mempool: HashSet<String> = [tx_id_hex(&real)].into();
         check_vanished_candidates(
             &db,
@@ -5567,7 +5550,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &tx,
             0..3,
             1500,
@@ -5622,7 +5605,7 @@ pub(crate) mod tests {
 
             let s = store.lock();
             let payments = s
-                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap();
             assert_eq!(
                 payments.len(),
@@ -5640,8 +5623,8 @@ pub(crate) mod tests {
             );
             let order = s
                 .get_order(
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
-                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &shared::ids::TenantId::new(tenant_id.clone()),
+                    &shared::ids::OrderId::new(order_id.clone()),
                 )
                 .unwrap()
                 .unwrap();
@@ -5673,7 +5656,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &tx,
             0..3,
             1500,
@@ -5696,7 +5679,7 @@ pub(crate) mod tests {
 
         let s = store.lock();
         let payments = s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert_eq!(
             payments.len(),
@@ -5706,8 +5689,8 @@ pub(crate) mod tests {
         assert!(payments[0].voided_at.is_some());
         assert_eq!(
             s.get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string())
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone())
             )
             .unwrap()
             .unwrap()
@@ -5732,7 +5715,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &first,
             0..3,
             1500,
@@ -5744,7 +5727,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &second,
             0..3,
             1500,
@@ -5754,7 +5737,7 @@ pub(crate) mod tests {
         .unwrap();
         // What the two payments are worth together, before either is voided.
         let total_before: u64 = store
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()
             .iter()
             .map(|p| p.amount_piconero)
@@ -5774,7 +5757,7 @@ pub(crate) mod tests {
 
         let s = store.lock();
         let payments = s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert_eq!(payments.len(), 2);
         let (voided, kept): (Vec<_>, Vec<_>) = payments.iter().partition(|p| p.voided_at.is_some());
@@ -5792,8 +5775,8 @@ pub(crate) mod tests {
         );
         let order = s
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
@@ -5831,7 +5814,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &tx,
             0..3,
             1500,
@@ -5851,7 +5834,7 @@ pub(crate) mod tests {
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
         assert!(store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()[0]
             .voided_at
             .is_some());
@@ -5860,7 +5843,7 @@ pub(crate) mod tests {
         // original - takes the inputs.
         store
             .lock()
-            .set_scanned_block(monero::Network::Mainnet, 50, "b_50")
+            .set_scanned_block(Network::Mainnet, 50, "b_50")
             .unwrap();
         reorg_to_chain(&daemon, 50, 50, "c", Some((50, conflicting_tx(2))));
 
@@ -5871,7 +5854,7 @@ pub(crate) mod tests {
 
         let s = store.lock();
         let payment = s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()
             .remove(0);
         assert!(
@@ -5880,8 +5863,8 @@ pub(crate) mod tests {
         );
         assert_eq!(
             s.get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string())
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone())
             )
             .unwrap()
             .unwrap()
@@ -5907,7 +5890,7 @@ pub(crate) mod tests {
             setup_with_confirmations_override(Some(0)).await;
         store
             .create_webhook(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -5935,14 +5918,14 @@ pub(crate) mod tests {
             let s = store.lock();
             let order = s
                 .get_order(
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
-                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &shared::ids::TenantId::new(tenant_id.clone()),
+                    &shared::ids::OrderId::new(order_id.clone()),
                 )
                 .unwrap()
                 .unwrap();
             assert_eq!(
                 order.status,
-                crate::status::OrderStatus::Overpaid,
+                OrderStatus::Overpaid,
                 "settled off the mempool sighting alone"
             );
         }
@@ -5969,7 +5952,7 @@ pub(crate) mod tests {
 
         let s = store.lock();
         let payments = s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert_eq!(payments.len(), 1);
         assert!(
@@ -5978,13 +5961,13 @@ pub(crate) mod tests {
         );
         let order = s
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
         assert_eq!(order.amount_received_piconero, 0);
-        assert_eq!(order.status, crate::status::OrderStatus::Pending);
+        assert_eq!(order.status, OrderStatus::Pending);
         assert!(order.double_spend_detected_at.is_some());
         let events: Vec<String> = s
             .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
@@ -5993,11 +5976,11 @@ pub(crate) mod tests {
             .map(|d| d.event_type)
             .collect();
         assert!(
-            events.contains(&"order.double_spend_detected".to_string()),
+            events.contains(&"order.double_spend_detected".to_owned()),
             "the merchant who shipped against this needs telling: {events:?}"
         );
         assert!(
-            events.contains(&"order.pending".to_string()),
+            events.contains(&"order.pending".to_owned()),
             "and the status retraction is its own event: {events:?}"
         );
     }
@@ -6023,7 +6006,7 @@ pub(crate) mod tests {
             setup_with_confirmations_override(Some(0)).await;
         store
             .create_webhook(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -6066,7 +6049,7 @@ pub(crate) mod tests {
         .unwrap();
 
         assert!(
-            store.lock().get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap()[0].voided_at.is_some(),
+            store.lock().get_all_payments(&shared::ids::OrderId::new(order_id.clone())).unwrap()[0].voided_at.is_some(),
             "test setup sanity check: the payment must actually be voided before these tests exercise the recheck"
         );
         (store, tenant_id, order_id)
@@ -6083,15 +6066,12 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             s.set_scheduler_position::<crate::store::position::VoidRecheckPassStarted>(
-                monero::Network::Mainnet,
+                Network::Mainnet,
                 &i64::MIN,
             )
             .unwrap();
-            s.set_scheduler_position::<crate::store::position::VoidRecheck>(
-                monero::Network::Mainnet,
-                &0,
-            )
-            .unwrap();
+            s.set_scheduler_position::<crate::store::position::VoidRecheck>(Network::Mainnet, &0)
+                .unwrap();
         }
         run_scan_tick(
             store,
@@ -6108,7 +6088,7 @@ pub(crate) mod tests {
     fn voided(store: &crate::store::SharedStore, order_id: &str) -> Vec<bool> {
         store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_owned()))
             .unwrap()
             .iter()
             .map(|p| p.voided_at.is_some())
@@ -6128,13 +6108,13 @@ pub(crate) mod tests {
 
         let s = store.lock();
         let payment = &s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()[0];
         assert!(payment.voided_at.is_none(), "the void should be reversed");
         let order = s
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
@@ -6149,7 +6129,7 @@ pub(crate) mod tests {
             .map(|d| d.event_type)
             .collect();
         assert!(
-            events.contains(&"order.double_spend_reversed".to_string()),
+            events.contains(&"order.double_spend_reversed".to_owned()),
             "the merchant told about the original accusation deserves to be told it was wrong too: {events:?}"
         );
     }
@@ -6159,7 +6139,7 @@ pub(crate) mod tests {
         for raw in ["not json", "[]"] {
             let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
             store.lock().overwrite_payment_key_images_for_test(
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::OrderId::new(order_id.clone()),
                 raw,
             );
             round_with_void_recheck_due(&store, &chain_replica())
@@ -6174,7 +6154,7 @@ pub(crate) mod tests {
         let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
         let payment = store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()[0]
             .clone();
         let images: Vec<String> = serde_json::from_str(&payment.key_images_json).unwrap();
@@ -6186,12 +6166,12 @@ pub(crate) mod tests {
         }
         let daemon = FallbackDaemonClient::new(vec![
             FallbackNode {
-                label: "spent".to_string(),
-                client: std::sync::Arc::new(spent),
+                label: "spent".to_owned(),
+                client: Arc::new(spent),
             },
             FallbackNode {
-                label: "unspent".to_string(),
-                client: std::sync::Arc::new(unspent),
+                label: "unspent".to_owned(),
+                client: Arc::new(unspent),
             },
         ]);
         round_with_void_recheck_due(&store, &daemon).await.unwrap();
@@ -6203,7 +6183,7 @@ pub(crate) mod tests {
         let (store, tenant_id, order_id) = setup_with_one_voided_double_spend().await;
         let payment = store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()[0]
             .clone();
         let key_images: Vec<String> = serde_json::from_str(&payment.key_images_json).unwrap();
@@ -6224,8 +6204,8 @@ pub(crate) mod tests {
         assert!(store
             .lock()
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string())
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone())
             )
             .unwrap()
             .unwrap()
@@ -6238,7 +6218,7 @@ pub(crate) mod tests {
         let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
         let payment = store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()[0]
             .clone();
 
@@ -6249,14 +6229,14 @@ pub(crate) mod tests {
             let s = store.lock();
             assert!(s
                 .unvoid_payment(
-                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.clone()),
                     &payment.txid,
                     payment.output_index
                 )
                 .unwrap());
             assert!(s
                 .void_payment(
-                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.clone()),
                     &payment.txid,
                     payment.output_index,
                     old_timestamp
@@ -6287,7 +6267,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &first,
             0..3,
             now,
@@ -6299,7 +6279,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &second,
             0..3,
             now,
@@ -6310,12 +6290,12 @@ pub(crate) mod tests {
         // Void both by their *actual* recorded output_index - not assumed to be 0,
         // since that depends on which output of each fixture transaction matched.
         for payment in store
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()
         {
             store
                 .void_payment(
-                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.clone()),
                     &payment.txid,
                     payment.output_index,
                     now,
@@ -6323,7 +6303,7 @@ pub(crate) mod tests {
                 .unwrap();
         }
         store
-            .mark_double_spend_detected(&shared::ids::OrderId::new(order_id.to_string()), now)
+            .mark_double_spend_detected(&shared::ids::OrderId::new(order_id.clone()), now)
             .unwrap();
 
         let store = store.into_shared();
@@ -6340,7 +6320,7 @@ pub(crate) mod tests {
 
         let s = store.lock();
         let payments = s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         let (voided, kept): (Vec<_>, Vec<_>) = payments.iter().partition(|p| p.voided_at.is_some());
         assert_eq!(voided.len(), 1, "the still-justified void must remain");
@@ -6351,7 +6331,7 @@ pub(crate) mod tests {
             "the false accusation is reversed"
         );
         assert!(
-            s.get_order(&shared::ids::TenantId::new(tenant_id.to_string()), &shared::ids::OrderId::new(order_id.to_string())).unwrap().unwrap().double_spend_detected_at.is_some(),
+            s.get_order(&shared::ids::TenantId::new(tenant_id.clone()), &shared::ids::OrderId::new(order_id.clone())).unwrap().unwrap().double_spend_detected_at.is_some(),
             "the other voided payment still genuinely justifies the flag - it must not be cleared as a side effect"
         );
     }
@@ -6450,7 +6430,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &first,
             0..3,
             now,
@@ -6462,7 +6442,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &second,
             0..3,
             now,
@@ -6471,12 +6451,12 @@ pub(crate) mod tests {
         .await
         .unwrap();
         for payment in store
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()
         {
             store
                 .void_payment(
-                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.clone()),
                     &payment.txid,
                     payment.output_index,
                     now,
@@ -6484,7 +6464,7 @@ pub(crate) mod tests {
                 .unwrap();
         }
         store
-            .mark_double_spend_detected(&shared::ids::OrderId::new(order_id.to_string()), now)
+            .mark_double_spend_detected(&shared::ids::OrderId::new(order_id.clone()), now)
             .unwrap();
 
         let store = store.into_shared();
@@ -6530,7 +6510,7 @@ pub(crate) mod tests {
             setup_with_confirmations_override(Some(0)).await;
         store
             .create_webhook(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -6551,12 +6531,12 @@ pub(crate) mod tests {
         }
         let client = FallbackDaemonClient::new(vec![
             FallbackNode {
-                label: "primary".to_string(),
-                client: std::sync::Arc::new(primary),
+                label: "primary".to_owned(),
+                client: Arc::new(primary),
             },
             FallbackNode {
-                label: "fallback".to_string(),
-                client: std::sync::Arc::new(fallback),
+                label: "fallback".to_owned(),
+                client: Arc::new(fallback),
             },
         ]);
 
@@ -6572,8 +6552,8 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store.lock().get_order(&shared::ids::TenantId::new(tenant_id.to_string()), &shared::ids::OrderId::new(order_id.to_string())).unwrap().unwrap().status,
-            crate::status::OrderStatus::Overpaid,
+            store.lock().get_order(&shared::ids::TenantId::new(tenant_id.clone()), &shared::ids::OrderId::new(order_id.clone())).unwrap().unwrap().status,
+            OrderStatus::Overpaid,
             "settled off the mempool sighting alone, same as the bare-daemon version of this scenario"
         );
 
@@ -6594,12 +6574,12 @@ pub(crate) mod tests {
         }
         let client = FallbackDaemonClient::new(vec![
             FallbackNode {
-                label: "primary".to_string(),
-                client: std::sync::Arc::new(primary),
+                label: "primary".to_owned(),
+                client: Arc::new(primary),
             },
             FallbackNode {
-                label: "fallback".to_string(),
-                client: std::sync::Arc::new(fallback),
+                label: "fallback".to_owned(),
+                client: Arc::new(fallback),
             },
         ]);
 
@@ -6617,7 +6597,7 @@ pub(crate) mod tests {
 
         let s = store.lock();
         let payments = s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert_eq!(payments.len(), 1);
         assert!(
@@ -6626,8 +6606,8 @@ pub(crate) mod tests {
         );
         let order = s
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
@@ -6642,7 +6622,7 @@ pub(crate) mod tests {
             .map(|d| d.event_type)
             .collect();
         assert!(
-            !events.contains(&"order.double_spend_detected".to_string()),
+            !events.contains(&"order.double_spend_detected".to_owned()),
             "no false double-spend webhook should ever be sent to the merchant: {events:?}"
         );
     }
@@ -6666,12 +6646,12 @@ pub(crate) mod tests {
         }
         let client = FallbackDaemonClient::new(vec![
             FallbackNode {
-                label: "primary".to_string(),
-                client: std::sync::Arc::new(primary),
+                label: "primary".to_owned(),
+                client: Arc::new(primary),
             },
             FallbackNode {
-                label: "fallback".to_string(),
-                client: std::sync::Arc::new(fallback),
+                label: "fallback".to_owned(),
+                client: Arc::new(fallback),
             },
         ]);
         run_scan_tick(
@@ -6697,12 +6677,12 @@ pub(crate) mod tests {
         }
         let client = FallbackDaemonClient::new(vec![
             FallbackNode {
-                label: "primary".to_string(),
-                client: std::sync::Arc::new(primary),
+                label: "primary".to_owned(),
+                client: Arc::new(primary),
             },
             FallbackNode {
-                label: "fallback".to_string(),
-                client: std::sync::Arc::new(fallback),
+                label: "fallback".to_owned(),
+                client: Arc::new(fallback),
             },
         ]);
         run_scan_tick(
@@ -6719,7 +6699,7 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert!(
-            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()[0]
                 .voided_at
                 .is_some(),
@@ -6774,7 +6754,7 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             let payments = s
-                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap();
             assert!(
                 payments[0].voided_at.is_none(),
@@ -6786,8 +6766,8 @@ pub(crate) mod tests {
             );
             assert!(s
                 .get_order(
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
-                    &shared::ids::OrderId::new(order_id.to_string())
+                    &shared::ids::TenantId::new(tenant_id.clone()),
+                    &shared::ids::OrderId::new(order_id.clone())
                 )
                 .unwrap()
                 .unwrap()
@@ -6810,7 +6790,7 @@ pub(crate) mod tests {
         .unwrap();
         let s = store.lock();
         assert_eq!(
-            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()[0]
                 .block_height,
             Some(3)
@@ -6869,7 +6849,7 @@ pub(crate) mod tests {
         assert_eq!(
             store
                 .lock()
-                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()[0]
                 .block_height,
             Some(2)
@@ -6907,7 +6887,7 @@ pub(crate) mod tests {
         // would still answer `InPool` and conclude nothing), but because it would
         // otherwise burn one RPC per pending payment, on every tick, for exactly as
         // long as the node is having trouble.
-        let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let store = store.into_shared();
 
         let tx = fixture_tx();
@@ -6935,7 +6915,7 @@ pub(crate) mod tests {
         assert_eq!(
             store
                 .lock()
-                .get_all_payments(&shared::ids::OrderId::new(_order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()
                 .len(),
             1
@@ -6996,9 +6976,7 @@ pub(crate) mod tests {
         // until a fetch succeeds, and the next tick retries the identical range -
         // no payment lost, none recorded twice.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-        store
-            .set_scanned_block(monero::Network::Mainnet, 1, "h1")
-            .unwrap();
+        store.set_scanned_block(Network::Mainnet, 1, "h1").unwrap();
         let store = store.into_shared();
 
         let fake = FakeDaemonClient::new();
@@ -7025,12 +7003,12 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+                s.max_scanned_height(Network::Mainnet).unwrap(),
                 Some(1),
                 "the whole chunk failed, so the high-water mark stays exactly where it was before this tick"
             );
             assert!(s
-                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()
                 .is_empty());
         }
@@ -7049,12 +7027,9 @@ pub(crate) mod tests {
         .unwrap();
 
         let s = store.lock();
-        assert_eq!(
-            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
-            Some(4)
-        );
+        assert_eq!(s.max_scanned_height(Network::Mainnet).unwrap(), Some(4));
         let payments = s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert_eq!(
             payments.len(),
@@ -7089,9 +7064,7 @@ pub(crate) mod tests {
 
         {
             let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
-            store
-                .set_scanned_block(monero::Network::Mainnet, 1, "h1")
-                .unwrap();
+            store.set_scanned_block(Network::Mainnet, 1, "h1").unwrap();
             let store = store.into_shared();
             let fake = FakeDaemonClient::new();
             fake.push_block("h1", vec![]); // the already-scanned baseline, mirrored into the daemon too
@@ -7112,10 +7085,7 @@ pub(crate) mod tests {
                 )
                 .await
                 .unwrap();
-                if store
-                    .lock()
-                    .max_scanned_height(monero::Network::Mainnet)
-                    .unwrap()
+                if store.lock().max_scanned_height(Network::Mainnet).unwrap()
                     == Some(NEW_BLOCK_COUNT + 1)
                 {
                     break;
@@ -7123,10 +7093,7 @@ pub(crate) mod tests {
             }
 
             assert_eq!(
-                store
-                    .lock()
-                    .max_scanned_height(monero::Network::Mainnet)
-                    .unwrap(),
+                store.lock().max_scanned_height(Network::Mainnet).unwrap(),
                 Some(NEW_BLOCK_COUNT + 1),
                 "the wide range must be fully scanned across bounded ticks"
             );
@@ -7142,9 +7109,7 @@ pub(crate) mod tests {
         // either, asserted here on a fresh scenario.
         {
             let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
-            store
-                .set_scanned_block(monero::Network::Mainnet, 1, "h1")
-                .unwrap();
+            store.set_scanned_block(Network::Mainnet, 1, "h1").unwrap();
             let store = store.into_shared();
             let fake = FakeDaemonClient::new();
             fake.push_block("h1", vec![]);
@@ -7167,10 +7132,7 @@ pub(crate) mod tests {
                 )
                 .await
                 .unwrap();
-                if store
-                    .lock()
-                    .max_scanned_height(monero::Network::Mainnet)
-                    .unwrap()
+                if store.lock().max_scanned_height(Network::Mainnet).unwrap()
                     == Some(NEW_BLOCK_COUNT + 1)
                 {
                     break;
@@ -7401,19 +7363,19 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+                s.max_scanned_height(Network::Mainnet).unwrap(),
                 None,
                 "nothing may be recorded as scanned"
             );
             assert_eq!(
                 s.get_order(
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
-                    &shared::ids::OrderId::new(order_id.to_string())
+                    &shared::ids::TenantId::new(tenant_id.clone()),
+                    &shared::ids::OrderId::new(order_id.clone())
                 )
                 .unwrap()
                 .unwrap()
                 .status,
-                crate::status::OrderStatus::Pending,
+                OrderStatus::Pending,
                 "and no order may have advanced on evidence the tick never got"
             );
         }
@@ -7432,7 +7394,7 @@ pub(crate) mod tests {
         .unwrap();
         let s = store.lock();
         assert_eq!(
-            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()
                 .len(),
             1,
@@ -7440,13 +7402,13 @@ pub(crate) mod tests {
         );
         assert_eq!(
             s.get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string())
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone())
             )
             .unwrap()
             .unwrap()
             .status,
-            crate::status::OrderStatus::Confirming
+            OrderStatus::Confirming
         );
     }
 
@@ -7465,7 +7427,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &tx,
             0..3,
             1500,
@@ -7489,13 +7451,13 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.get_scanned_block_hash(monero::Network::Mainnet, 50)
+                s.get_scanned_block_hash(Network::Mainnet, 50)
                     .unwrap()
                     .as_deref(),
                 Some("old_50")
             );
             assert!(
-                s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                s.get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                     .unwrap()[0]
                     .voided_at
                     .is_none(),
@@ -7511,7 +7473,7 @@ pub(crate) mod tests {
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
         assert!(store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()[0]
             .voided_at
             .is_some());
@@ -7545,7 +7507,7 @@ pub(crate) mod tests {
         let store = store.into_shared();
         store
             .lock()
-            .set_scanned_block(monero::Network::Mainnet, 49, "a_49")
+            .set_scanned_block(Network::Mainnet, 49, "a_49")
             .unwrap();
         run_scan_tick(
             &store,
@@ -7561,7 +7523,7 @@ pub(crate) mod tests {
         assert_eq!(
             store
                 .lock()
-                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()[0]
                 .block_height,
             Some(50)
@@ -7591,14 +7553,14 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+                s.max_scanned_height(Network::Mainnet).unwrap(),
                 Some(48),
                 "the divergence is found and rewound, exactly as for a reorg: the first recorded height that \
                  differs is 49, so the scan restarts from 48, one below it - detection can only ever be as \
                  fine-grained as the window of hashes it kept"
             );
             let payment = &s
-                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()[0];
             assert!(
                 payment.voided_at.is_none(),
@@ -7619,10 +7581,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(55)
         );
 
@@ -7640,7 +7599,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store.lock().max_scanned_height(monero::Network::Mainnet).unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(47),
             "no daemon is privileged - the stored chain is re-validated against whoever is answering"
         );
@@ -7661,7 +7620,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let tx = fixture_tx();
 
-        let primary = std::sync::Arc::new(FakeDaemonClient::new());
+        let primary = Arc::new(FakeDaemonClient::new());
         for h in 1..=49 {
             primary.push_block(&format!("a_{h}"), vec![]);
         }
@@ -7669,10 +7628,10 @@ pub(crate) mod tests {
         let store = store.into_shared();
         store
             .lock()
-            .set_scanned_block(monero::Network::Mainnet, 49, "a_49")
+            .set_scanned_block(Network::Mainnet, 49, "a_49")
             .unwrap();
 
-        let fallback = std::sync::Arc::new(FakeDaemonClient::new());
+        let fallback = Arc::new(FakeDaemonClient::new());
         for h in 1..=47 {
             fallback.push_block(&format!("a_{h}"), vec![]);
         }
@@ -7682,12 +7641,12 @@ pub(crate) mod tests {
 
         let client = FallbackDaemonClient::new(vec![
             FallbackNode {
-                label: "primary".to_string(),
-                client: primary.clone(),
+                label: "primary".to_owned(),
+                client: Arc::<FakeDaemonClient>::clone(&primary),
             },
             FallbackNode {
-                label: "fallback".to_string(),
-                client: fallback.clone(),
+                label: "fallback".to_owned(),
+                client: Arc::<FakeDaemonClient>::clone(&fallback),
             },
         ]);
 
@@ -7705,7 +7664,7 @@ pub(crate) mod tests {
         assert_eq!(
             store
                 .lock()
-                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()[0]
                 .block_height,
             Some(50),
@@ -7730,12 +7689,12 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+                s.max_scanned_height(Network::Mainnet).unwrap(),
                 Some(48),
                 "failover to a genuinely diverging fallback reconciles exactly like the raw-swap test above"
             );
             assert!(
-                s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap()[0].voided_at.is_none(),
+                s.get_all_payments(&shared::ids::OrderId::new(order_id.clone())).unwrap()[0].voided_at.is_none(),
                 "the fallback not having the transaction proves nothing about it - never void on that"
             );
         }
@@ -7752,10 +7711,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(52),
             "scanning continues forward on the fallback's own chain"
         );
@@ -7774,7 +7730,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let tx = fixture_tx();
 
-        let primary = std::sync::Arc::new(FakeDaemonClient::new());
+        let primary = Arc::new(FakeDaemonClient::new());
         for h in 1..=59 {
             primary.push_block(&format!("a_{h}"), vec![]);
         }
@@ -7782,7 +7738,7 @@ pub(crate) mod tests {
         let store = store.into_shared();
         store
             .lock()
-            .set_scanned_block(monero::Network::Mainnet, 59, "a_59")
+            .set_scanned_block(Network::Mainnet, 59, "a_59")
             .unwrap();
 
         run_scan_tick(
@@ -7797,27 +7753,24 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(60)
         );
 
         // A fallback with the identical history, just not caught up yet.
-        let fallback = std::sync::Arc::new(FakeDaemonClient::new());
+        let fallback = Arc::new(FakeDaemonClient::new());
         for h in 1..=40 {
             fallback.push_block(&format!("a_{h}"), vec![]);
         }
 
         let client = FallbackDaemonClient::new(vec![
             FallbackNode {
-                label: "primary".to_string(),
-                client: primary.clone(),
+                label: "primary".to_owned(),
+                client: Arc::<FakeDaemonClient>::clone(&primary),
             },
             FallbackNode {
-                label: "fallback".to_string(),
-                client: fallback.clone(),
+                label: "fallback".to_owned(),
+                client: Arc::<FakeDaemonClient>::clone(&fallback),
             },
         ]);
 
@@ -7836,12 +7789,12 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+                s.max_scanned_height(Network::Mainnet).unwrap(),
                 Some(60),
                 "a lagging fallback must not rewind the window back to where it currently is"
             );
             assert!(
-                s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap()[0].voided_at.is_none(),
+                s.get_all_payments(&shared::ids::OrderId::new(order_id.clone())).unwrap()[0].voided_at.is_none(),
                 "a lagging fallback not yet having the transaction proves nothing - never void on that"
             );
         }
@@ -7869,10 +7822,10 @@ pub(crate) mod tests {
         let store = store.into_shared();
         store
             .lock()
-            .set_scanned_block(monero::Network::Mainnet, 50, "a_50")
+            .set_scanned_block(Network::Mainnet, 50, "a_50")
             .unwrap();
 
-        let fallback = std::sync::Arc::new(FakeDaemonClient::new());
+        let fallback = Arc::new(FakeDaemonClient::new());
         // The fallback shares block 50 (so its 51 extends the recorded chain)
         // and has its own, different 51.
         fallback.seed_block_at(50, "a_50", vec![]);
@@ -7880,18 +7833,18 @@ pub(crate) mod tests {
 
         // The primary has block 51 (with the payment) and fails to serve it:
         // that call fails over to the fallback.
-        let primary = std::sync::Arc::new(DaemonFailingBlockHashAt {
+        let primary = Arc::new(DaemonFailingBlockHashAt {
             inner: primary_inner,
             failing_height: AtomicU64::new(51),
         });
         let client = FallbackDaemonClient::new(vec![
             FallbackNode {
-                label: "primary".to_string(),
+                label: "primary".to_owned(),
                 client: primary,
             },
             FallbackNode {
-                label: "fallback".to_string(),
-                client: fallback.clone(),
+                label: "fallback".to_owned(),
+                client: Arc::<FakeDaemonClient>::clone(&fallback),
             },
         ]);
 
@@ -7909,13 +7862,12 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(
-            s.get_scanned_block_hash(monero::Network::Mainnet, 51)
-                .unwrap(),
-            Some("b_51".to_string()),
+            s.get_scanned_block_hash(Network::Mainnet, 51).unwrap(),
+            Some("b_51".to_owned()),
             "the recorded hash for height 51 came from the fallback, which served the block"
         );
         assert!(
-            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap().is_empty(),
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.clone())).unwrap().is_empty(),
             "and so did the block's contents: the fallback's block 51 pays nobody, and the primary's block 51 (which \
              it can no longer vouch for) was never paired with the fallback's hash"
         );
@@ -7933,7 +7885,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let tx = fixture_tx();
 
-        let primary = std::sync::Arc::new(FakeDaemonClient::new());
+        let primary = Arc::new(FakeDaemonClient::new());
         primary.push_block("a_1", vec![tx.clone()]);
         let store = store.into_shared();
         run_scan_tick(
@@ -7949,27 +7901,24 @@ pub(crate) mod tests {
         .unwrap();
         let payments_before: Vec<(String, Option<i64>)> = store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()
             .into_iter()
             .map(|p| (p.txid, p.block_height))
             .collect();
-        let scanned_before = store
-            .lock()
-            .max_scanned_height(monero::Network::Mainnet)
-            .unwrap();
+        let scanned_before = store.lock().max_scanned_height(Network::Mainnet).unwrap();
 
-        let fallback = std::sync::Arc::new(FakeDaemonClient::new());
+        let fallback = Arc::new(FakeDaemonClient::new());
         primary.set_online(false);
         fallback.set_online(false);
         let client = FallbackDaemonClient::new(vec![
             FallbackNode {
-                label: "primary".to_string(),
-                client: primary.clone(),
+                label: "primary".to_owned(),
+                client: Arc::<FakeDaemonClient>::clone(&primary),
             },
             FallbackNode {
-                label: "fallback".to_string(),
-                client: fallback.clone(),
+                label: "fallback".to_owned(),
+                client: Arc::<FakeDaemonClient>::clone(&fallback),
             },
         ]);
 
@@ -7989,7 +7938,7 @@ pub(crate) mod tests {
         );
         let payments_after: Vec<(String, Option<i64>)> = store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()
             .into_iter()
             .map(|p| (p.txid, p.block_height))
@@ -7999,10 +7948,7 @@ pub(crate) mod tests {
             "a failed tick must not touch previously-recorded payments"
         );
         assert_eq!(
-            store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             scanned_before,
             "a failed tick must not move the scanned watermark"
         );
@@ -8037,20 +7983,20 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert!(
-                s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                s.get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                     .unwrap()
                     .is_empty(),
                 "nothing to see - only zero-conf is lost"
             );
             assert_eq!(
                 s.get_order(
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
-                    &shared::ids::OrderId::new(order_id.to_string())
+                    &shared::ids::TenantId::new(tenant_id.clone()),
+                    &shared::ids::OrderId::new(order_id.clone())
                 )
                 .unwrap()
                 .unwrap()
                 .status,
-                crate::status::OrderStatus::Pending
+                OrderStatus::Pending
             );
         }
 
@@ -8069,7 +8015,7 @@ pub(crate) mod tests {
 
         let s = store.lock();
         let payments = s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert_eq!(
             payments.len(),
@@ -8079,13 +8025,13 @@ pub(crate) mod tests {
         assert_eq!(payments[0].block_height, Some(2));
         assert_eq!(
             s.get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string())
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone())
             )
             .unwrap()
             .unwrap()
             .status,
-            crate::status::OrderStatus::Confirming
+            OrderStatus::Confirming
         );
     }
 
@@ -8137,7 +8083,7 @@ pub(crate) mod tests {
             .unwrap()
             .unwrap()
             .status,
-            crate::status::OrderStatus::Pending
+            OrderStatus::Pending
         );
         assert_eq!(
             s.get_order(
@@ -8189,12 +8135,12 @@ pub(crate) mod tests {
             let s = store.lock();
             let order = s
                 .get_order(
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
-                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &shared::ids::TenantId::new(tenant_id.clone()),
+                    &shared::ids::OrderId::new(order_id.clone()),
                 )
                 .unwrap()
                 .unwrap();
-            assert_eq!(order.status, crate::status::OrderStatus::Confirming);
+            assert_eq!(order.status, OrderStatus::Confirming);
             assert_eq!(order.confirmations, 1, "one real block, one confirmation");
         }
 
@@ -8214,8 +8160,8 @@ pub(crate) mod tests {
         let s = store.lock();
         let order = s
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
@@ -8223,7 +8169,7 @@ pub(crate) mod tests {
             order.confirmations, 999,
             "taken at face value - the documented trust boundary"
         );
-        assert_eq!(order.status, crate::status::OrderStatus::Overpaid);
+        assert_eq!(order.status, OrderStatus::Overpaid);
     }
 
     #[tokio::test]
@@ -8246,7 +8192,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &tx,
             0..3,
             1500,
@@ -8256,15 +8202,15 @@ pub(crate) mod tests {
         .unwrap();
         for h in 70..=100 {
             store
-                .set_scanned_block(monero::Network::Mainnet, h, &format!("old_{h}"))
+                .set_scanned_block(Network::Mainnet, h, &format!("old_{h}"))
                 .unwrap();
         }
         let (_, status) = store
-            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 100, 1600)
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.clone()), 100, 1600)
             .unwrap();
         assert_eq!(
             status,
-            crate::status::OrderStatus::Confirming,
+            OrderStatus::Confirming,
             "six confirmations, ten required"
         );
         let store = store.into_shared();
@@ -8289,18 +8235,18 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(
-            s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+            s.max_scanned_height(Network::Mainnet).unwrap(),
             Some(100),
             "the window belongs to the chain, not to whichever node is currently answering"
         );
         assert_eq!(
-            s.get_scanned_block_hash(monero::Network::Mainnet, 95)
+            s.get_scanned_block_hash(Network::Mainnet, 95)
                 .unwrap()
                 .as_deref(),
             Some("old_95")
         );
         let payment = &s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()[0];
         assert!(
             payment.voided_at.is_none(),
@@ -8348,7 +8294,7 @@ pub(crate) mod tests {
 
         let s = store.lock();
         let payments = s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
         assert_eq!(
             payments.len(),
@@ -8358,15 +8304,15 @@ pub(crate) mod tests {
         assert!(payments.iter().all(|p| p.block_height == Some(2)));
         let order = s
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
         assert_eq!(order.amount_received_piconero, per_tx_amount * 3);
         assert_eq!(
             order.status,
-            crate::status::OrderStatus::Confirming,
+            OrderStatus::Confirming,
             "one confirmation, ten required"
         );
     }
@@ -8387,11 +8333,11 @@ pub(crate) mod tests {
         // being tested is entirely on this side of the crypto.
         let (store, _key_custody, _handle, tenant_id, first_order) = setup().await;
         let second_index = store
-            .allocate_minor_index(&shared::ids::TenantId::new(tenant_id.to_string()))
+            .allocate_minor_index(&shared::ids::TenantId::new(tenant_id.clone()))
             .unwrap();
         assert_eq!(second_index, 2);
         let second_order = store
-            .create_order(NewOrder {
+            .create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: shared::ids::TenantId::new(tenant_id.clone()),
@@ -8427,12 +8373,12 @@ pub(crate) mod tests {
             ],
             txid: "tx_paying_two_orders".into(),
             key_images_json: "[]".into(),
-            output_keys: Default::default(),
+            output_keys: HashMap::default(),
         };
 
         let touched = record_scan_match(
             &store,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id),
             &scan,
             1500,
             Some(50),
@@ -8440,14 +8386,14 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(
             touched,
-            HashSet::from([
+            std::collections::BTreeSet::from([
                 crate::store::OrderId::new(first_order.clone()),
                 second_order.id.clone()
             ])
         );
 
         let first = store
-            .get_all_payments(&shared::ids::OrderId::new(first_order.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(first_order))
             .unwrap();
         assert_eq!(first.len(), 1);
         assert_eq!(
@@ -8592,7 +8538,7 @@ pub(crate) mod tests {
             }],
             txid: "tx_flaky_amount".into(),
             key_images_json: "[]".into(),
-            output_keys: Default::default(),
+            output_keys: HashMap::default(),
         };
         let decrypted = ScanResult {
             matches: vec![MatchedOutput {
@@ -8602,25 +8548,25 @@ pub(crate) mod tests {
             }],
             txid: "tx_flaky_amount".into(),
             key_images_json: "[]".into(),
-            output_keys: Default::default(),
+            output_keys: HashMap::default(),
         };
 
         record_scan_match(
             &store,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &undecryptable,
             1500,
             Some(50),
         )
         .unwrap();
         assert!(store
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()
             .is_empty());
 
         let touched = record_scan_match(
             &store,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &decrypted,
             1600,
             Some(50),
@@ -8628,12 +8574,12 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(
             touched,
-            HashSet::from([crate::store::OrderId::new(order_id.clone())]),
+            std::collections::BTreeSet::from([crate::store::OrderId::new(order_id.clone())]),
             "the later success records it in full"
         );
         assert_eq!(
             store
-                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()[0]
                 .amount_piconero,
             4_242
@@ -8641,14 +8587,14 @@ pub(crate) mod tests {
 
         record_scan_match(
             &store,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id),
             &undecryptable,
             1700,
             Some(50),
         )
         .unwrap();
         let payments = store
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id))
             .unwrap();
         assert_eq!(payments.len(), 1);
         assert_eq!(
@@ -8696,14 +8642,14 @@ pub(crate) mod tests {
         let s = store.lock();
         let order = s
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
         assert_eq!(
             order.status,
-            crate::status::OrderStatus::Unconfirmed,
+            OrderStatus::Unconfirmed,
             "paid in full, if only just - the deadline governs orders that fall short, not covered ones"
         );
         assert!(order.amount_received_piconero > 0);
@@ -8712,13 +8658,13 @@ pub(crate) mod tests {
         // does expire, and keeping both cases in one test is what stops a future
         // "fix" for either from quietly inverting the other.
         let partial = s
-            .create_order(NewOrder {
+            .create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: shared::ids::TenantId::new(tenant_id.clone()),
                 merchant_order_id: None,
                 minor_index: s
-                    .allocate_minor_index(&shared::ids::TenantId::new(tenant_id.to_string()))
+                    .allocate_minor_index(&shared::ids::TenantId::new(tenant_id.clone()))
                     .unwrap(),
                 address: "sub_partial".into(),
                 xmr_amount_piconero: 10_000_000,
@@ -8732,7 +8678,7 @@ pub(crate) mod tests {
         let (_, status) = s
             .recompute_order_status(&partial.id, 1, crate::now_unix())
             .unwrap();
-        assert_eq!(status, crate::status::OrderStatus::Expired);
+        assert_eq!(status, OrderStatus::Expired);
     }
 
     #[tokio::test]
@@ -8762,12 +8708,12 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert_eq!(
-                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
+                s.max_scanned_height(Network::Mainnet).unwrap(),
                 None,
                 "nothing to seed from, so nothing recorded"
             );
             assert!(s
-                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                 .unwrap()
                 .is_empty());
         }
@@ -8787,11 +8733,9 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert!(
-            check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
-                .await
-                .is_ok()
-        );
+        check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 2000)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -8804,10 +8748,10 @@ pub(crate) mod tests {
         // leaving an empty window that the next tick re-seeds from the tip.
         let store = Store::open_in_memory().unwrap();
         store
-            .set_scanned_block(monero::Network::Mainnet, 0, "genesis_v0")
+            .set_scanned_block(Network::Mainnet, 0, "genesis_v0")
             .unwrap();
         store
-            .set_scanned_block(monero::Network::Mainnet, 1, "block_1_v0")
+            .set_scanned_block(Network::Mainnet, 1, "block_1_v0")
             .unwrap();
         let store = store.into_shared();
 
@@ -8820,7 +8764,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(report.reorg_detected_at, Some(0));
         assert_eq!(
-            store.lock().max_scanned_height(monero::Network::Mainnet).unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             None,
             "there is no ancestor to preserve below genesis, so the window is emptied and re-seeded next tick"
         );
@@ -8862,13 +8806,10 @@ pub(crate) mod tests {
 
         {
             let s = store.lock();
-            assert_eq!(
-                s.max_scanned_height(monero::Network::Mainnet).unwrap(),
-                Some(60)
-            );
+            assert_eq!(s.max_scanned_height(Network::Mainnet).unwrap(), Some(60));
             let retained: u64 = (0..=60)
                 .filter(|h| {
-                    s.get_scanned_block_hash(monero::Network::Mainnet, *h)
+                    s.get_scanned_block_hash(Network::Mainnet, *h)
                         .unwrap()
                         .is_some()
                 })
@@ -8896,10 +8837,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(report.reorg_detected_at, Some(60 - depth));
         assert_eq!(
-            store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(60 - depth - 1),
             "the rewind still finds an ancestor to anchor on below the pruned window"
         );
@@ -8924,7 +8862,7 @@ pub(crate) mod tests {
             setup_with_confirmations_override(Some(0)).await;
         store
             .create_webhook(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -8968,14 +8906,14 @@ pub(crate) mod tests {
             let s = store.lock();
             let order = s
                 .get_order(
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
-                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &shared::ids::TenantId::new(tenant_id.clone()),
+                    &shared::ids::OrderId::new(order_id.clone()),
                 )
                 .unwrap()
                 .unwrap();
             assert_eq!(
                 order.status,
-                crate::status::OrderStatus::Paid,
+                OrderStatus::Paid,
                 "covered by both payments, trusted at zero-conf"
             );
         }
@@ -9015,18 +8953,17 @@ pub(crate) mod tests {
 
         let s = store.lock();
         let payments = s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap();
-        let voided: Vec<_> = payments.iter().filter(|p| p.voided_at.is_some()).collect();
+        let voided = payments.iter().filter(|p| p.voided_at.is_some()).count();
         assert_eq!(
-            voided.len(),
-            1,
+            voided, 1,
             "exactly one payment was resolved before the node failed"
         );
         let order = s
             .get_order(
-                &shared::ids::TenantId::new(tenant_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
             )
             .unwrap()
             .unwrap();
@@ -9036,7 +8973,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             order.status,
-            crate::status::OrderStatus::Partial,
+            OrderStatus::Partial,
             "an order whose money was voided must never be left reading `paid` because a later RPC failed"
         );
         assert!(order.double_spend_detected_at.is_some());
@@ -9047,11 +8984,11 @@ pub(crate) mod tests {
             .map(|d| d.event_type)
             .collect();
         assert!(
-            events.contains(&"order.double_spend_detected".to_string()),
+            events.contains(&"order.double_spend_detected".to_owned()),
             "and the merchant is told: {events:?}"
         );
         assert!(
-            events.contains(&"order.partial".to_string()),
+            events.contains(&"order.partial".to_owned()),
             "including the retraction of `paid`: {events:?}"
         );
     }
@@ -9112,7 +9049,10 @@ pub(crate) mod tests {
                             keys.iter().map(|_| other).collect(),
                         )
                     }
-                    field => field,
+                    field @ (monero::blockdata::transaction::SubField::Nonce(_)
+                    | monero::blockdata::transaction::SubField::Padding(_)
+                    | monero::blockdata::transaction::SubField::MergeMining(..)
+                    | monero::blockdata::transaction::SubField::MysteriousMinerGate(_)) => field,
                 })
                 .collect(),
         );
@@ -9244,7 +9184,7 @@ pub(crate) mod tests {
     ) -> (crate::store::TenantId, crate::store::OrderId) {
         let tenant = store
             .create_tenant(
-                NewTenant {
+                &NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![],
                     primary_address: "4fixture".into(),
@@ -9258,7 +9198,7 @@ pub(crate) mod tests {
         let index = store.allocate_minor_index(&tenant.tenant.id).unwrap();
         assert_eq!(index, 1);
         let order = store
-            .create_order(NewOrder {
+            .create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: tenant.tenant.id.clone(),
@@ -9278,12 +9218,14 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn cursor_of(store: &crate::store::SharedStore, tenant_id: &str) -> Option<u64> {
-        store
+        let tenant = store
             .lock()
-            .get_tenant_by_id(&shared::ids::TenantId::new(tenant_id.to_string()))
-            .unwrap()
-            .unwrap()
-            .scanned_through_height
+            .get_tenant_by_id(&shared::ids::TenantId::new(tenant_id.to_owned()));
+        match tenant {
+            Ok(Some(tenant)) => tenant.scanned_through_height,
+            Ok(None) => panic!("no tenant {tenant_id}"),
+            Err(e) => panic!("reading tenant {tenant_id}: {e}"),
+        }
     }
 
     pub(crate) fn order_status(
@@ -9324,10 +9266,7 @@ pub(crate) mod tests {
             .unwrap();
 
         assert_eq!(
-            store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(2),
             "the network moved on"
         );
@@ -9352,10 +9291,7 @@ pub(crate) mod tests {
             .unwrap()
             .is_empty());
         assert_eq!(
-            store
-                .lock()
-                .lagging_tenants(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().lagging_tenants(Network::Mainnet).unwrap(),
             vec![(a.clone(), 1)]
         );
 
@@ -9394,7 +9330,7 @@ pub(crate) mod tests {
         );
         assert!(store
             .lock()
-            .lagging_tenants(monero::Network::Mainnet)
+            .lagging_tenants(Network::Mainnet)
             .unwrap()
             .is_empty());
     }
@@ -9417,7 +9353,7 @@ pub(crate) mod tests {
         assert_eq!(
             order_status(
                 &store,
-                &shared::ids::OrderId::new(a_order.as_str().to_string())
+                &shared::ids::OrderId::new(a_order.as_str().to_owned())
             ),
             OrderStatus::Expired,
             "sanity: a caught-up tenant's order expires"
@@ -9436,7 +9372,7 @@ pub(crate) mod tests {
             let s = store.lock();
             let tenant = s
                 .create_tenant(
-                    NewTenant {
+                    &NewTenant {
                         key_custody_backend: "plain".into(),
                         sealed_key_material: vec![],
                         primary_address: "4fixture".into(),
@@ -9449,7 +9385,7 @@ pub(crate) mod tests {
                 .unwrap();
             let index = s.allocate_minor_index(&tenant.tenant.id).unwrap();
             let order = s
-                .create_order(NewOrder {
+                .create_order(&NewOrder {
                     idempotency_key: None,
                     confirmations_required_override: None,
                     tenant_id: tenant.tenant.id.clone(),
@@ -9491,7 +9427,7 @@ pub(crate) mod tests {
         assert_eq!(
             order_status(
                 &store,
-                &shared::ids::OrderId::new(c_order.as_str().to_string())
+                &shared::ids::OrderId::new(c_order.as_str().to_owned())
             ),
             OrderStatus::Pending,
             "no expiry while its blocks are unchecked"
@@ -9515,7 +9451,7 @@ pub(crate) mod tests {
         assert_ne!(
             order_status(
                 &store,
-                &shared::ids::OrderId::new(c_order.as_str().to_string())
+                &shared::ids::OrderId::new(c_order.as_str().to_owned())
             ),
             OrderStatus::Expired
         );
@@ -9549,7 +9485,7 @@ pub(crate) mod tests {
         assert_eq!(
             order_status(
                 &store,
-                &shared::ids::OrderId::new(a_order.as_str().to_string())
+                &shared::ids::OrderId::new(a_order.as_str().to_owned())
             ),
             OrderStatus::Pending
         );
@@ -9562,7 +9498,7 @@ pub(crate) mod tests {
         assert_eq!(
             order_status(
                 &store,
-                &shared::ids::OrderId::new(a_order.as_str().to_string())
+                &shared::ids::OrderId::new(a_order.as_str().to_owned())
             ),
             OrderStatus::Expired,
             "nothing was paid, so it expires as normal"
@@ -9588,10 +9524,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(
-            store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(2)
         );
         assert_eq!(
@@ -9627,7 +9560,7 @@ pub(crate) mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = store
             .create_tenant(
-                NewTenant {
+                &NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![],
                     primary_address: "4idle".into(),
@@ -9687,7 +9620,7 @@ pub(crate) mod tests {
         assert_eq!(cursor_of(&store, tenant.id.as_str()), Some(3));
         assert!(store
             .lock()
-            .lagging_tenants(monero::Network::Mainnet)
+            .lagging_tenants(Network::Mainnet)
             .unwrap()
             .is_empty());
     }
@@ -9696,12 +9629,12 @@ pub(crate) mod tests {
     fn a_new_tenant_starts_at_its_networks_scanned_height() {
         let store = Store::open_in_memory().unwrap();
         store
-            .set_scanned_block(monero::Network::Mainnet, 50, "h50")
+            .set_scanned_block(Network::Mainnet, 50, "h50")
             .unwrap();
         let new = |network: &str| {
             store
                 .create_tenant(
-                    NewTenant {
+                    &NewTenant {
                         key_custody_backend: "plain".into(),
                         sealed_key_material: vec![],
                         primary_address: "4x".into(),
@@ -9770,10 +9703,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(
-            store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(4)
         );
         assert_eq!(
@@ -9846,10 +9776,7 @@ pub(crate) mod tests {
         // without moving A; the reorg check then rewound everyone to 2.
         assert_eq!(cursor_of(&store, a.as_str()), Some(2));
         assert_eq!(
-            store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap(),
+            store.lock().max_scanned_height(Network::Mainnet).unwrap(),
             Some(2)
         );
         for _ in 0..3 {
@@ -9959,8 +9886,8 @@ pub(crate) mod tests {
             let mut rng = seed;
             let mut next = move |n: u64| {
                 rng = rng
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
                 (rng >> 33) % n
             };
             let store = Store::open_in_memory().unwrap();
@@ -9986,6 +9913,8 @@ pub(crate) mod tests {
                         custody.fail(*handle);
                     } else if next(2) == 0 {
                         custody.recover(*handle);
+                    } else {
+                        // Left as it is this step.
                     }
                 }
                 match next(6) {
@@ -10049,10 +9978,7 @@ pub(crate) mod tests {
                     .unwrap();
             }
 
-            let high_water = store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap();
+            let high_water = store.lock().max_scanned_height(Network::Mainnet).unwrap();
             for ((tenant_id, _), order_id) in tenants.iter().zip(&orders) {
                 assert_eq!(
                     cursor_of(&store, tenant_id.as_str()),
@@ -10080,7 +10006,7 @@ pub(crate) mod tests {
                 assert_ne!(
                     order_status(
                         &store,
-                        &shared::ids::OrderId::new(order_id.as_str().to_string())
+                        &shared::ids::OrderId::new(order_id.as_str().to_owned())
                     ),
                     OrderStatus::Expired,
                     "seed {seed}"
@@ -10180,20 +10106,7 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_scan_state_runs_the_tuning_it_was_given() {
         use crate::work::{ScanState, ScanTuning, Tier, TuningError};
-        let five = ScanTuning {
-            round_budget: Duration::from_secs(5),
-            ..ScanTuning::DEFAULT
-        };
-        assert!(matches!(
-            ScanState::default().with_tuning(ScanTuning {
-                group_page: 0,
-                ..five
-            }),
-            Err(TuningError::ZeroCount)
-        ));
-        assert_eq!(ScanState::default().tuning(), &ScanTuning::DEFAULT);
-
-        // A tick in which one store's backend hangs, timed.
+        /// A tick in which one store's backend hangs, timed.
         async fn hung_tick(state: ScanState) -> Duration {
             let store = Store::open_in_memory().unwrap();
             let custody = SlowKeyCustody::default();
@@ -10211,7 +10124,7 @@ pub(crate) mod tests {
             custody
                 .delays
                 .lock()
-                .insert(a_handle, Duration::from_secs(10 * 60));
+                .insert(a_handle, Duration::from_mins(10));
             daemon.push_block("h3", vec![fixture_tx()]);
             let started = tokio::time::Instant::now();
             run_scan_tick_with(
@@ -10222,6 +10135,19 @@ pub(crate) mod tests {
             assert_eq!(cursor_of(&store, a.as_str()), Some(2), "A left behind");
             started.elapsed()
         }
+        let five = ScanTuning {
+            round_budget: Duration::from_secs(5),
+            ..ScanTuning::DEFAULT
+        };
+        assert!(matches!(
+            ScanState::default().with_tuning(ScanTuning {
+                group_page: 0,
+                ..five
+            }),
+            Err(TuningError::ZeroCount)
+        ));
+        assert_eq!(ScanState::default().tuning(), &ScanTuning::DEFAULT);
+
         let state = ScanState::default().with_tuning(five).unwrap();
         assert_eq!(state.tuning(), &five);
         let under_five = hung_tick(state).await;
@@ -10253,7 +10179,7 @@ pub(crate) mod tests {
         custody
             .delays
             .lock()
-            .insert(a_handle, Duration::from_secs(10 * 60));
+            .insert(a_handle, Duration::from_mins(10));
         daemon.push_block("h3", vec![fixture_tx()]);
         let started = tokio::time::Instant::now();
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
@@ -10326,10 +10252,7 @@ pub(crate) mod tests {
             );
             result.unwrap().unwrap();
             assert_eq!(
-                store
-                    .lock()
-                    .max_scanned_height(monero::Network::Mainnet)
-                    .unwrap(),
+                store.lock().max_scanned_height(Network::Mainnet).unwrap(),
                 Some(height)
             );
         }
@@ -10412,7 +10335,7 @@ pub(crate) mod tests {
         assert_eq!(
             order_status(
                 &store,
-                &shared::ids::OrderId::new(a_order.as_str().to_string())
+                &shared::ids::OrderId::new(a_order.as_str().to_owned())
             ),
             OrderStatus::Expired
         );
@@ -10487,14 +10410,14 @@ pub(crate) mod tests {
         assert_eq!(
             order_status(
                 &store,
-                &shared::ids::OrderId::new(a_order.as_str().to_string())
+                &shared::ids::OrderId::new(a_order.as_str().to_owned())
             ),
             OrderStatus::Expired
         );
         assert_eq!(cursor_of(&store, a.as_str()), Some(3));
         assert!(store
             .lock()
-            .lagging_tenants(monero::Network::Mainnet)
+            .lagging_tenants(Network::Mainnet)
             .unwrap()
             .is_empty());
     }
@@ -10507,12 +10430,12 @@ pub(crate) mod tests {
     fn only_tenants_with_nothing_in_scope_move_without_a_scan() {
         let store = Store::open_in_memory().unwrap();
         store
-            .set_scanned_block(monero::Network::Mainnet, 10, "h10")
+            .set_scanned_block(Network::Mainnet, 10, "h10")
             .unwrap();
         let tenant = |network: &str, cursor: i64, with_order: bool| {
             let id = store
                 .create_tenant(
-                    NewTenant {
+                    &NewTenant {
                         key_custody_backend: "plain".into(),
                         sealed_key_material: vec![],
                         primary_address: format!("4{}", uuid::Uuid::new_v4().simple()),
@@ -10533,7 +10456,7 @@ pub(crate) mod tests {
             if with_order {
                 let index = store.allocate_minor_index(&id).unwrap();
                 store
-                    .create_order(NewOrder {
+                    .create_order(&NewOrder {
                         idempotency_key: None,
                         confirmations_required_override: None,
                         tenant_id: id.clone(),
@@ -10556,13 +10479,13 @@ pub(crate) mod tests {
 
         assert_eq!(
             store
-                .advance_idle_cursors(monero::Network::Mainnet, 10, 11, 500, 0)
+                .advance_idle_cursors(Network::Mainnet, 10, 11, 500, 0)
                 .unwrap(),
             1
         );
         let cursor = |id: &str| {
             store
-                .get_tenant_by_id(&shared::ids::TenantId::new(id.to_string()))
+                .get_tenant_by_id(&shared::ids::TenantId::new(id.to_owned()))
                 .unwrap()
                 .unwrap()
                 .scanned_through_height
@@ -10604,7 +10527,7 @@ pub(crate) mod tests {
         let sealed = custody.seal(&material).await.unwrap();
         let tenant = store
             .create_tenant(
-                NewTenant {
+                &NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: sealed,
                     primary_address: "4x".into(),
@@ -10624,7 +10547,7 @@ pub(crate) mod tests {
                 &custody,
                 &handles,
                 None,
-                monero::Network::Stagenet
+                Network::Stagenet
             )
             .await,
             0,
@@ -10636,7 +10559,7 @@ pub(crate) mod tests {
                 &custody,
                 &handles,
                 None,
-                monero::Network::Mainnet
+                Network::Mainnet
             )
             .await,
             1
@@ -10648,7 +10571,7 @@ pub(crate) mod tests {
                 &custody,
                 &handles,
                 None,
-                monero::Network::Mainnet
+                Network::Mainnet
             )
             .await,
             0,
@@ -10776,7 +10699,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn cancellation_after_a_closed_orders_payment_is_written_does_not_lose_its_status_or_webhook(
     ) {
-        use std::future::Future;
+        use std::future::Future as _;
         let store = Store::open_in_memory().unwrap();
         let custody = PlainKeyCustody::default();
         let now = crate::now_unix();
@@ -10818,7 +10741,7 @@ pub(crate) mod tests {
         assert_eq!(
             order_status(
                 &store,
-                &shared::ids::OrderId::new(order.as_str().to_string())
+                &shared::ids::OrderId::new(order.as_str().to_owned())
             ),
             OrderStatus::Paid
         );
@@ -10833,13 +10756,13 @@ pub(crate) mod tests {
         {
             // Every database job an await point, as with the worker: the
             // tick can be cut between writing the payment and settling it.
-            let db = crate::store::Db::over_shared_yielding(store.clone());
+            let db = crate::store::Db::over_shared_yielding(Arc::clone(&store));
             let state = crate::work::ScanState::default();
             let inputs = crate::work::RoundInputs {
                 db: &db,
                 custody: &custody,
                 daemon: &daemon,
-                network: monero::Network::Mainnet,
+                network: Network::Mainnet,
                 tenants: &tenants,
                 reorg_check_depth: 20,
                 grace_period_seconds: 3600,
@@ -10882,7 +10805,7 @@ pub(crate) mod tests {
         assert_eq!(
             order_status(
                 &store,
-                &shared::ids::OrderId::new(order.as_str().to_string())
+                &shared::ids::OrderId::new(order.as_str().to_owned())
             ),
             OrderStatus::Overpaid
         );
@@ -10906,8 +10829,8 @@ pub(crate) mod tests {
             let mut rng = seed;
             let mut next = move |n: u64| {
                 rng = rng
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
                 (rng >> 33) % n
             };
             let store = Store::open_in_memory().unwrap();
@@ -10970,10 +10893,7 @@ pub(crate) mod tests {
                     .unwrap();
             }
 
-            let high_water = store
-                .lock()
-                .max_scanned_height(monero::Network::Mainnet)
-                .unwrap();
+            let high_water = store.lock().max_scanned_height(Network::Mainnet).unwrap();
             let events = store
                 .lock()
                 .due_webhook_deliveries_for_test(i64::MAX / 2, 10_000)
@@ -10994,7 +10914,7 @@ pub(crate) mod tests {
                         assert_eq!(payments[0].block_height, Some(h as i64), "seed {seed}");
                         let status = order_status(
                             &store,
-                            &shared::ids::OrderId::new(order_id.as_str().to_string()),
+                            &shared::ids::OrderId::new(order_id.as_str().to_owned()),
                         );
                         assert!(
                             events.iter().any(|d| &d.order_id == order_id && d.event_type == format!("order.{status}")),
@@ -11029,7 +10949,7 @@ pub(crate) mod tests {
                 .allocate_minor_index(&shared::ids::TenantId::new(a.to_string()))
                 .unwrap();
             store
-                .create_order(NewOrder {
+                .create_order(&NewOrder {
                     idempotency_key: None,
                     confirmations_required_override: None,
                     tenant_id: a.clone(),
@@ -11383,7 +11303,7 @@ pub(crate) mod tests {
             let index = s
                 .allocate_minor_index(&shared::ids::TenantId::new(a.to_string()))
                 .unwrap();
-            s.create_order(NewOrder {
+            s.create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: a.clone(),
@@ -11479,7 +11399,7 @@ pub(crate) mod tests {
             ids.push(
                 store
                     .create_tenant(
-                        NewTenant {
+                        &NewTenant {
                             key_custody_backend: "socket".into(),
                             sealed_key_material: sealed.clone(),
                             primary_address: "4x".into(),
@@ -11496,14 +11416,14 @@ pub(crate) mod tests {
         }
         let store = store.into_shared();
         let handles = parking_lot::RwLock::new(HashMap::new());
-        let handled = AtomicU64::new(0);
+        let handled_epoch = AtomicU64::new(0);
         assert_eq!(
             register_missing_wallets_checking_state(
                 &store,
                 &custody,
                 &handles,
-                Some(&handled),
-                monero::Network::Mainnet
+                Some(&handled_epoch),
+                Network::Mainnet
             )
             .await,
             3
@@ -11514,8 +11434,8 @@ pub(crate) mod tests {
                 &store,
                 &custody,
                 &handles,
-                Some(&handled),
-                monero::Network::Mainnet
+                Some(&handled_epoch),
+                Network::Mainnet
             )
             .await,
             0
@@ -11528,8 +11448,8 @@ pub(crate) mod tests {
                 &store,
                 &custody,
                 &handles,
-                Some(&handled),
-                monero::Network::Mainnet
+                Some(&handled_epoch),
+                Network::Mainnet
             )
             .await,
             3
@@ -11543,8 +11463,8 @@ pub(crate) mod tests {
                 &store,
                 &custody,
                 &handles,
-                Some(&handled),
-                monero::Network::Stagenet
+                Some(&handled_epoch),
+                Network::Stagenet
             )
             .await,
             0
@@ -11559,8 +11479,8 @@ pub(crate) mod tests {
         let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let socket: Arc<dyn KeyCustody> = Arc::new(ForgetfulKeyCustody::default());
         let both = HashMap::from([
-            ("plain".to_string(), plain.clone()),
-            ("socket".to_string(), socket.clone()),
+            ("plain".to_owned(), Arc::clone(&plain)),
+            ("socket".to_owned(), Arc::clone(&socket)),
         ]);
         let router = CustodyRouter::new(both.clone(), "plain");
         let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
@@ -11570,7 +11490,7 @@ pub(crate) mod tests {
             let sealed = router.seal_in(backend, &material).await.unwrap();
             let tenant = store
                 .create_tenant(
-                    NewTenant {
+                    &NewTenant {
                         key_custody_backend: backend.into(),
                         sealed_key_material: sealed,
                         primary_address: "4x".into(),
@@ -11586,14 +11506,14 @@ pub(crate) mod tests {
         }
         let store = store.into_shared();
         let handles = parking_lot::RwLock::new(HashMap::new());
-        let handled = AtomicU64::new(0);
+        let handled_epoch = AtomicU64::new(0);
         assert_eq!(
             register_missing_wallets_checking_state(
                 &store,
                 &router,
                 &handles,
-                Some(&handled),
-                monero::Network::Mainnet
+                Some(&handled_epoch),
+                Network::Mainnet
             )
             .await,
             2
@@ -11603,7 +11523,7 @@ pub(crate) mod tests {
         // The socket backend is turned off: its store drops out, quietly,
         // and the other store keeps its handle.
         router.replace(
-            HashMap::from([("plain".to_string(), plain.clone())]),
+            HashMap::from([("plain".to_owned(), Arc::clone(&plain))]),
             "plain",
         );
         assert_eq!(
@@ -11611,8 +11531,8 @@ pub(crate) mod tests {
                 &store,
                 &router,
                 &handles,
-                Some(&handled),
-                monero::Network::Mainnet
+                Some(&handled_epoch),
+                Network::Mainnet
             )
             .await,
             0
@@ -11627,17 +11547,17 @@ pub(crate) mod tests {
                 &store,
                 &router,
                 &handles,
-                Some(&handled),
-                monero::Network::Mainnet
+                Some(&handled_epoch),
+                Network::Mainnet
             )
             .await,
             1
         );
         let socket_handle = handles.read()[&ids["socket"]];
-        assert!(router
+        router
             .derive_subaddress(socket_handle, SubaddressIndex::default(), Network::Mainnet)
             .await
-            .is_ok());
+            .unwrap();
         assert_eq!(
             handles.read()[&ids["plain"]],
             plain_handle,
@@ -11654,8 +11574,8 @@ pub(crate) mod tests {
         let socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let router = CustodyRouter::new(
             HashMap::from([
-                ("plain".to_string(), plain.clone()),
-                ("socket".to_string(), socket.clone()),
+                ("plain".to_owned(), Arc::clone(&plain)),
+                ("socket".to_owned(), Arc::clone(&socket)),
             ]),
             "plain",
         );
@@ -11663,7 +11583,7 @@ pub(crate) mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = store
             .create_tenant(
-                NewTenant {
+                &NewTenant {
                     key_custody_backend: "socket".into(),
                     sealed_key_material: router.seal_in("socket", &material).await.unwrap(),
                     primary_address: "4x".into(),
@@ -11677,14 +11597,14 @@ pub(crate) mod tests {
             .tenant;
         let store = store.into_shared();
         let handles = parking_lot::RwLock::new(HashMap::new());
-        let handled = AtomicU64::new(0);
+        let handled_epoch = AtomicU64::new(0);
         assert_eq!(
             register_missing_wallets_checking_state(
                 &store,
                 &router,
                 &handles,
-                Some(&handled),
-                monero::Network::Mainnet
+                Some(&handled_epoch),
+                Network::Mainnet
             )
             .await,
             1
@@ -11706,26 +11626,24 @@ pub(crate) mod tests {
                 &store,
                 &router,
                 &handles,
-                Some(&handled),
-                monero::Network::Mainnet
+                Some(&handled_epoch),
+                Network::Mainnet
             )
             .await,
             1
         );
         let handle = handles.read()[&tenant.id];
-        assert!(
-            scan_transaction_in_window(&router, handle, &tx_id_hex(&tx), &tx, &window)
-                .await
-                .is_ok()
-        );
+        scan_transaction_in_window(&router, handle, &tx_id_hex(&tx), &tx, &window)
+            .await
+            .unwrap();
 
         // The socket backend is pointed at another server (a new instance
         // under the same name): the store is registered there on the next tick.
         let new_socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         router.replace(
             HashMap::from([
-                ("plain".to_string(), plain),
-                ("socket".to_string(), new_socket.clone()),
+                ("plain".to_owned(), plain),
+                ("socket".to_owned(), Arc::clone(&new_socket)),
             ]),
             "plain",
         );
@@ -11734,22 +11652,20 @@ pub(crate) mod tests {
                 &store,
                 &router,
                 &handles,
-                Some(&handled),
-                monero::Network::Mainnet
+                Some(&handled_epoch),
+                Network::Mainnet
             )
             .await,
             1
         );
         let handle = handles.read()[&tenant.id];
-        assert!(new_socket
+        new_socket
             .derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet)
             .await
-            .is_ok());
-        assert!(
-            scan_transaction_in_window(&router, handle, &tx_id_hex(&tx), &tx, &window)
-                .await
-                .is_ok()
-        );
+            .unwrap();
+        scan_transaction_in_window(&router, handle, &tx_id_hex(&tx), &tx, &window)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -11761,8 +11677,8 @@ pub(crate) mod tests {
         let socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let router = CustodyRouter::new(
             HashMap::from([
-                ("plain".to_string(), plain.clone()),
-                ("socket".to_string(), socket),
+                ("plain".to_owned(), Arc::clone(&plain)),
+                ("socket".to_owned(), socket),
             ]),
             "plain",
         );
@@ -11772,7 +11688,7 @@ pub(crate) mod tests {
         for (network, backend) in [("mainnet", "plain"), ("stagenet", "socket")] {
             let tenant = store
                 .create_tenant(
-                    NewTenant {
+                    &NewTenant {
                         key_custody_backend: backend.into(),
                         sealed_key_material: router.seal_in(backend, &material).await.unwrap(),
                         primary_address: "4x".into(),
@@ -11803,22 +11719,17 @@ pub(crate) mod tests {
         }
 
         // The stagenet store's backend is replaced; mainnet's loop runs first.
+        let socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         router.replace(
-            HashMap::from([
-                ("plain".to_string(), plain),
-                (
-                    "socket".to_string(),
-                    Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>,
-                ),
-            ]),
+            HashMap::from([("plain".to_owned(), plain), ("socket".to_owned(), socket)]),
             "plain",
         );
         let pass = register_missing_wallets_reporting(
-            &crate::store::Db::over_shared(store.clone()),
+            &crate::store::Db::over_shared(Arc::clone(&store)),
             &router,
             &handles,
             None,
-            monero::Network::Mainnet,
+            Network::Mainnet,
         )
         .await;
         assert_eq!(
@@ -11839,7 +11750,7 @@ pub(crate) mod tests {
                 &router,
                 &handles,
                 None,
-                monero::Network::Stagenet
+                Network::Stagenet
             )
             .await,
             1
@@ -11851,7 +11762,7 @@ pub(crate) mod tests {
     // `cargo test -p engine --release --lib scale_ -- --ignored --nocapture`.
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore]
+    #[ignore = "a scale run: minutes long, run in release by hand"]
     async fn scale_many_stores_a_busy_mempool_and_a_block_with_payments_for_all_of_them() {
         let stores: usize = std::env::var("SCALE_STORES")
             .ok()
@@ -11945,11 +11856,11 @@ pub(crate) mod tests {
             }],
             txid: "ab".repeat(32),
             key_images_json: "[]".into(),
-            output_keys: Default::default(),
+            output_keys: HashMap::default(),
         };
         assert!(record_scan_match(
             &store,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &scan,
             100,
             Some(5)
@@ -11958,20 +11869,20 @@ pub(crate) mod tests {
         .is_empty());
         stage_block_match(
             &store,
-            monero::Network::Mainnet,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            Network::Mainnet,
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &scan,
             100,
         )
         .unwrap();
         assert!(store
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id))
             .unwrap()
             .is_empty());
         assert!(store
             .take_staged_payments(
-                monero::Network::Mainnet,
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                Network::Mainnet,
+                &shared::ids::TenantId::new(tenant_id),
                 "any"
             )
             .unwrap()
@@ -12034,17 +11945,13 @@ pub(crate) mod tests {
                     .unwrap();
             }
             assert!(
-                store
-                    .lock()
-                    .reorg_job(monero::Network::Mainnet)
-                    .unwrap()
-                    .is_none(),
+                store.lock().reorg_job(Network::Mainnet).unwrap().is_none(),
                 "fault {fault}"
             );
             assert_eq!(
                 store
                     .lock()
-                    .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                    .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
                     .unwrap()[0]
                     .block_height,
                 Some(3),
@@ -12100,11 +12007,11 @@ pub(crate) mod tests {
             {
                 let s = self.store.lock();
                 for payment in s
-                    .get_all_payments(&shared::ids::OrderId::new(self.order_id.to_string()))
+                    .get_all_payments(&shared::ids::OrderId::new(self.order_id.clone()))
                     .unwrap()
                 {
                     s.unvoid_payment(
-                        &shared::ids::OrderId::new(self.order_id.to_string()),
+                        &shared::ids::OrderId::new(self.order_id.clone()),
                         &payment.txid,
                         payment.output_index,
                     )
@@ -12120,19 +12027,19 @@ pub(crate) mod tests {
         let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
         let payment = store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()[0]
             .clone();
         let daemon = UnvoidsWhileAsked {
             inner: chain_replica(),
-            store: store.clone(),
+            store: Arc::clone(&store),
             order_id: order_id.clone(),
         };
-        let db = crate::store::Db::over_shared(store.clone());
+        let db = crate::store::Db::over_shared(Arc::clone(&store));
         let restored = recheck_voided_payment(
             &db,
             &daemon,
-            monero::Network::Mainnet,
+            Network::Mainnet,
             &payment,
             10,
             crate::now_unix(),
@@ -12149,7 +12056,7 @@ pub(crate) mod tests {
             .map(|d| d.event_type)
             .collect();
         assert!(
-            !events.contains(&"order.double_spend_reversed".to_string()),
+            !events.contains(&"order.double_spend_reversed".to_owned()),
             "{events:?}"
         );
     }
@@ -12163,12 +12070,12 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let tx = fixture_tx();
         let txid = tx_id_hex(&tx);
-        let order = shared::ids::OrderId::new(order_id.to_string());
+        let order = shared::ids::OrderId::new(order_id.clone());
         scan_transaction_for_tenant(
             &store,
             &key_custody,
             handle,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &tx,
             0..3,
             1500,
@@ -12198,7 +12105,7 @@ pub(crate) mod tests {
         let restored = recheck_voided_payment(
             &db,
             &daemon,
-            monero::Network::Mainnet,
+            Network::Mainnet,
             voided,
             60,
             crate::now_unix(),
@@ -12223,7 +12130,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_void_whose_transaction_is_mined_after_all_is_restored_at_its_block() {
         let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
-        let order = shared::ids::OrderId::new(order_id.to_string());
+        let order = shared::ids::OrderId::new(order_id.clone());
         let payment = store.lock().get_all_payments(&order).unwrap()[0].clone();
         let daemon = chain_replica();
         daemon.push_block("h3", vec![fixture_tx()]);
@@ -12232,11 +12139,11 @@ pub(crate) mod tests {
         for ki in &key_images_of(&fixture_tx()) {
             daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
         }
-        let db = crate::store::Db::over_shared(store.clone());
+        let db = crate::store::Db::over_shared(Arc::clone(&store));
         let restored = recheck_voided_payment(
             &db,
             &daemon,
-            monero::Network::Mainnet,
+            Network::Mainnet,
             &payment,
             10,
             crate::now_unix(),
@@ -12255,7 +12162,7 @@ pub(crate) mod tests {
             .map(|d| d.event_type)
             .collect();
         assert!(
-            events.contains(&"order.double_spend_reversed".to_string()),
+            events.contains(&"order.double_spend_reversed".to_owned()),
             "{events:?}"
         );
     }
@@ -12374,25 +12281,25 @@ pub(crate) mod tests {
             ))
             .await
             .unwrap();
-        let ids = (0..count)
-            .map(|_| {
-                store
-                    .create_tenant(
-                        NewTenant {
-                            key_custody_backend: "plain".into(),
-                            sealed_key_material: sealed.clone(),
-                            primary_address: "4x".into(),
-                            network: "mainnet".into(),
-                            confirmations_required: None,
-                            order_expiry_seconds: None,
-                        },
-                        1,
-                    )
-                    .unwrap()
-                    .tenant
-                    .id
-            })
-            .collect();
+        let ids = std::iter::repeat_with(|| {
+            store
+                .create_tenant(
+                    &NewTenant {
+                        key_custody_backend: "plain".into(),
+                        sealed_key_material: sealed.clone(),
+                        primary_address: "4x".into(),
+                        network: "mainnet".into(),
+                        confirmations_required: None,
+                        order_expiry_seconds: None,
+                    },
+                    1,
+                )
+                .unwrap()
+                .tenant
+                .id
+        })
+        .take(count)
+        .collect();
         (store.into_shared(), ids)
     }
 
@@ -12406,13 +12313,13 @@ pub(crate) mod tests {
             let (store, _) = stores_with_keys(&custody, 2).await;
             let handles = parking_lot::RwLock::new(HashMap::new());
             let epoch = AtomicU64::new(0);
-            let db = crate::store::Db::over_shared(store.clone());
+            let db = crate::store::Db::over_shared(Arc::clone(&store));
             let pass = register_missing_wallets_reporting(
                 &db,
                 &custody,
                 &handles,
                 Some(&epoch),
-                monero::Network::Mainnet,
+                Network::Mainnet,
             )
             .await;
             assert_eq!(
@@ -12438,16 +12345,11 @@ pub(crate) mod tests {
         let custody = ScriptedCustody::new(Behaviour::Answer, Behaviour::Answer);
         let (store, _) = stores_with_keys(&custody, 1).await;
         let handles = parking_lot::RwLock::new(HashMap::new());
-        let db = crate::store::Db::over_shared(store.clone());
+        let db = crate::store::Db::over_shared(Arc::clone(&store));
         store.lock().fail_nth_access(Some(0));
-        let pass = register_missing_wallets_reporting(
-            &db,
-            &custody,
-            &handles,
-            None,
-            monero::Network::Mainnet,
-        )
-        .await;
+        let pass =
+            register_missing_wallets_reporting(&db, &custody, &handles, None, Network::Mainnet)
+                .await;
         store.lock().fail_nth_access(None);
         assert_eq!(
             pass,
@@ -12483,16 +12385,11 @@ pub(crate) mod tests {
             let custody = ScriptedCustody::new(Behaviour::Answer, register);
             let (store, _) = stores_with_keys(&custody, 3).await;
             let handles = parking_lot::RwLock::new(HashMap::new());
-            let db = crate::store::Db::over_shared(store.clone());
+            let db = crate::store::Db::over_shared(Arc::clone(&store));
             let started = tokio::time::Instant::now();
-            let pass = register_missing_wallets_reporting(
-                &db,
-                &custody,
-                &handles,
-                None,
-                monero::Network::Mainnet,
-            )
-            .await;
+            let pass =
+                register_missing_wallets_reporting(&db, &custody, &handles, None, Network::Mainnet)
+                    .await;
             assert_eq!(
                 pass,
                 Registration {
@@ -12522,7 +12419,7 @@ pub(crate) mod tests {
     async fn a_registration_that_loses_the_race_is_removed() {
         let mut custody = ScriptedCustody::new(Behaviour::Answer, Behaviour::Answer);
         let (store, ids) = stores_with_keys(&custody, 1).await;
-        let handles = std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new()));
+        let handles = Arc::new(parking_lot::RwLock::new(HashMap::new()));
         let sealed = store
             .lock()
             .get_tenant_by_id(&shared::ids::TenantId::new(ids[0].to_string()))
@@ -12530,21 +12427,16 @@ pub(crate) mod tests {
             .unwrap()
             .sealed_key_material;
         let earlier = custody.inner.unseal_and_register(&sealed).await.unwrap();
-        let racing = handles.clone();
+        let racing = Arc::clone(&handles);
         custody.on_register = Box::new(move |id| {
             racing
                 .write()
                 .insert(crate::store::TenantId::new(id), earlier);
         });
-        let db = crate::store::Db::over_shared(store.clone());
-        let pass = register_missing_wallets_reporting(
-            &db,
-            &custody,
-            &handles,
-            None,
-            monero::Network::Mainnet,
-        )
-        .await;
+        let db = crate::store::Db::over_shared(Arc::clone(&store));
+        let pass =
+            register_missing_wallets_reporting(&db, &custody, &handles, None, Network::Mainnet)
+                .await;
         assert_eq!(
             pass,
             Registration {
@@ -12568,12 +12460,12 @@ pub(crate) mod tests {
             }],
             txid: "cd".repeat(32),
             key_images_json: "[]".into(),
-            output_keys: Default::default(),
+            output_keys: HashMap::default(),
         };
         stage_block_match(
             &store,
-            monero::Network::Mainnet,
-            &shared::ids::TenantId::new(tenant_id.to_string()),
+            Network::Mainnet,
+            &shared::ids::TenantId::new(tenant_id.clone()),
             &matched(99),
             100,
         )
@@ -12585,16 +12477,16 @@ pub(crate) mod tests {
         };
         store
             .save_block_checkpoint(
-                monero::Network::Mainnet,
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                Network::Mainnet,
+                &shared::ids::TenantId::new(tenant_id.clone()),
                 &checkpoint,
             )
             .unwrap();
         assert!(
             store
                 .take_staged_payments(
-                    monero::Network::Mainnet,
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    Network::Mainnet,
+                    &shared::ids::TenantId::new(tenant_id.clone()),
                     "h7"
                 )
                 .unwrap()
@@ -12605,8 +12497,8 @@ pub(crate) mod tests {
         for fault in 0.. {
             store
                 .save_block_checkpoint(
-                    monero::Network::Mainnet,
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    Network::Mainnet,
+                    &shared::ids::TenantId::new(tenant_id.clone()),
                     &checkpoint,
                 )
                 .unwrap();
@@ -12614,8 +12506,8 @@ pub(crate) mod tests {
             let result = store.in_transaction(|s| {
                 stage_block_match(
                     s,
-                    monero::Network::Mainnet,
-                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    Network::Mainnet,
+                    &shared::ids::TenantId::new(tenant_id.clone()),
                     &matched(1),
                     100,
                 )
@@ -12630,8 +12522,8 @@ pub(crate) mod tests {
             assert!(
                 store
                     .take_staged_payments(
-                        monero::Network::Mainnet,
-                        &shared::ids::TenantId::new(tenant_id.to_string()),
+                        Network::Mainnet,
+                        &shared::ids::TenantId::new(tenant_id.clone()),
                         "h7"
                     )
                     .unwrap()
@@ -12642,8 +12534,8 @@ pub(crate) mod tests {
         assert!(failed >= 2);
         let staged = store
             .take_staged_payments(
-                monero::Network::Mainnet,
-                &shared::ids::TenantId::new(tenant_id.to_string()),
+                Network::Mainnet,
+                &shared::ids::TenantId::new(tenant_id),
                 "h7",
             )
             .unwrap();
@@ -12698,14 +12590,14 @@ pub(crate) mod tests {
         let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
         let payment = store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()[0]
             .clone();
-        let db = crate::store::Db::over_shared(store.clone());
+        let db = crate::store::Db::over_shared(Arc::clone(&store));
         let restored = recheck_voided_payment(
             &db,
             &ShortAnswers(chain_replica()),
-            monero::Network::Mainnet,
+            Network::Mainnet,
             &payment,
             10,
             crate::now_unix(),
@@ -12716,7 +12608,7 @@ pub(crate) mod tests {
         assert!(!restored);
         assert!(store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
             .unwrap()[0]
             .voided_at
             .is_some());
@@ -12730,9 +12622,9 @@ pub(crate) mod tests {
         use std::sync::Arc;
         let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let forgetful = Arc::new(ForgetfulKeyCustody::default());
-        let socket: Arc<dyn KeyCustody> = forgetful.clone();
+        let socket: Arc<dyn KeyCustody> = Arc::<ForgetfulKeyCustody>::clone(&forgetful);
         let router = CustodyRouter::new(
-            HashMap::from([("plain".to_string(), plain), ("socket".to_string(), socket)]),
+            HashMap::from([("plain".to_owned(), plain), ("socket".to_owned(), socket)]),
             "plain",
         );
         let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
@@ -12741,7 +12633,7 @@ pub(crate) mod tests {
         for backend in ["plain", "socket"] {
             let tenant = store
                 .create_tenant(
-                    NewTenant {
+                    &NewTenant {
                         key_custody_backend: backend.into(),
                         sealed_key_material: router.seal_in(backend, &material).await.unwrap(),
                         primary_address: "4x".into(),
@@ -12757,14 +12649,14 @@ pub(crate) mod tests {
         }
         let store = store.into_shared();
         let handles = parking_lot::RwLock::new(HashMap::new());
-        let handled = AtomicU64::new(0);
+        let handled_epoch = AtomicU64::new(0);
         assert_eq!(
             register_missing_wallets_checking_state(
                 &store,
                 &router,
                 &handles,
-                Some(&handled),
-                monero::Network::Mainnet
+                Some(&handled_epoch),
+                Network::Mainnet
             )
             .await,
             2
@@ -12780,8 +12672,8 @@ pub(crate) mod tests {
                 &store,
                 &router,
                 &handles,
-                Some(&handled),
-                monero::Network::Mainnet
+                Some(&handled_epoch),
+                Network::Mainnet
             )
             .await,
             1
@@ -12792,7 +12684,7 @@ pub(crate) mod tests {
             socket_handle,
             "registered again"
         );
-        assert_eq!(handled.load(Ordering::SeqCst), 1);
+        assert_eq!(handled_epoch.load(Ordering::SeqCst), 1);
     }
 
     /// The test and tool entry points refuse a network name they don't know.

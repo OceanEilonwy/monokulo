@@ -1,12 +1,15 @@
 //! Live, in-memory status of the chain-scanner background loop
-//! (`main.rs::run_scanner_loop`) - for the status page (`http/status_page.rs`)
-//! to answer "is scanning actually happening, and did the last tick
-//! succeed" without inventing a second monitoring system. Purely
-//! observational: nothing here feeds back into scanning behavior itself,
-//! and losing it (a restart) loses only history, never anything the
+//! (`main.rs::run_scanner_loop`).
+//!
+//! For the status page (`http/status_page.rs`) to answer "is scanning actually
+//! happening, and did the last tick succeed" without inventing a second
+//! monitoring system.
+//!
+//! Purely observational: nothing here feeds back into scanning behavior
+//! itself, and losing it (a restart) loses only history, never anything the
 //! scanner's own correctness depends on - the same relationship
-//! `daemon_fallback`'s own log events have to real behavior,
-//! just queryable instead of log-only.
+//! `daemon_fallback`'s own log events have to real behavior, just queryable
+//! instead of log-only.
 
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -14,10 +17,11 @@ use std::sync::Arc;
 
 use monero::Network;
 
-/// One network's most recent scan-tick outcome. `Default` (all `None`/zero)
-/// is the real, honest state before this network has ever ticked even
-/// once - the status page renders that as "never ticked yet" rather than
-/// guessing.
+/// One network's most recent scan-tick outcome.
+///
+/// `Default` (all `None`/zero) is the real, honest state before this
+/// network has ever ticked even once - the status page renders that as
+/// "never ticked yet" rather than guessing.
 #[derive(Debug, Clone)]
 pub struct NetworkScanStatus {
     pub last_tick_started_at: Option<i64>,
@@ -34,19 +38,19 @@ pub struct NetworkScanStatus {
     /// matches anything, rather than that being indistinguishable from a
     /// stuck scanner.
     pub tenants_scanned: usize,
-    /// The block scan's live progress (docs/engine_scaling.md section 6),
+    /// The block scan's live progress (`docs/engine_scaling.md` section 6),
     /// written by the scan as it works.
     pub progress: crate::scaling::SharedProgress,
     /// What wakes the network's loops early, and what it has done
-    /// (docs/monero_zmq.md).
+    /// (`docs/monero_zmq.md`).
     pub wakes: Arc<crate::node_events::NodeWakes>,
-    /// Proof-of-work checking (docs/proof_of_work.md), while it is on.
+    /// Proof-of-work checking (`docs/proof_of_work.md`), while it is on.
     pub proof: Option<shared::proof::ProofStatus>,
 }
 
 impl Default for NetworkScanStatus {
     fn default() -> Self {
-        NetworkScanStatus {
+        Self {
             last_tick_started_at: None,
             last_tick_finished_at: None,
             last_tick_ok: false,
@@ -62,12 +66,12 @@ impl Default for NetworkScanStatus {
 
 /// `network`'s wakes, made if it has none yet.
 pub fn wakes_of(map: &ScannerStatusMap, network: Network) -> Arc<crate::node_events::NodeWakes> {
-    map.write().entry(network).or_default().wakes.clone()
+    Arc::clone(&map.write().entry(network).or_default().wakes)
 }
 
 /// `network`'s scan progress, made if it has none yet.
 pub fn progress_of(map: &ScannerStatusMap, network: Network) -> crate::scaling::SharedProgress {
-    map.write().entry(network).or_default().progress.clone()
+    Arc::clone(&map.write().entry(network).or_default().progress)
 }
 
 pub type ScannerStatusMap = Arc<RwLock<HashMap<Network, NetworkScanStatus>>>;
@@ -144,7 +148,7 @@ mod tests {
             1010,
             1012,
             3,
-            &Err("node unreachable".to_string()),
+            &Err("node unreachable".to_owned()),
         );
         {
             let guard = map.read();
@@ -186,7 +190,7 @@ mod tests {
             2000,
             2005,
             2,
-            &Err("down".to_string()),
+            &Err("down".to_owned()),
         );
 
         let guard = map.read();

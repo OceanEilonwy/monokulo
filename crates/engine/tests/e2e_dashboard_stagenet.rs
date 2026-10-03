@@ -35,6 +35,15 @@
 //! below are relative to `cargo test`'s working directory (the package
 //! root).
 
+// An integration test crate: every function in it is test code, which
+// fails by panicking.
+#![expect(
+    clippy::tests_outside_test_module,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "an integration test crate is all test code"
+)]
+
 mod support;
 
 use parking_lot::RwLock;
@@ -44,10 +53,10 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
+use http_body_util::BodyExt as _;
 use monero::Network;
 use serde_json::{json, Value};
-use tower::ServiceExt;
+use tower::ServiceExt as _;
 
 use engine::daemon::MoneroDaemonClient;
 use engine::daemon_fallback::{FallbackDaemonClient, FallbackNode};
@@ -100,14 +109,17 @@ fn expected_total_received_display(piconero: u64) -> String {
 }
 
 fn urlencode(s: &str) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{b:02X}")),
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
         }
     }
     out
@@ -132,7 +144,7 @@ async fn body_json(response: axum::response::Response) -> Value {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "needs the live stagenet node and a funded test wallet"]
 async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_received() {
     // ---- load the same real fixture + reusable wallet fixtures e2e_stagenet.rs uses ----
     use support::e2e_fixture;
@@ -166,23 +178,23 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
 
     let fallback_daemon = Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
         label: format!("{}:{}", e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT),
-        client: daemon.clone(),
+        client: Arc::clone(&daemon),
     }]));
     let wallet_handles: Arc<RwLock<HashMap<engine::store::TenantId, WalletHandle>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
     let engine_state = EngineAppState {
-        db: engine::store::Database::inline(store.clone()),
+        db: engine::store::Database::inline(Arc::clone(&store)),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         log_store: None,
-        engine_token: std::sync::Arc::new(
+        engine_token: Arc::new(
             shared::auth::RawToken::presented(shared::auth::TEST_ENGINE_TOKEN).hash(),
         ),
         settings: engine::engine_settings::EngineSettings::defaults(),
         custody: engine::http::Custody {
-            backends: key_custody.clone(),
-            default_backend: "plain".to_string(),
-            wallet_handles: wallet_handles.clone(),
+            backends: Arc::clone(&key_custody),
+            default_backend: "plain".to_owned(),
+            wallet_handles: Arc::clone(&wallet_handles),
         },
         networks: engine::http::Networks {
             daemons: engine::engine_settings::Daemons::fixed(HashMap::from([(
@@ -224,9 +236,9 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         // `tests/e2e_stagenet.rs`'s own target and `mock-woocommerce`'s own
         // real-stagenet test.
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
-        abuse: Default::default(),
+        abuse: Arc::default(),
         dns: Arc::new(monokulo::embed_domains::UnavailableDns(
-            "DNS is not available in tests".to_string(),
+            "DNS is not available in tests".to_owned(),
         )),
         log_store: None,
         // Public signup: `signup.mode` defaults to invite-only, which would
@@ -287,8 +299,8 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         .unwrap()
         .to_str()
         .unwrap()
-        .to_string();
-    let session_cookie = set_cookie.split(';').next().unwrap().to_string();
+        .to_owned();
+    let session_cookie = set_cookie.split(';').next().unwrap().to_owned();
 
     // ---- 2. connect a store via the real "advanced" connect form, using the
     // same reusable merchant watch-only wallet the engine-only e2e test uses ----
@@ -366,8 +378,8 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         "real order creation through monokulo must succeed"
     );
     let order: Value = body_json(order_response).await;
-    let order_id = order["order_id"].as_str().unwrap().to_string();
-    let address = order["address"].as_str().unwrap().to_string();
+    let order_id = order["order_id"].as_str().unwrap().to_owned();
+    let address = order["address"].as_str().unwrap().to_owned();
     let amount_piconero = order["xmr_amount_piconero"].as_u64().unwrap();
     println!("created order {order_id}: {amount_piconero} piconero to {address}");
 

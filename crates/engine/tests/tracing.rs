@@ -1,10 +1,18 @@
-//! Trace propagation through the engine (structured_logging.md 2.1-2.3):
+//! Trace propagation through the engine (`structured_logging.md` 2.1-2.3):
 //! request spans joining the caller's trace, and webhook attempts sending
 //! theirs to the merchant.
 //!
 //! A test binary of its own, with one process-wide subscriber installed
 //! before anything logs: thread-local subscribers race with other tests
 //! that hit the same callsites with none, and lose lines.
+
+// An integration test crate: every function in it is test code, which
+// fails by panicking.
+#![expect(
+    clippy::tests_outside_test_module,
+    clippy::unwrap_used,
+    reason = "an integration test crate is all test code"
+)]
 
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -55,16 +63,16 @@ fn lines() -> Vec<Value> {
 async fn a_webhook_attempt_is_logged_in_its_own_trace_and_the_merchant_gets_that_trace() {
     lines();
     let received: Arc<Mutex<Option<String>>> = Arc::default();
-    let received_for_server = received.clone();
+    let received_for_server = Arc::clone(&received);
     let app = Router::new().route(
         "/hook",
         post(move |headers: HeaderMap| {
-            let received = received_for_server.clone();
+            let received = Arc::clone(&received_for_server);
             async move {
                 *received.lock() = headers
                     .get("traceparent")
                     .and_then(|v| v.to_str().ok())
-                    .map(str::to_string);
+                    .map(str::to_owned);
                 StatusCode::OK
             }
         }),
@@ -76,7 +84,7 @@ async fn a_webhook_attempt_is_logged_in_its_own_trace_and_the_merchant_gets_that
     let store = Store::open_in_memory().unwrap();
     let tenant = store
         .create_tenant(
-            NewTenant {
+            &NewTenant {
                 key_custody_backend: "plain".into(),
                 sealed_key_material: vec![],
                 primary_address: "4x".into(),
@@ -93,7 +101,7 @@ async fn a_webhook_attempt_is_logged_in_its_own_trace_and_the_merchant_gets_that
         .unwrap();
     let index = store.allocate_minor_index(&tenant.id).unwrap();
     let order = store
-        .create_order(NewOrder {
+        .create_order(&NewOrder {
             idempotency_key: None,
             confirmations_required_override: None,
             tenant_id: tenant.id.clone(),

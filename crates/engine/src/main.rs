@@ -14,6 +14,13 @@
 // See `lib.rs`: no panics in loop code. `main` itself may still exit at boot
 // (a listener that can't bind), which is marked where it happens.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+// A boot failure comes before logging is set up: it is told on stderr and
+// ends the process with a failing status.
+#![expect(
+    clippy::print_stderr,
+    clippy::exit,
+    reason = "boot failures are reported on stderr and end the process"
+)]
 
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -109,7 +116,7 @@ fn main() {
     runtime.block_on(run(boot));
 }
 
-#[allow(
+#[expect(
     clippy::expect_used,
     reason = "boot-time: a listener that can't bind or a server that can't start ends the process"
 )]
@@ -141,10 +148,10 @@ async fn run(boot: Boot) {
     let admin_rate_limiter = Arc::new(RateLimiter::new(1));
     let router = Arc::new(CustodyRouter::default());
     let engine_settings = match EngineSettings::load(
-        store.clone(),
+        Arc::clone(&store),
         daemons.clone(),
-        router.clone(),
-        admin_rate_limiter.clone(),
+        Arc::clone(&router),
+        Arc::clone(&admin_rate_limiter),
         env.clone(),
         OptionsFile::at(&boot.options),
     )
@@ -169,7 +176,8 @@ async fn run(boot: Boot) {
     let enabled = router.enabled_backends();
     let stranded: Vec<(String, usize)> = {
         let tenants = store.lock().tenant_custody_backends().unwrap_or_default();
-        let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
         for (_, _, backend) in tenants
             .into_iter()
             .filter(|(_, _, backend)| !enabled.contains(backend))
@@ -188,7 +196,7 @@ async fn run(boot: Boot) {
         );
     }
 
-    let key_custody: Arc<dyn KeyCustody> = router.clone();
+    let key_custody: Arc<dyn KeyCustody> = Arc::<CustodyRouter>::clone(&router);
     let key_custody_backend = router.default_backend();
     let scanner_status = scanner_status::new_scanner_status_map();
     let wallet_handles = Arc::new(RwLock::new(
@@ -216,28 +224,28 @@ async fn run(boot: Boot) {
         admin_rate_limiter,
         log_store: log_store.clone(),
         engine_token,
-        settings: engine_settings.clone(),
+        settings: Arc::clone(&engine_settings),
         custody: engine::http::Custody {
-            backends: key_custody.clone(),
+            backends: Arc::clone(&key_custody),
             default_backend: key_custody_backend,
-            wallet_handles: wallet_handles.clone(),
+            wallet_handles: Arc::clone(&wallet_handles),
         },
         networks: engine::http::Networks {
             daemons: daemons.clone(),
-            scanner_status: scanner_status.clone(),
+            scanner_status: Arc::clone(&scanner_status),
         },
     };
 
     let delivery_db = db.clone();
-    let delivery_settings = engine_settings.clone();
+    let delivery_settings = Arc::clone(&engine_settings);
     // Woken by the scanner as soon as it enqueues a webhook.
     let webhook_wake = Arc::new(tokio::sync::Notify::new());
-    let delivery_wake = webhook_wake.clone();
+    let delivery_wake = Arc::clone(&webhook_wake);
     supervise("webhook delivery", move || {
         loops::run_webhook_delivery_loop(
             delivery_db.clone(),
-            delivery_settings.clone(),
-            delivery_wake.clone(),
+            Arc::clone(&delivery_settings),
+            Arc::clone(&delivery_wake),
         )
     });
 
@@ -247,21 +255,21 @@ async fn run(boot: Boot) {
     // them, and its restart starts them again.
     let (loops_db, loops_custody, loops_daemons, loops_handles, loops_status, loops_settings) = (
         db.clone(),
-        key_custody.clone(),
+        Arc::clone(&key_custody),
         daemons.clone(),
-        wallet_handles.clone(),
-        scanner_status.clone(),
-        engine_settings.clone(),
+        Arc::clone(&wallet_handles),
+        Arc::clone(&scanner_status),
+        Arc::clone(&engine_settings),
     );
     supervise("network loop manager", move || {
         loops::manage_network_loops(
             loops_db.clone(),
-            webhook_wake.clone(),
-            loops_custody.clone(),
+            Arc::clone(&webhook_wake),
+            Arc::clone(&loops_custody),
             loops_daemons.clone(),
-            loops_handles.clone(),
-            loops_status.clone(),
-            loops_settings.clone(),
+            Arc::clone(&loops_handles),
+            Arc::clone(&loops_status),
+            Arc::clone(&loops_settings),
         )
     });
 
@@ -297,15 +305,15 @@ async fn run(boot: Boot) {
         router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(shared::shutdown::signal());
-    let served = tokio::spawn(async move { server.await });
+    let serving = tokio::spawn(async move { server.await });
     shared::shutdown::signal().await;
     tracing::info!(grace = ?shared::shutdown::GRACE, "shutting down: finishing requests in flight");
-    match tokio::time::timeout(shared::shutdown::GRACE, served).await {
+    match tokio::time::timeout(shared::shutdown::GRACE, serving).await {
         Ok(Ok(Ok(()))) => tracing::info!("shut down cleanly"),
         Ok(Ok(Err(e))) => tracing::error!(error = %e, "server error while shutting down"),
         Ok(Err(e)) => tracing::error!(error = %e, "server task failed while shutting down"),
         Err(_) => {
-            tracing::warn!(grace = ?shared::shutdown::GRACE, "requests still running after the grace period, exiting anyway")
+            tracing::warn!(grace = ?shared::shutdown::GRACE, "requests still running after the grace period, exiting anyway");
         }
     }
     // The lines above, and any still on their way, stored (and exported)
@@ -338,7 +346,7 @@ async fn register_all_tenants(
     let tenants = loop {
         // Bound first: the lock must not be held through the retry's sleep.
         let listed = {
-            let store = store.clone();
+            let store = Arc::clone(store);
             tokio::task::spawn_blocking(move || store.lock().list_active_tenants())
                 .await
                 .unwrap_or_else(|e| {
@@ -374,10 +382,10 @@ async fn register_all_tenants(
                 handles.insert(tenant.id, handle);
             }
             Ok(Err(e)) => {
-                tracing::error!(store.id = %tenant.id, error = %e, "failed to register store with key custody")
+                tracing::error!(store.id = %tenant.id, error = %e, "failed to register store with key custody");
             }
             Err(_) => {
-                tracing::error!(store.id = %tenant.id, "registering a store with key custody exceeded its deadline")
+                tracing::error!(store.id = %tenant.id, "registering a store with key custody exceeded its deadline");
             }
         }
     }

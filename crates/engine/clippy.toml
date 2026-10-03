@@ -1,0 +1,10 @@
+# A failing test should panic: unwrap, expect, indexing and panic are what
+# tests use to say so. The restriction lints against them apply to the rest.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+allow-dbg-in-tests = true
+# `#[derive(FromRef)]` names its parameter `input`; the fields name the state.
+allow-renamed-params-for = ["..", "axum_core::extract::from_ref::FromRef"]

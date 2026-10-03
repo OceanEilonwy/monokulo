@@ -1,12 +1,13 @@
-//! The persistence layer. A `Store` wraps one `rusqlite::Connection` and is not
-//! `Sync` on its own. The engine writes through two of them: the database
-//! worker's own connection (`db::Db`, a thread serving queued jobs) and the
-//! shared store (`SharedStore`, an `Arc<Mutex<Store>>`) that tests, tools and
-//! a few startup paths use; SQLite's busy timeout and `BEGIN IMMEDIATE`
-//! transactions (`Store::in_transaction`) keep the two from deadlocking on
-//! each other. Reads can also go through [`ReadStorePool`]: separate
-//! read-only connections, as many as needed, alongside the writers in WAL
-//! mode.
+//! The persistence layer.
+//!
+//! A `Store` wraps one `rusqlite::Connection` and is not `Sync` on its own. The
+//! engine writes through two of them: the database worker's own connection
+//! (`db::Db`, a thread serving queued jobs) and the shared store
+//! (`SharedStore`, an `Arc<Mutex<Store>>`) that tests, tools and a few startup
+//! paths use; SQLite's busy timeout and `BEGIN IMMEDIATE` transactions
+//! (`Store::in_transaction`) keep the two from deadlocking on each other. Reads
+//! can also go through [`ReadStorePool`]: separate read-only connections, as
+//! many as needed, alongside the writers in WAL mode.
 //!
 //! This module intentionally has no `KeyCustody` dependency: deriving a subaddress
 //! for a new order happens *before* `create_order` is called, by whatever orchestrates
@@ -17,7 +18,7 @@ use parking_lot::Mutex;
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension as _};
 use uuid::Uuid;
 
 pub use shared::ids::{OrderId, TenantId, WebhookId};
@@ -43,84 +44,90 @@ pub use work::{
 /// binary against a file it had already created, not by any unit test, since every
 /// unit test in this codebase opens a fresh `:memory:` database exactly once.
 const MIGRATIONS: &[(i64, &str)] = &[
-    (1, include_str!("../migrations/0001_init.sql")),
+    (1, include_str!("../../migrations/0001_init.sql")),
     (
         2,
-        include_str!("../migrations/0002_active_orders_index.sql"),
+        include_str!("../../migrations/0002_active_orders_index.sql"),
     ),
     (
         3,
-        include_str!("../migrations/0003_network_scoped_scanning.sql"),
+        include_str!("../../migrations/0003_network_scoped_scanning.sql"),
     ),
     (
         4,
-        include_str!("../migrations/0004_order_scoped_payment_uniqueness.sql"),
+        include_str!("../../migrations/0004_order_scoped_payment_uniqueness.sql"),
     ),
     (
         5,
-        include_str!("../migrations/0005_drop_order_fiat_columns.sql"),
+        include_str!("../../migrations/0005_drop_order_fiat_columns.sql"),
     ),
     (
         6,
-        include_str!("../migrations/0006_drop_tenant_template_dir.sql"),
+        include_str!("../../migrations/0006_drop_tenant_template_dir.sql"),
     ),
-    (7, include_str!("../migrations/0007_order_rescans.sql")),
+    (7, include_str!("../../migrations/0007_order_rescans.sql")),
     (
         8,
-        include_str!("../migrations/0008_order_scanned_range.sql"),
+        include_str!("../../migrations/0008_order_scanned_range.sql"),
     ),
     (
         9,
-        include_str!("../migrations/0009_utc_suffix_date_columns.sql"),
+        include_str!("../../migrations/0009_utc_suffix_date_columns.sql"),
     ),
-    (10, include_str!("../migrations/0010_settings.sql")),
+    (10, include_str!("../../migrations/0010_settings.sql")),
     (
         11,
-        include_str!("../migrations/0011_order_confirmations_override.sql"),
+        include_str!("../../migrations/0011_order_confirmations_override.sql"),
     ),
     (
         12,
-        include_str!("../migrations/0012_drop_order_rescans.sql"),
+        include_str!("../../migrations/0012_drop_order_rescans.sql"),
     ),
     (
         13,
-        include_str!("../migrations/0013_drop_zero_conf_max_piconero.sql"),
+        include_str!("../../migrations/0013_drop_zero_conf_max_piconero.sql"),
     ),
     (
         14,
-        include_str!("../migrations/0014_drop_tenant_allowed_origins.sql"),
+        include_str!("../../migrations/0014_drop_tenant_allowed_origins.sql"),
     ),
     (
         15,
-        include_str!("../migrations/0015_tenant_scan_cursor.sql"),
+        include_str!("../../migrations/0015_tenant_scan_cursor.sql"),
     ),
-    (16, include_str!("../migrations/0016_order_closed_at.sql")),
+    (
+        16,
+        include_str!("../../migrations/0016_order_closed_at.sql"),
+    ),
     (
         17,
-        include_str!("../migrations/0017_pending_payment_recomputes.sql"),
+        include_str!("../../migrations/0017_pending_payment_recomputes.sql"),
     ),
     (
         18,
-        include_str!("../migrations/0018_partial_block_scans.sql"),
+        include_str!("../../migrations/0018_partial_block_scans.sql"),
     ),
-    (19, include_str!("../migrations/0019_scanner_work.sql")),
-    (20, include_str!("../migrations/0020_scanner_indexes.sql")),
+    (19, include_str!("../../migrations/0019_scanner_work.sql")),
+    (
+        20,
+        include_str!("../../migrations/0020_scanner_indexes.sql"),
+    ),
     (
         21,
-        include_str!("../migrations/0021_payment_output_keys.sql"),
+        include_str!("../../migrations/0021_payment_output_keys.sql"),
     ),
     (
         22,
-        include_str!("../migrations/0022_webhook_delivery_gave_up.sql"),
+        include_str!("../../migrations/0022_webhook_delivery_gave_up.sql"),
     ),
     (
         23,
-        include_str!("../migrations/0023_order_idempotency_key.sql"),
+        include_str!("../../migrations/0023_order_idempotency_key.sql"),
     ),
-    (24, include_str!("../migrations/0024_proof_of_work.sql")),
+    (24, include_str!("../../migrations/0024_proof_of_work.sql")),
     (
         25,
-        include_str!("../migrations/0025_superseded_payments.sql"),
+        include_str!("../../migrations/0025_superseded_payments.sql"),
     ),
 ];
 
@@ -157,7 +164,7 @@ pub(crate) fn value_text(value: rusqlite::types::ValueRef<'_>) -> String {
 /// `schema_migrations`) lives in `shared::migrations::apply` (WBS 0.5) - moved there
 /// so the monokulo database can reuse it without a second, hand-rolled copy.
 /// This wrapper just supplies the engine's own migration list, which - being
-/// `include_str!("../migrations/...")` paths relative to this crate - can't live in
+/// `include_str!("../../migrations/...")` paths relative to this crate - can't live in
 /// `shared` itself.
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
     shared::migrations::apply(conn, MIGRATIONS)
@@ -165,8 +172,9 @@ fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
 
 pub type SharedStore = Arc<Mutex<Store>>;
 
-/// Independent read-only SQLite connections (`shared::sqlite::Pool`). WAL
-/// lets these readers run concurrently with the writer; each connection
+/// Independent read-only SQLite connections (`shared::sqlite::Pool`).
+///
+/// WAL lets these readers run concurrently with the writer; each connection
 /// stays on its own thread, so a disk stall never blocks a Tokio worker, and
 /// a read goes to whichever connection is free.
 #[derive(Clone)]
@@ -174,9 +182,11 @@ pub struct ReadStorePool(shared::sqlite::Pool<Store>);
 
 impl ReadStorePool {
     pub fn open(path: &str, count: usize) -> Result<Self> {
-        let stores = (0..count.max(1))
-            .map(|_| Ok(Store::from_connection(shared::sqlite::open_reader(path)?)))
-            .collect::<Result<Vec<_>>>()?;
+        let stores = std::iter::repeat_with(|| {
+            Ok(Store::from_connection(shared::sqlite::open_reader(path)?))
+        })
+        .take(count.max(1))
+        .collect::<Result<Vec<_>>>()?;
         shared::sqlite::Pool::start("scanner-db-read", stores)
             .map(Self)
             .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))
@@ -186,7 +196,7 @@ impl ReadStorePool {
     /// connection: for tests and their in-memory databases.
     #[cfg(any(test, feature = "test-support"))]
     pub fn inline(store: SharedStore) -> Self {
-        ReadStorePool(shared::sqlite::Pool::Inline(store))
+        Self(shared::sqlite::Pool::Inline(store))
     }
 
     pub async fn query<T: Send + 'static>(
@@ -219,7 +229,7 @@ impl Database {
     /// `store`'s order-change notifications - the store the worker was
     /// opened from ([`Db::open`]), so its commits reach subscribers.
     pub fn from_parts(writes: Db, reads: ReadStorePool, store: &Store) -> Self {
-        Database {
+        Self {
             writes,
             reads,
             changes: store.order_changes.clone(),
@@ -233,12 +243,14 @@ impl Database {
     #[cfg(any(test, feature = "test-support"))]
     pub fn inline(store: SharedStore) -> Self {
         let changes = store.lock().order_changes.clone();
-        Database {
-            writes: Db::over_shared(store.clone()),
-            reads: ReadStorePool::inline(store.clone()),
+        #[cfg(test)]
+        let inline = Some(Arc::clone(&store));
+        Self {
+            writes: Db::over_shared(Arc::clone(&store)),
+            reads: ReadStorePool::inline(store),
             changes,
             #[cfg(test)]
-            inline: Some(store),
+            inline,
         }
     }
 
@@ -301,8 +313,9 @@ pub struct Store {
     pending_order_changes: RefCell<Option<Vec<OrderChange>>>,
 }
 
-/// A hint that one order's customer-visible state (status, confirmations,
-/// amount received, payments, double-spend flag or refund address) changed.
+/// A hint that one order's customer-visible state (status, confirmations, amount
+/// received, payments, double-spend flag or refund address) changed.
+///
 /// Carries no state of its own on purpose: a subscriber re-reads the order, so a
 /// spurious hint costs one read and a coalesced burst loses nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -327,7 +340,7 @@ pub enum StoreError {
 
 impl From<shared::sqlite::PoolError> for StoreError {
     fn from(e: shared::sqlite::PoolError) -> Self {
-        StoreError::WorkerUnavailable(e.to_string())
+        Self::WorkerUnavailable(e.to_string())
     }
 }
 
@@ -526,7 +539,7 @@ struct StatusFacts<'a> {
     /// known, so the order can't settle (`store::conflicts`).
     conflicted: bool,
     /// While the order's network checks proof of work
-    /// (docs/proof_of_work.md), the payments as proven: each counted only
+    /// (`docs/proof_of_work.md`), the payments as proven: each counted only
     /// if the block it was found in is the proven block at its height, and
     /// only with confirmations up to the proven, recorded tip. An order may
     /// only newly settle on these.
@@ -696,7 +709,7 @@ fn new_id(prefix: &str) -> String {
 impl Store {
     fn from_connection(conn: Connection) -> Self {
         let (order_changes, _) = tokio::sync::broadcast::channel(ORDER_CHANGE_CAPACITY);
-        Store {
+        Self {
             conn,
             order_changes,
             pending_order_changes: RefCell::new(None),
@@ -711,7 +724,7 @@ impl Store {
             let conn = Connection::open_in_memory()?;
             configure_connection(&conn)?;
             apply_migrations(&conn)?;
-            Ok(Store::from_connection(conn))
+            Ok(Self::from_connection(conn))
         }
     }
 
@@ -737,7 +750,7 @@ impl Store {
             false,
         )?;
         configure_connection(&conn)?;
-        Ok(Store::from_connection(conn))
+        Ok(Self::from_connection(conn))
     }
 
     /// Another connection to the same database file, sharing this store's
@@ -745,7 +758,7 @@ impl Store {
     pub(crate) fn connect_again(&self, path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         configure_connection(&conn)?;
-        Ok(Store {
+        Ok(Self {
             conn,
             order_changes: self.order_changes.clone(),
             pending_order_changes: RefCell::new(None),
@@ -756,7 +769,7 @@ impl Store {
         let conn = Connection::open(path)?;
         configure_connection(&conn)?;
         apply_migrations(&conn)?;
-        Ok(Store::from_connection(conn))
+        Ok(Self::from_connection(conn))
     }
 
     /// Every [`OrderChange`] committed from now on, across all tenants - the
@@ -823,12 +836,12 @@ impl Store {
     /// is rollback.
     pub fn in_transaction<T, E, F>(&self, f: F) -> std::result::Result<T, E>
     where
-        F: FnOnce(&Store) -> std::result::Result<T, E>,
+        F: FnOnce(&Self) -> std::result::Result<T, E>,
         E: From<StoreError>,
     {
         // Cleared again even if `f` panics, so a panic can't leave later
         // changes made outside any transaction stuck in the buffer.
-        struct ResetOnDrop<'a>(&'a std::cell::RefCell<Option<Vec<OrderChange>>>);
+        struct ResetOnDrop<'a>(&'a RefCell<Option<Vec<OrderChange>>>);
         impl Drop for ResetOnDrop<'_> {
             fn drop(&mut self) {
                 self.0.borrow_mut().take();
@@ -853,7 +866,7 @@ impl Store {
 
     fn run_transaction<T, E, F>(&self, f: F) -> std::result::Result<T, E>
     where
-        F: FnOnce(&Store) -> std::result::Result<T, E>,
+        F: FnOnce(&Self) -> std::result::Result<T, E>,
         E: From<StoreError>,
     {
         // IMMEDIATE takes SQLite's write lock at BEGIN. A deferred
@@ -888,54 +901,55 @@ impl Store {
     /// checked, each time it runs. Returns the running count of checks, so a
     /// sweep knows when `n` was past the last one.
     #[cfg(test)]
-    pub(crate) fn fail_nth_access(
-        &self,
-        n: Option<usize>,
-    ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    pub(crate) fn fail_nth_access(&self, n: Option<usize>) -> Arc<std::sync::atomic::AtomicUsize> {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let seen = std::sync::Arc::new(AtomicUsize::new(0));
-        match n {
-            Some(n) => {
-                self.conn.set_prepared_statement_cache_capacity(0);
-                self.conn.flush_prepared_statement_cache();
-                let counter = seen.clone();
-                self.conn
-                    .authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
-                        use rusqlite::hooks::AuthAction::*;
-                        // Counted once per statement (its kind), not per
-                        // column it reads, and not inside triggers: failing
-                        // a later check of the same statement takes the
-                        // same path.
-                        let statement = context.accessor.is_none()
-                            && matches!(
-                                context.action,
-                                Select
-                                    | Insert { .. }
-                                    | Update { .. }
-                                    | Delete { .. }
-                                    | Transaction { .. }
-                                    | Savepoint { .. }
-                                    | Pragma { .. }
-                            );
-                        if statement && counter.fetch_add(1, Ordering::Relaxed) == n {
-                            rusqlite::hooks::Authorization::Deny
-                        } else {
-                            rusqlite::hooks::Authorization::Allow
-                        }
-                    }))
-                    .unwrap();
-            }
-            None => {
-                self.conn
-                    .authorizer(
-                        None::<
-                            fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization,
-                        >,
-                    )
-                    .unwrap();
-                self.conn
-                    .set_prepared_statement_cache_capacity(shared::sqlite::STATEMENT_CACHE);
-            }
+        let seen = Arc::new(AtomicUsize::new(0));
+        if let Some(n) = n {
+            self.conn.set_prepared_statement_cache_capacity(0);
+            self.conn.flush_prepared_statement_cache();
+            let counter = Arc::clone(&seen);
+            self.conn
+                .authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
+                    use rusqlite::hooks::AuthAction::*;
+                    // Counted once per statement (its kind), not per
+                    // column it reads, and not inside triggers: failing
+                    // a later check of the same statement takes the
+                    // same path.
+                    let statement = context.accessor.is_none()
+                        && matches!(
+                            context.action,
+                            Select
+                                | Insert { table_name: _ }
+                                | Update {
+                                    table_name: _,
+                                    column_name: _
+                                }
+                                | Delete { table_name: _ }
+                                | Transaction { operation: _ }
+                                | Savepoint {
+                                    operation: _,
+                                    savepoint_name: _
+                                }
+                                | Pragma {
+                                    pragma_name: _,
+                                    pragma_value: _
+                                }
+                        );
+                    if statement && counter.fetch_add(1, Ordering::Relaxed) == n {
+                        rusqlite::hooks::Authorization::Deny
+                    } else {
+                        rusqlite::hooks::Authorization::Allow
+                    }
+                }))
+                .unwrap();
+        } else {
+            self.conn
+                .authorizer(
+                    None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>,
+                )
+                .unwrap();
+            self.conn
+                .set_prepared_statement_cache_capacity(shared::sqlite::STATEMENT_CACHE);
         }
         seen
     }
@@ -950,7 +964,7 @@ impl Store {
     /// states in tests.
     #[cfg(test)]
     pub(crate) fn dump_for_test(&self) -> String {
-        use std::fmt::Write;
+        use std::fmt::Write as _;
         let tables: Vec<String> = self
             .conn
             .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
@@ -987,7 +1001,7 @@ impl Store {
 
     // -- Tenants --------------------------------------------------------
 
-    pub fn create_tenant(&self, new: NewTenant, now: i64) -> Result<CreatedTenant> {
+    pub fn create_tenant(&self, new: &NewTenant, now: i64) -> Result<CreatedTenant> {
         let id = TenantId::new(new_id("tn"));
         let public_key = generate_public_key();
         let secret_token = generate_secret_token();
@@ -1020,7 +1034,7 @@ impl Store {
         })
     }
 
-    fn row_to_tenant(row: &rusqlite::Row) -> rusqlite::Result<Tenant> {
+    fn row_to_tenant(row: &rusqlite::Row<'_>) -> rusqlite::Result<Tenant> {
         Ok(Tenant {
             id: row.get("id")?,
             public_key: row.get("public_key")?,
@@ -1124,7 +1138,7 @@ impl Store {
 
     /// How many enabled tenants each network has, for the admin page (tasks
     /// 2.2 and 4.4).
-    pub fn count_tenants_by_network(&self) -> Result<std::collections::HashMap<String, u64>> {
+    pub fn count_tenants_by_network(&self) -> Result<std::collections::BTreeMap<String, u64>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT network, COUNT(*) FROM tenants WHERE disabled_at_utc IS NULL GROUP BY network",
         )?;
@@ -1135,7 +1149,7 @@ impl Store {
                     row.get::<_, shared::sqlite::Unsigned<u64>>(1)?.0,
                 ))
             })?
-            .collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?;
+            .collect::<rusqlite::Result<std::collections::BTreeMap<_, _>>>()?;
         Ok(rows)
     }
 
@@ -1210,7 +1224,7 @@ impl Store {
     pub fn update_tenant_config(
         &self,
         tenant_id: &TenantId,
-        patch: TenantConfigPatch,
+        patch: &TenantConfigPatch,
     ) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE tenants
@@ -1399,7 +1413,7 @@ impl Store {
     pub fn create_order_claiming_minor_index(
         &self,
         expected_index: u32,
-        new: NewOrder,
+        new: &NewOrder,
     ) -> Result<Option<Order>> {
         // IMMEDIATE, like every other write transaction: the write lock from
         // the start, so its reads and writes see one snapshot.
@@ -1434,7 +1448,7 @@ impl Store {
             return Ok(None);
         }
         let id = OrderId::new(new_id("order"));
-        Self::insert_order(&tx, &id, &new)?;
+        Self::insert_order(&tx, &id, new)?;
         tx.commit()?;
         Ok(Some(
             self.get_order_by_id(&id)?.ok_or(StoreError::NotFound)?,
@@ -1470,13 +1484,13 @@ impl Store {
         Ok(())
     }
 
-    pub fn create_order(&self, new: NewOrder) -> Result<Order> {
+    pub fn create_order(&self, new: &NewOrder) -> Result<Order> {
         let id = OrderId::new(new_id("order"));
-        Self::insert_order(&self.conn, &id, &new)?;
+        Self::insert_order(&self.conn, &id, new)?;
         self.get_order_by_id(&id)?.ok_or(StoreError::NotFound)
     }
 
-    fn row_to_order(row: &rusqlite::Row) -> rusqlite::Result<Order> {
+    fn row_to_order(row: &rusqlite::Row<'_>) -> rusqlite::Result<Order> {
         let status_str: String = row.get("status")?;
         Ok(Order {
             id: row.get("id")?,
@@ -1540,7 +1554,7 @@ impl Store {
     }
 
     /// Scoped by `tenant_id` in the query itself - the IDOR-prevention rule from
-    /// `docs/DESIGN.md` §10.1 applied at the row level. A order_id belonging to a
+    /// `docs/DESIGN.md` §10.1 applied at the row level. A `order_id` belonging to a
     /// different tenant must come back as `Ok(None)`, indistinguishable from a
     /// nonexistent one.
     pub fn get_order(&self, tenant_id: &TenantId, order_id: &OrderId) -> Result<Option<Order>> {
@@ -1598,7 +1612,10 @@ impl Store {
     /// (`store::conflicts`). A payment voided for another with its key is
     /// still updated here, so it can be credited if that one loses its
     /// block.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one column each of the payment row"
+    )]
     pub fn record_payment_match(
         &self,
         order_id: &OrderId,
@@ -1752,7 +1769,7 @@ impl Store {
         Ok(rows)
     }
 
-    fn row_to_payment(row: &rusqlite::Row) -> rusqlite::Result<OrderPaymentRow> {
+    fn row_to_payment(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrderPaymentRow> {
         Ok(OrderPaymentRow {
             id: row.get("id")?,
             order_id: row.get("order_id")?,
@@ -1821,6 +1838,10 @@ impl Store {
     /// falling back to `tenant.confirmations_required` exactly as before
     /// when it's `None` - the ordinary case for every order created outside
     /// that feature.
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "the stored order is compared with the plan, whose fields are named for it"
+    )]
     pub fn recompute_order_status(
         &self,
         order_id: &OrderId,
@@ -2034,7 +2055,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn stage_partial_match(&self, matched: StagedMatch<'_>) -> Result<()> {
+    pub fn stage_partial_match(&self, matched: &StagedMatch<'_>) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO partial_block_matches
              (network, tenant_id, order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc, output_key)
@@ -2293,8 +2314,8 @@ impl Store {
         Ok(Webhook {
             id,
             tenant_id: tenant_id.clone(),
-            url: url.to_string(),
-            extra_headers: extra_headers_json.to_string(),
+            url: url.to_owned(),
+            extra_headers: extra_headers_json.to_owned(),
             signing_secret: live_settings::Secret::new(signing_secret),
             enabled: true,
             created_at: now,
@@ -2762,7 +2783,7 @@ mod tests {
     }
 
     /// An order settles only on its payments as proven
-    /// (docs/proof_of_work.md); the counts shown stay the real ones, and an
+    /// (`docs/proof_of_work.md`); the counts shown stay the real ones, and an
     /// order already settled isn't walked back.
     #[test]
     fn settlement_waits_for_proven_payments() {
@@ -2837,8 +2858,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_pool_uses_independent_connections_without_blocking_the_runtime() {
-        let path =
-            std::env::temp_dir().join(format!("scanner_read_pool_{}.db", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("scanner_read_pool_{}.db", Uuid::new_v4()));
         let path_str = path.to_string_lossy().into_owned();
         let writer = Store::open_file(&path_str).unwrap();
         writer
@@ -2879,7 +2899,7 @@ mod tests {
     fn new_tenant(store: &Store) -> CreatedTenant {
         store
             .create_tenant(
-                NewTenant {
+                &NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![0u8; 64],
                     primary_address: "4addr".into(),
@@ -2894,10 +2914,10 @@ mod tests {
 
     fn new_order(store: &Store, tenant_id: &str, minor_index: u32) -> Order {
         store
-            .create_order(NewOrder {
+            .create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
-                tenant_id: shared::ids::TenantId::new(tenant_id.to_string()),
+                tenant_id: TenantId::new(tenant_id.to_owned()),
                 merchant_order_id: None,
                 minor_index,
                 address: format!("sub_{minor_index}"),
@@ -2913,7 +2933,7 @@ mod tests {
     fn a_panic_while_holding_the_shared_store_does_not_break_later_users() {
         let shared = Store::open_in_memory().unwrap().into_shared();
         let tenant = new_tenant(&shared.lock());
-        let panicking = shared.clone();
+        let panicking = Arc::clone(&shared);
         let joined = std::thread::spawn(move || {
             let _guard = panicking.lock();
             panic!("simulated bug while holding the store lock");
@@ -3010,7 +3030,7 @@ mod tests {
             filled += 1;
             assert!(filled < 10_000, "the cap didn't take effect");
         }
-        let err = store.create_order(NewOrder {
+        let err = store.create_order(&NewOrder {
             idempotency_key: None,
             confirmations_required_override: None,
             tenant_id: tenant.tenant.id.clone(),
@@ -3024,7 +3044,7 @@ mod tests {
         });
         match err {
             Err(StoreError::Sqlite(e)) => {
-                assert_eq!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::DiskFull))
+                assert_eq!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::DiskFull));
             }
             other => panic!("expected a disk-full error, got {other:?}"),
         }
@@ -3104,7 +3124,7 @@ mod tests {
 
     /// A transaction that reads, then writes, must not lose its write to a
     /// commit another connection made in between: with a deferred BEGIN that
-    /// write fails with SQLITE_BUSY_SNAPSHOT, which no busy timeout retries.
+    /// write fails with `SQLITE_BUSY_SNAPSHOT`, which no busy timeout retries.
     /// `in_transaction` holds the write lock from its first statement, so the
     /// other writer waits instead and both writes land.
     #[test]
@@ -3120,7 +3140,7 @@ mod tests {
                 let _ = s.get_setting("a")?;
                 let competing = other.execute("INSERT INTO settings (key, value) VALUES ('b', '1')", []);
                 assert!(
-                    matches!(competing, Err(rusqlite::Error::SqliteFailure(ref e, _)) if e.code == rusqlite::ErrorCode::DatabaseBusy),
+                    matches!(&competing, Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::DatabaseBusy),
                     "another writer must wait for this transaction, got {competing:?}"
                 );
                 s.set_setting("a", "1")
@@ -3207,7 +3227,7 @@ mod tests {
         store
             .conn
             .execute_batch(include_str!(
-                "../migrations/0017_pending_payment_recomputes.sql"
+                "../../migrations/0017_pending_payment_recomputes.sql"
             ))
             .unwrap();
         assert_eq!(
@@ -3311,16 +3331,21 @@ mod tests {
         // under real concurrent access, not just sequential calls.
         let store = Store::open_in_memory().unwrap();
         let created = new_tenant(&store);
-        let tenant_id = created.tenant.id.clone();
+        let tenant_id = created.tenant.id;
         let shared = store.into_shared();
 
-        let threads: Vec<_> = (0..50)
-            .map(|_| {
-                let shared = Arc::clone(&shared);
-                let tenant_id = tenant_id.clone();
-                std::thread::spawn(move || shared.lock().allocate_minor_index(&tenant_id).unwrap())
-            })
-            .collect();
+        // Every thread starts before any is joined, so they race.
+        #[expect(
+            clippy::needless_collect,
+            reason = "collecting starts every thread before the first join"
+        )]
+        let threads: Vec<_> = std::iter::repeat_with(|| {
+            let shared = Arc::clone(&shared);
+            let tenant_id = tenant_id.clone();
+            std::thread::spawn(move || shared.lock().allocate_minor_index(&tenant_id).unwrap())
+        })
+        .take(50)
+        .collect();
 
         let mut indices: Vec<u32> = threads.into_iter().map(|h| h.join().unwrap()).collect();
         indices.sort_unstable();
@@ -3431,13 +3456,13 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
         let order = store
-            .create_order(NewOrder {
+            .create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: Some(2),
-                tenant_id: tenant.tenant.id.clone(),
+                tenant_id: tenant.tenant.id,
                 merchant_order_id: None,
                 minor_index: 1,
-                address: "sub_1".to_string(),
+                address: "sub_1".to_owned(),
                 xmr_amount_piconero: 100,
                 description: None,
                 created_at: 1000,
@@ -3653,8 +3678,8 @@ mod tests {
         assert_eq!(
             drain_changes(&mut changes),
             vec![OrderChange {
-                tenant_id: tenant.tenant.id.clone(),
-                order_id: order.id.clone()
+                tenant_id: tenant.tenant.id,
+                order_id: order.id
             }],
             "one change per order per transaction"
         );
@@ -3687,7 +3712,7 @@ mod tests {
         store
             .update_tenant_config(
                 &created.tenant.id,
-                TenantConfigPatch {
+                &TenantConfigPatch {
                     confirmations_required: Some(3),
                     ..Default::default()
                 },
@@ -3705,7 +3730,7 @@ mod tests {
         store
             .update_tenant_config(
                 &created.tenant.id,
-                TenantConfigPatch {
+                &TenantConfigPatch {
                     confirmations_required: Some(0),
                     ..Default::default()
                 },
@@ -3775,7 +3800,7 @@ mod tests {
         assert!(store
             .update_tenant_config(
                 &created.tenant.id,
-                TenantConfigPatch {
+                &TenantConfigPatch {
                     confirmations_required: Some(3),
                     order_expiry_seconds: Some(900),
                 },
@@ -3789,8 +3814,8 @@ mod tests {
         assert!(
             !store
                 .update_tenant_config(
-                    &shared::ids::TenantId::new("nobody".to_string()),
-                    TenantConfigPatch {
+                    &TenantId::new("nobody".to_owned()),
+                    &TenantConfigPatch {
                         confirmations_required: Some(3),
                         order_expiry_seconds: None,
                     },
@@ -3954,7 +3979,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .get_order_tenant_id(&shared::ids::OrderId::new("pay_nonexistent"))
+                .get_order_tenant_id(&OrderId::new("pay_nonexistent"))
                 .unwrap(),
             None
         );
@@ -3973,7 +3998,7 @@ mod tests {
             store
                 .get_scanned_block_hash(monero::Network::Mainnet, 100)
                 .unwrap(),
-            Some("hash100".to_string())
+            Some("hash100".to_owned())
         );
 
         // Reorg overwrite at the same height.
@@ -3984,7 +4009,7 @@ mod tests {
             store
                 .get_scanned_block_hash(monero::Network::Mainnet, 100)
                 .unwrap(),
-            Some("hash100_v2".to_string())
+            Some("hash100_v2".to_owned())
         );
 
         store
@@ -4020,13 +4045,13 @@ mod tests {
             store
                 .get_scanned_block_hash(monero::Network::Mainnet, 100)
                 .unwrap(),
-            Some("mainnet_hash_100".to_string())
+            Some("mainnet_hash_100".to_owned())
         );
         assert_eq!(
             store
                 .get_scanned_block_hash(monero::Network::Stagenet, 100)
                 .unwrap(),
-            Some("stagenet_hash_100".to_string())
+            Some("stagenet_hash_100".to_owned())
         );
         assert_eq!(
             store
@@ -4063,7 +4088,7 @@ mod tests {
             store
                 .get_scanned_block_hash(monero::Network::Stagenet, 100)
                 .unwrap(),
-            Some("stagenet_hash_100".to_string()),
+            Some("stagenet_hash_100".to_owned()),
             "pruning mainnet must not prune stagenet's row at the same height"
         );
     }
@@ -4113,7 +4138,7 @@ mod tests {
 
         let stagenet_tenant = store
             .create_tenant(
-                NewTenant {
+                &NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![],
                     primary_address: "5stagenet".into(),
@@ -4368,13 +4393,13 @@ mod tests {
         // counter advanced first and stayed advanced regardless.
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let tenant_id = tenant.tenant.id.clone();
+        let tenant_id = tenant.tenant.id;
 
         let first = store.peek_next_minor_index(&tenant_id).unwrap();
         let order = store
             .create_order_claiming_minor_index(
                 first,
-                NewOrder {
+                &NewOrder {
                     idempotency_key: None,
                     confirmations_required_override: None,
                     tenant_id: tenant_id.clone(),
@@ -4397,7 +4422,7 @@ mod tests {
         let stale = store
             .create_order_claiming_minor_index(
                 first,
-                NewOrder {
+                &NewOrder {
                     idempotency_key: None,
                     confirmations_required_override: None,
                     tenant_id: tenant_id.clone(),
@@ -4423,7 +4448,7 @@ mod tests {
         let next = store.peek_next_minor_index(&tenant_id).unwrap();
         let failed = store.create_order_claiming_minor_index(
             next,
-            NewOrder {
+            &NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: tenant_id.clone(),
@@ -4436,7 +4461,7 @@ mod tests {
                 expires_at: 2000,
             },
         );
-        assert!(failed.is_err());
+        failed.unwrap_err();
         assert_eq!(
             store.peek_next_minor_index(&tenant_id).unwrap(),
             next,
@@ -4461,7 +4486,7 @@ mod tests {
 
         let reopened = Store::open_file(path_str).unwrap();
         let err = reopened
-            .create_order(NewOrder {
+            .create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: "tn_does_not_exist".into(),
@@ -4478,7 +4503,7 @@ mod tests {
             matches!(
                 err,
                 StoreError::Sqlite(rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error { code: rusqlite::ErrorCode::ConstraintViolation, .. },
+                    rusqlite::ffi::Error { code: rusqlite::ErrorCode::ConstraintViolation, extended_code: _ },
                     _
                 ))
             ),
@@ -4549,7 +4574,7 @@ mod tests {
         shared::migrations::apply(&store.conn, MIGRATIONS).unwrap();
 
         let payments = store
-            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .get_all_payments(&OrderId::new(order_id.to_owned()))
             .unwrap();
         assert_eq!(
             payments.len(),
@@ -4606,11 +4631,11 @@ mod tests {
         assert_eq!(
             indexes,
             vec![
-                "order_payments_confirmed_height_idx".to_string(),
-                "order_payments_order_idx".to_string(),
-                "order_payments_output_key_idx".to_string(),
-                "order_payments_unconfirmed_idx".to_string(),
-                "order_payments_voided_idx".to_string(),
+                "order_payments_confirmed_height_idx".to_owned(),
+                "order_payments_order_idx".to_owned(),
+                "order_payments_output_key_idx".to_owned(),
+                "order_payments_unconfirmed_idx".to_owned(),
+                "order_payments_voided_idx".to_owned(),
             ],
             "every explicitly-declared index that existed on order_payments before the rebuild must exist after it"
         );
@@ -4658,7 +4683,7 @@ mod tests {
         let store = Store::from_connection(conn);
         assert_eq!(
             store
-                .get_tenant_by_id(&shared::ids::TenantId::new("old"))
+                .get_tenant_by_id(&TenantId::new("old"))
                 .unwrap()
                 .unwrap()
                 .public_key,
@@ -4790,7 +4815,7 @@ mod tests {
             store
                 .get_scanned_block_hash(monero::Network::Stagenet, 103)
                 .unwrap(),
-            Some("stagenet_hash".to_string()),
+            Some("stagenet_hash".to_owned()),
             "another network's window at the same height must be untouched"
         );
     }

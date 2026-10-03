@@ -4,6 +4,14 @@
 //! in `live-settings` and through the admin API; this is the wiring in
 //! `main.rs` that only a real process shows.
 
+// An integration test crate: every function in it is test code, which
+// fails by panicking.
+#![expect(
+    clippy::tests_outside_test_module,
+    clippy::unwrap_used,
+    reason = "an integration test crate is all test code"
+)]
+
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -16,12 +24,12 @@ const TOKEN: &str = "options-file-test-token-0123456789abcdef";
 struct TempDir(PathBuf);
 
 impl TempDir {
-    fn new(name: &str) -> TempDir {
+    fn new(name: &str) -> Self {
         let dir =
             std::env::temp_dir().join(format!("engine-options-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        TempDir(dir)
+        Self(dir)
     }
 }
 
@@ -163,7 +171,7 @@ fn the_engine_does_not_start_on_a_file_it_cannot_use() {
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::PermissionsExt as _;
         std::fs::write(&path, "").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         if std::fs::read(&path).is_err() {

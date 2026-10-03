@@ -1,10 +1,12 @@
-//! The instance-wide admin settings API (`GET`/`POST /api/v1/admin/settings`) -
-//! server-level configuration (`crate::settings`), not any one tenant's own
-//! admin API (`http::admin`, authenticated by that tenant's own `sk_`). This
-//! is what replaces the former TOML config file: every setting that used to
-//! be read once at boot from a file is now read from the `settings` table
-//! (the command line, then the environment, then the table, then the
-//! default: `crate::engine_settings`) and editable here at runtime.
+//! The instance-wide admin settings API (`GET`/`POST /api/v1/admin/settings`).
+//!
+//! Server-level configuration (`crate::settings`), not any one tenant's own
+//! admin API (`http::admin`, authenticated by that tenant's own `sk_`).
+//!
+//! This is what replaces the former TOML config file: every setting that used
+//! to be read once at boot from a file is now read from the `settings` table
+//! (the command line, then the environment, then the table, then the default:
+//! `crate::engine_settings`) and editable here at runtime.
 //!
 //! Like every engine route, reachable only with the engine token
 //! (`ENGINE_TOKEN`), which the router checks on every request
@@ -13,10 +15,10 @@
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Json};
+use axum::response::{IntoResponse as _, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use crate::engine_settings::{EngineSettings, NETWORKS};
@@ -34,7 +36,7 @@ fn budget_description(base: &str, networks: usize) -> String {
             crate::engine_settings::max_scan_budget_mb(limit, networks),
             if networks == 1 { "" } else { "s" }
         ),
-        None => base.to_string(),
+        None => base.to_owned(),
     }
 }
 
@@ -89,7 +91,7 @@ pub struct SettingsView {
     /// Where the engine's options file is, and whether it can be written.
     options_file: Option<live_settings::FileInfo>,
     scalars: HashMap<String, ScalarSettingView>,
-    monero_node: HashMap<String, Option<serde_json::Value>>,
+    monero_node: BTreeMap<String, Option<serde_json::Value>>,
     networks: HashMap<String, NetworkView>,
 }
 
@@ -112,7 +114,9 @@ pub async fn get_settings(
             "settings are not available on this engine".into(),
         ));
     };
-    let tenant_counts = db.read(|s| s.count_tenants_by_network()).await?;
+    let tenant_counts = db
+        .read(super::super::store::Store::count_tenants_by_network)
+        .await?;
     let options_file = registry.options_file();
     let file_writable = options_file.as_ref().is_none_or(|file| file.writable);
     let read_only = format!(
@@ -120,7 +124,7 @@ pub async fn get_settings(
         options_file.as_ref().map_or("", |file| file.path.as_str())
     );
     let mut scalars = HashMap::new();
-    let mut monero_node = HashMap::new();
+    let mut monero_node = BTreeMap::new();
     let mut networks = HashMap::new();
     for view in registry.describe() {
         if let Some(network) = is_node_key(view.key) {
@@ -129,9 +133,9 @@ pub async fn get_settings(
             } else {
                 serde_json::from_str(&view.value).ok()
             };
-            monero_node.insert(network.to_string(), value);
+            monero_node.insert(network.to_owned(), value);
             networks.insert(
-                network.to_string(),
+                network.to_owned(),
                 NetworkView {
                     description: view.description,
                     example: view.example,
@@ -142,7 +146,7 @@ pub async fn get_settings(
             continue;
         }
         scalars.insert(
-            view.key.to_string(),
+            view.key.to_owned(),
             ScalarSettingView {
                 value: view.value,
                 source: source_str(view.source),
@@ -151,7 +155,7 @@ pub async fn get_settings(
                     // Kept in the options file, which can't be written.
                     (view.sources.toml && !file_writable).then(|| read_only.clone())
                 }),
-                description: view.description.to_string(),
+                description: view.description.to_owned(),
                 kind: view.kind,
                 example: view.example,
                 applies: view.applies,
@@ -183,24 +187,24 @@ pub struct UpdateSettingsRequest {
     /// `null` for a network clears its configuration rather than being
     /// rejected: "stop watching this network" is a legitimate choice.
     #[serde(default)]
-    monero_node: HashMap<String, Option<serde_json::Value>>,
+    monero_node: BTreeMap<String, Option<serde_json::Value>>,
 }
 
 /// How long a node being saved has to say which network it's on.
 const NODE_INFO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The nodes submitted for each network that can never work there
-/// (nicer_admin_screen.md T9): one listed twice, or one that answers that
+/// (`nicer_admin_screen.md` T9): one listed twice, or one that answers that
 /// it's on another network. Only networks whose nodes changed are checked;
 /// their nodes are all asked at once, each for at most
 /// [`NODE_INFO_TIMEOUT`], with no lock held. A node that doesn't answer, or
 /// doesn't say (an old monerod, a `fakechain` one), is not refused: it may
 /// just be down for now (decision D2), and saving it is allowed.
 async fn nodes_that_cannot_work(
-    submitted: &HashMap<String, Option<serde_json::Value>>,
+    submitted: &BTreeMap<String, Option<serde_json::Value>>,
     current: &crate::engine_settings::NodeConfig,
 ) -> Vec<live_settings::FieldError> {
-    use crate::daemon::MoneroDaemonClient;
+    use crate::daemon::MoneroDaemonClient as _;
     use crate::settings::MoneroNodeSetting;
 
     let mut errors = Vec::new();
@@ -293,12 +297,15 @@ pub struct UnservedNetwork {
     tenants: u64,
 }
 
-/// `POST /api/v1/admin/settings` - saves any subset of settings through the
-/// registry (admin_settings_v2.md part 1): every value is checked, runtime
-/// pieces that depend on changed settings are prepared, everything is
-/// stored in one transaction, then applied to the running engine. Anything
-/// invalid refuses the whole save and changes nothing. The response lists
-/// what needs a restart, warnings, settings still overridden by the
+/// `POST /api/v1/admin/settings`: saves any subset of settings through the
+/// registry (`admin_settings_v2.md` part 1).
+///
+/// Every value is checked, runtime pieces that depend on changed settings
+/// are prepared, everything is stored in one transaction, then applied to
+/// the running engine.
+///
+/// Anything invalid refuses the whole save and changes nothing. The response
+/// lists what needs a restart, warnings, settings still overridden by the
 /// environment, and networks left without a node that stores use.
 pub async fn update_settings(
     State(db): State<Database>,
@@ -334,7 +341,7 @@ pub async fn update_settings(
             Some(value) if !value.is_null() => Some(value.to_string()),
             _ => None,
         };
-        changes.push((setting.key.to_string(), raw));
+        changes.push((setting.key.to_owned(), raw));
     }
 
     match registry.save(changes).await {
@@ -343,7 +350,7 @@ pub async fn update_settings(
             // nodes don't answer (task 2.2, decision D2). Only saved
             // networks are probed, each node briefly, all at once.
             let counts = db
-                .read(|s| s.count_tenants_by_network())
+                .read(super::super::store::Store::count_tenants_by_network)
                 .await
                 .unwrap_or_default();
             let saved_networks: Vec<&str> = NETWORKS
@@ -415,7 +422,7 @@ fn save_refused(error: live_settings::SaveError) -> axum::response::Response {
             Json(json!({ "error": e.to_string() })),
         )
             .into_response(),
-        e => (
+        e @ (live_settings::SaveError::NotBooted | live_settings::SaveError::Install(_)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
         )
@@ -423,10 +430,11 @@ fn save_refused(error: live_settings::SaveError) -> axum::response::Response {
     }
 }
 
-/// `DELETE /api/v1/admin/proof/{network}/anchor` - forgets `network`'s
-/// proof-of-work anchor and proven chain (docs/proof_of_work.md), keeping
-/// checking on: its next round takes a new anchor from the nodes. For an
-/// operator after a reorg deeper than the anchor, once the nodes are
+/// `DELETE /api/v1/admin/proof/{network}/anchor`: forgets `network`'s
+/// proof-of-work anchor and proven chain (`docs/proof_of_work.md`).
+///
+/// Checking stays on: its next round takes a new anchor from the nodes. For
+/// an operator after a reorg deeper than the anchor, once the nodes are
 /// trusted again; nothing settles until the new anchor is taken. `404`
 /// while checking is off there.
 pub async fn forget_anchor(
@@ -451,9 +459,11 @@ pub async fn forget_anchor(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /api/v1/admin/settings/reload` - reads the options file again and
-/// applies what changed in it, as a save would: all of it, or, when
+/// `POST /api/v1/admin/settings/reload`: reads the options file again.
+///
+/// What changed in it is applied as a save would: all of it, or, when
 /// anything in it is wrong, none of it, with every problem named by line.
+///
 /// The response says what changed and what needs a restart.
 pub async fn reload_settings(
     State(settings): State<Arc<EngineSettings>>,

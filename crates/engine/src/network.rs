@@ -1,6 +1,8 @@
-//! Shared helpers for `monero::Network`, used wherever a network name crosses a
-//! text boundary: the config file (`[monero_node.<network>]`), the admin API
-//! (`CreateTenantRequest.network`), and the `tenants.network` column.
+//! Shared helpers for `monero::Network`.
+//!
+//! Used wherever a network name crosses a text boundary: the config file
+//! (`[monero_node.<network>]`), the admin API (`CreateTenantRequest.network`),
+//! and the `tenants.network` column.
 //!
 //! Moved to `shared::network` as of WBS 2.1.3 (see `shared::key_custody`'s module
 //! doc comment for the full reasoning behind that step - this module rode along

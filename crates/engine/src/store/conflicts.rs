@@ -9,7 +9,7 @@
 //! first; that must not get the honest payment refused.
 //!
 //! - Once one of them is in a block (under proof-of-work checking, the
-//!   proven block at its height: docs/proof_of_work.md), the earliest such
+//!   proven block at its height: `docs/proof_of_work.md`), the earliest such
 //!   is credited and the others are voided, marked `superseded_by` it.
 //! - Until then none is settled on: only one of them counts toward what was
 //!   received, and the order can't settle.
@@ -113,36 +113,33 @@ impl Store {
                     credited = Some((height, row.id));
                 }
             }
-            match credited {
-                Some((_, winner)) => {
-                    for row in &rows {
-                        if row.id == winner {
-                            if row.superseded_by.is_some() {
-                                self.supersede(order_id, row.id, None, now)?;
-                            }
-                        } else {
-                            conflicts.uncounted.insert(row.id);
-                            if row.superseded_by != Some(winner) {
-                                self.supersede(order_id, row.id, Some(winner), now)?;
-                            }
-                        }
-                    }
-                }
-                None => {
-                    // Nothing to settle on yet: whatever was superseded comes
-                    // back (its winner lost its block), and one counts.
-                    conflicts.unsettled = true;
-                    let shown = rows
-                        .iter()
-                        .min_by_key(|row| (row.block_height.is_none(), row.block_height, row.id))
-                        .map(|row| row.id);
-                    for row in &rows {
+            if let Some((_, winner)) = credited {
+                for row in &rows {
+                    if row.id == winner {
                         if row.superseded_by.is_some() {
                             self.supersede(order_id, row.id, None, now)?;
                         }
-                        if Some(row.id) != shown {
-                            conflicts.uncounted.insert(row.id);
+                    } else {
+                        conflicts.uncounted.insert(row.id);
+                        if row.superseded_by != Some(winner) {
+                            self.supersede(order_id, row.id, Some(winner), now)?;
                         }
+                    }
+                }
+            } else {
+                // Nothing to settle on yet: whatever was superseded comes
+                // back (its winner lost its block), and one counts.
+                conflicts.unsettled = true;
+                let shown = rows
+                    .iter()
+                    .min_by_key(|row| (row.block_height.is_none(), row.block_height, row.id))
+                    .map(|row| row.id);
+                for row in &rows {
+                    if row.superseded_by.is_some() {
+                        self.supersede(order_id, row.id, None, now)?;
+                    }
+                    if Some(row.id) != shown {
+                        conflicts.uncounted.insert(row.id);
                     }
                 }
             }
@@ -214,7 +211,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = store
             .create_tenant(
-                crate::store::NewTenant {
+                &crate::store::NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![],
                     primary_address: "4fixture".into(),
@@ -227,10 +224,10 @@ mod tests {
             .unwrap();
         let index = store.allocate_minor_index(&tenant.tenant.id).unwrap();
         let order = store
-            .create_order(crate::store::NewOrder {
+            .create_order(&crate::store::NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
-                tenant_id: tenant.tenant.id.clone(),
+                tenant_id: tenant.tenant.id,
                 merchant_order_id: None,
                 minor_index: index,
                 address: "fixture".into(),

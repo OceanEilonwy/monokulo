@@ -76,7 +76,7 @@ pub struct Custody {
 #[derive(Clone)]
 pub struct Networks {
     /// One `FallbackDaemonClient` per configured network, swapped whole when
-    /// node settings are saved (admin_settings_v2.md task 2.1). A network is
+    /// node settings are saved (`admin_settings_v2.md` task 2.1). A network is
     /// "configured" exactly when it has a client here: a tenant can only be
     /// created for one (`admin::create_tenant`), otherwise its address would
     /// be derived but never scanned. The same clients the scan loops use, so
@@ -105,11 +105,11 @@ pub struct AppState {
     pub admin_rate_limiter: Arc<RateLimiter<String>>,
     /// The nodes of each network and the scanner's status on them.
     pub networks: Networks,
-    /// Every engine setting, live (admin_settings_v2.md part 1): handlers
+    /// Every engine setting, live (`admin_settings_v2.md` part 1): handlers
     /// and loops read the current value of what they need on each use.
     pub settings: Arc<crate::engine_settings::EngineSettings>,
     /// This process's log store, read by `GET /api/v1/admin/logs` for
-    /// monokulo's Logs page (structured_logging.md 3.3). `None` in tests
+    /// monokulo's Logs page (`structured_logging.md` 3.3). `None` in tests
     /// and when it couldn't be opened.
     pub log_store: Option<telemetry::store::LogStore>,
     /// The hash of the engine token (`ENGINE_TOKEN`), which
@@ -139,22 +139,22 @@ impl AppState {
     pub fn for_tests_with_store(store: crate::store::SharedStore) -> Self {
         let mainnet_daemon = Arc::new(crate::daemon_fallback::FallbackDaemonClient::new(vec![
             crate::daemon_fallback::FallbackNode {
-                label: "fake-node:18081".to_string(),
+                label: "fake-node:18081".to_owned(),
                 client: Arc::new(crate::daemon::fake::FakeDaemonClient::new()),
             },
         ]));
-        AppState {
+        Self {
             db: crate::store::Database::inline(store),
             admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
             settings: crate::engine_settings::EngineSettings::defaults(),
             log_store: None,
             engine_token: Arc::new(shared::auth::RawToken::presented(TEST_ENGINE_TOKEN).hash()),
-            custody: crate::http::Custody {
+            custody: Custody {
                 backends: Arc::new(crate::key_custody::PlainKeyCustody::default()),
-                default_backend: "plain".to_string(),
+                default_backend: "plain".to_owned(),
                 wallet_handles: Arc::default(),
             },
-            networks: crate::http::Networks {
+            networks: Networks {
                 daemons: crate::engine_settings::Daemons::fixed(HashMap::from([(
                     monero::Network::Mainnet,
                     mainnet_daemon,
@@ -327,8 +327,8 @@ async fn engine_token_middleware(
     axum::extract::State(state): axum::extract::State<AppState>,
     request: axum::extract::Request,
     next: middleware::Next,
-) -> axum::response::Response {
-    use subtle::ConstantTimeEq;
+) -> Response {
+    use subtle::ConstantTimeEq as _;
     let accepted = request
         .headers()
         .get(shared::auth::ENGINE_TOKEN_HEADER)
@@ -360,7 +360,7 @@ async fn body_limit_middleware(
     axum::extract::State(state): axum::extract::State<AppState>,
     request: axum::extract::Request,
     next: middleware::Next,
-) -> axum::response::Response {
+) -> Response {
     use http_body::Body as _;
     let limit = state.settings.limits.load().max_body_bytes as u64;
     let declared = request
@@ -391,8 +391,9 @@ async fn body_limit_middleware(
         // Over the limit is `413`; a connection that dropped or a body that
         // couldn't be read is the client's `400`, not an oversized request.
         Err(e)
-            if std::error::Error::source(&e)
-                .is_some_and(|source| source.is::<http_body_util::LengthLimitError>()) =>
+            if std::error::Error::source(&e).is_some_and(
+                <dyn std::error::Error + 'static>::is::<http_body_util::LengthLimitError>,
+            ) =>
         {
             (
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -427,13 +428,13 @@ pub struct RequestLimits {
 
 impl Default for RequestLimits {
     fn default() -> Self {
-        RequestLimits::new(MAX_CONCURRENT_REQUESTS, MAX_OPEN_STREAMS, REQUEST_TIMEOUT)
+        Self::new(MAX_CONCURRENT_REQUESTS, MAX_OPEN_STREAMS, REQUEST_TIMEOUT)
     }
 }
 
 impl RequestLimits {
     pub fn new(max_requests: usize, max_streams: usize, timeout: std::time::Duration) -> Self {
-        RequestLimits {
+        Self {
             requests: Arc::new(tokio::sync::Semaphore::new(max_requests)),
             streams: Arc::new(tokio::sync::Semaphore::new(max_streams)),
             timeout,
@@ -441,7 +442,7 @@ impl RequestLimits {
     }
 }
 
-fn service_unavailable(message: &str) -> axum::response::Response {
+fn service_unavailable(message: &str) -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
         Json(serde_json::json!({ "error": message })),
@@ -453,8 +454,8 @@ async fn request_limit_middleware(
     axum::extract::State(limits): axum::extract::State<RequestLimits>,
     request: axum::extract::Request,
     next: middleware::Next,
-) -> axum::response::Response {
-    let Ok(_permit) = limits.requests.clone().try_acquire_owned() else {
+) -> Response {
+    let Ok(_permit) = Arc::clone(&limits.requests).try_acquire_owned() else {
         return service_unavailable("the engine is busy, try again shortly");
     };
     match tokio::time::timeout(limits.timeout, next.run(request)).await {
@@ -467,14 +468,14 @@ async fn stream_limit_middleware(
     axum::extract::State(limits): axum::extract::State<RequestLimits>,
     request: axum::extract::Request,
     next: middleware::Next,
-) -> axum::response::Response {
-    let Ok(permit) = limits.streams.clone().try_acquire_owned() else {
+) -> Response {
+    let Ok(permit) = Arc::clone(&limits.streams).try_acquire_owned() else {
         return service_unavailable("too many open event streams, try again shortly");
     };
     let (parts, body) = next.run(request).await.into_parts();
     // The permit lives as long as the stream's body, and is released when
     // the client disconnects and the body is dropped.
-    axum::response::Response::from_parts(
+    Response::from_parts(
         parts,
         axum::body::Body::new(PermitBody {
             inner: body,
@@ -529,9 +530,11 @@ pub fn parse_status_query(s: &str) -> Result<OrderStatus, ApiError> {
 }
 
 /// Resolves a tenant *entirely* from the presented `sk_` bearer token - never from
-/// any path parameter. This is the structural fix from `docs/DESIGN.md` §10.1: there
-/// is nothing in a `/api/v1/admin/tenant/*` route for a leaked or guessed identifier
-/// to authorize, because none of them accept one.
+/// any path parameter.
+///
+/// This is the structural fix from `docs/DESIGN.md` §10.1: there is nothing in a
+/// `/api/v1/admin/tenant/*` route for a leaked or guessed identifier to authorize,
+/// because none of them accept one.
 pub struct AuthedTenant(pub Tenant);
 
 impl FromRequestParts<AppState> for AuthedTenant {
@@ -558,7 +561,7 @@ impl FromRequestParts<AppState> for AuthedTenant {
             .ok_or(ApiError::Unauthorized)?;
         // The request's lines name the store (`telemetry::http::server`).
         tracing::Span::current().record("store.id", tenant.id.as_str());
-        Ok(AuthedTenant(tenant))
+        Ok(Self(tenant))
     }
 }
 
@@ -605,7 +608,7 @@ pub async fn resolve_wallet_handle(
         ),
     )
     .await
-    .map_err(|_| ApiError::Internal("key custody registration timed out".into()))??;
+    .map_err(|elapsed| ApiError::Internal(format!("key custody registration: {elapsed}")))??;
     let winner = {
         let mut handles = state.custody.wallet_handles.write();
         *handles.entry(tenant.id.clone()).or_insert(handle)
@@ -653,7 +656,9 @@ pub enum ApiError {
 /// SQLite failures that are about the environment (disk, locks, I/O) rather
 /// than the request, and so worth a retry later.
 fn is_transient_sqlite(e: &rusqlite::Error) -> bool {
-    use rusqlite::ErrorCode::*;
+    use rusqlite::ErrorCode::{
+        CannotOpen, DatabaseBusy, DatabaseLocked, DiskFull, OutOfMemory, SystemIoFailure,
+    };
     matches!(
         e.sqlite_error_code(),
         Some(DiskFull | DatabaseBusy | DatabaseLocked | SystemIoFailure | CannotOpen | OutOfMemory)
@@ -663,12 +668,10 @@ fn is_transient_sqlite(e: &rusqlite::Error) -> bool {
 impl From<StoreError> for ApiError {
     fn from(e: StoreError) -> Self {
         match e {
-            StoreError::NotFound => ApiError::NotFound,
-            StoreError::Sqlite(e) if is_transient_sqlite(&e) => {
-                ApiError::Unavailable(e.to_string())
-            }
-            StoreError::Sqlite(e) => ApiError::Internal(e.to_string()),
-            StoreError::WorkerUnavailable(e) => ApiError::Unavailable(e),
+            StoreError::NotFound => Self::NotFound,
+            StoreError::Sqlite(e) if is_transient_sqlite(&e) => Self::Unavailable(e.to_string()),
+            StoreError::Sqlite(e) => Self::Internal(e.to_string()),
+            StoreError::WorkerUnavailable(e) => Self::Unavailable(e),
         }
     }
 }
@@ -679,10 +682,12 @@ impl From<KeyCustodyError> for ApiError {
             // The store exists; its keys just aren't registered in this
             // process right now (a backend restart, a switch in progress).
             KeyCustodyError::UnknownWallet => {
-                ApiError::Unavailable("this store's keys are not available right now".to_string())
+                Self::Unavailable("this store's keys are not available right now".to_owned())
             }
-            KeyCustodyError::BackendUnavailable(m) => ApiError::Unavailable(m),
-            other => ApiError::Internal(other.to_string()),
+            KeyCustodyError::BackendUnavailable(m) => Self::Unavailable(m),
+            other @ (KeyCustodyError::InvalidKeyMaterial(_) | KeyCustodyError::ScanFailed(_)) => {
+                Self::Internal(other.to_string())
+            }
         }
     }
 }
@@ -697,7 +702,9 @@ impl From<crate::scanner::ScannerError> for ApiError {
             ScannerError::Daemon(e) => e.into(),
             ScannerError::Store(e) => e.into(),
             ScannerError::KeyCustody(e) => e.into(),
-            other => ApiError::Internal(other.to_string()),
+            other @ (ScannerError::InvalidPaymentEvidence(_) | ScannerError::Internal(_)) => {
+                Self::Internal(other.to_string())
+            }
         }
     }
 }
@@ -705,29 +712,29 @@ impl From<crate::scanner::ScannerError> for ApiError {
 /// A Monero node that didn't answer is down for now, not a bug: `503`.
 impl From<DaemonError> for ApiError {
     fn from(e: DaemonError) -> Self {
-        ApiError::Unavailable(format!("the Monero node did not answer: {e}"))
+        Self::Unavailable(format!("the Monero node did not answer: {e}"))
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
-            ApiError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
-            ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
-            ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
-            ApiError::Conflict(m) => (StatusCode::CONFLICT, m),
+            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_owned()),
+            Self::NotFound => (StatusCode::NOT_FOUND, "not found".to_owned()),
+            Self::Forbidden(m) => (StatusCode::FORBIDDEN, m),
+            Self::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            Self::Conflict(m) => (StatusCode::CONFLICT, m),
             // What went wrong is for the engine's own log, not the caller:
             // a database or custody message can carry SQL, file paths and
             // node addresses.
-            ApiError::Internal(m) => {
+            Self::Internal(m) => {
                 tracing::error!(error = %m, "request failed");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal error".to_string(),
+                    "internal error".to_owned(),
                 )
             }
-            ApiError::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, m),
+            Self::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, m),
         };
         (status, Json(json!({ "error": message }))).into_response()
     }

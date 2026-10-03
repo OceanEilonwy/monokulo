@@ -1,8 +1,8 @@
-//! Durable state for proof-of-work checking (docs/proof_of_work.md): which
-//! networks check, each one's anchor, its proven chain and the RandomX keys
+//! Durable state for proof-of-work checking (`docs/proof_of_work.md)`: which
+//! networks check, each one's anchor, its proven chain and the `RandomX` keys
 //! below it, and the settlement ceiling those give.
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension as _};
 use shared::network::SqlNetwork;
 
 use super::work::sql_height;
@@ -28,7 +28,7 @@ pub struct Anchor {
 }
 
 /// An anchor to write: itself, its window of blocks (oldest first, ending
-/// at the anchor) and the RandomX keys below the window that the blocks
+/// at the anchor) and the `RandomX` keys below the window that the blocks
 /// after it need.
 pub struct NewAnchor {
     pub agreed: u32,
@@ -54,11 +54,11 @@ fn read_hash(text: &str) -> rusqlite::Result<[u8; 32]> {
     let bytes = hex::decode(text).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
     })?;
-    bytes.try_into().map_err(|_| {
+    bytes.try_into().map_err(|bytes: Vec<u8>| {
         rusqlite::Error::FromSqlConversionFailure(
             0,
             rusqlite::types::Type::Text,
-            "a block hash that isn't 32 bytes".into(),
+            format!("a block hash of {} bytes, not 32", bytes.len()).into(),
         )
     })
 }
@@ -286,7 +286,7 @@ impl Store {
             .next())
     }
 
-    /// The RandomX key at `height` (a multiple of 2048): the proven block
+    /// The `RandomX` key at `height` (a multiple of 2048): the proven block
     /// there, or the key kept below the proven chain.
     pub fn proof_seed(&self, network: monero::Network, height: u64) -> Result<Option<[u8; 32]>> {
         if let Some(block) = self.proven_block(network, height)? {
@@ -330,7 +330,7 @@ impl Store {
         })
     }
 
-    /// Drops proven blocks below `keep_from`, keeping the RandomX keys among
+    /// Drops proven blocks below `keep_from`, keeping the `RandomX` keys among
     /// them that blocks from `keep_from` on may still need.
     pub fn prune_proven(&self, network: monero::Network, keep_from: u64) -> Result<()> {
         let oldest_key = crate::pow::seed_height(keep_from);
@@ -644,7 +644,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = store
             .create_tenant(
-                crate::store::NewTenant {
+                &crate::store::NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![],
                     primary_address: "4fixture".into(),
@@ -657,10 +657,10 @@ mod tests {
             .unwrap();
         let index = store.allocate_minor_index(&tenant.tenant.id).unwrap();
         let order = store
-            .create_order(crate::store::NewOrder {
+            .create_order(&crate::store::NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
-                tenant_id: tenant.tenant.id.clone(),
+                tenant_id: tenant.tenant.id,
                 merchant_order_id: None,
                 minor_index: index,
                 address: "fixture".into(),
@@ -679,7 +679,7 @@ mod tests {
         }
         let views = |store: &Store| {
             store
-                .proven_views(NET, &order, 120, &Default::default())
+                .proven_views(NET, &order, 120, &std::collections::HashSet::default())
                 .unwrap()
                 .unwrap()
         };
@@ -732,7 +732,7 @@ mod tests {
         // Checking off: no proven views at all.
         store.disable_proof(NET).unwrap();
         assert!(store
-            .proven_views(NET, &order, 120, &Default::default())
+            .proven_views(NET, &order, 120, &std::collections::HashSet::default())
             .unwrap()
             .is_none());
     }

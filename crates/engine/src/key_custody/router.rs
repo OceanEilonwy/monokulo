@@ -1,4 +1,4 @@
-//! Per-store key custody (admin_settings_v2.md part 5, decision D3).
+//! Per-store key custody (`admin_settings_v2.md` part 5, decision D3).
 //!
 //! A `CustodyRouter` holds one `KeyCustody` per enabled backend, by name
 //! (`plain`, `socket`), and is itself a `KeyCustody`, so everything that
@@ -39,9 +39,9 @@ impl CustodyRouter {
     /// A router over the given backends, `default` taking wallets registered
     /// without a backend name.
     pub fn new(backends: HashMap<String, Arc<dyn KeyCustody>>, default: &str) -> Self {
-        let router = CustodyRouter::default();
+        let router = Self::default();
         *router.backends.write() = backends;
-        *router.default_backend.write() = default.to_string();
+        default.clone_into(&mut router.default_backend.write());
         router
     }
 
@@ -50,10 +50,10 @@ impl CustodyRouter {
     pub fn plain() -> Self {
         let mut backends: HashMap<String, Arc<dyn KeyCustody>> = HashMap::new();
         backends.insert(
-            "plain".to_string(),
+            "plain".to_owned(),
             Arc::new(super::PlainKeyCustody::default()),
         );
-        CustodyRouter::new(backends, "plain")
+        Self::new(backends, "plain")
     }
 
     /// The backend called `name`, if enabled.
@@ -75,6 +75,10 @@ impl CustodyRouter {
     ///
     /// Returns the forgotten handles with the instance that issued them, so
     /// the caller can free them there (best effort - see `free_handles`).
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the router takes the new set as its own; callers build it to hand over"
+    )]
     pub fn replace(
         &self,
         backends: HashMap<String, Arc<dyn KeyCustody>>,
@@ -91,12 +95,12 @@ impl CustodyRouter {
                 return true;
             }
             if let Some(before) = old.get(name.as_str()) {
-                dropped.push((before.clone(), *handle));
+                dropped.push((Arc::clone(before), *handle));
             }
             false
         });
         self.epochs.write().retain(|name, _| kept(name));
-        *self.default_backend.write() = default.to_string();
+        default.clone_into(&mut self.default_backend.write());
         dropped
     }
 
@@ -152,7 +156,7 @@ impl CustodyRouter {
             .get(backend)
             .is_some_and(|current| same_instance(current, &custody))
         {
-            self.handles.write().insert(handle, backend.to_string());
+            self.handles.write().insert(handle, backend.to_owned());
             return Ok(handle);
         }
         drop(backends);
@@ -242,7 +246,9 @@ impl KeyCustody for CustodyRouter {
     /// and the caller registers them again). Returns the sum of the epochs,
     /// which only ever goes up.
     async fn check_state(&self) -> Result<u64, KeyCustodyError> {
-        let backends = self.backends();
+        // By name, so which backend's error is reported first doesn't vary.
+        let mut backends: Vec<_> = self.backends().into_iter().collect();
+        backends.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
         let mut total = 0;
         let mut first_error = None;
         for (name, custody) in backends {
@@ -258,7 +264,7 @@ impl KeyCustody for CustodyRouter {
                         self.handles.write().retain(|handle, backend| {
                             let keep = backend != &name;
                             if !keep {
-                                lost.push((custody.clone(), *handle));
+                                lost.push((Arc::clone(&custody), *handle));
                             }
                             keep
                         });
@@ -346,7 +352,7 @@ impl KeyCustody for CustodyRouter {
             {
                 Ok(Ok(_)) => None,
                 Ok(Err(e)) => Some(e.to_string()),
-                Err(_) => Some("did not answer within 2 seconds".to_string()),
+                Err(_) => Some("did not answer within 2 seconds".to_owned()),
             };
             health.push((name, error));
         }
@@ -356,13 +362,15 @@ impl KeyCustody for CustodyRouter {
 
 /// Whether two `Arc`s are the same backend instance.
 fn same_instance(a: &Arc<dyn KeyCustody>, b: &Arc<dyn KeyCustody>) -> bool {
-    std::ptr::eq(Arc::as_ptr(a) as *const (), Arc::as_ptr(b) as *const ())
+    std::ptr::eq(Arc::as_ptr(a).cast::<()>(), Arc::as_ptr(b).cast::<()>())
 }
 
 /// Removes forgotten handles from the backend instance that issued them, in
 /// the background and best effort: a backend that is down keeps them only
-/// until it restarts, which loses them anyway. Leaving them would keep a
-/// copy of a store's view key in a backend it no longer uses.
+/// until it restarts, which loses them anyway.
+///
+/// Leaving them would keep a copy of a store's view key in a backend it no
+/// longer uses.
 pub fn free_handles(handles: Vec<(Arc<dyn KeyCustody>, WalletHandle)>) {
     if handles.is_empty() {
         return;
@@ -402,8 +410,8 @@ mod tests {
         let a: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let b: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let mut backends = HashMap::new();
-        backends.insert("plain".to_string(), a.clone());
-        backends.insert("socket".to_string(), b.clone());
+        backends.insert("plain".to_owned(), Arc::clone(&a));
+        backends.insert("socket".to_owned(), Arc::clone(&b));
         (CustodyRouter::new(backends, "plain"), a, b)
     }
 
@@ -418,20 +426,19 @@ mod tests {
             .register_wallet_in("socket", material(3))
             .await
             .unwrap();
-        assert!(a
-            .derive_subaddress(in_a, SubaddressIndex::default(), Network::Mainnet)
+        a.derive_subaddress(in_a, SubaddressIndex::default(), Network::Mainnet)
             .await
-            .is_ok());
+            .unwrap();
         assert!(
             b.derive_subaddress(in_a, SubaddressIndex::default(), Network::Mainnet)
                 .await
                 .is_err(),
             "not in the other one"
         );
-        assert!(router
+        router
             .derive_subaddress(in_b, SubaddressIndex::default(), Network::Mainnet)
             .await
-            .is_ok());
+            .unwrap();
         assert_eq!(router.backend_of(in_b).as_deref(), Some("socket"));
     }
 
@@ -443,7 +450,7 @@ mod tests {
             .await
             .unwrap();
         let mut only_plain: HashMap<String, Arc<dyn KeyCustody>> = HashMap::new();
-        only_plain.insert("plain".to_string(), a);
+        only_plain.insert("plain".to_owned(), a);
         let dropped = router.replace(only_plain, "plain");
         assert_eq!(dropped.len(), 1);
         assert!(!router.handle_is_live(in_b));
@@ -451,7 +458,7 @@ mod tests {
             router.register_wallet_in("socket", material(5)).await,
             Err(KeyCustodyError::BackendUnavailable(_))
         ));
-        assert_eq!(router.enabled_backends(), vec!["plain".to_string()]);
+        assert_eq!(router.enabled_backends(), vec!["plain".to_owned()]);
     }
 
     #[tokio::test]
@@ -469,8 +476,8 @@ mod tests {
         let new_socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let dropped = router.replace(
             HashMap::from([
-                ("plain".to_string(), a.clone()),
-                ("socket".to_string(), new_socket),
+                ("plain".to_owned(), Arc::clone(&a)),
+                ("socket".to_owned(), new_socket),
             ]),
             "plain",
         );
@@ -576,9 +583,9 @@ mod tests {
     async fn a_restarted_backend_loses_only_its_own_handles() {
         let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let restartable = Arc::new(Restartable::default());
-        let socket: Arc<dyn KeyCustody> = restartable.clone();
+        let socket: Arc<dyn KeyCustody> = Arc::<Restartable>::clone(&restartable);
         let router = CustodyRouter::new(
-            HashMap::from([("plain".to_string(), plain), ("socket".to_string(), socket)]),
+            HashMap::from([("plain".to_owned(), plain), ("socket".to_owned(), socket)]),
             "plain",
         );
         let in_plain = router
@@ -672,18 +679,18 @@ mod tests {
             entered: tokio::sync::Notify::new(),
             gate: tokio::sync::Notify::new(),
         });
-        let old: Arc<dyn KeyCustody> = gated.clone();
+        let old: Arc<dyn KeyCustody> = Arc::<Gated>::clone(&gated);
         let router = Arc::new(CustodyRouter::new(
-            HashMap::from([("socket".to_string(), old)]),
+            HashMap::from([("socket".to_owned(), old)]),
             "socket",
         ));
         let registering = {
-            let router = router.clone();
+            let router = Arc::clone(&router);
             tokio::spawn(async move { router.register_wallet_in("socket", material(1)).await })
         };
         gated.entered.notified().await;
         let fresh: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-        router.replace(HashMap::from([("socket".to_string(), fresh)]), "socket");
+        router.replace(HashMap::from([("socket".to_owned(), fresh)]), "socket");
         gated.gate.notify_one();
         assert!(
             matches!(

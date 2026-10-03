@@ -77,7 +77,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
 /// trip, and the key images of those that are nowhere in another. A payment
 /// that stays nowhere and unproven (dropped, evicted) is then looked at
 /// less and less often, up to once a minute.
-async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(), ScannerError> {
+async fn vanished(round: &Round<'_>, tip: u64, until: Instant) -> Result<(), ScannerError> {
     let Some(txids) = round.pool_txids.clone() else {
         return Ok(());
     };
@@ -127,14 +127,14 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
         Ok(Ok(hints)) => hints,
         Ok(Err(error)) => {
             tracing::warn!(network = crate::network::network_str(network), error = %error, "asking about a page of vanished mempool payments at once failed; asking one by one");
-            Default::default()
+            crate::scanner::VanishedHints::default()
         }
         Err(_) => {
             tracing::warn!(
                 network = crate::network::network_str(network),
                 "asking about a page of vanished mempool payments at once took too long; asking one by one"
             );
-            Default::default()
+            crate::scanner::VanishedHints::default()
         }
     };
     // Until the time runs out (at least one), or the node fails: a node that
@@ -171,7 +171,7 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
                 } else {
                     unresolved.succeeded(&payment_id);
                 }
-                last = Some(id)
+                last = Some(id);
             }
             Ok(Err(ScannerError::Daemon(error))) => {
                 tracing::warn!(network = crate::network::network_str(network), error = %error, "checking a vanished mempool payment failed (retried)");
@@ -279,7 +279,7 @@ fn pick(
     let full = page.len() == RECOMPUTE_PAGE;
     let wrap = !full && !after.is_empty();
     let next_after = if full {
-        page.last().map(|id| id.to_string()).unwrap_or_default()
+        page.last().map_or_default(ToString::to_string)
     } else {
         String::new()
     };

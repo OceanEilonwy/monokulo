@@ -1,7 +1,11 @@
-//! The webhook HTTP delivery worker: claims due rows from `webhook_deliveries` and
-//! performs the actual outbound request, using the signing (`webhook_sign::sign_payload`)
-//! and SSRF address-classification (`webhook_sign::is_disallowed_address`) logic
-//! already built and tested in isolation. See `docs/DESIGN.md` §11.
+//! The webhook HTTP delivery worker.
+//!
+//! It claims due rows from `webhook_deliveries` and performs the actual
+//! outbound request, using the signing (`webhook_sign::sign_payload`) and SSRF
+//! address-classification (`webhook_sign::is_disallowed_address`) logic already
+//! built and tested in isolation.
+//!
+//! See `docs/DESIGN.md` §11.
 //!
 //! Runs as a loop separate from the writer/scanner, exactly so a slow or hostile
 //! merchant endpoint can never stall order-state commits (§DESIGN.md §9).
@@ -15,14 +19,15 @@ use serde_json::Value;
 use crate::store::{DueDelivery, SharedStore};
 use crate::webhook_sign::{is_disallowed_address, sign_payload};
 
-/// The one HTTP client webhooks are sent with. Its resolver is what makes
-/// the SSRF check hold: the addresses a name resolves to are checked
-/// (`is_disallowed_address`) by the lookup the connection is made from,
-/// not by a separate lookup an attacker's DNS could answer differently; a
-/// name with any private address among its answers isn't connected to at
-/// all. One client, not one per delivery: building a client loads and
-/// parses the system's CA store with blocking file I/O, and a new client
-/// has no connection to reuse.
+/// The one HTTP client webhooks are sent with.
+///
+/// Its resolver is what makes the SSRF check hold: the addresses a name
+/// resolves to are checked (`is_disallowed_address`) by the lookup the
+/// connection is made from, not by a separate lookup an attacker's DNS
+/// could answer differently; a name with any private address among its
+/// answers isn't connected to at all. One client, not one per delivery:
+/// building a client loads and parses the system's CA store with blocking
+/// file I/O, and a new client has no connection to reuse.
 ///
 /// `allow_private` is live (`webhooks.allow_private_urls`, read each tick):
 /// a self-hoster testing against their own LAN turns the check off.
@@ -41,10 +46,10 @@ impl WebhookClient {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .dns_resolver(Arc::new(CheckingResolver {
-                allow_private: allow_private.clone(),
+                allow_private: Arc::clone(&allow_private),
             }))
             .build()?;
-        Ok(WebhookClient {
+        Ok(Self {
             client,
             allow_private,
         })
@@ -75,29 +80,31 @@ impl reqwest::dns::Resolve for CheckingResolver {
             let addrs: Vec<std::net::SocketAddr> =
                 tokio::net::lookup_host((name.as_str(), 0)).await?.collect();
             if addrs.is_empty() {
-                return Err(
-                    Box::new(DeliveryError::UnresolvableHost(name.as_str().to_string()))
-                        as Box<dyn std::error::Error + Send + Sync>,
-                );
+                return Err(BoxError::from(DeliveryError::UnresolvableHost(
+                    name.as_str().to_owned(),
+                )));
             }
             // Every answer has to pass, not just the one that gets used: a
             // name resolving to both a public and a private address is the
             // rebinding pattern this defends against, not a partly
             // acceptable target.
             if !allow_private && addrs.iter().any(|addr| is_disallowed_address(addr.ip())) {
-                return Err(Box::new(DeliveryError::SsrfBlocked)
-                    as Box<dyn std::error::Error + Send + Sync>);
+                return Err(BoxError::from(DeliveryError::SsrfBlocked));
             }
-            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+            Ok::<reqwest::dns::Addrs, BoxError>(Box::new(addrs.into_iter()))
         })
     }
 }
 
-/// Fallback attempt ceiling, matching `WebhooksConfig::default()`. Only used by
-/// callers that have no configuration to consult (the tests below); `main` passes
-/// `webhooks.max_attempts` through instead. Kept in sync with that default on
-/// purpose - the two disagreeing would make the tests here prove something about a
-/// number production never uses.
+/// The error a `reqwest` resolver answers with.
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Fallback attempt ceiling, matching `WebhooksConfig::default()`.
+///
+/// Only used by callers that have no configuration to consult (the tests below);
+/// `main` passes `webhooks.max_attempts` through instead. Kept in sync with that
+/// default on purpose - the two disagreeing would make the tests here prove
+/// something about a number production never uses.
 pub const DEFAULT_MAX_ATTEMPTS: u32 = 8;
 
 /// Exponential backoff, capped: 1m, 2m, 4m, ... up to 1h.
@@ -143,11 +150,7 @@ fn check_ip_literal(url: &url::Url, allow_private: bool) -> Result<(), DeliveryE
 fn event_id_of(delivery: &DueDelivery) -> String {
     serde_json::from_str::<Value>(&delivery.payload_json)
         .ok()
-        .and_then(|v| {
-            v.get("event_id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
+        .and_then(|v| v.get("event_id").and_then(Value::as_str).map(str::to_owned))
         .unwrap_or_else(|| delivery.delivery_id.to_string())
 }
 
@@ -174,9 +177,11 @@ pub struct DeliveryOutcome {
     pub error: Option<String>,
 }
 
-/// Performs one delivery attempt: SSRF-validates the resolved address, signs the
-/// payload, sends the request with redirects disabled (a redirect to a private
-/// address must not be followed blindly - §DESIGN.md §11) and a bounded timeout.
+/// Performs one delivery attempt.
+///
+/// SSRF-validates the resolved address, signs the payload, sends the request
+/// with redirects disabled (a redirect to a private address must not be
+/// followed blindly - §DESIGN.md §11) and a bounded timeout.
 pub async fn attempt_delivery(
     client: &WebhookClient,
     delivery: &DueDelivery,
@@ -303,6 +308,7 @@ const DELIVERY_PER_TENANT: u32 = 4;
 
 /// Sends one batch of due deliveries, concurrently, picked fairly across
 /// stores (`Store::due_webhook_deliveries_fair`), and records each outcome.
+///
 /// A delivery that fails is rescheduled with backoff up to `max_attempts`
 /// (`webhooks.max_attempts`), after which it is given up: visible through
 /// the admin API, never retried forever or dropped in silence. Returns how
@@ -318,7 +324,7 @@ pub async fn run_delivery_tick(
     max_attempts: u32,
     now: i64,
 ) -> Result<usize, crate::store::StoreError> {
-    let db = crate::store::Db::over_shared(store.clone());
+    let db = crate::store::Db::over_shared(Arc::clone(store));
     run_delivery_tick_on(&db, client, timeout, max_attempts, now).await
 }
 
@@ -331,7 +337,7 @@ pub async fn run_delivery_tick_on(
     now: i64,
 ) -> Result<usize, crate::store::StoreError> {
     use crate::store::db::Class;
-    use futures_util::stream::{self, StreamExt};
+    use futures_util::stream::{self, StreamExt as _};
 
     let due = db
         .run(Class::Webhook, move |s| {
@@ -413,10 +419,9 @@ mod tests {
     use crate::store::Store;
     use axum::extract::State;
     use axum::http::HeaderMap;
-    use axum::response::IntoResponse;
+    use axum::response::IntoResponse as _;
     use axum::routing::post;
     use axum::Router;
-    use std::sync::Arc;
 
     /// A client that may (or may not) reach the test servers on loopback.
     fn test_client_allowing_private(allow: bool) -> WebhookClient {
@@ -438,8 +443,6 @@ mod tests {
     {
         #[derive(Clone)]
         struct Shared(Arc<dyn Fn(HeaderMap) -> axum::response::Response + Send + Sync>);
-        let shared = Shared(Arc::new(handler));
-
         async fn hook(
             State(shared): State<Shared>,
             headers: HeaderMap,
@@ -447,6 +450,7 @@ mod tests {
         ) -> axum::response::Response {
             (shared.0)(headers)
         }
+        let shared = Shared(Arc::new(handler));
 
         let app = Router::new().route("/hook", post(hook)).with_state(shared);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -465,7 +469,7 @@ mod tests {
             event_type: "order.paid".into(),
             payload_json: "{\"event\":\"order.paid\"}".into(),
             attempt_count: 0,
-            url: url.to_string(),
+            url: url.to_owned(),
             extra_headers_json: "{}".into(),
             signing_secret: live_settings::Secret::new(signing_secret),
         }
@@ -476,12 +480,12 @@ mod tests {
         use axum::http::StatusCode;
         let captured_signature: Arc<parking_lot::Mutex<Option<String>>> =
             Arc::new(parking_lot::Mutex::new(None));
-        let captured_clone = captured_signature.clone();
+        let captured_clone = Arc::clone(&captured_signature);
         let url = spawn_test_server(move |headers| {
             let sig = headers
                 .get("X-Monokulo-Signature")
                 .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
+                .map(str::to_owned);
             *captured_clone.lock() = sig;
             StatusCode::OK.into_response()
         })
@@ -509,12 +513,12 @@ mod tests {
         use axum::http::StatusCode;
         let captured: Arc<parking_lot::Mutex<Option<String>>> =
             Arc::new(parking_lot::Mutex::new(None));
-        let captured_clone = captured.clone();
+        let captured_clone = Arc::clone(&captured);
         let url = spawn_test_server(move |headers| {
             *captured_clone.lock() = headers
                 .get("X-Monokulo-Event-Id")
                 .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
+                .map(str::to_owned);
             StatusCode::OK.into_response()
         })
         .await;
@@ -528,7 +532,7 @@ mod tests {
         assert!(outcome.delivered);
         assert_eq!(
             *captured.lock(),
-            Some("evt_abc123".to_string()),
+            Some("evt_abc123".to_owned()),
             "the header must repeat the id from the signed body, never a separately-generated one"
         );
     }
@@ -541,10 +545,10 @@ mod tests {
     /// round-robin between a public and a private address).
     #[tokio::test]
     async fn the_resolver_refuses_a_name_with_a_private_address_and_answers_otherwise() {
-        use reqwest::dns::Resolve;
+        use reqwest::dns::Resolve as _;
         let allow_private = Arc::new(AtomicBool::new(false));
         let resolver = CheckingResolver {
-            allow_private: allow_private.clone(),
+            allow_private: Arc::clone(&allow_private),
         };
         let name = |host: &str| host.parse::<reqwest::dns::Name>().unwrap();
         let refused = match resolver.resolve(name("localhost")).await {
@@ -579,10 +583,10 @@ mod tests {
             check_ip_literal(&url("http://127.0.0.1/hook"), false),
             Err(DeliveryError::SsrfBlocked)
         ));
-        assert!(check_ip_literal(&url("https://[2606:4700:4700::1111]/hook"), false).is_ok());
-        assert!(check_ip_literal(&url("https://1.1.1.1/hook"), false).is_ok());
-        assert!(check_ip_literal(&url("https://shop.example/hook"), false).is_ok());
-        assert!(check_ip_literal(&url("http://[::1]/hook"), true).is_ok());
+        check_ip_literal(&url("https://[2606:4700:4700::1111]/hook"), false).unwrap();
+        check_ip_literal(&url("https://1.1.1.1/hook"), false).unwrap();
+        check_ip_literal(&url("https://shop.example/hook"), false).unwrap();
+        check_ip_literal(&url("http://[::1]/hook"), true).unwrap();
     }
 
     #[tokio::test]
@@ -594,7 +598,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = store
             .create_tenant(
-                crate::store::NewTenant {
+                &crate::store::NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![],
                     primary_address: "4x".into(),
@@ -606,7 +610,7 @@ mod tests {
             )
             .unwrap();
         let order = store
-            .create_order(crate::store::NewOrder {
+            .create_order(&crate::store::NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: tenant.tenant.id.clone(),
@@ -691,7 +695,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = store
             .create_tenant(
-                crate::store::NewTenant {
+                &crate::store::NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![],
                     primary_address: "4x".into(),
@@ -703,7 +707,7 @@ mod tests {
             )
             .unwrap();
         let order = store
-            .create_order(crate::store::NewOrder {
+            .create_order(&crate::store::NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: tenant.tenant.id.clone(),
@@ -777,7 +781,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = store
             .create_tenant(
-                crate::store::NewTenant {
+                &crate::store::NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![],
                     primary_address: "4x".into(),
@@ -789,7 +793,7 @@ mod tests {
             )
             .unwrap();
         let order = store
-            .create_order(crate::store::NewOrder {
+            .create_order(&crate::store::NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: tenant.tenant.id.clone(),
@@ -865,13 +869,13 @@ mod tests {
         status: u16,
     ) -> (String, Arc<std::sync::atomic::AtomicU64>) {
         let hits = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let counter = hits.clone();
+        let counter = Arc::clone(&hits);
         let app = Router::new().route(
             "/hook",
             post(move |_body: String| {
-                let counter = counter.clone();
+                let counter = Arc::clone(&counter);
                 async move {
-                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    counter.fetch_add(1, Ordering::SeqCst);
                     tokio::time::sleep(delay).await;
                     axum::http::StatusCode::from_u16(status).unwrap()
                 }
@@ -896,7 +900,7 @@ mod tests {
         use crate::store::{NewOrder, NewTenant};
         let tenant = store
             .create_tenant(
-                NewTenant {
+                &NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![],
                     primary_address: "4x".into(),
@@ -915,7 +919,7 @@ mod tests {
         for _ in 0..orders {
             let index = store.allocate_minor_index(&tenant.id).unwrap();
             let order = store
-                .create_order(NewOrder {
+                .create_order(&NewOrder {
                     idempotency_key: None,
                     confirmations_required_override: None,
                     tenant_id: tenant.id.clone(),
@@ -1041,7 +1045,7 @@ mod tests {
             "the other store's webhook went out in the first tick"
         );
         assert_eq!(
-            slow_hits.load(std::sync::atomic::Ordering::SeqCst),
+            slow_hits.load(Ordering::SeqCst),
             DELIVERY_PER_TENANT as u64,
             "the busy store got its fair share, not the whole batch"
         );
@@ -1054,11 +1058,11 @@ mod tests {
     #[tokio::test]
     async fn cancelling_a_batch_keeps_outcomes_that_already_completed() {
         let started = Arc::new(tokio::sync::Notify::new());
-        let signal = started.clone();
+        let signal = Arc::clone(&started);
         let app = Router::new().route(
             "/hook",
             post(move || {
-                let signal = signal.clone();
+                let signal = Arc::clone(&signal);
                 async move {
                     signal.notify_one();
                     std::future::pending::<axum::http::StatusCode>().await
@@ -1079,7 +1083,7 @@ mod tests {
             tokio::pin!(tick);
             tokio::select! {
                 result = &mut tick => panic!("batch unexpectedly completed: {result:?}"),
-                _ = started.notified() => {}
+                () = started.notified() => {}
             }
         }
         server.abort();
@@ -1140,15 +1144,11 @@ mod tests {
         run_delivery_tick(&store, &test_client(), Duration::from_secs(5), 8, 1000)
             .await
             .unwrap();
-        assert_eq!(
-            hits.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "the older one first, alone"
-        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "the older one first, alone");
         run_delivery_tick(&store, &test_client(), Duration::from_secs(5), 8, 1000)
             .await
             .unwrap();
-        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
         assert_eq!(pending_for(&store, &webhook), 0);
     }
 

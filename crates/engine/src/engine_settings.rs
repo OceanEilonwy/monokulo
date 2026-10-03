@@ -1,6 +1,8 @@
 //! Every engine setting, declared once with the `live-settings` library
-//! (admin_settings_v2.md part 1), grouped into the sections each part of the
-//! engine depends on, so a saved setting reaches the running engine.
+//! (`admin_settings_v2.md` part 1).
+//!
+//! The settings are grouped into the sections each part of the engine depends
+//! on, so a saved setting reaches the running engine.
 //!
 //! Keys, environment variables, defaults and ranges are the same as before
 //! (`settings.rs`, `http::instance_admin::validate_scalar`). New: every
@@ -168,7 +170,7 @@ settings! {
         default: 8,
         // Up to 1 TB here; what this machine allows is checked with the
         // other networks' budgets (`max_scan_budget_mb`).
-        check: range(1, 1_048_576),
+        check: range(1, 0x0010_0000),
         description: "Megabytes of block data each network's scan holds at once while catching up. Every network's budget together must fit in 80 % of the engine's memory.",
         example: "8",
     },
@@ -231,7 +233,7 @@ settings! {
     },
     LOGGING_LEVEL: String {
         key: "logging.level",
-        default: telemetry::DEFAULT_LEVEL.to_string(),
+        default: telemetry::DEFAULT_LEVEL.to_owned(),
         check: telemetry::check_level,
         description: "Which log lines the engine writes: a level (error, warn, info, debug, trace), optionally followed by target=level pairs for parts of the engine.",
         example: "info,engine::loops=debug",
@@ -284,9 +286,9 @@ pub const NETWORKS: [(
     ("testnet", &MONERO_NODE_TESTNET),
 ];
 
-/// Log level and development mode (structured_logging.md task 1.3), applied
+/// Log level and development mode (`structured_logging.md` task 1.3), applied
 /// to the process-wide subscriber by `telemetry::LogReloadable`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoggingConfig(pub telemetry::LogConfig);
 
 impl AsRef<telemetry::LogConfig> for LoggingConfig {
@@ -308,20 +310,20 @@ impl Section for LoggingConfig {
         ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
-        Ok(LoggingConfig(telemetry::LogConfig {
-            level: snapshot.get(&LOGGING_LEVEL).trim().to_string(),
+        Ok(Self(telemetry::LogConfig {
+            level: snapshot.get(&LOGGING_LEVEL).trim().to_owned(),
             dev_mode_until: snapshot.get(&LOGGING_DEV_MODE_UNTIL),
             retention_days: snapshot.get(&LOGGING_RETENTION_DAYS),
             max_mb: snapshot.get(&LOGGING_MAX_MB),
-            otlp_endpoint: snapshot.get(&LOGGING_OTLP_ENDPOINT).trim().to_string(),
-            otlp_headers: snapshot.get(&LOGGING_OTLP_HEADERS).expose().to_string(),
+            otlp_endpoint: snapshot.get(&LOGGING_OTLP_ENDPOINT).trim().to_owned(),
+            otlp_headers: snapshot.get(&LOGGING_OTLP_HEADERS).expose().to_owned(),
         }))
     }
 }
 
 /// What the engine needs before its settings store exists, or must never
 /// keep in it: read from the environment only (`env_only`), at start.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootConfig {
     pub database_path: PathBuf,
     pub token: live_settings::Secret,
@@ -334,7 +336,7 @@ impl Section for BootConfig {
         &[&DATABASE_PATH, &SERVER_TOKEN, &LOGGING_FORMAT]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
-        Ok(BootConfig {
+        Ok(Self {
             database_path: snapshot.get(&DATABASE_PATH),
             token: snapshot.get(&SERVER_TOKEN),
             log_format: snapshot.get(&LOGGING_FORMAT),
@@ -346,7 +348,7 @@ impl Section for BootConfig {
 /// certificates are refused from all of them.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct NodeConfig {
-    pub nodes: HashMap<&'static str, MoneroNodeSetting>,
+    pub nodes: std::collections::BTreeMap<&'static str, MoneroNodeSetting>,
     pub strict_tls: bool,
 }
 
@@ -361,13 +363,13 @@ impl Section for NodeConfig {
         ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
-        let mut nodes = HashMap::new();
+        let mut nodes = std::collections::BTreeMap::new();
         for (network, setting) in NETWORKS {
             if let Some(Json(node)) = snapshot.get(setting) {
                 nodes.insert(network, node);
             }
         }
-        Ok(NodeConfig {
+        Ok(Self {
             nodes,
             strict_tls: snapshot.get(&MONERO_NODE_STRICT_TLS),
         })
@@ -375,14 +377,14 @@ impl Section for NodeConfig {
 }
 
 /// What each scan tick reads (task 2.3).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanConfig {
     pub reorg_check_depth: u64,
     pub poll_interval: Duration,
     pub expired_order_grace_period_seconds: i64,
     pub scan_chunk_memory_budget_mb: u32,
     /// The networks whose blocks' proof of work is checked
-    /// (docs/proof_of_work.md).
+    /// (`docs/proof_of_work.md`).
     pub proof_of_work: Vec<monero::Network>,
 }
 
@@ -416,7 +418,7 @@ impl Section for ScanConfig {
                 )]);
             }
         }
-        Ok(ScanConfig {
+        Ok(Self {
             reorg_check_depth: snapshot.get(&PAYMENT_REORG_CHECK_DEPTH),
             poll_interval: Duration::from_millis(snapshot.get(&PAYMENT_MEMPOOL_POLL_INTERVAL_MS)),
             expired_order_grace_period_seconds: snapshot
@@ -437,7 +439,7 @@ impl Section for ScanConfig {
 }
 
 /// The share of the engine's memory every network's scan budget may take
-/// together (docs/engine_scaling.md section 3).
+/// together (`docs/engine_scaling.md` section 3).
 const SCAN_MEMORY_SHARE: f64 = 0.8;
 /// What a budget really costs: the block cache, plus a response being
 /// decoded (at most an eighth of the budget, held briefly twice).
@@ -487,7 +489,7 @@ fn human_bytes(bytes: u64) -> String {
 }
 
 /// What each webhook delivery attempt reads (task 2.4).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebhookConfig {
     pub allow_private_urls: bool,
     pub delivery_timeout: Duration,
@@ -504,7 +506,7 @@ impl Section for WebhookConfig {
         ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
-        Ok(WebhookConfig {
+        Ok(Self {
             allow_private_urls: snapshot.get(&WEBHOOKS_ALLOW_PRIVATE_URLS),
             delivery_timeout: Duration::from_millis(snapshot.get(&WEBHOOKS_DELIVERY_TIMEOUT_MS)),
             max_attempts: snapshot.get(&WEBHOOKS_MAX_ATTEMPTS),
@@ -513,7 +515,7 @@ impl Section for WebhookConfig {
 }
 
 /// API request limits (tasks 2.5, 2.6).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiLimits {
     pub rate_limit_per_token_per_min: u32,
     pub max_body_bytes: usize,
@@ -525,7 +527,7 @@ impl Section for ApiLimits {
         &[&SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN, &SERVER_MAX_BODY_BYTES]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
-        Ok(ApiLimits {
+        Ok(Self {
             rate_limit_per_token_per_min: snapshot.get(&SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN),
             max_body_bytes: snapshot.get(&SERVER_MAX_BODY_BYTES),
         })
@@ -533,7 +535,7 @@ impl Section for ApiLimits {
 }
 
 /// Defaults for tenants created without their own values (task 2.9).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TenantDefaults {
     pub confirmations_required: u64,
     pub order_expiry_seconds: i64,
@@ -548,7 +550,7 @@ impl Section for TenantDefaults {
         ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
-        Ok(TenantDefaults {
+        Ok(Self {
             confirmations_required: snapshot.get(&PAYMENT_CONFIRMATIONS_REQUIRED),
             order_expiry_seconds: snapshot.get(&PAYMENT_ORDER_EXPIRY_MINUTES) * 60,
         })
@@ -557,7 +559,7 @@ impl Section for TenantDefaults {
 
 /// Read once at start: the listen address, the thread count (tasks 2.7,
 /// 2.8, decisions D1 and D8) and the database's read connections.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
     pub bind: std::net::SocketAddr,
     pub worker_threads: usize,
@@ -574,7 +576,7 @@ impl Section for RuntimeConfig {
         ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
-        Ok(RuntimeConfig {
+        Ok(Self {
             bind: snapshot.get(&SERVER_BIND).0,
             worker_threads: snapshot.get(&SERVER_WORKER_THREADS),
             read_connections: snapshot.get(&DATABASE_READ_CONNECTIONS),
@@ -584,7 +586,7 @@ impl Section for RuntimeConfig {
 
 /// Which key custody backends are enabled, and which new stores get
 /// (task 5.2, decision D3).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustodyConfig {
     pub enabled: Vec<CustodyBackend>,
     pub default: CustodyBackend,
@@ -622,7 +624,9 @@ impl Section for CustodyConfig {
                 KEY_CUSTODY_ENABLED_BACKENDS.key,
                 "Enable at least one backend.",
             ));
-        } else if !enabled.contains(&default) {
+        } else if enabled.contains(&default) {
+            // The default is one of the enabled backends: nothing to report.
+        } else {
             errors.push(FieldError::new(
                 KEY_CUSTODY_DEFAULT_BACKEND.key,
                 format!(
@@ -638,7 +642,7 @@ impl Section for CustodyConfig {
             ));
         }
         if errors.is_empty() {
-            Ok(CustodyConfig {
+            Ok(Self {
                 enabled,
                 default,
                 socket_path,
@@ -650,14 +654,15 @@ impl Section for CustodyConfig {
     }
 }
 
-/// Applies saved custody settings to the router (task 5.2). Backends that
-/// stay enabled keep their instance, so their wallets stay registered; a
-/// newly enabled socket backend connects now, and if nothing answers yet it
-/// is enabled anyway with a warning, and connects when the server appears.
-/// A disabled backend's stores stop being scanned; their sealed keys stay in
-/// the database, so enabling it again brings them back. A socket backend
-/// that stays at its path keeps its instance whatever else changes: a new
-/// number of connections is set on the client in use.
+/// Applies saved custody settings to the router (task 5.2).
+///
+/// Backends that stay enabled keep their instance, so their wallets stay
+/// registered; a newly enabled socket backend connects now, and if nothing
+/// answers yet it is enabled anyway with a warning, and connects when the
+/// server appears. A disabled backend's stores stop being scanned; their
+/// sealed keys stay in the database, so enabling it again brings them back.
+/// A socket backend that stays at its path keeps its instance whatever else
+/// changes: a new number of connections is set on the client in use.
 pub struct CustodyReloadable {
     router: Arc<crate::key_custody::CustodyRouter>,
     /// The router's socket backend, as the client it is: the router only
@@ -698,38 +703,37 @@ impl live_settings::Reloadable for CustodyReloadable {
         let mut socket = None;
         let mut warnings = Vec::new();
         for backend in &new.enabled {
-            let name = backend.as_str().to_string();
+            let name = backend.as_str().to_owned();
             let custody: Arc<dyn crate::key_custody::KeyCustody> = match backend {
                 CustodyBackend::Plain => match current.get(&name) {
-                    Some(existing) => existing.clone(),
+                    Some(existing) => Arc::clone(existing),
                     None => Arc::new(crate::key_custody::PlainKeyCustody::default()),
                 },
                 CustodyBackend::Socket => {
                     let in_use = self.socket.lock().clone().filter(|_| {
                         current.contains_key(&name) && new.socket_path == old.socket_path
                     });
-                    let client = match in_use {
-                        Some(client) => client,
-                        None => {
-                            // `CustodyConfig` guarantees the path when socket is on.
-                            let path = new.socket_path.clone().unwrap_or_default();
-                            let timeout = key_custody_service::client::DEFAULT_CALL_TIMEOUT;
-                            match SocketKeyCustody::connect_with_timeout(&path, timeout).await {
-                                Ok(client) => Arc::new(client),
-                                Err(e) => {
-                                    warnings.push(live_settings::Warning::for_key(
-                                        KEY_CUSTODY_SOCKET_PATH.key,
-                                        format!(
-                                            "Saved, but no key-custody-server answers at {} yet ({e}). Stores on the socket backend aren't scanned until it does; it's picked up by itself.",
-                                            path.display()
-                                        ),
-                                    ));
-                                    Arc::new(SocketKeyCustody::not_connected_yet(&path, timeout))
-                                }
+                    let client = if let Some(client) = in_use {
+                        client
+                    } else {
+                        // `CustodyConfig` guarantees the path when socket is on.
+                        let path = new.socket_path.clone().unwrap_or_default();
+                        let timeout = key_custody_service::client::DEFAULT_CALL_TIMEOUT;
+                        match SocketKeyCustody::connect_with_timeout(&path, timeout).await {
+                            Ok(client) => Arc::new(client),
+                            Err(e) => {
+                                warnings.push(live_settings::Warning::for_key(
+                                    KEY_CUSTODY_SOCKET_PATH.key,
+                                    format!(
+                                        "Saved, but no key-custody-server answers at {} yet ({e}). Stores on the socket backend aren't scanned until it does; it's picked up by itself.",
+                                        path.display()
+                                    ),
+                                ));
+                                Arc::new(SocketKeyCustody::not_connected_yet(&path, timeout))
                             }
                         }
                     };
-                    socket = Some((client.clone(), new.socket_connections()));
+                    socket = Some((Arc::clone(&client), new.socket_connections()));
                     client
                 }
             };
@@ -737,7 +741,7 @@ impl live_settings::Reloadable for CustodyReloadable {
         }
         let prepared = PreparedCustody {
             backends,
-            default: new.default.as_str().to_string(),
+            default: new.default.as_str().to_owned(),
             socket,
         };
         Ok((prepared, warnings))
@@ -834,15 +838,15 @@ fn defaults_of<S: Section>() -> S {
     // anyway rather than panic.
     match S::from_snapshot(&Snapshot::defaults()) {
         Ok(section) => section,
-        Err(errors) => unreachable_defaults::<S>(errors),
+        Err(errors) => unreachable_defaults::<S>(&errors),
     }
 }
 
-#[allow(
+#[expect(
     clippy::panic,
     reason = "the tests prove every section builds from its defaults"
 )]
-fn unreachable_defaults<S: Section>(errors: Vec<FieldError>) -> S {
+fn unreachable_defaults<S: Section>(errors: &[FieldError]) -> S {
     panic!(
         "{} doesn't build from its own defaults: {errors:?}",
         S::NAME
@@ -853,7 +857,7 @@ impl EngineSettings {
     /// Default values and no registry, for tests that only need an engine
     /// running with ordinary settings.
     pub fn defaults() -> Arc<Self> {
-        Arc::new(EngineSettings {
+        Arc::new(Self {
             registry: None,
             env: live_settings::Env::fixed(Vec::<(String, String)>::new()),
             nodes: Live::new(NodeConfig::default()),
@@ -879,7 +883,7 @@ pub struct Daemons(Arc<parking_lot::RwLock<Arc<DaemonMap>>>);
 impl Daemons {
     /// A fixed set, for tests and tools that don't change nodes.
     pub fn fixed(map: DaemonMap) -> Self {
-        Daemons(Arc::new(parking_lot::RwLock::new(Arc::new(map))))
+        Self(Arc::new(parking_lot::RwLock::new(Arc::new(map))))
     }
 
     pub fn snapshot(&self) -> Arc<DaemonMap> {
@@ -925,10 +929,11 @@ pub fn build_daemon_client(
     Ok(FallbackDaemonClient::new(nodes))
 }
 
-/// Applies saved node settings to the running engine (task 2.1): networks
-/// whose node settings didn't change keep their client (and its node health
-/// and cooldowns); changed ones get a new client, as does every network when
-/// `monero_node.strict_tls` changes; removed ones go.
+/// Applies saved node settings to the running engine (task 2.1).
+///
+/// Networks whose node settings didn't change keep their client (and its
+/// node health and cooldowns); changed ones get a new client, as does every
+/// network when `monero_node.strict_tls` changes; removed ones go.
 pub struct NodesReloadable {
     pub daemons: Daemons,
 }
@@ -949,13 +954,12 @@ impl live_settings::Reloadable for NodesReloadable {
             let setting = NETWORKS
                 .iter()
                 .find(|(n, _)| n == name)
-                .map(|(_, s)| s.key)
-                .unwrap_or("monero_node");
+                .map_or("monero_node", |(_, s)| s.key);
             let network = crate::network::parse_network(name)
                 .map_err(|e| FieldError::new(setting, e.to_string()))?;
             let unchanged = old.nodes.get(name) == Some(node) && old.strict_tls == new.strict_tls;
             let client = match current.get(&network) {
-                Some(existing) if unchanged => existing.clone(),
+                Some(existing) if unchanged => Arc::clone(existing),
                 _ => Arc::new(
                     build_daemon_client(node, new.strict_tls)
                         .map_err(|e| FieldError::new(setting, e))?,
@@ -994,9 +998,9 @@ impl live_settings::Reloadable for LimitsReloadable {
         Ok((new.clone(), Vec::new()))
     }
 
-    async fn install(&self, limits: ApiLimits) {
+    async fn install(&self, prepared: ApiLimits) {
         self.rate_limiter
-            .set_limit(limits.rate_limit_per_token_per_min);
+            .set_limit(prepared.rate_limit_per_token_per_min);
     }
 
     fn boot_policy(&self) -> live_settings::BootPolicy {
@@ -1095,7 +1099,7 @@ impl EngineSettings {
         }
         // Each invalid value and each section on its defaults was already
         // logged once, by `build`.
-        Ok(Arc::new(EngineSettings {
+        Ok(Arc::new(Self {
             registry: Some(registry),
             env,
             nodes,
@@ -1140,14 +1144,14 @@ mod tests {
         let max = max_scan_budget_mb(limit, 1);
         let snapshot = |budget: u32| {
             Snapshot::new(
-                std::collections::HashMap::from([(
-                    PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB.key.to_string(),
+                HashMap::from([(
+                    PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB.key.to_owned(),
                     budget.to_string(),
                 )]),
                 live_settings::Env::fixed(Vec::<(String, String)>::new()),
             )
         };
-        assert!(ScanConfig::from_snapshot(&snapshot(max)).is_ok());
+        ScanConfig::from_snapshot(&snapshot(max)).unwrap();
         let errors = ScanConfig::from_snapshot(&snapshot(max + 1)).unwrap_err();
         assert_eq!(errors[0].key, PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB.key);
         assert!(
@@ -1173,22 +1177,24 @@ mod tests {
 
     #[test]
     fn the_old_ranges_are_kept() {
-        assert!(PAYMENT_REORG_CHECK_DEPTH.parse("10000").is_ok());
-        assert!(PAYMENT_REORG_CHECK_DEPTH.parse("10001").is_err());
-        assert!(PAYMENT_CONFIRMATIONS_REQUIRED.parse("0").is_ok());
-        assert!(PAYMENT_CONFIRMATIONS_REQUIRED.parse("721").is_err());
-        assert!(SERVER_MAX_BODY_BYTES.parse("255").is_err());
-        assert!(KEY_CUSTODY_DEFAULT_BACKEND.parse("enclave").is_err());
-        assert!(KEY_CUSTODY_ENABLED_BACKENDS.parse("plain,enclave").is_err());
+        PAYMENT_REORG_CHECK_DEPTH.parse("10000").unwrap();
+        PAYMENT_REORG_CHECK_DEPTH.parse("10001").unwrap_err();
+        PAYMENT_CONFIRMATIONS_REQUIRED.parse("0").unwrap();
+        PAYMENT_CONFIRMATIONS_REQUIRED.parse("721").unwrap_err();
+        SERVER_MAX_BODY_BYTES.parse("255").unwrap_err();
+        KEY_CUSTODY_DEFAULT_BACKEND.parse("enclave").unwrap_err();
+        KEY_CUSTODY_ENABLED_BACKENDS
+            .parse("plain,enclave")
+            .unwrap_err();
     }
 
     #[test]
     fn socket_connections_may_be_left_empty_or_set_from_1_to_1024() {
         assert_eq!(KEY_CUSTODY_SOCKET_CONNECTIONS.parse("").unwrap(), None);
         assert_eq!(KEY_CUSTODY_SOCKET_CONNECTIONS.parse("8").unwrap(), Some(8));
-        assert!(KEY_CUSTODY_SOCKET_CONNECTIONS.parse("1024").is_ok());
-        assert!(KEY_CUSTODY_SOCKET_CONNECTIONS.parse("0").is_err());
-        assert!(KEY_CUSTODY_SOCKET_CONNECTIONS.parse("1025").is_err());
+        KEY_CUSTODY_SOCKET_CONNECTIONS.parse("1024").unwrap();
+        KEY_CUSTODY_SOCKET_CONNECTIONS.parse("0").unwrap_err();
+        KEY_CUSTODY_SOCKET_CONNECTIONS.parse("1025").unwrap_err();
         assert_eq!(defaults_of::<CustodyConfig>().socket_connections, None);
     }
 
@@ -1219,7 +1225,7 @@ mod tests {
     }
 
     async fn save(reloadable: &CustodyReloadable, new: &CustodyConfig, old: &CustodyConfig) {
-        use live_settings::Reloadable;
+        use live_settings::Reloadable as _;
         let (prepared, warnings) = reloadable.prepare(new, old).await.unwrap();
         assert!(warnings.is_empty(), "the server is there");
         reloadable.install(prepared).await;
@@ -1230,7 +1236,7 @@ mod tests {
     /// a new socket path makes a new client, which then has the number too.
     #[tokio::test]
     async fn a_new_number_of_socket_connections_is_set_on_the_client_in_use() {
-        use crate::key_custody::{CustodyRouter, KeyCustody, WalletMaterial};
+        use crate::key_custody::{CustodyRouter, KeyCustody as _, WalletMaterial};
         let custody = |path: &PathBuf, connections| CustodyConfig {
             enabled: vec![CustodyBackend::Plain, CustodyBackend::Socket],
             default: CustodyBackend::Plain,
@@ -1239,7 +1245,7 @@ mod tests {
         };
         let path = spawn_registering_server("connections");
         let router = Arc::new(CustodyRouter::plain());
-        let reloadable = CustodyReloadable::new(router.clone());
+        let reloadable = CustodyReloadable::new(Arc::clone(&router));
         let client = || reloadable.socket.lock().clone().unwrap();
         let cores = key_custody_service::client::connections_per_core();
 
@@ -1282,7 +1288,7 @@ mod tests {
     /// of connections saved as well, for when the server appears.
     #[tokio::test]
     async fn a_socket_backend_whose_server_is_away_still_gets_its_connections() {
-        use live_settings::Reloadable;
+        use live_settings::Reloadable as _;
         let router = Arc::new(crate::key_custody::CustodyRouter::plain());
         let reloadable = CustodyReloadable::new(router);
         let new = CustodyConfig {

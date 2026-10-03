@@ -1,10 +1,10 @@
-//! RandomX hashing for block verification, on a thread of its own
-//! (docs/proof_of_work.md).
+//! `RandomX` hashing for block verification, on a thread of its own
+//! (`docs/proof_of_work.md`).
 //!
-//! RandomX's objects can't leave the thread that made them, and hashing is
+//! `RandomX`'s objects can't leave the thread that made them, and hashing is
 //! CPU work that mustn't run on a Tokio worker, so one thread per network
 //! owns them and takes requests over a channel. Verification runs in light
-//! mode: a 256 MiB cache per RandomX key, built once per key (about a
+//! mode: a 256 MiB cache per `RandomX` key, built once per key (about a
 //! quarter of a second) and kept while in use; a key not used for a minute
 //! is dropped when another is, so only around a key change are two held.
 //! Dropping the [`Hasher`] ends the thread and frees its memory.
@@ -27,7 +27,7 @@ const IDLE_KEY: Duration = Duration::from_secs(60);
 /// anchor's window) can't make it hold more.
 pub const MAX_KEYS: usize = 2;
 
-/// What a hashing request failed with: RandomX couldn't be set up (out of
+/// What a hashing request failed with: `RandomX` couldn't be set up (out of
 /// memory, say), or the thread is gone.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("RandomX: {0}")]
@@ -47,7 +47,7 @@ pub struct HasherStats {
 /// A snapshot of [`HasherStats`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
 pub struct HasherSnapshot {
-    /// Whether RandomX's JIT compiler is in use (otherwise interpreted).
+    /// Whether `RandomX`'s JIT compiler is in use (otherwise interpreted).
     pub jit: bool,
     pub hashes: u64,
     /// Mean time a hash took, in milliseconds.
@@ -89,7 +89,7 @@ struct Request {
     reply: Reply,
 }
 
-/// A RandomX hashing thread. Cheap to share; the thread ends when the last
+/// A `RandomX` hashing thread. Cheap to share; the thread ends when the last
 /// handle is dropped.
 #[derive(Clone)]
 pub struct Hasher {
@@ -102,10 +102,10 @@ impl Hasher {
     pub fn start(name: &str) -> Result<Self, HashError> {
         let (requests, incoming) = std::sync::mpsc::channel::<Request>();
         let stats = Arc::new(HasherStats::default());
-        let thread_stats = stats.clone();
+        let thread_stats = Arc::clone(&stats);
         std::thread::Builder::new()
-            .name(name.to_string())
-            .spawn(move || serve(incoming, &thread_stats))
+            .name(name.to_owned())
+            .spawn(move || serve(&incoming, &thread_stats))
             .map_err(|e| HashError(format!("can't start the hashing thread: {e}")))?;
         Ok(Self { requests, stats })
     }
@@ -114,7 +114,7 @@ impl Hasher {
         self.stats.snapshot()
     }
 
-    /// The RandomX hash of each of `inputs` under `key`, waiting on the
+    /// The `RandomX` hash of each of `inputs` under `key`, waiting on the
     /// calling thread: for blocking code (and building test chains).
     pub fn hash_blocking(
         &self,
@@ -128,10 +128,10 @@ impl Hasher {
                 inputs,
                 reply,
             })
-            .map_err(|_| HashError("the hashing thread has stopped".to_string()))?;
+            .map_err(|e| HashError(format!("the hashing thread has stopped: {e}")))?;
         answer
             .recv()
-            .map_err(|_| HashError("the hashing thread has stopped".to_string()))?
+            .map_err(|e| HashError(format!("the hashing thread has stopped: {e}")))?
     }
 
     /// [`Self::hash_blocking`] from async code, waiting on the blocking
@@ -149,36 +149,35 @@ impl Hasher {
 }
 
 /// One key's VM (which holds its cache), and when it was last used.
-struct Key {
+struct KeyedVm {
     key: Vec<u8>,
     vm: RandomXVM,
     used: Instant,
 }
 
-fn serve(incoming: std::sync::mpsc::Receiver<Request>, stats: &HasherStats) {
-    let mut keys: Vec<Key> = Vec::new();
+fn serve(incoming: &std::sync::mpsc::Receiver<Request>, stats: &HasherStats) {
+    let mut keys: Vec<KeyedVm> = Vec::new();
     // Once the JIT has failed to set up, it isn't tried again.
     let mut jit_works = true;
     while let Ok(Request { key, inputs, reply }) = incoming.recv() {
         let now = Instant::now();
         keys.retain(|held| held.key == key || now.duration_since(held.used) < IDLE_KEY);
-        let index = match keys.iter().position(|held| held.key == key) {
-            Some(index) => Ok(index),
-            None => {
-                // Room first, the least recently used key going.
-                while keys.len() >= MAX_KEYS {
-                    let oldest = keys
-                        .iter()
-                        .enumerate()
-                        .min_by_key(|(_, held)| held.used)
-                        .map_or(0, |(i, _)| i);
-                    keys.remove(oldest);
-                }
-                build(&key, &mut jit_works, stats).map(|vm| {
-                    keys.push(Key { key, vm, used: now });
-                    keys.len() - 1
-                })
+        let index = if let Some(index) = keys.iter().position(|held| held.key == key) {
+            Ok(index)
+        } else {
+            // Room first, the least recently used key going.
+            while keys.len() >= MAX_KEYS {
+                let oldest = keys
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, held)| held.used)
+                    .map_or(0, |(i, _)| i);
+                keys.remove(oldest);
             }
+            build(&key, &mut jit_works, stats).map(|vm| {
+                keys.push(KeyedVm { key, vm, used: now });
+                keys.len() - 1
+            })
         };
         stats.keys_held.store(keys.len() as u64, Ordering::Relaxed);
         let result = index.and_then(|index| {
@@ -195,9 +194,9 @@ fn serve(incoming: std::sync::mpsc::Receiver<Request>, stats: &HasherStats) {
                     .hash_nanos
                     .fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 stats.hashes.fetch_add(1, Ordering::Relaxed);
-                let hash: [u8; 32] = hash
-                    .try_into()
-                    .map_err(|_| HashError("a hash that isn't 32 bytes".to_string()))?;
+                let hash: [u8; 32] = hash.try_into().map_err(|hash: Vec<u8>| {
+                    HashError(format!("a hash of {} bytes, not 32", hash.len()))
+                })?;
                 out.push(hash);
             }
             Ok(out)
@@ -245,7 +244,7 @@ fn build(key: &[u8], jit_works: &mut bool, stats: &HasherStats) -> Result<Random
         }
     }
     Err(HashError(
-        last.unwrap_or_else(|| "no flags to try".to_string()),
+        last.unwrap_or_else(|| "no flags to try".to_owned()),
     ))
 }
 
@@ -254,15 +253,15 @@ fn build(key: &[u8], jit_works: &mut bool, stats: &HasherStats) -> Result<Random
 mod tests {
     use super::*;
 
-    /// RandomX's own first test vector (tevador/RandomX `src/tests/tests.cpp`).
+    /// `RandomX`'s own first test vector (tevador/RandomX `src/tests/tests.cpp`).
     #[test]
     fn hashes_randomx_s_reference_vector() {
         let hasher = Hasher::start("test randomx").unwrap();
-        let hashes = hasher
+        let digests = hasher
             .hash_blocking(b"test key 000", vec![b"This is a test".to_vec()])
             .unwrap();
         assert_eq!(
-            hex::encode(hashes[0]),
+            hex::encode(digests[0]),
             "639183aae1bf4c9a35884cb46b09cad9175f04efd7684e7262a0ac1c2f0b4e3f"
         );
         let stats = hasher.stats();

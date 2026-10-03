@@ -58,7 +58,7 @@ pub(super) fn pays(
 /// anyone who knows one of a store's addresses can send it such an output. A
 /// scan that failed on it would fail again on every retry, and the store
 /// would never get past that block.
-pub(super) fn owned_outputs(checker: &SubKeyChecker, tx: &ScanInput) -> Vec<MatchedOutput> {
+pub(super) fn owned_outputs(checker: &SubKeyChecker<'_>, tx: &ScanInput) -> Vec<MatchedOutput> {
     // Without the RingCT data monero-rs only matches outputs. Given it, it
     // also opens their amounts, and fails the whole transaction on the first
     // one that doesn't open.
@@ -77,11 +77,11 @@ pub(super) fn owned_outputs(checker: &SubKeyChecker, tx: &ScanInput) -> Vec<Matc
 
 /// The amount of an output that belongs to the wallet, or `None` if it can't
 /// be read.
-fn amount(view_pair: &ViewPair, tx: &ScanInput, out: &OwnedTxOut) -> Option<u64> {
+fn amount(view_pair: &ViewPair, tx: &ScanInput, out: &OwnedTxOut<'_>) -> Option<u64> {
     let rct = match tx.rct() {
         Some(rct) if rct.rct_type != RctType::Null => rct,
         // No RingCT: the amount is in the clear.
-        _ => return out.amount().map(|amount| amount.as_pico()),
+        _ => return out.amount().map(monero::Amount::as_pico),
     };
     let encrypted = rct.ecdh_info.get(out.index())?;
     let commitment = PublicKey::from_slice(&rct.out_pk.get(out.index())?.mask.key)
@@ -197,7 +197,7 @@ mod tests {
             .map(|out| MatchedOutput {
                 output_index: out.index(),
                 subaddress_index: out.sub_index(),
-                amount_piconero: out.amount().map(|amount| amount.as_pico()),
+                amount_piconero: out.amount().map(monero::Amount::as_pico),
             })
             .collect();
         let input = ScanInput::of(tx);
@@ -380,7 +380,7 @@ mod tests {
     fn an_output_with_the_wrong_view_tag_is_not_a_payment() {
         let me = wallet(1);
         let (tx_key, mut mine) = payment(&me, minor(1), scalar(9), 0, true);
-        let TxOutTarget::ToTaggedKey { view_tag, .. } = &mut mine.target else {
+        let TxOutTarget::ToTaggedKey { view_tag, key: _ } = &mut mine.target else {
             unreachable!()
         };
         *view_tag = view_tag.wrapping_add(1);

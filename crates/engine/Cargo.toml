@@ -152,5 +152,159 @@ rusqlite = { version = "0.40.2", features = ["bundled", "hooks", "serialize"] }
 # Captures log events in tests that assert a failure was reported.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt"] }
 
-[lints]
-workspace = true
+# Every opt-in lint is on for the engine: clippy's pedantic, nursery,
+# restriction and cargo groups and rustc's allow-by-default lints. Each one
+# allowed below says why it does not fit this crate. This table replaces
+# `workspace = true`, so the workspace's own entries are repeated here.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
+absolute_paths_not_starting_with_crate = "deny"
+ambiguous_negative_literals = "deny"
+closure_returning_async_block = "deny"
+deprecated_in_future = "deny"
+deref_into_dyn_supertrait = "deny"
+elided_lifetimes_in_paths = "deny"
+explicit_outlives_requirements = "deny"
+ffi_unwind_calls = "deny"
+macro_use_extern_crate = "deny"
+meta_variable_misuse = "deny"
+missing_unsafe_on_extern = "deny"
+non_ascii_idents = "deny"
+redundant_imports = "deny"
+redundant_lifetimes = "deny"
+single_use_lifetimes = "deny"
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
+unit_bindings = "deny"
+unnameable_types = "deny"
+unreachable_pub = "deny"
+unsafe_attr_outside_unsafe = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unused_crate_dependencies = "deny"
+unused_extern_crates = "deny"
+unused_import_braces = "deny"
+unused_lifetimes = "deny"
+unused_macro_rules = "deny"
+unused_qualifications = "deny"
+variant_size_differences = "deny"
+# Not enabled:
+# - missing_docs, missing_debug_implementations, missing_copy_implementations:
+#   API lints for published libraries; the engine's library is internal, and
+#   deriving Copy or Debug (key material) is a decision, not a default.
+# - unused_results: wants `let _ =` on every ignored value; the values that
+#   matter are `#[must_use]`, which rustc's unused_must_use already covers.
+# - let_underscore_drop: `let _ =` is Rust's explicit discard; the cases where
+#   dropping at once is a bug (a lock guard, a future) are clippy's
+#   let_underscore_lock and let_underscore_future, on in clippy::all.
+# - The edition migration lints (keyword_idents_*, rust_20*_*,
+#   edition_2024_expr_fragment_specifier, tail_expr_drop_order,
+#   if_let_rescope, impl_trait_overcaptures, deprecated_safe_2024): they
+#   belong to moving the crate to edition 2024, a change of its own.
+# - must_not_suspend, non_exhaustive_omitted_patterns,
+#   deprecated_llvm_intrinsic, implicit_provenance_casts,
+#   multiple_supertrait_upcastable: unstable, they
+#   need a feature gate this crate does not use.
+# - unstable_features: the coverage build turns on `coverage_attribute`
+#   (`lib.rs`), which it would refuse.
+# - unsafe_code: pending a decision on `key_custody/plain.rs`, whose view-key
+#   zeroing on drop is the crate's one `unsafe` block (see clippy's
+#   volatile_composites and cfg_not_test below).
+# - dead_code_pub_in_binary, linker_info, unqualified_local_imports,
+#   resolving_to_items_shadowing_supertrait_items, shadowing_supertrait_items,
+#   raw_borrows_via_references, impl_trait_redundant_captures: diagnostics
+#   for other settings, or still being designed upstream.
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+restriction = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+# Enabling restriction as a group is what this table does on purpose.
+blanket_clippy_restriction_lints = "allow"
+
+# Pairs that contradict each other: the side the code already follows is on.
+implicit_return = "allow"               # needless_return is on
+semicolon_outside_block = "allow"       # semicolon_inside_block is on
+pub_with_shorthand = "allow"            # pub_without_shorthand is on
+unneeded_field_pattern = "allow"        # rest_pattern_accessible_field is on: naming
+                                        # every field makes an added field a compile error
+unseparated_literal_suffix = "allow"    # separated_literal_suffix is on
+mod_module_files = "allow"              # self_named_module_files is on
+redundant_pub_crate = "allow"           # rustc's unreachable_pub is on
+little_endian_bytes = "allow"           # with big_endian_bytes: Monero's wire
+big_endian_bytes = "allow"              # format is little endian, explicitly
+
+# Ban core language features with no safety gain.
+question_mark_used = "allow"            # `?` is how errors propagate
+float_arithmetic = "allow"              # link and scaling estimates are float by design
+integer_division_remainder_used = "allow" # for constant-time crypto code; casts and
+                                        # integer_division cover the range risk
+shadow_reuse = "allow"                  # `let x = x.trim()` is idiomatic
+shadow_same = "allow"
+shadow_unrelated = "allow"              # a later step rebinding `client` or a closure
+                                        # param `node` reads as meant; `client2` reads worse
+impl_trait_in_params = "allow"
+let_underscore_must_use = "allow"        # `let _ =` is the explicit discard (see let_underscore_drop above)
+pattern_type_mismatch = "allow"         # fights default binding modes
+
+# Written for no_std or published libraries; the engine is neither.
+std_instead_of_core = "allow"
+std_instead_of_alloc = "allow"
+exhaustive_structs = "allow"
+exhaustive_enums = "allow"
+missing_inline_in_public_items = "allow"
+missing_docs_in_private_items = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+implicit_hasher = "allow"
+missing_trait_methods = "allow"
+missing_const_for_fn = "allow"          # commits a fn to const for no gain here
+cargo_common_metadata = "allow"         # never published
+multiple_crate_versions = "allow"       # set by the dependency tree, not this crate
+
+# Layout and naming taste that would churn every file for no defect caught.
+absolute_paths = "allow"                # the code names `shared::...` paths in full on purpose
+arbitrary_source_item_ordering = "allow"
+min_ident_chars = "allow"
+single_char_lifetime_names = "allow"
+module_name_repetitions = "allow"
+single_call_fn = "allow"
+definition_in_module_root = "allow"
+inline_modules = "allow"                # `mod tests` and small inline modules
+pub_use = "allow"
+multiple_inherent_impl = "allow"        # `impl Store` is split by concern across files
+redundant_feature_names = "allow"       # `test-support` is the workspace-wide feature name
+field_scoped_visibility_modifiers = "allow"
+default_numeric_fallback = "allow"
+let_underscore_untyped = "allow"
+inline_trait_bounds = "allow"
+too_many_lines = "allow"                # arbitrary thresholds; splitting to
+cognitive_complexity = "allow"          # satisfy a counter adds no safety
+option_if_let_else = "allow"            # nursery; its rewrites read worse
+significant_drop_tightening = "allow"   # nursery; known false positives on guards
+assert_is_empty = "allow"               # its fix, `assert_eq!(v, [] as [T; 0])`,
+                                        # is a trivial cast that trivial_casts refuses
+
+# Pending a decision on `key_custody/plain.rs`: its view-key zeroing writes a
+# whole `PrivateKey` with `write_volatile` (volatile_composites), and its
+# derivation counter is compiled only in tests (cfg_not_test).
+volatile_composites = "allow"
+cfg_not_test = "allow"
+
+# Range lints: enabled by step 6 of docs/engine_arithmetic_audit.md, once the
+# unit types (step 5) have removed most sites, so each remaining one gets a
+# reasoned `#[expect]` rather than one now that the types then delete.
+arithmetic_side_effects = "allow"
+as_conversions = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+indexing_slicing = "allow"
+integer_division = "allow"
+modulo_arithmetic = "allow"
+string_slice = "allow"
+missing_asserts_for_indexing = "allow"

@@ -1,6 +1,9 @@
-//! `MoneroDaemonClient`: the trait wrapping calls the chain scanner needs against
-//! `monerod`, so reorg/double-spend logic (`src/scanner.rs`) can be tested against a
-//! deterministic scripted fake instead of a live node. See `docs/DESIGN.md` §7.1.
+//! `MoneroDaemonClient`: the calls the chain scanner makes to `monerod`.
+//!
+//! A trait, so reorg/double-spend logic (`src/scanner.rs`) can be tested
+//! against a deterministic scripted fake instead of a live node.
+//!
+//! See `docs/DESIGN.md` §7.1.
 //!
 //! The trait holds what the engine asks of a node and nothing else: the real
 //! implementation is `daemon_rpc::RpcDaemonClient`, behind
@@ -39,9 +42,9 @@ pub enum DaemonError {
 
 impl DaemonError {
     /// Whether asking for less might succeed where this failed: a timeout
-    /// or an answer over the size cap (docs/engine_scaling.md section 2).
+    /// or an answer over the size cap (`docs/engine_scaling.md` section 2).
     pub fn asks_for_less(&self) -> bool {
-        matches!(self, DaemonError::TimedOut(_) | DaemonError::TooLarge(_))
+        matches!(self, Self::TimedOut(_) | Self::TooLarge(_))
     }
 }
 
@@ -63,8 +66,8 @@ impl DaemonInfo {
     pub const UNKNOWN: &'static str = "unknown";
 
     pub fn unknown() -> Self {
-        DaemonInfo {
-            nettype: Self::UNKNOWN.to_string(),
+        Self {
+            nettype: Self::UNKNOWN.to_owned(),
             height: None,
         }
     }
@@ -97,7 +100,7 @@ pub struct EndpointStats {
 
 /// One block as the node has it, contents and identity together
 /// ([`MoneroDaemonClient::get_chain_blocks`]).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChainBlock {
     pub height: u64,
     /// The block's id, as `get_block_hash` reports it (lowercase hex).
@@ -108,7 +111,7 @@ pub struct ChainBlock {
     /// hours ahead of real time.
     pub timestamp: u64,
     /// The block's transactions, without the coinbase, as the scan keeps
-    /// them (docs/engine_scaling.md section 3).
+    /// them (`docs/engine_scaling.md` section 3).
     pub txs: Vec<ScanTx>,
     /// The id of each of `txs` (lowercase hex), in order. They come with
     /// the block: a pruned transaction can't be hashed to its id
@@ -132,12 +135,15 @@ impl ChainBlock {
     }
 }
 
-/// What the scan keeps of one transaction (docs/engine_scaling.md section
-/// 3): what a view key reads ([`ScanInput`]: the outputs, `extra`, the unlock
+/// What the scan keeps of one transaction (`docs/engine_scaling.md` section 3).
+///
+/// What a view key reads ([`ScanInput`]: the outputs, `extra`, the unlock
 /// time, the encrypted amounts and commitments) and the inputs' key images,
-/// which a payment is recorded with. Ring members and everything else are
-/// dropped once the transaction is decoded.
-#[derive(Clone, Debug, PartialEq)]
+/// which a payment is recorded with.
+///
+/// Ring members and everything else are dropped once the transaction is
+/// decoded.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScanTx {
     pub input: shared::key_custody::ScanInput,
     pub key_images: Vec<[u8; 32]>,
@@ -145,17 +151,19 @@ pub struct ScanTx {
 
 impl ScanTx {
     pub fn of(tx: &Transaction) -> Self {
-        ScanTx {
+        Self {
             input: shared::key_custody::ScanInput::of(tx),
             key_images: tx
                 .prefix
                 .inputs
                 .iter()
                 .filter_map(|input| match input {
-                    monero::blockdata::transaction::TxIn::ToKey { k_image, .. } => {
-                        Some(k_image.image.to_bytes())
-                    }
-                    monero::blockdata::transaction::TxIn::Gen { .. } => None,
+                    monero::blockdata::transaction::TxIn::ToKey {
+                        k_image,
+                        amount: _,
+                        key_offsets: _,
+                    } => Some(k_image.image.to_bytes()),
+                    monero::blockdata::transaction::TxIn::Gen { height: _ } => None,
                 })
                 .collect(),
         }
@@ -173,7 +181,7 @@ pub struct ChainHeader {
     pub timestamp: u64,
     /// The block's weight in bytes, when the node said: whether it is
     /// fetched whole or a page of transactions at a time depends on it
-    /// (docs/engine_scaling.md section 4).
+    /// (`docs/engine_scaling.md` section 4).
     pub weight: Option<u64>,
     /// How many transactions it holds besides the coinbase, when the node
     /// said.
@@ -181,9 +189,10 @@ pub struct ChainHeader {
 }
 
 /// A block's identity and its transactions' ids in order, without their
-/// bodies ([`MoneroDaemonClient::get_block_outline`]): what a block too large
-/// to fetch whole is scanned from, a page of transactions at a time
-/// (docs/engine_scaling.md section 4).
+/// bodies ([`MoneroDaemonClient::get_block_outline`]).
+///
+/// A block too large to fetch whole is scanned from this, a page of
+/// transactions at a time (`docs/engine_scaling.md` section 4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockOutline {
     pub height: u64,
@@ -198,7 +207,7 @@ pub struct BlockOutline {
 
 /// A block header with what the node says of its difficulty
 /// ([`MoneroDaemonClient::get_difficulty_headers`]): taken on the nodes'
-/// word only for an anchor's window (docs/proof_of_work.md).
+/// word only for an anchor's window (`docs/proof_of_work.md`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DifficultyHeader {
     pub height: u64,
@@ -221,7 +230,7 @@ pub struct ChainTip {
 /// A transaction with its id, as a node gave it
 /// ([`MoneroDaemonClient::get_transactions_with_ids`]). The transaction may
 /// be pruned, which is why the id comes with it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FetchedTx {
     pub txid: String,
     pub tx: Transaction,
@@ -230,10 +239,11 @@ pub struct FetchedTx {
 /// The mempool's transaction ids, or why they couldn't be read.
 pub type PoolAnswer = Result<Vec<String>, DaemonError>;
 
-/// Which configured node a client's answers come from. Nodes can be at
-/// different heights or on different forks, so what was read from one
-/// isn't kept for use with another's answers (the scan's block cache,
-/// `work::blocks`).
+/// Which configured node a client's answers come from.
+///
+/// Nodes can be at different heights or on different forks, so what
+/// was read from one isn't kept for use with another's answers (the
+/// scan's block cache, `work::blocks`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct NodeKey(pub usize);
 
@@ -254,7 +264,7 @@ pub trait MoneroDaemonClient: Send + Sync {
     }
 
     /// What this client has measured of its node's link
-    /// (docs/engine_scaling.md section 1), if it measures one.
+    /// (`docs/engine_scaling.md` section 1), if it measures one.
     fn link(&self) -> Option<crate::link::LinkSnapshot> {
         None
     }
@@ -280,7 +290,7 @@ pub trait MoneroDaemonClient: Send + Sync {
         crate::link::MIN_TIMEOUT
     }
 
-    /// The node announced a change to its pool (docs/monero_zmq.md): the
+    /// The node announced a change to its pool (`docs/monero_zmq.md)`: the
     /// next poll asks it, rather than reusing an answer from just before.
     /// Nothing for a client that doesn't reuse answers.
     fn pool_changed(&self) {}
@@ -389,7 +399,7 @@ pub trait MoneroDaemonClient: Send + Sync {
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError>;
 
     /// Block `height` as the node stores it: its header, coinbase and its
-    /// transactions' ids, without the transactions (docs/proof_of_work.md).
+    /// transactions' ids, without the transactions (`docs/proof_of_work.md`).
     /// Nothing in it is taken on trust: its id and its proof of work are
     /// computed from it. `RpcDaemonClient` asks monerod's `get_block`.
     async fn get_block_blob(&self, height: u64) -> Result<Vec<u8>, DaemonError> {
@@ -400,7 +410,7 @@ pub trait MoneroDaemonClient: Send + Sync {
 
     /// Up to `count` headers from `start_height`, with what the node says
     /// of their difficulty: for an anchor's window, the one thing taken on
-    /// the nodes' word (docs/proof_of_work.md). May be shorter than
+    /// the nodes' word (`docs/proof_of_work.md`). May be shorter than
     /// `count`; empty only if nothing at `start_height` is available.
     async fn get_difficulty_headers(
         &self,
@@ -468,7 +478,7 @@ pub trait MoneroDaemonClient: Send + Sync {
             return Ok(None);
         }
         let fetched = self
-            .get_transactions_with_ids(std::slice::from_ref(&txid.to_string()))
+            .get_transactions_with_ids(std::slice::from_ref(&txid.to_owned()))
             .await?
             .into_iter()
             .next()
@@ -499,11 +509,12 @@ pub trait MoneroDaemonClient: Send + Sync {
     }
 }
 
-/// Test double for `MoneroDaemonClient`, scripted via a small timeline API. Lets
-/// reorg/double-spend scenarios be constructed deterministically, without a live or
-/// regtest `monerod` - see `docs/TESTING.md` §3 for why this matters (reorgs are
-/// rare in production, so bugs here are exactly the kind that go unnoticed for a
-/// long time otherwise).
+/// Test double for `MoneroDaemonClient`, scripted via a small timeline API.
+///
+/// Lets reorg/double-spend scenarios be constructed deterministically, without a
+/// live or regtest `monerod` - see `docs/TESTING.md` §3 for why this matters
+/// (reorgs are rare in production, so bugs here are exactly the kind that go
+/// unnoticed for a long time otherwise).
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub mod fake {
@@ -568,7 +579,7 @@ pub mod fake {
         mempool: Vec<Transaction>,
         /// txid -> location, explicitly tracked rather than derived from `blocks`
         /// so a test can put a tx "in the pool" without it ever having been mined,
-        /// or mark it fully gone (NotFound) after a reorg.
+        /// or mark it fully gone (`NotFound`) after a reorg.
         tx_locations: HashMap<String, TxLocation>,
         key_image_status: HashMap<String, KeyImageStatus>,
         /// Weights a test gives blocks in place of their real size, so a
@@ -589,10 +600,12 @@ pub mod fake {
 
     /// The id of a whole transaction, as the real chain names it: what the
     /// fake's blocks and pool carry their transactions under, and what tests
-    /// name them by. (A pruned transaction, as the real client fetches
-    /// them, doesn't hash to its id.)
+    /// name them by.
+    ///
+    /// (A pruned transaction, as the real client fetches them, doesn't hash
+    /// to its id.)
     pub fn tx_id_hex(tx: &Transaction) -> String {
-        use monero::cryptonote::hash::Hashable;
+        use monero::cryptonote::hash::Hashable as _;
         hex::encode(tx.hash().to_bytes())
     }
 
@@ -619,7 +632,7 @@ pub mod fake {
             if self.online.load(std::sync::atomic::Ordering::Relaxed) {
                 Ok(())
             } else {
-                Err(DaemonError::Request("fake daemon is offline".to_string()))
+                Err(DaemonError::Request("fake daemon is offline".to_owned()))
             }
         }
 
@@ -636,7 +649,7 @@ pub mod fake {
             state.blocks.insert(
                 height,
                 FakeBlock {
-                    hash: hash.to_string(),
+                    hash: hash.to_owned(),
                     txs,
                     timestamp: default_fake_timestamp(height),
                     proof: None,
@@ -662,7 +675,7 @@ pub mod fake {
             state.blocks.insert(
                 height,
                 FakeBlock {
-                    hash: hash.to_string(),
+                    hash: hash.to_owned(),
                     txs,
                     timestamp: default_fake_timestamp(height),
                     proof: None,
@@ -742,7 +755,7 @@ pub mod fake {
                 state.blocks.insert(
                     height,
                     FakeBlock {
-                        hash: hash.to_string(),
+                        hash: hash.to_owned(),
                         txs,
                         timestamp: default_fake_timestamp(height),
                         proof: None,
@@ -762,7 +775,7 @@ pub mod fake {
             self.state
                 .lock()
                 .key_image_status
-                .insert(key_image_hex.to_string(), status);
+                .insert(key_image_hex.to_owned(), status);
         }
 
         /// Has block `height`'s header report `weight` bytes, whatever its
@@ -833,13 +846,13 @@ pub mod fake {
             }
         }
 
-        /// A block known only by its id, at a RandomX key height below a
+        /// A block known only by its id, at a `RandomX` key height below a
         /// test chain: `get_block_hash` answers with it.
         pub fn seed_key_block(&self, height: u64, hash: &str) {
             self.state.lock().blocks.insert(
                 height,
                 FakeBlock {
-                    hash: hash.to_string(),
+                    hash: hash.to_owned(),
                     txs: Vec::new(),
                     timestamp: default_fake_timestamp(height),
                     proof: None,
@@ -904,8 +917,7 @@ pub mod fake {
                 let prev_hash = height
                     .checked_sub(1)
                     .and_then(|p| state.blocks.get(&p))
-                    .map(|b| b.hash.clone())
-                    .unwrap_or_default();
+                    .map_or_default(|b| b.hash.clone());
                 out.push(ChainBlock {
                     height,
                     hash: block.hash.clone(),
@@ -945,8 +957,7 @@ pub mod fake {
                 let prev_hash = height
                     .checked_sub(1)
                     .and_then(|p| state.blocks.get(&p))
-                    .map(|b| b.hash.clone())
-                    .unwrap_or_default();
+                    .map_or_default(|b| b.hash.clone());
                 let real: u64 = block
                     .txs
                     .iter()
@@ -1003,8 +1014,7 @@ pub mod fake {
                 let prev_hash = height
                     .checked_sub(1)
                     .and_then(|p| state.blocks.get(&p))
-                    .map(|b| b.hash.clone())
-                    .unwrap_or_default();
+                    .map_or_default(|b| b.hash.clone());
                 out.push(DifficultyHeader {
                     height,
                     hash: block.hash.clone(),

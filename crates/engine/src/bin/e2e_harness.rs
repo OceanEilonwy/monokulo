@@ -31,6 +31,17 @@
 //! behind the same `e2e` feature every other real-stagenet test in this
 //! crate uses).
 
+// Test infrastructure Playwright drives: it fails loudly, says it is ready
+// on stdout and reports a failed tick on stderr.
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "an e2e test harness: it fails by panicking and talks over stdout"
+)]
+
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -39,15 +50,15 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Request, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse as _, Response};
 use axum::routing::post;
 use axum::{Json, Router};
-use http_body_util::BodyExt;
+use http_body_util::BodyExt as _;
 use monero::Network;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use tokio::sync::Mutex as AsyncMutex;
-use tower::ServiceExt;
+use tower::ServiceExt as _;
 
 use engine::daemon::MoneroDaemonClient;
 use engine::daemon_fallback::{FallbackDaemonClient, FallbackNode};
@@ -86,14 +97,17 @@ const WALLET_PUBLIC_SPEND_KEY: &str =
 const PAYMENT_REORG_CHECK_DEPTH: u64 = 20;
 
 fn urlencode(s: &str) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{b:02X}")),
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
         }
     }
     out
@@ -107,7 +121,7 @@ fn form_body(fields: &[(&str, &str)]) -> String {
         .join("&")
 }
 
-async fn body_text(response: axum::response::Response) -> String {
+async fn body_text(response: Response) -> String {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()
 }
@@ -183,7 +197,7 @@ async fn send_payment_handler(
     node_urls.extend(
         cli_wallet::DEFAULT_STAGENET_NODES
             .iter()
-            .map(|url| url.to_string())
+            .map(ToString::to_string)
             .filter(|url| *url != state.node_url),
     );
     let ctx = cli_wallet::WalletCtx {
@@ -213,6 +227,7 @@ async fn send_payment_handler(
 
 #[tokio::main]
 async fn main() {
+    use std::io::Write as _;
     // ---- real, network-bound engine against the real public stagenet node ----
     let store = Store::open_in_memory().unwrap().into_shared();
     let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
@@ -230,7 +245,7 @@ async fn main() {
     }
     let mut nodes = vec![FallbackNode {
         label: format!("{NODE_HOST}:{NODE_PORT}"),
-        client: daemon.clone(),
+        client: Arc::clone(&daemon),
     }];
     for host in FALLBACK_NODE_HOSTS {
         let client: Arc<dyn MoneroDaemonClient> = Arc::new(
@@ -247,22 +262,22 @@ async fn main() {
         Arc::new(RwLock::new(HashMap::new()));
 
     let engine_state = EngineAppState {
-        db: engine::store::Database::inline(store.clone()),
+        db: engine::store::Database::inline(Arc::clone(&store)),
         admin_rate_limiter: Arc::new(RateLimiter::new(1_000_000)),
         log_store: None,
-        engine_token: std::sync::Arc::new(
+        engine_token: Arc::new(
             shared::auth::RawToken::presented(shared::auth::TEST_ENGINE_TOKEN).hash(),
         ),
         settings: engine::engine_settings::EngineSettings::defaults(),
         custody: engine::http::Custody {
-            backends: key_custody.clone(),
-            default_backend: "plain".to_string(),
-            wallet_handles: wallet_handles.clone(),
+            backends: Arc::clone(&key_custody),
+            default_backend: "plain".to_owned(),
+            wallet_handles: Arc::clone(&wallet_handles),
         },
         networks: engine::http::Networks {
             daemons: engine::engine_settings::Daemons::fixed(HashMap::from([(
                 Network::Stagenet,
-                fallback_daemon.clone(),
+                Arc::clone(&fallback_daemon),
             )])),
             scanner_status: new_scanner_status_map(),
         },
@@ -289,9 +304,9 @@ async fn main() {
         db: monokulo::db::Database::inline(Db::open_in_memory().unwrap().into_shared()),
         encryption_key: monokulo::crypto::AtRestKey::new([7u8; 32]),
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
-        abuse: Default::default(),
+        abuse: Arc::default(),
         dns: Arc::new(monokulo::embed_domains::UnavailableDns(
-            "DNS is not available in tests".to_string(),
+            "DNS is not available in tests".to_owned(),
         )),
         log_store: None,
         // Public signup: `signup.mode` defaults to invite-only, which would
@@ -332,7 +347,7 @@ async fn main() {
     // production router above. ----
     let send_payment_state = SendPaymentState {
         node_url: node_url.clone(),
-        network_lock: network_lock.clone(),
+        network_lock: Arc::clone(&network_lock),
     };
     let send_payment_router = Router::new()
         .route("/send-payment", post(send_payment_handler))
@@ -365,12 +380,13 @@ async fn main() {
     // wait window. `network_lock` still rules out this loop ever *literally
     // overlapping* a `/send-payment` call either way. ----
     {
-        let store = store.clone();
-        let key_custody = key_custody.clone();
+        let store = Arc::clone(&store);
+        let key_custody = Arc::clone(&key_custody);
         // Through the fallback list, not the one node directly.
-        let daemon: Arc<dyn MoneroDaemonClient> = fallback_daemon.clone();
-        let wallet_handles = wallet_handles.clone();
-        let network_lock = network_lock.clone();
+        let daemon: Arc<dyn MoneroDaemonClient> =
+            Arc::<FallbackDaemonClient>::clone(&fallback_daemon);
+        let wallet_handles = Arc::clone(&wallet_handles);
+        let network_lock = Arc::clone(&network_lock);
         tokio::spawn(async move {
             loop {
                 let tenants: Vec<(engine::store::TenantId, WalletHandle)> = wallet_handles
@@ -451,8 +467,8 @@ async fn main() {
         .unwrap()
         .to_str()
         .unwrap()
-        .to_string();
-    let session_cookie = set_cookie.split(';').next().unwrap().to_string();
+        .to_owned();
+    let session_cookie = set_cookie.split(';').next().unwrap().to_owned();
 
     let site_url = "https://pos-e2e-test.example.com";
     let connect_response = cp_router
@@ -534,7 +550,7 @@ async fn main() {
         .take_while(|c| c.is_alphanumeric() || *c == '-')
         .collect();
 
-    let ready: Value = json!({
+    let ready = json!({
         "engine_base_url": engine_base_url,
         "monokulo_base_url": monokulo_base_url,
         "send_payment_url": send_payment_url,
@@ -545,8 +561,7 @@ async fn main() {
         "session_cookie": session_cookie,
     });
     println!("POS_E2E_READY {ready}");
-    use std::io::Write;
-    std::io::stdout().flush().ok();
+    let _ = std::io::stdout().flush();
 
     // Both servers and the scan loop keep running on their own spawned
     // tasks - this task just needs to never return, so the process stays

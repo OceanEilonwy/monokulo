@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::Arc;
 
 use monero::Transaction;
 
@@ -16,7 +16,7 @@ use crate::scanner::tests::{
     FlakyKeyCustody,
 };
 use crate::status::OrderStatus;
-use crate::store::{Db, SharedStore, Store};
+use crate::store::SharedStore;
 
 /// A fake node that counts the block-hash lookups made against it and the
 /// blocks it sends, and answers as whichever node a test says it is.
@@ -24,7 +24,7 @@ struct CountingDaemon<'a> {
     inner: &'a FakeDaemonClient,
     hash_lookups: AtomicU64,
     /// How many times each height was sent whole.
-    sent: parking_lot::Mutex<std::collections::HashMap<u64, u32>>,
+    sent: parking_lot::Mutex<HashMap<u64, u32>>,
     node: parking_lot::Mutex<Option<crate::daemon::NodeKey>>,
 }
 
@@ -33,7 +33,7 @@ impl<'a> CountingDaemon<'a> {
         Self {
             inner,
             hash_lookups: AtomicU64::new(0),
-            sent: Default::default(),
+            sent: parking_lot::Mutex::default(),
             node: parking_lot::Mutex::new(Some(crate::daemon::NodeKey::default())),
         }
     }
@@ -165,7 +165,12 @@ async fn with_no_time_at_all_every_tier_with_work_still_advances() {
     let state = ScanState::default();
     run_round(
         &state,
-        &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
+        &inputs(
+            &Db::over_shared(Arc::clone(&store)),
+            &custody,
+            &daemon,
+            &tenants,
+        ),
         Duration::ZERO,
     )
     .await
@@ -182,7 +187,12 @@ async fn with_no_time_at_all_every_tier_with_work_still_advances() {
         let before = cursor_of(&store, tenant.as_str()).unwrap();
         let report = run_round(
             &state,
-            &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
+            &inputs(
+                &Db::over_shared(Arc::clone(&store)),
+                &custody,
+                &daemon,
+                &tenants,
+            ),
             Duration::ZERO,
         )
         .await;
@@ -208,7 +218,7 @@ async fn with_no_time_at_all_every_tier_with_work_still_advances() {
     assert_eq!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(order.as_str().to_string())
+            &shared::ids::OrderId::new(order.as_str().to_owned())
         ),
         OrderStatus::Unconfirmed,
         "and its status recomputed"
@@ -229,7 +239,7 @@ async fn reorg_detection_costs_one_lookup_when_the_chain_agrees_and_log_depth_wh
             .unwrap();
     }
     let daemon = CountingDaemon::new(&fake);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let chain = chain::Chain::new(&db, &daemon, monero::Network::Mainnet, 20, 1000);
     assert_eq!(chain.detect(60).await.unwrap(), None);
     assert_eq!(daemon.take_hash_lookups(), 1);
@@ -312,10 +322,9 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
         .unwrap();
     // Plenty of other payments above the fork, more than one unit handles.
     for i in 0..40u8 {
-        let other =
-            crate::scanner::tests::fixture_tenant(&store, &custody, crate::now_unix() + 3600)
-                .await
-                .2;
+        let other = fixture_tenant(&store, &custody, crate::now_unix() + 3600)
+            .await
+            .2;
         store
             .record_payment_match(
                 &shared::ids::OrderId::new(other.to_string()),
@@ -329,7 +338,10 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
             )
             .unwrap();
     }
-    fake.reorg_from(50, (50..=60).map(|_| ("b", vec![])).collect());
+    fake.reorg_from(
+        50,
+        std::iter::repeat_with(|| ("b", vec![])).take(11).collect(),
+    );
     let store = store.into_shared();
     let tenants = [(tenant.clone(), handle)];
 
@@ -354,7 +366,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     assert_ne!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(order.as_str().to_string())
+            &shared::ids::OrderId::new(order.as_str().to_owned())
         ),
         OrderStatus::Paid,
         "no settlement while a reorg is open"
@@ -392,7 +404,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
             .is_none()
             && order_status(
                 &store,
-                &shared::ids::OrderId::new(order.as_str().to_string()),
+                &shared::ids::OrderId::new(order.as_str().to_owned()),
             ) == OrderStatus::Paid
         {
             break;
@@ -409,7 +421,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     assert_eq!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(order.as_str().to_string())
+            &shared::ids::OrderId::new(order.as_str().to_owned())
         ),
         OrderStatus::Paid
     );
@@ -440,7 +452,12 @@ async fn a_failing_tenant_backs_off_without_holding_up_the_others() {
     let state = ScanState::default();
     run_round(
         &state,
-        &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
+        &inputs(
+            &Db::over_shared(Arc::clone(&store)),
+            &custody,
+            &daemon,
+            &tenants,
+        ),
         ScanTuning::DEFAULT.round_budget,
     )
     .await
@@ -453,7 +470,12 @@ async fn a_failing_tenant_backs_off_without_holding_up_the_others() {
         daemon.push_block(&format!("n{i}"), vec![unrelated_tx(60 + i)]);
         run_round(
             &state,
-            &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
+            &inputs(
+                &Db::over_shared(Arc::clone(&store)),
+                &custody,
+                &daemon,
+                &tenants,
+            ),
             ScanTuning::DEFAULT.round_budget,
         )
         .await
@@ -486,7 +508,12 @@ async fn a_failing_tenant_backs_off_without_holding_up_the_others() {
     for _ in 0..3 {
         run_round(
             &state,
-            &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
+            &inputs(
+                &Db::over_shared(Arc::clone(&store)),
+                &custody,
+                &daemon,
+                &tenants,
+            ),
             ScanTuning::DEFAULT.round_budget,
         )
         .await
@@ -515,7 +542,12 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
     let tenants = [(tenant.clone(), handle)];
     run_round(
         &ScanState::default(),
-        &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
+        &inputs(
+            &Db::over_shared(Arc::clone(&store)),
+            &custody,
+            &daemon,
+            &tenants,
+        ),
         ScanTuning::DEFAULT.round_budget,
     )
     .await
@@ -617,7 +649,12 @@ async fn catch_up_gets_turns_while_the_frontier_is_far_behind() {
     let state = ScanState::default();
     run_round(
         &state,
-        &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
+        &inputs(
+            &Db::over_shared(Arc::clone(&store)),
+            &custody,
+            &daemon,
+            &tenants,
+        ),
         ScanTuning::DEFAULT.round_budget,
     )
     .await
@@ -629,7 +666,12 @@ async fn catch_up_gets_turns_while_the_frontier_is_far_behind() {
     }
     run_round(
         &state,
-        &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
+        &inputs(
+            &Db::over_shared(Arc::clone(&store)),
+            &custody,
+            &daemon,
+            &tenants,
+        ),
         ScanTuning::DEFAULT.round_budget,
     )
     .await
@@ -653,7 +695,12 @@ async fn catch_up_gets_turns_while_the_frontier_is_far_behind() {
     for _ in 0..4 {
         run_round(
             &state,
-            &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
+            &inputs(
+                &Db::over_shared(Arc::clone(&store)),
+                &custody,
+                &daemon,
+                &tenants,
+            ),
             Duration::ZERO,
         )
         .await
@@ -772,7 +819,12 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expir
 
     let report = run_round(
         &ScanState::default(),
-        &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
+        &inputs(
+            &Db::over_shared(Arc::clone(&store)),
+            &custody,
+            &daemon,
+            &tenants,
+        ),
         ScanTuning::DEFAULT.round_budget,
     )
     .await;
@@ -808,14 +860,14 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expir
     assert_eq!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(open_order.as_str().to_string())
+            &shared::ids::OrderId::new(open_order.as_str().to_owned())
         ),
         OrderStatus::Unconfirmed
     );
     assert_eq!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(overdue_order.as_str().to_string())
+            &shared::ids::OrderId::new(overdue_order.as_str().to_owned())
         ),
         OrderStatus::Expired,
         "and orders still expire"
@@ -852,7 +904,7 @@ async fn a_second_deeper_fork_during_a_reorg_job_ends_on_the_final_chain() {
         async move {
             run_round(
                 state,
-                &inputs(&Db::over_shared(store.clone()), custody, fake, tenants),
+                &inputs(&Db::over_shared(Arc::clone(store)), custody, fake, tenants),
                 budget,
             )
             .await
@@ -970,11 +1022,11 @@ impl MoneroDaemonClient for ReorgsAfterFetch<'_> {
     }
     async fn get_chain_blocks(
         &self,
-        start: u64,
+        start_height: u64,
         count: u64,
     ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
         self.chain_fetches.fetch_add(1, Ordering::Relaxed);
-        let blocks = self.inner.get_chain_blocks(start, count).await?;
+        let blocks = self.inner.get_chain_blocks(start_height, count).await?;
         if self.armed.swap(false, Ordering::Relaxed) {
             let tip = self.inner.get_height().await?;
             let replacement: Vec<(String, Vec<Transaction>)> = (self.fork..=tip)
@@ -1055,7 +1107,7 @@ async fn a_reorged_payment_the_node_cannot_find_never_settles_its_order() {
     assert_ne!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(order.as_str().to_string())
+            &shared::ids::OrderId::new(order.as_str().to_owned())
         ),
         OrderStatus::Paid,
         "no confirmations on a discarded block"
@@ -1093,7 +1145,12 @@ async fn a_store_far_behind_does_not_hold_every_catch_up_turn() {
     for _ in 0..2 {
         run_round(
             &state,
-            &inputs(&Db::over_shared(store.clone()), &custody, &fake, &tenants),
+            &inputs(
+                &Db::over_shared(Arc::clone(&store)),
+                &custody,
+                &fake,
+                &tenants,
+            ),
             Duration::ZERO,
         )
         .await
@@ -1160,7 +1217,7 @@ async fn a_tip_replaced_after_it_was_fetched_leaves_no_phantom_payment() {
     assert_ne!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(order.as_str().to_string())
+            &shared::ids::OrderId::new(order.as_str().to_owned())
         ),
         OrderStatus::Paid
     );
@@ -1210,7 +1267,12 @@ async fn run_round_on(
 ) {
     run_round(
         &ScanState::default(),
-        &inputs(&Db::over_shared(store.clone()), custody, daemon, tenants),
+        &inputs(
+            &Db::over_shared(Arc::clone(store)),
+            custody,
+            daemon,
+            tenants,
+        ),
         ScanTuning::DEFAULT.round_budget,
     )
     .await
@@ -1233,7 +1295,7 @@ impl<'a> Lookups<'a> {
             inner,
             locate_calls: AtomicU64::new(0),
             fail_bodies: false.into(),
-            body_requests: Default::default(),
+            body_requests: parking_lot::Mutex::default(),
         }
     }
 }
@@ -1248,10 +1310,10 @@ impl MoneroDaemonClient for Lookups<'_> {
     }
     async fn get_chain_blocks(
         &self,
-        start: u64,
+        start_height: u64,
         count: u64,
     ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
-        self.inner.get_chain_blocks(start, count).await
+        self.inner.get_chain_blocks(start_height, count).await
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.inner.get_mempool_txids().await
@@ -1321,7 +1383,7 @@ async fn a_failing_node_is_asked_once_a_round_about_reorg_candidates() {
     let state = ScanState::default();
     let report = run_round(
         &state,
-        &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &[]),
+        &inputs(&Db::over_shared(Arc::clone(&store)), &custody, &daemon, &[]),
         ScanTuning::DEFAULT.round_budget,
     )
     .await;
@@ -1363,8 +1425,8 @@ async fn one_failing_recompute_does_not_hold_up_the_others() {
         .unwrap();
     let store = store.into_shared();
     let state = ScanState::default();
-    let db = Db::over_shared(store.clone());
-    let round = || async {
+    let db = Db::over_shared(Arc::clone(&store));
+    let round = async || {
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &[]),
@@ -1381,7 +1443,7 @@ async fn one_failing_recompute_does_not_hold_up_the_others() {
     assert_eq!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(healthy.as_str().to_string())
+            &shared::ids::OrderId::new(healthy.as_str().to_owned())
         ),
         OrderStatus::Expired
     );
@@ -1397,7 +1459,7 @@ async fn one_failing_recompute_does_not_hold_up_the_others() {
     assert_eq!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(poisoned.as_str().to_string())
+            &shared::ids::OrderId::new(poisoned.as_str().to_owned())
         ),
         OrderStatus::Pending
     );
@@ -1411,8 +1473,8 @@ async fn backoff_forgets_keys_that_stopped_failing() {
     for _ in 0..4 {
         backoff.failed(&shared::ids::TenantId::new("gone"));
     }
-    assert_eq!(backoff.waiting(), vec!["gone".to_string()]);
-    tokio::time::advance(Duration::from_secs(61 * 60)).await;
+    assert_eq!(backoff.waiting(), vec!["gone".to_owned()]);
+    tokio::time::advance(Duration::from_mins(61)).await;
     assert!(backoff.waiting().is_empty());
     assert!(
         backoff.failures.lock().is_empty(),
@@ -1438,14 +1500,24 @@ async fn a_failed_mempool_body_fetch_is_retried_next_round() {
     let state = ScanState::default();
     run_round(
         &state,
-        &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
+        &inputs(
+            &Db::over_shared(Arc::clone(&store)),
+            &custody,
+            &daemon,
+            &tenants,
+        ),
         ScanTuning::DEFAULT.round_budget,
     )
     .await;
     daemon.fail_bodies.store(false, Ordering::Relaxed);
     run_round(
         &state,
-        &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
+        &inputs(
+            &Db::over_shared(Arc::clone(&store)),
+            &custody,
+            &daemon,
+            &tenants,
+        ),
         ScanTuning::DEFAULT.round_budget,
     )
     .await;
@@ -1471,19 +1543,19 @@ impl MoneroDaemonClient for SlowBlocks<'_> {
     }
     async fn get_chain_blocks(
         &self,
-        start: u64,
+        start_height: u64,
         count: u64,
     ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
         self.chain_fetches.fetch_add(1, Ordering::Relaxed);
         tokio::time::sleep(self.delay).await;
-        self.inner.get_chain_blocks(start, count).await
+        self.inner.get_chain_blocks(start_height, count).await
     }
     async fn get_chain_headers(
         &self,
-        start: u64,
+        start_height: u64,
         count: u64,
     ) -> Result<Vec<crate::daemon::ChainHeader>, DaemonError> {
-        self.inner.get_chain_headers(start, count).await
+        self.inner.get_chain_headers(start_height, count).await
     }
     async fn get_transactions_with_ids(
         &self,
@@ -1533,12 +1605,12 @@ async fn the_next_block_is_fetched_while_this_one_is_scanned_and_used() {
         delay: Duration::from_millis(100),
         chain_fetches: AtomicU64::new(0),
     };
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let inputs = RoundInputs {
         scan_chunk_memory_budget_mb: 0,
         ..inputs(&db, &custody, &daemon, &tenants)
     };
-    let started = tokio::time::Instant::now();
+    let started = Instant::now();
     run_round(
         &ScanState::default(),
         &inputs,
@@ -1581,10 +1653,10 @@ async fn the_fast_path_settles_a_new_pool_payment_at_once() {
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
     fake.set_mempool(vec![fixture_tx()]);
-    let wake = std::sync::Arc::new(tokio::sync::Notify::new());
-    let state = ScanState::waking(wake.clone());
+    let wake = Arc::new(tokio::sync::Notify::new());
+    let state = ScanState::waking(Arc::clone(&wake));
     let tenants = [(tenant.clone(), handle)];
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let report = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants))
         .await
         .unwrap();
@@ -1599,7 +1671,7 @@ async fn the_fast_path_settles_a_new_pool_payment_at_once() {
     assert_eq!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(order.as_str().to_string())
+            &shared::ids::OrderId::new(order.as_str().to_owned())
         ),
         OrderStatus::Unconfirmed
     );
@@ -1650,7 +1722,7 @@ async fn the_fast_path_defers_what_its_budget_does_not_cover() {
     fake.push_block("a1", vec![]);
     fake.set_mempool((0..100u8).map(unrelated_tx).collect());
     let state = ScanState::default();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let first = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants))
         .await
         .unwrap();
@@ -1672,7 +1744,7 @@ async fn the_fast_path_reports_an_unreadable_pool() {
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
     fake.set_online(false);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let tenants = [(tenant, handle)];
     assert_eq!(
         fast_pass(
@@ -1692,7 +1764,7 @@ async fn the_fast_path_leaves_the_node_alone_while_no_store_has_an_order_in_scop
     let custody = FlakyKeyCustody::default();
     let fake = FakeDaemonClient::new();
     fake.set_online(false);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     assert_eq!(
         fast_pass(&ScanState::default(), &inputs(&db, &custody, &fake, &[])).await,
         Some(FastReport::default())
@@ -1754,7 +1826,7 @@ impl Story {
     }
 
     async fn round(&self) -> RoundReport {
-        let db = Db::over_shared(self.store.clone());
+        let db = Db::over_shared(Arc::clone(&self.store));
         let report = run_round(
             &self.state,
             &inputs(&db, &self.custody, &self.daemon, &self.tenants),
@@ -1826,7 +1898,7 @@ const PAID: &Steps = &[
     |story| {
         story
             .daemon
-            .set_mempool(vec![fixture_tx(), unrelated_tx(3)])
+            .set_mempool(vec![fixture_tx(), unrelated_tx(3)]);
     },
     |story| {
         story.daemon.set_mempool(vec![]);
@@ -1973,10 +2045,10 @@ impl MoneroDaemonClient for HashLookupsFail<'_> {
     }
     async fn get_chain_blocks(
         &self,
-        start: u64,
+        start_height: u64,
         count: u64,
     ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
-        self.0.get_chain_blocks(start, count).await
+        self.0.get_chain_blocks(start_height, count).await
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.0.get_mempool_txids().await
@@ -2014,7 +2086,7 @@ async fn a_fork_not_yet_opened_stops_the_frontier_instead_of_spinning() {
     }
     let tenants = [(tenant, handle)];
     let state = ScanState::default();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     run_round(
         &state,
         &inputs(&db, &custody, &fake, &tenants),
@@ -2072,7 +2144,7 @@ async fn a_fork_not_yet_opened_stops_the_frontier_instead_of_spinning() {
     assert_eq!(
         s.scanned_blocks_between(monero::Network::Mainnet, 5, 6)
             .unwrap(),
-        vec![(5, "b5".to_string()), (6, "b6".to_string())]
+        vec![(5, "b5".to_owned()), (6, "b6".to_owned())]
     );
 }
 
@@ -2081,10 +2153,10 @@ async fn a_fork_not_yet_opened_stops_the_frontier_instead_of_spinning() {
 #[tokio::test(start_paused = true)]
 async fn a_call_the_node_never_answers_fails_at_the_deadline() {
     let never = std::future::pending::<Result<(), DaemonError>>();
-    let started = tokio::time::Instant::now();
+    let started = Instant::now();
     let result = bounded(never).await;
     assert!(
-        matches!(result, Err(ScannerError::Daemon(DaemonError::TimedOut(ref m))) if m.contains("no answer within")),
+        matches!(&result, Err(ScannerError::Daemon(DaemonError::TimedOut(m))) if m.contains("no answer within")),
         "{result:?}"
     );
     assert_eq!(started.elapsed(), CALL_DEADLINE);
@@ -2140,13 +2212,13 @@ async fn a_hung_node_times_out_by_its_own_clock_and_cools_down() {
     let client = crate::daemon_fallback::FallbackDaemonClient::new(vec![
         crate::daemon_fallback::FallbackNode {
             label: "hung".into(),
-            client: std::sync::Arc::new(TimesOutItself),
+            client: Arc::new(TimesOutItself),
         },
     ]);
     let pinned = client.pin();
     let result = bounded(pinned.get_height()).await;
     assert!(
-        matches!(result, Err(ScannerError::Daemon(DaemonError::TimedOut(ref m))) if m.contains("node.example")),
+        matches!(&result, Err(ScannerError::Daemon(DaemonError::TimedOut(m))) if m.contains("node.example")),
         "{result:?}"
     );
     assert!(
@@ -2201,7 +2273,7 @@ async fn backlog(
 async fn blocks_fetched_ahead_are_scanned_in_later_rounds_without_being_sent_again() {
     let (store, custody, fake, tenants) = backlog(100).await;
     let daemon = CountingDaemon::new(&fake);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let inputs = inputs(&db, &custody, &daemon, &tenants);
     let state = ScanState::default();
     let mut rounds = 0;
@@ -2232,7 +2304,7 @@ async fn blocks_fetched_ahead_are_scanned_in_later_rounds_without_being_sent_aga
 async fn blocks_are_kept_only_for_the_node_they_came_from() {
     let (store, custody, fake, tenants) = backlog(100).await;
     let daemon = CountingDaemon::new(&fake);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let inputs = inputs(&db, &custody, &daemon, &tenants);
     let state = ScanState::default();
     run_round(&state, &inputs, Duration::ZERO).await;
@@ -2262,7 +2334,7 @@ async fn blocks_are_kept_only_for_the_node_they_came_from() {
 async fn nothing_is_kept_across_a_rewind() {
     let (store, custody, fake, tenants) = backlog(100).await;
     let daemon = CountingDaemon::new(&fake);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let inputs = inputs(&db, &custody, &daemon, &tenants);
     let state = ScanState::default();
     while lowest_cursor(&store) < 100 {
@@ -2310,7 +2382,7 @@ fn tiers_and_wait_reasons_display_distinctly() {
         Wait::ReorgCandidatesRetrying,
         Wait::ChainDiverged,
     ];
-    let texts: std::collections::HashSet<String> = waits.iter().map(ToString::to_string).collect();
+    let texts: HashSet<String> = waits.iter().map(ToString::to_string).collect();
     assert_eq!(texts.len(), waits.len());
     assert!(texts.iter().all(|t| !t.is_empty()));
 }
@@ -2324,7 +2396,7 @@ async fn a_round_without_the_chain_height_reports_it_and_scans_the_pool() {
     let custody = FlakyKeyCustody::default();
     let fake = FakeDaemonClient::new();
     fake.set_online(false);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let report = run_round(
         &ScanState::default(),
         &inputs(&db, &custody, &fake, &[]),
@@ -2379,10 +2451,10 @@ impl MoneroDaemonClient for OnLocate<'_> {
     }
     async fn get_chain_blocks(
         &self,
-        start: u64,
+        start_height: u64,
         count: u64,
     ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
-        self.inner.get_chain_blocks(start, count).await
+        self.inner.get_chain_blocks(start_height, count).await
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.inner.get_mempool_txids().await
@@ -2455,16 +2527,20 @@ async fn run_job(chain: &chain::Chain<'_>) -> Vec<&'static str> {
             .advance_job(
                 10,
                 &mut HashSet::new(),
-                tokio::time::Instant::now() + ScanTuning::DEFAULT.round_budget,
+                Instant::now() + ScanTuning::DEFAULT.round_budget,
             )
             .await
             .unwrap();
         steps.push(match step {
             None => panic!("no job"),
             Some(chain::JobStep::Collected) => "collected",
-            Some(chain::JobStep::Processed { failure: None, .. }) => "processed",
             Some(chain::JobStep::Processed {
-                failure: Some(_), ..
+                failure: None,
+                reconciled: _,
+            }) => "processed",
+            Some(chain::JobStep::Processed {
+                failure: Some(_),
+                reconciled: _,
             }) => "failed",
             Some(chain::JobStep::Waiting) => "waiting",
             Some(chain::JobStep::Rewound) => return steps,
@@ -2485,7 +2561,7 @@ async fn a_candidate_the_node_never_answers_about_is_given_up_on() {
         inner: &fake,
         txid: stuck,
     };
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let mut now = crate::now_unix();
     let mut failed = 0;
     loop {
@@ -2496,13 +2572,14 @@ async fn a_candidate_the_node_never_answers_about_is_given_up_on() {
             .advance_job(
                 10,
                 &mut HashSet::new(),
-                tokio::time::Instant::now() + ScanTuning::DEFAULT.round_budget,
+                Instant::now() + ScanTuning::DEFAULT.round_budget,
             )
             .await
             .unwrap()
         {
             Some(chain::JobStep::Processed {
-                failure: Some(_), ..
+                failure: Some(_),
+                reconciled: _,
             }) => failed += 1,
             Some(chain::JobStep::Rewound) => break,
             Some(_) => {}
@@ -2554,7 +2631,7 @@ async fn a_candidate_deleted_mid_page_is_skipped() {
             ));
         }),
     };
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let chain = chain::Chain::new(
         &db,
         &daemon,
@@ -2607,7 +2684,7 @@ async fn a_void_restored_meanwhile_still_gets_its_new_height() {
                 .unwrap();
         }),
     };
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let chain = chain::Chain::new(
         &db,
         &daemon,
@@ -2631,10 +2708,10 @@ async fn a_reorg_page_with_no_time_left_does_one_candidate() {
     let other = "ef".repeat(32);
     let (store, fake, _) = open_reorg_with(&[(&txid, 9), (&other, 9)]).await;
     fake.reorg_from(9, vec![("b9", vec![tx]), ("b10", vec![])]);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let chain = chain::Chain::new(&db, &fake, monero::Network::Mainnet, 20, crate::now_unix());
     let mut skip = HashSet::new();
-    let far = tokio::time::Instant::now() + ScanTuning::DEFAULT.round_budget;
+    let far = Instant::now() + ScanTuning::DEFAULT.round_budget;
     assert!(matches!(
         chain.advance_job(10, &mut skip, far).await.unwrap(),
         Some(chain::JobStep::Collected)
@@ -2643,7 +2720,7 @@ async fn a_reorg_page_with_no_time_left_does_one_candidate() {
         chain.advance_job(10, &mut skip, far).await.unwrap(),
         Some(chain::JobStep::Collected)
     ));
-    let spent = tokio::time::Instant::now();
+    let spent = Instant::now();
     let (processed, _, failure) = chain.process_page(10, &mut skip, spent).await.unwrap();
     assert_eq!((processed, failure.is_none()), (1, true));
     assert_eq!(
@@ -2704,14 +2781,14 @@ impl MoneroDaemonClient for Hooked<'_> {
     }
     async fn get_chain_blocks(
         &self,
-        start: u64,
+        start_height: u64,
         count: u64,
     ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
-        (self.on_blocks)(start);
+        (self.on_blocks)(start_height);
         if self.empty_blocks {
             return Ok(Vec::new());
         }
-        self.inner.get_chain_blocks(start, count).await
+        self.inner.get_chain_blocks(start_height, count).await
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.inner.get_mempool_txids().await
@@ -2770,7 +2847,7 @@ async fn seeded_network(
         orders.push(order);
     }
     let store = store.into_shared();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     run_round(
         &ScanState::default(),
         &inputs(&db, &custody, &fake, &handles),
@@ -2809,7 +2886,7 @@ async fn a_payment_deep_in_a_big_block_is_found_in_one_go_and_a_unit_at_a_time()
         txs.push(unrelated_tx(99));
         fake.push_block("big", txs);
         let state = ScanState::default();
-        let db = Db::over_shared(store.clone());
+        let db = Db::over_shared(Arc::clone(&store));
         let mut rounds = 0;
         while cursor_of(&store, tenants[0].0.as_str()) != Some(21) {
             rounds += 1;
@@ -2848,7 +2925,7 @@ async fn a_payment_whose_amount_cannot_be_read_does_not_stop_the_store_at_its_bl
     fake.push_block("unreadable", vec![unrelated_tx(1), unreadable]);
     fake.push_block("paid", vec![fixture_tx()]);
     let state = ScanState::default();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
 
     for _ in 0..3 {
         run_round(
@@ -2887,7 +2964,7 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
     txs.extend((0..ScanTuning::DEFAULT.txs_per_scan as u8 + 8).map(|i| unrelated_tx(100 + i)));
     fake.push_block("big", txs);
     let state = ScanState::default();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     run_round(
         &state,
         &inputs(&db, &custody, &fake, &tenants),
@@ -2896,7 +2973,7 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
     .await
     .into_result()
     .unwrap();
-    let stale = store
+    let stale_checkpoint = store
         .lock()
         .block_checkpoint(
             monero::Network::Mainnet,
@@ -2904,7 +2981,7 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
         )
         .unwrap()
         .expect("checkpointed partway");
-    assert_eq!(stale.hash, "big");
+    assert_eq!(stale_checkpoint.hash, "big");
 
     // Replaced before it committed: the payment is now further in.
     let mut replacement: Vec<Transaction> = (0..5u8).map(|i| unrelated_tx(150 + i)).collect();
@@ -2974,7 +3051,7 @@ async fn a_group_larger_than_a_page_moves_together() {
             .unwrap()
     };
     let state = ScanState::default();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let mut rounds = 0;
     while cursors() == [20].into() {
         run_round(
@@ -3018,7 +3095,7 @@ async fn a_big_group_resumes_each_store_from_its_own_place() {
     txs.extend((0..4u8).map(|i| unrelated_tx(100 + i)));
     fake.push_block("big", txs);
     let state = ScanState::default();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     run_round(
         &state,
         &inputs(&db, &custody, &fake, &tenants),
@@ -3090,7 +3167,7 @@ async fn catching_up_onto_a_replaced_recorded_block_waits() {
     fake.reorg_from(19, vec![("b19", vec![]), ("b20", vec![])]);
     let mut daemon = Hooked::new(&fake);
     daemon.fail_hashes = true;
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let report = run_round(
         &ScanState::default(),
         &inputs(&db, &custody, &daemon, &tenants),
@@ -3122,7 +3199,7 @@ async fn a_recorded_chain_changed_mid_scan_stops_the_commit() {
         let (store, custody, fake, tenants, _) = seeded_network(1, cursor).await;
         let block = cursor + 1;
         fake.seed_block_at(block, &format!("a{block}"), vec![unrelated_tx(1)]);
-        let hook_store = store.clone();
+        let hook_store = Arc::clone(&store);
         custody.on_next_scan(move || {
             hook_store
                 .lock()
@@ -3131,7 +3208,7 @@ async fn a_recorded_chain_changed_mid_scan_stops_the_commit() {
                 ))
                 .unwrap();
         });
-        let db = Db::over_shared(store.clone());
+        let db = Db::over_shared(Arc::clone(&store));
         run_round(
             &ScanState::default(),
             &inputs(&db, &custody, &fake, &tenants),
@@ -3164,7 +3241,7 @@ async fn a_recorded_chain_changed_mid_scan_stops_the_commit() {
 async fn catching_up_below_the_recorded_history_records_nothing_for_the_network() {
     let (store, custody, fake, tenants, orders) = seeded_network(1, 10).await;
     fake.seed_block_at(12, "a12", vec![fixture_tx()]);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     for _ in 0..3 {
         run_round(
             &ScanState::default(),
@@ -3203,7 +3280,7 @@ async fn a_node_that_returns_no_block_is_waited_out() {
     fake.push_block("a21", vec![]);
     let mut daemon = Hooked::new(&fake);
     daemon.empty_blocks = true;
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let report = run_round(
         &ScanState::default(),
         &inputs(&db, &custody, &daemon, &tenants),
@@ -3237,7 +3314,7 @@ async fn a_store_whose_orders_all_closed_before_the_gap_moves_straight_on() {
             orders[0]
         ))
         .unwrap();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     run_round(
         &ScanState::default(),
         &inputs(&db, &custody, &fake, &tenants),
@@ -3260,7 +3337,7 @@ async fn pool_transactions_gone_before_their_bodies_came_are_moved_past() {
     fake.set_mempool(vec![fixture_tx()]);
     let mut daemon = Hooked::new(&fake);
     daemon.no_bodies = true;
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let report = run_round(
         &ScanState::default(),
         &inputs(&db, &custody, &daemon, &tenants),
@@ -3283,7 +3360,7 @@ async fn a_fast_pass_that_cannot_load_windows_tries_again_next_pass() {
     let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
     fake.set_mempool(vec![fixture_tx()]);
     let state = ScanState::default();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     store.lock().fail_nth_access(Some(0));
     let report = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants))
         .await
@@ -3317,7 +3394,7 @@ async fn a_fast_pass_with_no_store_in_scope_does_nothing() {
     let custody = FlakyKeyCustody::default();
     let fake = FakeDaemonClient::new();
     fake.set_mempool(vec![fixture_tx()]);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     assert_eq!(
         fast_pass(&ScanState::default(), &inputs(&db, &custody, &fake, &[])).await,
         Some(FastReport::default())
@@ -3330,7 +3407,7 @@ async fn a_fast_pass_with_no_store_in_scope_does_nothing() {
 async fn the_fast_path_uses_the_last_rounds_chain_height() {
     let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
     let state = ScanState::default();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     run_round(
         &state,
         &inputs(&db, &custody, &fake, &tenants),
@@ -3406,7 +3483,7 @@ async fn a_failing_store_is_tried_once_per_pass_then_waits() {
     custody.fail(handle);
     fake.set_mempool(vec![unrelated_tx(1), unrelated_tx(2)]);
     let state = ScanState::default();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let report = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants))
         .await
         .unwrap();
@@ -3450,7 +3527,7 @@ async fn every_store_is_scanned_when_there_are_more_than_a_page() {
     let count = 257;
     let (store, custody, fake, tenants, orders) = seeded_network(count, 20).await;
     fake.set_mempool(vec![fixture_tx()]);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
 
     // The fast path, in one pass.
     let report = fast_pass(
@@ -3534,7 +3611,7 @@ async fn a_vanished_check_the_node_fails_or_stalls_is_retried() {
                 .unwrap()
         };
         let before = position();
-        let db = Db::over_shared(store.clone());
+        let db = Db::over_shared(Arc::clone(&store));
         let report = run_round(
             &ScanState::default(),
             &inputs(&db, &custody, &daemon, &tenants),
@@ -3571,7 +3648,7 @@ async fn vanished_payments_are_checked_one_a_round_with_no_time_to_spare() {
         .into_iter()
         .map(|(id, _)| id)
         .collect();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let state = ScanState::default();
     let position = || {
         store
@@ -3624,7 +3701,7 @@ async fn a_vanished_payment_found_mined_gets_its_height_and_one_back_in_the_pool
         .into_iter()
         .map(|(_, p)| p)
         .collect();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     // The snapshot was taken before either moved: neither is in it.
     let report = crate::scanner::check_vanished_candidates(
         &db,
@@ -3633,7 +3710,7 @@ async fn a_vanished_payment_found_mined_gets_its_height_and_one_back_in_the_pool
         height,
         crate::now_unix(),
         candidates,
-        &Default::default(),
+        &crate::scanner::VanishedHints::default(),
     )
     .await
     .unwrap();
@@ -3706,7 +3783,7 @@ async fn a_void_recheck_pass_longer_than_a_page_carries_on_across_rounds() {
     let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
     voided_payments(&store, &orders[0], 18);
     void_recheck_due(&store);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let state = ScanState::default();
     let voided = || {
         store
@@ -3767,7 +3844,7 @@ async fn every_sql_failure_in_a_void_recheck_is_recovered_from() {
             .unwrap();
         voided_payments(&store, &orders[0], 1);
         void_recheck_due(&store);
-        let db = Db::over_shared(store.clone());
+        let db = Db::over_shared(Arc::clone(&store));
         let state = ScanState::default();
         let seen = store.lock().fail_nth_access(Some(fault));
         run_round(
@@ -3824,7 +3901,7 @@ async fn more_recomputes_owed_than_a_page_are_all_done() {
                 .allocate_minor_index(&shared::ids::TenantId::new(tenant.to_string()))
                 .unwrap();
             let order = s
-                .create_order(crate::store::NewOrder {
+                .create_order(&crate::store::NewOrder {
                     idempotency_key: None,
                     confirmations_required_override: None,
                     tenant_id: tenant.clone(),
@@ -3842,7 +3919,7 @@ async fn more_recomputes_owed_than_a_page_are_all_done() {
             orders.push(order.id);
         }
     }
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let state = ScanState::default();
     for _ in 0..3 {
         run_round(
@@ -3858,7 +3935,7 @@ async fn more_recomputes_owed_than_a_page_are_all_done() {
         assert_eq!(
             order_status(
                 &store,
-                &shared::ids::OrderId::new(order.as_str().to_string())
+                &shared::ids::OrderId::new(order.as_str().to_owned())
             ),
             OrderStatus::Unconfirmed,
             "{order}"
@@ -3875,7 +3952,7 @@ async fn a_store_failing_partway_through_a_block_is_left_behind_and_not_asked_ag
     let failing = tenants[1].1;
     custody.fail(failing);
     fake.push_block("b21", vec![unrelated_tx(1), fixture_tx(), unrelated_tx(2)]);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let state = ScanState::default();
     run_round(
         &state,
@@ -3937,7 +4014,7 @@ async fn a_store_failing_partway_through_a_block_is_left_behind_and_not_asked_ag
 async fn a_cursor_moved_mid_scan_keeps_what_moved_it() {
     let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
     fake.push_block("b21", vec![fixture_tx()]);
-    let hook_store = store.clone();
+    let hook_store = Arc::clone(&store);
     let tenant = tenants[0].0.clone();
     custody.on_next_scan(move || {
         hook_store
@@ -3947,7 +4024,7 @@ async fn a_cursor_moved_mid_scan_keeps_what_moved_it() {
             ))
             .unwrap();
     });
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     run_round(
         &ScanState::default(),
         &inputs(&db, &custody, &fake, &tenants),
@@ -3981,7 +4058,7 @@ async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from() {
         let mut txs = vec![fixture_tx()];
         txs.extend((0..ScanTuning::DEFAULT.txs_per_scan as u8).map(|i| unrelated_tx(100 + i)));
         fake.push_block("big", txs);
-        let db = Db::over_shared(store.clone());
+        let db = Db::over_shared(Arc::clone(&store));
         let state = ScanState::default();
         run_round(
             &state,
@@ -4048,7 +4125,7 @@ async fn every_sql_failure_working_a_reorg_job_is_recovered_from() {
         let (store, fake, orders) = open_reorg_with(&[(&txid, 9)]).await;
         fake.reorg_from(9, vec![("b9", vec![]), ("b10", vec![tx.clone()])]);
         let custody = FlakyKeyCustody::default();
-        let db = Db::over_shared(store.clone());
+        let db = Db::over_shared(Arc::clone(&store));
         let state = ScanState::default();
         let seen = store.lock().fail_nth_access(Some(fault));
         run_round(
@@ -4097,7 +4174,7 @@ async fn every_sql_failure_working_a_reorg_job_is_recovered_from() {
 async fn a_reorg_job_with_every_candidate_waiting_waits() {
     let stuck = "ab".repeat(32);
     let (store, fake, orders) = open_reorg_with(&[(&stuck, 9)]).await;
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     // A few passes reach the processing phase; more means it never will.
     let mut phase = None;
     for _ in 0..16 {
@@ -4152,7 +4229,7 @@ async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
                 .allocate_minor_index(&shared::ids::TenantId::new(tenant.to_string()))
                 .unwrap();
             let order = s
-                .create_order(crate::store::NewOrder {
+                .create_order(&crate::store::NewOrder {
                     idempotency_key: None,
                     confirmations_required_override: None,
                     tenant_id: tenant.clone(),
@@ -4182,7 +4259,7 @@ async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
         s.execute_raw_for_test("UPDATE orders SET next_due_at_utc = 1")
             .unwrap();
     }
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let state = ScanState::default();
     run_round(
         &state,
@@ -4233,7 +4310,7 @@ impl<'a> Asked<'a> {
     fn new(inner: &'a FakeDaemonClient) -> Self {
         Self {
             inner,
-            calls: Default::default(),
+            calls: parking_lot::Mutex::default(),
         }
     }
 
@@ -4272,19 +4349,19 @@ impl MoneroDaemonClient for Asked<'_> {
     }
     async fn get_chain_blocks(
         &self,
-        start: u64,
+        start_height: u64,
         count: u64,
     ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
         self.note("get_chain_blocks");
-        self.inner.get_chain_blocks(start, count).await
+        self.inner.get_chain_blocks(start_height, count).await
     }
     async fn get_chain_headers(
         &self,
-        start: u64,
+        start_height: u64,
         count: u64,
     ) -> Result<Vec<crate::daemon::ChainHeader>, DaemonError> {
         self.note("get_chain_headers");
-        self.inner.get_chain_headers(start, count).await
+        self.inner.get_chain_headers(start_height, count).await
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.note("get_mempool_txids");
@@ -4304,7 +4381,7 @@ impl MoneroDaemonClient for Asked<'_> {
     async fn locate_transactions(
         &self,
         txids: &[String],
-    ) -> Result<std::collections::HashMap<String, TxLocation>, DaemonError> {
+    ) -> Result<HashMap<String, TxLocation>, DaemonError> {
         self.note("locate_transactions");
         self.inner.locate_transactions(txids).await
     }
@@ -4317,7 +4394,7 @@ impl MoneroDaemonClient for Asked<'_> {
     }
 }
 
-/// A node on a thin link (docs/engine_scaling.md section 2): a block request
+/// A node on a thin link (`docs/engine_scaling.md` section 2): a block request
 /// for more than `capacity` blocks runs out of time, and every request
 /// takes `delay` (on the test's clock) before it answers. Its client says a
 /// block request may take `timeout`.
@@ -4336,7 +4413,7 @@ impl<'a> ThinLink<'a> {
             capacity,
             delay: Duration::ZERO,
             timeout: crate::link::MIN_TIMEOUT,
-            asked: Default::default(),
+            asked: parking_lot::Mutex::default(),
         }
     }
 
@@ -4362,14 +4439,14 @@ impl MoneroDaemonClient for ThinLink<'_> {
     }
     async fn get_chain_blocks(
         &self,
-        start: u64,
+        start_height: u64,
         count: u64,
     ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
         tokio::time::sleep(self.delay).await;
         let arrives = count <= self.capacity;
         self.asked.lock().push((count, arrives));
         if arrives {
-            self.inner.get_chain_blocks(start, count).await
+            self.inner.get_chain_blocks(start_height, count).await
         } else {
             Err(DaemonError::TimedOut(format!(
                 "{count} blocks didn't arrive"
@@ -4378,10 +4455,10 @@ impl MoneroDaemonClient for ThinLink<'_> {
     }
     async fn get_chain_headers(
         &self,
-        start: u64,
+        start_height: u64,
         count: u64,
     ) -> Result<Vec<crate::daemon::ChainHeader>, DaemonError> {
-        self.inner.get_chain_headers(start, count).await
+        self.inner.get_chain_headers(start_height, count).await
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.inner.get_mempool_txids().await
@@ -4419,7 +4496,7 @@ async fn a_slow_link_halves_its_requests_until_they_arrive_and_the_scan_complete
     let node = ThinLink::new(&fake, 4);
     let tenants = [(tenant.clone(), handle)];
     let state = ScanState::default();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let _ = run_round(
         &state,
         &inputs(&db, &custody, &node, &tenants),
@@ -4462,13 +4539,8 @@ async fn a_slow_link_halves_its_requests_until_they_arrive_and_the_scan_complete
     assert_eq!(payments[0].block_height, Some(tip as i64));
 
     let asked = node.asked();
-    let failed: Vec<u64> = asked
-        .iter()
-        .filter(|(_, ok)| !ok)
-        .map(|(n, _)| *n)
-        .collect();
     assert!(
-        !failed.is_empty(),
+        asked.iter().any(|(_, ok)| !ok),
         "the first requests were too big: {asked:?}"
     );
     // Each failure halves the next request, never repeating the size
@@ -4493,7 +4565,7 @@ async fn a_block_request_gets_the_time_its_link_needs() {
     fake.push_block("a1", vec![]);
     let tenants = [(tenant.clone(), handle)];
     let state = ScanState::default();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let mut node = ThinLink::new(&fake, 500);
     let _ = run_round(
         &state,
@@ -4565,7 +4637,7 @@ async fn a_network_with_nothing_to_watch_costs_one_small_request_a_round() {
         fake.push_block(&format!("a{h}"), vec![]);
     }
     let node = Asked::new(&fake);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let state = ScanState::default();
 
     // The first round starts the network just below the tip and records
@@ -4634,7 +4706,7 @@ async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_roun
         fake.push_block(&format!("a{h}"), vec![]);
     }
     let node = Asked::new(&fake);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let state = ScanState::default();
     for _ in 0..2 {
         run_round(
@@ -4707,7 +4779,7 @@ async fn nothing_is_fetched_for_a_store_whose_keys_are_not_registered() {
         fake.push_block(&format!("a{h}"), vec![]);
     }
     let node = Asked::new(&fake);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let state = ScanState::default();
     run_round(
         &state,
@@ -4792,7 +4864,7 @@ async fn a_page_of_vanished_payments_costs_two_round_trips_and_the_stuck_ones_ba
         unconfirmed_with_image(&store, &orders[0], &txid(n), i64::from(n), &image(n));
     }
     let node = Asked::new(&fake);
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let state = ScanState::default();
     let lookups = |asked: &[&'static str]| -> Vec<&'static str> {
         asked
@@ -4868,7 +4940,7 @@ fn a_round_with_a_tier_blocked_by_the_node_is_a_failed_round_for_status() {
         outcomes: PerTier::filled(TierOutcome::Idle),
         error: None,
     };
-    assert!(clean.into_status_result().is_ok());
+    clean.into_status_result().unwrap();
     let waiting = RoundReport {
         steps: PerTier::filled(1),
         outcomes: PerTier::filled(TierOutcome::Blocked(Wait::ReorgBeingReconciled)),
@@ -4912,9 +4984,9 @@ impl<'a> PagedNode<'a> {
     fn new(inner: &'a FakeDaemonClient) -> Self {
         Self {
             inner,
-            chain_fetches: Default::default(),
+            chain_fetches: parking_lot::Mutex::default(),
             outlines: AtomicU64::new(0),
-            pages: Default::default(),
+            pages: parking_lot::Mutex::default(),
             pool_reads: AtomicU64::new(0),
             failing_page: AtomicU64::new(u64::MAX),
             too_large: AtomicU64::new(u64::MAX),
@@ -4935,21 +5007,21 @@ impl MoneroDaemonClient for PagedNode<'_> {
     }
     async fn get_chain_blocks(
         &self,
-        start: u64,
+        start_height: u64,
         count: u64,
     ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
-        self.chain_fetches.lock().push((start, count));
-        if (start..start + count).contains(&self.too_large.load(Ordering::Relaxed)) {
+        self.chain_fetches.lock().push((start_height, count));
+        if (start_height..start_height + count).contains(&self.too_large.load(Ordering::Relaxed)) {
             return Err(DaemonError::TooLarge("over the response cap".into()));
         }
-        self.inner.get_chain_blocks(start, count).await
+        self.inner.get_chain_blocks(start_height, count).await
     }
     async fn get_chain_headers(
         &self,
-        start: u64,
+        start_height: u64,
         count: u64,
     ) -> Result<Vec<crate::daemon::ChainHeader>, DaemonError> {
-        self.inner.get_chain_headers(start, count).await
+        self.inner.get_chain_headers(start_height, count).await
     }
     async fn get_block_outline(
         &self,
@@ -4996,7 +5068,7 @@ impl MoneroDaemonClient for PagedNode<'_> {
 
 /// A block too large to fetch whole (a 200 MB header; the bytes themselves
 /// aren't needed) is scanned a page of transactions at a time across
-/// rounds (docs/engine_scaling.md section 4). Headers aren't read first
+/// rounds (`docs/engine_scaling.md` section 4). Headers aren't read first
 /// until something says blocks may be large: here the one request for it
 /// whole, refused as too large. From then on its outline is asked for once
 /// and each page fits the response cap. Its payment is staged until the
@@ -5013,7 +5085,7 @@ async fn a_200_mb_block_is_scanned_in_pages_and_its_payment_found() {
     let node = PagedNode::new(&fake);
     node.too_large.store(height, Ordering::Relaxed);
     let state = ScanState::default();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     // A 256 MB budget: answers of up to 32 MiB, so ten transactions of
     // about 3.3 MB a page.
     let inputs = RoundInputs {
@@ -5106,7 +5178,7 @@ async fn a_failed_page_keeps_the_pages_before_it() {
     node.too_large.store(height, Ordering::Relaxed);
     node.failing_page.store(2, Ordering::Relaxed);
     let state = ScanState::default();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     let inputs = RoundInputs {
         scan_chunk_memory_budget_mb: 256,
         ..inputs(&db, &custody, &node, &tenants)
@@ -5209,7 +5281,7 @@ async fn a_reorg_moves_a_superseded_payment_without_restoring_it() {
     let store = store.into_shared();
     let tenants = [(tenant.clone(), handle)];
     let state = ScanState::default();
-    let db = Db::over_shared(store.clone());
+    let db = Db::over_shared(Arc::clone(&store));
     for _ in 0..20 {
         run_round(
             &state,

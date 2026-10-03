@@ -29,10 +29,11 @@ pub struct StatusInputs {
     pub expires_at: i64,
 }
 
-/// Derive an order's status from its currently-valid (non-voided) payments. Callers
-/// must exclude voided rows from `payments` before calling this - this function has
-/// no notion of "voided" at all, on purpose, since double-spend handling is entirely
-/// the caller's concern (see module docs).
+/// Derive an order's status from its currently-valid (non-voided) payments.
+///
+/// Callers must exclude voided rows from `payments` before calling this - this
+/// function has no notion of "voided" at all, on purpose, since double-spend
+/// handling is entirely the caller's concern (see module docs).
 ///
 /// `confirmations_required = 0` (native 0-conf, WBS: kill the `zero_conf_max_piconero`
 /// ceiling) needs no special-casing here: `min_confirmations >= 0` is true from the
@@ -281,17 +282,11 @@ mod tests {
         // ...and a tier with a real (nonzero) threshold is untouched - the ladder
         // behaves exactly as it always did for every order not on the zero tier.
         assert_eq!(
-            derive_status(
-                &[confirmed(100, 1)],
-                super::tests::inputs(100, 10, 500, 100_000)
-            ),
+            derive_status(&[confirmed(100, 1)], tests::inputs(100, 10, 500, 100_000)),
             OrderStatus::Confirming
         );
         assert_eq!(
-            derive_status(
-                &[zero_conf(100)],
-                super::tests::inputs(100, 10, 500, 100_000)
-            ),
+            derive_status(&[zero_conf(100)], tests::inputs(100, 10, 500, 100_000)),
             OrderStatus::Unconfirmed
         );
 
