@@ -300,6 +300,9 @@ fn replay_frames_carry_their_events_and_end_on_the_right_state() {
             .flat_map(|f| f.marks.clone())
             .collect::<Vec<_>>(),
         marks
+            .iter()
+            .map(crate::engine_view::present::mark_view)
+            .collect::<Vec<_>>()
     );
     let long = history.frames(events[0].at_ms, events[0].at_ms + 10 * MAX_REPLAY_MS);
     assert!(long.last().unwrap().at_ms <= events[0].at_ms + MAX_REPLAY_MS);

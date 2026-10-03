@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{AppState, AuthedAdmin};
 use crate::engine_view::history::Frame;
-use crate::engine_view::machine::Mark;
+use crate::engine_view::present::{mark_view, MarkView};
 use crate::engine_view::relay::Message;
 use crate::views;
 
@@ -71,7 +71,7 @@ struct Start<'a> {
     /// The oldest moment that can be shown.
     oldest_ms: Option<i64>,
     frame: Frame,
-    marks: Vec<&'a Mark>,
+    marks: Vec<MarkView>,
 }
 
 /// The networks the engine scans, in its order.
@@ -126,11 +126,11 @@ pub async fn page(
             .engine
             .activity
             .read(&network, |history| {
-                let marks: Vec<Mark> = history
+                let marks: Vec<MarkView> = history
                     .marks()
                     .rev()
                     .take(views::engine::MARKS_SHOWN)
-                    .cloned()
+                    .map(mark_view)
                     .collect();
                 let pinned = query.round.and_then(|number| history.round(number));
                 (history.live_frame().view, pinned, marks)
@@ -194,7 +194,7 @@ pub async fn events(
                 engine_now_ms: history.engine_now_ms(),
                 oldest_ms: history.oldest_ms(),
                 frame: history.live_frame(),
-                marks: history.marks().collect(),
+                marks: history.marks().map(mark_view).collect(),
             })
         })
         .await;
@@ -207,10 +207,7 @@ pub async fn events(
     };
     let follow = stream::unfold((watch, permit), |(mut watch, permit)| async move {
         let event = match watch.messages.recv().await {
-            Ok(Message::Frame(frame)) => match Event::default().event("frame").json_data(&*frame) {
-                Ok(event) => event,
-                Err(_) => Event::default().event("restarted").data(""),
-            },
+            Ok(Message::Frame(_, json)) => Event::default().event("frame").data(&*json),
             // Fell behind (a slow reader): start over from the history.
             Ok(Message::Restarted) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                 Event::default().event("restarted").data("")

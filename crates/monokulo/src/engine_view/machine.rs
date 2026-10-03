@@ -4,9 +4,10 @@
 //! [`step`] is the page's only logic. It does no I/O, reads no clock (an
 //! event's own time is the only time it knows) and knows nothing of how the
 //! state is drawn: [`State`] is what the page shows, [`Effect`]s are the
-//! movements that lead to it, and a [`Mark`] is the event as a sentence for
-//! the timeline and the events table. Everything that draws, live, replayed
-//! or scrubbed, and with or without JavaScript, is drawn from these.
+//! movements that lead to it, and a [`Mark`] says what happened, as data,
+//! for the timeline and the events table. Everything that draws, live,
+//! replayed or scrubbed, and with or without JavaScript, is drawn from
+//! these; every word is written from them in `present`.
 //!
 //! The engine's snapshots ([`Event::Snapshot`]) are the truth; between them
 //! the state follows the events. A snapshot overrides whatever the events
@@ -65,7 +66,7 @@ pub struct State {
     /// The last call made to the node, as far as the events tell.
     pub last_call: Option<Call>,
     /// When durable writes happened in the last minute.
-    pub saves: VecDeque<i64>,
+    pub saves: PerMinute,
     /// Durable writes by what was written, since the page's history began.
     pub saved: Saved,
     /// What the next round's `woken_by` is: set by a sleep, taken by the
@@ -138,12 +139,32 @@ pub struct Round {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct UnitBar {
     pub tier: Tier,
-    /// 1 or 2 for a unit; 0 for other work.
-    pub pass: u8,
     pub start_ms: u64,
     pub ms: u64,
-    pub progress: UnitProgress,
-    pub work: Option<Work>,
+    pub span: Span,
+}
+
+/// What a span of a round was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Span {
+    /// One of the tier's units, in pass 1 or 2.
+    Unit { pass: u8, progress: UnitProgress },
+    /// Work for the tier outside its units.
+    Work { what: Work },
+}
+
+impl UnitBar {
+    /// Ran in pass 2, on time left over.
+    pub const fn leftover(&self) -> bool {
+        matches!(
+            self.span,
+            Span::Unit {
+                pass: 2,
+                progress: _
+            }
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -195,12 +216,13 @@ pub struct Pool {
     /// Whether the scanner looks at the pool: only while an order could be
     /// paid from it, or a payment waits for a block.
     pub watched: bool,
-    /// Transactions the scanner remembers from the pool.
-    pub size: u64,
+    /// Transactions the scanner remembers from the pool, as of the last
+    /// snapshot.
+    pub remembered: u64,
     /// The newest few, shortened, oldest first.
     pub txs: VecDeque<PoolTx>,
     /// When the fast path scanned new transactions, in the last minute.
-    pub fast_passes: VecDeque<i64>,
+    pub fast_passes: PerMinute,
     /// Payments found in the pool since the page's history began.
     pub found: u64,
 }
@@ -210,8 +232,9 @@ pub struct NodePool {
     pub txs: u64,
     /// Their size in bytes, when the node said.
     pub bytes: Option<u64>,
-    /// The block weight a miner can fill without a smaller reward.
-    pub penalty_free: u64,
+    /// The block weight a miner can fill without a smaller reward, once
+    /// the node was asked (a scan of the pool only counts it).
+    pub penalty_free: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -256,6 +279,40 @@ pub enum Call {
     Blocks { from: u64, count: u64 },
     Pool,
     Transactions,
+}
+
+/// Things counted over the last minute, a count per second: bounded
+/// however many happen (a catch-up saves thousands of times a minute).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct PerMinute {
+    /// `(second, how many)`, oldest first.
+    seconds: VecDeque<(i64, u64)>,
+}
+
+impl PerMinute {
+    /// Counts one at `at_ms` (never before the newest counted).
+    fn add(&mut self, at_ms: i64) {
+        let second = at_ms.div_euclid(1000);
+        match self.seconds.back_mut() {
+            Some((newest, count)) if *newest >= second => *count += 1,
+            Some(_) | None => self.seconds.push_back((second, 1)),
+        }
+    }
+
+    /// Lets go of the seconds wholly before `since_ms`.
+    fn forget_before(&mut self, since_ms: i64) {
+        while self
+            .seconds
+            .front()
+            .is_some_and(|(second, _)| (second + 1) * 1000 <= since_ms)
+        {
+            self.seconds.pop_front();
+        }
+    }
+
+    pub fn count(&self) -> u64 {
+        self.seconds.iter().map(|(_, count)| count).sum()
+    }
 }
 
 /// Durable writes since the page's history began, by what was written.
@@ -325,9 +382,96 @@ pub struct Mark {
     pub seq: u64,
     pub at_ms: i64,
     pub round: u64,
-    pub tier: Option<Tier>,
+    pub tier: Tier,
     pub key: bool,
-    pub text: String,
+    /// What happened; `present::mark_text` writes it as a sentence.
+    pub what: MarkKind,
+}
+
+/// What a mark says happened: the facts its sentence is written from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MarkKind {
+    /// The node has `count` new blocks, up to `tip`.
+    NewBlocks {
+        tip: u64,
+        count: u64,
+    },
+    ReorgFound {
+        fork: u64,
+        deeper: bool,
+    },
+    ReorgCollected,
+    ReorgProcessed {
+        examined: u64,
+        changed: u64,
+        voided: u64,
+    },
+    /// Blocks from `fork` to `deleted_to` (if any were recorded) deleted,
+    /// stores moved back to `ancestor`.
+    Rewound {
+        fork: u64,
+        deleted_to: Option<u64>,
+        ancestor: u64,
+    },
+    Seeded {
+        height: u64,
+    },
+    Checkpointed {
+        height: u64,
+        stores: u64,
+        done_txs: u64,
+        total_txs: u64,
+    },
+    Committed {
+        height: u64,
+        stores: u64,
+        found: u64,
+        how: CommitHow,
+    },
+    Diverged {
+        height: u64,
+    },
+    IdleAdvanced {
+        from: u64,
+        to: u64,
+        stores: u64,
+    },
+    FastScanned {
+        transactions: u64,
+    },
+    TxMatched {
+        path: PoolPath,
+        txid: String,
+    },
+    /// `orders` changed status, the first (or only) from `from` to `to`.
+    Recomputed {
+        orders: u64,
+        from: OrderStatus,
+        to: OrderStatus,
+    },
+    Pruned {
+        hashes: u64,
+    },
+    TierFailed {
+        tier: Tier,
+    },
+    NodeFailed {
+        tier: Tier,
+    },
+}
+
+/// How a committed block's stores stood.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitHow {
+    /// Recorded from its header: nobody had anything to look for in it.
+    HeaderOnly,
+    /// Scanned for the frontier.
+    Frontier,
+    /// Scanned for stores catching up, who then joined the frontier.
+    Joined,
+    CatchingUp,
 }
 
 /// What one step produced.
@@ -361,11 +505,12 @@ pub fn step(state: &mut State, recorded: &Recorded) -> Output {
             &mut out,
             UnitBar {
                 tier: *tier,
-                pass: *pass,
                 start_ms: *start_ms,
                 ms: *ms,
-                progress: *progress,
-                work: None,
+                span: Span::Unit {
+                    pass: *pass,
+                    progress: *progress,
+                },
             },
         ),
         Event::Work {
@@ -377,11 +522,9 @@ pub fn step(state: &mut State, recorded: &Recorded) -> Output {
             &mut out,
             UnitBar {
                 tier: *tier,
-                pass: 0,
                 start_ms: *start_ms,
                 ms: *ms,
-                progress: UnitProgress::Advanced,
-                work: Some(*what),
+                span: Span::Work { what: *what },
             },
         ),
         Event::TierEnded { tier, outcome } => {
@@ -422,11 +565,7 @@ pub fn step(state: &mut State, recorded: &Recorded) -> Output {
                 reorg.step = ReorgStep::Collecting;
             }
             state.save(&mut out, Anchor::Reorg, |saved| &mut saved.reorg);
-            out.mark(
-                Tier::Chain,
-                false,
-                "Payments at or above the fork were queued to be re-examined.".to_owned(),
-            );
+            out.mark(Tier::Chain, false, MarkKind::ReorgCollected);
         }
         Event::ReorgProcessed {
             examined,
@@ -438,14 +577,7 @@ pub fn step(state: &mut State, recorded: &Recorded) -> Output {
             state.chain.high_water = Some(*height);
             state.chain.tip = Some(state.chain.tip.map_or(*height, |tip| tip.max(*height)));
             state.save(&mut out, Anchor::Cell(*height), |saved| &mut saved.cursors);
-            out.mark(
-                Tier::Blocks,
-                true,
-                format!(
-                    "Started scanning this network at block {}.",
-                    thousands(*height)
-                ),
-            );
+            out.mark(Tier::Blocks, true, MarkKind::Seeded { height: *height });
         }
         Event::Fetched {
             from,
@@ -511,13 +643,12 @@ pub fn step(state: &mut State, recorded: &Recorded) -> Output {
             out.mark(
                 Tier::Blocks,
                 true,
-                format!(
-                    "Out of time partway through block {}: {} of {} transactions scanned for {}, saved.",
-                    thousands(*height),
-                    thousands(*done_txs),
-                    thousands(*total_txs),
-                    stores_phrase(*stores)
-                ),
+                MarkKind::Checkpointed {
+                    height: *height,
+                    stores: *stores,
+                    done_txs: *done_txs,
+                    total_txs: *total_txs,
+                },
             );
         }
         Event::Committed {
@@ -541,26 +672,18 @@ pub fn step(state: &mut State, recorded: &Recorded) -> Output {
         Event::Diverged { height } => {
             state.chain.replaced.insert(*height);
             out.effects.push(Effect::Probe { height: *height });
-            out.mark(
-                Tier::Blocks,
-                true,
-                format!(
-                    "Block {} from the node doesn't extend the recorded chain: new blocks wait for the reorganisation to be reconciled.",
-                    thousands(*height)
-                ),
-            );
+            out.mark(Tier::Blocks, true, MarkKind::Diverged { height: *height });
         }
         Event::IdleAdvanced { from, to, stores } => {
             state.move_stores(&mut out, *from, *to, *stores);
             out.mark(
                 Tier::Blocks,
                 false,
-                format!(
-                    "{} with nothing that could have been paid moved straight from block {} to {}.",
-                    capitalised(&stores_phrase(*stores)),
-                    thousands(*from),
-                    thousands(*to)
-                ),
+                MarkKind::IdleAdvanced {
+                    from: *from,
+                    to: *to,
+                    stores: *stores,
+                },
             );
         }
         Event::NodePool {
@@ -571,7 +694,7 @@ pub fn step(state: &mut State, recorded: &Recorded) -> Output {
             state.node_pool = Some(NodePool {
                 txs: *txs,
                 bytes: *bytes,
-                penalty_free: *penalty_free,
+                penalty_free: Some(*penalty_free),
             });
         }
         Event::PoolScanned {
@@ -579,31 +702,32 @@ pub fn step(state: &mut State, recorded: &Recorded) -> Output {
             pool,
             scanned,
         } => {
-            state.pool.size = *pool;
             state.pool.watched = true;
             // The scanner read the node's pool: its count is the latest,
             // and its size moves with it, at the same size per transaction.
-            if let Some(node_pool) = &mut state.node_pool {
-                node_pool.bytes = node_pool.bytes.map(|bytes| {
-                    bytes
-                        .saturating_mul(*pool)
-                        .checked_div(node_pool.txs)
-                        .unwrap_or(bytes)
-                });
-                node_pool.txs = *pool;
-            }
+            let node_pool = state.node_pool.get_or_insert(NodePool {
+                txs: *pool,
+                bytes: None,
+                penalty_free: None,
+            });
+            node_pool.bytes = node_pool.bytes.map(|bytes| {
+                bytes
+                    .saturating_mul(*pool)
+                    .checked_div(node_pool.txs)
+                    .unwrap_or(bytes)
+            });
+            node_pool.txs = *pool;
             match path {
                 PoolPath::Fast => {
-                    state.pool.fast_passes.push_back(recorded.at_ms);
+                    state.pool.fast_passes.add(recorded.at_ms);
                     out.effects.push(Effect::Flash { at: Anchor::Pool });
                     if *scanned > 0 {
                         out.mark(
                             Tier::Mempool,
                             false,
-                            format!(
-                                "The fast path scanned {} new in the pool.",
-                                plural(*scanned, "transaction")
-                            ),
+                            MarkKind::FastScanned {
+                                transactions: *scanned,
+                            },
                         );
                     }
                 }
@@ -631,9 +755,9 @@ pub fn step(state: &mut State, recorded: &Recorded) -> Output {
             out.mark(
                 Tier::Mempool,
                 true,
-                match path {
-                    PoolPath::Fast => format!("Transaction {txid} in the pool pays an order: recorded at once by the fast path."),
-                    PoolPath::Round => format!("Transaction {txid} in the pool pays an order: found by the round's rotation."),
+                MarkKind::TxMatched {
+                    path: *path,
+                    txid: txid.clone(),
                 },
             );
         }
@@ -649,24 +773,20 @@ pub fn step(state: &mut State, recorded: &Recorded) -> Output {
             };
             out.effects.push(Effect::Flash { at: Anchor::Upkeep });
             if *pruned > 0 {
-                out.mark(
-                    Tier::Upkeep,
-                    false,
-                    format!("Pruned {} old block hashes.", thousands(*pruned)),
-                );
+                out.mark(Tier::Upkeep, false, MarkKind::Pruned { hashes: *pruned });
             }
         }
     }
     state.forget_before(recorded.at_ms - MINUTE_MS);
     Output {
         effects: out.effects,
-        mark: out.mark.map(|(tier, key, text)| Mark {
+        mark: out.mark.map(|(tier, key, what)| Mark {
             seq: recorded.seq,
             at_ms: recorded.at_ms,
             round: state.round.as_ref().map_or(0, |round| round.number),
             tier,
             key,
-            text,
+            what,
         }),
     }
 }
@@ -674,12 +794,12 @@ pub fn step(state: &mut State, recorded: &Recorded) -> Output {
 /// The output being built by one step.
 struct Step {
     effects: Vec<Effect>,
-    mark: Option<(Option<Tier>, bool, String)>,
+    mark: Option<(Tier, bool, MarkKind)>,
 }
 
 impl Step {
-    fn mark(&mut self, tier: Tier, key: bool, text: String) {
-        self.mark = Some((Some(tier), key, text));
+    fn mark(&mut self, tier: Tier, key: bool, what: MarkKind) {
+        self.mark = Some((tier, key, what));
     }
 }
 
@@ -748,7 +868,7 @@ impl State {
             .map(|tx| tx.txid.clone())
             .collect();
         self.pool.watched = snapshot.pool.watched;
-        self.pool.size = snapshot.pool.size;
+        self.pool.remembered = snapshot.pool.size;
         self.pool.txs = snapshot
             .pool
             .txids
@@ -779,14 +899,9 @@ impl State {
                 out.mark(
                     Tier::Chain,
                     false,
-                    if tip == known + 1 {
-                        format!("The node has a new block: {}.", thousands(tip))
-                    } else {
-                        format!(
-                            "The node has {} new blocks, up to {}.",
-                            thousands(tip - known),
-                            thousands(tip)
-                        )
+                    MarkKind::NewBlocks {
+                        tip,
+                        count: tip - known,
                     },
                 );
             }
@@ -812,24 +927,21 @@ impl State {
         };
         round.elapsed_ms = round.elapsed_ms.max(unit.start_ms.saturating_add(unit.ms));
         round.units.push(unit);
-        match unit.progress {
-            UnitProgress::Failed => out.mark(
-                unit.tier,
-                true,
-                format!(
-                    "The {} tier failed and stopped for this round; it is retried next round.",
-                    unit.tier
-                ),
-            ),
-            UnitProgress::Blocked(Wait::NodeFailed) => out.mark(
-                unit.tier,
-                true,
-                format!(
-                    "The {} tier stopped for this round: the node failed.",
-                    unit.tier
-                ),
-            ),
-            UnitProgress::Blocked(_) | UnitProgress::Advanced | UnitProgress::Idle => {}
+        let tier = unit.tier;
+        match unit.span {
+            Span::Unit {
+                pass: _,
+                progress: UnitProgress::Failed,
+            } => out.mark(tier, true, MarkKind::TierFailed { tier }),
+            Span::Unit {
+                pass: _,
+                progress: UnitProgress::Blocked(Wait::NodeFailed),
+            } => out.mark(tier, true, MarkKind::NodeFailed { tier }),
+            Span::Unit {
+                pass: _,
+                progress: UnitProgress::Blocked(_) | UnitProgress::Advanced | UnitProgress::Idle,
+            }
+            | Span::Work { what: _ } => {}
         }
     }
 
@@ -872,21 +984,7 @@ impl State {
         }
         out.effects.push(Effect::Probe { height: fork });
         self.save(out, Anchor::Reorg, |saved| &mut saved.reorg);
-        out.mark(
-            Tier::Chain,
-            true,
-            if deeper {
-                format!(
-                    "The reorganisation goes deeper: it is reconciled from block {} now.",
-                    thousands(fork)
-                )
-            } else {
-                format!(
-                    "The node's chain differs from block {} on: a reorganisation. Payments from there are re-examined, and new blocks wait.",
-                    thousands(fork)
-                )
-            },
-        );
+        out.mark(Tier::Chain, true, MarkKind::ReorgFound { fork, deeper });
     }
 
     fn reorg_processed(&mut self, out: &mut Step, examined: u64, changed: u64, voided: u64) {
@@ -906,12 +1004,11 @@ impl State {
         out.mark(
             Tier::Chain,
             voided > 0,
-            format!(
-                "Re-examined {} against the node's chain: {} changed, {} voided as double-spent.",
-                plural(examined, "payment"),
-                thousands(changed),
-                thousands(voided)
-            ),
+            MarkKind::ReorgProcessed {
+                examined,
+                changed,
+                voided,
+            },
         );
     }
 
@@ -941,18 +1038,10 @@ impl State {
         out.mark(
             Tier::Chain,
             true,
-            match deleted_to {
-                Some(to) if to > fork => format!(
-                    "Rewound: blocks {} to {} deleted, stores moved back to block {}. The replacement blocks are scanned next.",
-                    thousands(fork),
-                    thousands(to),
-                    thousands(ancestor)
-                ),
-                Some(_) | None => format!(
-                    "Rewound: block {} deleted, stores moved back to block {}. The replacement block is scanned next.",
-                    thousands(fork),
-                    thousands(ancestor)
-                ),
+            MarkKind::Rewound {
+                fork,
+                deleted_to,
+                ancestor,
             },
         );
     }
@@ -1014,37 +1103,26 @@ impl State {
                 token: Token::Payment,
             });
         }
-        let found = if matches > 0 {
-            format!(", {} found in it", plural(matches, "payment"))
-        } else {
-            String::new()
-        };
         let joined = !frontier && height == high_water && was_frontier;
-        let text = if header_only {
-            format!(
-                "Block {} recorded from its header: no store had anything to look for in it.",
-                thousands(height)
-            )
+        let how = if header_only {
+            CommitHow::HeaderOnly
         } else if frontier {
-            format!(
-                "Block {} scanned for {} and committed{found}.",
-                thousands(height),
-                stores_phrase(stores)
-            )
+            CommitHow::Frontier
         } else if joined {
-            format!(
-                "Block {} scanned for {} catching up{found}: they caught up and joined the frontier.",
-                thousands(height),
-                stores_phrase(stores)
-            )
+            CommitHow::Joined
         } else {
-            format!(
-                "Block {} scanned for {} catching up{found}.",
-                thousands(height),
-                stores_phrase(stores)
-            )
+            CommitHow::CatchingUp
         };
-        out.mark(Tier::Blocks, matches > 0 || joined, text);
+        out.mark(
+            Tier::Blocks,
+            matches > 0 || joined,
+            MarkKind::Committed {
+                height,
+                stores,
+                found: matches,
+                how,
+            },
+        );
     }
 
     fn recomputed(&mut self, out: &mut Step, orders: u64, transitions: &[Transition]) {
@@ -1071,21 +1149,20 @@ impl State {
             [only] => out.mark(
                 Tier::Settlement,
                 settled,
-                format!(
-                    "An order went from {} to {}; its webhook is queued.",
-                    only.from.as_str(),
-                    only.to.as_str()
-                ),
+                MarkKind::Recomputed {
+                    orders: 1,
+                    from: only.from,
+                    to: only.to,
+                },
             ),
             [first, ..] => out.mark(
                 Tier::Settlement,
                 settled,
-                format!(
-                    "{} orders changed status (one from {} to {}); their webhooks are queued.",
-                    thousands(queued),
-                    first.from.as_str(),
-                    first.to.as_str()
-                ),
+                MarkKind::Recomputed {
+                    orders: queued,
+                    from: first.from,
+                    to: first.to,
+                },
             ),
         }
     }
@@ -1181,18 +1258,14 @@ impl State {
     /// Records a durable write at `at`, counted under `kind`.
     fn save(&mut self, out: &mut Step, at: Anchor, kind: impl FnOnce(&mut Saved) -> &mut u64) {
         *kind(&mut self.saved) += 1;
-        self.saves.push_back(self.at_ms);
+        self.saves.add(self.at_ms);
         out.effects.push(Effect::Save { at });
     }
 
     /// Lets go of the per-minute figures from before `since`.
     fn forget_before(&mut self, since: i64) {
-        while self.saves.front().is_some_and(|at| *at < since) {
-            self.saves.pop_front();
-        }
-        while self.pool.fast_passes.front().is_some_and(|at| *at < since) {
-            self.pool.fast_passes.pop_front();
-        }
+        self.saves.forget_before(since);
+        self.pool.fast_passes.forget_before(since);
     }
 }
 
@@ -1208,13 +1281,6 @@ pub fn plural(n: u64, noun: &str) -> String {
     } else {
         format!("{} {noun}s", thousands(n))
     }
-}
-
-fn capitalised(text: &str) -> String {
-    let mut chars = text.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
 }
 
 #[cfg(test)]

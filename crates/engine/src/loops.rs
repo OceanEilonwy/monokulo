@@ -895,11 +895,13 @@ mod tests {
             .into_iter()
             .map(|recorded| recorded.event)
             .collect();
+        // A snapshot (skipped only while the database is busy, which an
+        // idle test engine's isn't at both rounds' starts).
         assert!(
-            matches!(
-                recorded.first(),
-                Some(shared::activity::Event::Snapshot(snapshot)) if !snapshot.pool.watched
-            ),
+            recorded.iter().any(|event| matches!(
+                event,
+                shared::activity::Event::Snapshot(snapshot) if !snapshot.pool.watched
+            )),
             "no store has anything to look for in the pool: {recorded:#?}"
         );
         assert!(recorded.iter().any(|event| matches!(

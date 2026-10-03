@@ -30,8 +30,9 @@ const BACKLOG: usize = 64;
 /// What viewers are sent.
 #[derive(Clone, Debug)]
 pub enum Message {
-    /// New events: what the page draws now, and what led there.
-    Frame(Arc<Frame>),
+    /// New events: what the page draws now, and what led there; and the
+    /// same as JSON, written once for every viewer.
+    Frame(Arc<Frame>, Arc<str>),
     /// The engine restarted (or the history fell behind it): start over.
     Restarted,
     /// The engine didn't answer; the page keeps what it has.
@@ -196,7 +197,9 @@ impl Relay {
                     let mut history = channel.history.write().await;
                     match history.as_mut() {
                         Some(history) => match history.update(page) {
-                            Update::Frame(frame) => Some(Message::Frame(Arc::from(frame))),
+                            Update::Frame(frame) => serde_json::to_string(&frame)
+                                .ok()
+                                .map(|json| Message::Frame(Arc::from(frame), Arc::from(json))),
                             Update::Restarted => Some(Message::Restarted),
                             Update::Nothing => None,
                         },
@@ -253,7 +256,7 @@ mod tests {
                 .expect("a message within 10 s")
                 .expect("the channel is open")
             {
-                Message::Frame(frame) => return frame,
+                Message::Frame(frame, _) => return frame,
                 Message::Restarted | Message::Unreachable(_) => {}
             }
         }
@@ -281,7 +284,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(marks.len(), 1);
-        assert_eq!(marks[0].text, "Started scanning this network at block 100.");
+        assert_eq!(
+            crate::engine_view::present::mark_text(&marks[0].what),
+            "Started scanning this network at block 100."
+        );
 
         activity.record(Event::ReorgFound { fork: 100 });
         let frame = next_frame(&mut watch).await;
@@ -322,7 +328,11 @@ mod tests {
             assert!(Instant::now() < deadline, "still polling");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(relay.channel("stagenet").history.read().await.is_none());
+        // The poller lets the history go just after it stops.
+        while relay.channel("stagenet").history.read().await.is_some() {
+            assert!(Instant::now() < deadline, "the history was kept");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     /// A network nobody watches is let go of after the linger; watching it
@@ -343,7 +353,11 @@ mod tests {
             assert!(Instant::now() < deadline, "still polling");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(relay.channel("stagenet").history.read().await.is_none());
+        // The poller lets the history go just after it stops.
+        while relay.channel("stagenet").history.read().await.is_some() {
+            assert!(Instant::now() < deadline, "the history was kept");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         let again = relay.watch("stagenet").await.unwrap();
         assert!(relay.polling("stagenet"));
         drop(again);

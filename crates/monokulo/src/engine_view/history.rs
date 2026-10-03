@@ -11,13 +11,15 @@ use serde::Serialize;
 use shared::activity::{ActivityPage, Event, Recorded, Tuning};
 
 use super::machine::{step, Effect, Mark, State};
-use super::present::{present, present_round, Presented, RoundView};
+use super::present::{mark_view, present, present_round, MarkView, Presented, RoundView};
 
 /// How far back the history reaches: the engine keeps as much.
 pub const KEEP_MS: i64 = 30 * 60_000;
 /// How often the state is kept, so a moment is rebuilt from at most this
-/// much of events.
+/// much of events...
 pub const KEYFRAME_EVERY_MS: i64 = 5_000;
+/// ...and at most this many (a catch-up records hundreds a second).
+pub const KEYFRAME_EVERY_EVENTS: u64 = 500;
 /// Replay's frames are this far apart at most.
 pub const FRAME_MS: i64 = 500;
 /// The longest stretch one replay request covers.
@@ -49,7 +51,7 @@ pub struct Frame {
     pub at_ms: i64,
     pub view: Presented,
     pub effects: Vec<Timed>,
-    pub marks: Vec<Mark>,
+    pub marks: Vec<MarkView>,
 }
 
 /// An effect at the time of the event that caused it.
@@ -113,7 +115,7 @@ impl History {
             at_ms: self.live.at_ms,
             view: present(&self.live, &self.tuning),
             effects,
-            marks,
+            marks: marks.iter().map(mark_view).collect(),
         }))
     }
 
@@ -139,10 +141,10 @@ impl History {
                 self.marks.push_back(mark.clone());
                 marks.push(mark);
             }
-            let keyframe_due = self
-                .keyframes
-                .back()
-                .is_none_or(|last| recorded.at_ms.saturating_sub(last.at_ms) >= KEYFRAME_EVERY_MS);
+            let keyframe_due = self.keyframes.back().is_none_or(|last| {
+                recorded.at_ms.saturating_sub(last.at_ms) >= KEYFRAME_EVERY_MS
+                    || recorded.seq + 1 - last.next_seq >= KEYFRAME_EVERY_EVENTS
+            });
             if keyframe_due {
                 self.keyframes.push_back(Keyframe {
                     at_ms: recorded.at_ms,
@@ -170,6 +172,16 @@ impl History {
         while self.marks.front().is_some_and(|m| m.at_ms < cutoff) {
             self.marks.pop_front();
         }
+    }
+
+    /// Where event `seq` is (or would be) in the history: events are
+    /// numbered one up, so it is counted, not searched for.
+    fn index_of(&self, seq: u64) -> usize {
+        self.events.front().map_or(0, |front| {
+            usize::try_from(seq.saturating_sub(front.seq))
+                .unwrap_or(usize::MAX)
+                .min(self.events.len())
+        })
     }
 
     /// The sequence number to ask the engine for next.
@@ -226,8 +238,7 @@ impl History {
         let mut state = keyframe.state.clone();
         for recorded in self
             .events
-            .iter()
-            .skip_while(|e| e.seq < keyframe.next_seq)
+            .range(self.index_of(keyframe.next_seq)..)
             .take_while(|e| e.at_ms <= at_ms)
         {
             step(&mut state, recorded);
@@ -243,7 +254,7 @@ impl History {
         let index = self.keyframes.iter().rposition(|k| k.next_seq <= start)?;
         let keyframe = &self.keyframes[index];
         let mut state = keyframe.state.clone();
-        for recorded in self.events.iter().skip_while(|e| e.seq < keyframe.next_seq) {
+        for recorded in self.events.range(self.index_of(keyframe.next_seq)..) {
             if recorded.seq > start
                 && matches!(
                     recorded.event,
@@ -283,11 +294,8 @@ impl History {
         let mut state = self.state_at(from_ms);
         let mut frames: Vec<Frame> = Vec::new();
         let mut window: Option<(i64, Vec<Timed>, Vec<Mark>)> = None;
-        for recorded in self
-            .events
-            .iter()
-            .filter(|e| e.at_ms > from_ms && e.at_ms <= to_ms)
-        {
+        let first = self.events.partition_point(|e| e.at_ms <= from_ms);
+        for recorded in self.events.range(first..).take_while(|e| e.at_ms <= to_ms) {
             // Saturating: `from_ms` is whatever the request said.
             let window_end = from_ms.saturating_add(
                 recorded
@@ -325,7 +333,7 @@ impl History {
             at_ms,
             view: present(state, &self.tuning),
             effects,
-            marks,
+            marks: marks.iter().map(mark_view).collect(),
         }
     }
 }

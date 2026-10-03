@@ -466,6 +466,59 @@ Left as is: a viewer's first read of the engine's record copies up to
 50,000 events under the record's lock, once per new viewer or gap
 (acceptable, as the reviewer also judged).
 
+## D37. Second code review
+
+A second review looked at test determinism, the state machine's shape,
+and performance. Acted on:
+
+- **Tests.** The browser test has a 90s limit (the story and eight
+  screenshots can outlast the suite's 40s on a loaded runner). Its
+  playback-marker drag check passed whatever the drag did (the tooltip's
+  "ago" changes by itself, and the drag ended where the marker already
+  was): the marker carries its exact moment (`data-at`), and the test drags
+  it back and checks it went back. The relay tests wait for the history to
+  be let go rather than assuming it is gone as polling stops; the loop test
+  looks for any snapshot, not the first event. The engine timestamps events
+  under the record's lock, never going back, so the record is in time order
+  as well as sequence order (a stepped-back clock or two loops recording at
+  once could disagree before).
+- **A real-binary crash test** (`real-4-crash`) failed in CI twice. It
+  predates this branch (main's engine fails the same way on a loaded
+  machine): a store created before the engine's first round recorded the
+  fake node's tip started a block behind, and the fake node can't serve
+  blocks, so every tick failed. The test now waits for the engine's first
+  good tick before creating the store.
+- **The machine.** Marks are data (`MarkKind`); `present::mark_text` writes
+  the sentences, so the machine writes no words and scrubbing formats none
+  it throws away. A round's span is a `Span` (a unit with its pass and
+  progress, or other work), not a unit with a `pass: 0` sentinel. A mark's
+  tier is always there. `pool.size` meant two things (what the scanner
+  remembers, and the node's pool count from a scan): it is now
+  `pool.remembered`, set by snapshots only, and a scan counts the node's
+  pool (whose penalty-free size is then unknown until the node is asked).
+  Counts over the last minute (saves, fast passes) are a count per second,
+  bounded at a minute, instead of every moment kept (thousands a minute in
+  a catch-up, in every keyframe). The random-sequence test runs four seeds
+  over every event kind, and checks more: a move whose source the page
+  knows keeps its stores, the cache rule after a commit, that stores fly
+  between groups that exist, and the token cap exactly.
+- **Performance.** The timeline is redrawn only when something on it moved
+  by half a pixel or an event is fading in, with its scale computed once
+  per draw and plain events drawn in two strokes; attributes are written
+  only when they change. Live no longer downloads the whole history again:
+  frames keep arriving while paused, and the newest is drawn. A frame's
+  effects play with repeated saves and flashes coalesced, at most 30. Each
+  frame is serialised once for every viewer, and fractions are rounded to
+  three places. History finds an event by counting from its sequence
+  number rather than scanning, finds replay's start by binary search, and
+  keeps a keyframe every 500 events as well as every 5s.
+- The once-a-second "behind live" readout is no longer an `aria-live`
+  region.
+
+Not taken: the chain check's state (`chain_agrees`) could be one enum with
+the reorg's; groups could be a newtype guarding their order; the webhook
+buckets could be counted in SQL. Each is small and none is wrong as it is.
+
 ## What differs from the design, and what is left
 
 - **Simplified time lens.** The design asked for minimum animation lengths,

@@ -6,8 +6,12 @@
 use serde::Serialize;
 use shared::activity::{Group, Tier, TierOutcome, Tuning, Wait, Wake, Work};
 
-use super::machine::{plural, stores_phrase, Call, NodePool, ReorgStep, RibbonEntry, State};
+use super::machine::{
+    plural, stores_phrase, Call, CommitHow, Mark, MarkKind, NodePool, ReorgStep, RibbonEntry, Span,
+    State,
+};
 use crate::views::scaling::thousands;
+use shared::activity::PoolPath;
 
 /// A round shorter than this is drawn to this scale, so its units are
 /// still visible.
@@ -147,27 +151,37 @@ fn segments(round: &super::machine::Round, tier: Tier, scale_ms: u64) -> Vec<Bar
     for unit in round.units.iter().filter(|unit| unit.tier == tier) {
         let part = format!(
             "{}: {}",
-            match unit.work {
-                Some(Work::TipRequest) => "asking the node for its tip",
-                Some(Work::CacheCarry) => "keeping fetched blocks for the next round",
-                None if unit.pass == 2 => "a unit on time left over",
-                None => "a unit of work",
+            match unit.span {
+                Span::Work {
+                    what: Work::TipRequest,
+                } => "asking the node for its tip",
+                Span::Work {
+                    what: Work::CacheCarry,
+                } => "keeping fetched blocks for the next round",
+                Span::Unit {
+                    pass: 2,
+                    progress: _,
+                } => "a unit on time left over",
+                Span::Unit {
+                    pass: _,
+                    progress: _,
+                } => "a unit of work",
             },
             milliseconds(unit.ms)
         );
         match merged.last_mut() {
             Some((bar, parts)) if bar.start_ms + bar.ms == unit.start_ms => {
                 bar.ms += unit.ms;
-                bar.leftover |= unit.pass == 2;
-                bar.work &= unit.work.is_some();
+                bar.leftover |= unit.leftover();
+                bar.work &= matches!(unit.span, Span::Work { what: _ });
                 parts.push(part);
             }
             Some(_) | None => merged.push((
                 Bar {
                     start_ms: unit.start_ms,
                     ms: unit.ms,
-                    leftover: unit.pass == 2,
-                    work: unit.work.is_some(),
+                    leftover: unit.leftover(),
+                    work: matches!(unit.span, Span::Work { what: _ }),
                     title: String::new(),
                     label: None,
                     last: false,
@@ -259,6 +273,181 @@ pub struct Panel {
     /// Draws attention: open by itself, with an alert edge.
     pub alert: bool,
     pub rows: Vec<(String, String)>,
+}
+
+/// A mark as the page shows it: a line on the timeline, a row in the
+/// events table.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct MarkView {
+    pub seq: u64,
+    pub at_ms: i64,
+    pub round: u64,
+    pub tier: Tier,
+    pub key: bool,
+    pub text: String,
+}
+
+pub fn mark_view(mark: &Mark) -> MarkView {
+    MarkView {
+        seq: mark.seq,
+        at_ms: mark.at_ms,
+        round: mark.round,
+        tier: mark.tier,
+        key: mark.key,
+        text: mark_text(&mark.what),
+    }
+}
+
+/// What happened, as a sentence.
+pub fn mark_text(what: &MarkKind) -> String {
+    match what {
+        MarkKind::NewBlocks { tip, count: 1 } => {
+            format!("The node has a new block: {}.", thousands(*tip))
+        }
+        MarkKind::NewBlocks { tip, count } => format!(
+            "The node has {} new blocks, up to {}.",
+            thousands(*count),
+            thousands(*tip)
+        ),
+        MarkKind::ReorgFound { fork, deeper: true } => format!(
+            "The reorganisation goes deeper: it is reconciled from block {} now.",
+            thousands(*fork)
+        ),
+        MarkKind::ReorgFound { fork, deeper: false } => format!(
+            "The node's chain differs from block {} on: a reorganisation. Payments from there are re-examined, and new blocks wait.",
+            thousands(*fork)
+        ),
+        MarkKind::ReorgCollected => {
+            "Payments at or above the fork were queued to be re-examined.".to_owned()
+        }
+        MarkKind::ReorgProcessed {
+            examined,
+            changed,
+            voided,
+        } => format!(
+            "Re-examined {} against the node's chain: {} changed, {} voided as double-spent.",
+            plural(*examined, "payment"),
+            thousands(*changed),
+            thousands(*voided)
+        ),
+        MarkKind::Rewound {
+            fork,
+            deleted_to: Some(to),
+            ancestor,
+        } if to > fork => format!(
+            "Rewound: blocks {} to {} deleted, stores moved back to block {}. The replacement blocks are scanned next.",
+            thousands(*fork),
+            thousands(*to),
+            thousands(*ancestor)
+        ),
+        MarkKind::Rewound {
+            fork,
+            deleted_to: _,
+            ancestor,
+        } => format!(
+            "Rewound: block {} deleted, stores moved back to block {}. The replacement block is scanned next.",
+            thousands(*fork),
+            thousands(*ancestor)
+        ),
+        MarkKind::Seeded { height } => format!(
+            "Started scanning this network at block {}.",
+            thousands(*height)
+        ),
+        MarkKind::Checkpointed {
+            height,
+            stores,
+            done_txs,
+            total_txs,
+        } => format!(
+            "Out of time partway through block {}: {} of {} transactions scanned for {}, saved.",
+            thousands(*height),
+            thousands(*done_txs),
+            thousands(*total_txs),
+            stores_phrase(*stores)
+        ),
+        MarkKind::Committed {
+            height,
+            stores,
+            found,
+            how,
+        } => {
+            let found = if *found > 0 {
+                format!(", {} found in it", plural(*found, "payment"))
+            } else {
+                String::new()
+            };
+            let (height, stores) = (thousands(*height), stores_phrase(*stores));
+            match how {
+                CommitHow::HeaderOnly => format!(
+                    "Block {height} recorded from its header: no store had anything to look for in it."
+                ),
+                CommitHow::Frontier => {
+                    format!("Block {height} scanned for {stores} and committed{found}.")
+                }
+                CommitHow::Joined => format!(
+                    "Block {height} scanned for {stores} catching up{found}: they caught up and joined the frontier."
+                ),
+                CommitHow::CatchingUp => {
+                    format!("Block {height} scanned for {stores} catching up{found}.")
+                }
+            }
+        }
+        MarkKind::Diverged { height } => format!(
+            "Block {} from the node doesn't extend the recorded chain: new blocks wait for the reorganisation to be reconciled.",
+            thousands(*height)
+        ),
+        MarkKind::IdleAdvanced { from, to, stores } => format!(
+            "{} with nothing that could have been paid moved straight from block {} to {}.",
+            capitalised(&stores_phrase(*stores)),
+            thousands(*from),
+            thousands(*to)
+        ),
+        MarkKind::FastScanned { transactions } => format!(
+            "The fast path scanned {} new in the pool.",
+            plural(*transactions, "transaction")
+        ),
+        MarkKind::TxMatched {
+            path: PoolPath::Fast,
+            txid,
+        } => format!(
+            "Transaction {txid} in the pool pays an order: recorded at once by the fast path."
+        ),
+        MarkKind::TxMatched {
+            path: PoolPath::Round,
+            txid,
+        } => format!(
+            "Transaction {txid} in the pool pays an order: found by the round's rotation."
+        ),
+        MarkKind::Recomputed {
+            orders: 1,
+            from,
+            to,
+        } => format!(
+            "An order went from {} to {}; its webhook is queued.",
+            from.as_str(),
+            to.as_str()
+        ),
+        MarkKind::Recomputed { orders, from, to } => format!(
+            "{} orders changed status (one from {} to {}); their webhooks are queued.",
+            thousands(*orders),
+            from.as_str(),
+            to.as_str()
+        ),
+        MarkKind::Pruned { hashes } => format!("Pruned {} old block hashes.", thousands(*hashes)),
+        MarkKind::TierFailed { tier } => format!(
+            "The {tier} tier failed and stopped for this round; it is retried next round."
+        ),
+        MarkKind::NodeFailed { tier } => {
+            format!("The {tier} tier stopped for this round: the node failed.")
+        }
+    }
+}
+
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 /// `state` in words and figures, its rounds to `tuning`'s scale.
@@ -448,18 +637,19 @@ fn chain(state: &State, tuning: &Tuning) -> ChainView {
 fn next_block(pool: NodePool) -> NextBlock {
     let fill = pool
         .bytes
-        .map(|bytes| bytes as f64 / pool.penalty_free.max(1) as f64);
+        .zip(pool.penalty_free)
+        .map(|(bytes, free)| bytes as f64 / free.max(1) as f64);
     let over = fill.is_some_and(|fill| fill > 1.0);
     let transactions = plural(pool.txs, "transaction");
     NextBlock {
-        fill: fill.map(|fill| fill.min(1.0)),
+        fill: fill.map(|fill| rounded(fill.min(1.0))),
         over,
         count: compact(pool.txs),
-        title: match pool.bytes {
-            Some(bytes) => format!(
+        title: match pool.bytes.zip(pool.penalty_free) {
+            Some((bytes, free)) => format!(
                 "The next block: {transactions} waiting in the node's pool, {} of the {} a miner can fill at full reward ({:.0} %){}",
                 kilobytes(bytes),
-                kilobytes(pool.penalty_free),
+                kilobytes(free),
                 fill.unwrap_or(0.0) * 100.0,
                 if over {
                     ": more than one block takes without a smaller reward."
@@ -517,7 +707,16 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
             let started = round
                 .units
                 .iter()
-                .find(|unit| unit.tier == *tier && unit.pass == 1)
+                .find(|unit| {
+                    unit.tier == *tier
+                        && matches!(
+                            unit.span,
+                            Span::Unit {
+                                pass: 1,
+                                progress: _
+                            }
+                        )
+                })
                 .map(|unit| unit.start_ms);
             Lane {
                 tier: *tier,
@@ -637,7 +836,7 @@ fn side(state: &State) -> Side {
     let reorg = state.reorg;
     let orders = &state.orders;
     let waiting = orders.pending + orders.due;
-    let fast_passes = u64::try_from(state.pool.fast_passes.len()).unwrap_or(u64::MAX);
+    let fast_passes = state.pool.fast_passes.count();
     let sent: u64 = state.webhooks.sent.iter().map(|n| u64::from(*n)).sum();
     let last_minute: u64 = state
         .webhooks
@@ -648,7 +847,7 @@ fn side(state: &State) -> Side {
         .map(|n| u64::from(*n))
         .sum();
     let queued: u64 = state.database.queued.iter().sum();
-    let saves = u64::try_from(state.saves.len()).unwrap_or(u64::MAX);
+    let saves = state.saves.count();
     Side {
         reorg: Panel {
             summary: match reorg {
@@ -710,7 +909,10 @@ fn side(state: &State) -> Side {
                     (Some(node), false) => {
                         format!("{} in the node's pool, not scanned", thousands(node.txs))
                     }
-                    (None, true) => format!("{} in the pool{found}", thousands(state.pool.size)),
+                    (None, true) => format!(
+                        "{} scanned in the pool{found}",
+                        thousands(state.pool.remembered)
+                    ),
                     (None, false) => "Not scanned: no order waits to be paid".to_owned(),
                 }
             },
@@ -726,13 +928,9 @@ fn side(state: &State) -> Side {
                     "Of the next block's full-reward size".to_owned(),
                     state
                         .node_pool
-                        .and_then(|node| {
-                            node.bytes.map(|bytes| {
-                                format!(
-                                    "{:.0} %",
-                                    bytes as f64 / node.penalty_free.max(1) as f64 * 100.0
-                                )
-                            })
+                        .and_then(|node| node.bytes.zip(node.penalty_free))
+                        .map(|(bytes, free)| {
+                            format!("{:.0} %", bytes as f64 / free.max(1) as f64 * 100.0)
                         })
                         .unwrap_or_else(dash),
                 ),
@@ -746,7 +944,7 @@ fn side(state: &State) -> Side {
                 ),
                 (
                     "Transactions scanned and remembered".to_owned(),
-                    thousands(state.pool.size),
+                    thousands(state.pool.remembered),
                 ),
                 (
                     "Fast passes with something new, last minute".to_owned(),
@@ -864,7 +1062,7 @@ fn side(state: &State) -> Side {
                 ),
                 (
                     "In memory: pool transactions".to_owned(),
-                    thousands(state.pool.size),
+                    thousands(state.pool.remembered),
                 ),
             ],
         },
@@ -946,12 +1144,18 @@ fn queue(queued: u64, capacity: u64) -> String {
     format!("{} of {}", thousands(queued), thousands(capacity))
 }
 
+/// `part` of `whole`, 0 to 1, to three places: enough to draw, and short
+/// in every frame the page is sent.
 fn fraction(part: u64, whole: u64) -> f64 {
     if whole == 0 {
         0.0
     } else {
-        (part as f64 / whole as f64).clamp(0.0, 1.0)
+        rounded((part as f64 / whole as f64).clamp(0.0, 1.0))
     }
+}
+
+fn rounded(x: f64) -> f64 {
+    (x * 1000.0).round() / 1000.0
 }
 
 fn dash() -> String {

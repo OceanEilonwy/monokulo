@@ -581,7 +581,10 @@ fn the_side_summarises_the_pool_orders_upkeep_webhooks_and_saves() {
         Event::Upkeep { pruned: 3 },
     ]);
     let side = present(&state, &TUNING).side;
-    assert_eq!(side.mempool.summary, "12 in the pool, 1 payment found");
+    assert_eq!(
+        side.mempool.summary,
+        "12 scanned in the pool, 1 payment found"
+    );
     assert_eq!(side.pool_txs, [("aaaaaaaa".to_owned(), true)]);
     assert_eq!(side.orders.summary, "2 to recompute");
     assert_eq!(side.transitions, [("pending", "unconfirmed")]);
@@ -695,5 +698,8 @@ fn the_pool_panel_says_whether_the_engine_looks() {
     assert_eq!(looking.summary, "30 in the node's pool");
     assert_eq!(looking.rows[1].1, "20 %");
     assert_eq!(looking.rows[2].1, "yes");
-    assert_eq!(summary(vec![watched(true)]).summary, "4 in the pool");
+    assert_eq!(
+        summary(vec![watched(true)]).summary,
+        "4 scanned in the pool"
+    );
 }

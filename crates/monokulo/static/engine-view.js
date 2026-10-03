@@ -33,6 +33,7 @@
   // up to this, so a burst plays one after another.
   const STAGGER_MS = 1000;
   const PULSE_MS = 1200; // a block or the node lighting up
+  const MAX_EFFECTS = 30; // played from one frame at most
   const TIERS = ["chain", "blocks", "mempool", "settlement", "upkeep"];
   const TIER_NAMES = { chain: "Chain", blocks: "Blocks", mempool: "Mempool", settlement: "Settlement", upkeep: "Upkeep" };
 
@@ -86,6 +87,7 @@
       // What the engine no longer keeps, the page lets go of too.
       const keep = engineNow() - AXIS;
       while (marks.length && marks[0].at_ms < keep) marks.shift();
+      lastFrame = frame;
       if (mode === "live") queue.push(frame);
       tlDirty = true;
     });
@@ -113,14 +115,26 @@
       if (win.end != null && head >= b) { head = b; setMode("paused"); }
       else if (head >= engineNow() - LAG) goLive();
     }
-    if (tlDirty || mode !== "paused") drawTimeline();
+    if (tlDirty || timelineMoved()) drawTimeline();
     requestAnimationFrame(frameLoop);
   }
 
   function play(frame, quietly) {
     if (!quietly && !document.hidden && !reduced) {
       const first = frame.effects.length ? frame.effects[0].at_ms : 0;
+      // A catch-up can commit fifty blocks in one frame: a save or flash
+      // on the same thing plays once, and at most MAX_EFFECTS play.
+      const seen = new Set(), effects = [];
       for (const timed of frame.effects) {
+        const kind = timed.effect.kind;
+        if (kind === "save" || kind === "flash" || kind === "probe") {
+          const key = JSON.stringify(timed.effect);
+          if (seen.has(key)) continue;
+          seen.add(key);
+        }
+        if (effects.length < MAX_EFFECTS) effects.push(timed);
+      }
+      for (const timed of effects) {
         const delay = Math.min(STAGGER_MS, Math.max(0, timed.at_ms - first) * 2);
         setTimeout(() => animate(timed.effect), delay);
       }
@@ -191,10 +205,14 @@
     tlDirty = true;
   }
 
+  // Frames keep arriving while paused, so going live draws the newest
+  // rather than downloading the whole history again.
+  let lastFrame = null;
   function goLive() {
     setMode("live");
     setWindow(null, win.span);
-    connect();
+    queue = [];
+    if (lastFrame) { head = Math.max(lastFrame.at_ms, engineNow() - LAG); clearTokens(); draw(lastFrame.view); drawEvents(); }
   }
 
   // ---- drawing a view ----
@@ -570,7 +588,6 @@
     if (t < a) setWindow(t + (b - a) * 0.8, b - a);
     else if (t > b) setWindow(t + (b - a) * 0.2, b - a);
   }
-  const xOf = (t, w) => { const [a, b] = axis(); return ((t - a) / (b - a)) * w; };
   const tOf = (x, w) => { const [a, b] = axis(); return a + (x / w) * (b - a); };
   // "45s", "11m 8s", "1h 5m".
   const ago = (ms) => {
@@ -580,15 +597,30 @@
     return `${Math.floor(s / 3600)}h${Math.floor(s / 60) % 60 ? ` ${Math.floor(s / 60) % 60}m` : ""}`;
   };
   const clockAt = (t) => new Date(t - offset).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  function setReadout(text) { $("tl-text").textContent = text; }
+  function setReadout(text) { const el = $("tl-text"); if (el.textContent !== text) el.textContent = text; }
   function headText() {
     if (mode === "live") return "Playback position: live, 1.5s behind the engine. Drag it back to pause there.";
     return `Playback position: ${ago(engineNow() - head)} ago (${clockAt(head)}). Drag it to scrub; Play replays from here.`;
   }
+  // The timeline is redrawn when something on it moved by half a pixel
+  // or more (30 minutes over the bar is about a second a pixel), or while
+  // an event fades in; not every frame.
+  let drawn = { end: 0, head: 0, w: 0, fading: false };
+  function timelineMoved() {
+    const w = canvas.clientWidth;
+    const halfPixel = AXIS / Math.max(1, w) / 2;
+    return drawn.fading || w !== drawn.w
+      || Math.abs(axisEnd() - drawn.end) >= halfPixel || Math.abs(head - drawn.head) >= halfPixel;
+  }
+  // Sets an attribute only when it changes.
+  const setAttr = (el, name, value) => { if (el.getAttribute(name) !== value) el.setAttribute(name, value); };
   function drawTimeline() {
     tlDirty = false;
     const dpr = devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
     if (!w) return;
+    // The bar's scale, once per draw.
+    const [axisStart, axisStop] = axis(), perMs = w / (axisStop - axisStart);
+    const X = (t) => (t - axisStart) * perMs;
     if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
@@ -598,7 +630,7 @@
     // started less than 30 minutes ago) the bar is hatched, with a line
     // where the engine's record starts: nothing to show or move to there.
     ctx.fillStyle = css("--surface-sunken");
-    const held = Math.max(0, xOf(start, w));
+    const held = Math.max(0, X(start));
     ctx.fillRect(held, 0, w - held, h);
     if (held > 0) {
       ctx.save();
@@ -615,19 +647,33 @@
     // Positions aren't rounded to pixels, so everything glides as time
     // passes; a new event fades in.
     const fade = (mark) => (mark.arrived ? Math.min(1, (clock - mark.arrived) / 400) : 1);
+    let fading = false;
     const keys = [];
+    // Plain events in two strokes (before and after the playback
+    // position); only one still fading in is drawn on its own.
     ctx.strokeStyle = css("--muted"); ctx.lineWidth = 1;
+    const past = new Path2D(), future = new Path2D();
     for (const mark of marks) {
-      const x = xOf(mark.at_ms, w);
+      const x = X(mark.at_ms);
       if (x < -6 || x > w + 6) continue;
-      if (mark.key) { keys.push([x, mark]); continue; }
-      ctx.globalAlpha = (live || mark.at_ms <= head ? 0.75 : 0.3) * fade(mark);
-      ctx.beginPath(); ctx.moveTo(x, mid - 6); ctx.lineTo(x, mid + 6); ctx.stroke();
+      const f = fade(mark);
+      if (f < 1) fading = true;
+      if (mark.key) { keys.push([x, mark, f]); continue; }
+      const before = live || mark.at_ms <= head;
+      if (f < 1) {
+        ctx.globalAlpha = (before ? 0.75 : 0.3) * f;
+        ctx.beginPath(); ctx.moveTo(x, mid - 6); ctx.lineTo(x, mid + 6); ctx.stroke();
+        continue;
+      }
+      const path = before ? past : future;
+      path.moveTo(x, mid - 6); path.lineTo(x, mid + 6);
     }
-    for (const [x, mark] of keys) {
+    ctx.globalAlpha = 0.75; ctx.stroke(past);
+    ctx.globalAlpha = 0.3; ctx.stroke(future);
+    for (const [x, mark, f] of keys) {
       ctx.beginPath(); ctx.arc(x, mid, 5, 0, Math.PI * 2);
       ctx.fillStyle = css(`--viz-tier-${mark.tier || "chain"}`);
-      ctx.globalAlpha = (!live && mark.at_ms > head ? 0.4 : 1) * fade(mark);
+      ctx.globalAlpha = (!live && mark.at_ms > head ? 0.4 : 1) * f;
       ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = css("--paper-raised"); ctx.stroke();
     }
     ctx.globalAlpha = 1;
@@ -637,27 +683,28 @@
     const box = $("tl-win"), marker = $("tl-head");
     // Anchored by its right edge, so a window too short to grab grows to
     // the left, never past the bar's end.
-    box.style.right = `${100 - (xOf(b, w) / w) * 100}%`;
-    box.style.width = `${((xOf(b, w) - xOf(a, w)) / w) * 100}%`;
+    box.style.right = `${100 - (X(b) / w) * 100}%`;
+    box.style.width = `${((X(b) - X(a)) / w) * 100}%`;
     const windowText = `${ago(now - a)} ago to ${win.end == null ? "now" : ago(now - b) + " ago"}`;
-    for (const id of ["tl-win", "tl-from", "tl-to"]) $(id).setAttribute("aria-valuetext", windowText);
-    marker.style.left = `${(xOf(head, w) / w) * 100}%`;
-    marker.setAttribute("aria-valuetext", headText());
+    for (const id of ["tl-win", "tl-from", "tl-to"]) setAttr($(id), "aria-valuetext", windowText);
+    marker.style.left = `${(X(head) / w) * 100}%`;
+    setAttr(marker, "aria-valuetext", headText());
+    setAttr(marker, "data-at", String(Math.round(head)));
 
     const tip = $("tl-tipbox");
     let best = null;
     if (hoverX != null && !dragging) for (const k of keys) if (Math.abs(k[0] - hoverX) < 7 && (!best || Math.abs(k[0] - hoverX) < Math.abs(best[0] - hoverX))) best = k;
-    const onHead = hoverX != null && Math.abs(xOf(head, w) - hoverX) < 6;
+    const onHead = hoverX != null && Math.abs(X(head) - hoverX) < 6;
     const onVoid = !best && !onHead && hoverX != null && hoverX < held - 2;
     tip.hidden = !best && !onHead && !onVoid;
     if (onVoid) { tip.textContent = `No data before ${clockAt(start)}, when the engine started: nothing to show or move to there.`; tip.style.left = `${Math.max(220, Math.min(w - 220, hoverX))}px`; }
-    else if (onHead) { tip.textContent = headText(); tip.style.left = `${Math.max(180, Math.min(w - 180, xOf(head, w)))}px`; }
+    else if (onHead) { tip.textContent = headText(); tip.style.left = `${Math.max(180, Math.min(w - 180, X(head)))}px`; }
     else if (best) { tip.textContent = best[1].text; tip.style.left = `${Math.max(140, Math.min(w - 140, best[0]))}px`; }
 
     setReadout(live ? "" : `${ago(engineNow() - head)} behind live`);
     // Five-minute marks back from the bar's right edge, which is now while
     // live and the moment playback left live otherwise.
-    const [axisStart, end] = axis(), reallyNow = engineNow();
+    const end = axisStop, reallyNow = engineNow();
     const label = (t) => (reallyNow - t < 1000 ? "now" : `${ago(reallyNow - t)} ago`);
     let labels = `<span class="edge" style="left:0">${label(axisStart)}</span>`;
     for (let back = 5 * 60000; back < AXIS; back += 5 * 60000) {
@@ -667,6 +714,7 @@
     }
     labels += `<span class="end" style="left:100%">${label(end)}</span>`;
     if ($("tl-axis").innerHTML !== labels) $("tl-axis").innerHTML = labels;
+    drawn = { end: axisStop, head, w, fading };
   }
 
   // Moving the window: by its middle, or one end by a handle. The window

@@ -62,8 +62,9 @@ impl Feed {
     }
 }
 
-fn text(output: &Output) -> &str {
-    &output.mark.as_ref().expect("a mark").text
+/// The mark's sentence, as the page writes it (`present::mark_text`).
+fn text(output: &Output) -> String {
+    crate::engine_view::present::mark_text(&output.mark.as_ref().expect("a mark").what)
 }
 
 fn key(output: &Output) -> bool {
@@ -185,7 +186,7 @@ fn a_snapshot_sets_what_the_page_draws() {
         (state.chain.cache_bytes, state.chain.cache_budget_bytes),
         (4096, 1 << 26)
     );
-    assert_eq!(state.pool.size, 9);
+    assert_eq!(state.pool.remembered, 9);
     assert_eq!(state.pool.txs[0].txid, "aaaaaaaa");
     assert_eq!((state.orders.pending, state.orders.due), (2, 4));
     assert_eq!(state.webhooks.due, 1);
@@ -974,10 +975,20 @@ fn pool_passes_flash_count_and_call() {
         text(&busy),
         "The fast path scanned 2 transactions new in the pool."
     );
-    assert_eq!(feed.state.pool.fast_passes.len(), 2);
-    assert_eq!(feed.state.pool.size, 5);
+    assert_eq!(feed.state.pool.fast_passes.count(), 2);
+    assert_eq!(
+        feed.state.node_pool.map(|pool| pool.txs),
+        Some(5),
+        "a scan of the pool counts the node's pool"
+    );
+    assert_eq!(
+        feed.state.pool.remembered, 0,
+        "only a snapshot says what is remembered"
+    );
+    // Counted by the second: the first pass's second ended over a minute
+    // before this one.
     feed.feed_at(
-        61_500,
+        62_100,
         Event::PoolScanned {
             path: PoolPath::Round,
             pool: 5,
@@ -985,8 +996,8 @@ fn pool_passes_flash_count_and_call() {
         },
     );
     assert_eq!(
-        feed.state.pool.fast_passes,
-        [2_000],
+        feed.state.pool.fast_passes.count(),
+        1,
         "the first pass is over a minute old"
     );
     assert_eq!(feed.state.last_call, Some(Call::Pool));
@@ -1016,7 +1027,7 @@ fn the_node_s_pool_fills_the_next_block() {
         Some(NodePool {
             txs: 20,
             bytes: Some(60_000),
-            penalty_free: 300_000,
+            penalty_free: Some(300_000),
         })
     );
     assert!(feed.state.pool.watched);
@@ -1045,7 +1056,7 @@ fn the_node_s_pool_fills_the_next_block() {
         Some(NodePool {
             txs: 3,
             bytes: None,
-            penalty_free: 400_000,
+            penalty_free: Some(400_000),
         })
     );
 }
@@ -1193,13 +1204,17 @@ fn saves_are_counted_for_a_minute_and_marks_carry_their_place() {
     let mut feed = Feed::new().after([snapshot(10, &[(10, 1)]), started(3, Some(10))]);
     feed.feed_at(2_100_000, committed(11, Group::Frontier, 1, 0, 0));
     feed.feed_at(2_130_000, Event::ReorgCollected);
-    assert_eq!(feed.state.saves.len(), 2);
+    assert_eq!(feed.state.saves.count(), 2);
     let out = feed.feed_at(2_161_000, Event::Seeded { height: 1 });
-    assert_eq!(feed.state.saves, [2_130_000, 2_161_000]);
+    assert_eq!(
+        feed.state.saves.count(),
+        2,
+        "the first is over a minute old"
+    );
     let mark = out.mark.unwrap();
     assert_eq!(
         (mark.at_ms, mark.round, mark.tier),
-        (2_161_000, 3, Some(Tier::Blocks))
+        (2_161_000, 3, Tier::Blocks)
     );
     assert_eq!(mark.seq, feed.seq);
     feed.feed_at(5, Event::ReorgCollected);
@@ -1217,17 +1232,30 @@ fn saves_are_counted_for_a_minute_and_marks_carry_their_place() {
 /// within their bounds; a mark on every key event.
 #[test]
 fn no_sequence_of_events_breaks_the_page_s_invariants() {
+    for seed in [0x9e37_79b9_7f4a_7c15, 1, 0xdead_beef, 42] {
+        random_run(seed, 20_000);
+    }
+}
+
+/// `steps` events from every kind, in an order drawn from `seed`, each
+/// checked against the page's invariants.
+fn random_run(mut seed: u64, steps: usize) {
     let mut feed = Feed::new().after([snapshot(1_000, &[(1_000, 50), (990, 5), (900, 3)])]);
-    let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
     let mut next = |n: u64| {
         seed = seed
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
         (seed >> 33) % n
     };
-    for _ in 0..20_000 {
+    for _ in 0..steps {
         let height = 880 + next(140);
-        let event = match next(18) {
+        let tier = Tier::ALL[usize::try_from(next(5)).unwrap()];
+        let path = if next(2) == 0 {
+            PoolPath::Fast
+        } else {
+            PoolPath::Round
+        };
+        let event = match next(28) {
             0 => started(next(1_000), Some(1_000 + next(20))),
             1 => committed(
                 height,
@@ -1260,7 +1288,7 @@ fn no_sequence_of_events_breaks_the_page_s_invariants() {
                 total_txs: 2,
             },
             7 => Event::TxMatched {
-                path: PoolPath::Fast,
+                path,
                 txid: format!("{:08x}", next(1 << 20)),
             },
             8 => Event::Recomputed {
@@ -1272,7 +1300,11 @@ fn no_sequence_of_events_breaks_the_page_s_invariants() {
             },
             9 => Event::Slept {
                 ms: next(2_000),
-                woken_by: Wake::Interval,
+                woken_by: if next(2) == 0 {
+                    Wake::Interval
+                } else {
+                    Wake::NewBlock
+                },
             },
             10 => Event::RoundFinished {
                 round: next(1_000),
@@ -1280,10 +1312,15 @@ fn no_sequence_of_events_breaks_the_page_s_invariants() {
                 backlogged: next(2) == 0,
             },
             11 => unit(
-                Tier::ALL[usize::try_from(next(5)).unwrap()],
+                tier,
                 next(100),
                 next(100),
-                UnitProgress::Advanced,
+                match next(4) {
+                    0 => UnitProgress::Failed,
+                    1 => UnitProgress::Blocked(Wait::NodeFailed),
+                    2 => UnitProgress::Idle,
+                    _ => UnitProgress::Advanced,
+                },
             ),
             12 => Event::Diverged { height },
             13 => Event::BlockScanStarted {
@@ -1291,17 +1328,38 @@ fn no_sequence_of_events_breaks_the_page_s_invariants() {
                 group: Group::CatchUp,
                 stores: next(3),
                 txs: next(100),
-                header_only: false,
+                header_only: next(2) == 0,
             },
-            14 => snapshot(
-                height,
-                &[
-                    (height, 1 + next(30)),
-                    (height.saturating_sub(1 + next(50)), 1 + next(5)),
+            14 => Event::Snapshot(Box::new(Snapshot {
+                round: next(1_000),
+                tip: Some(height + next(3)),
+                high_water: Some(height),
+                groups: vec![
+                    SnapshotGroup {
+                        cursor: height,
+                        stores: 1 + next(30),
+                    },
+                    SnapshotGroup {
+                        cursor: height.saturating_sub(1 + next(50)),
+                        stores: 1 + next(5),
+                    },
                 ],
-            ),
+                cached: vec![height + 1, height + 2],
+                checkpoints: vec![height + 1],
+                reorg: (next(3) == 0).then(|| ReorgJob {
+                    fork: height.saturating_sub(next(5)),
+                    phase: ReorgPhase::Process,
+                    candidates: next(9),
+                }),
+                pool: SnapshotPool {
+                    watched: next(2) == 0,
+                    size: next(20),
+                    txids: vec![format!("{:08x}", next(1 << 20))],
+                },
+                ..Snapshot::default()
+            })),
             15 => Event::PoolScanned {
-                path: PoolPath::Fast,
+                path,
                 pool: next(50),
                 scanned: next(3),
             },
@@ -1310,10 +1368,69 @@ fn no_sequence_of_events_breaks_the_page_s_invariants() {
                 bytes: (next(2) == 0).then(|| next(400_000)),
                 penalty_free: 300_000,
             },
+            17 => Event::TierEnded {
+                tier,
+                outcome: TierOutcome::Idle,
+            },
+            18 => Event::ChainChecked {
+                agrees: next(2) == 0,
+                looked_up: next(2) == 0,
+            },
+            19 => Event::ReorgCollected,
+            20 => Event::ReorgProcessed {
+                examined: next(5),
+                changed: next(3),
+                voided: next(2),
+            },
+            21 => Event::Seeded { height },
+            22 => Event::BlockProgress {
+                height,
+                done_txs: next(50),
+                total_txs: 50,
+            },
+            23 => Event::Work {
+                tier,
+                start_ms: next(100),
+                ms: next(100),
+                what: if next(2) == 0 {
+                    shared::activity::Work::TipRequest
+                } else {
+                    shared::activity::Work::CacheCarry
+                },
+            },
+            24 => Event::Vanished { looked: next(9) },
             _ => Event::Upkeep { pruned: next(3) },
         };
+        let before = feed.state.clone();
+        let stores_before: u64 = before.groups.iter().map(|g| g.stores).sum();
+        // A move whose source the page knows, with the stores it moves,
+        // neither makes nor loses stores.
+        let conserving = match &event {
+            Event::IdleAdvanced {
+                from,
+                to: _,
+                stores,
+            } => before
+                .groups
+                .iter()
+                .any(|g| g.cursor == *from && g.stores >= *stores),
+            Event::Committed {
+                height,
+                group: _,
+                stores,
+                matches: _,
+                idle_moved,
+                header_only: _,
+            } => before
+                .groups
+                .iter()
+                .any(|g| g.cursor == height.saturating_sub(1) && g.stores >= stores + idle_moved),
+            _ => false,
+        };
+        let commit = matches!(event, Event::Committed { .. });
         let out = feed.feed(event);
-        let groups = &feed.state.groups;
+        let state = &feed.state;
+        let groups = &state.groups;
         assert!(
             groups.windows(2).all(|w| w[0].cursor > w[1].cursor),
             "sorted, one per cursor: {groups:?}"
@@ -1324,9 +1441,40 @@ fn no_sequence_of_events_breaks_the_page_s_invariants() {
             groups.iter().all(|g| g.stores > 0),
             "none empty: {groups:?}"
         );
-        assert!(feed.state.ribbon.len() <= RIBBON);
-        assert!(feed.state.pool.txs.len() <= POOL_TXS);
-        assert!(feed.state.orders.last.len() <= LAST_TRANSITIONS);
+        if conserving {
+            assert_eq!(
+                groups.iter().map(|g| g.stores).sum::<u64>(),
+                stores_before,
+                "a move keeps its stores: {before:?} to {groups:?}"
+            );
+        }
+        if commit {
+            let lowest = groups.iter().map(|g| g.cursor).min();
+            assert!(
+                lowest.is_none_or(|lowest| state.chain.cached.iter().all(|h| *h > lowest)),
+                "no block at or below every cursor stays cached"
+            );
+        }
+        // Stores fly from a group the page had to one it has.
+        let before_ids: BTreeSet<u64> = before.groups.iter().map(|g| g.id).collect();
+        for effect in &out.effects {
+            if let Effect::Fly {
+                from: Anchor::Group(from),
+                to: Anchor::Group(to),
+                token: _,
+            } = effect
+            {
+                assert!(before_ids.contains(from), "from a group it had: {effect:?}");
+                assert!(ids.contains(to), "to a group it has: {effect:?}");
+            }
+        }
+        assert!(state.ribbon.len() <= RIBBON);
+        assert!(state.pool.txs.len() <= POOL_TXS);
+        assert!(state.orders.last.len() <= LAST_TRANSITIONS);
+        assert!(
+            state.saves.seconds.len() <= 61,
+            "a minute of seconds at most"
+        );
         assert!(
             out.effects
                 .iter()
@@ -1339,11 +1487,11 @@ fn no_sequence_of_events_breaks_the_page_s_invariants() {
                     }
                 ))
                 .count()
-                <= MAX_TOKENS + 1
+                <= MAX_TOKENS
         );
         if let Some(mark) = &out.mark {
-            assert!(!mark.text.is_empty());
-            assert!(mark.text.ends_with('.'), "a sentence: {}", mark.text);
+            let text = crate::engine_view::present::mark_text(&mark.what);
+            assert!(text.ends_with('.'), "a sentence: {text}");
         }
     }
 }

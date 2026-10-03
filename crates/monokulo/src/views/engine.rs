@@ -6,8 +6,9 @@
 use maud::{html, Markup, PreEscaped};
 
 use super::{layout_with_head, reload_button, PageChrome};
-use crate::engine_view::machine::Mark;
-use crate::engine_view::present::{Bar, ChainView, Lane, Panel, Presented, RibbonMark, RoundView};
+use crate::engine_view::present::{
+    Bar, ChainView, Lane, MarkView, Panel, Presented, RibbonMark, RoundView,
+};
 use crate::views::scaling::thousands;
 
 /// Blocks drawn without JavaScript (the script fits the strip's width).
@@ -30,7 +31,7 @@ pub struct EnginePage {
     /// in place of the live one.
     pub pinned: Option<RoundView>,
     /// Newest first.
-    pub marks: Vec<Mark>,
+    pub marks: Vec<MarkView>,
     /// Why the engine couldn't be read, if it couldn't.
     pub error: Option<String>,
 }
@@ -332,7 +333,7 @@ fn timeline() -> Markup {
                 div class="tl-head" id="tl-head" role="slider" aria-label="Playback position" {}
                 div class="tl-axis" id="tl-axis" {}
             }
-            div class="tl-read" id="tl-read" aria-live="polite" { span id="tl-text" {} }
+            div class="tl-read" id="tl-read" { span id="tl-text" {} }
             div class="tl-modes" id="tl-modes" role="radiogroup" aria-label="Playback" {
                 label { input type="radio" name="tl-mode" value="live" checked; span { "Live" } }
                 label title="Replay from the playback position" { input type="radio" name="tl-mode" value="replay" disabled; span { "Play" } }
@@ -831,7 +832,7 @@ pub fn sparkline(sent: &[u32]) -> Markup {
     }
 }
 
-fn events(marks: &[Mark]) -> Markup {
+fn events(marks: &[MarkView]) -> Markup {
     html! {
         section class="engine-card" aria-labelledby="h-events" {
             header {
@@ -850,7 +851,7 @@ fn events(marks: &[Mark]) -> Markup {
                         @for mark in marks {
                             tr class=(if mark.key { "key" } else { "" }) {
                                 td class="num" { (thousands(mark.round)) }
-                                td { @if let Some(tier) = mark.tier { span class=(format!("tierchip t-{tier}")) { (crate::engine_view::present::tier_name(tier)) } } }
+                                td { span class=(format!("tierchip t-{}", mark.tier)) { (crate::engine_view::present::tier_name(mark.tier)) } }
                                 td { (mark.text) }
                             }
                         }

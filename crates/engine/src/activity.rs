@@ -88,13 +88,20 @@ pub fn now_ms() -> i64 {
 }
 
 impl Activity {
-    /// Records `event` as happening now.
+    /// Records `event` as happening now. Several loops record at once, so
+    /// the time is read under the record's lock and never goes back: the
+    /// record is in time order as well as sequence order (a clock stepped
+    /// back holds at the last time until it catches up).
     pub fn record(&self, event: Event) {
-        self.record_at(now_ms(), event);
+        let mut record = self.record.lock();
+        let at_ms = record
+            .events
+            .back()
+            .map_or_else(now_ms, |last| now_ms().max(last.at_ms));
+        Self::push(&mut record, at_ms, event);
     }
 
-    fn record_at(&self, at_ms: i64, event: Event) {
-        let mut record = self.record.lock();
+    fn push(record: &mut Record, at_ms: i64, event: Event) {
         let seq = record.next_seq;
         record.next_seq += 1;
         record.events.push_back(Recorded { seq, at_ms, event });
@@ -180,6 +187,23 @@ mod tests {
     use super::*;
     use shared::activity::Snapshot;
 
+    /// Records `event` at `at_ms`, whatever the clock says.
+    fn record_at(activity: &Activity, at_ms: i64, event: Event) {
+        Activity::push(&mut activity.record.lock(), at_ms, event);
+    }
+
+    /// Recording never goes back in time: an event recorded after one
+    /// stamped ahead of the clock takes that time.
+    #[test]
+    fn the_record_is_in_time_order() {
+        let activity = Activity::default();
+        let ahead = now_ms() + 60_000;
+        record_at(&activity, ahead, Event::ReorgCollected);
+        activity.record(Event::ReorgCollected);
+        let page = activity.page(None);
+        assert_eq!(page.events[1].at_ms, ahead);
+    }
+
     fn seqs(page: &Page) -> Vec<u64> {
         page.events.iter().map(|e| e.seq).collect()
     }
@@ -242,8 +266,9 @@ mod tests {
         // Push the first events out by age.
         let old = now_ms() - KEEP.as_millis() as i64 - 1;
         let aged = Activity::default();
-        aged.record_at(old, Event::Snapshot(Box::default()));
-        aged.record_at(
+        record_at(&aged, old, Event::Snapshot(Box::default()));
+        record_at(
+            &aged,
             old,
             Event::ChainChecked {
                 agrees: true,
@@ -280,13 +305,17 @@ mod tests {
     fn the_record_is_bounded_by_age_and_count() {
         let activity = Activity::default();
         let now = now_ms();
-        activity.record_at(now - KEEP.as_millis() as i64 - 1, Event::ReorgCollected);
-        activity.record_at(now, Event::ReorgCollected);
+        record_at(
+            &activity,
+            now - KEEP.as_millis() as i64 - 1,
+            Event::ReorgCollected,
+        );
+        record_at(&activity, now, Event::ReorgCollected);
         assert_eq!(seqs(&activity.page(Some(0))), [1], "the stale event went");
 
         let full = Activity::default();
         for _ in 0..=MAX_EVENTS {
-            full.record_at(now, Event::ReorgCollected);
+            record_at(&full, now, Event::ReorgCollected);
         }
         let page = full.page(Some(1));
         assert_eq!(page.events.len(), MAX_EVENTS);

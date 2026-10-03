@@ -26,6 +26,9 @@ async function openAsAdmin(page, context) {
 }
 
 test('the engine page follows the engine live, scrubs, replays and moves its window', async ({ page, context }) => {
+  // The story alone takes about ten seconds, and the run captures eight
+  // screenshots: more than the suite's default on a loaded runner.
+  test.setTimeout(90_000);
   const errors = [];
   page.on('pageerror', (error) => errors.push(String(error)));
   await page.setViewportSize({ width: 1600, height: 900 });
@@ -143,14 +146,16 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await page.mouse.move(box.x + 2 + 60, box.y + box.height / 2, { steps: 4 });
   await page.mouse.up();
   await expect(windowBox).not.toHaveAttribute('style', resized);
-  const at = await marker.getAttribute('aria-valuetext');
+  // The moment it shows, exactly (its tooltip's "ago" changes by itself).
+  const at = await marker.getAttribute('data-at');
+  // Dragged back 40px (about 50s on the 30-minute bar), it shows an
+  // earlier moment; the window moves with it.
   const head = await marker.boundingBox();
-  const inside = await windowBox.boundingBox();
   await page.mouse.move(head.x + head.width / 2, head.y + head.height / 2);
   await page.mouse.down();
-  await page.mouse.move(inside.x + inside.width - 4, head.y + head.height / 2, { steps: 5 });
+  await page.mouse.move(head.x + head.width / 2 - 40, head.y + head.height / 2, { steps: 5 });
   await page.mouse.up();
-  await expect(marker).not.toHaveAttribute('aria-valuetext', at);
+  await expect.poll(async () => Number(await marker.getAttribute('data-at'))).toBeLessThan(Number(at));
   await expect(mode('paused')).toBeChecked();
 
   // A click on a recent round shows it in the round card, paused; the chip
