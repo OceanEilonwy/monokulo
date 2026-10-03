@@ -20,10 +20,12 @@ use std::time::Duration;
 
 use parking_lot::RwLock;
 
-use crate::engine_settings::{Daemons, EngineSettings, SERVER_TOKEN, STANDALONE_ONLY};
+use crate::engine_settings::{
+    Daemons, EngineSettings, SnpBootConfig, ALL, SERVER_TOKEN, STANDALONE_ONLY,
+};
 use crate::http::rate_limit::RateLimiter;
 use crate::http::{build_router, AppState};
-use crate::key_custody::{CustodyRouter, KeyCustody, WalletHandle};
+use crate::key_custody::{CustodyRouter, KeyCustody, SnpSlot, StoreWraps, WalletHandle};
 use crate::store::{SharedStore, Store, StoreError, TenantId};
 
 /// A fixed outer ceiling on request bodies; `server.max_body_bytes` (the
@@ -114,19 +116,23 @@ impl Engine {
         // Every request must carry it (`http::engine_token_middleware`):
         // without one, nothing could talk to this engine, so it doesn't start.
         let embedded = matches!(config.host, Host::Embedded { token: _ });
-        let (engine_token, env) = match &config.host {
-            Host::Standalone => (
-                SERVER_TOKEN
+        let (engine_token, raw_token, env) = match &config.host {
+            Host::Standalone => {
+                let token = SERVER_TOKEN
                     .require(&config.env)
-                    .map(|token| Arc::new(shared::auth::engine_token(token.expose()).hash()))
-                    .map_err(StartError::Token)?,
-                config.env.clone(),
-            ),
+                    .map_err(StartError::Token)?;
+                (
+                    Arc::new(shared::auth::engine_token(token.expose()).hash()),
+                    token.expose().to_owned(),
+                    config.env.clone(),
+                )
+            }
             Host::Embedded { token } => {
                 refuse_standalone_settings(&config.options, &config.env)?;
                 // The token monokulo made is this engine's `server.token`.
                 (
                     Arc::new(token.hash()),
+                    token.expose().to_owned(),
                     config
                         .env
                         .clone()
@@ -154,10 +160,23 @@ impl Engine {
         let daemons = Daemons::default();
         let admin_rate_limiter = Arc::new(RateLimiter::new(1));
         let custody_router = Arc::new(CustodyRouter::default());
+        // The snp backend's settings apply at a restart: read once, here. It
+        // starts when it is first enabled (`SnpSlot`).
+        let file = config
+            .options
+            .read(ALL)
+            .map_err(|e| StartError::Settings(e.to_string()))?;
+        let snp_boot = live_settings::read_sync_with_env::<SnpBootConfig>(Ok(file), env);
+        let snp = Arc::new(SnpSlot::new(
+            snp_boot.snp_config(),
+            Arc::new(snp_attest::guest::SevGuest::new(&snp_boot.device)),
+            Arc::new(StoreWraps(Arc::clone(&store))),
+        ));
         let settings = EngineSettings::load(
             Arc::clone(&store),
             daemons.clone(),
             Arc::clone(&custody_router),
+            Arc::clone(&snp),
             Arc::clone(&admin_rate_limiter),
             env.clone(),
             config.options,
@@ -207,6 +226,7 @@ impl Engine {
                 backends: Arc::clone(&key_custody),
                 default_backend,
                 wallet_handles: Arc::clone(&wallet_handles),
+                snp: Some(Arc::clone(&snp)),
             },
             networks: crate::http::Networks {
                 daemons: daemons.clone(),
@@ -230,6 +250,23 @@ impl Engine {
                     delivery_db.clone(),
                     Arc::clone(&delivery_settings),
                     Arc::clone(&delivery_wake),
+                )
+            },
+        ));
+
+        // AMD's certificates for the snp backend's report, and the handoff
+        // of its master key when it runs a new image.
+        let handoff_url = snp_boot.handoff_url.map(|url| url.url().to_string());
+        loops.push(shared::supervise::supervise_until(
+            "snp key custody upkeep",
+            stopped.clone(),
+            move || {
+                crate::key_custody::run_snp_upkeep(
+                    Arc::clone(&snp),
+                    handoff_url.clone().map(|url| crate::key_custody::Handoff {
+                        url,
+                        token: raw_token.clone(),
+                    }),
                 )
             },
         ));
@@ -302,7 +339,7 @@ pub fn refuse_standalone_settings(
     env: &live_settings::Env,
 ) -> Result<(), StartError> {
     let file = options
-        .read(crate::engine_settings::ALL)
+        .read(ALL)
         .map_err(|e| StartError::Settings(e.to_string()))?;
     let snapshot = live_settings::Snapshot::new(file, env.clone());
     let given: Vec<String> = STANDALONE_ONLY

@@ -20,16 +20,30 @@ use live_settings::{
     Section, Snapshot,
 };
 
-use key_custody_service::client::SocketKeyCustody;
-
 use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use crate::daemon_rpc::RpcDaemonClient;
 use crate::settings::MoneroNodeSetting;
 use crate::store::SharedStore;
 
 choice_value! {
-    /// Where tenants' view keys are held (see `docs/DESIGN.md` §8).
-    pub enum CustodyBackend { Plain = "plain", Socket = "socket" }
+    /// Where tenants' view keys are held (see `docs/DESIGN.md` §6).
+    pub enum CustodyBackend { Plain = "plain", Snp = "snp" }
+}
+
+choice_value! {
+    /// The AMD EPYC generation an SEV-SNP engine runs on: which of AMD's
+    /// root certificates its reports lead to.
+    pub enum SnpProduct { Milan = "Milan", Genoa = "Genoa", Turin = "Turin" }
+}
+
+impl SnpProduct {
+    pub fn product(self) -> snp_attest::report::Product {
+        match self {
+            Self::Milan => snp_attest::report::Product::Milan,
+            Self::Genoa => snp_attest::report::Product::Genoa,
+            Self::Turin => snp_attest::report::Product::Turin,
+        }
+    }
 }
 
 const NODE_EXAMPLE: &str = r#"{"host":"node.monerodevs.org","port":38089,"ssl":false,"accept_self_signed_certs":true,"fallbacks":[{"host":"node2.monerodevs.org","port":38089,"ssl":false}]}"#;
@@ -108,8 +122,8 @@ settings! {
     KEY_CUSTODY_ENABLED_BACKENDS: CommaList<CustodyBackend> {
         key: "key_custody.enabled_backends",
         default: live_settings::parsed_default("plain"),
-        description: "Where stores' private view keys may be held (comma-separated in the environment variable): plain (in the engine's own memory) and socket (a separate key-custody-server process). Each store uses one of these; a store whose backend is turned off stops being scanned until it's turned on again or the store moves to another one.",
-        example: "plain,socket",
+        description: "Where stores' private view keys may be held (comma-separated in the environment variable): plain (in the engine's own memory, stored in the clear) and snp (for an engine inside an AMD SEV-SNP confidential VM: keys arrive encrypted to it and are stored sealed to the engine image). Each store uses one of these; a store whose backend is turned off stops being scanned until it's turned on again or the store moves to another one.",
+        example: "plain,snp",
     },
     KEY_CUSTODY_DEFAULT_BACKEND: CustodyBackend {
         key: "key_custody.default_backend",
@@ -117,18 +131,46 @@ settings! {
         description: "The backend new stores get unless they choose another. Must be one of the enabled ones.",
         example: "plain",
     },
-    KEY_CUSTODY_SOCKET_PATH: Option<PathBuf> {
-        key: "key_custody.socket_path",
+    KEY_CUSTODY_SNP_PRODUCT: Option<SnpProduct> {
+        key: "key_custody.snp_product",
         default: None,
-        description: "The Unix socket a running key-custody-server listens on. Required when socket is enabled.",
-        example: "/run/key-custody/sock",
+        description: "The AMD EPYC generation this engine's confidential VM runs on: Milan, Genoa or Turin. Required for the snp backend.",
+        example: "Genoa",
+        applies: Restart,
+        editable: false,
     },
-    KEY_CUSTODY_SOCKET_CONNECTIONS: Option<usize> {
-        key: "key_custody.socket_connections",
+    KEY_CUSTODY_SNP_DEVICE: PathBuf {
+        key: "key_custody.snp_device",
+        default: PathBuf::from("/dev/sev-guest"),
+        description: "The guest kernel's SEV-SNP device, through which the snp backend asks the security processor for reports and sealing keys.",
+        example: "/dev/sev-guest",
+        applies: Restart,
+        editable: false,
+    },
+    KEY_CUSTODY_SNP_TRUSTED_ID_KEY: Option<String> {
+        key: "key_custody.snp_trusted_id_key",
         default: None,
-        check: range(1, 1024),
-        description: "The most connections the engine keeps to the key-custody-server. A connection carries one scan at a time, so no more stores than this are scanned on the socket backend at once. Leave empty for one per CPU core. Connections are opened only as scans overlap.",
-        example: "8",
+        check: check_id_key_digest,
+        description: "The SHA-384 digest (96 hex characters) of the ID key that signs the engine images this instance trusts. Leave empty to trust the official monokulo releases. Set it only if you build and sign your own engine image: merchants then pass the same digest to key-custody-cli with --trust-id-key.",
+        example: "",
+        applies: Restart,
+        editable: false,
+    },
+    KEY_CUSTODY_SNP_MIN_GUEST_SVN: u32 {
+        key: "key_custody.snp_min_guest_svn",
+        default: 0,
+        description: "The lowest engine image security version (the ID block's guest SVN) trusted with keys: this engine refuses to start below it, merchants' key entry checks it, and a handoff never goes to an image below it or below the engine handing over.",
+        example: "1",
+        applies: Restart,
+        editable: false,
+    },
+    KEY_CUSTODY_SNP_HANDOFF_URL: Option<live_settings::HttpUrl> {
+        key: "key_custody.snp_handoff_url",
+        default: None,
+        description: "When this engine runs a new image, the address of the engine it replaces (still running, on the same private network), which hands over the master key the stores' keys are sealed under. Leave empty otherwise.",
+        example: "http://10.0.0.5:8443",
+        applies: Restart,
+        editable: false,
     },
     PAYMENT_CONFIRMATIONS_REQUIRED: u64 {
         key: "payment.confirmations_required",
@@ -648,40 +690,95 @@ impl Section for RuntimeConfig {
     }
 }
 
+/// An ID key digest setting: empty, or 96 hex characters.
+#[expect(
+    clippy::ref_option,
+    reason = "the settings macro passes a setting's value by reference"
+)]
+fn check_id_key_digest(digest: &Option<String>) -> Result<(), String> {
+    digest.as_deref().map_or(Ok(()), |text| {
+        crate::key_custody::transport::parse_id_key_digest(text)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
+}
+
 /// Which key custody backends are enabled, and which new stores get
 /// (task 5.2, decision D3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustodyConfig {
     pub enabled: Vec<CustodyBackend>,
     pub default: CustodyBackend,
-    pub socket_path: Option<PathBuf>,
-    /// `None` is one per CPU core.
-    pub socket_connections: Option<usize>,
 }
 
-impl CustodyConfig {
-    /// The connections the socket backend's client may keep.
-    fn socket_connections(&self) -> usize {
-        self.socket_connections
-            .unwrap_or_else(key_custody_service::client::connections_per_core)
+/// The `snp` backend's settings, which apply at a restart (`SnpSlot`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnpBootConfig {
+    pub product: Option<SnpProduct>,
+    pub device: PathBuf,
+    pub trusted_id_key: Option<String>,
+    pub min_guest_svn: u32,
+    pub handoff_url: Option<live_settings::HttpUrl>,
+}
+
+impl SnpBootConfig {
+    /// The ID key digest trusted: the one set, else the official one.
+    pub fn trusted_id_key_digest(&self) -> Option<[u8; 48]> {
+        match &self.trusted_id_key {
+            Some(text) => crate::key_custody::transport::parse_id_key_digest(text).ok(),
+            None => crate::key_custody::transport::official_id_key_digest(),
+        }
+    }
+
+    /// The backend's configuration, or why it can't start.
+    pub fn snp_config(&self) -> Result<crate::key_custody::snp::SnpConfig, String> {
+        let product = self
+            .product
+            .ok_or("the snp backend needs key_custody.snp_product (Milan, Genoa or Turin)")?;
+        let id_key_digest = self.trusted_id_key_digest().ok_or(
+            "this build has no official engine ID key: set key_custody.snp_trusted_id_key to the digest of the key your engine image is signed with",
+        )?;
+        Ok(crate::key_custody::snp::SnpConfig {
+            product: product.product(),
+            trust: crate::key_custody::transport::TrustPolicy {
+                id_key_digest,
+                min_guest_svn: self.min_guest_svn,
+            },
+        })
+    }
+}
+
+impl Section for SnpBootConfig {
+    const NAME: &'static str = "key custody (snp)";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[
+            &KEY_CUSTODY_SNP_PRODUCT,
+            &KEY_CUSTODY_SNP_DEVICE,
+            &KEY_CUSTODY_SNP_TRUSTED_ID_KEY,
+            &KEY_CUSTODY_SNP_MIN_GUEST_SVN,
+            &KEY_CUSTODY_SNP_HANDOFF_URL,
+        ]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(Self {
+            product: snapshot.get(&KEY_CUSTODY_SNP_PRODUCT),
+            device: snapshot.get(&KEY_CUSTODY_SNP_DEVICE),
+            trusted_id_key: snapshot.get(&KEY_CUSTODY_SNP_TRUSTED_ID_KEY),
+            min_guest_svn: snapshot.get(&KEY_CUSTODY_SNP_MIN_GUEST_SVN),
+            handoff_url: snapshot.get(&KEY_CUSTODY_SNP_HANDOFF_URL),
+        })
     }
 }
 
 impl Section for CustodyConfig {
     const NAME: &'static str = "key custody";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[
-            &KEY_CUSTODY_ENABLED_BACKENDS,
-            &KEY_CUSTODY_DEFAULT_BACKEND,
-            &KEY_CUSTODY_SOCKET_PATH,
-            &KEY_CUSTODY_SOCKET_CONNECTIONS,
-        ]
+        &[&KEY_CUSTODY_ENABLED_BACKENDS, &KEY_CUSTODY_DEFAULT_BACKEND]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         let mut enabled = snapshot.get(&KEY_CUSTODY_ENABLED_BACKENDS).0;
         enabled.dedup();
         let default = snapshot.get(&KEY_CUSTODY_DEFAULT_BACKEND);
-        let socket_path = snapshot.get(&KEY_CUSTODY_SOCKET_PATH);
         let mut errors = Vec::new();
         if enabled.is_empty() {
             errors.push(FieldError::new(
@@ -699,19 +796,8 @@ impl Section for CustodyConfig {
                 ),
             ));
         }
-        if enabled.contains(&CustodyBackend::Socket) && socket_path.is_none() {
-            errors.push(FieldError::new(
-                KEY_CUSTODY_SOCKET_PATH.key,
-                "The socket backend needs the path of a running key-custody-server's socket.",
-            ));
-        }
         if errors.is_empty() {
-            Ok(Self {
-                enabled,
-                default,
-                socket_path,
-                socket_connections: snapshot.get(&KEY_CUSTODY_SOCKET_CONNECTIONS),
-            })
+            Ok(Self { enabled, default })
         } else {
             Err(errors)
         }
@@ -721,35 +807,31 @@ impl Section for CustodyConfig {
 /// Applies saved custody settings to the router (task 5.2).
 ///
 /// Backends that stay enabled keep their instance, so their wallets stay
-/// registered; a newly enabled socket backend connects now, and if nothing
-/// answers yet it is enabled anyway with a warning, and connects when the
-/// server appears. A disabled backend's stores stop being scanned; their
-/// sealed keys stay in the database, so enabling it again brings them back.
-/// A socket backend that stays at its path keeps its instance whatever else
-/// changes: a new number of connections is set on the client in use.
+/// registered. The `snp` backend starts the first time it is enabled and is
+/// kept from then on (`SnpSlot`); if it can't start, a stand-in that says why
+/// takes its place, so its stores are reported unavailable with the reason
+/// and the other backends carry on. A disabled backend's stores stop being
+/// scanned; their sealed keys stay in the database, so enabling it again
+/// brings them back.
 pub struct CustodyReloadable {
     router: Arc<crate::key_custody::CustodyRouter>,
-    /// The router's socket backend, as the client it is: the router only
-    /// knows it as a `KeyCustody`, which has no connections to set.
-    socket: parking_lot::Mutex<Option<Arc<SocketKeyCustody>>>,
+    snp: Arc<crate::key_custody::SnpSlot>,
 }
 
 impl CustodyReloadable {
-    pub fn new(router: Arc<crate::key_custody::CustodyRouter>) -> Self {
-        Self {
-            router,
-            socket: parking_lot::Mutex::new(None),
-        }
+    pub fn new(
+        router: Arc<crate::key_custody::CustodyRouter>,
+        snp: Arc<crate::key_custody::SnpSlot>,
+    ) -> Self {
+        Self { router, snp }
     }
 }
 
 /// What `CustodyReloadable::prepare` built: the router's next backends and
-/// default, and the socket backend among them with the connections it may
-/// keep.
+/// default.
 pub struct PreparedCustody {
     backends: HashMap<String, Arc<dyn crate::key_custody::KeyCustody>>,
     default: String,
-    socket: Option<(Arc<SocketKeyCustody>, usize)>,
 }
 
 #[live_settings::async_trait]
@@ -760,11 +842,10 @@ impl live_settings::Reloadable for CustodyReloadable {
     async fn prepare(
         &self,
         new: &CustodyConfig,
-        old: &CustodyConfig,
+        _old: &CustodyConfig,
     ) -> Result<(Self::Prepared, Vec<live_settings::Warning>), FieldError> {
         let current = self.router.backends();
         let mut backends: HashMap<String, Arc<dyn crate::key_custody::KeyCustody>> = HashMap::new();
-        let mut socket = None;
         let mut warnings = Vec::new();
         for backend in &new.enabled {
             let name = backend.as_str().to_owned();
@@ -773,54 +854,32 @@ impl live_settings::Reloadable for CustodyReloadable {
                     Some(existing) => Arc::clone(existing),
                     None => Arc::new(crate::key_custody::PlainKeyCustody::default()),
                 },
-                CustodyBackend::Socket => {
-                    let in_use = self.socket.lock().clone().filter(|_| {
-                        current.contains_key(&name) && new.socket_path == old.socket_path
-                    });
-                    let client = if let Some(client) = in_use {
-                        client
-                    } else {
-                        // `CustodyConfig` guarantees the path when socket is on.
-                        let path = new.socket_path.clone().unwrap_or_default();
-                        let timeout = key_custody_service::client::DEFAULT_CALL_TIMEOUT;
-                        match SocketKeyCustody::connect_with_timeout(&path, timeout).await {
-                            Ok(client) => Arc::new(client),
-                            Err(e) => {
-                                warnings.push(live_settings::Warning::for_key(
-                                    KEY_CUSTODY_SOCKET_PATH.key,
-                                    format!(
-                                        "Saved, but no key-custody-server answers at {} yet ({e}). Stores on the socket backend aren't scanned until it does; it's picked up by itself.",
-                                        path.display()
-                                    ),
-                                ));
-                                Arc::new(SocketKeyCustody::not_connected_yet(&path, timeout))
-                            }
-                        }
-                    };
-                    socket = Some((Arc::clone(&client), new.socket_connections()));
-                    client
-                }
+                CustodyBackend::Snp => match self.snp.start() {
+                    Ok(snp) => snp,
+                    Err(e) => {
+                        warnings.push(live_settings::Warning::for_key(
+                            KEY_CUSTODY_ENABLED_BACKENDS.key,
+                            format!(
+                                "Saved, but the snp backend can't start: {e}. Stores on it aren't scanned until it can (its settings apply at a restart)."
+                            ),
+                        ));
+                        Arc::new(crate::key_custody::Unstarted(format!(
+                            "the snp backend can't start: {e}"
+                        )))
+                    }
+                },
             };
             backends.insert(name, custody);
         }
         let prepared = PreparedCustody {
             backends,
             default: new.default.as_str().to_owned(),
-            socket,
         };
         Ok((prepared, warnings))
     }
 
     async fn install(&self, prepared: Self::Prepared) {
-        let PreparedCustody {
-            backends,
-            default,
-            socket,
-        } = prepared;
-        if let Some((client, connections)) = &socket {
-            client.set_connections(*connections);
-        }
-        *self.socket.lock() = socket.map(|(client, _)| client);
+        let PreparedCustody { backends, default } = prepared;
         let dropped = self.router.replace(backends, &default);
         crate::key_custody::router::free_handles(dropped);
     }
@@ -1086,6 +1145,7 @@ impl EngineSettings {
         store: SharedStore,
         daemons: Daemons,
         router: Arc<crate::key_custody::CustodyRouter>,
+        snp: Arc<crate::key_custody::SnpSlot>,
         rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
         env: live_settings::Env,
         options: live_settings::OptionsFile,
@@ -1094,7 +1154,7 @@ impl EngineSettings {
         Self::load_full(
             store,
             Some(NodesReloadable { daemons }),
-            Some(CustodyReloadable::new(router)),
+            Some(CustodyReloadable::new(router, snp)),
             rate_limiter,
             env,
             options,
@@ -1154,6 +1214,8 @@ impl EngineSettings {
         // Read at start, before the store opened (`main`); registered so it
         // is described, checked and reported like every other setting.
         builder.section::<BootConfig>();
+        // Read at start too, for the snp backend (`SnpSlot`).
+        builder.section::<SnpBootConfig>();
         if embedded {
             // monokulo's logger is the process's: its logging settings
             // govern it, not these (STANDALONE_ONLY).
@@ -1270,128 +1332,135 @@ mod tests {
     }
 
     #[test]
-    fn socket_connections_may_be_left_empty_or_set_from_1_to_1024() {
-        assert_eq!(KEY_CUSTODY_SOCKET_CONNECTIONS.parse("").unwrap(), None);
-        assert_eq!(KEY_CUSTODY_SOCKET_CONNECTIONS.parse("8").unwrap(), Some(8));
-        KEY_CUSTODY_SOCKET_CONNECTIONS.parse("1024").unwrap();
-        KEY_CUSTODY_SOCKET_CONNECTIONS.parse("0").unwrap_err();
-        KEY_CUSTODY_SOCKET_CONNECTIONS.parse("1025").unwrap_err();
-        assert_eq!(defaults_of::<CustodyConfig>().socket_connections, None);
-    }
+    fn snp_settings_are_checked_and_say_what_the_backend_still_needs() {
+        KEY_CUSTODY_SNP_TRUSTED_ID_KEY
+            .parse(&"ab".repeat(48))
+            .unwrap();
+        KEY_CUSTODY_SNP_TRUSTED_ID_KEY.parse("ab").unwrap_err();
+        KEY_CUSTODY_SNP_PRODUCT.parse("Venice").unwrap_err();
+        assert_eq!(
+            KEY_CUSTODY_SNP_PRODUCT.parse("Genoa").unwrap(),
+            Some(SnpProduct::Genoa)
+        );
 
-    /// A stand-in key-custody-server on a socket of its own: it answers
-    /// every request with a newly registered wallet.
-    fn spawn_registering_server(tag: &str) -> PathBuf {
-        use key_custody_service::protocol::{
-            read_frame, write_frame, KeyCustodyRequest, KeyCustodyResponse,
+        let defaults = defaults_of::<SnpBootConfig>();
+        assert_eq!(defaults.device, PathBuf::from("/dev/sev-guest"));
+        assert!(defaults.snp_config().unwrap_err().contains("snp_product"));
+        let own_key = SnpBootConfig {
+            product: Some(SnpProduct::Turin),
+            trusted_id_key: Some("cd".repeat(48)),
+            min_guest_svn: 3,
+            ..defaults.clone()
         };
-        let path =
-            std::env::temp_dir().join(format!("engine-settings-{tag}-{}.sock", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let listener = tokio::net::UnixListener::bind(&path).unwrap();
-        tokio::spawn(async move {
-            while let Ok((mut stream, _addr)) = listener.accept().await {
-                tokio::spawn(async move {
-                    while let Ok(Some(_)) = read_frame::<_, KeyCustodyRequest>(&mut stream).await {
-                        let handle = crate::key_custody::WalletHandle::generate();
-                        let answer = KeyCustodyResponse::RegisterWallet(Ok(handle.into()));
-                        if write_frame(&mut stream, &answer).await.is_err() {
-                            break;
-                        }
-                    }
-                });
-            }
-        });
-        path
+        let config = own_key.snp_config().unwrap();
+        assert_eq!(config.product, snp_attest::report::Product::Turin);
+        assert_eq!(config.trust.id_key_digest, [0xCD; 48]);
+        assert_eq!(config.trust.min_guest_svn, 3);
+        if crate::key_custody::transport::official_id_key_digest().is_none() {
+            let official = SnpBootConfig {
+                product: Some(SnpProduct::Turin),
+                ..defaults
+            };
+            assert!(official
+                .snp_config()
+                .unwrap_err()
+                .contains("snp_trusted_id_key"));
+        }
     }
 
-    async fn save(reloadable: &CustodyReloadable, new: &CustodyConfig, old: &CustodyConfig) {
+    /// A slot whose backend runs on a stand-in security processor.
+    fn test_slot() -> Arc<crate::key_custody::SnpSlot> {
+        use snp_attest::guest::{TestGuest, TestIdentity};
+        let store = crate::store::Store::open_in_memory().unwrap().into_shared();
+        Arc::new(crate::key_custody::SnpSlot::new(
+            Ok(crate::key_custody::snp::SnpConfig {
+                product: snp_attest::report::Product::Genoa,
+                trust: crate::key_custody::transport::TrustPolicy {
+                    id_key_digest: TestIdentity::default().id_key_digest,
+                    min_guest_svn: 0,
+                },
+            }),
+            Arc::new(TestGuest::new([1; 32], TestIdentity::default())),
+            Arc::new(crate::key_custody::StoreWraps(store)),
+        ))
+    }
+
+    async fn save(
+        reloadable: &CustodyReloadable,
+        new: &CustodyConfig,
+        old: &CustodyConfig,
+    ) -> usize {
         use live_settings::Reloadable as _;
         let (prepared, warnings) = reloadable.prepare(new, old).await.unwrap();
-        assert!(warnings.is_empty(), "the server is there");
         reloadable.install(prepared).await;
+        warnings.len()
     }
 
-    /// Saving a new number of connections for the socket backend sets it on
-    /// the client in use: the stores registered there stay registered. Only
-    /// a new socket path makes a new client, which then has the number too.
+    /// The snp backend starts the first time it is enabled and is the same
+    /// instance from then on, so the stores registered in it stay
+    /// registered whatever else is saved.
     #[tokio::test]
-    async fn a_new_number_of_socket_connections_is_set_on_the_client_in_use() {
+    async fn the_snp_backend_starts_once_and_keeps_its_stores() {
         use crate::key_custody::{CustodyRouter, KeyCustody as _, WalletMaterial};
-        let custody = |path: &PathBuf, connections| CustodyConfig {
-            enabled: vec![CustodyBackend::Plain, CustodyBackend::Socket],
-            default: CustodyBackend::Plain,
-            socket_path: Some(path.clone()),
-            socket_connections: connections,
-        };
-        let path = spawn_registering_server("connections");
         let router = Arc::new(CustodyRouter::plain());
-        let reloadable = CustodyReloadable::new(Arc::clone(&router));
-        let client = || reloadable.socket.lock().clone().unwrap();
-        let cores = key_custody_service::client::connections_per_core();
-
-        // Nothing set: one connection per core.
-        let unset = custody(&path, None);
-        save(&reloadable, &unset, &defaults_of::<CustodyConfig>()).await;
-        let first = client();
-        assert_eq!(first.connections(), cores);
-        let store = router
-            .register_wallet_in("socket", WalletMaterial::new([1; 32], [2; 32]))
+        let slot = test_slot();
+        let reloadable = CustodyReloadable::new(Arc::clone(&router), Arc::clone(&slot));
+        let both = CustodyConfig {
+            enabled: vec![CustodyBackend::Plain, CustodyBackend::Snp],
+            default: CustodyBackend::Plain,
+        };
+        assert_eq!(
+            save(&reloadable, &both, &defaults_of::<CustodyConfig>()).await,
+            0
+        );
+        let snp = slot.backend().expect("started");
+        let spend =
+            monero::PublicKey::from_private_key(&monero::PrivateKey::from_slice(&[2; 32]).unwrap());
+        let sealed = snp
+            .seal(&WalletMaterial::new([1; 32], spend.to_bytes()))
             .await
             .unwrap();
+        let store = router.unseal_and_register_in("snp", &sealed).await.unwrap();
 
-        let three = custody(&path, Some(3));
-        save(&reloadable, &three, &unset).await;
-        assert!(Arc::ptr_eq(&first, &client()), "the same client");
-        assert_eq!(first.connections(), 3);
-        assert_eq!(router.backend_of(store).as_deref(), Some("socket"));
-
-        // Emptied again: back to one per core, still the same client.
-        save(&reloadable, &unset, &three).await;
-        assert!(Arc::ptr_eq(&first, &client()));
-        assert_eq!(first.connections(), cores);
-        assert_eq!(router.backend_of(store).as_deref(), Some("socket"));
-
-        // Another server is another client: its stores are registered
-        // again there, and it keeps the number of connections saved.
-        let elsewhere = spawn_registering_server("connections-elsewhere");
-        let moved = custody(&elsewhere, Some(2));
-        save(&reloadable, &moved, &unset).await;
-        assert!(!Arc::ptr_eq(&first, &client()));
-        assert_eq!(client().connections(), 2);
-        assert_eq!(router.backend_of(store), None);
-
-        let _ = std::fs::remove_file(path);
-        let _ = std::fs::remove_file(elsewhere);
+        let snp_default = CustodyConfig {
+            default: CustodyBackend::Snp,
+            ..both.clone()
+        };
+        save(&reloadable, &snp_default, &both).await;
+        assert!(Arc::ptr_eq(&snp, &slot.backend().unwrap()));
+        assert_eq!(router.backend_of(store).as_deref(), Some("snp"));
+        assert_eq!(router.default_backend(), "snp");
+        assert!(!router.takes_raw_keys_in("snp"));
+        assert!(router.takes_raw_keys_in("plain"));
     }
 
-    /// A socket backend turned on while its server is away gets the number
-    /// of connections saved as well, for when the server appears.
+    /// An snp backend that can't start (here: no product set) is enabled as
+    /// a stand-in that says why, with a warning; plain carries on.
     #[tokio::test]
-    async fn a_socket_backend_whose_server_is_away_still_gets_its_connections() {
-        use live_settings::Reloadable as _;
-        let router = Arc::new(crate::key_custody::CustodyRouter::plain());
-        let reloadable = CustodyReloadable::new(router);
-        let new = CustodyConfig {
-            enabled: vec![CustodyBackend::Plain, CustodyBackend::Socket],
+    async fn an_snp_backend_that_cannot_start_says_why_and_plain_carries_on() {
+        use crate::key_custody::{CustodyRouter, KeyCustody as _};
+        let store = crate::store::Store::open_in_memory().unwrap().into_shared();
+        let slot = Arc::new(crate::key_custody::SnpSlot::new(
+            defaults_of::<SnpBootConfig>().snp_config(),
+            Arc::new(snp_attest::guest::SevGuest::new("/nonexistent/sev-guest")),
+            Arc::new(crate::key_custody::StoreWraps(store)),
+        ));
+        let router = Arc::new(CustodyRouter::plain());
+        let reloadable = CustodyReloadable::new(Arc::clone(&router), slot);
+        let both = CustodyConfig {
+            enabled: vec![CustodyBackend::Plain, CustodyBackend::Snp],
             default: CustodyBackend::Plain,
-            socket_path: Some(std::env::temp_dir().join("engine-settings-nobody-listens.sock")),
-            socket_connections: Some(5),
         };
-        let (prepared, warnings) = reloadable
-            .prepare(&new, &defaults_of::<CustodyConfig>())
-            .await
-            .unwrap();
-        assert_eq!(warnings.len(), 1, "saved, with a word that nothing answers");
-        reloadable.install(prepared).await;
-        assert_eq!(reloadable.socket.lock().clone().unwrap().connections(), 5);
-
-        // Turned off again, the client is let go.
-        let (prepared, _) = reloadable
-            .prepare(&defaults_of::<CustodyConfig>(), &new)
-            .await
-            .unwrap();
-        reloadable.install(prepared).await;
-        assert!(reloadable.socket.lock().is_none());
+        assert_eq!(
+            save(&reloadable, &both, &defaults_of::<CustodyConfig>()).await,
+            1
+        );
+        let health = router.backend_health().await;
+        assert_eq!(health[0], ("plain".to_owned(), None));
+        assert_eq!(health[1].0, "snp");
+        assert!(
+            health[1].1.as_deref().unwrap().contains("snp_product"),
+            "{health:?}"
+        );
     }
 }

@@ -550,6 +550,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
             backends: Arc::clone(&custody),
             default_backend: "plain".into(),
             wallet_handles: Arc::clone(&handles),
+            snp: None,
         },
         networks: engine::http::Networks {
             daemons: Daemons::fixed(HashMap::from([(

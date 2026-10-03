@@ -1116,7 +1116,6 @@ dependencies = [
  "http-body",
  "http-body-util",
  "key-custody",
- "key-custody-service",
  "live-settings",
  "monero",
  "monero-epee",
@@ -1130,6 +1129,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "shared",
+ "snp-attest",
  "subtle",
  "telemetry",
  "thiserror 2.0.20",
@@ -1152,14 +1152,14 @@ dependencies = [
  "axum",
  "engine",
  "hex",
- "key-custody-server",
- "key-custody-service",
  "live-settings",
  "monero",
+ "p384",
  "parking_lot",
  "reqwest",
  "serde_json",
  "shared",
+ "snp-attest",
  "telemetry",
  "tokio",
 ]
@@ -2119,39 +2119,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "key-custody-server"
-version = "0.1.0"
-dependencies = [
- "engine",
- "hex",
- "key-custody-service",
- "monero",
- "shared",
- "telemetry",
- "tokio",
- "tracing",
- "zeroize",
-]
-
-[[package]]
-name = "key-custody-service"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "hex",
- "key-custody",
- "monero",
- "parking_lot",
- "serde",
- "serde_json",
- "shared",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
  "zeroize",
 ]
 

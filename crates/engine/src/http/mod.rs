@@ -71,6 +71,10 @@ pub struct Custody {
     pub default_backend: String,
     /// Each registered tenant's wallet handle.
     pub wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>>,
+    /// The `snp` backend's slot, for what only it does (its trust policy,
+    /// handing its master key over); `None` where it can't run (tests,
+    /// tools).
+    pub snp: Option<Arc<crate::key_custody::SnpSlot>>,
 }
 
 /// The networks the engine serves.
@@ -154,6 +158,7 @@ impl AppState {
                 backends: Arc::new(crate::key_custody::PlainKeyCustody::default()),
                 default_backend: "plain".to_owned(),
                 wallet_handles: Arc::default(),
+                snp: None,
             },
             networks: Networks {
                 daemons: crate::engine_settings::Daemons::fixed(HashMap::from([(
@@ -181,6 +186,14 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
     // request without an `sk_` on its address.
     let unauthenticated_router = Router::new()
         .route("/api/v1/admin/tenants", post(admin::create_tenant))
+        .route(
+            "/api/v1/admin/key-custody/bundle",
+            post(admin::create_key_bundle),
+        )
+        .route(
+            "/api/v1/admin/key-custody/handoff",
+            post(admin::answer_handoff),
+        )
         .route("/status", get(status_page::status_page))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -203,6 +216,10 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         .route(
             "/api/v1/admin/tenant/key-custody",
             axum::routing::put(admin::switch_key_custody),
+        )
+        .route(
+            "/api/v1/admin/tenant/key-custody/bundle",
+            post(admin::move_key_bundle),
         )
         .route(
             "/api/v1/admin/tenant/orders",

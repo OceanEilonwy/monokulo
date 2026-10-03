@@ -10,8 +10,6 @@ members = [
     "crates/engine-test-support",
     "crates/e2e-harness",
     "crates/cli-wallet",
-    "crates/key-custody-service",
-    "crates/key-custody-server",
     "crates/snp-attest",
     "crates/key-custody",
     "xtask",

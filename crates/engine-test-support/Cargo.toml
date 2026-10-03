@@ -1,6 +1,6 @@
 [package]
 name = "engine-test-support"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 
 [dependencies]
@@ -10,14 +10,9 @@ parking_lot = "0.12.5"
 async-trait = "0.1.92"
 # Defaults less `tower-log` (see crates/engine/Cargo.toml).
 axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tracing", "macros"] }
-# WBS 2.1.3: lets a spawned test engine be configured to use `SocketKeyCustody`
-# instead of the default in-process `PlainKeyCustody` - see
-# `TestEngineConfig::with_socket_key_custody`. A normal (not dev) dependency
-# because `TestEngineConfig::spawn` itself (real library code, not `#[cfg(test)]`)
-# needs to construct one; no cycle, since `key-custody-service` depends only on
-# `shared`, never on `engine` or this crate - see
-# `shared/src/key_custody.rs`'s module doc comment.
-key-custody-service = { path = "../key-custody-service" }
+# The snp backend on a stand-in security processor (`with_snp_backend`).
+snp-attest = { path = "../snp-attest", features = ["test-support"] }
+p384 = { version = "0.14.0", features = ["ecdsa"] }
 monero = "0.22.0"
 engine = { path = "../engine", features = ["test-support"] }
 shared = { path = "../shared" }
@@ -26,13 +21,6 @@ serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["full"] }
 # The id of a transaction a stand-in node holds.
 hex = "0.4.3"
-
-[dev-dependencies]
-# Only this crate's own regression test (WBS 2.1.3's acceptance bar: order
-# creation + chain scanning must behave identically through the socket-based
-# `KeyCustody` path) needs to actually run a `KeyCustodyServer` - everything else
-# in this crate only ever dials one via `key-custody-service`'s client.
-key-custody-server = { path = "../key-custody-server" }
 
 [lints]
 workspace = true

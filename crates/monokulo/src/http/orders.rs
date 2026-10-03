@@ -3892,7 +3892,7 @@ mod tests {
     ) -> (AppState, engine_test_support::TestEngineHandle) {
         let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
-            .with_two_custody_backends()
+            .with_snp_backend()
             .spawn()
             .await;
         let state = AppState {

@@ -4,7 +4,8 @@
 use std::ops::Range;
 
 use monero::blockdata::transaction::TransactionPrefix;
-use monero::consensus::encode::{serialize, Decodable};
+#[cfg(test)]
+use monero::consensus::encode::serialize;
 pub use monero::cryptonote::subaddress::Index as SubaddressIndex;
 use monero::util::ringct::RctSigBase;
 pub use monero::Network;
@@ -22,45 +23,10 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 pub struct WalletHandle(Uuid);
 
 impl WalletHandle {
-    /// Mints a new, random handle (so deliberately no `Default`).
-    ///
-    /// Not `pub(crate)`: real `KeyCustody` implementations live in their own crates
-    /// now (`engine`'s `PlainKeyCustody`, `key-custody-service`'s
-    /// `SocketKeyCustody`), exactly the situation this type's own doc comment above
-    /// already anticipated for `to_view_pair`/`to_raw_bytes` on `WalletMaterial`
-    /// below - `pub(crate)` would only have granted access within whichever crate
-    /// this module happens to live in, not to every crate that needs to mint a
-    /// handle.
+    /// Mints a new, random handle (so deliberately no `Default`). Public:
+    /// every backend mints its own.
     pub fn generate() -> Self {
         WalletHandle(Uuid::new_v4())
-    }
-
-    /// Expose the underlying UUID as raw bytes, and the inverse constructor to
-    /// rebuild an equal `WalletHandle` from them.
-    ///
-    /// Added for WBS 2.1.1 (`key-custody-service`'s wire DTOs): a `WalletHandle`
-    /// needs to cross a Unix socket as plain bytes, and - once 2.1.2 builds the
-    /// actual socket client - that client needs to hand back the *same* handle
-    /// value a remote `KeyCustody` implementation issued, on every subsequent call
-    /// for the same wallet, since the server-side registry is keyed by that exact
-    /// value. Neither direction was reachable from outside this module before this
-    /// pair existed - `Uuid` itself is a private field with no accessor.
-    ///
-    /// This is not a weakening of the "opaque handle" framing in this type's own
-    /// doc comment above. `WalletHandle` was never a secret or a capability token
-    /// the way `sk_...`/`pk_...` are - it's an index into a process-local map, and
-    /// nothing about the design relies on a `WalletHandle` value being hard to
-    /// construct or guess; the actual security boundary this module draws is about
-    /// *where key material lives*, never about handles being unforgeable. A caller
-    /// that already holds a `WalletHandle` could already `Clone`/`Copy`/compare it
-    /// freely - `from_bytes` only lets a *different process*, one that has only
-    /// ever seen the wire-encoded form, reconstruct an equal value.
-    pub fn as_bytes(&self) -> [u8; 16] {
-        *self.0.as_bytes()
-    }
-
-    pub fn from_bytes(bytes: [u8; 16]) -> Self {
-        WalletHandle(Uuid::from_bytes(bytes))
     }
 }
 
@@ -200,7 +166,7 @@ pub struct TxMatches {
 /// What a scan reads of a transaction: its keys, its outputs and its
 /// encrypted amounts. The inputs, ring signatures and range proofs are most
 /// of a transaction's bytes and a scan never looks at them, so they are left
-/// out of what is handed to a worker thread or sent to a key-custody process.
+/// out of what is handed to a worker thread.
 ///
 /// Made once per transaction and cheap to clone, however many wallets the
 /// transaction is scanned for. Like the transaction it comes from, it is
@@ -245,47 +211,6 @@ impl ScanInput {
     /// transaction has them.
     pub fn rct(&self) -> Option<&RctSigBase> {
         self.0.rct.as_ref()
-    }
-
-    /// The bytes that [`Self::from_bytes`] reads back: the prefix in
-    /// Monero's own encoding, then one byte saying whether the RingCT part
-    /// follows, then that part in Monero's own encoding.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = serialize(&self.0.prefix);
-        match &self.0.rct {
-            None => bytes.push(0),
-            Some(rct) => {
-                bytes.push(1);
-                bytes.extend(serialize(rct));
-            }
-        }
-        bytes
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-        let mut reader = std::io::Cursor::new(bytes);
-        let prefix = TransactionPrefix::consensus_decode(&mut reader)
-            .map_err(|e| format!("invalid transaction prefix: {e}"))?;
-        if !prefix.inputs.is_empty() {
-            return Err("a scan input carries no transaction inputs".to_string());
-        }
-        let rct = match bytes.get(reader.position() as usize) {
-            Some(0) => {
-                reader.set_position(reader.position() + 1);
-                None
-            }
-            Some(1) => {
-                reader.set_position(reader.position() + 1);
-                RctSigBase::consensus_decode(&mut reader, 0, prefix.outputs.len())
-                    .map_err(|e| format!("invalid RingCT data: {e}"))?
-            }
-            Some(other) => return Err(format!("invalid RingCT marker {other}")),
-            None => return Err("missing RingCT marker".to_string()),
-        };
-        if reader.position() as usize != bytes.len() {
-            return Err("trailing bytes after the scan input".to_string());
-        }
-        Ok(ScanInput(std::sync::Arc::new(ScanParts { prefix, rct })))
     }
 }
 
@@ -687,7 +612,6 @@ pub async fn remove_wallet_logged(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use monero::util::ringct::{EcdhInfo, Key, RctType};
 
     fn fixture_tx() -> Transaction {
         let raw = hex::decode(include_str!(
@@ -695,24 +619,6 @@ mod tests {
         ))
         .unwrap();
         monero::consensus::encode::deserialize(&raw).unwrap()
-    }
-
-    /// The fixture as an early RingCT transaction: the type that carries one
-    /// pseudo-output per input in the part a scan input keeps.
-    fn simple_ringct_tx() -> Transaction {
-        let mut tx = fixture_tx();
-        let outputs = tx.prefix.outputs.len();
-        let rct = tx.rct_signatures.sig.as_mut().unwrap();
-        rct.rct_type = RctType::Simple;
-        rct.pseudo_outs = vec![Key { key: [1; 32] }; tx.prefix.inputs.len()];
-        rct.ecdh_info = vec![
-            EcdhInfo::Standard {
-                mask: Key { key: [2; 32] },
-                amount: Key { key: [3; 32] },
-            };
-            outputs
-        ];
-        tx
     }
 
     #[test]
@@ -729,65 +635,10 @@ mod tests {
         assert_eq!(kept.ecdh_info, rct.ecdh_info);
         assert_eq!(kept.out_pk, rct.out_pk);
         assert!(
-            input.to_bytes().len() * 4 < serialize(&tx).len(),
+            serialize(input.prefix()).len() * 4 < serialize(&tx).len(),
             "{} bytes of a {}-byte transaction",
-            input.to_bytes().len(),
+            serialize(input.prefix()).len(),
             serialize(&tx).len()
         );
-    }
-
-    #[test]
-    fn a_scan_input_survives_its_own_encoding() {
-        let mut no_ringct = fixture_tx();
-        no_ringct.rct_signatures.sig = None;
-        for tx in [
-            fixture_tx(),
-            simple_ringct_tx(),
-            no_ringct,
-            Transaction::default(),
-        ] {
-            let input = ScanInput::of(&tx);
-            assert_eq!(ScanInput::from_bytes(&input.to_bytes()), Ok(input));
-        }
-    }
-
-    #[test]
-    fn bytes_that_are_not_a_scan_input_are_refused() {
-        let tx = fixture_tx();
-        let bytes = ScanInput::of(&tx).to_bytes();
-        for cut in 0..bytes.len() {
-            assert!(
-                ScanInput::from_bytes(&bytes[..cut]).is_err(),
-                "cut short at {cut} of {}",
-                bytes.len()
-            );
-        }
-        let mut longer = bytes.clone();
-        longer.push(0);
-        assert!(ScanInput::from_bytes(&longer).is_err());
-
-        // A whole prefix, inputs and all, is not what a scan input carries.
-        let mut with_inputs = serialize(&tx.prefix);
-        with_inputs.push(0);
-        assert!(ScanInput::from_bytes(&with_inputs).is_err());
-    }
-
-    #[test]
-    fn wallet_handle_as_bytes_and_from_bytes_round_trip_and_stay_distinguishable() {
-        // Pins the accessor pair added for WBS 2.1.1's wire DTOs
-        // (`key-custody-service`): a real `WalletHandle` survives a bytes-out,
-        // bytes-in round trip exactly, and two distinct handles don't collide.
-        let a = WalletHandle::generate();
-        let b = WalletHandle::generate();
-        assert_ne!(a, b);
-
-        let restored_a = WalletHandle::from_bytes(a.as_bytes());
-        assert_eq!(a, restored_a);
-        assert_ne!(restored_a, b);
-
-        // A handle built directly from known bytes reproduces those same bytes -
-        // the direction the socket client side (WBS 2.1.2) actually needs.
-        let known = [0xAB; 16];
-        assert_eq!(WalletHandle::from_bytes(known).as_bytes(), known);
     }
 }

@@ -7,7 +7,10 @@ use std::sync::Arc;
 use crate::auth::generate_webhook_secret;
 use crate::daemon::MoneroDaemonClient as _;
 use crate::engine_settings::EngineSettings;
-use crate::key_custody::{remove_wallet_logged, KeyCustodyError, SubaddressIndex, WalletMaterial};
+use crate::key_custody::transport::{Action, Bundle, Envelope};
+use crate::key_custody::{
+    remove_wallet_logged, KeyCustodyError, SubaddressIndex, WalletHandle, WalletMaterial,
+};
 use crate::status::OrderStatus;
 use crate::store::{Database, NewTenant, Order, OrderPaymentRow, TenantConfigPatch, Webhook};
 
@@ -44,8 +47,8 @@ fn key_custody_error_for_new_tenant(e: KeyCustodyError) -> ApiError {
 /// sending one is not refused.
 #[derive(Deserialize)]
 pub(super) struct CreateTenantRequest {
-    view_key_hex: String,
-    spend_pubkey_hex: String,
+    #[serde(flatten)]
+    keys: KeysIn,
     network: Option<String>,
     confirmations_required: Option<u64>,
     order_expiry_seconds: Option<i64>,
@@ -103,12 +106,93 @@ pub(super) async fn create_tenant(
     to_completion(create_tenant_to_completion(state, req)).await
 }
 
+/// A store's keys as a request carries them: in the clear, for a backend
+/// that takes them that way (`plain`), or encrypted to the backend
+/// (`encrypted_keys`, an envelope from `key-custody-cli` or the key entry
+/// form) for one that takes them only that way (`snp`).
+#[derive(Deserialize, Default)]
+pub(super) struct KeysIn {
+    #[serde(default)]
+    view_key_hex: String,
+    #[serde(default)]
+    spend_pubkey_hex: String,
+    #[serde(default)]
+    encrypted_keys: Option<String>,
+}
+
+/// A store's keys, registered: the handle, the sealed bytes to store, and
+/// (keys given in the clear) the keys themselves, for the caller's checks.
+struct Registered {
+    handle: WalletHandle,
+    sealed: Vec<u8>,
+    material: Option<WalletMaterial>,
+}
+
+/// Registers `keys` in `backend` and seals them, in the form the backend
+/// takes, refusing the other form. Errors are the caller's (`400`) where the
+/// keys are at fault. Nothing stays registered if it fails.
+async fn register_keys(
+    state: &AppState,
+    backend: &str,
+    keys: &KeysIn,
+    action: Action,
+    store: Option<&str>,
+) -> Result<Registered, ApiError> {
+    let custody = state.custody.backends.as_ref();
+    let encrypted = keys
+        .encrypted_keys
+        .as_deref()
+        .filter(|e| !e.trim().is_empty());
+    if custody.takes_raw_keys_in(backend) {
+        if encrypted.is_some() {
+            return Err(ApiError::BadRequest(format!(
+                "the {backend} key custody backend takes keys as they are, not encrypted"
+            )));
+        }
+        let material = WalletMaterial::from_hex(&keys.view_key_hex, &keys.spend_pubkey_hex)
+            .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        let handle = custody
+            .register_wallet_in(backend, material.clone())
+            .await
+            .map_err(key_custody_error_for_new_tenant)?;
+        return match custody.seal_in(backend, &material).await {
+            Ok(sealed) => Ok(Registered {
+                handle,
+                sealed,
+                material: Some(material),
+            }),
+            Err(e) => {
+                remove_wallet_logged(custody, handle, None, "sealing a store's keys failed").await;
+                Err(key_custody_error_for_new_tenant(e))
+            }
+        };
+    }
+    if !keys.view_key_hex.trim().is_empty() {
+        return Err(ApiError::BadRequest(format!(
+            "the {backend} key custody backend takes keys only encrypted to it (key-custody-cli or the key entry form); the keys sent in the clear were not used"
+        )));
+    }
+    let envelope = Envelope::from_text(encrypted.ok_or_else(|| {
+        ApiError::BadRequest(format!(
+            "the {backend} key custody backend needs the store's keys encrypted to it (encrypted_keys)"
+        ))
+    })?)
+    .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let (handle, sealed) = custody
+        .register_envelope_in(backend, &envelope, action, store)
+        .await
+        .map_err(key_custody_error_for_new_tenant)?;
+    Ok(Registered {
+        handle,
+        sealed,
+        material: None,
+    })
+}
+
 async fn create_tenant_to_completion(
     state: AppState,
     req: CreateTenantRequest,
 ) -> Result<Json<CreateTenantResponse>, ApiError> {
-    let material = WalletMaterial::from_hex(&req.view_key_hex, &req.spend_pubkey_hex)
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let network = parse_network(req.network.as_deref().unwrap_or("mainnet"))
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     if !state.networks.daemons.is_configured(network) {
@@ -121,26 +205,24 @@ async fn create_tenant_to_completion(
     validate_tenant_settings(req.confirmations_required, req.order_expiry_seconds)?;
     let backend = chosen_backend(&state, req.key_custody_backend.as_deref())?;
 
-    let handle = state
-        .custody
-        .backends
-        .register_wallet_in(&backend, material.clone())
-        .await
-        .map_err(key_custody_error_for_new_tenant)?;
-    let primary_address = state
+    let Registered {
+        handle,
+        sealed,
+        material: _,
+    } = register_keys(&state, &backend, &req.keys, Action::Create, None).await?;
+    let primary_address = match state
         .custody
         .backends
         .derive_subaddress(handle, SubaddressIndex::default(), network)
         .await
-        .map_err(key_custody_error_for_new_tenant)?;
-    let sealed = match state.custody.backends.seal_in(&backend, &material).await {
-        Ok(sealed) => sealed,
+    {
+        Ok(address) => address,
         Err(e) => {
             remove_wallet_logged(
                 state.custody.backends.as_ref(),
                 handle,
                 None,
-                "creating a store, sealing its keys failed",
+                "creating a store, deriving its address failed",
             )
             .await;
             return Err(key_custody_error_for_new_tenant(e));
@@ -281,8 +363,8 @@ impl From<crate::store::Tenant> for TenantView {
 #[derive(Deserialize)]
 pub(super) struct SwitchKeyCustodyRequest {
     backend: String,
-    view_key_hex: String,
-    spend_pubkey_hex: String,
+    #[serde(flatten)]
+    keys: KeysIn,
 }
 
 /// Whether `material` is the wallet `primary_address` belongs to, on
@@ -325,37 +407,37 @@ async fn switch_key_custody_to_completion(
     // otherwise leave its row saying one backend while its live handle is
     // in the other. Switches are rare, so one lock for all of them is fine.
     static SWITCHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    let material = WalletMaterial::from_hex(&req.view_key_hex, &req.spend_pubkey_hex)
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let network = parse_network(&tenant.network).map_err(|e| ApiError::Internal(e.to_string()))?;
-    if !is_same_wallet(&material, &tenant.primary_address, network)? {
-        return Err(ApiError::BadRequest(
-            "These keys belong to a different wallet from the one this store uses.".to_owned(),
-        ));
-    }
     let backend = chosen_backend(&state, Some(&req.backend))?;
 
     let _switching = SWITCHING.lock().await;
 
-    let handle = state
-        .custody
-        .backends
-        .register_wallet_in(&backend, material.clone())
-        .await
-        .map_err(ApiError::from)?;
-    let sealed = match state.custody.backends.seal_in(&backend, &material).await {
-        Ok(sealed) => sealed,
-        Err(e) => {
-            remove_wallet_logged(
-                state.custody.backends.as_ref(),
-                handle,
-                Some(tenant.id.as_str()),
-                "moving a store's keys, sealing them in the new backend failed",
-            )
-            .await;
-            return Err(e.into());
-        }
+    let store = tenant.id.as_str().to_owned();
+    let Registered {
+        handle,
+        sealed,
+        material,
+    } = register_keys(&state, &backend, &req.keys, Action::Move, Some(&store)).await?;
+    // Keys given in the clear are checked against the store's wallet by
+    // their keys; keys that only the backend can see, by the address it
+    // derives from them.
+    let same = match material {
+        Some(material) => is_same_wallet(&material, &tenant.primary_address, network),
+        None => derives_primary_address(&state, handle, &tenant.primary_address, network).await,
     };
+    if !matches!(same, Ok(true)) {
+        remove_wallet_logged(
+            state.custody.backends.as_ref(),
+            handle,
+            Some(tenant.id.as_str()),
+            "moving a store's keys, they were refused",
+        )
+        .await;
+        same?;
+        return Err(ApiError::BadRequest(
+            "These keys belong to a different wallet from the one this store uses.".to_owned(),
+        ));
+    }
     let (id, chosen) = (tenant.id.clone(), backend.clone());
     let updated = state
         .db
@@ -392,6 +474,142 @@ async fn switch_key_custody_to_completion(
         .await?
         .ok_or(ApiError::NotFound)?;
     Ok(Json(TenantView::from(refetched)))
+}
+
+/// Whether the wallet registered as `handle` has `primary_address` as its
+/// primary address on `network`: compared by keys, not spelling.
+async fn derives_primary_address(
+    state: &AppState,
+    handle: WalletHandle,
+    primary_address: &str,
+    network: monero::Network,
+) -> Result<bool, ApiError> {
+    let derived = state
+        .custody
+        .backends
+        .derive_subaddress(handle, SubaddressIndex::default(), network)
+        .await
+        .map_err(key_custody_error_for_new_tenant)?;
+    let stored: monero::Address = primary_address
+        .parse()
+        .map_err(|e| ApiError::Internal(format!("the store's address doesn't parse: {e}")))?;
+    Ok(derived.network == stored.network
+        && derived.public_spend == stored.public_spend
+        && derived.public_view == stored.public_view)
+}
+
+#[derive(Deserialize, Default)]
+pub(super) struct KeyBundleRequest {
+    /// The backend the keys are for; the default when absent.
+    backend: Option<String>,
+}
+
+/// Which engine images a client should trust with keys: what it checks a
+/// bundle's report against.
+#[derive(Serialize)]
+pub(super) struct TrustView {
+    /// SHA-384 of the ID key the engine image must be signed with, hex.
+    id_key_digest: String,
+    /// Whether that is the official one built into this release (and so
+    /// into the matching `key-custody-cli`): if not, merchants pass it to
+    /// the CLI with `--trust-id-key`.
+    official: bool,
+    min_guest_svn: u32,
+}
+
+#[derive(Serialize)]
+pub(super) struct KeyBundleResponse {
+    bundle: Bundle,
+    trust: TrustView,
+}
+
+fn trust_view(state: &AppState) -> Result<TrustView, ApiError> {
+    let snp = state
+        .custody
+        .snp
+        .as_ref()
+        .and_then(|slot| slot.backend())
+        .ok_or_else(|| ApiError::Unavailable("the snp key custody backend isn't running".into()))?;
+    let trust = snp.config().trust;
+    Ok(TrustView {
+        id_key_digest: hex::encode(trust.id_key_digest),
+        official: crate::key_custody::transport::official_id_key_digest()
+            == Some(trust.id_key_digest),
+        min_guest_svn: trust.min_guest_svn,
+    })
+}
+
+async fn key_bundle(
+    state: &AppState,
+    backend: Option<&str>,
+    action: Action,
+    store: Option<&str>,
+) -> Result<Json<KeyBundleResponse>, ApiError> {
+    let backend = chosen_backend(state, backend)?;
+    let bundle = state
+        .custody
+        .backends
+        .key_bundle_in(&backend, action, store)
+        .await
+        .map_err(|e| match e {
+            KeyCustodyError::InvalidKeyMaterial(m) => ApiError::BadRequest(m),
+            other @ (KeyCustodyError::UnknownWallet
+            | KeyCustodyError::BackendUnavailable(_)
+            | KeyCustodyError::ScanFailed(_)) => other.into(),
+        })?;
+    Ok(Json(KeyBundleResponse {
+        bundle,
+        trust: trust_view(state)?,
+    }))
+}
+
+/// `POST /api/v1/admin/key-custody/bundle` - a bundle to encrypt a new
+/// store's keys against, for a backend that takes keys only encrypted to it
+/// (`key_custody::transport`). One per key entry form: its challenge is
+/// accepted once.
+pub(super) async fn create_key_bundle(
+    State(state): State<AppState>,
+    Json(req): Json<KeyBundleRequest>,
+) -> Result<Json<KeyBundleResponse>, ApiError> {
+    key_bundle(&state, req.backend.as_deref(), Action::Create, None).await
+}
+
+/// `POST /api/v1/admin/tenant/key-custody/bundle` - as `create_key_bundle`,
+/// for moving the authenticated store's keys: the challenge is for this
+/// store only.
+pub(super) async fn move_key_bundle(
+    AuthedTenant(tenant): AuthedTenant,
+    State(state): State<AppState>,
+    Json(req): Json<KeyBundleRequest>,
+) -> Result<Json<KeyBundleResponse>, ApiError> {
+    let store = tenant.id.as_str().to_owned();
+    key_bundle(&state, req.backend.as_deref(), Action::Move, Some(&store)).await
+}
+
+/// `POST /api/v1/admin/key-custody/handoff` - an upgraded engine asking this
+/// one for the snp master key (`key_custody::snp`). Answered only for an
+/// engine image signed by the trusted ID key at this engine's security
+/// version or later, and encrypted to that engine alone.
+pub(super) async fn answer_handoff(
+    State(state): State<AppState>,
+    Json(bundle): Json<Bundle>,
+) -> Result<Json<Envelope>, ApiError> {
+    let slot = state.custody.snp.as_ref().ok_or_else(|| {
+        ApiError::Unavailable("this engine has no snp key custody backend".into())
+    })?;
+    let snp = slot.backend().ok_or_else(|| {
+        ApiError::Unavailable("this engine's snp key custody backend isn't running".into())
+    })?;
+    let answer = snp
+        .answer_handoff(&bundle, slot.anchor(), crate::key_custody::snp::unix_now())
+        .map_err(|e| match e {
+            KeyCustodyError::InvalidKeyMaterial(m) => ApiError::Forbidden(m),
+            other @ (KeyCustodyError::UnknownWallet
+            | KeyCustodyError::BackendUnavailable(_)
+            | KeyCustodyError::ScanFailed(_)) => other.into(),
+        })?;
+    tracing::info!("handed the snp master key over to an upgraded engine image");
+    Ok(Json(answer))
 }
 
 pub(super) async fn get_own_tenant(AuthedTenant(tenant): AuthedTenant) -> Json<TenantView> {
