@@ -14,6 +14,14 @@
 //! cargo test --test backup_restore -- --ignored --nocapture
 //! ```
 
+// An integration test crate: every function in it is test code, which
+// fails by panicking.
+#![expect(
+    clippy::tests_outside_test_module,
+    clippy::unwrap_used,
+    reason = "an integration test crate is all test code"
+)]
+
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,15 +43,14 @@ fn require_sqlite3() {
     let ok = Command::new("sqlite3")
         .arg("-version")
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+        .is_ok_and(|o| o.status.success());
     assert!(ok, "sqlite3 CLI must be on PATH for this test - it's what backup-database.sh/restore-database.sh themselves require");
 }
 
 fn seed_tenant_and_orders(store: &Store, n: u32) -> String {
     let created = store
         .create_tenant(
-            NewTenant {
+            &NewTenant {
                 key_custody_backend: "plain".into(),
                 sealed_key_material: vec![0u8; 64],
                 primary_address: "4backup_restore_test_addr".into(),
@@ -57,7 +64,7 @@ fn seed_tenant_and_orders(store: &Store, n: u32) -> String {
 
     for i in 0..n {
         store
-            .create_order(NewOrder {
+            .create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: created.tenant.id.clone(),
@@ -77,7 +84,7 @@ fn seed_tenant_and_orders(store: &Store, n: u32) -> String {
 
 /// Full drill: seed a live database, keep a writer hammering it, run the real
 /// backup script mid-write, run the real restore script into a fresh
-/// destination, and diff tenant/order/order_payments counts between source
+/// destination, and diff `tenant/order/order_payments` counts between source
 /// and restored copy.
 #[test]
 #[ignore = "shells out to scripts/*.sh and requires the sqlite3 CLI - see module docs"]
@@ -105,8 +112,8 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
     // synthetic scenario.
     let stop = Arc::new(AtomicBool::new(false));
     let writer_store = Store::open_file(src_db_path.to_str().unwrap()).unwrap();
-    let writer_tenant_id = tenant_id.clone();
-    let writer_stop = stop.clone();
+    let writer_tenant_id = tenant_id;
+    let writer_stop = Arc::clone(&stop);
     // Counts the inserts that committed, not the attempts: an attempt that
     // failed (the database locked by the backup, say) proves nothing about
     // a backup taken mid-write.
@@ -114,7 +121,7 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
         let mut i = 1000u32;
         let mut inserted = 0u32;
         while !writer_stop.load(Ordering::Relaxed) {
-            let created = writer_store.create_order(NewOrder {
+            let created = writer_store.create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: shared::ids::TenantId::new(writer_tenant_id.clone()),
@@ -171,7 +178,7 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
     // Locate the single backup file the script just produced.
     let backup_file = std::fs::read_dir(&backup_dir)
         .unwrap()
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .map(|e| e.path())
         .find(|p| p.extension().and_then(|e| e.to_str()) == Some("db"))
         .expect("backup-database.sh should have written exactly one .db file");
@@ -263,7 +270,7 @@ fn restore_refuses_to_overwrite_an_existing_destination_without_force() {
     assert!(backup_output.status.success());
     let backup_file = std::fs::read_dir(&backup_dir)
         .unwrap()
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .map(|e| e.path())
         .find(|p| p.extension().and_then(|e| e.to_str()) == Some("db"))
         .unwrap();

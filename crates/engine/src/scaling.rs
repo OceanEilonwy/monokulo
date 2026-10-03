@@ -1,8 +1,11 @@
 //! What one network's block scan is doing, kept live for `/status`
-//! (docs/engine_scaling.md sections 2, 5 and 6): how requests are sized,
-//! the block in progress and how long it has taken, how fast recent blocks
-//! went, and where the time goes. The scan writes it as it works; `/status`
-//! reads it at any moment, even in the middle of a long round.
+//! (`docs/engine_scaling.md` sections 2, 5 and 6).
+//!
+//! How requests are sized, the block in progress and how long it has taken,
+//! how fast recent blocks went, and where the time goes.
+//!
+//! The scan writes it as it works; `/status` reads it at any moment, even
+//! in the middle of a long round.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -20,8 +23,9 @@ const RECENT_BLOCKS: usize = 64;
 const RECENT_SECS: i64 = 600;
 
 /// One network's scan progress, shared between its scan loop and `/status`.
+///
 /// How long blocks' headers are read before the blocks after the last sign
-/// that a block may be too large to fetch whole (docs/engine_scaling.md
+/// that a block may be too large to fetch whole (`docs/engine_scaling.md`
 /// section 4).
 pub const HEADERS_FIRST_SECS: i64 = 60 * 60;
 
@@ -51,18 +55,18 @@ pub struct ScanProgress {
     /// the engine started: fetched for nothing, and fetched again if needed.
     pub discarded_cache_bytes: u64,
     /// The same, by when, for the last [`RECENT_SECS`].
-    discarded_recent: VecDeque<(i64, u64)>,
+    pub discarded_recent: VecDeque<(i64, u64)>,
     /// The time the last round was given: the base, unless one page of a
-    /// large block needed more (docs/engine_scaling.md section 4).
+    /// large block needed more (`docs/engine_scaling.md` section 4).
     pub round_budget: std::time::Duration,
     /// Until when blocks' headers are read before the blocks, and why
-    /// (docs/engine_scaling.md section 4).
+    /// (`docs/engine_scaling.md` section 4).
     pub headers_first: Option<(i64, HeadersFirstReason)>,
 }
 
 impl Default for ScanProgress {
     fn default() -> Self {
-        ScanProgress {
+        Self {
             avg_bytes_per_block: crate::scanner::SCAN_CHUNK_INITIAL_AVG_BYTES,
             last_chunk: None,
             in_progress: None,
@@ -200,12 +204,12 @@ impl ScanProgress {
 
     /// Figures for `/status`, as of `now_unix`.
     pub fn report(&self, now_unix: i64) -> ScanReport {
-        let recent: Vec<&DoneBlock> = self
+        let recent = self
             .recent
             .iter()
             .filter(|b| b.finished_unix >= now_unix - RECENT_SECS)
-            .collect();
-        let blocks_per_minute = recent.len() as f64 / (RECENT_SECS as f64 / 60.0);
+            .count();
+        let blocks_per_minute = recent as f64 / (RECENT_SECS as f64 / 60.0);
         let (fetch, scan) = self
             .time
             .iter()
@@ -270,7 +274,7 @@ mod tests {
 
     /// Headers come first for an hour after the last sign that blocks may
     /// be large, and each sign starts the hour again
-    /// (docs/engine_scaling.md section 4).
+    /// (`docs/engine_scaling.md` section 4).
     #[test]
     fn headers_come_first_for_an_hour_after_each_sign() {
         let mut progress = ScanProgress::default();

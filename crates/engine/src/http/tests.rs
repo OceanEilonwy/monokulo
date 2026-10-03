@@ -5,16 +5,16 @@
 //! per `docs/TESTING.md` §5.
 
 use std::collections::HashMap;
-use std::str::FromStr;
+use std::str::FromStr as _;
 use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
-use http_body_util::BodyExt;
+use http_body_util::BodyExt as _;
 use monero::consensus::encode::deserialize;
 use monero::{Network, PrivateKey, PublicKey, Transaction};
-use tower::ServiceExt;
+use tower::ServiceExt as _;
 
 use crate::daemon::fake::FakeDaemonClient;
 use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
@@ -51,7 +51,7 @@ fn json_request(
     method: &str,
     uri: &str,
     bearer: Option<&str>,
-    body: serde_json::Value,
+    body: &serde_json::Value,
 ) -> Request<Body> {
     let mut builder = Request::builder()
         .method(method)
@@ -78,7 +78,7 @@ async fn create_tenant(router: &Router, seed: u8) -> TestTenant {
         "POST",
         "/api/v1/admin/tenants",
         None,
-        serde_json::json!({
+        &serde_json::json!({
             "view_key_hex": valid_view_key_hex(seed),
             "spend_pubkey_hex": valid_spend_pubkey_hex(seed.wrapping_add(1)),
         }),
@@ -87,8 +87,8 @@ async fn create_tenant(router: &Router, seed: u8) -> TestTenant {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     TestTenant {
-        public_key: body["public_key"].as_str().unwrap().to_string(),
-        secret_token: body["secret_token"].as_str().unwrap().to_string(),
+        public_key: body["public_key"].as_str().unwrap().to_owned(),
+        secret_token: body["secret_token"].as_str().unwrap().to_owned(),
     }
 }
 
@@ -101,13 +101,13 @@ async fn create_tenant_then_create_order_happy_path() {
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
+        &serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body["xmr_amount_piconero"], 167_500_000_000u64);
-    let order_id = body["order_id"].as_str().unwrap().to_string();
+    let order_id = body["order_id"].as_str().unwrap().to_owned();
     assert!(!body["address"].as_str().unwrap().is_empty());
 
     let req = Request::builder()
@@ -126,7 +126,7 @@ async fn create_tenant_then_create_order_happy_path() {
 #[tokio::test]
 async fn creating_an_order_with_a_confirmations_required_override_persists_it() {
     let state = AppState::for_tests();
-    let store = state.db.shared_store_for_test().clone();
+    let store = Arc::clone(state.db.shared_store_for_test());
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
 
@@ -134,14 +134,14 @@ async fn creating_an_order_with_a_confirmations_required_override_persists_it() 
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": 3 }),
+        &serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": 3 }),
     );
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let order_id = body_json(response).await["order_id"]
         .as_str()
         .unwrap()
-        .to_string();
+        .to_owned();
 
     let guard = store.lock();
     let tenant_id = guard
@@ -152,7 +152,7 @@ async fn creating_an_order_with_a_confirmations_required_override_persists_it() 
         .unwrap()
         .id;
     let order = guard
-        .get_order(&tenant_id, &shared::ids::OrderId::new(order_id.to_string()))
+        .get_order(&tenant_id, &shared::ids::OrderId::new(order_id))
         .unwrap()
         .unwrap();
     assert_eq!(order.confirmations_required_override, Some(3));
@@ -161,7 +161,7 @@ async fn creating_an_order_with_a_confirmations_required_override_persists_it() 
 #[tokio::test]
 async fn creating_an_order_with_no_confirmations_required_override_leaves_it_unset() {
     let state = AppState::for_tests();
-    let store = state.db.shared_store_for_test().clone();
+    let store = Arc::clone(state.db.shared_store_for_test());
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
 
@@ -169,14 +169,14 @@ async fn creating_an_order_with_no_confirmations_required_override_leaves_it_uns
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
+        &serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
     );
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let order_id = body_json(response).await["order_id"]
         .as_str()
         .unwrap()
-        .to_string();
+        .to_owned();
 
     let guard = store.lock();
     let tenant_id = guard
@@ -187,7 +187,7 @@ async fn creating_an_order_with_no_confirmations_required_override_leaves_it_uns
         .unwrap()
         .id;
     let order = guard
-        .get_order(&tenant_id, &shared::ids::OrderId::new(order_id.to_string()))
+        .get_order(&tenant_id, &shared::ids::OrderId::new(order_id))
         .unwrap()
         .unwrap();
     assert_eq!(order.confirmations_required_override, None);
@@ -204,7 +204,7 @@ async fn creating_an_order_with_an_out_of_range_confirmations_required_is_reject
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": 721u64 }),
+        &serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": 721u64 }),
     );
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(
@@ -217,7 +217,7 @@ async fn creating_an_order_with_an_out_of_range_confirmations_required_is_reject
 #[tokio::test]
 async fn creating_an_order_with_confirmations_required_zero_is_accepted() {
     let state = AppState::for_tests();
-    let store = state.db.shared_store_for_test().clone();
+    let store = Arc::clone(state.db.shared_store_for_test());
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
 
@@ -225,14 +225,14 @@ async fn creating_an_order_with_confirmations_required_zero_is_accepted() {
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": 0u64 }),
+        &serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": 0u64 }),
     );
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let order_id = body_json(response).await["order_id"]
         .as_str()
         .unwrap()
-        .to_string();
+        .to_owned();
 
     let guard = store.lock();
     let tenant_id = guard
@@ -243,7 +243,7 @@ async fn creating_an_order_with_confirmations_required_zero_is_accepted() {
         .unwrap()
         .id;
     let order = guard
-        .get_order(&tenant_id, &shared::ids::OrderId::new(order_id.to_string()))
+        .get_order(&tenant_id, &shared::ids::OrderId::new(order_id))
         .unwrap()
         .unwrap();
     assert_eq!(order.confirmations_required_override, Some(0));
@@ -270,7 +270,7 @@ async fn create_tenant_rejects_a_syntactically_valid_but_off_curve_spend_pubkey_
         "POST",
         "/api/v1/admin/tenants",
         None,
-        serde_json::json!({
+        &serde_json::json!({
             "view_key_hex": valid_view_key_hex(1),
             // 32 well-formed hex bytes, all 0xff - not a valid Ed25519/Monero
             // curve point (real, verified: this genuinely fails
@@ -303,7 +303,7 @@ async fn create_tenant_rejects_a_non_canonical_view_key_scalar_as_bad_request_no
         "POST",
         "/api/v1/admin/tenants",
         None,
-        serde_json::json!({
+        &serde_json::json!({
             // 0xff * 32 as a little-endian scalar is far larger than the curve
             // order l - a real non-canonical scalar, not merely hypothetical.
             "view_key_hex": "ff".repeat(32),
@@ -332,7 +332,7 @@ async fn successive_orders_get_distinct_addresses_and_never_leave_an_unclaimed_i
     // not skip indices along the way (a skipped index means an address was derived,
     // counted, and never issued to anyone).
     let state = AppState::for_tests();
-    let store = state.db.shared_store_for_test().clone();
+    let store = Arc::clone(state.db.shared_store_for_test());
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
 
@@ -342,7 +342,7 @@ async fn successive_orders_get_distinct_addresses_and_never_leave_an_unclaimed_i
             "POST",
             "/api/v1/admin/tenant/orders",
             Some(&tenant.secret_token),
-            serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
+            &serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
         );
         let response = router.clone().oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -350,7 +350,7 @@ async fn successive_orders_get_distinct_addresses_and_never_leave_an_unclaimed_i
             body_json(response).await["address"]
                 .as_str()
                 .unwrap()
-                .to_string(),
+                .to_owned(),
         );
     }
 
@@ -425,11 +425,11 @@ async fn tenant_a_cannot_read_tenant_bs_order_via_admin_api() {
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant_b.secret_token),
-        serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }),
+        &serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
     let body = body_json(response).await;
-    let order_b_order_id = body["order_id"].as_str().unwrap().to_string();
+    let order_b_order_id = body["order_id"].as_str().unwrap().to_owned();
 
     let req = Request::builder()
         .method("GET")
@@ -466,7 +466,7 @@ async fn rotated_secret_invalidates_the_old_token_end_to_end() {
     let response = router.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    let new_secret = body["secret_token"].as_str().unwrap().to_string();
+    let new_secret = body["secret_token"].as_str().unwrap().to_owned();
 
     let req = Request::builder()
         .method("GET")
@@ -513,7 +513,7 @@ async fn the_engine_serves_no_public_order_routes_and_no_cors() {
             method,
             &uri,
             None,
-            serde_json::json!({ "xmr_amount_piconero": 1u64, "refund_address": "x" }),
+            &serde_json::json!({ "xmr_amount_piconero": 1u64, "refund_address": "x" }),
         );
         let response = router.clone().oneshot(req).await.unwrap();
         assert_eq!(
@@ -525,9 +525,9 @@ async fn the_engine_serves_no_public_order_routes_and_no_cors() {
 
     for uri in [
         format!("/api/v1/t/{pk}/orders"),
-        "/api/v1/admin/tenant/orders".to_string(),
-        "/api/v1/admin/tenants".to_string(),
-        "/status".to_string(),
+        "/api/v1/admin/tenant/orders".to_owned(),
+        "/api/v1/admin/tenants".to_owned(),
+        "/status".to_owned(),
     ] {
         let preflight = Request::builder()
             .method("OPTIONS")
@@ -558,12 +558,12 @@ async fn webhook_lifecycle_is_scoped_to_the_owning_tenant() {
         "POST",
         "/api/v1/admin/tenant/webhooks",
         Some(&tenant_b.secret_token),
-        serde_json::json!({ "url": "https://b.example/hook" }),
+        &serde_json::json!({ "url": "https://b.example/hook" }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    let webhook_id = body["webhook_id"].as_str().unwrap().to_string();
+    let webhook_id = body["webhook_id"].as_str().unwrap().to_owned();
     assert!(body["signing_secret"]
         .as_str()
         .unwrap()
@@ -604,7 +604,7 @@ async fn a_zero_or_malformed_xmr_amount_is_rejected_with_bad_request() {
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        serde_json::json!({ "xmr_amount_piconero": 0u64 }),
+        &serde_json::json!({ "xmr_amount_piconero": 0u64 }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -617,7 +617,7 @@ async fn a_zero_or_malformed_xmr_amount_is_rejected_with_bad_request() {
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        serde_json::json!({ "xmr_amount_piconero": "not_a_number" }),
+        &serde_json::json!({ "xmr_amount_piconero": "not_a_number" }),
     );
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -639,7 +639,7 @@ async fn an_idempotency_key_makes_a_retried_order_creation_return_the_first_orde
                     "POST",
                     "/api/v1/admin/tenant/orders",
                     Some(&token),
-                    body,
+                    &body,
                 ))
                 .await
                 .unwrap();
@@ -698,7 +698,7 @@ async fn an_xmr_amount_above_the_cap_is_rejected_with_bad_request() {
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        serde_json::json!({ "xmr_amount_piconero": u64::MAX }),
+        &serde_json::json!({ "xmr_amount_piconero": u64::MAX }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -710,7 +710,7 @@ async fn an_xmr_amount_above_the_cap_is_rejected_with_bad_request() {
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        serde_json::json!({ "xmr_amount_piconero": crate::http::orders::MAX_ORDER_PICONERO }),
+        &serde_json::json!({ "xmr_amount_piconero": crate::http::orders::MAX_ORDER_PICONERO }),
     );
     assert_eq!(
         router.oneshot(req).await.unwrap().status(),
@@ -735,7 +735,7 @@ async fn webhook_extra_headers_are_validated_when_saved() {
                     "POST",
                     "/api/v1/admin/tenant/webhooks",
                     Some(&token),
-                    serde_json::json!({ "url": "https://b.example/hook", "extra_headers": extra_headers }),
+                    &serde_json::json!({ "url": "https://b.example/hook", "extra_headers": extra_headers }),
                 ))
                 .await
                 .unwrap();
@@ -782,7 +782,7 @@ async fn webhook_extra_headers_are_validated_when_saved() {
             "GET",
             "/api/v1/admin/tenant/webhooks",
             Some(&tenant.secret_token),
-            serde_json::Value::Null,
+            &serde_json::Value::Null,
         ))
         .await
         .unwrap();
@@ -803,7 +803,7 @@ async fn tenant_creation_is_rejected_for_a_network_with_no_configured_node() {
         "POST",
         "/api/v1/admin/tenants",
         None,
-        serde_json::json!({
+        &serde_json::json!({
             "view_key_hex": valid_view_key_hex(20),
             "spend_pubkey_hex": valid_spend_pubkey_hex(21),
             "network": "stagenet",
@@ -819,7 +819,7 @@ async fn tenant_creation_is_rejected_for_a_network_with_no_configured_node() {
         "POST",
         "/api/v1/admin/tenants",
         None,
-        serde_json::json!({
+        &serde_json::json!({
             "view_key_hex": valid_view_key_hex(20),
             "spend_pubkey_hex": valid_spend_pubkey_hex(21),
         }),
@@ -856,7 +856,7 @@ async fn tenant_deletion_disables_it_and_admin_routes_stop_working() {
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }),
+        &serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }),
     );
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -1091,7 +1091,7 @@ async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and
                 "POST",
                 "/api/v1/admin/tenants",
                 None,
-                create_body,
+                &create_body,
             ))
             .await
             .unwrap();
@@ -1115,7 +1115,7 @@ async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and
                 "PATCH",
                 "/api/v1/admin/tenant",
                 Some(&tenant.secret_token),
-                bad.clone(),
+                &bad.clone(),
             ))
             .await
             .unwrap();
@@ -1134,7 +1134,7 @@ async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and
             "PATCH",
             "/api/v1/admin/tenant",
             Some(&tenant.secret_token),
-            serde_json::json!({ "confirmations_required": 3, "order_expiry_seconds": 900 }),
+            &serde_json::json!({ "confirmations_required": 3, "order_expiry_seconds": 900 }),
         ))
         .await
         .unwrap();
@@ -1151,7 +1151,7 @@ async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and
             "PATCH",
             "/api/v1/admin/tenant",
             Some(&tenant.secret_token),
-            serde_json::json!({ "confirmations_required": 0 }),
+            &serde_json::json!({ "confirmations_required": 0 }),
         ))
         .await
         .unwrap();
@@ -1173,7 +1173,7 @@ async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and
             "POST",
             "/api/v1/admin/tenants",
             None,
-            create_body,
+            &create_body,
         ))
         .await
         .unwrap();
@@ -1198,19 +1198,19 @@ async fn the_admin_refund_address_route_is_scoped_to_the_tenant_behind_the_secre
                 "POST",
                 "/api/v1/admin/tenant/orders",
                 Some(&a.secret_token),
-                serde_json::json!({ "xmr_amount_piconero": 1_000_000u64 }),
+                &serde_json::json!({ "xmr_amount_piconero": 1_000_000u64 }),
             ))
             .await
             .unwrap(),
     )
     .await;
-    let order_id = order["order_id"].as_str().unwrap().to_string();
+    let order_id = order["order_id"].as_str().unwrap().to_owned();
     let uri = format!("/api/v1/admin/tenant/orders/{order_id}/refund-address");
     let body = serde_json::json!({ "refund_address": "refund-here" });
 
     let no_key = router
         .clone()
-        .oneshot(json_request("POST", &uri, None, body.clone()))
+        .oneshot(json_request("POST", &uri, None, &body.clone()))
         .await
         .unwrap();
     assert_eq!(no_key.status(), StatusCode::UNAUTHORIZED);
@@ -1221,7 +1221,7 @@ async fn the_admin_refund_address_route_is_scoped_to_the_tenant_behind_the_secre
             "POST",
             &uri,
             Some(&b.secret_token),
-            body.clone(),
+            &body.clone(),
         ))
         .await
         .unwrap();
@@ -1233,7 +1233,7 @@ async fn the_admin_refund_address_route_is_scoped_to_the_tenant_behind_the_secre
 
     let owner = router
         .clone()
-        .oneshot(json_request("POST", &uri, Some(&a.secret_token), body))
+        .oneshot(json_request("POST", &uri, Some(&a.secret_token), &body))
         .await
         .unwrap();
     assert_eq!(owner.status(), StatusCode::OK);
@@ -1270,13 +1270,13 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
                 "POST",
                 "/api/v1/admin/tenant/orders",
                 Some(&a.secret_token),
-                serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
+                &serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
             ))
             .await
             .unwrap(),
     )
     .await;
-    let a_order_id = order["order_id"].as_str().unwrap().to_string();
+    let a_order_id = order["order_id"].as_str().unwrap().to_owned();
     let a_webhook = body_json(
         router
             .clone()
@@ -1284,13 +1284,13 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
                 "POST",
                 "/api/v1/admin/tenant/webhooks",
                 Some(&a.secret_token),
-                serde_json::json!({ "url": "https://a.example/hook" }),
+                &serde_json::json!({ "url": "https://a.example/hook" }),
             ))
             .await
             .unwrap(),
     )
     .await;
-    let a_webhook_id = a_webhook["webhook_id"].as_str().unwrap().to_string();
+    let a_webhook_id = a_webhook["webhook_id"].as_str().unwrap().to_owned();
 
     // B's token against A's identifiers: every one must miss.
     let response = router
@@ -1381,7 +1381,7 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
             "POST",
             "/api/v1/admin/tenant/rotate-secret",
             Some(&b.secret_token),
-            serde_json::json!({ "tenant_id": "whatever" }),
+            &serde_json::json!({ "tenant_id": "whatever" }),
         ))
         .await
         .unwrap();
@@ -1422,7 +1422,7 @@ async fn every_path_that_can_set_a_webhook_url_validates_the_scheme() {
                 "POST",
                 "/api/v1/admin/tenant/webhooks",
                 Some(&tenant.secret_token),
-                serde_json::json!({ "url": bad_url }),
+                &serde_json::json!({ "url": bad_url }),
             ))
             .await
             .unwrap();
@@ -1440,7 +1440,7 @@ async fn every_path_that_can_set_a_webhook_url_validates_the_scheme() {
             "PATCH",
             "/api/v1/admin/tenant",
             Some(&tenant.secret_token),
-            serde_json::json!({ "webhook_url": "file:///etc/passwd", "url": "file:///etc/passwd" }),
+            &serde_json::json!({ "webhook_url": "file:///etc/passwd", "url": "file:///etc/passwd" }),
         ))
         .await
         .unwrap();
@@ -1471,16 +1471,14 @@ async fn every_path_that_can_set_a_webhook_url_validates_the_scheme() {
 }
 
 /// /status reports the engine's CPU and memory, and each network's scaling
-/// figures (docs/engine_scaling.md section 6). One block that has taken over
+/// figures (`docs/engine_scaling.md` section 6). One block that has taken over
 /// two minutes, while its node answers, is reported as slow, with what is
 /// known about it.
 #[tokio::test]
 async fn status_reports_resources_scaling_and_a_slow_block() {
     let state = AppState::for_tests();
-    let progress = crate::scanner_status::progress_of(
-        &state.networks.scanner_status,
-        monero::Network::Mainnet,
-    );
+    let progress =
+        crate::scanner_status::progress_of(&state.networks.scanner_status, Network::Mainnet);
     let router = build_router(state, 1_000_000);
 
     let status = get_status_json(router.clone()).await;
@@ -1581,7 +1579,7 @@ async fn status_endpoint_shows_the_real_configured_network_and_node_with_its_liv
 async fn status_endpoint_shows_an_offline_node_as_an_error_not_a_silent_gap() {
     let mut state = AppState::for_tests();
     let offline_daemon = Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
-        label: "dead-node:18081".to_string(),
+        label: "dead-node:18081".to_owned(),
         client: Arc::new(FakeDaemonClient::default()), // starts offline (see FakeDaemonClient::new vs. Default)
     }]));
     state.networks.daemons =
@@ -1638,7 +1636,7 @@ async fn status_endpoint_reflects_a_failing_scan_tick_with_its_real_error() {
         crate::now_unix(),
         crate::now_unix(),
         1,
-        &Err::<(), String>("node returned garbage".to_string()),
+        &Err::<(), String>("node returned garbage".to_owned()),
     );
     let router = build_router(state, 1_000_000);
     let body = get_status_json(router).await;
@@ -1704,12 +1702,12 @@ async fn test_app_state_with_real_daemon_and_env(
     let store = Store::open_in_memory().unwrap().into_shared();
     let fake_daemon = Arc::new(FakeDaemonClient::new());
     let mainnet_daemon = Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
-        label: "fake-node:18081".to_string(),
-        client: fake_daemon.clone(),
+        label: "fake-node:18081".to_owned(),
+        client: Arc::<FakeDaemonClient>::clone(&fake_daemon),
     }]));
     let state = AppState {
         settings: crate::engine_settings::EngineSettings::load_with(
-            store.clone(),
+            Arc::clone(&store),
             None,
             Arc::new(RateLimiter::new(10_000)),
             env,
@@ -1740,11 +1738,11 @@ async fn the_options_file_is_saved_to_and_reloaded_through_the_api() {
     std::fs::write(&path, "# Mine.\n[payment]\nconfirmations_required = 4\n").unwrap();
     let store = Store::open_in_memory().unwrap().into_shared();
     let settings = crate::engine_settings::EngineSettings::load_full(
-        store.clone(),
+        Arc::clone(&store),
         None,
         None,
         Arc::new(RateLimiter::new(10_000)),
-        live_settings::Env::fixed([("ENGINE_TOKEN", shared::auth::TEST_ENGINE_TOKEN)]),
+        live_settings::Env::fixed([("ENGINE_TOKEN", TEST_ENGINE_TOKEN)]),
         live_settings::OptionsFile::at(&path),
     )
     .await
@@ -1756,7 +1754,7 @@ async fn the_options_file_is_saved_to_and_reloaded_through_the_api() {
         },
         1_000_000,
     );
-    let get = |router: axum::Router| async move {
+    let get = async |router: Router| {
         body_json(router.oneshot(settings_request("GET", None)).await.unwrap()).await
     };
     let body = get(router.clone()).await;
@@ -1790,10 +1788,7 @@ async fn the_options_file_is_saved_to_and_reloaded_through_the_api() {
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/admin/settings/reload")
-                .header(
-                    shared::auth::ENGINE_TOKEN_HEADER,
-                    shared::auth::TEST_ENGINE_TOKEN,
-                )
+                .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1834,7 +1829,7 @@ async fn the_options_file_is_saved_to_and_reloaded_through_the_api() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_read_only_options_file_is_locked_and_a_save_to_it_refused() {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::PermissionsExt as _;
     let dir = std::env::temp_dir().join(format!("engine-read-only-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -1847,11 +1842,11 @@ async fn a_read_only_options_file_is_locked_and_a_save_to_it_refused() {
     }
     let store = Store::open_in_memory().unwrap().into_shared();
     let settings = crate::engine_settings::EngineSettings::load_full(
-        store.clone(),
+        Arc::clone(&store),
         None,
         None,
         Arc::new(RateLimiter::new(10_000)),
-        live_settings::Env::fixed([("ENGINE_TOKEN", shared::auth::TEST_ENGINE_TOKEN)]),
+        live_settings::Env::fixed([("ENGINE_TOKEN", TEST_ENGINE_TOKEN)]),
         live_settings::OptionsFile::at(&path),
     )
     .await
@@ -1875,7 +1870,7 @@ async fn a_read_only_options_file_is_locked_and_a_save_to_it_refused() {
     let locked = body["scalars"]["payment.confirmations_required"]["locked"]
         .as_str()
         .unwrap_or_default()
-        .to_string();
+        .to_owned();
     assert!(locked.contains("can't be written by the engine"), "{body}");
     assert!(
         body["scalars"]["logging.dev_mode_until"]["locked"].is_null(),
@@ -1920,7 +1915,7 @@ async fn every_route_refuses_a_request_without_the_engine_token() {
     let state = AppState::for_tests();
     let tenant = create_tenant(&build_router(state.clone(), 1_000_000), 1).await;
     let router = super::build_router(state, 1_000_000);
-    let routes = [
+    let endpoints = [
         ("POST", "/api/v1/admin/tenants"),
         ("GET", "/status"),
         ("GET", "/api/v1/admin/settings"),
@@ -1932,7 +1927,7 @@ async fn every_route_refuses_a_request_without_the_engine_token() {
         ("GET", "/no/such/route"),
     ];
     let wrong_values = [None, Some("wrong"), Some(tenant.secret_token.as_str())];
-    for (method, uri) in routes {
+    for (method, uri) in endpoints {
         for wrong in wrong_values {
             let mut request = Request::builder()
                 .method(method)
@@ -2005,10 +2000,7 @@ fn settings_request(method: &str, body: Option<serde_json::Value>) -> Request<Bo
         .method(method)
         .uri("/api/v1/admin/settings")
         .header("content-type", "application/json")
-        .body(
-            body.map(|b| Body::from(b.to_string()))
-                .unwrap_or(Body::empty()),
-        )
+        .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
         .unwrap()
 }
 
@@ -2070,13 +2062,8 @@ async fn updating_a_scalar_setting_persists_and_a_later_get_reflects_it() {
 /// and refuses a save of it.
 #[tokio::test]
 async fn a_setting_given_on_the_command_line_is_locked_and_a_save_of_it_refused() {
-    let env = live_settings::Env::fixed(Vec::<(String, String)>::new()).with_cli(
-        [(
-            "payment.confirmations_required".to_string(),
-            "99".to_string(),
-        )]
-        .into(),
-    );
+    let env = live_settings::Env::fixed(Vec::<(String, String)>::new())
+        .with_cli([("payment.confirmations_required".to_owned(), "99".to_owned())].into());
     let (state, _daemon) = test_app_state_with_real_daemon_and_env(env).await;
     let router = build_router(state, 1_000_000);
 
@@ -2364,7 +2351,7 @@ fn lookup_request(token: &str, txid: &str) -> Request<Body> {
         "POST",
         "/api/v1/admin/tenant/payments/lookup",
         Some(token),
-        serde_json::json!({ "txid": txid }),
+        &serde_json::json!({ "txid": txid }),
     )
 }
 
@@ -2408,7 +2395,7 @@ async fn create_fixture_tenant(router: &Router) -> TestTenant {
         "POST",
         "/api/v1/admin/tenants",
         None,
-        serde_json::json!({
+        &serde_json::json!({
             "view_key_hex": fixture_view_key_hex(),
             "spend_pubkey_hex": fixture_spend_pubkey_hex(),
         }),
@@ -2417,8 +2404,8 @@ async fn create_fixture_tenant(router: &Router) -> TestTenant {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     TestTenant {
-        public_key: body["public_key"].as_str().unwrap().to_string(),
-        secret_token: body["secret_token"].as_str().unwrap().to_string(),
+        public_key: body["public_key"].as_str().unwrap().to_owned(),
+        secret_token: body["secret_token"].as_str().unwrap().to_owned(),
     }
 }
 
@@ -2444,7 +2431,7 @@ async fn lookup_payment_requires_authentication() {
         "POST",
         "/api/v1/admin/tenant/payments/lookup",
         None,
-        serde_json::json!({ "txid": "0".repeat(64) }),
+        &serde_json::json!({ "txid": "0".repeat(64) }),
     );
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -2469,6 +2456,7 @@ async fn lookup_payment_reports_not_found_on_chain_for_an_unknown_txid() {
 
 #[tokio::test]
 async fn lookup_payment_reports_no_matching_order_for_a_real_but_unrelated_tx() {
+    use monero::cryptonote::hash::Hashable as _;
     let (state, daemon) = test_app_state_with_real_daemon().await;
     let router = build_router(state, 1_000_000);
     // Random, non-fixture keys - this tenant genuinely has no claim on the
@@ -2477,7 +2465,6 @@ async fn lookup_payment_reports_no_matching_order_for_a_real_but_unrelated_tx() 
 
     let tx = fixture_tx_for_lookup_tests();
     daemon.set_mempool(vec![tx.clone()]);
-    use monero::cryptonote::hash::Hashable;
     let txid = hex::encode(tx.hash().to_bytes());
 
     let response = router
@@ -2492,8 +2479,9 @@ async fn lookup_payment_reports_no_matching_order_for_a_real_but_unrelated_tx() 
 
 #[tokio::test]
 async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
+    use monero::cryptonote::hash::Hashable as _;
     let (state, daemon) = test_app_state_with_real_daemon().await;
-    let store = state.db.shared_store_for_test().clone();
+    let store = Arc::clone(state.db.shared_store_for_test());
     let router = build_router(state, 1_000_000);
     let tenant = create_fixture_tenant(&router).await;
 
@@ -2505,18 +2493,17 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
         "POST",
         "/api/v1/admin/tenant/orders",
         Some(&tenant.secret_token),
-        serde_json::json!({ "xmr_amount_piconero": 1u64 }),
+        &serde_json::json!({ "xmr_amount_piconero": 1u64 }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let order_id = body_json(response).await["order_id"]
         .as_str()
         .unwrap()
-        .to_string();
+        .to_owned();
 
     let tx = fixture_tx_for_lookup_tests();
     daemon.set_mempool(vec![tx.clone()]);
-    use monero::cryptonote::hash::Hashable;
     let txid = hex::encode(tx.hash().to_bytes());
 
     let response = router
@@ -2534,7 +2521,7 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
 
     let payments = store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+        .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
         .unwrap();
     assert_eq!(
         payments.len(),
@@ -2555,7 +2542,7 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
     assert_eq!(body["outcome"], "matched");
     let payments = store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+        .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
         .unwrap();
     assert_eq!(
         payments.len(),
@@ -2574,9 +2561,11 @@ async fn next_sse_event(body: &mut Body, buffer: &mut String) -> (String, String
             let mut data = String::new();
             for line in block.lines() {
                 if let Some(value) = line.strip_prefix("event: ") {
-                    event = value.to_string();
+                    event = value.to_owned();
                 } else if let Some(value) = line.strip_prefix("data: ") {
-                    data = value.to_string();
+                    data = value.to_owned();
+                } else {
+                    // Comments and other fields: not asserted on.
                 }
             }
             if !event.is_empty() {
@@ -2604,7 +2593,7 @@ async fn create_admin_order(router: &Router, tenant: &TestTenant) -> String {
             "POST",
             "/api/v1/admin/tenant/orders",
             Some(&tenant.secret_token),
-            serde_json::json!({ "xmr_amount_piconero": 1_000_000_000_000u64 }),
+            &serde_json::json!({ "xmr_amount_piconero": 1_000_000_000_000u64 }),
         ))
         .await
         .unwrap();
@@ -2612,7 +2601,7 @@ async fn create_admin_order(router: &Router, tenant: &TestTenant) -> String {
     body_json(response).await["order_id"]
         .as_str()
         .unwrap()
-        .to_string()
+        .to_owned()
 }
 
 #[tokio::test]
@@ -2659,7 +2648,7 @@ async fn order_events_stream_reports_only_the_authenticated_tenants_changes() {
                 "POST",
                 &format!("/api/v1/admin/tenant/orders/{id}/refund-address"),
                 Some(&owner.secret_token),
-                serde_json::json!({ "refund_address": "refund" }),
+                &serde_json::json!({ "refund_address": "refund" }),
             ))
             .await
             .unwrap();
@@ -2676,21 +2665,21 @@ async fn order_events_stream_reports_only_the_authenticated_tenants_changes() {
 
 #[tokio::test]
 async fn listing_orders_by_ids_returns_only_this_tenants_named_orders_in_order() {
-    let router = test_router();
-    let tenant = create_tenant(&router, 40).await;
-    let other = create_tenant(&router, 42).await;
     async fn create(router: &Router, token: &str) -> String {
         let req = json_request(
             "POST",
             "/api/v1/admin/tenant/orders",
             Some(token),
-            serde_json::json!({ "xmr_amount_piconero": 1_000u64 }),
+            &serde_json::json!({ "xmr_amount_piconero": 1_000u64 }),
         );
         body_json(router.clone().oneshot(req).await.unwrap()).await["order_id"]
             .as_str()
             .unwrap()
-            .to_string()
+            .to_owned()
     }
+    let router = test_router();
+    let tenant = create_tenant(&router, 40).await;
+    let other = create_tenant(&router, 42).await;
     let (a, b, _c) = (
         create(&router, &tenant.secret_token).await,
         create(&router, &tenant.secret_token).await,
@@ -2705,7 +2694,7 @@ async fn listing_orders_by_ids_returns_only_this_tenants_named_orders_in_order()
             "GET",
             &uri,
             Some(&tenant.secret_token),
-            serde_json::Value::Null,
+            &serde_json::Value::Null,
         ))
         .await
         .unwrap();
@@ -2715,7 +2704,7 @@ async fn listing_orders_by_ids_returns_only_this_tenants_named_orders_in_order()
         .as_array()
         .unwrap()
         .iter()
-        .map(|o| o["order_id"].as_str().unwrap().to_string())
+        .map(|o| o["order_id"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(
         ids,
@@ -2732,7 +2721,7 @@ async fn listing_orders_by_ids_returns_only_this_tenants_named_orders_in_order()
             "GET",
             &format!("/api/v1/admin/tenant/orders?ids={too_many}"),
             Some(&tenant.secret_token),
-            serde_json::Value::Null,
+            &serde_json::Value::Null,
         ))
         .await
         .unwrap();
@@ -2742,7 +2731,7 @@ async fn listing_orders_by_ids_returns_only_this_tenants_named_orders_in_order()
 #[tokio::test]
 async fn listing_orders_can_page_search_and_keep_to_open_orders() {
     let state = AppState::for_tests();
-    let store = state.db.shared_store_for_test().clone();
+    let store = Arc::clone(state.db.shared_store_for_test());
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 44).await;
     let mut ids = Vec::new();
@@ -2751,13 +2740,13 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
             "POST",
             "/api/v1/admin/tenant/orders",
             Some(&tenant.secret_token),
-            serde_json::json!({ "xmr_amount_piconero": 1_000u64, "merchant_order_id": reference }),
+            &serde_json::json!({ "xmr_amount_piconero": 1_000u64, "merchant_order_id": reference }),
         );
         ids.push(
             body_json(router.clone().oneshot(req).await.unwrap()).await["order_id"]
                 .as_str()
                 .unwrap()
-                .to_string(),
+                .to_owned(),
         );
     }
     // "Table 2" is paid, so no longer open.
@@ -2765,7 +2754,7 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
         let store = store.lock();
         store
             .record_payment_match(
-                &shared::ids::OrderId::new(ids[1].to_string()),
+                &shared::ids::OrderId::new(ids[1].clone()),
                 "tx_paid",
                 0,
                 1_000,
@@ -2777,7 +2766,7 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
             .unwrap();
         crate::scanner::recompute_and_notify(
             &store,
-            &shared::ids::OrderId::new(ids[1].to_string()),
+            &shared::ids::OrderId::new(ids[1].clone()),
             100,
             crate::now_unix(),
         )
@@ -2793,7 +2782,7 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
                     "GET",
                     &uri,
                     Some(&token),
-                    serde_json::Value::Null,
+                    &serde_json::Value::Null,
                 ))
                 .await
                 .unwrap();
@@ -2803,7 +2792,7 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|o| o["merchant_order_id"].as_str().unwrap().to_string())
+                .map(|o| o["merchant_order_id"].as_str().unwrap().to_owned())
                 .collect::<Vec<_>>()
         }
     };
@@ -2851,7 +2840,7 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
                 "GET",
                 &format!("/api/v1/admin/tenant/orders?{query}"),
                 Some(&tenant.secret_token),
-                serde_json::Value::Null,
+                &serde_json::Value::Null,
             ))
             .await
             .unwrap();
@@ -2868,14 +2857,14 @@ fn limited_router(
     limits: RequestLimits,
     holding: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
-) -> axum::Router {
+) -> Router {
     use axum::routing::get;
-    let slow = get(|| async {
+    let slow = get(async || {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         "slow"
     });
     let wait = get(move || {
-        let (holding, release) = (holding.clone(), release.clone());
+        let (holding, release) = (Arc::clone(&holding), Arc::clone(&release));
         async move {
             // Registered before `holding` is signalled, so a `notify_one`
             // sent before this task is back here is still seen.
@@ -2885,25 +2874,30 @@ fn limited_router(
             "released"
         }
     });
-    let stream = get(|| async {
+    let stream = get(async || {
         let body =
             futures_util::stream::pending::<Result<axum::body::Bytes, std::convert::Infallible>>();
-        axum::body::Body::from_stream(body)
+        Body::from_stream(body)
     });
-    axum::Router::new()
+    Router::new()
         .route("/slow", slow)
         .route("/wait", wait)
-        .route("/fast", get(|| async { "fast" }))
+        .route("/fast", get(async || "fast"))
         .layer(axum::middleware::from_fn_with_state(
             limits.clone(),
             request_limit_middleware,
         ))
-        .merge(axum::Router::new().route("/stream", stream).layer(
-            axum::middleware::from_fn_with_state(limits, stream_limit_middleware),
-        ))
+        .merge(
+            Router::new()
+                .route("/stream", stream)
+                .layer(axum::middleware::from_fn_with_state(
+                    limits,
+                    stream_limit_middleware,
+                )),
+        )
 }
 
-async fn status_of(router: &axum::Router, path: &str) -> StatusCode {
+async fn status_of(router: &Router, path: &str) -> StatusCode {
     router
         .clone()
         .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
@@ -2927,7 +2921,7 @@ async fn requests_beyond_the_concurrency_limit_get_503_at_once_instead_of_queuei
     let holding = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
     let limits = RequestLimits::new(1, 10, std::time::Duration::from_secs(60));
-    let router = limited_router(limits, holding.clone(), release.clone());
+    let router = limited_router(limits, Arc::clone(&holding), Arc::clone(&release));
     let held = tokio::spawn({
         let router = router.clone();
         async move { status_of(&router, "/wait").await }
@@ -3028,17 +3022,17 @@ async fn engine_that_applies_node_settings() -> (
     let daemons = crate::engine_settings::Daemons::default();
     let rate_limiter = Arc::new(RateLimiter::new(10_000));
     let settings = crate::engine_settings::EngineSettings::load_with(
-        store.clone(),
+        Arc::clone(&store),
         Some(crate::engine_settings::NodesReloadable {
             daemons: daemons.clone(),
         }),
-        rate_limiter.clone(),
+        Arc::clone(&rate_limiter),
         live_settings::Env::fixed(Vec::<(String, String)>::new()),
     )
     .await
     .unwrap();
     let state = AppState {
-        admin_rate_limiter: rate_limiter.clone(),
+        admin_rate_limiter: Arc::clone(&rate_limiter),
         settings,
         networks: crate::http::Networks {
             daemons: daemons.clone(),
@@ -3066,7 +3060,7 @@ fn stagenet_tenant_request(seed: u8) -> Request<Body> {
         "POST",
         "/api/v1/admin/tenants",
         None,
-        serde_json::json!({
+        &serde_json::json!({
             "view_key_hex": valid_view_key_hex(seed),
             "spend_pubkey_hex": valid_spend_pubkey_hex(seed.wrapping_add(1)),
             "network": "stagenet",
@@ -3103,7 +3097,7 @@ async fn a_saved_node_is_used_straight_away_and_clearing_it_stops_it_the_reporte
 
     // Straight away, with no restart: a client for it exists, a stagenet
     // store can be created, and /status lists it with both nodes.
-    assert!(daemons.is_configured(monero::Network::Stagenet));
+    assert!(daemons.is_configured(Network::Stagenet));
     let created = router
         .clone()
         .oneshot(stagenet_tenant_request(2))
@@ -3127,7 +3121,7 @@ async fn a_saved_node_is_used_straight_away_and_clearing_it_stops_it_the_reporte
         cleared["warnings"]["unserved_networks"],
         serde_json::json!([{ "network": "stagenet", "tenants": 1 }])
     );
-    assert!(!daemons.is_configured(monero::Network::Stagenet));
+    assert!(!daemons.is_configured(Network::Stagenet));
     let refused = router
         .clone()
         .oneshot(stagenet_tenant_request(3))
@@ -3145,17 +3139,17 @@ async fn an_unchanged_network_keeps_its_client_when_another_network_is_saved() {
         serde_json::json!({ "monero_node": { "stagenet": node.clone() } }),
     )
     .await;
-    let before = daemons.get(monero::Network::Stagenet).unwrap();
+    let before = daemons.get(Network::Stagenet).unwrap();
     save_settings(
         &router,
         serde_json::json!({ "monero_node": { "testnet": node } }),
     )
     .await;
     assert!(
-        Arc::ptr_eq(&before, &daemons.get(monero::Network::Stagenet).unwrap()),
+        Arc::ptr_eq(&before, &daemons.get(Network::Stagenet).unwrap()),
         "stagenet's client (and its node health) was kept"
     );
-    assert!(daemons.is_configured(monero::Network::Testnet));
+    assert!(daemons.is_configured(Network::Testnet));
 }
 
 #[tokio::test]
@@ -3176,7 +3170,7 @@ async fn a_saved_rate_limit_body_limit_and_tenant_default_apply_to_the_next_requ
         "POST",
         "/api/v1/admin/tenants",
         None,
-        serde_json::json!({ "view_key_hex": "a".repeat(400), "spend_pubkey_hex": "b" }),
+        &serde_json::json!({ "view_key_hex": "a".repeat(400), "spend_pubkey_hex": "b" }),
     );
     assert_eq!(
         router.clone().oneshot(big).await.unwrap().status(),
@@ -3233,7 +3227,7 @@ async fn a_saved_rate_limit_body_limit_and_tenant_default_apply_to_the_next_requ
             "GET",
             "/api/v1/admin/tenant",
             Some(&tenant.secret_token),
-            serde_json::json!({}),
+            &serde_json::json!({}),
         ))
         .await
         .unwrap();
@@ -3314,7 +3308,7 @@ async fn status_lists_a_store_whose_network_has_no_answering_node() {
         .await
         .unwrap();
     let created = body_json(created).await;
-    let public_key = created["public_key"].as_str().unwrap().to_string();
+    let public_key = created["public_key"].as_str().unwrap().to_owned();
 
     let status = get_status_json(router.clone()).await;
     assert_eq!(
@@ -3358,8 +3352,8 @@ fn test_app_state_with_two_custody_backends() -> (AppState, Arc<dyn KeyCustody>,
     let socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let router = crate::key_custody::CustodyRouter::new(
         HashMap::from([
-            ("plain".to_string(), plain.clone()),
-            ("socket".to_string(), socket.clone()),
+            ("plain".to_owned(), Arc::clone(&plain)),
+            ("socket".to_owned(), Arc::clone(&socket)),
         ]),
         "plain",
     );
@@ -3387,7 +3381,7 @@ async fn create_order_for(router: &Router, token: &str) -> axum::response::Respo
             "POST",
             "/api/v1/admin/tenant/orders",
             Some(token),
-            serde_json::json!({ "xmr_amount_piconero": 1_000_000_000u64 }),
+            &serde_json::json!({ "xmr_amount_piconero": 1_000_000_000u64 }),
         ))
         .await
         .unwrap()
@@ -3398,7 +3392,7 @@ fn switch_request(token: &str, backend: &str, seed: u8) -> Request<Body> {
         "PUT",
         "/api/v1/admin/tenant/key-custody",
         Some(token),
-        serde_json::json!({
+        &serde_json::json!({
             "backend": backend,
             "view_key_hex": valid_view_key_hex(seed),
             "spend_pubkey_hex": valid_spend_pubkey_hex(seed.wrapping_add(1)),
@@ -3423,7 +3417,7 @@ async fn a_new_store_goes_to_the_default_backend_or_the_one_it_asks_for() {
             "POST",
             "/api/v1/admin/tenants",
             None,
-            serde_json::json!({
+            &serde_json::json!({
                 "view_key_hex": valid_view_key_hex(3),
                 "spend_pubkey_hex": valid_spend_pubkey_hex(4),
                 "key_custody_backend": "socket",
@@ -3435,7 +3429,7 @@ async fn a_new_store_goes_to_the_default_backend_or_the_one_it_asks_for() {
     let token = body_json(response).await["secret_token"]
         .as_str()
         .unwrap()
-        .to_string();
+        .to_owned();
     assert_eq!(
         own_tenant_view(&router, &token).await["key_custody_backend"],
         "socket"
@@ -3456,7 +3450,7 @@ async fn a_new_store_can_not_use_a_backend_that_is_not_enabled() {
             "POST",
             "/api/v1/admin/tenants",
             None,
-            serde_json::json!({
+            &serde_json::json!({
                 "view_key_hex": valid_view_key_hex(3),
                 "spend_pubkey_hex": valid_spend_pubkey_hex(4),
                 "key_custody_backend": "hsm",
@@ -3470,8 +3464,8 @@ async fn a_new_store_can_not_use_a_backend_that_is_not_enabled() {
 #[tokio::test]
 async fn moving_a_store_to_another_backend_keeps_it_taking_orders_and_frees_the_old_registration() {
     let (state, plain, socket) = test_app_state_with_two_custody_backends();
-    let wallet_handles = state.custody.wallet_handles.clone();
-    let store = state.db.shared_store_for_test().clone();
+    let wallet_handles = Arc::clone(&state.custody.wallet_handles);
+    let store = Arc::clone(state.db.shared_store_for_test());
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
     assert_eq!(
@@ -3549,7 +3543,7 @@ async fn moving_a_store_to_another_backend_keeps_it_taking_orders_and_frees_the_
 #[tokio::test]
 async fn moving_a_store_needs_the_keys_of_its_own_wallet() {
     let (state, _, _) = test_app_state_with_two_custody_backends();
-    let store = state.db.shared_store_for_test().clone();
+    let store = Arc::clone(state.db.shared_store_for_test());
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
 
@@ -3593,7 +3587,7 @@ async fn an_order_made_while_the_backend_has_just_lost_the_store_still_succeeds(
     // The backend restarted and forgot every wallet, but the engine's map
     // still has the old handle: the order re-registers and goes through.
     let (state, plain, _) = test_app_state_with_two_custody_backends();
-    let wallet_handles = state.custody.wallet_handles.clone();
+    let wallet_handles = Arc::clone(&state.custody.wallet_handles);
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
     let handle = wallet_handles.read().values().copied().next().unwrap();
@@ -3665,7 +3659,7 @@ impl KeyCustody for UnansweringKeyCustody {
     }
     async fn check_state(&self) -> Result<u64, crate::key_custody::KeyCustodyError> {
         Err(crate::key_custody::KeyCustodyError::BackendUnavailable(
-            "connection refused".to_string(),
+            "connection refused".to_owned(),
         ))
     }
 }
@@ -3676,13 +3670,14 @@ async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() 
     let socket: Arc<dyn KeyCustody> = Arc::new(UnansweringKeyCustody::default());
     let router_custody = Arc::new(crate::key_custody::CustodyRouter::new(
         HashMap::from([
-            ("plain".to_string(), plain.clone()),
-            ("socket".to_string(), socket),
+            ("plain".to_owned(), Arc::clone(&plain)),
+            ("socket".to_owned(), socket),
         ]),
         "plain",
     ));
     let mut state = AppState::for_tests();
-    state.custody.backends = router_custody.clone();
+    state.custody.backends =
+        Arc::<crate::key_custody::router::CustodyRouter>::clone(&router_custody);
     let router = build_router(state, 1_000_000);
 
     let on_plain = create_tenant(&router, 1).await;
@@ -3692,7 +3687,7 @@ async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() 
             "POST",
             "/api/v1/admin/tenants",
             None,
-            serde_json::json!({
+            &serde_json::json!({
                 "view_key_hex": valid_view_key_hex(3),
                 "spend_pubkey_hex": valid_spend_pubkey_hex(4),
                 "key_custody_backend": "socket",
@@ -3703,7 +3698,7 @@ async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() 
     let on_socket = body_json(response).await["public_key"]
         .as_str()
         .unwrap()
-        .to_string();
+        .to_owned();
 
     let status = get_status_json(router.clone()).await;
     assert_eq!(
@@ -3717,19 +3712,19 @@ async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() 
         .iter()
         .map(|u| {
             (
-                u["public_key"].as_str().unwrap().to_string(),
-                u["reason"].as_str().unwrap().to_string(),
+                u["public_key"].as_str().unwrap().to_owned(),
+                u["reason"].as_str().unwrap().to_owned(),
             )
         })
         .collect();
     assert_eq!(
         reasons,
-        vec![(on_socket.clone(), "custody_unavailable".to_string())],
+        vec![(on_socket.clone(), "custody_unavailable".to_owned())],
         "{status}"
     );
     assert!(!reasons.iter().any(|(key, _)| key == &on_plain.public_key));
 
-    router_custody.replace(HashMap::from([("plain".to_string(), plain)]), "plain");
+    router_custody.replace(HashMap::from([("plain".to_owned(), plain)]), "plain");
     let status = get_status_json(router.clone()).await;
     assert_eq!(
         status["unserved_tenants"][0]["reason"], "custody_disabled",
@@ -3741,10 +3736,10 @@ async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() 
 #[tokio::test]
 async fn a_store_a_block_or_two_behind_is_not_reported_but_one_further_behind_is() {
     let state = AppState::for_tests();
-    let store = state.db.shared_store_for_test().clone();
+    let store = Arc::clone(state.db.shared_store_for_test());
     store
         .lock()
-        .set_scanned_block(monero::Network::Mainnet, 100, "h100")
+        .set_scanned_block(Network::Mainnet, 100, "h100")
         .unwrap();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
@@ -3764,7 +3759,7 @@ async fn a_store_a_block_or_two_behind_is_not_reported_but_one_further_behind_is
     );
     store
         .lock()
-        .set_scanned_block(monero::Network::Mainnet, 102, "h102")
+        .set_scanned_block(Network::Mainnet, 102, "h102")
         .unwrap();
     let status = get_status_json(router.clone()).await;
     assert_eq!(
@@ -3775,7 +3770,7 @@ async fn a_store_a_block_or_two_behind_is_not_reported_but_one_further_behind_is
 
     store
         .lock()
-        .set_scanned_block(monero::Network::Mainnet, 103, "h103")
+        .set_scanned_block(Network::Mainnet, 103, "h103")
         .unwrap();
     let status = get_status_json(router.clone()).await;
     assert_eq!(
@@ -3787,23 +3782,16 @@ async fn a_store_a_block_or_two_behind_is_not_reported_but_one_further_behind_is
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_overlapping_moves_of_one_store_leave_its_row_and_its_live_keys_in_the_same_backend() {
+    let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+    let socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let custody = Arc::new(crate::key_custody::CustodyRouter::new(
-        HashMap::from([
-            (
-                "plain".to_string(),
-                Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>,
-            ),
-            (
-                "socket".to_string(),
-                Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>,
-            ),
-        ]),
+        HashMap::from([("plain".to_owned(), plain), ("socket".to_owned(), socket)]),
         "plain",
     ));
     let mut state = AppState::for_tests();
-    state.custody.backends = custody.clone();
-    let wallet_handles = state.custody.wallet_handles.clone();
-    let store = state.db.shared_store_for_test().clone();
+    state.custody.backends = Arc::<crate::key_custody::router::CustodyRouter>::clone(&custody);
+    let wallet_handles = Arc::clone(&state.custody.wallet_handles);
+    let store = Arc::clone(state.db.shared_store_for_test());
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
     for _ in 0..10 {
@@ -3839,7 +3827,7 @@ fn a_disabled_store_can_not_be_moved() {
     let store = Store::open_in_memory().unwrap();
     let tenant = store
         .create_tenant(
-            crate::store::NewTenant {
+            &crate::store::NewTenant {
                 key_custody_backend: "plain".into(),
                 sealed_key_material: vec![1],
                 primary_address: "4x".into(),
@@ -3966,7 +3954,7 @@ async fn the_log_api_answers_the_admin_with_filtered_lines_traces_and_query_erro
         .unwrap();
     let names: telemetry::store::api::AttributesResponse =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert!(names.names.contains(&"store.id".to_string()), "{names:?}");
+    assert!(names.names.contains(&"store.id".to_owned()), "{names:?}");
 }
 
 #[tokio::test]
@@ -3991,10 +3979,10 @@ async fn without_a_log_store_the_log_api_says_so() {
 async fn spawn_node_on(nettype: Option<&'static str>) -> std::net::SocketAddr {
     use axum::routing::post;
     let app = Router::new()
-        .route("/get_height", post(|| async { axum::Json(serde_json::json!({ "height": 10, "status": "OK" })) }))
+        .route("/get_height", post(async || { axum::Json(serde_json::json!({ "height": 10, "status": "OK" })) }))
         .route(
             "/json_rpc",
-            post(move |axum::Json(request): axum::Json<serde_json::Value>| async move {
+            post(async move |axum::Json(request): axum::Json<serde_json::Value>| {
                 let id = request["id"].clone();
                 match (request["method"].as_str(), nettype) {
                     (Some("get_info"), Some(nettype)) => {
@@ -4155,7 +4143,7 @@ async fn status_says_which_network_each_node_is_on() {
             ),
         },
         FallbackNode {
-            label: "fake-node:18081".to_string(),
+            label: "fake-node:18081".to_owned(),
             client: Arc::new(FakeDaemonClient::new()),
         },
     ]));
@@ -4171,22 +4159,22 @@ async fn status_says_which_network_each_node_is_on() {
     );
 }
 
-/// An operator's "take a new anchor" (docs/proof_of_work.md): the anchor
+/// An operator's "take a new anchor" (`docs/proof_of_work.md)`: the anchor
 /// and proven chain go, checking stays on (nothing settles until the next
 /// anchor); refused where checking is off, or for no network.
 #[tokio::test]
 async fn forgetting_a_proof_anchor_keeps_checking_on() {
     let store = Store::open_in_memory().unwrap().into_shared();
-    let router = build_router(AppState::for_tests_with_store(store.clone()), 1_000_000);
+    let router = build_router(
+        AppState::for_tests_with_store(Arc::clone(&store)),
+        1_000_000,
+    );
     let forget = |network: &str| {
         router.clone().oneshot(
             Request::builder()
                 .method("DELETE")
                 .uri(format!("/api/v1/admin/proof/{network}/anchor"))
-                .header(
-                    shared::auth::ENGINE_TOKEN_HEADER,
-                    shared::auth::TEST_ENGINE_TOKEN,
-                )
+                .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
                 .body(Body::empty())
                 .unwrap(),
         )

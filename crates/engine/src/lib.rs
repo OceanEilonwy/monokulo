@@ -2,6 +2,18 @@
 // loop stops payment detection until the supervisor restarts it. Tests may
 // unwrap freely. Each remaining allow names the invariant that makes it safe.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+// A test fails by panicking: its fakes answer `unimplemented!` for calls the
+// test never makes, and `unreachable!` marks a shape the fixture can't take.
+// Test helpers are awaited in place, never spawned, so need not be `Send`.
+#![cfg_attr(
+    test,
+    expect(
+        clippy::unimplemented,
+        clippy::unreachable,
+        clippy::future_not_send,
+        reason = "test code: it fails by panicking and runs its futures in place"
+    )
+)]
 // Test code is left out of coverage reports (`cargo +nightly llvm-cov`).
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 

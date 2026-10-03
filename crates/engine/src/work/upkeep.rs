@@ -26,7 +26,7 @@ const VOID_PAGE: usize = 16;
 const VOID_RECHECK_INTERVAL_SECS: i64 = 5 * 60;
 
 /// How often the write-ahead log is checkpointed.
-const CHECKPOINT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+const CHECKPOINT_INTERVAL: std::time::Duration = std::time::Duration::from_mins(10);
 
 /// Kept across rounds: when the log was last checkpointed.
 #[derive(Default)]
@@ -127,9 +127,7 @@ async fn scanned_ranges(round: &mut Round<'_>) -> Result<(), ScannerError> {
                 let next = if finished {
                     String::new()
                 } else {
-                    page.last()
-                        .map(|(id, _)| id.to_string())
-                        .unwrap_or_default()
+                    page.last().map_or_default(|(id, _)| id.to_string())
                 };
                 s.set_scheduler_position::<ScanRange>(network, &next)?;
                 Ok(finished)
@@ -146,10 +144,7 @@ async fn scanned_ranges(round: &mut Round<'_>) -> Result<(), ScannerError> {
 /// `VOID_RECHECK_INTERVAL_SECS` and walks voided payments in id order; a
 /// failed or inconclusive recheck leaves the payment voided for the next
 /// pass.
-async fn recheck_voids(
-    round: &mut Round<'_>,
-    until: tokio::time::Instant,
-) -> Result<(), ScannerError> {
+async fn recheck_voids(round: &Round<'_>, until: tokio::time::Instant) -> Result<(), ScannerError> {
     let Some(tip) = round.tip else { return Ok(()) };
     let now = round.now;
     let cutoff = now - DOUBLE_SPEND_RECHECK_WINDOW_SECS;

@@ -1,6 +1,8 @@
-//! Taking an anchor (docs/proof_of_work.md): the one block, with the 735
-//! before it, that the engine takes on its nodes' word, deep enough below
-//! their tips that no reorg reaches it. Every block after it is checked.
+//! Taking an anchor (`docs/proof_of_work.md`).
+//!
+//! The anchor is the one block, with the 735 before it, that the engine
+//! takes on its nodes' word, deep enough below their tips that no reorg
+//! reaches it. Every block after it is checked.
 //!
 //! What a block's id commits to (its timestamp, its parent) a node can't
 //! change, but a block's difficulty isn't in it: it is computed from the
@@ -52,7 +54,7 @@ pub enum AnchorProblem {
     Failed(String),
 }
 
-/// The window as proven blocks, and the RandomX keys below it.
+/// The window as proven blocks, and the `RandomX` keys below it.
 type CheckedWindow = (Vec<ProvenBlock>, Vec<(u64, [u8; 32])>);
 
 /// What one node said the window is.
@@ -60,7 +62,7 @@ type CheckedWindow = (Vec<ProvenBlock>, Vec<(u64, [u8; 32])>);
 struct Answer {
     /// The window's headers and the block after it.
     rows: Vec<DifficultyHeader>,
-    /// RandomX key blocks below the window: (height, id).
+    /// `RandomX` key blocks below the window: (height, id).
     keys: Vec<(u64, String)>,
 }
 
@@ -194,7 +196,7 @@ fn id_of(hex_id: &str) -> Result<[u8; 32], AnchorProblem> {
 fn check_dates(window: &[ProvenBlock], depth: u64, now: i64) -> Result<(), AnchorProblem> {
     let target = pow::DIFFICULTY_TARGET_SECS as u64;
     let (Some(first), Some(last)) = (window.first(), window.last()) else {
-        return Err(AnchorProblem::Inconsistent("an empty window".to_string()));
+        return Err(AnchorProblem::Inconsistent("an empty window".to_owned()));
     };
     let age = u64::try_from(now)
         .unwrap_or(0)
@@ -341,7 +343,7 @@ async fn sample(
             if candidate.id != window[index].id {
                 return Err(AnchorProblem::SampleFailed {
                     height,
-                    reason: "its blob isn't the block the nodes named".to_string(),
+                    reason: "its blob isn't the block the nodes named".to_owned(),
                 });
             }
             let key = key_of(height).ok_or_else(|| {
@@ -355,11 +357,11 @@ async fn sample(
     }
     for (key, blocks) in by_key {
         let (indices, inputs): (Vec<usize>, Vec<Vec<u8>>) = blocks.into_iter().unzip();
-        let hashes = hasher
+        let pow_hashes = hasher
             .hash(key, inputs)
             .await
             .map_err(|e| AnchorProblem::Failed(e.to_string()))?;
-        for (index, hash) in indices.into_iter().zip(hashes) {
+        for (index, hash) in indices.into_iter().zip(pow_hashes) {
             let difficulty = answer.rows[index].difficulty;
             if !pow::check_hash(&hash, difficulty) {
                 return Err(AnchorProblem::SampleFailed {

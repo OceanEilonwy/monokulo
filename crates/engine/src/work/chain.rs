@@ -1,5 +1,5 @@
 //! The chain tier: reorg detection, and the durable reorg job that
-//! reconciles the payments a reorg touched (docs/scanner_microtasks.md,
+//! reconciles the payments a reorg touched (`docs/scanner_microtasks.md`,
 //! "Reorgs").
 
 use std::collections::HashSet;
@@ -17,7 +17,7 @@ use super::{bounded, Progress, Round, Wait};
 /// (`get_block`: the id is computed from the block, the list is what the id
 /// commits to). A payment moved to a height on a node's word is stamped
 /// with it, and settles under proof-of-work checking only if that block is
-/// the proven one (docs/proof_of_work.md). `None` if the node can't show
+/// the proven one (`docs/proof_of_work.md`). `None` if the node can't show
 /// it: the payment then waits for a scan of that block.
 pub(crate) async fn block_holding(
     daemon: &dyn MoneroDaemonClient,
@@ -46,17 +46,25 @@ pub(crate) struct ChainRound {
     detected: bool,
     /// A rewind happened this round: the replacement blocks are scanned
     /// from the next round, against a freshly read chain.
-    pub rewound: bool,
+    rewound: bool,
     /// Candidates tried this round: one that failed isn't retried until the
     /// next round, so a failing node can't spin the tier.
     attempted: HashSet<i64>,
 }
 
+impl ChainRound {
+    /// A rewind happened this round: the replacement blocks are scanned
+    /// from the next round, against a freshly read chain.
+    pub(crate) const fn rewound(&self) -> bool {
+        self.rewound
+    }
+}
+
 /// What reconciling some candidates changed, for callers that report it.
 #[derive(Default)]
 pub(crate) struct Reconciled {
-    pub(crate) dirty_orders: HashSet<crate::store::OrderId>,
-    pub(crate) double_spent_orders: HashSet<crate::store::OrderId>,
+    pub(crate) dirty_orders: std::collections::BTreeSet<crate::store::OrderId>,
+    pub(crate) double_spent_orders: std::collections::BTreeSet<crate::store::OrderId>,
 }
 
 /// The chain work for one network, usable from a round or on its own.
@@ -71,7 +79,7 @@ pub(crate) struct Chain<'a> {
 }
 
 impl<'a> Chain<'a> {
-    pub fn new(
+    pub(crate) fn new(
         db: &'a Db,
         daemon: &'a dyn MoneroDaemonClient,
         network: monero::Network,
@@ -91,7 +99,7 @@ impl<'a> Chain<'a> {
     /// With the id the node gave for its tip block along with the height
     /// passed to [`Self::detect`]: a comparison at that height then needs
     /// no lookup.
-    pub fn with_tip_hash(mut self, tip_hash: Option<String>) -> Self {
+    pub(crate) fn with_tip_hash(mut self, tip_hash: Option<String>) -> Self {
         self.tip_hash = tip_hash;
         self
     }
@@ -121,7 +129,7 @@ impl<'a> Chain<'a> {
     /// binary search over the stored window, O(log depth) lookups. When the
     /// recorded chain ends at the node's tip and the node gave the tip's id
     /// with its height, that one comparison costs no lookup at all.
-    pub async fn detect(&self, tip: u64) -> Result<Option<u64>, ScannerError> {
+    pub(crate) async fn detect(&self, tip: u64) -> Result<Option<u64>, ScannerError> {
         let depth = self.reorg_check_depth;
         let rows = self
             .db(move |s, network| -> Result<_, crate::store::StoreError> {
@@ -170,7 +178,7 @@ impl<'a> Chain<'a> {
 
     /// Records a detected fork (or deepens the open job). Logged, because a
     /// reorg is rare and worth an operator knowing about.
-    pub async fn open(&self, fork: u64) -> Result<(), ScannerError> {
+    pub(crate) async fn open(&self, fork: u64) -> Result<(), ScannerError> {
         let now = self.now;
         match self
             .db(move |s, network| s.open_reorg_job(network, fork, now))
@@ -181,7 +189,7 @@ impl<'a> Chain<'a> {
                     network = crate::network::network_str(self.network),
                     fork,
                     "chain reorganisation detected - reconciling payments from this height"
-                )
+                );
             }
             OpenedReorg::Deepened { from } => {
                 tracing::warn!(
@@ -189,7 +197,7 @@ impl<'a> Chain<'a> {
                     fork,
                     previous_fork = from,
                     "the reorganisation being reconciled goes deeper"
-                )
+                );
             }
             OpenedReorg::Covered => {}
         }
@@ -203,7 +211,7 @@ impl<'a> Chain<'a> {
     /// and waiting on it payment after payment would stall the round.
     /// Returns how many were re-examined, what changed, and the first
     /// failure (a failed candidate is deferred; the others still count).
-    pub async fn process_page(
+    pub(crate) async fn process_page(
         &self,
         tip: u64,
         skip: &mut HashSet<i64>,
@@ -343,7 +351,7 @@ impl<'a> Chain<'a> {
         let decision = decide(voided, location, proven);
         let moved_to = match decision {
             Decision::Move(Some(height)) | Decision::Restore(height) => Some(height),
-            _ => None,
+            Decision::Keep | Decision::Move(_) | Decision::Void => None,
         };
         let found_in = match moved_to {
             Some(height) => block_holding(self.daemon, &payment.txid, height).await,
@@ -418,7 +426,7 @@ impl<'a> Chain<'a> {
     /// The job's last step, once every candidate is done: rewind to the
     /// common ancestor. The ancestor's hash is read first; without it the
     /// losing hashes and the job stay, and this is retried.
-    pub async fn rewind(&self, fork: u64) -> Result<(), ScannerError> {
+    pub(crate) async fn rewind(&self, fork: u64) -> Result<(), ScannerError> {
         let ancestor = match fork.checked_sub(1) {
             Some(height) => Some((height, bounded(self.daemon.get_block_hash(height)).await?)),
             // The genesis block changed: impossible on a real chain, and
@@ -443,17 +451,21 @@ impl<'a> Chain<'a> {
 
     /// One unit of the open job, if any: collect a page, re-examine a page,
     /// or rewind. `Ok(None)` when there is no job.
-    pub async fn advance_job(
+    pub(crate) async fn advance_job(
         &self,
         tip: u64,
         skip: &mut HashSet<i64>,
         until: Instant,
     ) -> Result<Option<JobStep>, ScannerError> {
-        let Some(job) = self.db(|s, network| s.reorg_job(network)).await? else {
+        let Some(job) = self.db(Store::reorg_job).await? else {
             return Ok(None);
         };
         match job.phase {
-            ReorgPhase::CollectConfirmed { .. } | ReorgPhase::CollectUnconfirmed { .. } => {
+            ReorgPhase::CollectConfirmed {
+                after_height: _,
+                after_id: _,
+            }
+            | ReorgPhase::CollectUnconfirmed { after_id: _ } => {
                 let now = self.now;
                 self.db(move |s, network| s.collect_reorg_candidates(network, COLLECT_PAGE, now))
                     .await?;
@@ -467,9 +479,7 @@ impl<'a> Chain<'a> {
                         failure,
                     }));
                 }
-                let (remaining, _) = self
-                    .db(|s, network| s.reorg_work_remaining(network))
-                    .await?;
+                let (remaining, _) = self.db(Store::reorg_work_remaining).await?;
                 if remaining > 0 {
                     return Ok(Some(JobStep::Waiting));
                 }
@@ -509,9 +519,8 @@ pub(crate) fn decide(voided: bool, location: TxLocation, double_spend_proven: bo
         (true, TxLocation::InBlock(height)) => Decision::Restore(height),
         (true, TxLocation::InPool | TxLocation::NotFound) => Decision::Keep,
         (false, TxLocation::InBlock(height)) => Decision::Move(Some(height)),
-        (false, TxLocation::InPool) => Decision::Move(None),
         (false, TxLocation::NotFound) if double_spend_proven => Decision::Void,
-        (false, TxLocation::NotFound) => Decision::Move(None),
+        (false, TxLocation::InPool | TxLocation::NotFound) => Decision::Move(None),
     }
 }
 
@@ -548,7 +557,10 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
             );
             Progress::Blocked(Wait::NodeFailed)
         }
-        progress => progress,
+        progress @ (Progress::Advanced
+        | Progress::Idle
+        | Progress::Blocked(_)
+        | Progress::Failed(_)) => progress,
     }
 }
 

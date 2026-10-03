@@ -1,4 +1,4 @@
-//! The rules against real mainnet blocks (a fixture straddling a RandomX
+//! The rules against real mainnet blocks (a fixture straddling a `RandomX`
 //! key change), and each rule's edges.
 
 use super::hasher::Hasher;
@@ -132,7 +132,10 @@ fn real_blocks_prove_across_a_key_change_and_any_change_fails() {
             .unwrap()[0];
         assert!(matches!(
             accept(&window, &candidate, difficulty, &hash),
-            Err(Rejection::ProofOfWork { .. })
+            Err(Rejection::ProofOfWork {
+                height: _,
+                difficulty: _
+            })
         ));
         window.push(proven);
     }
@@ -153,13 +156,19 @@ fn a_real_block_sent_for_another_height_or_garbled_is_refused() {
     );
     assert!(matches!(
         decode(height, &blob[..blob.len() - 1]),
-        Err(Rejection::Undecodable { .. })
+        Err(Rejection::Undecodable {
+            height: _,
+            reason: _
+        })
     ));
     let mut longer = blob.clone();
     longer.push(0);
     assert!(matches!(
         decode(height, &longer),
-        Err(Rejection::Undecodable { .. })
+        Err(Rejection::Undecodable {
+            height: _,
+            reason: _
+        })
     ));
     for rejection in [
         Rejection::WrongHeight { height, sent: 1 },
@@ -195,13 +204,26 @@ fn the_header_rules_each_refuse() {
     let mut old = good.clone();
     old.major_version = RANDOMX_MAJOR_VERSION - 1;
     let rejection = check_header(&window, &old).unwrap_err();
-    assert!(matches!(rejection, Rejection::NotRandomX { .. }));
+    assert!(matches!(
+        rejection,
+        Rejection::NotRandomX {
+            height: _,
+            version: _
+        }
+    ));
     assert_eq!(rejection.verdict(), Verdict::Invalid);
 
     // Two hours ahead is allowed; a second more waits for the clock.
-    assert!(check_time(&good, good.timestamp - FUTURE_TIME_LIMIT_SECS).is_ok());
+    check_time(&good, good.timestamp - FUTURE_TIME_LIMIT_SECS).unwrap();
     let rejection = check_time(&good, good.timestamp - FUTURE_TIME_LIMIT_SECS - 1).unwrap_err();
-    assert!(matches!(rejection, Rejection::TimestampInFuture { .. }));
+    assert!(matches!(
+        rejection,
+        Rejection::TimestampInFuture {
+            height: _,
+            timestamp: _,
+            now: _
+        }
+    ));
     assert_eq!(rejection.verdict(), Verdict::NotYet);
 
     let median = window.median_timestamp().unwrap();
@@ -226,7 +248,7 @@ fn the_header_rules_each_refuse() {
     // No window: nothing to follow.
     assert!(matches!(
         check_header(&Window::default(), &good),
-        Err(Rejection::DoesNotFollow { .. })
+        Err(Rejection::DoesNotFollow { height: _ })
     ));
 }
 
@@ -313,7 +335,7 @@ fn difficulty_edges() {
     // A timestamp far in the future is cut, not counted: the span only
     // loses the slot it left (599 work over 600 slots), where counting it
     // would have sunk the difficulty to almost nothing.
-    let mut outlier = window.clone();
+    let mut outlier = window;
     outlier[300].0 = 10_000_000;
     assert_eq!(next_difficulty(&outlier), 999);
 }

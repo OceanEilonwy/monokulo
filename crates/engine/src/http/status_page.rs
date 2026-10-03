@@ -35,6 +35,7 @@
 //! caller renders this for a person - presentation logic belongs in the
 //! presentation layer, and there is now exactly one of those (monokulo).
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::State;
@@ -49,7 +50,7 @@ use super::{ApiError, AppState};
 const NODE_HEIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Serialize, Clone)]
-pub struct NodeStatus {
+pub(super) struct NodeStatus {
     pub label: String,
     pub is_active: bool,
     /// Skipped for now after failing (task 7.6).
@@ -63,7 +64,7 @@ pub struct NodeStatus {
     /// What the engine has asked this node since the node was configured
     /// (or the engine started), by endpoint, busiest first.
     pub rpc: Vec<crate::daemon::EndpointStats>,
-    /// What has been measured of the node's link (docs/engine_scaling.md
+    /// What has been measured of the node's link (`docs/engine_scaling.md`
     /// section 1).
     pub link: Option<shared::scaling::LinkSnapshot>,
 }
@@ -103,7 +104,7 @@ async fn probe_node(
 }
 
 #[derive(Serialize, Clone)]
-pub struct ScannerStatusView {
+pub(super) struct ScannerStatusView {
     pub ever_ticked: bool,
     pub last_tick_started_at: Option<i64>,
     pub last_tick_finished_at: Option<i64>,
@@ -118,7 +119,7 @@ pub struct ScannerStatusView {
 }
 
 #[derive(Serialize, Clone)]
-pub struct NetworkStatus {
+pub(super) struct NetworkStatus {
     pub network: String,
     pub nodes: Vec<NodeStatus>,
     pub scanner: ScannerStatusView,
@@ -128,20 +129,20 @@ pub struct NetworkStatus {
     /// How far behind the furthest-behind tenant is, in blocks.
     pub max_blocks_behind: u64,
     /// How the block scan is going and what limits it
-    /// (docs/engine_scaling.md section 6).
+    /// (`docs/engine_scaling.md` section 6).
     pub scaling: shared::scaling::NetworkScaling,
-    /// The nodes' ZMQ announcements (docs/monero_zmq.md); absent while no
+    /// The nodes' ZMQ announcements (`docs/monero_zmq.md`); absent while no
     /// node of this network has a `zmq_pub`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub announcements: Option<shared::announcements::Announcements>,
-    /// Proof-of-work checking (docs/proof_of_work.md); absent while it is
+    /// Proof-of-work checking (`docs/proof_of_work.md`); absent while it is
     /// off on this network.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proof: Option<shared::proof::ProofStatus>,
 }
 
 #[derive(Serialize)]
-pub struct EngineStatusResponse {
+pub(super) struct EngineStatusResponse {
     pub networks: Vec<NetworkStatus>,
     pub poll_interval_secs: u64,
     pub generated_at: i64,
@@ -160,18 +161,18 @@ pub struct EngineStatusResponse {
     /// `None` when there's no choice (a single backend).
     pub key_custody_default: Option<String>,
     /// The engine process's CPU and memory over the last hour, and the
-    /// machine it runs on (docs/engine_scaling.md section 6).
+    /// machine it runs on (`docs/engine_scaling.md` section 6).
     pub resources: shared::resources::ResourceReport,
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-pub struct CustodyBackendStatus {
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub(super) struct CustodyBackendStatus {
     pub backend: String,
     pub error: Option<String>,
 }
 
-#[derive(Serialize, Clone, Debug, PartialEq)]
-pub struct UnservedTenant {
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub(super) struct UnservedTenant {
     pub public_key: String,
     pub network: String,
     /// `"no_reachable_node"` (its network has no node configured, or none
@@ -184,14 +185,14 @@ pub struct UnservedTenant {
 }
 
 #[derive(Serialize)]
-pub struct WebhookBacklog {
+pub(super) struct WebhookBacklog {
     pub due: u64,
     /// How long the oldest due delivery has been waiting, in seconds.
     pub oldest_waiting_secs: Option<i64>,
 }
 
 #[derive(Serialize)]
-pub struct LoopRestarts {
+pub(super) struct LoopRestarts {
     pub name: &'static str,
     pub restarts: u64,
 }
@@ -221,7 +222,7 @@ fn is_stale(now: i64, last_tick_finished_at: i64, poll_interval_secs: u64) -> bo
     now.saturating_sub(last_tick_finished_at) > staleness_threshold
 }
 
-pub async fn status_page(
+pub(super) async fn status_page(
     State(state): State<AppState>,
 ) -> Result<Json<EngineStatusResponse>, ApiError> {
     let now = crate::now_unix();
@@ -231,7 +232,7 @@ pub async fn status_page(
         .daemons
         .snapshot()
         .iter()
-        .map(|(n, d)| (*n, d.clone()))
+        .map(|(n, d)| (*n, Arc::clone(d)))
         .collect();
     let poll_interval_secs = state.settings.scan.load().poll_interval.as_secs();
     networks.sort_by_key(|(network, _)| network_str(*network));
@@ -317,7 +318,7 @@ pub async fn status_page(
             configured,
         );
         network_views.push(NetworkStatus {
-            network: network_str(network).to_string(),
+            network: network_str(network).to_owned(),
             nodes,
             scanner,
             lagging_tenants,
@@ -367,13 +368,13 @@ pub async fn status_page(
         },
         unserved_tenants,
         key_custody_default: (!key_custody.is_empty())
-            .then(|| state.settings.custody.load().default.as_str().to_string()),
+            .then(|| state.settings.custody.load().default.as_str().to_owned()),
         key_custody,
         resources: shared::resources::sampler().report(),
     }))
 }
 
-/// One network's scaling figures (docs/engine_scaling.md section 6): how far
+/// One network's scaling figures (`docs/engine_scaling.md` section 6): how far
 /// behind the node it is and at what pace, what limits it, its memory, and
 /// a block that has taken too long.
 fn network_scaling(
@@ -445,7 +446,7 @@ fn network_scaling(
 fn custody_unserved_tenants(
     store: &crate::store::Store,
     health: &[CustodyBackendStatus],
-) -> std::result::Result<Vec<UnservedTenant>, crate::store::StoreError> {
+) -> Result<Vec<UnservedTenant>, crate::store::StoreError> {
     if health.is_empty() {
         return Ok(Vec::new());
     }
@@ -470,7 +471,7 @@ fn custody_unserved_tenants(
 
 /// How far behind a store must be before it's reported as catching up: a
 /// block or two behind is normal while a tick is part-way through.
-pub const CATCHING_UP_REPORT_BLOCKS: u64 = 3;
+pub(super) const CATCHING_UP_REPORT_BLOCKS: u64 = 3;
 
 /// Whether a network's stores are cut off: no node answered this probe,
 /// and the scan loop isn't succeeding either (its last tick failed, it's
@@ -490,7 +491,7 @@ fn network_unreachable(status: Option<&NetworkStatus>) -> bool {
 fn unserved_tenants(
     store: &crate::store::Store,
     networks: &[NetworkStatus],
-) -> std::result::Result<Vec<UnservedTenant>, crate::store::StoreError> {
+) -> Result<Vec<UnservedTenant>, crate::store::StoreError> {
     let mut unserved = Vec::new();
     let with_tenants = store.count_tenants_by_network()?;
     for (network, count) in with_tenants {
@@ -535,13 +536,13 @@ mod tests {
 
     fn network(probe_ok: bool, last_tick_ok: bool, is_stale: bool) -> NetworkStatus {
         NetworkStatus {
-            network: "stagenet".to_string(),
+            network: "stagenet".to_owned(),
             nodes: vec![NodeStatus {
-                label: "node".to_string(),
+                label: "node".to_owned(),
                 is_active: true,
                 in_cooldown: false,
                 height: probe_ok.then_some(100),
-                error: (!probe_ok).then(|| "timed out".to_string()),
+                error: (!probe_ok).then(|| "timed out".to_owned()),
                 network: None,
                 rpc: Vec::new(),
                 link: None,
@@ -682,11 +683,11 @@ mod tests {
     async fn a_node_is_asked_once_when_its_info_says_its_height() {
         let node = |info: Option<(&str, Option<u64>)>, height| ProbedNode {
             info: info.map(|(nettype, height)| crate::daemon::DaemonInfo {
-                nettype: nettype.to_string(),
+                nettype: nettype.to_owned(),
                 height,
             }),
             height,
-            height_requests: Default::default(),
+            height_requests: std::sync::atomic::AtomicUsize::default(),
         };
         let asked = |node: &ProbedNode| {
             node.height_requests
@@ -696,7 +697,7 @@ mod tests {
         let says_both = node(Some(("stagenet", Some(7))), Some(99));
         assert_eq!(
             probe_node(&says_both).await,
-            (Some(7), None, Some("stagenet".to_string()))
+            (Some(7), None, Some("stagenet".to_owned()))
         );
         assert_eq!(asked(&says_both), 0);
 

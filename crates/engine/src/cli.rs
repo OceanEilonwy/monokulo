@@ -1,6 +1,9 @@
-//! The `monokulo-engine` command line, with `clap`: `--options` and `--init`
-//! for the options file, and an option for every setting that takes one,
-//! with help from the settings' own declarations (`live_settings::cli`).
+//! The `monokulo-engine` command line, with `clap`.
+//!
+//! `--options` and `--init` for the options file, and an option for every
+//! setting that takes one, with help from the settings' own declarations
+//! (`live_settings::cli`).
+//!
 //! Kept in the lib crate (not `main.rs`) so it's unit-testable the normal
 //! way. The engine has no one-off commands: stores are created, read and
 //! changed by monokulo, through the admin API.
@@ -44,8 +47,10 @@ pub fn command() -> Command {
 
 /// Parses the full argument list, argv[0] included, into the settings it
 /// gives, the options file to read, and whether to write one instead
-/// (`--init`). Help, the version and mistakes come back as clap's error,
-/// which the caller prints and exits on (`clap::Error::exit`).
+/// (`--init`).
+///
+/// Help, the version and mistakes come back as clap's error, which the
+/// caller prints and exits on (`clap::Error::exit`).
 pub fn parse_args<I, T>(args: I) -> Result<live_settings::cli::Start, clap::Error>
 where
     I: IntoIterator<Item = T>,
@@ -108,7 +113,8 @@ mod tests {
             "/data/e.db",
         ])
         .unwrap();
-        let snapshot = live_settings::Snapshot::new(Default::default(), start.env.clone());
+        let snapshot =
+            live_settings::Snapshot::new(std::collections::HashMap::default(), start.env.clone());
         assert_eq!(
             database_path(&snapshot),
             std::path::PathBuf::from("/data/e.db")
@@ -129,7 +135,7 @@ mod tests {
         // A leftover config-file-path-shaped argument (from the removed
         // `--config`/positional-path era) must not be silently accepted and
         // ignored - that would look like it worked while doing nothing.
-        assert!(parse(&["moneropay.toml"]).is_err());
+        parse(&["moneropay.toml"]).unwrap_err();
         // The one-off commands are gone: stores are created, read and
         // changed by monokulo, through the admin API.
         for removed in [
@@ -208,7 +214,7 @@ mod tests {
             std::path::PathBuf::from("/srv/engine.db")
         );
         let flagged =
-            none.with_cli([("database.path".to_string(), "/cli/engine.db".to_string())].into());
+            none.with_cli([("database.path".to_owned(), "/cli/engine.db".to_owned())].into());
         assert_eq!(
             from(&[("database.path", "/srv/engine.db")], flagged),
             std::path::PathBuf::from("/cli/engine.db"),

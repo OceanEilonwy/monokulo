@@ -1,8 +1,11 @@
-//! The engine's background loops (tasks 2.1, 7.4, 7.9): one scheduler loop
-//! and one fast mempool loop per network with a node configured (the
-//! double-spend void recheck is the scheduler's upkeep tier), started and stopped as node settings are saved, and the
-//! webhook delivery loop. `main` supervises them; they live here so they
-//! can be tested.
+//! The engine's background loops (tasks 2.1, 7.4, 7.9).
+//!
+//! One scheduler loop and one fast mempool loop per network with a node
+//! configured (the double-spend void recheck is the scheduler's upkeep tier),
+//! started and stopped as node settings are saved, and the webhook delivery
+//! loop.
+//!
+//! `main` supervises them; they live here so they can be tested.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,7 +14,7 @@ use std::time::Duration;
 use monero::Network;
 use parking_lot::RwLock;
 use shared::supervise::supervise_until;
-use tracing::Instrument;
+use tracing::Instrument as _;
 
 use crate::engine_settings::{Daemons, EngineSettings};
 use crate::http::now_unix;
@@ -22,6 +25,10 @@ use crate::webhook_delivery::run_delivery_tick_on;
 
 /// Delivers due webhooks, waking as soon as the scanner enqueues one (`wake`)
 /// and otherwise every few seconds (retries fall due with time).
+#[expect(
+    clippy::infinite_loop,
+    reason = "a supervised loop: `shared::supervise` restarts one that returns"
+)]
 pub async fn run_webhook_delivery_loop(
     db: Db,
     settings: Arc<EngineSettings>,
@@ -86,8 +93,14 @@ pub fn fast_mempool_interval(poll_interval: Duration) -> Duration {
 
 /// Looks at the pool every fraction of a second for transactions not seen
 /// before, and records and settles any payment among them at once
-/// (`work::fast_pass`). The network's round loop remains the safety net: it
-/// rescans the pool's transactions on its own rotation.
+/// (`work::fast_pass`).
+///
+/// The network's round loop remains the safety net: it rescans the pool's
+/// transactions on its own rotation.
+#[expect(
+    clippy::infinite_loop,
+    reason = "a supervised loop: `shared::supervise` restarts one that returns"
+)]
 pub async fn run_fast_mempool_loop(
     scan_state: Arc<crate::work::ScanState>,
     db: Db,
@@ -176,9 +189,12 @@ pub fn scanner_loop_name(network: Network) -> &'static str {
 }
 
 /// Longest one scan tick may run before it is abandoned and the next one
-/// starts (task 7.9): a tick stuck on a call that never returns would
-/// otherwise stop payment detection on its network without any error. Well
-/// above a normal tick, which the per-call deadlines keep short.
+/// starts (task 7.9).
+///
+/// A tick stuck on a call that never returns would otherwise stop payment
+/// detection on its network without any error.
+///
+/// Well above a normal tick, which the per-call deadlines keep short.
 pub fn tick_deadline(poll_interval: Duration) -> Duration {
     (poll_interval * 20).max(Duration::from_secs(120))
 }
@@ -187,7 +203,7 @@ pub fn tick_deadline(poll_interval: Duration) -> Duration {
 /// [`tick_deadline`], or room for the largest block request the node's link
 /// allows under `tuning` (fetched and prefetched in one unit) after the
 /// round's own budget, whichever is longer. A slow link's requests aren't
-/// abandoned by the round around them (docs/engine_scaling.md section 2).
+/// abandoned by the round around them (`docs/engine_scaling.md` section 2).
 fn round_deadline(
     poll_interval: Duration,
     daemon: &dyn crate::daemon::MoneroDaemonClient,
@@ -199,9 +215,9 @@ fn round_deadline(
 }
 
 /// Starts a scanner loop for each network that has a node configured, and stops them for a network whose node setting is
-/// cleared, whenever node settings are saved (task 2.1). Runs for the life of
-/// the process.
-#[allow(clippy::too_many_arguments)] // the loops' genuinely independent shared handles
+/// cleared, whenever node settings are saved (task 2.1).
+///
+/// Runs for the life of the process.
 pub async fn manage_network_loops(
     db: Db,
     webhooks: Arc<tokio::sync::Notify>,
@@ -214,7 +230,8 @@ pub async fn manage_network_loops(
     let mut changed = settings.nodes.subscribe();
     let mut running: HashMap<Network, tokio::sync::watch::Sender<bool>> = HashMap::new();
     loop {
-        let wanted: std::collections::HashSet<Network> = daemons.networks().into_iter().collect();
+        let networks = daemons.networks();
+        let wanted: std::collections::HashSet<Network> = networks.iter().copied().collect();
         running.retain(|network, stop| {
             let keep = wanted.contains(network);
             if !keep {
@@ -224,7 +241,7 @@ pub async fn manage_network_loops(
             }
             keep
         });
-        for network in wanted {
+        for network in networks {
             if running.contains_key(&network) {
                 continue;
             }
@@ -245,38 +262,43 @@ pub async fn manage_network_loops(
             }
             // Shared by the network's round loop and its fast mempool loop.
             let scan_state = Arc::new(
-                crate::work::ScanState::waking(webhooks.clone())
-                    .with_progress(crate::scanner_status::progress_of(&scanner_status, network))
-                    .with_wakes(crate::scanner_status::wakes_of(&scanner_status, network)),
+                crate::work::ScanState::waking(Arc::clone(&webhooks))
+                    .with_progress(scanner_status::progress_of(&scanner_status, network))
+                    .with_wakes(scanner_status::wakes_of(&scanner_status, network)),
             );
             #[cfg(feature = "zmq")]
             {
-                let (wakes, settings) = (scan_state.node_wakes().clone(), settings.clone());
+                let (wakes, settings) =
+                    (Arc::clone(scan_state.node_wakes()), Arc::clone(&settings));
                 supervise_until(node_events_name(network), stopped.clone(), move || {
-                    crate::node_events::run_subscriber(network, wakes.clone(), settings.clone())
+                    crate::node_events::run_subscriber(
+                        network,
+                        Arc::clone(&wakes),
+                        Arc::clone(&settings),
+                    )
                 });
             }
             {
                 let (db, key_custody, daemons, wallet_handles, settings, scan_state) = (
                     db.clone(),
-                    key_custody.clone(),
+                    Arc::clone(&key_custody),
                     daemons.clone(),
-                    wallet_handles.clone(),
-                    settings.clone(),
-                    scan_state.clone(),
+                    Arc::clone(&wallet_handles),
+                    Arc::clone(&settings),
+                    Arc::clone(&scan_state),
                 );
                 supervise_until(
                     fast_mempool_loop_name(network),
                     stopped.clone(),
                     move || {
                         run_fast_mempool_loop(
-                            scan_state.clone(),
+                            Arc::clone(&scan_state),
                             db.clone(),
-                            key_custody.clone(),
+                            Arc::clone(&key_custody),
                             network,
                             daemons.clone(),
-                            wallet_handles.clone(),
-                            settings.clone(),
+                            Arc::clone(&wallet_handles),
+                            Arc::clone(&settings),
                         )
                     },
                 );
@@ -285,40 +307,40 @@ pub async fn manage_network_loops(
                 let (db, daemons, settings, status, wakes) = (
                     db.clone(),
                     daemons.clone(),
-                    settings.clone(),
-                    scanner_status.clone(),
-                    scan_state.node_wakes().clone(),
+                    Arc::clone(&settings),
+                    Arc::clone(&scanner_status),
+                    Arc::clone(scan_state.node_wakes()),
                 );
                 supervise_until(proof_loop_name(network), stopped.clone(), move || {
                     crate::proof::run_loop(
                         network,
                         db.clone(),
                         daemons.clone(),
-                        settings.clone(),
-                        status.clone(),
-                        wakes.clone(),
+                        Arc::clone(&settings),
+                        Arc::clone(&status),
+                        Arc::clone(&wakes),
                         crate::proof::ProofTuning::DEFAULT,
                     )
                 });
             }
             let (db, key_custody, daemons, wallet_handles, scanner_status, settings) = (
                 db.clone(),
-                key_custody.clone(),
+                Arc::clone(&key_custody),
                 daemons.clone(),
-                wallet_handles.clone(),
-                scanner_status.clone(),
-                settings.clone(),
+                Arc::clone(&wallet_handles),
+                Arc::clone(&scanner_status),
+                Arc::clone(&settings),
             );
             supervise_until(scanner_loop_name(network), stopped, move || {
                 run_scanner_loop(
-                    scan_state.clone(),
+                    Arc::clone(&scan_state),
                     db.clone(),
-                    key_custody.clone(),
+                    Arc::clone(&key_custody),
                     network,
                     daemons.clone(),
-                    wallet_handles.clone(),
-                    scanner_status.clone(),
-                    settings.clone(),
+                    Arc::clone(&wallet_handles),
+                    Arc::clone(&scanner_status),
+                    Arc::clone(&settings),
                 )
             });
             tracing::info!(network = ?network, "scanning");
@@ -337,12 +359,20 @@ pub const REGISTRATION_RETRY_AFTER_LOSS: Duration = Duration::from_secs(5);
 
 /// Runs the scheduler's rounds (`work::run_round`) for one network, over
 /// and over: at once while work is left, otherwise every poll interval.
-/// Re-reads
-/// `wallet_handles`, the network's node client and the scan settings every
-/// round, so new tenants, saved node settings and saved scan settings all
-/// apply from the next tick (tasks 2.1, 2.3). Each network has its own
-/// loop (task 7.4), so a slow node on one never delays another.
-#[allow(clippy::too_many_arguments)] // the loop's genuinely independent shared handles
+///
+/// Re-reads `wallet_handles`, the network's node client and the scan
+/// settings every round, so new tenants, saved node settings and saved
+/// scan settings all apply from the next tick (tasks 2.1, 2.3). Each
+/// network has its own loop (task 7.4), so a slow node on one never delays
+/// another.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the loop's genuinely independent shared handles"
+)]
+#[expect(
+    clippy::infinite_loop,
+    reason = "a supervised loop: `shared::supervise` restarts one that returns"
+)]
 pub async fn run_scanner_loop(
     scan_state: Arc<crate::work::ScanState>,
     db: Db,
@@ -353,6 +383,10 @@ pub async fn run_scanner_loop(
     scanner_status: ScannerStatusMap,
     settings: Arc<EngineSettings>,
 ) {
+    // Shared by every network's loop, so the handle map is cleared once per
+    // lost-state epoch of the key-custody backend, not once per network.
+    static HANDLED_CUSTODY_EPOCH: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
     // Keys that failed to register (at boot, or since) are retried here at
     // most once a minute, so a tenant whose key-custody backend comes back
     // is scanned again without anyone having to call the API for it.
@@ -364,10 +398,6 @@ pub async fn run_scanner_loop(
     // shared with the fast mempool loop (the mempool is fetched and scanned
     // incrementally, retry delays are remembered). Losing it costs only
     // repeated work: everything that matters is in the database.
-    // Shared by every network's loop, so the handle map is cleared once per
-    // lost-state epoch of the key-custody backend, not once per network.
-    static HANDLED_CUSTODY_EPOCH: std::sync::atomic::AtomicU64 =
-        std::sync::atomic::AtomicU64::new(0);
     loop {
         // `debug`: a tick runs every few seconds, too often for a span at
         // `info` (each would become a stored trace). Lines inside carry
@@ -499,7 +529,7 @@ mod tests {
     use crate::store::{NewTenant, Store};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use tower::ServiceExt;
+    use tower::ServiceExt as _;
 
     /// Waits up to 15s for `condition`.
     async fn eventually(what: &str, condition: impl Fn() -> bool) {
@@ -519,7 +549,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = store
             .create_tenant(
-                NewTenant {
+                &NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: vec![],
                     primary_address: "4wake".into(),
@@ -533,7 +563,7 @@ mod tests {
             .tenant;
         let index = store.allocate_minor_index(&tenant.id).unwrap();
         let order = store
-            .create_order(crate::store::NewOrder {
+            .create_order(&crate::store::NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
                 tenant_id: tenant.id.clone(),
@@ -554,9 +584,9 @@ mod tests {
         let store = store.into_shared();
         let wake = Arc::new(tokio::sync::Notify::new());
         let delivery = tokio::spawn(run_webhook_delivery_loop(
-            Db::over_shared(store.clone()),
+            Db::over_shared(Arc::clone(&store)),
             EngineSettings::defaults(),
-            wake.clone(),
+            Arc::clone(&wake),
         ));
         // Let its first pass find nothing and go to sleep.
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -590,11 +620,11 @@ mod tests {
         let daemons = Daemons::default();
         let rate_limiter = Arc::new(RateLimiter::new(10_000));
         let settings = EngineSettings::load_with(
-            store.clone(),
+            Arc::clone(&store),
             Some(crate::engine_settings::NodesReloadable {
                 daemons: daemons.clone(),
             }),
-            rate_limiter.clone(),
+            Arc::clone(&rate_limiter),
             live_settings::Env::fixed(Vec::<(String, String)>::new()),
         )
         .await
@@ -604,32 +634,32 @@ mod tests {
             Arc::default();
         let status = scanner_status::new_scanner_status_map();
         let state = crate::http::AppState {
-            db: crate::store::Database::inline(store.clone()),
+            db: crate::store::Database::inline(Arc::clone(&store)),
             admin_rate_limiter: rate_limiter,
             log_store: None,
             engine_token: Arc::new(
                 shared::auth::RawToken::presented(crate::http::TEST_ENGINE_TOKEN).hash(),
             ),
-            settings: settings.clone(),
+            settings: Arc::clone(&settings),
             custody: crate::http::Custody {
-                backends: key_custody.clone(),
-                default_backend: "plain".to_string(),
-                wallet_handles: wallet_handles.clone(),
+                backends: Arc::clone(&key_custody),
+                default_backend: "plain".to_owned(),
+                wallet_handles: Arc::clone(&wallet_handles),
             },
             networks: crate::http::Networks {
                 daemons: daemons.clone(),
-                scanner_status: status.clone(),
+                scanner_status: Arc::clone(&status),
             },
         };
         let router = crate::http::build_router(state, 1 << 20);
-        let db = Db::over_shared(store.clone());
+        let db = Db::over_shared(Arc::clone(&store));
         let manager = tokio::spawn(manage_network_loops(
             db,
             Arc::default(),
             key_custody,
             daemons,
             wallet_handles,
-            status.clone(),
+            Arc::clone(&status),
             settings,
         ));
 
@@ -690,7 +720,7 @@ mod tests {
     }
 
     /// With an hour between polls, a round still runs as soon as the node
-    /// announces a block (docs/monero_zmq.md).
+    /// announces a block (`docs/monero_zmq.md`).
     #[tokio::test]
     async fn the_node_s_announcements_cut_the_wait_between_polls_short() {
         let defaults = EngineSettings::defaults();
@@ -714,20 +744,20 @@ mod tests {
         let daemons = Daemons::fixed(HashMap::from([(
             Network::Stagenet,
             Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
-                label: "fake".to_string(),
-                client: node.clone(),
+                label: "fake".to_owned(),
+                client: Arc::<FakeDaemonClient>::clone(&node),
             }])),
         )]));
         let status = scanner_status::new_scanner_status_map();
         let scan_state: Arc<crate::work::ScanState> = Arc::default();
         let scan_loop = tokio::spawn(run_scanner_loop(
-            scan_state.clone(),
+            Arc::clone(&scan_state),
             Db::over_shared(Store::open_in_memory().unwrap().into_shared()),
             Arc::new(PlainKeyCustody::default()),
             Network::Stagenet,
             daemons,
             Arc::default(),
-            status.clone(),
+            Arc::clone(&status),
             settings,
         ));
         let ticks = || {
@@ -751,13 +781,13 @@ mod tests {
     async fn a_store_whose_backend_was_replaced_is_registered_again_within_seconds() {
         let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let router = Arc::new(CustodyRouter::new(
-            HashMap::from([("plain".to_string(), plain)]),
+            HashMap::from([("plain".to_owned(), plain)]),
             "plain",
         ));
         let store = Store::open_in_memory().unwrap();
         let tenant = store
             .create_tenant(
-                NewTenant {
+                &NewTenant {
                     key_custody_backend: "plain".into(),
                     sealed_key_material: router.seal_in("plain", &material()).await.unwrap(),
                     primary_address: "5x".into(),
@@ -775,20 +805,20 @@ mod tests {
         let daemons = Daemons::fixed(HashMap::from([(
             Network::Stagenet,
             Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
-                label: "fake".to_string(),
+                label: "fake".to_owned(),
                 client: Arc::new(node),
             }])),
         )]));
         let wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>> =
             Arc::default();
-        let key_custody: Arc<dyn KeyCustody> = router.clone();
+        let key_custody: Arc<dyn KeyCustody> = Arc::<CustodyRouter>::clone(&router);
         let scan_loop = tokio::spawn(run_scanner_loop(
             Arc::default(),
             Db::over_shared(store),
             key_custody,
             Network::Stagenet,
             daemons,
-            wallet_handles.clone(),
+            Arc::clone(&wallet_handles),
             scanner_status::new_scanner_status_map(),
             EngineSettings::defaults(),
         ));
@@ -801,7 +831,7 @@ mod tests {
         // The backend is replaced by a new instance: the old handle is gone.
         let fresh: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         router.replace(
-            HashMap::from([("plain".to_string(), fresh.clone())]),
+            HashMap::from([("plain".to_owned(), Arc::clone(&fresh))]),
             "plain",
         );
         eventually("the store to be registered in the new instance", || {

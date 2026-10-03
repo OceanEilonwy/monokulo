@@ -1,4 +1,4 @@
-//! The engine's log store, for monokulo's Logs page (structured_logging.md
+//! The engine's log store, for monokulo's Logs page (`structured_logging.md`
 //! 3.3). The engine token only, like the settings API: the engine never
 //! pushes its logs anywhere, monokulo asks.
 //!
@@ -13,7 +13,7 @@
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Json, Response};
+use axum::response::{IntoResponse as _, Json, Response};
 use telemetry::store::api::{
     is_trace_id, AttributesResponse, HistogramRequest, HistogramResponse, LogsRequest,
     LogsResponse, QueryErrorResponse,
@@ -41,7 +41,7 @@ fn bad_query(e: telemetry::query::ParseError) -> Response {
     (StatusCode::BAD_REQUEST, Json(QueryErrorResponse::from(e))).into_response()
 }
 
-pub async fn list(
+pub(super) async fn list(
     State(log_store): State<Option<LogStore>>,
     Query(request): Query<LogsRequest>,
 ) -> Response {
@@ -59,7 +59,7 @@ pub async fn list(
     }
 }
 
-pub async fn trace(
+pub(super) async fn trace(
     State(log_store): State<Option<LogStore>>,
     Path(trace_id): Path<String>,
 ) -> Response {
@@ -77,7 +77,7 @@ pub async fn trace(
     }
 }
 
-pub async fn histogram(
+pub(super) async fn histogram(
     State(log_store): State<Option<LogStore>>,
     Query(request): Query<HistogramRequest>,
 ) -> Response {
@@ -103,9 +103,9 @@ pub async fn histogram(
     }
 }
 
-pub async fn attributes(State(log_store): State<Option<LogStore>>) -> Response {
+pub(super) async fn attributes(State(log_store): State<Option<LogStore>>) -> Response {
     let result = match store(log_store) {
-        Ok(store) => read(store, |s| s.attribute_names()).await,
+        Ok(store) => read(store, LogStore::attribute_names).await,
         Err(e) => Err(e),
     };
     match result {

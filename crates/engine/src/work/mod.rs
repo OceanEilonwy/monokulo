@@ -1,5 +1,5 @@
 //! The scanner as small, durable work units chosen by one scheduler per
-//! network (docs/scanner_microtasks.md).
+//! network (`docs/scanner_microtasks.md`).
 //!
 //! A *round* runs the five tiers in priority order. Each tier has a reserved
 //! share of the round's time and completes at least one unit per round when
@@ -45,12 +45,12 @@ pub enum Tier {
 }
 
 impl Tier {
-    pub const ALL: [Tier; 5] = [
-        Tier::Chain,
-        Tier::Blocks,
-        Tier::Mempool,
-        Tier::Settlement,
-        Tier::Upkeep,
+    pub const ALL: [Self; 5] = [
+        Self::Chain,
+        Self::Blocks,
+        Self::Mempool,
+        Self::Settlement,
+        Self::Upkeep,
     ];
 
     const fn index(self) -> usize {
@@ -61,11 +61,11 @@ impl Tier {
 impl std::fmt::Display for Tier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Tier::Chain => "chain",
-            Tier::Blocks => "blocks",
-            Tier::Mempool => "mempool",
-            Tier::Settlement => "settlement",
-            Tier::Upkeep => "upkeep",
+            Self::Chain => "chain",
+            Self::Blocks => "blocks",
+            Self::Mempool => "mempool",
+            Self::Settlement => "settlement",
+            Self::Upkeep => "upkeep",
         })
     }
 }
@@ -88,14 +88,14 @@ impl<T: Copy> PerTier<T> {
 
 impl<T> std::ops::Index<Tier> for PerTier<T> {
     type Output = T;
-    fn index(&self, tier: Tier) -> &T {
-        &self.0[tier.index()]
+    fn index(&self, index: Tier) -> &T {
+        &self.0[index.index()]
     }
 }
 
 impl<T> std::ops::IndexMut<Tier> for PerTier<T> {
-    fn index_mut(&mut self, tier: Tier) -> &mut T {
-        &mut self.0[tier.index()]
+    fn index_mut(&mut self, index: Tier) -> &mut T {
+        &mut self.0[index.index()]
     }
 }
 
@@ -126,16 +126,16 @@ pub enum Wait {
 impl std::fmt::Display for Wait {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Wait::ChainHeightUnknown => "the chain height is unknown",
-            Wait::ReorgBeingReconciled => "a reorganisation is being reconciled",
-            Wait::RewoundThisRound => {
+            Self::ChainHeightUnknown => "the chain height is unknown",
+            Self::ReorgBeingReconciled => "a reorganisation is being reconciled",
+            Self::RewoundThisRound => {
                 "rewound this round; replacement blocks are scanned from the next"
             }
-            Wait::NodeFailed => "the node failed",
-            Wait::NodeCannotServeTip => "the node can't serve its own tip yet",
-            Wait::MempoolUnreadable => "the mempool couldn't be read",
-            Wait::ReorgCandidatesRetrying => "reorg candidates are waiting to be retried",
-            Wait::ChainDiverged => {
+            Self::NodeFailed => "the node failed",
+            Self::NodeCannotServeTip => "the node can't serve its own tip yet",
+            Self::MempoolUnreadable => "the mempool couldn't be read",
+            Self::ReorgCandidatesRetrying => "reorg candidates are waiting to be retried",
+            Self::ChainDiverged => {
                 "the node's chain differs from the recorded one; waiting for reorg reconciliation"
             }
         })
@@ -255,7 +255,7 @@ where
 }
 
 /// A call with `deadline`: for a block request, what the node's link needs
-/// (docs/engine_scaling.md section 2).
+/// (`docs/engine_scaling.md` section 2).
 pub(crate) async fn bounded_by<T, E>(
     deadline: Duration,
     call: impl std::future::Future<Output = Result<T, E>>,
@@ -290,7 +290,7 @@ pub(crate) struct Backoff<K> {
 impl<K> Default for Backoff<K> {
     fn default() -> Self {
         Self {
-            failures: Default::default(),
+            failures: parking_lot::Mutex::default(),
         }
     }
 }
@@ -300,7 +300,7 @@ impl<K: Clone + Eq + std::hash::Hash> Backoff<K> {
     const MAX_DELAY: Duration = Duration::from_secs(60);
     /// A key that hasn't failed for this long is forgotten: it is no longer
     /// being tried (a store with nothing in scope, an order that settled).
-    const FORGET_AFTER: Duration = Duration::from_secs(60 * 60);
+    const FORGET_AFTER: Duration = Duration::from_hours(1);
 
     pub(crate) fn failed(&self, key: &K) {
         let mut failures = self.failures.lock();
@@ -350,7 +350,7 @@ pub struct ScanState {
     /// settlement's webhook goes out at once rather than on the next poll.
     webhooks: std::sync::Arc<tokio::sync::Notify>,
     /// Wakes the network's loops when its node announces a block or a pool
-    /// transaction (docs/monero_zmq.md).
+    /// transaction (`docs/monero_zmq.md`).
     node_wakes: std::sync::Arc<crate::node_events::NodeWakes>,
     mempool: mempool::MempoolState,
     blocks: blocks::BlockState,
@@ -375,14 +375,15 @@ impl ScanState {
     }
 
     /// This state, keeping its block scan's progress in `progress`, which
-    /// `/status` reads (docs/engine_scaling.md section 6).
+    /// `/status` reads (`docs/engine_scaling.md` section 6).
+    #[must_use = "the state with progress reporting is returned, not changed in place"]
     pub fn with_progress(mut self, progress: crate::scaling::SharedProgress) -> Self {
         self.blocks = blocks::BlockState::with_progress(progress);
         self
     }
 
     /// The time the next round may take: the tuning's round, unless a
-    /// large block's smallest unit needs more (docs/engine_scaling.md
+    /// large block's smallest unit needs more (`docs/engine_scaling.md`
     /// section 4).
     pub fn round_budget(&self, daemon: &dyn MoneroDaemonClient, stores: usize) -> Duration {
         self.blocks.round_budget(daemon, stores, &self.tuning)
@@ -403,6 +404,7 @@ impl ScanState {
     }
 
     /// This state, its loops woken by `wakes` (shared with `/status`).
+    #[must_use = "the state with node wakes is returned, not changed in place"]
     pub fn with_wakes(mut self, wakes: std::sync::Arc<crate::node_events::NodeWakes>) -> Self {
         self.node_wakes = wakes;
         self
@@ -443,7 +445,7 @@ pub(crate) struct Round<'a> {
     pub upkeep: upkeep::UpkeepRound,
 }
 
-impl<'a> Round<'a> {
+impl Round<'_> {
     pub(crate) fn network(&self) -> monero::Network {
         self.inputs.network
     }
@@ -537,11 +539,11 @@ pub async fn run_round(
             .map(|(id, handle)| (id.as_str(), *handle))
             .collect(),
         pool_txids: None,
-        chain: Default::default(),
+        chain: chain::ChainRound::default(),
         blocks: blocks::BlocksRound::resume(&state.blocks, inputs),
         mempool: mempool::MempoolRound::starting(watching, polled),
-        settlement: Default::default(),
-        upkeep: Default::default(),
+        settlement: settlement::SettlementRound::default(),
+        upkeep: upkeep::UpkeepRound::default(),
     };
     let mut report = RoundReport {
         steps: PerTier::filled(0),

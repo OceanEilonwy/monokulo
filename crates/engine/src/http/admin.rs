@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::auth::generate_webhook_secret;
-use crate::daemon::MoneroDaemonClient;
+use crate::daemon::MoneroDaemonClient as _;
 use crate::engine_settings::EngineSettings;
 use crate::key_custody::{KeyCustodyError, SubaddressIndex, WalletMaterial};
 use crate::status::OrderStatus;
@@ -32,7 +32,9 @@ fn key_custody_error_for_new_tenant(e: KeyCustodyError) -> ApiError {
         KeyCustodyError::InvalidKeyMaterial(m) => {
             ApiError::BadRequest(format!("invalid key material: {m}"))
         }
-        other => other.into(),
+        other @ (KeyCustodyError::UnknownWallet
+        | KeyCustodyError::BackendUnavailable(_)
+        | KeyCustodyError::ScanFailed(_)) => other.into(),
     }
 }
 
@@ -41,7 +43,7 @@ fn key_custody_error_for_new_tenant(e: KeyCustodyError) -> ApiError {
 /// request body here, unknown fields are ignored, so an old caller still
 /// sending one is not refused.
 #[derive(Deserialize)]
-pub struct CreateTenantRequest {
+pub(super) struct CreateTenantRequest {
     view_key_hex: String,
     spend_pubkey_hex: String,
     network: Option<String>,
@@ -58,13 +60,12 @@ fn chosen_backend(state: &AppState, requested: Option<&str>) -> Result<String, A
     let enabled = state.custody.backends.enabled_backends();
     if enabled.is_empty() {
         // A single backend, not a router (some tests): it is the only one.
-        return Ok(requested
-            .map(str::to_string)
-            .unwrap_or_else(|| state.custody.default_backend.clone()));
+        return Ok(requested.map_or_else(|| state.custody.default_backend.clone(), str::to_owned));
     }
-    let backend = requested
-        .map(str::to_string)
-        .unwrap_or_else(|| state.settings.custody.load().default.as_str().to_string());
+    let backend = requested.map_or_else(
+        || state.settings.custody.load().default.as_str().to_owned(),
+        str::to_owned,
+    );
     if !enabled.contains(&backend) {
         return Err(ApiError::BadRequest(format!(
             "key custody backend {backend:?} is not enabled on this instance (enabled: {})",
@@ -75,7 +76,7 @@ fn chosen_backend(state: &AppState, requested: Option<&str>) -> Result<String, A
 }
 
 #[derive(Serialize)]
-pub struct CreateTenantResponse {
+pub(super) struct CreateTenantResponse {
     tenant_id: crate::store::TenantId,
     public_key: String,
     secret_token: String,
@@ -95,7 +96,7 @@ async fn to_completion<T: Send + 'static>(
         .map_err(|e| ApiError::Internal(format!("key custody work panicked: {e}")))?
 }
 
-pub async fn create_tenant(
+pub(super) async fn create_tenant(
     State(state): State<AppState>,
     Json(req): Json<CreateTenantRequest>,
 ) -> Result<Json<CreateTenantResponse>, ApiError> {
@@ -146,7 +147,7 @@ async fn create_tenant_to_completion(
         key_custody_backend: backend.clone(),
         sealed_key_material: sealed,
         primary_address: primary_address.to_string(),
-        network: network_str(network).to_string(),
+        network: network_str(network).to_owned(),
         // Values the request doesn't give come from the instance's
         // current defaults (task 2.9), not a hardcoded number.
         confirmations_required: Some(
@@ -160,7 +161,7 @@ async fn create_tenant_to_completion(
     };
     let created = state
         .db
-        .write(move |s| s.create_tenant(new_tenant, now_unix()))
+        .write(move |s| s.create_tenant(&new_tenant, now_unix()))
         .await;
     // A failed insert leaves a registered wallet nothing holds a handle to - key
     // material live in `KeyCustody` for the rest of the process's life, with no
@@ -182,7 +183,7 @@ async fn create_tenant_to_completion(
     Ok(Json(CreateTenantResponse {
         tenant_id: created.tenant.id,
         public_key: created.tenant.public_key,
-        secret_token: created.secret_token.expose().to_string(),
+        secret_token: created.secret_token.expose().to_owned(),
     }))
 }
 
@@ -241,7 +242,7 @@ fn validate_tenant_settings(
 }
 
 #[derive(Serialize)]
-pub struct TenantView {
+pub(super) struct TenantView {
     tenant_id: crate::store::TenantId,
     public_key: String,
     primary_address: String,
@@ -253,7 +254,7 @@ pub struct TenantView {
 
 impl From<crate::store::Tenant> for TenantView {
     fn from(t: crate::store::Tenant) -> Self {
-        TenantView {
+        Self {
             tenant_id: t.id,
             public_key: t.public_key,
             primary_address: t.primary_address,
@@ -266,7 +267,7 @@ impl From<crate::store::Tenant> for TenantView {
 }
 
 #[derive(Deserialize)]
-pub struct SwitchKeyCustodyRequest {
+pub(super) struct SwitchKeyCustodyRequest {
     backend: String,
     view_key_hex: String,
     spend_pubkey_hex: String,
@@ -277,7 +278,7 @@ pub struct SwitchKeyCustodyRequest {
 /// address may be in any valid form (the bootstrap CLI stores what was
 /// typed). The public spend key must match, and so must the public view key
 /// derived from the given private view key.
-pub fn is_same_wallet(
+pub(super) fn is_same_wallet(
     material: &WalletMaterial,
     primary_address: &str,
     network: monero::Network,
@@ -295,7 +296,7 @@ pub fn is_same_wallet(
 /// backend and sealed there, the row is updated in one statement, the live
 /// handle is swapped, and only then is the old registration removed, so
 /// scanning and order creation always have a valid handle.
-pub async fn switch_key_custody(
+pub(super) async fn switch_key_custody(
     AuthedTenant(tenant): AuthedTenant,
     State(state): State<AppState>,
     Json(req): Json<SwitchKeyCustodyRequest>,
@@ -308,20 +309,20 @@ async fn switch_key_custody_to_completion(
     tenant: crate::store::Tenant,
     req: SwitchKeyCustodyRequest,
 ) -> Result<Json<TenantView>, ApiError> {
+    // One switch at a time: two overlapping switches of the same store could
+    // otherwise leave its row saying one backend while its live handle is
+    // in the other. Switches are rare, so one lock for all of them is fine.
+    static SWITCHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let material = WalletMaterial::from_hex(&req.view_key_hex, &req.spend_pubkey_hex)
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let network = parse_network(&tenant.network).map_err(|e| ApiError::Internal(e.to_string()))?;
     if !is_same_wallet(&material, &tenant.primary_address, network)? {
         return Err(ApiError::BadRequest(
-            "These keys belong to a different wallet from the one this store uses.".to_string(),
+            "These keys belong to a different wallet from the one this store uses.".to_owned(),
         ));
     }
     let backend = chosen_backend(&state, Some(&req.backend))?;
 
-    // One switch at a time: two overlapping switches of the same store could
-    // otherwise leave its row saying one backend while its live handle is
-    // in the other. Switches are rare, so one lock for all of them is fine.
-    static SWITCHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _switching = SWITCHING.lock().await;
 
     let handle = state
@@ -366,17 +367,17 @@ async fn switch_key_custody_to_completion(
     Ok(Json(TenantView::from(refetched)))
 }
 
-pub async fn get_own_tenant(AuthedTenant(tenant): AuthedTenant) -> Json<TenantView> {
+pub(super) async fn get_own_tenant(AuthedTenant(tenant): AuthedTenant) -> Json<TenantView> {
     Json(TenantView::from(tenant))
 }
 
 #[derive(Deserialize, Default)]
-pub struct PatchTenantRequest {
+pub(super) struct PatchTenantRequest {
     confirmations_required: Option<u64>,
     order_expiry_seconds: Option<i64>,
 }
 
-pub async fn patch_own_tenant(
+pub(super) async fn patch_own_tenant(
     AuthedTenant(tenant): AuthedTenant,
     State(db): State<Database>,
     Json(req): Json<PatchTenantRequest>,
@@ -389,7 +390,7 @@ pub async fn patch_own_tenant(
     let id = tenant.id.clone();
     let refetched = db
         .write(move |s| {
-            s.update_tenant_config(&id, patch)?;
+            s.update_tenant_config(&id, &patch)?;
             s.get_tenant_by_id(&id)
         })
         .await?
@@ -398,18 +399,18 @@ pub async fn patch_own_tenant(
 }
 
 #[derive(Serialize)]
-pub struct RotateSecretResponse {
+pub(super) struct RotateSecretResponse {
     secret_token: String,
 }
 
-pub async fn rotate_secret(
+pub(super) async fn rotate_secret(
     AuthedTenant(tenant): AuthedTenant,
     State(db): State<Database>,
 ) -> Result<Json<RotateSecretResponse>, ApiError> {
     let id = tenant.id.clone();
     let new_secret = db.write(move |s| s.rotate_tenant_secret(&id)).await?;
     Ok(Json(RotateSecretResponse {
-        secret_token: new_secret.expose().to_string(),
+        secret_token: new_secret.expose().to_owned(),
     }))
 }
 
@@ -417,7 +418,7 @@ pub async fn rotate_secret(
 /// authenticated just before this one finds the store gone when it looks
 /// for a handle (`resolve_wallet_handle`), instead of registering the keys
 /// again after they were removed.
-pub async fn delete_own_tenant(
+pub(super) async fn delete_own_tenant(
     AuthedTenant(tenant): AuthedTenant,
     State(custody): State<Custody>,
     State(db): State<Database>,
@@ -433,7 +434,7 @@ pub async fn delete_own_tenant(
 }
 
 #[derive(Serialize)]
-pub struct OrderView {
+pub(super) struct OrderView {
     order_id: crate::store::OrderId,
     merchant_order_id: Option<String>,
     address: String,
@@ -470,7 +471,7 @@ fn build_order_view(order: Order, now: i64, grace_period_seconds: i64) -> OrderV
         address: order.address,
         xmr_amount_piconero: order.xmr_amount_piconero,
         amount_received_piconero: order.amount_received_piconero,
-        status: order.status.as_str().to_string(),
+        status: order.status.as_str().to_owned(),
         confirmations: order.confirmations,
         double_spend_detected_at: order.double_spend_detected_at,
         refund_address: order.refund_address,
@@ -484,7 +485,7 @@ fn build_order_view(order: Order, now: i64, grace_period_seconds: i64) -> OrderV
 }
 
 #[derive(Deserialize)]
-pub struct ListOrdersQuery {
+pub(super) struct ListOrdersQuery {
     status: Option<String>,
     /// `created_at` of the last order of the previous page, with its id in
     /// `cursor_id`: the next page starts after that order. Several orders
@@ -509,9 +510,9 @@ pub struct ListOrdersQuery {
 }
 
 /// Most order ids one `ids=` request may name.
-pub const MAX_LIST_ORDER_IDS: usize = 100;
+pub(super) const MAX_LIST_ORDER_IDS: usize = 100;
 
-pub async fn list_orders(
+pub(super) async fn list_orders(
     AuthedTenant(tenant): AuthedTenant,
     State(db): State<Database>,
     State(settings): State<Arc<EngineSettings>>,
@@ -594,7 +595,7 @@ pub async fn list_orders(
 }
 
 #[derive(Serialize)]
-pub struct PaymentView {
+pub(super) struct PaymentView {
     txid: String,
     output_index: i64,
     amount_piconero: u64,
@@ -605,7 +606,7 @@ pub struct PaymentView {
 
 impl From<OrderPaymentRow> for PaymentView {
     fn from(p: OrderPaymentRow) -> Self {
-        PaymentView {
+        Self {
             txid: p.txid,
             output_index: p.output_index,
             amount_piconero: p.amount_piconero,
@@ -617,13 +618,13 @@ impl From<OrderPaymentRow> for PaymentView {
 }
 
 #[derive(Serialize)]
-pub struct OrderDetailResponse {
+pub(super) struct OrderDetailResponse {
     #[serde(flatten)]
     order: OrderView,
     payments: Vec<PaymentView>,
 }
 
-pub async fn get_order_detail(
+pub(super) async fn get_order_detail(
     AuthedTenant(tenant): AuthedTenant,
     Path(order_id): Path<crate::store::OrderId>,
     State(db): State<Database>,
@@ -648,7 +649,7 @@ pub async fn get_order_detail(
 }
 
 #[derive(Deserialize)]
-pub struct SetRefundAddressRequest {
+pub(super) struct SetRefundAddressRequest {
     refund_address: String,
 }
 
@@ -660,7 +661,7 @@ pub struct SetRefundAddressRequest {
 /// is stored verbatim: a human reviews it before any refund is sent. The
 /// tenant comes from the `sk_` alone, so an `order_id` belonging to another
 /// tenant is simply not found.
-pub async fn set_order_refund_address(
+pub(super) async fn set_order_refund_address(
     AuthedTenant(tenant): AuthedTenant,
     Path(order_id): Path<crate::store::OrderId>,
     State(db): State<Database>,
@@ -678,7 +679,7 @@ pub async fn set_order_refund_address(
 }
 
 #[derive(Deserialize)]
-pub struct CreateWebhookRequest {
+pub(super) struct CreateWebhookRequest {
     url: String,
     extra_headers: Option<serde_json::Value>,
 }
@@ -706,7 +707,7 @@ const RESERVED_HEADERS: [&str; 5] = [
 /// lowercase. Nothing given is an empty object.
 fn validate_extra_headers(extra_headers: Option<serde_json::Value>) -> Result<String, ApiError> {
     let Some(extra_headers) = extra_headers else {
-        return Ok("{}".to_string());
+        return Ok("{}".to_owned());
     };
     let serde_json::Value::Object(map) = extra_headers else {
         return Err(ApiError::BadRequest(
@@ -726,10 +727,13 @@ fn validate_extra_headers(extra_headers: Option<serde_json::Value>) -> Result<St
                 "extra header {name:?} must be a string"
             )));
         };
-        let name = axum::http::HeaderName::from_bytes(name.as_bytes())
-            .map_err(|_| ApiError::BadRequest(format!("{name:?} is not a valid header name")))?;
-        axum::http::HeaderValue::from_str(value).map_err(|_| {
-            ApiError::BadRequest(format!("the value of extra header {name} is not valid"))
+        let name = axum::http::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
+            ApiError::BadRequest(format!("{name:?} is not a valid header name: {e}"))
+        })?;
+        axum::http::HeaderValue::from_str(value).map_err(|e| {
+            ApiError::BadRequest(format!(
+                "the value of extra header {name} is not valid: {e}"
+            ))
         })?;
         let name = name.as_str();
         if RESERVED_HEADERS.contains(&name) || name.starts_with("x-monokulo-") {
@@ -743,21 +747,18 @@ fn validate_extra_headers(extra_headers: Option<serde_json::Value>) -> Result<St
                 "extra_headers may hold at most {MAX_EXTRA_HEADER_BYTES} bytes"
             )));
         }
-        checked.insert(
-            name.to_string(),
-            serde_json::Value::String(value.to_string()),
-        );
+        checked.insert(name.to_owned(), serde_json::Value::String(value.to_owned()));
     }
     Ok(serde_json::Value::Object(checked).to_string())
 }
 
 #[derive(Serialize)]
-pub struct CreateWebhookResponse {
+pub(super) struct CreateWebhookResponse {
     webhook_id: crate::store::WebhookId,
     signing_secret: String,
 }
 
-pub async fn create_webhook(
+pub(super) async fn create_webhook(
     AuthedTenant(tenant): AuthedTenant,
     State(db): State<Database>,
     Json(req): Json<CreateWebhookRequest>,
@@ -794,7 +795,7 @@ pub async fn create_webhook(
 }
 
 #[derive(Serialize)]
-pub struct WebhookView {
+pub(super) struct WebhookView {
     webhook_id: crate::store::WebhookId,
     url: String,
     enabled: bool,
@@ -803,7 +804,7 @@ pub struct WebhookView {
 
 impl From<Webhook> for WebhookView {
     fn from(w: Webhook) -> Self {
-        WebhookView {
+        Self {
             webhook_id: w.id,
             url: w.url,
             enabled: w.enabled,
@@ -812,7 +813,7 @@ impl From<Webhook> for WebhookView {
     }
 }
 
-pub async fn list_webhooks(
+pub(super) async fn list_webhooks(
     AuthedTenant(tenant): AuthedTenant,
     State(db): State<Database>,
 ) -> Result<Json<Vec<WebhookView>>, ApiError> {
@@ -821,7 +822,7 @@ pub async fn list_webhooks(
     Ok(Json(webhooks.into_iter().map(WebhookView::from).collect()))
 }
 
-pub async fn delete_webhook(
+pub(super) async fn delete_webhook(
     AuthedTenant(tenant): AuthedTenant,
     Path(webhook_id): Path<crate::store::WebhookId>,
     State(db): State<Database>,
@@ -838,7 +839,7 @@ pub async fn delete_webhook(
 }
 
 #[derive(Deserialize)]
-pub struct LookupPaymentRequest {
+pub(super) struct LookupPaymentRequest {
     txid: String,
 }
 
@@ -852,7 +853,7 @@ pub struct LookupPaymentRequest {
 /// not one order's `minor_index` - see below for why).
 #[derive(Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
-pub enum PaymentLookupView {
+pub(super) enum PaymentLookupView {
     /// The daemon has no record of this txid at all, in a block or the pool.
     NotFoundOnChain,
     /// The transaction is real and was decoded, but none of its outputs
@@ -884,7 +885,7 @@ pub enum PaymentLookupView {
 /// the sustained-request-volume contention `AppState::rescan_daemons` exists
 /// to prevent - see that field's own doc comment for the class of problem
 /// this endpoint is deliberately too small to be.
-pub async fn lookup_payment(
+pub(super) async fn lookup_payment(
     AuthedTenant(tenant): AuthedTenant,
     State(state): State<AppState>,
     Json(req): Json<LookupPaymentRequest>,
@@ -892,7 +893,7 @@ pub async fn lookup_payment(
     let txid = req.txid.trim().to_lowercase();
     if txid.len() != 64 || !txid.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(ApiError::BadRequest(
-            "txid must be 64 hex characters".to_string(),
+            "txid must be 64 hex characters".to_owned(),
         ));
     }
 
@@ -937,9 +938,9 @@ pub async fn lookup_payment(
         .await
         {
             Ok(scan) => break scan,
-            Err(crate::scanner::ScannerError::KeyCustody(
-                crate::key_custody::KeyCustodyError::UnknownWallet,
-            )) if retries < super::UNKNOWN_WALLET_RETRIES => {
+            Err(crate::scanner::ScannerError::KeyCustody(KeyCustodyError::UnknownWallet))
+                if retries < super::UNKNOWN_WALLET_RETRIES =>
+            {
                 retries += 1;
                 super::forget_wallet_handle(&state, &tenant.id, handle);
                 handle = resolve_wallet_handle(&state, &tenant).await?;
@@ -1005,7 +1006,7 @@ pub async fn lookup_payment(
 ///   everything, exactly as on `ready`.
 ///
 /// Carries no order state itself - see [`crate::store::OrderChange`].
-pub async fn order_events(
+pub(super) async fn order_events(
     AuthedTenant(tenant): AuthedTenant,
     State(db): State<Database>,
 ) -> axum::response::sse::Sse<
@@ -1017,9 +1018,8 @@ pub async fn order_events(
     let receiver = db.subscribe_order_changes();
     let ready =
         futures_util::stream::once(async { Ok(Event::default().event("ready").data("{}")) });
-    let changes = futures_util::stream::unfold(
-        (receiver, tenant.id),
-        |(mut receiver, tenant_id)| async move {
+    let changes =
+        futures_util::stream::unfold((receiver, tenant.id), async |(mut receiver, tenant_id)| {
             loop {
                 match receiver.recv().await {
                     Ok(change) if change.tenant_id == tenant_id => {
@@ -1029,7 +1029,7 @@ pub async fn order_events(
                             (receiver, tenant_id),
                         ));
                     }
-                    Ok(_) => continue,
+                    Ok(_) => {}
                     Err(RecvError::Lagged(_)) => {
                         return Some((
                             Ok(Event::default().event("resync").data("{}")),
@@ -1039,8 +1039,7 @@ pub async fn order_events(
                     Err(RecvError::Closed) => return None,
                 }
             }
-        },
-    );
+        });
     Sse::new(futures_util::StreamExt::chain(ready, changes))
         .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
 }

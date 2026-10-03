@@ -2,7 +2,7 @@
 //! (`pow::test_chain`): mined for real at a small difficulty, so a block
 //! with a wrong proof is as easy to make as a right one.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use super::*;
@@ -13,10 +13,10 @@ use crate::store::SharedStore;
 
 const NET: monero::Network = monero::Network::Mainnet;
 /// The test chains' window ends here; their blocks after it cross a
-/// RandomX key change (at 977 × 2048 + 65 = 2,000,961).
+/// `RandomX` key change (at 977 × 2048 + 65 = 2,000,961).
 const TOP: u64 = 977 * 2048 + 60;
 
-/// One RandomX thread for building every test's chains.
+/// One `RandomX` thread for building every test's chains.
 fn builder() -> Hasher {
     static HASHER: OnceLock<Hasher> = OnceLock::new();
     HASHER
@@ -64,25 +64,25 @@ impl World {
 
     fn with_tuning(n: usize, chain: &TestChain, tuning: ProofTuning) -> Self {
         let store = Store::open_in_memory().unwrap().into_shared();
-        let nodes: Vec<Arc<FakeDaemonClient>> = (0..n)
-            .map(|_| {
-                let node = Arc::new(FakeDaemonClient::new());
-                chain.install(&node, 0);
-                node
-            })
-            .collect();
+        let nodes: Vec<Arc<FakeDaemonClient>> = std::iter::repeat_with(|| {
+            let node = Arc::new(FakeDaemonClient::new());
+            chain.install(&node, 0);
+            node
+        })
+        .take(n)
+        .collect();
         let client = FallbackDaemonClient::new(
             nodes
                 .iter()
                 .enumerate()
                 .map(|(i, node)| FallbackNode {
                     label: format!("node{i}:18081"),
-                    client: node.clone(),
+                    client: Arc::<FakeDaemonClient>::clone(node),
                 })
                 .collect(),
         );
-        World {
-            db: Db::over_shared(store.clone()),
+        Self {
+            db: Db::over_shared(Arc::clone(&store)),
             store,
             nodes,
             client,
@@ -369,7 +369,7 @@ async fn an_anchor_below_the_floor_or_with_a_failing_proof_is_refused() {
     let mut heavy = TestChain::unmined_claiming(
         builder(),
         TOP,
-        crate::pow::DIFFICULTY_BLOCKS as u64,
+        DIFFICULTY_BLOCKS as u64,
         60,
         crate::now_unix() as u64 - 200,
         1 << 40,
@@ -518,10 +518,10 @@ async fn the_proven_chain_is_pruned_to_what_reorgs_and_rules_need() {
     let tip = world.proven_tip();
     assert_eq!(
         floor.height,
-        tip.height - 10 - (crate::pow::DIFFICULTY_BLOCKS as u64 - 1)
+        tip.height - 10 - (DIFFICULTY_BLOCKS as u64 - 1)
     );
     // The key the newest blocks need is still there.
-    let key_height = crate::pow::seed_height(tip.height + 1);
+    let key_height = pow::seed_height(tip.height + 1);
     assert_eq!(
         world.store.lock().proof_seed(NET, key_height).unwrap(),
         Some(chain.key(tip.height + 1))
@@ -621,10 +621,10 @@ async fn blocks_the_proven_chain_has_are_passed_over_unhashed() {
         }
         async fn get_chain_blocks(
             &self,
-            start: u64,
+            start_height: u64,
             count: u64,
         ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
-            self.0.get_chain_blocks(start, count).await
+            self.0.get_chain_blocks(start_height, count).await
         }
         async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
             self.0.get_mempool_txids().await
@@ -656,8 +656,8 @@ async fn blocks_the_proven_chain_has_are_passed_over_unhashed() {
     chain.mine_empty(1);
     chain.install(&world.nodes[0], TOP + 13);
     let bent = FallbackDaemonClient::new(vec![FallbackNode {
-        label: "node0:18081".to_string(),
-        client: Arc::new(BentHashes(world.nodes[0].clone())),
+        label: "node0:18081".to_owned(),
+        client: Arc::new(BentHashes(Arc::clone(&world.nodes[0]))),
     }]);
     world.client = bent;
     world.round().await;
@@ -691,10 +691,10 @@ async fn a_node_contradicting_itself_is_caught() {
         }
         async fn get_chain_blocks(
             &self,
-            start: u64,
+            start_height: u64,
             count: u64,
         ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
-            self.0.get_chain_blocks(start, count).await
+            self.0.get_chain_blocks(start_height, count).await
         }
         async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
             self.0.get_mempool_txids().await
@@ -722,14 +722,14 @@ async fn a_node_contradicting_itself_is_caught() {
     let chain = base_chain();
     let mut world = World::new(2, &chain);
     world.round().await;
-    let honest = world.nodes[1].clone();
+    let honest = Arc::clone(&world.nodes[1]);
     world.client = FallbackDaemonClient::new(vec![
         FallbackNode {
-            label: "node0:18081".to_string(),
-            client: Arc::new(TwoFaced(world.nodes[0].clone())),
+            label: "node0:18081".to_owned(),
+            client: Arc::new(TwoFaced(Arc::clone(&world.nodes[0]))),
         },
         FallbackNode {
-            label: "node1:18081".to_string(),
+            label: "node1:18081".to_owned(),
             client: honest,
         },
     ]);
@@ -839,7 +839,7 @@ async fn a_failed_anchor_is_not_retried_at_once() {
 
 #[test]
 fn a_tuning_checking_cannot_run_with_is_refused() {
-    assert!(ProofTuning::DEFAULT.validate().is_ok());
+    ProofTuning::DEFAULT.validate().unwrap();
     for broken in [
         ProofTuning {
             anchor_depth: 0,
@@ -904,7 +904,7 @@ mod settlement {
                     .unwrap();
             }
             world.round().await;
-            Shop {
+            Self {
                 world,
                 custody,
                 tenants: vec![(tenant, handle)],
