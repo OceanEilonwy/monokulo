@@ -26,6 +26,7 @@ pub use shared::ids::{OrderId, TenantId, WebhookId};
 use crate::auth::{generate_public_key, generate_secret_token, RawToken};
 use crate::status::{derive_status, OrderStatus, PaymentView, StatusInputs};
 
+mod conflicts;
 pub mod db;
 pub mod proof;
 mod work;
@@ -124,6 +125,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../../migrations/0023_order_idempotency_key.sql"),
     ),
     (24, include_str!("../../migrations/0024_proof_of_work.sql")),
+    (
+        25,
+        include_str!("../../migrations/0025_superseded_payments.sql"),
+    ),
 ];
 
 /// The engine's writing connections (the shared store and the database
@@ -470,6 +475,9 @@ pub struct OrderPaymentRow {
     pub voided_at: Option<i64>,
     /// The output's one-time key (hex); `None` for a row recorded without it.
     pub output_key: Option<String>,
+    /// Voided because another payment sharing its output key is the one
+    /// credited (`store::conflicts`): that payment's id.
+    pub superseded_by: Option<i64>,
 }
 
 pub struct StagedMatch<'a> {
@@ -526,6 +534,10 @@ struct StatusFacts<'a> {
     tenant_lagging: bool,
     /// A reorg is being reconciled on the order's network.
     settlement_frozen: bool,
+    /// Payments sharing an output key, none of them yet in a block (a
+    /// proven one, under proof-of-work checking): which is credited isn't
+    /// known, so the order can't settle (`store::conflicts`).
+    conflicted: bool,
     /// While the order's network checks proof of work
     /// (`docs/proof_of_work.md`), the payments as proven: each counted only
     /// if the block it was found in is the proven block at its height, and
@@ -603,7 +615,7 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
     };
     let settlement_deferred = is_settlement(derived)
         && !is_settlement(order.status)
-        && (facts.settlement_frozen || !settles_on_proven_blocks());
+        && (facts.settlement_frozen || facts.conflicted || !settles_on_proven_blocks());
     let status = if expiry_held {
         order.status
     } else if settlement_deferred {
@@ -1593,13 +1605,13 @@ impl Store {
     /// that reorg reconciliation has already voided.
     ///
     /// `output_key` is the output's one-time key (hex). Only one output is
-    /// ever credited per key: a second output (another transaction, or
-    /// another index) carrying a key already credited to an unvoided payment
-    /// (the "burning bug": the sender reused a transaction key, and only one
-    /// of the two can be spent) is refused and returns `false`. The same
-    /// output credited to two orders (see migration 0004) is not that: it is
-    /// one output, spendable once, that both orders see. `None` records the
-    /// payment without the check.
+    /// ever credited per key (the "burning bug": the sender reused a
+    /// transaction key, and only one output with it can be spent), but every
+    /// one is recorded: which is credited isn't decided by which a node
+    /// showed first, which a lying node chooses, but at recompute
+    /// (`store::conflicts`). A payment voided for another with its key is
+    /// still updated here, so it can be credited if that one loses its
+    /// block.
     #[expect(
         clippy::too_many_arguments,
         reason = "one column each of the payment row"
@@ -1615,27 +1627,6 @@ impl Store {
         block_height: Option<i64>,
         output_key: Option<&str>,
     ) -> Result<bool> {
-        if let Some(output_key) = output_key {
-            let burned: Option<(OrderId, String, i64)> = self
-                .conn
-                .query_row(
-                    "SELECT order_id, txid, output_index FROM order_payments
-                     WHERE output_key = ?1 AND voided_at_utc IS NULL
-                       AND NOT (txid = ?2 AND output_index = ?3)
-                     LIMIT 1",
-                    params![output_key, txid, output_index],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .optional()?;
-            if let Some((credited_order, credited_txid, credited_output)) = burned {
-                tracing::warn!(
-                    order.id = %order_id, tx.id = txid, output_index,
-                    credited.order.id = %credited_order, credited.tx.id = credited_txid, credited.output_index = credited_output,
-                    "an output carries a one-time key already credited to a payment; only one of the two can be spent, so it is not credited"
-                );
-                return Ok(false);
-            }
-        }
         // Whether this is a genuinely new row has to be established before the
         // upsert: with `DO UPDATE`, `execute`'s changed-row count is 1 for both
         // paths and can't distinguish them. Two connections write (the database
@@ -1664,7 +1655,7 @@ impl Store {
                      THEN NULL ELSE order_payments.block_hash END,
                  block_height = COALESCE(excluded.block_height, order_payments.block_height),
                  output_key = COALESCE(order_payments.output_key, excluded.output_key)
-             WHERE order_payments.voided_at_utc IS NULL",
+             WHERE order_payments.voided_at_utc IS NULL OR order_payments.superseded_by IS NOT NULL",
             params![
                 order_id,
                 txid,
@@ -1700,7 +1691,8 @@ impl Store {
             "UPDATE order_payments
              SET block_hash = CASE WHEN block_height IS ?4 THEN block_hash ELSE NULL END,
                  block_height = ?4
-             WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3 AND voided_at_utc IS NULL",
+             WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3
+               AND (voided_at_utc IS NULL OR superseded_by IS NOT NULL)",
             params![order_id, txid, output_index, new_height],
         )?;
         if changed > 0 {
@@ -1791,6 +1783,7 @@ impl Store {
             block_height: row.get("block_height")?,
             voided_at: row.get("voided_at_utc")?,
             output_key: row.get("output_key")?,
+            superseded_by: row.get("superseded_by")?,
         })
     }
 
@@ -1859,9 +1852,11 @@ impl Store {
             .get_order_by_id(order_id)?
             .ok_or(StoreError::NotFound)?;
         let (confirmations_required, network, lagging) = self.recompute_facts(&order.tenant_id)?;
+        let conflicts = self.settle_output_key_conflicts(order_id, network, now)?;
         let views: Vec<PaymentView> = self
             .get_valid_payments(order_id)?
             .iter()
+            .filter(|p| !conflicts.uncounted.contains(&p.id))
             .map(|p| PaymentView {
                 amount_piconero: p.amount_piconero,
                 confirmations: match p.block_height {
@@ -1879,7 +1874,13 @@ impl Store {
                 .unwrap_or(confirmations_required),
             tenant_lagging: lagging,
             settlement_frozen: self.settlement_frozen(network)?,
-            proven_views: self.proven_views(network, order_id, current_height)?,
+            conflicted: conflicts.unsettled,
+            proven_views: self.proven_views(
+                network,
+                order_id,
+                current_height,
+                &conflicts.uncounted,
+            )?,
             current_height,
             now,
         });
@@ -2762,6 +2763,7 @@ mod tests {
                 confirmations_required: case.required,
                 tenant_lagging: case.lagging,
                 settlement_frozen: case.frozen,
+                conflicted: false,
                 proven_views: None,
                 current_height: 50,
                 now: case.now,
@@ -2803,6 +2805,7 @@ mod tests {
                 confirmations_required: 10,
                 tenant_lagging: false,
                 settlement_frozen: false,
+                conflicted: false,
                 proven_views: proven.map(|c| vec![mined(100, c)]),
                 current_height: 50,
                 now: 500,
@@ -2824,6 +2827,7 @@ mod tests {
             confirmations_required: 0,
             tenant_lagging: false,
             settlement_frozen: false,
+            conflicted: false,
             proven_views: Some(vec![pooled(100)]),
             current_height: 50,
             now: 500,

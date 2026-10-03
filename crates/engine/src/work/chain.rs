@@ -257,9 +257,12 @@ impl<'a> Chain<'a> {
                     // left there it would keep counting confirmations and
                     // could settle the order. As an unconfirmed payment the
                     // vanished-payment check follows it and records where
-                    // it is once a node answers. A voided one is left as it
-                    // is; nothing counts its height.
-                    let unconfirm = candidate.payment.voided_at.is_none()
+                    // it is once a node answers. One voided as a double spend
+                    // is left as it is: nothing counts its height. One voided
+                    // for another with its output key is unconfirmed too:
+                    // `store::conflicts` credits by height.
+                    let unconfirm = (candidate.payment.voided_at.is_none()
+                        || candidate.payment.superseded_by.is_some())
                         && candidate.payment.block_height.is_some();
                     tracing::error!(
                         network = crate::network::network_str(self.network), payment.id = candidate.payment.id, order.id = %candidate.payment.order_id,
@@ -345,10 +348,21 @@ impl<'a> Chain<'a> {
                 location = agreed;
             }
         }
-        let proven = !voided
-            && location == TxLocation::NotFound
-            && self.double_spend_proven(&payment).await?;
-        let decision = decide(voided, location, proven);
+        // A payment voided for another with its output key
+        // (`store::conflicts`) only has its height followed: which of them
+        // is credited is settled at recompute, never restored or voided as
+        // a double spend here.
+        let decision = if payment.superseded_by.is_some() {
+            Decision::Move(match location {
+                TxLocation::InBlock(height) => Some(height),
+                TxLocation::InPool | TxLocation::NotFound => None,
+            })
+        } else {
+            let proven = !voided
+                && location == TxLocation::NotFound
+                && self.double_spend_proven(&payment).await?;
+            decide(voided, location, proven)
+        };
         let moved_to = match decision {
             Decision::Move(Some(height)) | Decision::Restore(height) => Some(height),
             Decision::Keep | Decision::Move(_) | Decision::Void => None,
@@ -364,9 +378,10 @@ impl<'a> Chain<'a> {
             payment.output_index,
             self.now,
         );
-        let changed = self
+        let (changed, voided) = self
             .db(move |s, network| {
-                s.in_transaction(|s| -> Result<bool, ScannerError> {
+                s.in_transaction(|s| -> Result<(bool, bool), ScannerError> {
+                    let mut voided = false;
                     let changed = match decision {
                         Decision::Keep => false,
                         Decision::Move(height) => {
@@ -385,7 +400,7 @@ impl<'a> Chain<'a> {
                             restored || height != payment.block_height
                         }
                         Decision::Void => {
-                            void_and_notify_in_tx(s, &order_id, &txid, output, tip, now)?;
+                            voided = void_and_notify_in_tx(s, &order_id, &txid, output, tip, now)?;
                             true
                         }
                     };
@@ -393,14 +408,14 @@ impl<'a> Chain<'a> {
                         s.attest_payment_block(&txid, height, hash)?;
                     }
                     s.complete_reorg_candidate(network, id)?;
-                    Ok(changed)
+                    Ok((changed, voided))
                 })
             })
             .await?;
         if changed {
             done.dirty_orders.insert(candidate.order_id.clone());
         }
-        if decision == Decision::Void {
+        if voided {
             done.double_spent_orders.insert(candidate.order_id.clone());
         }
         Ok(())

@@ -602,6 +602,9 @@ pub(super) struct PaymentView {
     first_seen_at: i64,
     block_height: Option<i64>,
     voided_at: Option<i64>,
+    /// Voided because another payment of the same output (its one-time key)
+    /// is the one credited, not as a double spend.
+    superseded: bool,
 }
 
 impl From<OrderPaymentRow> for PaymentView {
@@ -613,6 +616,7 @@ impl From<OrderPaymentRow> for PaymentView {
             first_seen_at: p.first_seen_at,
             block_height: p.block_height,
             voided_at: p.voided_at,
+            superseded: p.superseded_by.is_some(),
         }
     }
 }

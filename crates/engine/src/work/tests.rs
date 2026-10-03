@@ -5220,3 +5220,98 @@ async fn a_failed_page_keeps_the_pages_before_it() {
         .unwrap();
     assert_eq!(payments.len(), 1);
 }
+
+/// A payment voided for another sharing its output key (`store::conflicts`)
+/// is a reorg candidate like any other: its height follows its
+/// transaction, but it is never restored as a "false double spend", nor
+/// voided as one: which of the two is credited is the recompute's to say.
+#[tokio::test]
+async fn a_reorg_moves_a_superseded_payment_without_restoring_it() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let order = shared::ids::OrderId::new(order.to_string());
+    let fake = FakeDaemonClient::new();
+    for h in 1..=60 {
+        let txs = if h == 55 { vec![fixture_tx()] } else { vec![] };
+        let height = fake.push_block(&format!("a{h}"), txs);
+        store
+            .set_scanned_block(monero::Network::Mainnet, height, &format!("a{h}"))
+            .unwrap();
+    }
+    store
+        .execute_raw_for_test("UPDATE tenants SET scanned_through_height = 60")
+        .unwrap();
+    let txid = crate::daemon::fake::tx_id_hex(&fixture_tx());
+    // The credited one, earlier; the fixture's, sharing its key, later.
+    store
+        .record_payment_match(
+            &order,
+            &"c".repeat(64),
+            0,
+            1,
+            "[]",
+            1000,
+            Some(30),
+            Some("k"),
+        )
+        .unwrap();
+    store
+        .record_payment_match(&order, &txid, 0, 1, "[]", 1000, Some(55), Some("k"))
+        .unwrap();
+    store.recompute_order_status(&order, 60, 1000).unwrap();
+    let superseded = |store: &Store| {
+        store
+            .get_all_payments(&order)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.txid == txid)
+            .unwrap()
+    };
+    let voided_at = superseded(&store).voided_at;
+    assert!(voided_at.is_some() && superseded(&store).superseded_by.is_some());
+
+    // A reorg from 50: the fixture's transaction is now in block 52.
+    fake.reorg_from(
+        50,
+        (50..=60)
+            .map(|h| ("b", if h == 52 { vec![fixture_tx()] } else { vec![] }))
+            .collect(),
+    );
+    let store = store.into_shared();
+    let tenants = [(tenant.clone(), handle)];
+    let state = ScanState::default();
+    let db = Db::over_shared(Arc::clone(&store));
+    for _ in 0..20 {
+        run_round(
+            &state,
+            &inputs(&db, &custody, &fake, &tenants),
+            ScanTuning::DEFAULT.round_budget,
+        )
+        .await
+        .into_result()
+        .unwrap();
+        if store
+            .lock()
+            .reorg_job(monero::Network::Mainnet)
+            .unwrap()
+            .is_none()
+        {
+            break;
+        }
+    }
+    assert!(store
+        .lock()
+        .reorg_job(monero::Network::Mainnet)
+        .unwrap()
+        .is_none());
+    let payment = superseded(&store.lock());
+    assert_eq!(payment.block_height, Some(52), "its height followed");
+    assert_eq!(
+        payment.voided_at, voided_at,
+        "never restored (and voided again) in between"
+    );
+    assert!(payment.superseded_by.is_some());
+    let order_row = store.lock().get_order(&tenant, &order).unwrap().unwrap();
+    assert_eq!(order_row.double_spend_detected_at, None);
+}
