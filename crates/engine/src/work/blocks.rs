@@ -1193,12 +1193,13 @@ async fn scan_block(
     let committed = round
         .db(move |s, network| commit(s, network, &commit_block, &scanned, now))
         .await?;
-    if let Some(matches) = committed {
+    if let Some((matches, idle_moved)) = committed {
         round.state.activity().record(Event::Committed {
             height,
             group: group.into(),
             stores,
             matches: count(matches),
+            idle_moved: count(idle_moved),
             header_only,
         });
         round
@@ -1376,7 +1377,8 @@ struct CommitBlock {
 /// payments' recompute obligations are left by the payment triggers.
 ///
 /// Returns how many payments the block was found to hold for the tenants
-/// that moved (staged from a checkpoint, or found now), or `None` (nothing
+/// that moved (staged from a checkpoint, or found now) and how many idle
+/// tenants moved along, or `None` (nothing
 /// written) unless the block still extends the recorded chain: the
 /// recorded hash at its height (if any) is its own, and the recorded parent
 /// (if any) is its parent.
@@ -1386,8 +1388,8 @@ fn commit(
     block: &CommitBlock,
     scanned: &[ScannedBlock],
     now: i64,
-) -> Result<Option<usize>, ScannerError> {
-    s.in_transaction(|s| -> Result<Option<usize>, ScannerError> {
+) -> Result<Option<(usize, usize)>, ScannerError> {
+    s.in_transaction(|s| -> Result<Option<(usize, usize)>, ScannerError> {
         let height = block.height;
         if s.get_scanned_block_hash(network, block.parent)?
             .is_some_and(|parent| parent != block.prev_hash)
@@ -1443,14 +1445,14 @@ fn commit(
                 }
             }
         }
-        s.advance_idle_cursors(
+        let idle = s.advance_idle_cursors(
             network,
             block.parent,
             block.idle_to,
             block.since,
             block.grace,
         )?;
-        Ok(Some(matches))
+        Ok(Some((matches, idle)))
     })
 }
 

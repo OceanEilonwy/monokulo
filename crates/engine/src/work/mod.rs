@@ -419,12 +419,6 @@ pub async fn run_round(
     let started = Instant::now();
     let round_end = started + budget;
     let now = crate::now_unix();
-    let activity = state.activity();
-    let round_number = activity.next_round();
-    activity.record(Event::RoundStarted {
-        round: round_number,
-        budget_ms: millis(budget),
-    });
     // A round that will look at the pool asks for the tip and the pool
     // together: one request while the chain hasn't moved.
     let watching = mempool::watching(inputs, now).await;
@@ -458,6 +452,13 @@ pub async fn run_round(
             .last_tip
             .store(tip, std::sync::atomic::Ordering::Relaxed);
     }
+    let activity = state.activity();
+    let round_number = activity.next_round();
+    activity.record(Event::RoundStarted {
+        round: round_number,
+        budget_ms: millis(budget),
+        tip,
+    });
     let mut round = Round {
         inputs,
         state,

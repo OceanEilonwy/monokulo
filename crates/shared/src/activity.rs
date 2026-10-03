@@ -165,9 +165,11 @@ pub enum Event {
     /// The state the page draws, taken every few seconds: where a page
     /// opened later starts, and what keeps an open page from drifting.
     Snapshot(Box<Snapshot>),
+    /// A round started, having read the node's tip (`None`: it couldn't).
     RoundStarted {
         round: u64,
         budget_ms: u64,
+        tip: Option<u64>,
     },
     /// One unit of `tier`'s work, from `start_ms` into its round.
     Unit {
@@ -180,28 +182,18 @@ pub enum Event {
     },
     /// A tier stopped for the rest of its round: out of work, waiting, or
     /// failed. A tier still open at the round's end was out of time.
-    TierEnded {
-        tier: Tier,
-        outcome: TierOutcome,
-    },
+    TierEnded { tier: Tier, outcome: TierOutcome },
     RoundFinished {
         round: u64,
         ms: u64,
         backlogged: bool,
     },
     /// The loop waited `ms` between two rounds.
-    Slept {
-        ms: u64,
-        woken_by: Wake,
-    },
+    Slept { ms: u64, woken_by: Wake },
     /// Reorg detection: whether the recorded chain agrees with the node's.
-    ChainChecked {
-        agrees: bool,
-    },
+    ChainChecked { agrees: bool },
     /// A reorg job was opened, or deepened, from `fork`.
-    ReorgFound {
-        fork: u64,
-    },
+    ReorgFound { fork: u64 },
     /// A page of the payments a reorg may affect was queued.
     ReorgCollected,
     /// Queued payments were re-examined against the node's chain.
@@ -211,13 +203,9 @@ pub enum Event {
         voided: u64,
     },
     /// Every candidate was handled: blocks from `fork` up were deleted.
-    ReorgRewound {
-        fork: u64,
-    },
+    ReorgRewound { fork: u64 },
     /// First run on the network: the scan starts at `height`.
-    Seeded {
-        height: u64,
-    },
+    Seeded { height: u64 },
     /// Blocks `from..from + count` came from the node.
     Fetched {
         from: u64,
@@ -249,24 +237,21 @@ pub enum Event {
         total_txs: u64,
     },
     /// A block's scan was committed: `stores` moved past it, with `matches`
-    /// payments found in it.
+    /// payments found in it, and `idle_moved` stores with nothing that could
+    /// have been paid moved on with it (to this block on the frontier,
+    /// straight to the high-water mark when catching up).
     Committed {
         height: u64,
         group: Group,
         stores: u64,
         matches: u64,
+        idle_moved: u64,
         header_only: bool,
     },
     /// The node's block at `height` doesn't extend the recorded chain.
-    Diverged {
-        height: u64,
-    },
+    Diverged { height: u64 },
     /// Stores with nothing that could have been paid moved straight on.
-    IdleAdvanced {
-        from: u64,
-        to: u64,
-        stores: u64,
-    },
+    IdleAdvanced { from: u64, to: u64, stores: u64 },
     /// A mempool path looked at the pool and scanned `scanned` transactions.
     PoolScanned {
         path: PoolPath,
@@ -285,13 +270,9 @@ pub enum Event {
         transitions: Vec<Transition>,
     },
     /// Unconfirmed payments were checked for having left the pool.
-    Vanished {
-        looked: u64,
-    },
+    Vanished { looked: u64 },
     /// The upkeep tier's first unit of a round ran.
-    Upkeep {
-        pruned: u64,
-    },
+    Upkeep { pruned: u64 },
 }
 
 impl Event {
@@ -536,7 +517,8 @@ mod tests {
         assert_eq!(
             Event::RoundStarted {
                 round: 1,
-                budget_ms: 1
+                budget_ms: 1,
+                tip: None,
             }
             .tier(),
             None

@@ -585,7 +585,7 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
                 if *h == height && *done_txs > 0 && *total_txs == 1 + 4 * ScanTuning::DEFAULT.txs_per_scan as u64)
         });
         let committed = recorded.iter().any(|e| {
-            matches!(e, Event::Committed { height: h, matches: 1, stores: 1, group: _, header_only: false } if *h == height)
+            matches!(e, Event::Committed { height: h, matches: 1, stores: 1, group: _, idle_moved: 0, header_only: false } if *h == height)
         });
         assert!(
             stopped != committed,
@@ -5315,10 +5315,16 @@ async fn the_activity_record_tells_the_paid_story_in_order() {
     // endings fall inside them, units in time order.
     let (mut open, mut last, mut unit_end) = (None, 0, 0);
     for event in &events {
-        if let Event::RoundStarted { round, budget_ms } = event {
+        if let Event::RoundStarted {
+            round,
+            budget_ms,
+            tip,
+        } = event
+        {
             assert!(open.is_none(), "a round started inside another");
             assert_eq!(*round, last + 1);
             assert_eq!(*budget_ms, 10_000);
+            assert!(tip.is_some(), "the fake node always answers");
             (open, last, unit_end) = (Some(*round), *round, 0);
         } else if let Event::RoundFinished {
             round,
@@ -5380,6 +5386,7 @@ async fn the_activity_record_tells_the_paid_story_in_order() {
                 group: Group::Frontier,
                 height: _,
                 stores: 1,
+                idle_moved: 0,
                 header_only: false
             }
         )
