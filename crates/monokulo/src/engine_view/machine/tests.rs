@@ -606,8 +606,17 @@ fn a_catch_up_commit_moves_scanned_stores_and_sends_idle_ones_ahead() {
     );
     assert_eq!(text(&out), "Block 51 scanned for 3 stores catching up.");
 
+    // Blocks fetched ahead for the group are let go of as it passes them.
+    feed.feed(Event::Fetched {
+        from: 52,
+        count: 4,
+        bytes: 1,
+        ahead: true,
+    });
+    feed.feed(committed(52, Group::CatchUp, 3, 0, 0));
+    assert_eq!(feed.state.chain.cached, BTreeSet::from([53, 54, 55]));
     let unknown = feed.feed(committed(71, Group::CatchUp, 2, 0, 0));
-    assert_eq!(feed.cursors(), [(100, 11), (71, 2), (51, 3)], "{unknown:?}");
+    assert_eq!(feed.cursors(), [(100, 11), (71, 2), (52, 3)], "{unknown:?}");
 }
 
 /// A group scanned a page at a time moves page by page: the moved part is

@@ -930,6 +930,11 @@ impl State {
         for (to, moving) in moves {
             self.move_stores(out, parent, to, moving);
         }
+        // As the engine's cache does: a block at or below every group's
+        // cursor serves nobody any more.
+        if let Some(lowest) = self.groups.iter().map(|g| g.cursor).min() {
+            self.chain.cached.retain(|cached| *cached > lowest);
+        }
         out.effects.push(Effect::Flash {
             at: Anchor::Cell(height),
         });

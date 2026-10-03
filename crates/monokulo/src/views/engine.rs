@@ -33,6 +33,7 @@ pub struct EnginePage {
 }
 
 const ENGINE_STYLE: &str = r#"
+.engine-page [hidden] { display: none !important; }
 .wrap.engine-page { max-width: 1880px; display: grid; gap: var(--space-sm); padding-bottom: var(--space-xl); }
 .engine-page h1 { border: 0; margin: 0; padding: 0; font-size: 1.3rem; }
 .engine-page h2 { border: 0; margin: 0; padding: 0; font-size: 0.85rem; font-weight: 800; }
@@ -51,6 +52,7 @@ const ENGINE_STYLE: &str = r#"
 .engine-chip.hi { background: var(--tint-highlight); border-color: var(--accent); }
 .engine-timeline { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-md); align-items: center; }
 .engine-timeline .tl-track { position: relative; display: grid; gap: 2px; }
+.engine-timeline .btn { padding: 3px 10px; font-size: 0.8rem; }
 .engine-timeline canvas { width: 100%; height: 32px; display: block; border-radius: 4px; touch-action: none; cursor: grab; }
 .engine-timeline canvas.panning { cursor: grabbing; }
 .tl-axis { position: relative; height: 12px; font-size: 0.62rem; color: var(--muted); }
@@ -80,7 +82,7 @@ const ENGINE_STYLE: &str = r#"
 .legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 0.66rem; color: var(--muted); }
 .legend span { display: inline-flex; align-items: center; gap: 4px; }
 .legend .cell { width: 11px; height: 13px; border-radius: 3px; }
-.chain-row { display: grid; grid-template-columns: minmax(0, 1fr) 176px; gap: 10px; align-items: start; }
+.chain-row { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 10px; align-items: start; }
 .strip-scroll { overflow: hidden; }
 .strip { position: relative; padding-inline: 14px 8px; padding-top: 26px; height: 128px; }
 .cells { display: flex; gap: 4px; align-items: flex-end; height: 28px; }
@@ -118,7 +120,9 @@ const ENGINE_STYLE: &str = r#"
 @keyframes pill-busy { to { box-shadow: 0 0 0 4px var(--tint-highlight); } }
 .nodes { display: grid; gap: 6px; }
 .node { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 5px 8px; font-size: 0.7rem; }
-.node .nm { font-weight: 800; display: flex; gap: 6px; align-items: center; font-size: 0.75rem; }
+.node .nm { font-weight: 800; display: flex; gap: 6px; align-items: center; font-size: 0.75rem; min-width: 0; }
+.node .nm .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.node .nm .engine-chip { flex: none; }
 .node .call { font-family: var(--font-mono); font-size: 0.66rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .node.spark { animation: node-spark 0.8s; }
 @keyframes node-spark { 30% { box-shadow: 0 0 0 4px var(--tint-highlight); } }
@@ -183,6 +187,7 @@ details.mini.alert { border-color: var(--error); }
 .token.save { width: 10px; height: 10px; border-radius: 2px; background: var(--viz-saved); border: 1.5px solid var(--paper-raised); box-shadow: none; }
 .token.envelope { width: 15px; height: 10px; border-radius: 2px; background: var(--paper-raised); border: 1.5px solid var(--ink); box-shadow: none; }
 .token.payment { border-radius: 50%; background: var(--accent); }
+.token.token-stores { background: var(--viz-tier-blocks); border-radius: 99px; width: 18px; }
 .ghostcell { position: absolute; z-index: 15; pointer-events: none; }
 #engine-stage { position: relative; }
 @media (max-width: 1150px) {
@@ -375,7 +380,7 @@ fn chain(chain: &ChainView) -> Markup {
                 }
                 div class="nodes" id="nodes" {
                     @for node in &chain.nodes {
-                        div class="node" { div class="nm" { (node.label) " " span class=(format!("engine-chip {}", node.tone)) { (node.chip) } } }
+                        div class="node" { div class="nm" { span class="label" title=(node.label) { (node.label) } span class=(format!("engine-chip {}", node.tone)) { (node.chip) } } }
                     }
                     div class="node" id="node-call" { div class="call" { (chain.call) } }
                 }

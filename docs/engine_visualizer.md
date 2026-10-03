@@ -208,7 +208,7 @@ One track across the top of the page, showing a **window** of the history
   is labelled in time ago ("6 min ago").
 - **Drag the track to move along the history**: drag right to go back in
   time, left to come forward. **Scroll to zoom** around the pointer (from
-  20 s to the whole history). While the window's right edge is at now it
+  5 s, about five rounds, to the whole history). While the window's right edge is at now it
   follows now; once moved into the past it stays there.
 - **Click to move the playhead** (a press that doesn't move more than a few
   pixels is a click, not a drag). That pauses and moves the whole page to

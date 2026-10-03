@@ -7,7 +7,7 @@ const root = path.resolve(__dirname, '../..');
 const output = path.join(root, 'target/coverage/browser/assets');
 fs.mkdirSync(output, { recursive: true });
 const initial = {};
-for (const name of ['checkout', 'challenge', 'monokulo-client']) {
+for (const name of ['checkout', 'challenge', 'monokulo-client', 'engine-view']) {
   const source = `crates/monokulo/static/${name}.js`;
   const instrumenter = createInstrumenter({ esModules: false, compact: false });
   const code = instrumenter.instrumentSync(fs.readFileSync(path.join(root, source), 'utf8'), source);
