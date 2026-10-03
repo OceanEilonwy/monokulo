@@ -864,6 +864,10 @@ pub struct PaymentView {
     pub first_seen_at: i64,
     pub block_height: Option<i64>,
     pub voided_at: Option<i64>,
+    /// Voided because another payment of the same output is the one
+    /// credited, not as a double spend.
+    #[serde(default)]
+    pub superseded: bool,
 }
 
 #[derive(Serialize)]

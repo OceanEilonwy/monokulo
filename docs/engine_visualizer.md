@@ -310,7 +310,7 @@ in tests.
   per SQL statement.
 - A **snapshot every 10 s**, taken by the scan loop before a round
   (`work::snapshot`): one store call for the database facts
-  (`Store::activity_facts`, each query indexed; migration 0025 indexes
+  (`Store::activity_facts`, each query indexed; migration 0026 indexes
   webhook deliveries by when they were made) and the scheduler's memory
   (the carried block cache, the pool it remembers, the database worker's
   queues, the nodes).

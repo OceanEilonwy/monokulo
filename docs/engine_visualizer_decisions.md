@@ -42,7 +42,7 @@ events arrive while it runs.
 Webhook delivery is one loop for every network, so it can't record into a
 network's activity. The snapshot counts deliveries made per 10 s over the
 last five minutes for the network's stores, with a new partial index on
-`delivered_at_utc` (migration 0025) so the query reads only those rows.
+`delivered_at_utc` (migration 0026) so the query reads only those rows.
 "Failed" was dropped from the panel's detail: due and sent are what the
 design's one line shows, and failures have their own place (the logs).
 

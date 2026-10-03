@@ -1095,7 +1095,7 @@ async fn scan_block(
     if plan
         .parent
         .as_ref()
-        .is_some_and(|parent| parent != prev_hash)
+        .is_some_and(|parent_hash| parent_hash != prev_hash)
     {
         return Ok(BlockOutcome::Diverged(
             "the node's block doesn't extend the recorded chain",

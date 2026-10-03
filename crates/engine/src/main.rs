@@ -275,7 +275,7 @@ async fn run(boot: Boot) {
 
     // Read once: the listen address is restart-only (decision D8).
     let bind = engine_settings.runtime.load().bind;
-    let router = build_router(app_state, MAX_BODY_CEILING);
+    let app = build_router(app_state, MAX_BODY_CEILING);
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .expect("failed to bind server address");
@@ -302,7 +302,7 @@ async fn run(boot: Boot) {
     // delivered only after they went out), so the next start carries on.
     let server = axum::serve(
         listener,
-        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(shared::shutdown::signal());
     let serving = tokio::spawn(async move { server.await });

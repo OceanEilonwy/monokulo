@@ -175,11 +175,11 @@ mod subscriber {
     /// with its node's `host:port`; one named twice is listened to once.
     fn publishers(settings: &EngineSettings, network: monero::Network) -> Vec<(String, String)> {
         let nodes = settings.nodes.load();
-        let Some(node) = nodes.nodes.get(crate::network::network_str(network)) else {
+        let Some(primary) = nodes.nodes.get(crate::network::network_str(network)) else {
             return Vec::new();
         };
         let mut publishers: Vec<(String, String)> = Vec::new();
-        for node in std::iter::once(node).chain(&node.fallbacks) {
+        for node in std::iter::once(primary).chain(&primary.fallbacks) {
             if let Some(endpoint) = &node.zmq_pub {
                 if !publishers.iter().any(|(_, e)| e == endpoint) {
                     publishers.push((format!("{}:{}", node.host, node.port), endpoint.clone()));

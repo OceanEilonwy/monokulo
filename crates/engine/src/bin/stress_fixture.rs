@@ -654,7 +654,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
             })??;
         }
         let elapsed_ms = started.elapsed().as_millis() as u64;
-        let now = progress(&observer, 2)?;
+        let snapshot = progress(&observer, 2)?;
         let phase = if tick < warmup {
             "warmup"
         } else if tick < warmup + measured {
@@ -662,9 +662,9 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
         } else {
             "drain"
         };
-        points.push(json!({"tick":tick,"phase":phase,"duration_ms":elapsed_ms,"highwater":now.highwater,
-            "lagging_tenants":now.lagging,"oldest_lag_blocks":now.highwater.saturating_sub(now.min_cursor),
-            "min_tenant_cursor":now.min_cursor,"progressed_tenants":now.progressed,
+        points.push(json!({"tick":tick,"phase":phase,"duration_ms":elapsed_ms,"highwater":snapshot.highwater,
+            "lagging_tenants":snapshot.lagging,"oldest_lag_blocks":snapshot.highwater.saturating_sub(snapshot.min_cursor),
+            "min_tenant_cursor":snapshot.min_cursor,"progressed_tenants":snapshot.progressed,
             "ok":outcome.is_ok(),"error":outcome.err()}));
     }
     heartbeat_stop.store(true, Ordering::Relaxed);

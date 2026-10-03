@@ -1,0 +1,14 @@
+{
+	"admin/services/monokulo": {
+		"title": "Monokulo",
+		"order": 90,
+		"action": {
+			"type": "view",
+			"path": "monokulo"
+		},
+		"depends": {
+			"acl": [ "luci-app-monokulo" ],
+			"uci": { "monokulo": true }
+		}
+	}
+}

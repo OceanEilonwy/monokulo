@@ -1,0 +1,14 @@
+{
+	"luci-app-monokulo": {
+		"description": "Grant access to Monokulo settings",
+		"read": {
+			"ubus": {
+				"service": [ "list" ]
+			},
+			"uci": [ "monokulo" ]
+		},
+		"write": {
+			"uci": [ "monokulo" ]
+		}
+	}
+}

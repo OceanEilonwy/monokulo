@@ -364,7 +364,8 @@ impl Store {
     pub fn attest_payment_block(&self, txid: &str, height: u64, hash: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE order_payments SET block_hash = ?3
-             WHERE txid = ?1 AND block_height = ?2 AND voided_at_utc IS NULL",
+             WHERE txid = ?1 AND block_height = ?2
+               AND (voided_at_utc IS NULL OR superseded_by IS NOT NULL)",
             params![txid, sql_height(height)?, hash],
         )?;
         Ok(())
@@ -375,19 +376,20 @@ impl Store {
     /// the block it was found in is the proven block at its height, and
     /// only with the confirmations up to [`Self::proof_ceiling`]; one whose
     /// block isn't (or can't be shown to be) counts none. One in the pool
-    /// counts as it is.
+    /// counts as it is. Payments in `uncounted` (ids) are left out.
     pub fn proven_views(
         &self,
         network: monero::Network,
         order_id: &crate::store::OrderId,
         current_height: u64,
+        uncounted: &std::collections::HashSet<i64>,
     ) -> Result<Option<Vec<crate::status::PaymentView>>> {
         let Some(ceiling) = self.proof_ceiling(network)? else {
             return Ok(None);
         };
         let top = ceiling.min(current_height);
         let mut statement = self.conn.prepare_cached(
-            "SELECT p.amount_piconero, p.block_height, p.block_hash, pb.block_hash
+            "SELECT p.amount_piconero, p.block_height, p.block_hash, pb.block_hash, p.id
              FROM order_payments p
              LEFT JOIN proven_blocks pb ON pb.network = ?2 AND pb.height = p.block_height
              WHERE p.order_id = ?1 AND p.voided_at_utc IS NULL",
@@ -407,14 +409,24 @@ impl Store {
                     }
                     _ => 0,
                 };
-                Ok(crate::status::PaymentView {
-                    amount_piconero: amount.0,
-                    confirmations,
-                    is_zero_conf: height.is_none(),
-                })
+                let id: i64 = row.get(4)?;
+                Ok((
+                    id,
+                    crate::status::PaymentView {
+                        amount_piconero: amount.0,
+                        confirmations,
+                        is_zero_conf: height.is_none(),
+                    },
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(Some(views))
+        Ok(Some(
+            views
+                .into_iter()
+                .filter(|(id, _)| !uncounted.contains(id))
+                .map(|(_, view)| view)
+                .collect(),
+        ))
     }
 
     /// The highest block an order on `network` may newly settle on, while
@@ -665,7 +677,12 @@ mod tests {
                 .set_scanned_block(NET, h, &hex::encode(block(h, 0).id))
                 .unwrap();
         }
-        let views = |store: &Store| store.proven_views(NET, &order, 120).unwrap().unwrap();
+        let views = |store: &Store| {
+            store
+                .proven_views(NET, &order, 120, &std::collections::HashSet::default())
+                .unwrap()
+                .unwrap()
+        };
 
         store
             .record_payment_match(&order, "tx", 0, 5, "[]", 1000, Some(110), None)
@@ -714,7 +731,10 @@ mod tests {
         assert!(pooled[0].is_zero_conf);
         // Checking off: no proven views at all.
         store.disable_proof(NET).unwrap();
-        assert!(store.proven_views(NET, &order, 120).unwrap().is_none());
+        assert!(store
+            .proven_views(NET, &order, 120, &std::collections::HashSet::default())
+            .unwrap()
+            .is_none());
     }
 
     #[test]

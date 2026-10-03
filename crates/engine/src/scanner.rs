@@ -705,8 +705,7 @@ async fn void_if_double_spend_proven(
     db.run(crate::store::db::Class::Scanner, move |s| {
         void_and_notify(s, &order_id, &txid, output, current_height, now)
     })
-    .await?;
-    Ok(true)
+    .await
 }
 
 /// Voids a payment proven double-spent and, in the *same transaction*, records every
@@ -730,7 +729,7 @@ fn void_and_notify(
     output_index: i64,
     current_height: u64,
     now: i64,
-) -> Result<()> {
+) -> Result<bool> {
     store.in_transaction(|store| {
         void_and_notify_in_tx(store, order_id, txid, output_index, current_height, now)
     })
@@ -745,7 +744,17 @@ pub(crate) fn void_and_notify_in_tx(
     output_index: i64,
     current_height: u64,
     now: i64,
-) -> Result<()> {
+) -> Result<bool> {
+    // Another payment on the order carries its output key: its inputs being
+    // spent is no double spend of the order's money, as a copy of a real
+    // payment (a lying node's, carrying the real one's key images) shows.
+    // Which of them is credited is `store::conflicts`'s to settle, at the
+    // recompute; nothing is voided or flagged here. Returns whether it
+    // voided.
+    if store.shares_output_key(order_id, txid, output_index)? {
+        recompute_and_notify_in_tx(store, order_id, current_height, now)?;
+        return Ok(false);
+    }
     // A payment is voided on the evidence that its transaction is in no
     // block, so its recorded height (from a discarded chain, if it has one)
     // goes too: a void that is later reversed must come back unconfirmed,
@@ -764,7 +773,8 @@ pub(crate) fn void_and_notify_in_tx(
         "order.double_spend_detected",
         &[("order_id", order_id.as_str())],
         now,
-    )
+    )?;
+    Ok(true)
 }
 
 /// Reverses a payment void that a later, corroborated re-check no longer supports -
@@ -806,7 +816,7 @@ fn unvoid_as_false_positive(
         if store
             .get_all_payments(order_id)?
             .iter()
-            .all(|p| p.voided_at.is_none())
+            .all(|p| p.voided_at.is_none() || p.superseded_by.is_some())
         {
             store.clear_double_spend_flag(order_id)?;
         }
@@ -1340,7 +1350,13 @@ pub async fn register_missing_wallets_reporting(
                 if winner == handle {
                     registered += 1;
                 } else {
-                    let _ = key_custody.remove_wallet(handle).await;
+                    crate::key_custody::remove_wallet_logged(
+                        key_custody,
+                        handle,
+                        Some(tenant.id.as_str()),
+                        "registering a store's keys, another task registered them first",
+                    )
+                    .await;
                 }
             }
             Ok(Err(e)) => {
@@ -5297,13 +5313,17 @@ pub(crate) mod tests {
     async fn an_output_reusing_a_credited_one_time_key_is_not_credited_twice() {
         // Two outputs carrying one one-time key are one spendable output:
         // crediting both pays an order with money the merchant cannot have.
+        // Both are recorded (which one a node shows first is its choice, so
+        // it can't decide), and only one is ever counted
+        // (`store::conflicts`).
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let tenant = shared::ids::TenantId::new(tenant_id.clone());
         let order = shared::ids::OrderId::new(order_id.clone());
         let first = fixture_tx();
         let reused = key_reusing_tx(1);
         assert_ne!(tx_id_hex(&first), tx_id_hex(&reused));
-        for tx in [&first, &reused, &first] {
+        // The copy is seen first, both in the pool.
+        for tx in [&reused, &first, &reused] {
             scan_transaction_for_tenant(
                 &store,
                 &key_custody,
@@ -5318,20 +5338,25 @@ pub(crate) mod tests {
             .unwrap();
         }
         let payments = store.get_all_payments(&order).unwrap();
-        assert_eq!(
-            payments.len(),
-            1,
-            "the second output with the key is refused"
-        );
-        assert_eq!(payments[0].txid, tx_id_hex(&first));
+        assert_eq!(payments.len(), 2, "both outputs with the key are recorded");
         let scan = scan_transaction(&key_custody, handle, &first, 0..3)
             .await
             .unwrap();
         let (index, key) = scan.output_keys.iter().next().unwrap();
-        assert_eq!(payments[0].output_index, *index as i64);
-        assert_eq!(payments[0].output_key.as_deref(), Some(key.as_str()));
+        assert!(payments
+            .iter()
+            .all(|p| p.output_key.as_deref() == Some(key.as_str())));
+        let received = |store: &Store| {
+            store.recompute_order_status(&order, 100, 1600).unwrap();
+            store
+                .get_order(&tenant, &order)
+                .unwrap()
+                .unwrap()
+                .amount_received_piconero
+        };
+        assert_eq!(received(&store), FIXTURE_AMOUNT_PICONERO, "counted once");
 
-        // A genuinely independent second payment is credited.
+        // A genuinely independent second payment counts too.
         let independent = independent_payment_tx(2);
         scan_transaction_for_tenant(
             &store,
@@ -5345,30 +5370,89 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(store.get_all_payments(&order).unwrap().len(), 2);
+        assert_eq!(received(&store), 2 * FIXTURE_AMOUNT_PICONERO);
 
-        // Once the credited one is voided (its transaction lost a double
-        // spend), the other output with the key is the one that can be spent.
-        store
-            .void_payment(&order, &tx_id_hex(&first), *index as i64, 1600)
-            .unwrap();
+        // The real one is mined: credited, the copy voided for it.
         scan_transaction_for_tenant(
             &store,
             &key_custody,
             handle,
             &tenant,
-            &reused,
+            &first,
             0..3,
             1700,
-            None,
+            Some(90),
         )
         .await
         .unwrap();
+        assert_eq!(received(&store), 2 * FIXTURE_AMOUNT_PICONERO);
         let payments = store.get_all_payments(&order).unwrap();
-        assert_eq!(payments.len(), 3);
-        assert!(payments
+        let credited = payments
             .iter()
-            .any(|p| p.txid == tx_id_hex(&reused) && p.voided_at.is_none()));
+            .find(|p| p.txid == tx_id_hex(&first))
+            .unwrap();
+        assert_eq!(credited.output_index, *index as i64);
+        assert_eq!((credited.voided_at, credited.superseded_by), (None, None));
+        let copy = payments
+            .iter()
+            .find(|p| p.txid == tx_id_hex(&reused))
+            .unwrap();
+        assert!(copy.voided_at.is_some());
+        assert_eq!(copy.superseded_by, Some(credited.id));
+    }
+
+    /// A copy of a real payment's outputs (a lying node's) leaves the pool,
+    /// its inputs spent: no double spend of the order's money, since the
+    /// real one carries the same output. Nothing is voided or flagged;
+    /// `store::conflicts` credits the one that gets into a block.
+    #[tokio::test]
+    async fn a_copy_vanishing_from_the_pool_is_not_voided_as_a_double_spend() {
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let tenant = shared::ids::TenantId::new(tenant_id);
+        let order = shared::ids::OrderId::new(order_id);
+        let (real, copy) = (fixture_tx(), key_reusing_tx(1));
+        for tx in [&copy, &real] {
+            scan_transaction_for_tenant(
+                &store,
+                &key_custody,
+                handle,
+                &tenant,
+                tx,
+                0..3,
+                1500,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        let daemon = FakeDaemonClient::new();
+        daemon.set_mempool(vec![real.clone()]);
+        for image in key_images_of(&copy) {
+            daemon.set_key_image_status(&image, KeyImageStatus::SpentInBlockchain);
+        }
+        let unconfirmed = store.get_all_payments(&order).unwrap();
+        let store = store.into_shared();
+        let db = crate::store::Db::over_shared(Arc::clone(&store));
+        let mempool: HashSet<String> = [tx_id_hex(&real)].into();
+        check_vanished_candidates(
+            &db,
+            &daemon,
+            &mempool,
+            100,
+            1600,
+            unconfirmed,
+            &VanishedHints::default(),
+        )
+        .await
+        .unwrap();
+        let store = store.lock();
+        assert!(store
+            .get_all_payments(&order)
+            .unwrap()
+            .iter()
+            .all(|p| p.voided_at.is_none()));
+        let order_row = store.get_order(&tenant, &order).unwrap().unwrap();
+        assert_eq!(order_row.double_spend_detected_at, None, "not flagged");
     }
 
     #[tokio::test]

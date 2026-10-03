@@ -473,6 +473,7 @@ async fn order_detail_data(
                             p.block_height.map(|h| h.to_string()).as_deref(),
                         ),
                         voided_at: p.voided_at,
+                        superseded: p.superseded,
                     })
                     .collect(),
                 payment_link,

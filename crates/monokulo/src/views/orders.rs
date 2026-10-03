@@ -204,6 +204,8 @@ pub struct PaymentRowViewModel {
     pub first_seen_at: i64,
     pub block_height_display: maud::Markup,
     pub voided_at: Option<i64>,
+    /// Voided for another payment of the same output, not a double spend.
+    pub superseded: bool,
 }
 
 pub struct OrderDetailData {
@@ -342,7 +344,12 @@ pub fn live_fragment(order: &OrderDetailData, clock: &super::time::Clock) -> Mar
                             td { (payment.amount_piconero) }
                             td { (clock.time(payment.first_seen_at)) }
                             td { (payment.block_height_display) }
-                            td { (clock.time_or_dash(payment.voided_at)) }
+                            td {
+                                (clock.time_or_dash(payment.voided_at))
+                                @if payment.superseded {
+                                    " " span class="muted" { "(the same output, paid in another transaction, is the one counted)" }
+                                }
+                            }
                         }
                     }
                 }
