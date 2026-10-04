@@ -290,11 +290,10 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		// the hosted service by that name throughout.
 		$this->id = 'monokulo';
 
-		// No custom checkout icon yet - out of scope for a registration-only
-		// step, and WooCommerce renders gateways with no `icon` perfectly
-		// normally (an empty string is this property's own documented
-		// default), so there's nothing to work around here.
-		$this->icon = '';
+		// The Monokulo mark beside the payment method at checkout: the square
+		// version, shipped with the plugin so the shopper's browser loads it
+		// from the store, not from monokulo. Written by `scripts/logo.py`.
+		$this->icon = plugins_url( 'assets/monokulo-icon.svg', dirname( __DIR__ ) . '/monokulo.php' );
 
 		// This gateway never renders its own fields inline at WooCommerce's
 		// checkout - per `docs/WOOCOMMERCE_ROADMAP.md` Stage 7's explicit
