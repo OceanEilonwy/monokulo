@@ -2447,11 +2447,19 @@ impl Store {
     /// `false` (not an error) if the webhook doesn't exist or belongs to a different
     /// tenant - the two are indistinguishable from the caller's perspective.
     pub fn delete_webhook(&self, tenant_id: &TenantId, webhook_id: &WebhookId) -> Result<bool> {
-        let changed = self.conn.execute(
-            "DELETE FROM webhooks WHERE id = ?1 AND tenant_id = ?2",
-            params![webhook_id, tenant_id],
-        )?;
-        Ok(changed > 0)
+        self.in_transaction(|_| {
+            // Scope the children too: another tenant must not cancel deliveries.
+            self.conn.execute(
+                "DELETE FROM webhook_deliveries WHERE webhook_id = ?1
+                 AND EXISTS (SELECT 1 FROM webhooks WHERE id = ?1 AND tenant_id = ?2)",
+                params![webhook_id, tenant_id],
+            )?;
+            let changed = self.conn.execute(
+                "DELETE FROM webhooks WHERE id = ?1 AND tenant_id = ?2",
+                params![webhook_id, tenant_id],
+            )?;
+            Ok(changed > 0)
+        })
     }
 
     pub fn enqueue_webhook_delivery(
@@ -2586,13 +2594,17 @@ impl Store {
         response_status: u16,
         at: i64,
     ) -> Result<()> {
+        #[cfg(test)]
+        crash_checkpoint("webhooks.delivered.before_commit");
         self.conn.execute(
             "UPDATE webhook_deliveries
-             SET attempt_count = attempt_count + 1, delivered_at_utc = ?2, last_attempted_at_utc = ?2,
-                 last_response_status = ?3
-             WHERE id = ?1",
+             SET attempt_count = MIN(attempt_count + 1, 4294967295), delivered_at_utc = ?2, last_attempted_at_utc = ?2,
+                 last_response_status = ?3, last_error = NULL, gave_up_at_utc = NULL
+             WHERE id = ?1 AND delivered_at_utc IS NULL",
             params![delivery_id, at, response_status as i64],
         )?;
+        #[cfg(test)]
+        crash_checkpoint("webhooks.delivered.after_commit");
         Ok(())
     }
 
@@ -2606,16 +2618,35 @@ impl Store {
         error: Option<&str>,
         at: i64,
     ) -> Result<()> {
+        #[cfg(test)]
+        crash_checkpoint("webhooks.give_up.before_commit");
         self.conn.execute(
             "UPDATE webhook_deliveries
-             SET attempt_count = attempt_count + 1,
+             SET attempt_count = MIN(attempt_count + 1, 4294967295),
                  gave_up_at_utc = ?2,
                  last_attempted_at_utc = ?2,
                  last_response_status = ?3,
                  last_error = ?4
-             WHERE id = ?1",
+             WHERE id = ?1 AND delivered_at_utc IS NULL AND gave_up_at_utc IS NULL",
             params![delivery_id, at, response_status.map(|s| s as i64), error],
         )?;
+        #[cfg(test)]
+        crash_checkpoint("webhooks.give_up.after_commit");
+        Ok(())
+    }
+
+    /// A lowered live retry budget may already be exhausted. Retire the row
+    /// without claiming an HTTP attempt occurred or erasing the last failure.
+    pub fn retire_exhausted_webhook_delivery(&self, delivery_id: i64, at: i64) -> Result<()> {
+        #[cfg(test)]
+        crash_checkpoint("webhooks.exhausted.before_commit");
+        self.conn.execute(
+            "UPDATE webhook_deliveries SET gave_up_at_utc = ?2
+             WHERE id = ?1 AND delivered_at_utc IS NULL AND gave_up_at_utc IS NULL",
+            params![delivery_id, at],
+        )?;
+        #[cfg(test)]
+        crash_checkpoint("webhooks.exhausted.after_commit");
         Ok(())
     }
 
@@ -2627,14 +2658,16 @@ impl Store {
         error: Option<&str>,
         at: i64,
     ) -> Result<()> {
+        #[cfg(test)]
+        crash_checkpoint("webhooks.retry.before_commit");
         self.conn.execute(
             "UPDATE webhook_deliveries
-             SET attempt_count = attempt_count + 1,
+             SET attempt_count = MIN(attempt_count + 1, 4294967295),
                  next_attempt_at_utc = ?2,
                  last_attempted_at_utc = ?3,
                  last_response_status = ?4,
                  last_error = ?5
-             WHERE id = ?1",
+             WHERE id = ?1 AND delivered_at_utc IS NULL AND gave_up_at_utc IS NULL",
             params![
                 delivery_id,
                 next_attempt_at,
@@ -2643,6 +2676,8 @@ impl Store {
                 error
             ],
         )?;
+        #[cfg(test)]
+        crash_checkpoint("webhooks.retry.after_commit");
         Ok(())
     }
 }
