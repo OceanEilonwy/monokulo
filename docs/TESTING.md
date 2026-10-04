@@ -567,3 +567,28 @@ investigate rather than an automatic build break.
 |---|---|---|
 | Binary size stays within a tracked budget | Directly protects the "as small as possible" goal (§DESIGN.md 2) from silent dependency creep | CI step comparing the built binary's size against a checked-in baseline, failing (or warning) past a configured delta |
 | Idle CPU/memory footprint stays within a rough budget | Directly protects "minimal resource use, doesn't compete with the router's other duties" | Run the server idle for a fixed period under a resource-measuring wrapper; assert RSS and CPU time stay under a generous threshold — treat as advisory given shared-CI noise |
+
+### Order creation and allocation properties
+
+`http::tests::properties` drives the real authenticated router and custody implementation.
+Ten generated properties use 64 cases by default and run in the existing default/ZMQ
+CI matrix and daily exploration filter. `PROPTEST_CASES` and persisted regressions
+work as for scanner properties. Run `cargo nextest run -p engine --lib --locked
+-E 'test(http::tests::properties::)'`.
+
+| Property family | Inclusive ranges and guarantees |
+|---|---|
+| Tenant-scoped creation histories | 2–4 tenants, 1–24 events, eight reusable keys; base amount 1–999,999,999,999 plus key offset; repeats, metadata changes, invalid/conflicting requests, custody failures, stale handles and database reopen. Independent wallet/index address derivation, exact purchase fields, stable replies and contiguous allocation counters. |
+| Request boundaries | Full-width u64 amounts and confirmation counts, explicit zero/max/max+1 amounts and confirmation boundaries; keys of 1–128 visible ASCII bytes, empty/129-byte/space/control/non-ASCII keys. Invalid requests cannot change orders or counters. |
+| Concurrent production-worker creation | 2–32 callers across 1–3 tenants; shared or distinct keys, amounts 1–9,999. Bounded contention errors may require client retries; every purchase eventually gets exactly one order and unique address. |
+| SQL failure recovery | Denial positions 0–99, optional reopen; observable denial traces, no burned indices, idempotent recovery. A fixed sweep covers every reached denial position through creation. |
+| Cancellation and tenant disable during derivation | Amounts 1–9,999; explicit rendezvous proves the derivation was reached. Cancellation preserves allocation for retry; disabling a tenant before its claim cannot create an order. |
+| Allocation exhaustion and consistency | Last four u32 counter values, matching/mismatched claimed indices. MAX is the terminal exclusive scan bound; allocation cannot overflow it. Fixed replay checks preserve old idempotent orders even after exhaustion and reject corrupt out-of-range counters. |
+| Process death around allocation commit | Amounts 1–9,999; named before/after-commit rendezvous, hard kill, integrity check and reopen. Both the order and counter commit together, and retry creates or recovers exactly one order. |
+| Keyless purchases and conflicting keyed purchases | 2–16 identical keyless requests create distinct orders; amounts 1–9,999 and confirmation counts 0–19; changing amount, merchant reference or confirmation override under an existing key returns conflict without writes. |
+
+This suite exposed exhaustion of the u32 allocation counter and inconsistent
+caller-supplied indices. Both are rejected before committing. Allocation now also
+checks tenant enablement inside the claim. The SQL sweep exposed a one-shot failure
+restoring the inline read-only test connection; restoration now retries once so
+subsequent valid writes can recover.

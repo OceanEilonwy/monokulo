@@ -679,6 +679,7 @@ impl From<StoreError> for ApiError {
     fn from(e: StoreError) -> Self {
         match e {
             StoreError::NotFound => Self::NotFound,
+            StoreError::AddressAllocation(e) => Self::Conflict(e),
             StoreError::Sqlite(e) if is_transient_sqlite(&e) => Self::Unavailable(e.to_string()),
             StoreError::Sqlite(e) => Self::Internal(e.to_string()),
             StoreError::WorkerUnavailable(e) => Self::Unavailable(e),
