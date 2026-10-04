@@ -1312,3 +1312,8 @@ mod tests {
         assert_eq!(size_scan_slots(size + 5), size, "the first size stays");
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[path = "plain_properties.rs"]
+mod properties;

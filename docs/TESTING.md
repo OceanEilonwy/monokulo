@@ -592,3 +592,28 @@ caller-supplied indices. Both are rejected before committing. Allocation now als
 checks tenant enablement inside the claim. The SQL sweep exposed a one-shot failure
 restoring the inline read-only test connection; restoration now retries once so
 subsequent valid writes can recover.
+
+### Key-custody properties
+
+Twelve generated properties in `key_custody::{plain,router}::properties` use 64
+cases by default, with real Monero keys and a real paying RingCT transaction.
+They run under the existing CI/daily property filter. Run `cargo nextest run
+-p engine --lib --locked -E 'test(key_custody::plain::properties::) |
+test(key_custody::router::properties::)'`.
+
+| Property family | Inclusive ranges and guarantees |
+|---|---|
+| Sparse scan-window histories | 1–12 generated windows of 0–12 input indices, biased toward 0–15 with full-width u32 and MAX; forced payment inclusion/removal/reinclusion; 1–8 paying/unrelated transactions. Cached and fresh scans match an independent known-output oracle, preserve batch positions and amounts, derive only newly added indices and never rebuild unchanged windows. |
+| Lookup/live cache independence | 1–12 major/minor range changes, small and near-MAX endpoints, including empty/reversed ranges. Lookups agree with fresh scans, reuse unchanged ranges, and leave the live scan window intact. |
+| Scan cancellation | Lookup/live paths, cold/warm caches, 0–11 extra indices. A blocked CPU worker proves cancellation reached queued work; both caches subsequently recover the real payment. |
+| Registration, sealing, retries and removal | 1–16 concurrent same-ID callers, 1–128-character IDs; full-width major/minor indices, all three networks; same material returns one handle, conflicting material is refused, removal and restart preserve address identity while invalidating old handles. |
+| Malformed inputs and resource bounds | 0–96 arbitrary sealed bytes, independent material decoding; oversized ranges of 1,000,001–u32::MAX entries fail without corrupting an existing wallet. Arbitrary registration IDs, explicit 0/128/129-byte boundaries, with no allocation on invalid IDs. |
+| Concurrent wallet scans | 2–16 generated calls plus forced paying/unrelated/empty/recovery calls, windows of 0–11 indices drawn from 0–11; wallets retain independent caches and matches under interleaving. |
+| Router ownership histories | Two real backends; 1–24 register/idempotent-register/replace/disable/remove/backend-loss/retained-reload/unknown-handle events; four generated wallet identities, full-width minor indices. Both backends start populated; every live handle derives its own wallet's address and only affected handles are invalidated or freed. |
+| Outages and epochs | 1–8 failed derivations, all networks, full-width minor indices; failures retain handle ownership. Either backend advances through 1–u64::MAX epochs; only that backend's handles are invalidated, stable epochs preserve new handles, and combined epochs cannot overflow. |
+| Interrupted registration | 1–8 registrations held after backend allocation, then replacement; late replies are rejected and old keys freed. Cancellation after allocation followed by an idempotent retry recovers one handle with no duplicate wallet. |
+
+A fixed scan-table test crosses 255/256/257 and 511/512/513 entries and changes
+windows during partial construction. The epoch property exposed an unchecked sum
+of backend epochs; status aggregation now saturates while per-backend invalidation
+continues to compare each actual epoch independently.

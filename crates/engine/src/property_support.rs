@@ -1,6 +1,6 @@
 //! Shared fixtures for generated boundary tests. All crypto and SQL stay real.
 use crate::key_custody::*;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 pub(crate) fn runtime() -> tokio::runtime::Runtime {
@@ -41,8 +41,22 @@ pub(crate) struct GateCustody {
     pub(crate) inner: PlainKeyCustody,
     pub(crate) mode: AtomicU8,
     pub(crate) attempted: AtomicUsize,
+    pub(crate) epoch: AtomicU64,
+    pub(crate) registration_mode: AtomicU8,
+    pub(crate) registrations: AtomicUsize,
+    pub(crate) registration_entered: tokio::sync::Notify,
+    pub(crate) registration_release: tokio::sync::Notify,
     pub(crate) entered: tokio::sync::Notify,
     pub(crate) release: tokio::sync::Notify,
+}
+impl GateCustody {
+    async fn registration_gate(&self) {
+        self.registrations.fetch_add(1, Ordering::Relaxed);
+        if self.registration_mode.load(Ordering::Relaxed) == 2 {
+            self.registration_entered.notify_one();
+            self.registration_release.notified().await;
+        }
+    }
 }
 #[async_trait::async_trait]
 impl KeyCustody for GateCustody {
@@ -50,7 +64,9 @@ impl KeyCustody for GateCustody {
         &self,
         material: WalletMaterial,
     ) -> Result<WalletHandle, KeyCustodyError> {
-        self.inner.register_wallet(material).await
+        let handle = self.inner.register_wallet(material).await?;
+        self.registration_gate().await;
+        Ok(handle)
     }
     async fn remove_wallet(&self, handle: WalletHandle) -> Result<(), KeyCustodyError> {
         self.inner.remove_wallet(handle).await
@@ -59,7 +75,24 @@ impl KeyCustody for GateCustody {
         self.inner.seal(material).await
     }
     async fn unseal_and_register(&self, sealed: &[u8]) -> Result<WalletHandle, KeyCustodyError> {
-        self.inner.unseal_and_register(sealed).await
+        let handle = self.inner.unseal_and_register(sealed).await?;
+        self.registration_gate().await;
+        Ok(handle)
+    }
+    async fn unseal_and_register_idempotent(
+        &self,
+        sealed: &[u8],
+        registration_id: &str,
+    ) -> Result<WalletHandle, KeyCustodyError> {
+        let handle = self
+            .inner
+            .unseal_and_register_idempotent(sealed, registration_id)
+            .await?;
+        self.registration_gate().await;
+        Ok(handle)
+    }
+    async fn check_state(&self) -> Result<u64, KeyCustodyError> {
+        Ok(self.epoch.load(Ordering::Relaxed))
     }
     async fn derive_subaddress(
         &self,
