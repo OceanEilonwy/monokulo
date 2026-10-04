@@ -133,7 +133,10 @@ where
             let started = tokio::time::Instant::now();
             let Some(future) = make_future(name, &make_loop) else {
                 *RESTARTS.lock().entry(name).or_default() += 1;
-                tokio::time::sleep(backoff).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(backoff) => {}
+                    _ = stop.wait_for(|stopped| *stopped) => return,
+                }
                 backoff = (backoff * 2).min(MAX_BACKOFF);
                 continue;
             };

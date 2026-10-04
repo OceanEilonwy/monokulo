@@ -1,0 +1,50 @@
+[package]
+name = "engine-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+engine = { path = "../crates/engine", features = ["fuzzing"] }
+
+[dev-dependencies]
+loom = "0.7"
+
+[features]
+zmq = ["engine/zmq"]
+
+[[bin]]
+name = "scheduler"
+path = "fuzz_targets/scheduler.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "resources"
+path = "fuzz_targets/resources.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "inputs"
+path = "fuzz_targets/inputs.rs"
+test = false
+doc = false
+bench = false
+
+# Isolate fuzz instrumentation and dependencies from the shipping workspace.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "queue"
+path = "fuzz_targets/queue.rs"
+test = false
+doc = false
+bench = false

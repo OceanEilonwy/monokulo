@@ -95,7 +95,10 @@ impl LinkCost {
 
 /// `expected`, with room to spare, within [`MIN_TIMEOUT`] and [`MAX_TIMEOUT`].
 pub fn timeout_for(expected: Duration) -> Duration {
-    expected.mul_f64(SAFETY).clamp(MIN_TIMEOUT, MAX_TIMEOUT)
+    expected
+        .min(MAX_TIMEOUT)
+        .mul_f64(SAFETY)
+        .clamp(MIN_TIMEOUT, MAX_TIMEOUT)
 }
 
 /// One link's measurements. Cheap to share: every method takes `&self`.
@@ -249,7 +252,7 @@ impl Link {
     /// How long `blocks` blocks of `bytes_per_block` each should take.
     pub fn expected_for_blocks(&self, blocks: u64, bytes_per_block: f64) -> Duration {
         let secs = self.cost().secs(blocks, blocks as f64 * bytes_per_block);
-        Duration::from_secs_f64(secs.max(0.0))
+        Duration::try_from_secs_f64(secs.max(0.0)).unwrap_or(Duration::MAX)
     }
 
     /// The timeout for a `get_blocks.bin` call asking for `blocks` blocks,
@@ -264,7 +267,7 @@ impl Link {
 
     fn snapshot_at(&self, now_unix: i64) -> LinkSnapshot {
         let state = self.state.lock();
-        let hour_ago = now_unix - 3600;
+        let hour_ago = now_unix.saturating_sub(3600);
         let recent = state.history.iter().filter(|m| m.at_unix > hour_ago);
         let (timeouts, failures) = recent
             .clone()
@@ -310,7 +313,7 @@ impl State {
     /// Applies `f` to the history entry for the minute holding `now_unix`,
     /// started if new.
     fn in_minute(&mut self, now_unix: i64, f: impl FnOnce(&mut Minute)) {
-        let at_unix = now_unix - now_unix.rem_euclid(60);
+        let at_unix = now_unix.saturating_sub(now_unix.rem_euclid(60));
         if self.history.back().is_none_or(|m| m.at_unix != at_unix) {
             self.history.push_back(Minute {
                 at_unix,

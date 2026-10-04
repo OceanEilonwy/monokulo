@@ -173,3 +173,56 @@ impl Drop for CrashChild {
         }
     }
 }
+
+pub(crate) struct WorkerRelease(Option<std::sync::mpsc::Sender<()>>);
+impl WorkerRelease {
+    pub(crate) fn release(&mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(());
+        }
+    }
+}
+impl Drop for WorkerRelease {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// Holds a real worker between transactions, with a positive admission ack.
+pub(crate) async fn hold_worker(db: &crate::store::Db) -> WorkerRelease {
+    let (release, hold) = std::sync::mpsc::channel();
+    let (entered, ready) = tokio::sync::oneshot::channel();
+    let db = db.clone();
+    let task = tokio::spawn(async move {
+        db.run(
+            crate::store::db::Class::Admin,
+            move |_| -> Result<(), crate::store::StoreError> {
+                let _ = entered.send(());
+                let _ = hold.recv();
+                Ok(())
+            },
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), ready)
+        .await
+        .unwrap()
+        .unwrap();
+    // Dropping a JoinHandle detaches this bounded job. Release always unblocks it.
+    drop(task);
+    WorkerRelease(Some(release))
+}
+
+pub(crate) async fn wait_queued(
+    db: &crate::store::Db,
+    class: crate::store::db::Class,
+    count: usize,
+) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while db.queued(class) != count {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}

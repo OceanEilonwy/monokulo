@@ -214,6 +214,26 @@ fn round_deadline(
     tick_deadline(poll_interval).max(largest * 2 + budget)
 }
 
+/// Owns one network generation. Stopping waits for its supervised futures to
+/// be dropped before another generation starts or its status is removed.
+struct RunningNetwork {
+    stop: tokio::sync::watch::Sender<bool>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+impl RunningNetwork {
+    async fn stopped(mut self) {
+        let _ = self.stop.send(true);
+        for task in std::mem::take(&mut self.tasks) {
+            let _ = task.await;
+        }
+    }
+}
+impl Drop for RunningNetwork {
+    fn drop(&mut self) {
+        let _ = self.stop.send(true);
+    }
+}
+
 /// Starts a scanner loop for each network that has a node configured, and stops them for a network whose node setting is
 /// cleared, whenever node settings are saved (task 2.1).
 ///
@@ -228,24 +248,28 @@ pub async fn manage_network_loops(
     settings: Arc<EngineSettings>,
 ) {
     let mut changed = settings.nodes.subscribe();
-    let mut running: HashMap<Network, tokio::sync::watch::Sender<bool>> = HashMap::new();
+    let mut running: HashMap<Network, RunningNetwork> = HashMap::new();
     loop {
         let networks = daemons.networks();
         let wanted: std::collections::HashSet<Network> = networks.iter().copied().collect();
-        running.retain(|network, stop| {
-            let keep = wanted.contains(network);
-            if !keep {
-                let _ = stop.send(true);
-                scanner_status.write().remove(network);
-                tracing::info!(network = ?network, "stopped scanning: its node setting was cleared");
+        let removed: Vec<_> = running
+            .keys()
+            .copied()
+            .filter(|network| !wanted.contains(network))
+            .collect();
+        for network in removed {
+            if let Some(generation) = running.remove(&network) {
+                generation.stopped().await;
             }
-            keep
-        });
+            scanner_status.write().remove(&network);
+            tracing::info!(network = ?network, "stopped scanning: its node setting was cleared");
+        }
         for network in networks {
             if running.contains_key(&network) {
                 continue;
             }
             let (stop, stopped) = tokio::sync::watch::channel(false);
+            let mut tasks = Vec::new();
             // Checking on before any loop starts, so no order settles on
             // unchecked blocks while the proof loop gets going
             // (docs/proof_of_work.md). Its own rounds turn it off if not.
@@ -271,13 +295,17 @@ pub async fn manage_network_loops(
             {
                 let (wakes, settings) =
                     (Arc::clone(scan_state.node_wakes()), Arc::clone(&settings));
-                supervise_until(node_events_name(network), stopped.clone(), move || {
-                    crate::node_events::run_subscriber(
-                        network,
-                        Arc::clone(&wakes),
-                        Arc::clone(&settings),
-                    )
-                });
+                tasks.push(supervise_until(
+                    node_events_name(network),
+                    stopped.clone(),
+                    move || {
+                        crate::node_events::run_subscriber(
+                            network,
+                            Arc::clone(&wakes),
+                            Arc::clone(&settings),
+                        )
+                    },
+                ));
             }
             {
                 let (db, key_custody, daemons, wallet_handles, settings, scan_state) = (
@@ -288,7 +316,7 @@ pub async fn manage_network_loops(
                     Arc::clone(&settings),
                     Arc::clone(&scan_state),
                 );
-                supervise_until(
+                tasks.push(supervise_until(
                     fast_mempool_loop_name(network),
                     stopped.clone(),
                     move || {
@@ -302,7 +330,7 @@ pub async fn manage_network_loops(
                             Arc::clone(&settings),
                         )
                     },
-                );
+                ));
             }
             {
                 let (db, daemons, settings, status, wakes) = (
@@ -312,17 +340,21 @@ pub async fn manage_network_loops(
                     Arc::clone(&scanner_status),
                     Arc::clone(scan_state.node_wakes()),
                 );
-                supervise_until(proof_loop_name(network), stopped.clone(), move || {
-                    crate::proof::run_loop(
-                        network,
-                        db.clone(),
-                        daemons.clone(),
-                        Arc::clone(&settings),
-                        Arc::clone(&status),
-                        Arc::clone(&wakes),
-                        crate::proof::ProofTuning::DEFAULT,
-                    )
-                });
+                tasks.push(supervise_until(
+                    proof_loop_name(network),
+                    stopped.clone(),
+                    move || {
+                        crate::proof::run_loop(
+                            network,
+                            db.clone(),
+                            daemons.clone(),
+                            Arc::clone(&settings),
+                            Arc::clone(&status),
+                            Arc::clone(&wakes),
+                            crate::proof::ProofTuning::DEFAULT,
+                        )
+                    },
+                ));
             }
             let (db, key_custody, daemons, wallet_handles, scanner_status, settings) = (
                 db.clone(),
@@ -332,20 +364,24 @@ pub async fn manage_network_loops(
                 Arc::clone(&scanner_status),
                 Arc::clone(&settings),
             );
-            supervise_until(scanner_loop_name(network), stopped, move || {
-                run_scanner_loop(
-                    Arc::clone(&scan_state),
-                    db.clone(),
-                    Arc::clone(&key_custody),
-                    network,
-                    daemons.clone(),
-                    Arc::clone(&wallet_handles),
-                    Arc::clone(&scanner_status),
-                    Arc::clone(&settings),
-                )
-            });
+            tasks.push(supervise_until(
+                scanner_loop_name(network),
+                stopped,
+                move || {
+                    run_scanner_loop(
+                        Arc::clone(&scan_state),
+                        db.clone(),
+                        Arc::clone(&key_custody),
+                        network,
+                        daemons.clone(),
+                        Arc::clone(&wallet_handles),
+                        Arc::clone(&scanner_status),
+                        Arc::clone(&settings),
+                    )
+                },
+            ));
             tracing::info!(network = ?network, "scanning");
-            running.insert(network, stop);
+            running.insert(network, RunningNetwork { stop, tasks });
         }
         if changed.changed().await.is_err() {
             return;
@@ -981,3 +1017,8 @@ mod tests {
         scan_loop.abort();
     }
 }
+
+#[cfg(test)]
+#[path = "loop_properties.rs"]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod properties;

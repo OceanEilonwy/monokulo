@@ -330,10 +330,11 @@ The generated models still have explicit limits:
   exhaustively control the executor or explore every weak-memory ordering. The new subprocess harness samples abrupt
   process death during SQLite execution. It does not model OS crashes/power loss or exhaust every crash point.
   Existing concurrency and SQL fault-sweep tests complement these cases.
-- Reorg models retain two bootstrap blocks and stay within the configured window.
-  Bootstrap/genesis and deeper-than-window forks have example tests, but are not
-  generated histories yet; hashes outside the retained window cannot establish
-  a fork without additional evidence.
+- The original reorg model retains two bootstrap blocks and stays within the
+  configured window. Separate lifecycle properties now generate bootstrap,
+  genesis replacement and deeper-than-window forks with failures and database
+  reopens. Hashes outside the retained window cannot establish a fork without
+  additional evidence.
 - Wallet isolation uses two deterministic key pairs and valid output derivations;
   it does not fuzz arbitrary cryptographic keys, encodings or signatures.
 - The settlement-ceiling property supplies trusted verifier-result fixtures.
@@ -671,3 +672,87 @@ PROPTEST_CASES=128 PROPTEST_RNG_SEED=83 cargo nextest run -p engine --lib --lock
 cargo nextest run -p engine --lib --locked -E \
   'test(http::tests::properties::) | test(key_custody::plain::properties::) | test(key_custody::router::properties::) | test(webhook_delivery::properties::)'
 ```
+
+## Deterministic scheduler, queue and boundary exploration
+
+The production round runner now delegates its two-pass scheduling decisions to
+`work::scheduler::Scheduler`. It accepts explicit elapsed monotonic time, issues
+one `RunUnit`, and accepts only that outstanding unit's completion. Tokens include
+an explicit round generation; duplicates and completions from another generation
+cannot alter progress. The runner still executes the real daemon/custody/SQLite
+operations, records activity, and preserves the first actual failure.
+`work::retry::Retry` similarly separates retry policy from the clock and map.
+`store::dispatch::Dispatch` supplies the real database worker's class rotation;
+Tokio channels and the worker thread still own admission, capacity and execution.
+
+This split supplements the existing integration suites. SQLite remains the source
+of durable truth: issuing an effect does not mean it committed. In particular,
+block publication rechecks the parent, block identity, tenant cursor and pending
+reorg inside its transaction. A cancelled caller's accepted database job can still
+commit, and must leave the same durable recompute obligation as an observed reply.
+
+| Suite | Generated surface and bounds | Required assertions |
+|---|---|---|
+| `work::scheduler::properties` | 0–99,999 ns budgets, 0–149,999 ns opening costs; 0–255 scripted units, each 0–999 ns; generated positive tier shares; every progress outcome; full `u32` retry counts, `u64` times/generations and full-width `Duration` budgets/opening costs | Full trace matches a separate interpreter of the pre-extraction two-pass contract; each tier gets its progress floor; terminal tiers stop; duplicate, outstanding and other-generation effects cannot change counts; retries saturate, reset and expire per key. A fixed sweep covers all 1,024 combinations of five tier outcomes. |
+| `store::db::properties` | Three classes, 1–66 submissions per class around capacity 64; cancellation before admission and after admission; injected job panics; 1–64 accepted jobs per class when all senders close | FIFO within each class, exact round-robin drain, no execution of cancelled unaccepted work, execution and durable writes of accepted abandoned work, isolated panic failure. A fixed sweep explores all 8^6 readiness histories for each continuously ready class. Fairness is measured in service turns, not wall-clock time. |
+| `work::blocks::properties` | Six late-commit situations × cancelled/observed caller × staged/direct real cryptographic scan; 1–255 cache actions, heights 0–31 and sizes/budgets 0–999,999 | Stale parents/hashes, rewound or advanced cursors and pending reorgs cannot publish money; valid abandoned writes survive reopen with a recompute obligation. Every late-commit combination also runs in a fixed sweep. Cache contents, byte accounting, protection, victim selection and discarded bytes agree with an independent eviction model. |
+| `loops::properties` | 1–39 generation actions over three networks; panic/return recovery; 1–11 real admin configuration saves with network masks 0–7, changing fallbacks and a local endpoint that holds RPC responses; 1–7 restart failures before stopping | Previous supervised futures are gone before replacement; other networks retain their generations; dropping ownership stops children; the actual manager follows saved settings; stopping during factory or loop restart backoff is immediate. |
+| Scanner lifecycle properties | Bootstrap heights 0–4; 1–11 outage/fault/reopen actions; tips 12–49, retention depths 1–9, forks 0–4 blocks below the edge, up to four full database reopens; genesis divergence histories | No bootstrap creates money; a newly arriving real payment is found once after recovery; retained-window evidence is reconciled, while payments below it retain the documented limitation; genesis replacement finishes without a stranded reorg. |
+| `scaling::properties` | Full-width counters, durations and timestamps; arbitrary floats plus fixed NaN/infinity/zero/extreme cases; 1–255 telemetry events; changing valid link costs and memory budgets | Requests remain bounded, increasing usable resources cannot reduce their size, timeouts stay within their floor/ceiling, timestamp/counter arithmetic cannot wrap or panic, telemetry stays bounded even with a stopped/backwards clock. |
+| `store::properties` | Every schema version 1–26 with real historical migrations and existing money/queues; amounts 1–`i64::MAX`, Unicode payloads, SQL authorizer fault positions 0–399; generated process kills from versions 1–25 | Upgrade preserves payment identity/amounts, exact queued payloads, partial scans, recompute obligations and reorg work; migration versions remain contiguous after failure; reopening finishes the upgrade; integrity and foreign keys hold. Fixed sweeps cover all historical schemas, every reached boundary of the final migration, and kills before/after commits from every historic prefix. |
+| `exploration::properties` | Byte histories 0–4,095 bytes; all float bit patterns; CPU range/set histories and full-width endpoints | Shared fuzz oracles check scheduler/dispatch invariants, sizing, bounded CPU parsing, setting and identifier serialization, malformed input handling. |
+
+New properties default to **64 cases**, overridden by `PROPTEST_CASES`; regression
+seeds are replayed first. The existing ordinary and daily property jobs discover
+these suites through `::properties::`. Run the new surfaces or the complete suite:
+
+```sh
+PROPTEST_CASES=128 PROPTEST_RNG_SEED=47 ENGINE_PROOF_CASES=16 \
+  cargo nextest run -p engine --lib --locked -E 'test(::properties::)'
+cargo nextest run -p engine -p shared --lib --locked --features zmq
+```
+
+Coverage-guided fuzzing lives in the isolated `fuzz/` Cargo workspace. Its lockfile
+uses the application's locked versions for shared dependencies; `libfuzzer-sys`
+and Loom are additional test-only tools. `engine/fuzzing` exposes only exploration
+entry points and is absent from ordinary shipping builds. All four targets invoke
+actual production policy or boundary code through the same oracles used in normal
+properties:
+
+- `scheduler`: time, progress outcomes and completion sequencing.
+- `queue`: bounded arrivals, closed classes, class selection and draining.
+- `resources`: arbitrary numeric bit patterns in request sizing, retries and timeouts.
+- `inputs`: CPU lists, node settings, scalar settings, identifiers, headers, URLs and signature header rejection.
+
+Install `cargo-fuzz` once, then use the bounded runner. The final parameter is an
+optional `zmq` feature selection. The budget excludes compilation.
+
+```sh
+cargo install cargo-fuzz --locked
+ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh scheduler 60
+ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh queue 60 zmq
+ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh resources 60
+ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh inputs 60
+
+# Replay a saved failing input directly; replace the artifact filename.
+cargo fuzz run --fuzz-dir fuzz inputs fuzz/artifacts/inputs/crash-HASH
+
+# Explore bounded completion event interleavings with Loom.
+cargo test --manifest-path fuzz/Cargo.toml --locked --test interleavings
+cargo test --manifest-path fuzz/Cargo.toml --locked --features zmq --test interleavings
+```
+
+The fuzz runner copies reviewed `fuzz/seeds/` into ignored mutable corpora, supplies
+an explicit seed, limits inputs to 4 KiB and individual executions to ten seconds,
+and uses AddressSanitizer. The daily/manual `engine-fuzz.yml` workflow exercises
+all four targets under both feature configurations, caches evolving corpora and
+uploads corpora and failure artifacts. Its separate Loom jobs explore completion
+ordering with the actual scheduler policy. Loom instruments the small harness's
+synchronization; **it does not instrument or exhaustively verify Tokio channels,
+SQLite, network operations or the whole application**. Real worker, HTTP and crash
+properties remain responsible for those effects.
+
+Fuzzing explores paths rather than proving every execution. The retained-window
+trust limitation remains explicit; daemon response decoding and PoW arithmetic
+remain deferred. Every discovered product bug should get a named regression in
+addition to its minimized input or persisted Proptest seed.

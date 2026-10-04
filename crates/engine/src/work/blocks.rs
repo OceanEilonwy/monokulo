@@ -1444,6 +1444,9 @@ fn commit(
 ) -> Result<Option<(usize, usize)>, ScannerError> {
     let result = s.in_transaction(|s| -> Result<Option<(usize, usize)>, ScannerError> {
         let height = block.height;
+        if s.settlement_frozen(network)? {
+            return Ok(None);
+        }
         if s.get_scanned_block_hash(network, block.parent)?
             .is_some_and(|parent| parent != block.prev_hash)
         {
@@ -2150,3 +2153,8 @@ mod tests {
         assert_eq!(state.progress.lock().discarded_cache_bytes, 3 * 1024 * 1024);
     }
 }
+
+#[cfg(test)]
+#[path = "block_effect_properties.rs"]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod properties;

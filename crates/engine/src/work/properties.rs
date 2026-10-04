@@ -26,6 +26,9 @@ const RETRY_TIME: Duration = Duration::from_secs(61);
 #[path = "money_properties.rs"]
 mod money;
 
+#[path = "lifecycle_properties.rs"]
+mod lifecycle;
+
 #[path = "property_daemon.rs"]
 mod property_daemon;
 use property_daemon::ScriptedDaemon;
@@ -188,7 +191,7 @@ struct Harness {
 }
 
 impl Harness {
-    async fn new() -> Self {
+    async fn unbootstrapped(height: usize) -> Self {
         let (store, path) = file_store();
         let custody = FlakyKeyCustody::default();
         let (tenant, handle, order) = fixture_tenant(&store, &custody, i64::MAX).await;
@@ -204,14 +207,13 @@ impl Harness {
         let store = store.into_shared();
         let db = Db::over_shared(Arc::clone(&store));
         let daemon = ScriptedDaemon::new();
-        let blocks = vec![
-            ("bootstrap-1".to_owned(), false),
-            ("bootstrap-2".to_owned(), false),
-        ];
+        let blocks: Vec<_> = (1..=height)
+            .map(|n| (format!("bootstrap-{n}"), false))
+            .collect();
         for (hash, _) in &blocks {
             daemon.push_block(hash, vec![]);
         }
-        let mut harness = Self {
+        Self {
             db: Some(db),
             store: Some(store),
             path,
@@ -229,7 +231,11 @@ impl Harness {
             now: 1_700_000_000,
             node_online: true,
             custody_online: true,
-        };
+        }
+    }
+
+    async fn new() -> Self {
+        let mut harness = Self::unbootstrapped(2).await;
         // Bootstrap seeds one below the tip, then a second round scans the tip.
         for _ in 0..2 {
             harness.tick().await.into_result().unwrap();

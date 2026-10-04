@@ -484,3 +484,29 @@ These are observations for this workload and machine, not capacity limits.
 - The stress fixture doesn't yet inject reorgs, process kills or slow disk
   commands. The engine's tests cover the first two (restart mid-job,
   mid-block, the kill-anywhere test); slow disk is untested.
+
+## Deterministic policy and effect execution
+
+`work::scheduler::Scheduler` owns round selection, deadlines, progress counts and
+closed-tier outcomes. It takes elapsed monotonic time and returns one typed
+`RunUnit`; `run_round_at` executes that unit and sends its result back. A completion
+must match the outstanding unit and round generation. The machine has no Tokio,
+SQLite, daemon, custody or wall-clock dependency. `work::retry::Retry` similarly
+owns retry counts/deadlines over explicit elapsed durations. The in-memory scanner
+backoff maps retain only the resulting policy state and their monotonic origin.
+
+Durable decisions stay in their existing SQLite transactions. Block publication
+also rejects a pending reorg inside its transaction, so a prepared or queued scan
+cannot bypass the freeze after its original scheduling decision. Accepted DB jobs
+continue after caller cancellation; queued effects therefore cannot equate losing
+a reply with rolling back a write.
+
+The database thread delegates class ordering to `store::dispatch::Dispatch`.
+Channel polling, accepted jobs and wakeups remain real effects. Only a taken job
+advances its class turn; closed/empty queues do not. Network loop ownership keeps
+and joins the supervisor tasks when a network is removed, before removing its
+status or allowing a replacement generation. Supervisor restart backoff remains
+interruptible even if the factory itself panics.
+
+See `docs/TESTING.md` for the generated histories, independent oracles, real effect
+checks, subprocess crash boundaries and optional fuzz/Loom runners.

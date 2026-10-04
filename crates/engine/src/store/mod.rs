@@ -28,6 +28,7 @@ use crate::status::{derive_status, OrderStatus, PaymentView, StatusInputs};
 
 mod conflicts;
 pub mod db;
+pub mod dispatch;
 pub mod proof;
 mod work;
 pub use db::{Db, DbMetrics};
@@ -4916,3 +4917,8 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "migration_properties.rs"]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod properties;
