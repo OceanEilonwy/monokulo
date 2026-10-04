@@ -33,6 +33,9 @@
 //!   an output's entire [`monero_wallet::WalletOutput`] is serialized into
 //!   the wallet's own JSON file ([`file::WalletData`]) and committed, so
 //!   every later run reads it straight off disk with zero RPC calls.
+//!   The one exception is `rescan <blocks>` ([`Wallet::rescan`]), which
+//!   scans a chosen range of blocks ([`block_range::BlockRange`]) - only
+//!   when asked, never as part of any other operation.
 //! - **Decoy selection still runs the real, correct algorithm** (still
 //!   picks genuine, unlocked, on-chain outputs - a node will reject
 //!   anything less, stagenet or not) but is fed from a *cached, committed*
@@ -52,6 +55,7 @@
 //! wallet's.
 
 pub mod amount;
+pub mod block_range;
 pub mod file;
 pub mod meta;
 mod wallet;
@@ -77,8 +81,8 @@ use zeroize::Zeroizing;
 pub use file::{WalletData, WalletFile};
 pub use monero_wallet::interface::FeePriority;
 pub use wallet::{
-    CommittedTransfer, DaemonVersion, OwnedOutput, PreparedTransfer, SweepSelect, TransferKind,
-    TransferRequest, Wallet, WalletBalance, WalletKeys, MAX_OUTPUTS,
+    CommittedTransfer, DaemonVersion, OwnedOutput, PreparedTransfer, RescanReport, SweepSelect,
+    TransferKind, TransferRequest, Wallet, WalletBalance, WalletKeys, MAX_OUTPUTS,
 };
 
 /// The ring size required for the `ClsagBulletproofPlus` RCT type this
@@ -844,7 +848,7 @@ pub async fn send_payment(
 mod tests {
     use super::*;
     use crate::file::{migrate_legacy, OutputRecord};
-    use crate::wallet::record_resolved;
+    use crate::wallet::{record_resolved, record_scanned, ScannedOutput};
 
     #[test]
     fn each_retry_starts_from_the_next_node_and_still_tries_them_all() {
@@ -956,6 +960,35 @@ mod tests {
         // Recording the same transaction again adds nothing.
         assert_eq!(record_resolved(&mut data, &txid, height, None, &outputs), 0);
         assert_eq!(data.outputs.len(), 3);
+    }
+
+    /// A rescan finds a transaction's outputs one block-scan result at a
+    /// time; they're recorded per transaction, resolving it if it was
+    /// pending, and a rescan over the same blocks again changes nothing.
+    #[test]
+    fn a_rescan_records_what_it_found_once_and_resolves_pending() {
+        let (txid, height, outputs) = split_transaction();
+        let (_, mut data) = temp_wallet("record-scanned", "spender");
+        data.add_pending(&txid, 0);
+        let found: Vec<ScannedOutput> = outputs
+            .into_iter()
+            .map(|output| ScannedOutput {
+                height,
+                timestamp: 1_700_000_000,
+                output,
+            })
+            .collect();
+
+        assert_eq!(record_scanned(&mut data, &found), 3);
+        assert!(data.pending.is_empty());
+        assert!(data
+            .outputs
+            .iter()
+            .all(|o| o.txid == txid && o.height == height && o.timestamp == Some(1_700_000_000)));
+
+        assert_eq!(record_scanned(&mut data, &found), 0);
+        assert_eq!(data.outputs.len(), 3);
+        assert_eq!(record_scanned(&mut data, &[]), 0);
     }
 
     /// Resolving a transaction this wallet sent dates its sent record, so

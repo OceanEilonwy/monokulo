@@ -242,3 +242,46 @@ fn transfer_arguments_are_checked_before_any_node_is_contacted() {
         );
     }
 }
+
+#[test]
+fn rescan_takes_a_block_range_and_leaves_the_file_alone_without_a_node() {
+    let dir = temp_dir("rescan");
+    assert!(cli(&dir, &["--generate-new-wallet", "dave", "version"], "")
+        .status
+        .success());
+    let before = std::fs::read_to_string(dir.join("dave.json")).unwrap();
+    // An unreachable node: the bad arguments fail before connecting, and
+    // the good one fails to connect.
+    let node = ["--daemon-address", "127.0.0.1:9"];
+    for (args, expected) in [
+        (vec!["rescan"], "<BLOCKS>"),
+        (vec!["rescan", "200"], "a bare number is ambiguous"),
+        (vec!["rescan", "lots"], "expected ^<blocks back>"),
+        (vec!["rescan", "5..x"], "expected ^<blocks back>"),
+        (
+            vec!["rescan", "http://node:38089", "^10"],
+            "unexpected argument",
+        ),
+        (
+            vec!["rescan", "^200..^100"],
+            "cannot reach the stagenet node at http://127.0.0.1:9",
+        ),
+    ] {
+        let output = cli(
+            &dir,
+            &[&node[..], &["--wallet-file", "dave"], &args[..]].concat(),
+            "",
+        );
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            stderr(&output).contains(expected),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.join("dave.json")).unwrap(),
+        before,
+        "a rescan that never reached a node changes nothing"
+    );
+}
