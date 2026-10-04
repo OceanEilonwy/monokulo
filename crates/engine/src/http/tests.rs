@@ -4236,3 +4236,6 @@ async fn forgetting_a_proof_anchor_keeps_checking_on() {
     assert_eq!(store.proven_tip(Network::Mainnet).unwrap(), None);
     assert_eq!(store.proof_ceiling(Network::Mainnet).unwrap(), Some(0));
 }
+
+#[path = "order_properties.rs"]
+mod properties;

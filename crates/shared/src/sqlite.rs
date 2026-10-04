@@ -84,7 +84,12 @@ pub fn read_only<T>(conn: &Connection, f: impl FnOnce() -> T) -> T {
     struct Restore<'a>(&'a Connection, bool);
     impl Drop for Restore<'_> {
         fn drop(&mut self) {
-            let _ = self.0.pragma_update(None, "query_only", self.1);
+            // A one-shot statement failure must not leave the shared writer
+            // stuck in read-only mode after this read. Retry restoration once;
+            // this guard also runs when the closure unwinds.
+            if self.0.pragma_update(None, "query_only", self.1).is_err() {
+                let _ = self.0.pragma_update(None, "query_only", self.1);
+            }
         }
     }
     let was: bool = conn

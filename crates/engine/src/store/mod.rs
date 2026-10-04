@@ -384,6 +384,8 @@ pub enum StoreError {
     Sqlite(#[from] rusqlite::Error),
     #[error("not found")]
     NotFound,
+    #[error("address allocation refused: {0}")]
+    AddressAllocation(String),
     #[error("database worker unavailable: {0}")]
     WorkerUnavailable(String),
 }
@@ -1442,26 +1444,34 @@ impl Store {
     /// `create_order_claiming_minor_index`, which advances the counter and inserts
     /// the order together.
     pub fn allocate_minor_index(&self, tenant_id: &TenantId) -> Result<u32> {
-        let allocated: i64 = self.conn.query_row(
-            "UPDATE tenants SET next_minor_index = next_minor_index + 1
-             WHERE id = ?1
+        let allocated = self
+            .conn
+            .query_row(
+                "UPDATE tenants SET next_minor_index = next_minor_index + 1
+             WHERE id = ?1 AND next_minor_index > 0 AND next_minor_index < ?2
              RETURNING next_minor_index - 1",
-            params![tenant_id],
-            |row| row.get(0),
-        )?;
-        Ok(allocated as u32)
+                params![tenant_id, i64::from(u32::MAX)],
+                |row| row.get::<_, shared::sqlite::Unsigned<u32>>(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                StoreError::AddressAllocation(
+                    "tenant missing or subaddress indices exhausted".to_owned(),
+                )
+            })?;
+        Ok(allocated.0)
     }
 
     /// The index `allocate_minor_index` would hand out next, without claiming it.
     /// Only useful in combination with `create_order_claiming_minor_index` - see
     /// that method for why order creation can't simply allocate first.
     pub fn peek_next_minor_index(&self, tenant_id: &TenantId) -> Result<u32> {
-        let next: i64 = self.conn.query_row(
+        let next = self.conn.query_row(
             "SELECT next_minor_index FROM tenants WHERE id = ?1",
             params![tenant_id],
-            |row| row.get(0),
+            |row| row.get::<_, shared::sqlite::Unsigned<u32>>(0),
         )?;
-        Ok(next as u32)
+        Ok(next.0)
     }
 
     /// Claims `expected_index` for `tenant_id` and inserts `new` as one atomic unit,
@@ -1513,9 +1523,17 @@ impl Store {
                 ));
             }
         }
+        // The next index is also an exclusive u32 scan bound. Reserve MAX
+        // as the exhausted counter rather than committing MAX+1 and making
+        // the tenant unreadable. The supplied order must claim that same index.
+        if expected_index == 0 || expected_index == u32::MAX || new.minor_index != expected_index {
+            return Err(StoreError::AddressAllocation(
+                "subaddress index exhausted or inconsistent with the order".to_owned(),
+            ));
+        }
         let claimed = tx.execute(
             "UPDATE tenants SET next_minor_index = next_minor_index + 1
-             WHERE id = ?1 AND next_minor_index = ?2",
+             WHERE id = ?1 AND next_minor_index = ?2 AND disabled_at_utc IS NULL",
             params![new.tenant_id, expected_index],
         )?;
         if claimed == 0 {
@@ -1523,7 +1541,11 @@ impl Store {
         }
         let id = OrderId::new(new_id("order"));
         Self::insert_order(&tx, &id, new)?;
+        #[cfg(test)]
+        crash_checkpoint("orders.before_commit");
         tx.commit()?;
+        #[cfg(test)]
+        crash_checkpoint("orders.after_commit");
         Ok(Some(
             self.get_order_by_id(&id)?.ok_or(StoreError::NotFound)?,
         ))
