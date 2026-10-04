@@ -45,12 +45,12 @@ mod custody;
 mod outputs;
 #[cfg(feature = "backends")]
 mod plain;
+#[cfg(all(test, feature = "backends"))]
+mod property_support;
 #[cfg(feature = "backends")]
 pub mod router;
 #[cfg(feature = "snp")]
 pub mod snp;
-#[cfg(all(test, feature = "backends"))]
-mod property_support;
 #[cfg(all(test, feature = "backends"))]
 mod test_log;
 pub mod transport;

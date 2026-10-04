@@ -16,7 +16,10 @@ fn fixture() -> (WalletMaterial, Transaction) {
     )
     .unwrap();
     let tx = monero::consensus::encode::deserialize(
-        &hex::decode(include_str!("../../engine/tests/fixtures/subaddress_tx.hex")).unwrap(),
+        &hex::decode(include_str!(
+            "../../engine/tests/fixtures/subaddress_tx.hex"
+        ))
+        .unwrap(),
     )
     .unwrap();
     (
