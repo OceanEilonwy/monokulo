@@ -617,3 +617,57 @@ A fixed scan-table test crosses 255/256/257 and 511/512/513 entries and changes
 windows during partial construction. The epoch property exposed an unchecked sum
 of backend epochs; status aggregation now saturates while per-backend invalidation
 continues to compare each actual epoch independently.
+
+### Webhook delivery and recovery properties
+
+Twenty-one generated properties in `webhook_delivery::properties` use **64 cases per
+property** by default. They use real local HTTP endpoints, file-backed SQLite,
+and the production database worker. A separate queue oracle calculates eligible
+heads and tenant shares without calling the production selector. A stalled DNS
+resolver is injected only to prove the timeout covers name resolution. No external
+service, new dependency, or live daemon is needed. Existing Linux/macOS CI and the
+daily default/ZMQ exploration job select these tests automatically.
+
+| Property family | Inclusive ranges and guarantees |
+|---|---|
+| Retry and restart histories | 0–9 failures, ceilings 1–8, success statuses 200/201/204/299, arbitrary Unicode payload text. Every request preserves payload bytes and event ID, has one valid fresh signature, carries merchant headers, and uses the exact 60/120/240/480/960/1920/3840-second backoff from the recorded attempt time. Reopening preserves all row fields; success clears failures and terminal outcomes stop retries. |
+| Stored-header defenses | Nine case-varied reserved names and values of 1–32 ASCII characters, plus a fixed simultaneous override attempt. Even legacy stored headers cannot replace or duplicate signing, event identity, content type, host, framing, or connection headers. Safe merchant headers still arrive. Admission and delivery share the reserved-name rule. |
+| Independent fairness/FIFO model | 1–20 tenants, 1–8 orders each, 1–4 events per order; 1–24 retry/success/give-up/no-op actions; tenant shares 0–7 and total limits 0–64; clocks 999/1000/1100. The earliest pending event blocks later events even while waiting for retry, terminal events unblock them, and tenant shares apply after order-head selection. |
+| Late outcome histories and overlapping ticks | 1–29 reordered bookkeeping outcomes, timestamps 1–99,999. A real overlapping-request property uses late HTTP failures 400–599 and ceilings 1–8. Acknowledged success remains authoritative, duplicate/late failures cannot rewrite it, and terminal failures cannot be reopened by retry scheduling. |
+| Private-destination policy reload | IP literals and `localhost`; forced allow→deny followed by 1–15 generated flips. Tightening policy prevents new requests even after a permitted request warmed a connection. Clients retain separate pools with fixed resolver policies. |
+| Environment proxy bypass | Four HTTP/ALL proxy environment names, isolated child processes and a real local proxy. Guarded requests must not reach the proxy or bypass private-destination classification. Guarded delivery ignores system proxy settings; the explicit private-URL policy retains proxy support. |
+| Redirects and HTTP status classes | Redirects 301/302/303/307/308 never reach their target or forward a signed event. Statuses 200–599 are recorded exactly; only 2xx succeeds, and all other responses follow the failure/give-up contract. |
+| Timeouts, disconnections and DNS stalls | Zero timeout, hanging HTTP, connection refusal and accepted-connection reset; 1–15 ms deadlines, ceilings 1–4. Stalled DNS is bounded by the same deadline. Failures are persisted, URL tokens are excluded from errors, reopen preserves the row, and a healthy endpoint recovers eligible retries. |
+| Cancellation while a batch is running | 1–6 fast and 1–6 held requests. Rendezvous proves fast outcomes committed and slow requests entered before cancellation. Committed successes survive, unfinished rows remain retryable, and subsequent delivery converges. |
+| Actual batch/concurrency bounds | 1–20 tenants, 1–6 orders each, 1–3 events per order; full drain verifies exact request count and FIFO. A separate 16–64-tenant test fills and holds all 16 worker slots, checks no seventeenth request starts, then drains; batch size never exceeds 50 or four eligible heads per tenant. |
+| Legacy payload identity | Arbitrary Unicode raw payloads and full-width u64 non-string event IDs. Two real sends preserve exact body bytes and the stable delivery-ID fallback, with valid signatures. |
+| Subscription lifecycle | Two subscriptions on the same order, 2–6 events each. A disabled subscription does not block the other; reopening and reenabling preserves its own FIFO. Deletion cancels only its queue and allows the documented delete-and-recreate rotation. |
+| Lowered budgets and integer limits | Recorded attempts 1–15 and new ceilings 0–15; an already exhausted row retires without another network request or fabricated attempt. Small/full-width u32 attempt counts and ordinary/near-MAX i64 timestamps cannot panic or overflow; retry timestamps saturate. |
+| Observable SQLite failures | Denial positions 0–31 across success, retry, give-up and already-exhausted retirement. Errors are surfaced, later completed outcomes still commit, and unaffected/pending rows recover after reopen. A fixed sweep covers every reached SQL boundary for all four outcomes. Deletion additionally tests positions 0–23 and a complete reached-boundary sweep, with both correct and incorrect tenant IDs; failed deletion rolls back parent and children together. |
+| Process death at durability boundaries | Generated success/retry/give-up/exhausted-retirement outcomes, before/after the atomic write. A fixed sweep always kills a child at **all eight** named rendezvous points, checks SQLite integrity after reopening, and verifies terminal/pending state. A delivered request whose acknowledgement was not persisted is sent again with the same body/event ID and a valid newly timed signature. |
+
+Fixed regressions also protect success/error cleanup, late-outcome immunity,
+reserved stored headers, a warmed `localhost` connection after policy tightening,
+and full-width counters/timestamps. Replay seeds are committed in
+`crates/engine/proptest-regressions/webhook_properties.txt`.
+
+These tests enforce **at-least-once**, so an interrupted acknowledgement or an
+overlapping worker may deliver a duplicate. The durable attempt count tracks
+recorded outcomes rather than every possible request received by the merchant.
+Consumers must deduplicate by event ID. Explicit subscription deletion atomically
+removes its delivery rows, including history; a request already in flight can still
+finish. Ordinary delivery/give-up retains rows for inspection. The signing/SSRF
+primitive tests remain in `shared`; these properties exercise their delivery wiring.
+
+```sh
+# Local default budget, including fixed regressions and complete fault/crash sweeps.
+cargo nextest run -p engine --lib --locked -E 'test(/^webhook_delivery::/)'
+
+# Larger, reproducible exploration with the optional ZMQ engine configuration.
+PROPTEST_CASES=128 PROPTEST_RNG_SEED=83 cargo nextest run -p engine --lib --locked \
+  --features zmq -E 'test(/^webhook_delivery::/)'
+
+# All three new target suites together.
+cargo nextest run -p engine --lib --locked -E \
+  'test(http::tests::properties::) | test(key_custody::plain::properties::) | test(key_custody::router::properties::) | test(webhook_delivery::properties::)'
+```

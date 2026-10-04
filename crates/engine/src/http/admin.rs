@@ -725,17 +725,6 @@ pub(super) struct CreateWebhookRequest {
 const MAX_EXTRA_HEADERS: usize = 20;
 const MAX_EXTRA_HEADER_BYTES: usize = 4 * 1024;
 
-/// Header names the engine sets itself on every delivery, or that the HTTP
-/// client sets from the request; a merchant header of one of these would
-/// replace or break what the delivery carries.
-const RESERVED_HEADERS: [&str; 5] = [
-    "host",
-    "content-length",
-    "content-type",
-    "transfer-encoding",
-    "connection",
-];
-
 /// The `extra_headers` a webhook is saved with: a JSON object of string
 /// values, each a valid header name and value (what `reqwest` would
 /// otherwise refuse at every delivery, failing them all with a cryptic
@@ -772,7 +761,7 @@ fn validate_extra_headers(extra_headers: Option<serde_json::Value>) -> Result<St
             ))
         })?;
         let name = name.as_str();
-        if RESERVED_HEADERS.contains(&name) || name.starts_with("x-monokulo-") {
+        if crate::webhook_delivery::is_reserved_webhook_header(name) {
             return Err(ApiError::BadRequest(format!(
                 "extra header {name} is set by the engine itself"
             )));

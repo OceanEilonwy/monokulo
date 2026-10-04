@@ -1,0 +1,14 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 55e4bb209ce8ebede3d03315fd537e7d61ea0c6bf2223281870e24125a94d8e8 # shrinks to attempt = 0, now = 9223372036854775806
+cc 8ef3b7c8aea28b718b01c9bb026d24cf151b5df9ff2030dec59d12dc8a5a2990 # shrinks to kind = 0, after = false
+cc b8028148046d9f9a0f3cf31898abcf9c8d67ac1c34370cad725f6ea9f60d8fdf # shrinks to kind = 0, millis = 1, max = 2
+cc ec19669e48039c139841272a651fac06827dc62453ae255031e3aa18748890da # shrinks to variant = 0, value = "A"
+cc 63e7b0c5bd693cc9610a48a28eda15fff701e888d11ec03d830c13bb845a4953 # shrinks to flips = [false], hostname = true
+cc 15d325ead841fb8a7e7c05616a7e2c1883cefba72ba28dce34e1e0c4572ad7ec # shrinks to history = [1, 0], at = 1
+cc 3975dfe690971763aed3f6be83f575a175b48577f6a97db73325da14b3bfa0c7 # shrinks to failures = 1, max = 2, status = 200, text = ""
+cc 2bb8b9715577619c43fff55416a1db750481434c4f570224c32ea60cbffc7c7a # shrinks to attempt = 0, now = 1
