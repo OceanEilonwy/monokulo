@@ -141,6 +141,7 @@ impl<'a> Chain<'a> {
     /// recorded chain ends at the node's tip and the node gave the tip's id
     /// with its height, that one comparison costs no lookup at all.
     pub(crate) async fn detect(&self, tip: u64) -> Result<Option<u64>, ScannerError> {
+        let pending = self.pending_branch_fork(tip).await?;
         let depth = self.reorg_check_depth;
         let rows = self
             .db(move |s, network| -> Result<_, crate::store::StoreError> {
@@ -152,7 +153,7 @@ impl<'a> Chain<'a> {
             })
             .await?;
         let (Some(first), Some(last)) = (rows.first(), rows.last()) else {
-            return Ok(None);
+            return Ok(pending);
         };
         let at_tip = match &self.tip_hash {
             Some(tip_hash) if last.0 == tip => Some(*tip_hash == last.1),
@@ -163,12 +164,12 @@ impl<'a> Chain<'a> {
             None => self.node_agrees(last).await?,
         };
         if agrees {
-            return Ok(None);
+            return Ok(pending);
         }
         if !self.node_agrees(first).await? {
             // Diverged at or below the window's edge: reconcile from there,
             // and leave older payments alone.
-            return Ok(Some(first.0));
+            return Ok(Some(pending.map_or(first.0, |fork| fork.min(first.0))));
         }
         // rows[lo] agrees, rows[hi] doesn't.
         let (mut lo, mut hi) = (0, rows.len() - 1);
@@ -180,7 +181,51 @@ impl<'a> Chain<'a> {
                 hi = mid;
             }
         }
-        Ok(Some(rows[lo].0 + 1))
+        let fork = rows[lo].0 + 1;
+        Ok(Some(pending.map_or(fork, |pending| pending.min(fork))))
+    }
+
+    /// After rewind, payment heights may already refer to replacement blocks
+    /// above the scanned high-water mark. Follow that branch until scanning
+    /// records its anchor, without treating unscanned blocks as scanned.
+    async fn pending_branch_fork(&self, tip: u64) -> Result<Option<u64>, ScannerError> {
+        let pending = self
+            .db(|s, network| -> Result<_, crate::store::StoreError> {
+                if s.reorg_job(network)?.is_some() {
+                    return Ok(None);
+                }
+                let Some((height, hash)) = s.reorg_branch(network)? else {
+                    return Ok(None);
+                };
+                let Some(fork) =
+                    s.scheduler_position::<crate::store::position::ReorgBranchFork>(network)?
+                else {
+                    return Ok(None);
+                };
+                if s.get_scanned_block_hash(network, height)?.as_ref() == Some(&hash) {
+                    s.clear_reorg_branch(network)?;
+                    return Ok(None);
+                }
+                // A long scan round can pass the anchor and prune it before
+                // detection runs again. Verify its hash once more before
+                // clearing the bookkeeping in that case.
+                let covered = s
+                    .max_scanned_height(network)?
+                    .is_some_and(|high| high >= height);
+                Ok(Some((height, hash, fork, covered)))
+            })
+            .await?;
+        let Some((height, hash, fork, covered)) = pending else {
+            return Ok(None);
+        };
+        if height > tip || bounded(self.daemon.get_block_hash(height)).await? != hash {
+            Ok(Some(fork))
+        } else {
+            if covered {
+                self.db(Store::clear_reorg_branch).await?;
+            }
+            Ok(None)
+        }
     }
 
     async fn node_agrees(&self, (height, stored): &(u64, String)) -> Result<bool, ScannerError> {
@@ -486,9 +531,36 @@ impl<'a> Chain<'a> {
         skip: &mut HashSet<i64>,
         until: Instant,
     ) -> Result<Option<JobStep>, ScannerError> {
-        let Some(job) = self.db(Store::reorg_job).await? else {
+        let Some(mut job) = self.db(Store::reorg_job).await? else {
             return Ok(None);
         };
+        // Detection compares against the losing chain, so another replacement
+        // can have the same fork point and look "covered" by the open job.
+        // Recheck the branch used for completed candidates before doing more
+        // work or rewinding. A fixed height avoids restarting for extensions.
+        let branch = self.db(Store::reorg_branch).await?;
+        let unchanged = match &branch {
+            Some((height, hash)) if *height <= tip => {
+                bounded(self.daemon.get_block_hash(*height)).await? == *hash
+            }
+            _ => false,
+        };
+        if !unchanged {
+            let hash = bounded(self.daemon.get_block_hash(tip)).await?;
+            let now = self.now;
+            self.db(move |s, network| s.restart_reorg_for_branch(network, tip, &hash, now))
+                .await?;
+            job.phase = ReorgPhase::CollectConfirmed {
+                after_height: job.fork_height,
+                after_id: 0,
+            };
+        } else if branch.is_some_and(|(height, _)| height < tip) {
+            let hash = bounded(self.daemon.get_block_hash(tip)).await?;
+            self.db(move |s, network| s.extend_reorg_branch(network, tip, &hash))
+                .await?;
+        } else {
+            // The same branch at the same tip; keep completed candidates.
+        }
         match job.phase {
             ReorgPhase::CollectConfirmed {
                 after_height: _,

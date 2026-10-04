@@ -154,6 +154,13 @@ jobs:
       - name: Fail on test failure
         if: always()
         run: test '${{ steps.nextest.outcome }}' = success && test '${{ steps.nextest_no_zmq.outcome }}' = success && test '${{ steps.nextest_no_snp.outcome }}' = success && test '${{ steps.doctest.outcome }}' = success
+      - name: Preserve property test regressions
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proptest-regressions-${{ matrix.os }}-${{ github.sha }}
+          path: crates/*/proptest-regressions/
+          if-no-files-found: ignore
 
   coverage-rust:
     runs-on: ubuntu-latest
@@ -202,6 +209,13 @@ jobs:
       - name: Fail on collector or test failure
         if: always()
         run: test '${{ steps.collect.outcome }}' = success
+      - name: Preserve property test regressions
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proptest-regressions-coverage-${{ github.sha }}
+          path: crates/*/proptest-regressions/
+          if-no-files-found: ignore
 
   coverage-browser:
     runs-on: ubuntu-latest
