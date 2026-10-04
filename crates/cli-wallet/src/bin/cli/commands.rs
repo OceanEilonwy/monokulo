@@ -656,7 +656,7 @@ pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError
             Ok(())
         }
         Command::Version => {
-            println!("stagenet-wallet-cli v{}", env!("CARGO_PKG_VERSION"));
+            println!("wallet-cli v{}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         Command::Pocketchange { args } => {

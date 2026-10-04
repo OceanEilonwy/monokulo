@@ -451,7 +451,7 @@ fn redacted_args(args: impl Iterator<Item = String>) -> Vec<String> {
 #[derive(Debug, Clone)]
 pub struct LockHolder {
     pub lock_path: PathBuf,
-    /// e.g. `pid 1234 (stagenet-wallet-cli transfer ...)`.
+    /// e.g. `pid 1234 (wallet-cli transfer ...)`.
     pub description: String,
 }
 

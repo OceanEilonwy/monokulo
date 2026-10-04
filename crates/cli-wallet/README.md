@@ -1,7 +1,7 @@
 # cli-wallet
 
 A fast stagenet and testnet test wallet: the library the real-stagenet e2e suites
-pay orders with, and `stagenet-wallet-cli`, which speaks
+pay orders with, and `wallet-cli`, which speaks
 [`monero-wallet-cli`](https://docs.getmonero.org/interacting/monero-wallet-cli-reference/)'s
 commands over the same wallets. See `src/lib.rs` for why it never scans the
 chain, and `e2e/README.md` for how the e2e suites use it.
@@ -17,8 +17,8 @@ match its file, or the wallet is refused. Mainnet wallet files are refused
 outright: every key here is kept in plaintext.
 
 ```sh
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- --testnet --generate-new-wallet ~/testnet/me.json
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- --wallet-file ~/testnet/me.json balance
+cargo run -p cli-wallet --bin wallet-cli -- --testnet --generate-new-wallet ~/testnet/me.json
+cargo run -p cli-wallet --bin wallet-cli -- --wallet-file ~/testnet/me.json balance
 ```
 
 On testnet:
@@ -55,8 +55,8 @@ selection until it's recorded, so two senders can't pick the same output.
 ## The CLI
 
 ```sh
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- --wallet-file spender          # prompt
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- --wallet-file spender balance  # one command
+cargo run -p cli-wallet --bin wallet-cli -- --wallet-file spender          # prompt
+cargo run -p cli-wallet --bin wallet-cli -- --wallet-file spender balance  # one command
 ```
 
 With no command it opens the wallet and prompts (`[wallet 5648a3]: `)
@@ -76,7 +76,7 @@ plainly, so scripts behave the same as ever.
 |---|---|
 | Tab / Shift+Tab | Completion menu, with a description beside each candidate: commands, their sub-words and options, and the wallet's own txids, key images (with amounts), outputs, address book and accounts |
 | → (at the end of the line) | Accept the grey hint: the rest of a matching history entry, or of a command name |
-| ↑ / ↓, Ctrl+R | History (kept across sessions in `~/.local/state/stagenet-wallet-cli/history`; start a line with a space to keep it out) and reverse search |
+| ↑ / ↓, Ctrl+R | History (kept across sessions in `~/.local/state/wallet-cli/history`; start a line with a space to keep it out) and reverse search |
 | Alt+← / Alt+→ (or Ctrl) | Jump a word |
 | Shift+arrows, Alt+Shift+← / →, Shift+Home / End, Alt+A | Select a character, a word, to either end, everything; typing or Backspace replaces the selection |
 | Alt+Backspace / Alt+Delete, Ctrl+W | Delete a word |

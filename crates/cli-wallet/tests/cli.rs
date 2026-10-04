@@ -1,4 +1,4 @@
-//! Drives the real `stagenet-wallet-cli` binary through the commands that
+//! Drives the real `wallet-cli` binary through the commands that
 //! need no node: creating a wallet, then an interactive session run over
 //! stdin, as a person would type it. Commands that talk to a node are
 //! covered by hand against stagenet (see the crate README), except that
@@ -9,15 +9,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 fn temp_dir(test: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("stagenet-wallet-cli-{test}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("wallet-cli-{test}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
 fn cli(dir: &Path, args: &[&str], stdin: &str) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_stagenet-wallet-cli"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wallet-cli"))
         .args(["--wallet-dir", dir.to_str().unwrap()])
         .args(args)
         .current_dir(dir)
