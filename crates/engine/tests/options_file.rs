@@ -252,10 +252,12 @@ fn the_engine_starts_without_a_file_and_follows_one_and_its_options() {
     let path = dir.0.join("engine.toml");
     let file_port = free_port();
     let option_port = free_port();
+    // The path as a TOML literal string: a Windows path's backslashes
+    // aren't escapes.
     std::fs::write(
         &path,
         format!(
-            "[server]\nbind = \"127.0.0.1:{file_port}\"\n[database]\npath = \"{}\"\n",
+            "[server]\nbind = \"127.0.0.1:{file_port}\"\n[database]\npath = '{}'\n",
             dir.0.join("mine.db").display()
         ),
     )
