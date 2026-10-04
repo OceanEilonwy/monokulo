@@ -12,7 +12,7 @@ use cli_wallet::block_range::BlockRange;
 use cli_wallet::file::{default_busy_handler, BusyChoice, BusyHandler, LockHolder, WalletData};
 use cli_wallet::meta::AddressBookEntry;
 use cli_wallet::{
-    legacy_seed_for, FeePriority, OwnedOutput, ResolvedWallet, SweepSelect, TransferKind,
+    legacy_seed_for, FeePriority, Network, OwnedOutput, ResolvedWallet, SweepSelect, TransferKind,
     TransferRequest, Wallet, WalletCtx, WalletError, WalletKeys, RING_LEN,
 };
 
@@ -619,7 +619,12 @@ pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError
             );
             println!("Address: {}", data.address);
             println!("Type: Normal");
-            println!("Network type: Stagenet");
+            let network = match session.keys.network() {
+                Network::Mainnet => "Mainnet",
+                Network::Stagenet => "Stagenet",
+                Network::Testnet => "Testnet",
+            };
+            println!("Network type: {network}");
             Ok(())
         }
         Command::Seed => {
@@ -1041,16 +1046,15 @@ fn integrated_address(session: &Session, arg: Option<&str>) -> Result<(), CliErr
             );
         }
         Some(address) => {
-            let parsed = monero_wallet::address::MoneroAddress::from_str(
-                monero_wallet::address::Network::Stagenet,
-                address,
-            )
-            .map_err(|_| format!("failed to parse payment ID or address: {address}"))?;
+            let parsed = session
+                .keys
+                .parse_address(address)
+                .map_err(|_| format!("failed to parse payment ID or address: {address}"))?;
             let id = parsed
                 .payment_id()
                 .ok_or("Address is not an integrated address")?;
             let standard = monero_wallet::address::MoneroAddress::new(
-                monero_wallet::address::Network::Stagenet,
+                session.keys.network(),
                 monero_wallet::address::AddressType::Legacy,
                 parsed.spend(),
                 parsed.view(),
@@ -1739,11 +1743,7 @@ async fn address_book(session: &mut Session, args: &[String]) -> Result<(), CliE
         }
         Some("add") => {
             let address = args.get(1).ok_or("missing address")?.clone();
-            monero_wallet::address::MoneroAddress::from_str(
-                monero_wallet::address::Network::Stagenet,
-                &address,
-            )
-            .map_err(|e| format!("failed to parse address {address}: {e}"))?;
+            session.keys.parse_address(&address)?;
             let description = joined(&args[2..]);
             session
                 .keys
