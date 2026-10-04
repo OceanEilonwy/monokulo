@@ -77,7 +77,7 @@ never outlives the process holding it, even if it crashes.
 ### What's supported
 
 The limits applied: a JSON file per wallet as the only wallet state, and no
-chain scanning. Single node calls that aren't scans are fine (chain height,
+chain scanning, except `rescan` when asked. Single node calls that aren't scans are fine (chain height,
 fee rate, broadcast, one transaction's block, whether key images are spent).
 Stagenet only; ring size 16.
 
@@ -123,7 +123,7 @@ Stagenet only; ring size 16.
 | `mark_output_spent`, `mark_output_unspent`, `is_output_spent` | Yes | `0/<global index>` |
 | `rescan_spent` | Yes | One `is_key_image_spent` call |
 | `export_outputs`, `import_outputs`, `export_key_images`, `import_key_images` | No | wallet2's binary signed file format |
-| `rescan_bc` | No | It's a chain scan |
+| `rescan_bc` | No | `rescan <blocks>` (below) scans a chosen range of blocks instead |
 | `print_ring`, `set_ring`, blackball | No | Rings aren't stored |
 
 #### Keys
@@ -165,4 +165,24 @@ Not in the reference wallet:
   enough separate mature outputs to run fast; see `e2e/README.md`, "Keeping
   enough outputs". (`split` still works as an alias.)
 - `add_output <txid>` records a payment received, e.g. from the faucet.
+- `rescan <blocks>` is the one chain scan, and only runs when asked: it
+  scans a range of blocks on the configured node (`--daemon-address`, or
+  the default stagenet nodes) for outputs paying any address the wallet
+  has created, records each one the wallet file is missing (resolving
+  pending txids among them), then checks every output's spent status as
+  `rescan_spent` does. `<blocks>` is a height or `^<blocks back>` on either
+  side of `..`, both ends included:
+
+  | `<blocks>` | Scans |
+  |---|---|
+  | `^200` | 200 blocks ago to the tip |
+  | `^200..^100` | 200 blocks ago to 100 blocks ago |
+  | `80..` | block 80 to the tip |
+  | `..20` | block 1 to block 20 |
+  | `5..15` | block 5 to block 15 |
+
+  A bare number (`200`) is refused as ambiguous. Blocks are fetched 100 at
+  a time without holding the file lock, which is taken only to record what
+  was found. Outputs to subaddresses the wallet hasn't created are not
+  found, and neither are coinbase outputs.
 - `completions <shell>` prints a shell completion script.

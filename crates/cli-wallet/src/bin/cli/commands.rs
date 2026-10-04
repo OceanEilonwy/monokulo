@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use clap::Subcommand;
 use cli_wallet::amount::{format_amount, parse_amount, Unit};
+use cli_wallet::block_range::BlockRange;
 use cli_wallet::file::{default_busy_handler, BusyChoice, BusyHandler, LockHolder, WalletData};
 use cli_wallet::meta::AddressBookEntry;
 use cli_wallet::{
@@ -172,6 +173,14 @@ pub enum Command {
     /// Check every output's spent status against the node (one key-image
     /// query; no scanning) and correct the wallet file.
     RescanSpent,
+    /// Not in the reference wallet: scan a range of blocks on the node for
+    /// outputs paying this wallet's addresses, record any the wallet file
+    /// is missing, then check every output's spent status.
+    #[command(
+        override_usage = "rescan <blocks>",
+        after_help = "<blocks>: ^200 (200 blocks ago to now), ^200..^100 (200 to 100 blocks ago), 80.. (block 80 to now), ..20 (block 1 to 20), 5..15 (block 5 to 15). Both ends are included."
+    )]
+    Rescan { blocks: BlockRange },
     /// Resolve pending transactions (each one block lookup; no scanning).
     Refresh,
     /// Show the node's height and the wallet's sync state.
@@ -542,6 +551,7 @@ pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError
             }
             Ok(())
         }
+        Command::Rescan { blocks } => rescan(session, &blocks).await,
         Command::Refresh => {
             let wallet = session.wallet().await?;
             let (data, resolved) = wallet.refresh().await?;
@@ -681,6 +691,64 @@ pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError
             Ok(())
         }
     }
+}
+
+/// `rescan <blocks>` (a [`BlockRange`]): progress on stderr at a terminal, then one line per
+/// output found and per spent flag corrected, and the balance.
+async fn rescan(session: &mut Session, blocks: &BlockRange) -> Result<(), CliError> {
+    let unit = session.unit()?;
+    let show_progress = std::io::stderr().is_terminal();
+    let wallet = session.wallet().await?;
+    let report = wallet
+        .rescan(blocks, |done, to| {
+            if show_progress {
+                eprint!("\rScanned to block {done}/{to}");
+                std::io::stderr().flush().ok();
+            }
+        })
+        .await;
+    if show_progress {
+        eprintln!();
+    }
+    let report = report?;
+    println!(
+        "Rescanned blocks {} to {} on {}: {} output(s) paying this wallet, {} new",
+        report.from,
+        report.to,
+        wallet.node_url(),
+        report.outputs_seen,
+        report.new_outputs.len()
+    );
+    for output in &report.new_outputs {
+        let (account, index) = output.subaddress();
+        println!(
+            "Height {}, txid <{}>, {}, idx {account}/{index}",
+            output.height,
+            output.txid,
+            money(output.amount(), unit)
+        );
+    }
+    for (output, spent) in &report.spent_changed {
+        println!(
+            "Output {} ({}, tx <{}>) is now {}",
+            output.global_index(),
+            money(output.amount(), unit),
+            output.txid,
+            if *spent { "spent" } else { "unspent" }
+        );
+    }
+    let tip = wallet.tip().await?;
+    let data = session.data()?;
+    let (balance, unlocked) = account_totals(
+        &balances(&session.keys, &data, tip)?,
+        data.meta.current_account,
+    );
+    println!(
+        "Balance: {}, unlocked balance: {}",
+        money(balance, unit),
+        money(unlocked, unit)
+    );
+    Ok(())
 }
 
 async fn balance(session: &mut Session, detail: bool) -> Result<(), CliError> {

@@ -20,6 +20,7 @@ use serde::Serialize;
 use serde_json::Value;
 use zeroize::Zeroizing;
 
+use crate::block_range::BlockRange;
 use crate::file::{
     default_busy_handler, BusyHandler, OutputRecord, SentDestination, SentRecord, WalletData,
     WalletFile, WalletFileLock,
@@ -382,6 +383,57 @@ pub(crate) fn record_resolved(
     recorded
 }
 
+/// How many blocks [`Wallet::rescan`] asks the node for at once: one
+/// `/get_blocks.bin` call each, and the granularity of its progress.
+const RESCAN_BATCH: u64 = 100;
+
+/// One output [`Wallet::rescan`] found, with the block it's in.
+pub(crate) struct ScannedOutput {
+    pub height: u64,
+    pub timestamp: u64,
+    pub output: WalletOutput,
+}
+
+/// What [`Wallet::rescan`] scanned and changed.
+pub struct RescanReport {
+    /// The first and last block scanned, inclusive.
+    pub from: u64,
+    pub to: u64,
+    /// Every output paying this wallet in those blocks, already recorded
+    /// or not.
+    pub outputs_seen: usize,
+    /// The outputs the wallet file was missing, now recorded.
+    pub new_outputs: Vec<OwnedOutput>,
+    /// Outputs whose spent flag the chain corrected, with the new value.
+    pub spent_changed: Vec<(OwnedOutput, bool)>,
+}
+
+/// Records what a rescan found, a transaction at a time through
+/// [`record_resolved`] - so outputs already recorded are skipped, a pending
+/// txid among them stops being pending, and a send of this wallet's gets
+/// its height. Returns how many outputs were newly recorded.
+pub(crate) fn record_scanned(data: &mut WalletData, found: &[ScannedOutput]) -> usize {
+    let mut by_transaction: Vec<(String, u64, u64, Vec<WalletOutput>)> = Vec::new();
+    for scanned in found {
+        let txid = hex::encode(scanned.output.transaction());
+        match by_transaction.iter_mut().find(|(t, ..)| *t == txid) {
+            Some((.., outputs)) => outputs.push(scanned.output.clone()),
+            None => by_transaction.push((
+                txid,
+                scanned.height,
+                scanned.timestamp,
+                vec![scanned.output.clone()],
+            )),
+        }
+    }
+    by_transaction
+        .iter()
+        .map(|(txid, height, timestamp, outputs)| {
+            record_resolved(data, txid, *height, Some(*timestamp), outputs)
+        })
+        .sum()
+}
+
 pub struct Wallet {
     pub(crate) keys: WalletKeys,
     pub(crate) rpc: MoneroDaemon<ReqwestTransport>,
@@ -647,7 +699,21 @@ impl Wallet {
     /// flag changed, with its new value.
     pub async fn rescan_spent(&self) -> Result<Vec<(OwnedOutput, bool)>, WalletError> {
         let (_lock, mut file, _) = self.lock_and_resolve().await?;
-        let outputs = self.outputs(&file.data)?;
+        let changed = self.correct_spent(&mut file.data).await?;
+        if !changed.is_empty() {
+            file.save()?;
+        }
+        Ok(changed)
+    }
+
+    /// The heart of [`Self::rescan_spent`]: one `/is_key_image_spent` call
+    /// for every output in `data`, correcting each `spent` flag the chain
+    /// disagrees with. Changes `data` only; the caller saves.
+    async fn correct_spent(
+        &self,
+        data: &mut WalletData,
+    ) -> Result<Vec<(OwnedOutput, bool)>, WalletError> {
+        let outputs = self.outputs(data)?;
         if outputs.is_empty() {
             return Ok(Vec::new());
         }
@@ -671,16 +737,84 @@ impl Wallet {
             // 0: unspent, 1: spent on chain, 2: spent in the pool.
             let spent = status.as_u64() != Some(0);
             if spent != output.spent {
-                update_records(&mut file.data, &[output.id()], |record| {
-                    record.spent = spent
-                });
+                update_records(data, &[output.id()], |record| record.spent = spent);
                 changed.push((output, spent));
             }
         }
-        if !changed.is_empty() {
+        Ok(changed)
+    }
+
+    /// `rescan <blocks>`: the one place this wallet scans the chain for
+    /// output discovery, and only when asked. Scans the blocks `range`
+    /// names (resolved against the tip as the scan starts) for outputs
+    /// paying any address the wallet has created, records every one the file is missing (resolving any
+    /// pending txid among them), then checks every output's spent status
+    /// as [`Self::rescan_spent`] does, so an output found already spent
+    /// isn't offered for spending. `progress` is called after each batch
+    /// of blocks with the last block scanned and the last to scan.
+    ///
+    /// The blocks are fetched without holding the file lock, which a long
+    /// scan would otherwise keep from every other user of the wallet; the
+    /// lock is taken only to record what was found.
+    pub async fn rescan(
+        &self,
+        range: &BlockRange,
+        mut progress: impl FnMut(u64, u64),
+    ) -> Result<RescanReport, WalletError> {
+        let (from, to) = range
+            .resolve(self.tip().await?)
+            .map_err(WalletError::Invalid)?;
+        let mut scanner = self.scanner(&self.load()?.data.meta);
+
+        let mut found: Vec<ScannedOutput> = Vec::new();
+        let mut start = from;
+        while start <= to {
+            let end = (start + RESCAN_BATCH - 1).min(to);
+            let scannable = self
+                .rpc
+                .contiguous_scannable_blocks(start as usize..=end as usize)
+                .await
+                .map_err(|e| WalletError::Rpc(format!("fetching blocks {start} to {end}: {e}")))?;
+            for (height, block) in (start..).zip(scannable) {
+                let timestamp = block.block.header.timestamp;
+                let outputs = scanner
+                    .scan(block)
+                    .map_err(|e| WalletError::Rpc(format!("scanning block {height}: {e}")))?
+                    .not_additionally_locked();
+                found.extend(outputs.into_iter().map(|output| ScannedOutput {
+                    height,
+                    timestamp,
+                    output,
+                }));
+            }
+            progress(end, to);
+            start = end + 1;
+        }
+
+        let _lock = self.lock().await?;
+        let mut file = self.load()?;
+        let known: Vec<(String, u64)> = self
+            .outputs(&file.data)?
+            .iter()
+            .map(OwnedOutput::id)
+            .collect();
+        record_scanned(&mut file.data, &found);
+        let new_outputs: Vec<OwnedOutput> = self
+            .outputs(&file.data)?
+            .into_iter()
+            .filter(|output| !known.contains(&output.id()))
+            .collect();
+        let spent_changed = self.correct_spent(&mut file.data).await?;
+        if !new_outputs.is_empty() || !spent_changed.is_empty() {
             file.save()?;
         }
-        Ok(changed)
+        Ok(RescanReport {
+            from,
+            to,
+            outputs_seen: found.len(),
+            new_outputs,
+            spent_changed,
+        })
     }
 
     /// Resolves anything pending, then builds (but doesn't sign) the
