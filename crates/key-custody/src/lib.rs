@@ -50,6 +50,8 @@ pub mod router;
 #[cfg(feature = "snp")]
 pub mod snp;
 #[cfg(all(test, feature = "backends"))]
+mod property_support;
+#[cfg(all(test, feature = "backends"))]
 mod test_log;
 pub mod transport;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]

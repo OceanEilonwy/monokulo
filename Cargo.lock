@@ -2111,6 +2111,7 @@ dependencies = [
  "monero",
  "p384",
  "parking_lot",
+ "proptest",
  "reqwest",
  "serde",
  "serde_json",

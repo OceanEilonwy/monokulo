@@ -62,6 +62,8 @@ tracing = { version = "0.1.44", optional = true }
 uuid = { version = "1.26.0", features = ["v4"], optional = true }
 
 [dev-dependencies]
+# Generated custody histories; the strategies drive the real backends.
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 futures-util = "0.3"
 snp-attest = { path = "../snp-attest", default-features = false, features = ["test-support"] }
 tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "test-util"] }
