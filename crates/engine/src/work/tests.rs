@@ -2,6 +2,9 @@
 //! resumes across rounds and restarts, failures are isolated and backed
 //! off, and reorg detection stays cheap.
 
+#[path = "properties.rs"]
+mod properties;
+
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -148,6 +151,47 @@ impl Drop for TempDb {
 /// The production database path: a worker thread with its own connection.
 fn worker(store: &SharedStore, path: &str) -> Db {
     Db::open(path, &store.lock()).unwrap()
+}
+
+#[tokio::test]
+async fn a_rescanned_branch_anchor_pruned_before_detection_is_forgotten() {
+    let store = Store::open_in_memory().unwrap();
+    let daemon = FakeDaemonClient::new();
+    for height in 1..=30 {
+        daemon.push_block(&format!("h{height}"), vec![]);
+    }
+    store
+        .open_reorg_job(monero::Network::Mainnet, 3, 1000)
+        .unwrap();
+    store
+        .extend_reorg_branch(monero::Network::Mainnet, 3, "h3")
+        .unwrap();
+    while store
+        .collect_reorg_candidates(monero::Network::Mainnet, 64, 1000)
+        .unwrap()
+        != crate::store::ReorgPhase::Process
+    {}
+    store
+        .finish_reorg(monero::Network::Mainnet, 3, Some((2, "h2")))
+        .unwrap();
+    // A fast forward scan and upkeep can pass/prune the anchor in one round.
+    store
+        .set_scanned_block(monero::Network::Mainnet, 3, "h3")
+        .unwrap();
+    store
+        .set_scanned_block(monero::Network::Mainnet, 30, "h30")
+        .unwrap();
+    store
+        .prune_scanned_blocks_below(monero::Network::Mainnet, 10)
+        .unwrap();
+    let store = store.into_shared();
+    let db = Db::over_shared(Arc::clone(&store));
+    let chain = chain::Chain::new(&db, &daemon, monero::Network::Mainnet, 20, 1000);
+    assert_eq!(chain.detect(30).await.unwrap(), None);
+    assert_eq!(
+        store.lock().reorg_branch(monero::Network::Mainnet).unwrap(),
+        None
+    );
 }
 
 /// With no time at all, each tier with work still completes one unit a
@@ -4232,6 +4276,14 @@ async fn every_sql_failure_working_a_reorg_job_is_recovered_from() {
 async fn a_reorg_job_with_every_candidate_waiting_waits() {
     let stuck = "ab".repeat(32);
     let (store, fake, orders) = open_reorg_with(&[(&stuck, 9)]).await;
+    // This fixture manually collects/defer candidates rather than letting the
+    // chain tier initialize them. Mark its branch as a current-format job.
+    let tip = fake.get_height().await.unwrap();
+    let hash = fake.get_block_hash(tip).await.unwrap();
+    store
+        .lock()
+        .extend_reorg_branch(monero::Network::Mainnet, tip, &hash)
+        .unwrap();
     let db = Db::over_shared(Arc::clone(&store));
     // A few passes reach the processing phase; more means it never will.
     let mut phase = None;

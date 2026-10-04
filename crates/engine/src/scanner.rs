@@ -463,14 +463,22 @@ pub(crate) async fn check_vanished_candidates(
         if mempool_txids.contains(&payment.txid) {
             continue; // still pending in the pool - nothing has been decided about it yet
         }
-        let mut location = match hints.locations.get(&payment.txid) {
-            Some(location) => *location,
-            None => daemon.locate_transaction(&payment.txid).await?,
+        // Without a batch hint, ask for corroborated location directly. Asking
+        // one node first would duplicate its RPC and spend the settlement budget
+        // before the key-image evidence can be checked on slower connections.
+        let (mut location, corroborated) = match hints.locations.get(&payment.txid) {
+            Some(location) => (*location, false),
+            None => match daemon
+                .locate_transaction_corroborated(&payment.txid)
+                .await?
+            {
+                Some(location) => (location, true),
+                None => (daemon.locate_transaction(&payment.txid).await?, true),
+            },
         };
-        // Nowhere according to one node is not nowhere: every node is asked
-        // before the key-image evidence can void it (see
-        // `MoneroDaemonClient::locate_transaction_corroborated`).
-        if location == TxLocation::NotFound {
+        // A batch hint from one node still needs independent corroboration
+        // before missing-transaction evidence can void money.
+        if location == TxLocation::NotFound && !corroborated {
             if let Some(agreed) = daemon
                 .locate_transaction_corroborated(&payment.txid)
                 .await?
@@ -609,7 +617,13 @@ pub fn recompute_and_notify(
     current_height: u64,
     now: i64,
 ) -> Result<Option<shared::activity::Transition>> {
-    store.in_transaction(|store| recompute_and_notify_in_tx(store, order_id, current_height, now))
+    let result = store
+        .in_transaction(|store| recompute_and_notify_in_tx(store, order_id, current_height, now));
+    #[cfg(test)]
+    if matches!(result, Ok(Some(_))) {
+        crate::store::crash_checkpoint("recompute.after_commit");
+    }
+    result
 }
 
 /// The body of `recompute_and_notify`, minus the transaction, for callers that are
@@ -638,6 +652,8 @@ pub(crate) fn recompute_and_notify_in_tx(
             now,
         )?;
     }
+    #[cfg(test)]
+    crate::store::crash_checkpoint("recompute.before_commit");
     Ok(Some(shared::activity::Transition {
         from: old_status,
         to: new_status,
@@ -5250,19 +5266,35 @@ pub(crate) mod tests {
     /// different inputs, hence different key images. Pays the fixture's
     /// amount to the fixture's subaddress, in the clear (no `RingCT` part).
     fn independent_payment_tx(seed: u8) -> Transaction {
-        use monero::blockdata::transaction::{ExtraField, SubField, TxOut};
-        use monero::cryptonote::onetime_key::KeyGenerator;
+        payment_tx(seed, FIXTURE_SUBADDRESS.minor, FIXTURE_AMOUNT_PICONERO)
+    }
+
+    /// A payment with real one-time-key derivation, for generated scanner tests.
+    /// These fixtures exercise output scanning, not network consensus validation.
+    pub(crate) fn payment_tx(seed: u8, minor: u32, amount: u64) -> Transaction {
+        payment_tx_outputs(seed, &[(minor, amount)])
+    }
+
+    pub(crate) fn payment_tx_outputs(seed: u8, outputs: &[(u32, u64)]) -> Transaction {
         let view_pair = monero::ViewPair {
             view: PrivateKey::from_slice(&fixture_view_key()).unwrap(),
             spend: PublicKey::from_slice(&fixture_spend_pubkey()).unwrap(),
         };
-        let (view, spend) =
-            monero::cryptonote::subaddress::get_public_keys(&view_pair, FIXTURE_SUBADDRESS);
+        payment_tx_for_wallet(seed, &view_pair, outputs)
+    }
+
+    pub(crate) fn payment_tx_for_wallet(
+        seed: u8,
+        view_pair: &monero::ViewPair,
+        outputs: &[(u32, u64)],
+    ) -> Transaction {
+        use monero::blockdata::transaction::{ExtraField, SubField, TxOut};
+        use monero::cryptonote::onetime_key::KeyGenerator;
+        assert!(!outputs.is_empty());
         // Deterministic per seed, not random: fixture data.
         let mut r_bytes = [seed; 32];
         r_bytes[31] &= 0x0f;
         let r = PrivateKey::from_slice(&r_bytes).unwrap();
-        let sender = KeyGenerator::from_random(view, spend, r);
         let mut tx = fixture_tx_variant(0x1000 + seed as u64);
         for input in &mut tx.prefix.inputs {
             if let monero::blockdata::transaction::TxIn::ToKey {
@@ -5277,13 +5309,30 @@ pub(crate) mod tests {
             }
         }
         // A subaddress payment's transaction key is r*D, not r*G.
-        tx.prefix.extra = ExtraField(vec![SubField::TxPublicKey(r * &spend)]).into();
-        tx.prefix.outputs = vec![TxOut {
-            amount: monero::VarInt(FIXTURE_AMOUNT_PICONERO),
-            target: TxOutTarget::ToKey {
-                key: sender.one_time_key(0).to_bytes(),
-            },
-        }];
+        let mut keys = Vec::new();
+        tx.prefix.outputs = outputs
+            .iter()
+            .enumerate()
+            .map(|(index, &(minor, amount))| {
+                let (view, spend) = monero::cryptonote::subaddress::get_public_keys(
+                    view_pair,
+                    SubaddressIndex { major: 0, minor },
+                );
+                keys.push(r * &spend);
+                let sender = KeyGenerator::from_random(view, spend, r);
+                TxOut {
+                    amount: monero::VarInt(amount),
+                    target: TxOutTarget::ToKey {
+                        key: sender.one_time_key(index).to_bytes(),
+                    },
+                }
+            })
+            .collect();
+        let mut extra = vec![SubField::TxPublicKey(keys[0])];
+        if keys.len() > 1 {
+            extra.push(SubField::AdditionalPublickKey(keys));
+        }
+        tx.prefix.extra = ExtraField(extra).into();
         tx.rct_signatures = monero::util::ringct::RctSig { sig: None, p: None };
         tx
     }
@@ -5292,7 +5341,7 @@ pub(crate) mod tests {
     /// one-time key, from other inputs. What a sender who reuses a
     /// transaction key produces, by mistake or on purpose ("burning bug"):
     /// only one of the two outputs can ever be spent.
-    fn key_reusing_tx(seed: u8) -> Transaction {
+    pub(crate) fn key_reusing_tx(seed: u8) -> Transaction {
         let mut tx = fixture_tx_variant(0x2000 + seed as u64);
         for input in &mut tx.prefix.inputs {
             if let monero::blockdata::transaction::TxIn::ToKey {
@@ -9181,7 +9230,7 @@ pub(crate) mod tests {
         (tenant, handle, order)
     }
 
-    async fn register_fixture_wallet(key_custody: &dyn KeyCustody) -> WalletHandle {
+    pub(crate) async fn register_fixture_wallet(key_custody: &dyn KeyCustody) -> WalletHandle {
         key_custody
             .register_wallet(WalletMaterial::new(
                 fixture_view_key(),

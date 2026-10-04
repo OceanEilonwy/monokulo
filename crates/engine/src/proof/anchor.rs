@@ -297,6 +297,13 @@ fn check_answer(
 /// Checks the proof of work of a random sample of the window's blocks
 /// (always the anchor itself) against the difficulty claimed for each,
 /// fetched from the agreeing nodes in turn.
+#[cfg_attr(
+    not(test),
+    expect(
+        clippy::cfg_not_test,
+        reason = "production samples must remain unpredictable"
+    )
+)]
 async fn sample(
     nodes: &[NodeRef<'_>],
     members: &[usize],
@@ -307,14 +314,50 @@ async fn sample(
     hasher: &Hasher,
 ) -> Result<(), AnchorProblem> {
     let last = window.len() - 1;
+    // Production sampling remains unpredictable. Tests use a replayable seed.
+    #[cfg(not(test))]
+    let mut rng = {
+        use rand::SeedableRng as _;
+        rand::rngs::StdRng::from_rng(&mut rand::rng())
+    };
+    #[cfg(test)]
+    let seed = std::env::var("PROPTEST_RNG_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(47);
+    #[cfg(test)]
+    let mut rng = {
+        use rand::SeedableRng as _;
+        rand::rngs::StdRng::seed_from_u64(seed)
+    };
     let mut picked: BTreeSet<usize> = rand::seq::index::sample(
-        &mut rand::rng(),
+        &mut rng,
         last,
         tuning.anchor_samples.saturating_sub(1).min(last),
     )
     .into_iter()
     .collect();
     picked.insert(last);
+    #[cfg(test)]
+    {
+        fn record_sample(seed: u64, heights: &[u64]) {
+            // Direct stderr writes survive libtest capture in nextest failure output.
+            use std::io::Write as _;
+            let heights = heights
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "anchor sample seed={seed}, heights=[{heights}]"
+            );
+        }
+        record_sample(
+            seed,
+            &picked.iter().map(|&i| window[i].height).collect::<Vec<_>>(),
+        );
+    }
     let start = window[0].height;
     let key_of = |height: u64| -> Option<[u8; 32]> {
         let at = pow::seed_height(height);
@@ -327,25 +370,31 @@ async fn sample(
     let picked: Vec<usize> = picked.into_iter().collect();
     let mut by_key: BTreeMap<[u8; 32], Vec<(usize, Vec<u8>)>> = BTreeMap::new();
     for chunk in picked.chunks(tuning.fetch_concurrency.max(1)) {
-        let blobs = join_all(chunk.iter().enumerate().map(|(i, &index)| {
-            let node = &nodes[members[i % members.len()]];
-            tuning.bounded(node.client.get_block_blob(window[index].height))
+        let blobs = join_all(chunk.iter().enumerate().map(async |(i, &index)| {
+            let mut failure = None;
+            // All members agreed on this window. One peer timing out on a
+            // sampled blob must not prevent a healthy majority anchoring.
+            for offset in 0..members.len() {
+                let node = &nodes[members[(i + offset) % members.len()]];
+                match tuning
+                    .bounded(node.client.get_block_blob(window[index].height))
+                    .await
+                {
+                    Ok(blob) => match pow::decode(window[index].height, &blob) {
+                        Ok(candidate) if candidate.id == window[index].id => return Ok(candidate),
+                        Ok(_) => failure = Some("sample blob is not the agreed block".to_owned()),
+                        Err(error) => failure = Some(format!("invalid sample blob: {error}")),
+                    },
+                    Err(error) => failure = Some(error),
+                }
+            }
+            Err(failure.unwrap_or_else(|| "no node supplied a sampled block".to_owned()))
         }))
         .await;
         for (&index, blob) in chunk.iter().zip(blobs) {
             let height = window[index].height;
-            let blob = blob.map_err(AnchorProblem::Failed)?;
             let candidate =
-                pow::decode(height, &blob).map_err(|e| AnchorProblem::SampleFailed {
-                    height,
-                    reason: e.to_string(),
-                })?;
-            if candidate.id != window[index].id {
-                return Err(AnchorProblem::SampleFailed {
-                    height,
-                    reason: "its blob isn't the block the nodes named".to_owned(),
-                });
-            }
+                blob.map_err(|reason| AnchorProblem::SampleFailed { height, reason })?;
             let key = key_of(height).ok_or_else(|| {
                 AnchorProblem::Failed(format!("no RandomX key for block {height}"))
             })?;

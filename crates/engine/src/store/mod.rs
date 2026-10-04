@@ -303,6 +303,44 @@ impl Database {
     }
 }
 
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct SqlFaultTrace {
+    checks: std::sync::atomic::AtomicUsize,
+    pub(crate) denied: std::sync::atomic::AtomicUsize,
+    pub(crate) action: Mutex<Option<String>>,
+}
+#[cfg(test)]
+impl SqlFaultTrace {
+    pub(crate) fn load(&self, ordering: std::sync::atomic::Ordering) -> usize {
+        self.checks.load(ordering)
+    }
+    pub(crate) fn assert_outcome(&self, target: usize) {
+        use std::sync::atomic::Ordering;
+        let denied = self.denied.load(Ordering::Relaxed);
+        assert_eq!(denied, usize::from(self.load(Ordering::Relaxed) > target));
+        assert_eq!(self.action.lock().is_some(), denied == 1);
+    }
+}
+
+/// A child process rendezvous at a named durability boundary. Never included
+/// in production; normal tests do not set these environment variables.
+#[cfg(test)]
+#[expect(
+    clippy::infinite_loop,
+    reason = "child rendezvous waits for the parent to kill this process"
+)]
+pub(crate) fn crash_checkpoint(point: &str) {
+    if std::env::var("MONOKULO_PROPERTY_CRASH_POINT").as_deref() != Ok(point) {
+        return;
+    }
+    let path = std::env::var("MONOKULO_PROPERTY_CRASH_PATH").unwrap();
+    std::fs::write(format!("{path}.ready"), point).unwrap();
+    loop {
+        std::thread::park();
+    }
+}
+
 pub struct Store {
     conn: Connection,
     /// Fan-out of "this order's visible state just changed" hints - see
@@ -617,9 +655,12 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
             is_settlement(as_of_ceiling)
         }
     };
+    // Losing a conflict's confirmed winner invalidates an earlier settlement
+    // too: zero-confirmation policy cannot make unresolved copies spendable.
     let settlement_deferred = is_settlement(derived)
-        && !is_settlement(order.status)
-        && (facts.settlement_frozen || facts.conflicted || !settles_on_proven_blocks());
+        && (facts.conflicted
+            || (!is_settlement(order.status)
+                && (facts.settlement_frozen || !settles_on_proven_blocks())));
     let status = if expiry_held {
         order.status
     } else if settlement_deferred {
@@ -894,9 +935,9 @@ impl Store {
     /// checked, each time it runs. Returns the running count of checks, so a
     /// sweep knows when `n` was past the last one.
     #[cfg(test)]
-    pub(crate) fn fail_nth_access(&self, n: Option<usize>) -> Arc<std::sync::atomic::AtomicUsize> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let seen = Arc::new(AtomicUsize::new(0));
+    pub(crate) fn fail_nth_access(&self, n: Option<usize>) -> Arc<SqlFaultTrace> {
+        use std::sync::atomic::Ordering;
+        let seen = Arc::new(SqlFaultTrace::default());
         if let Some(n) = n {
             self.conn.set_prepared_statement_cache_capacity(0);
             self.conn.flush_prepared_statement_cache();
@@ -928,7 +969,9 @@ impl Store {
                                     pragma_value: _
                                 }
                         );
-                    if statement && counter.fetch_add(1, Ordering::Relaxed) == n {
+                    if statement && counter.checks.fetch_add(1, Ordering::Relaxed) == n {
+                        counter.denied.fetch_add(1, Ordering::Relaxed);
+                        *counter.action.lock() = Some(format!("{:?}", context.action));
                         rusqlite::hooks::Authorization::Deny
                     } else {
                         rusqlite::hooks::Authorization::Allow
@@ -1901,7 +1944,10 @@ impl Store {
                 order_id,
                 status_to_str(plan.status),
                 plan.confirmations as i64,
-                plan.amount_received as i64,
+                // Individual payments can fit SQLite while their total does
+                // not. Fail the write instead of wrapping money negative;
+                // transactional callers then roll the whole update back.
+                shared::sqlite::Unsigned(plan.amount_received),
                 now,
                 is_terminal(plan.status),
                 closed_at,

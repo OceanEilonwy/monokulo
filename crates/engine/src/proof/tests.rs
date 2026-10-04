@@ -14,6 +14,7 @@ use crate::store::SharedStore;
 const NET: monero::Network = monero::Network::Mainnet;
 /// The test chains' window ends here; their blocks after it cross a
 /// `RandomX` key change (at 977 × 2048 + 65 = 2,000,961).
+pub(crate) const TEST_NOW: i64 = 1_800_000_000;
 const TOP: u64 = 977 * 2048 + 60;
 
 /// One `RandomX` thread for building every test's chains.
@@ -29,7 +30,7 @@ fn builder() -> Hasher {
 /// what that needs, and letting a caught node back as soon as it serves
 /// the proven chain (`a_caught_node_stays_out_for_a_while` has the real
 /// wait).
-fn tuning() -> ProofTuning {
+pub(crate) fn tuning() -> ProofTuning {
     ProofTuning {
         anchor_depth: 10,
         keep_blocks: 0,
@@ -42,8 +43,8 @@ fn tuning() -> ProofTuning {
 
 /// A test chain's window, then 12 mined blocks: an anchor is taken at
 /// TOP + 2. Its last block an hour ago, so a hundred more fit before now.
-fn base_chain() -> TestChain {
-    let mut chain = TestChain::anchored_at(builder(), TOP, crate::now_unix() as u64 - 3600);
+pub(crate) fn base_chain() -> TestChain {
+    let mut chain = TestChain::anchored_at(builder(), TOP, TEST_NOW as u64 - 3600);
     chain.mine_empty(12);
     chain
 }
@@ -91,7 +92,7 @@ impl World {
     }
 
     async fn round(&mut self) -> RoundReport {
-        self.round_at(crate::now_unix()).await
+        self.round_at(TEST_NOW).await
     }
 
     async fn round_at(&mut self, now: i64) -> RoundReport {
@@ -276,7 +277,7 @@ async fn a_reorg_deeper_than_can_be_followed_holds_settlement() {
     world.round().await;
     // A replacement for everything from 20 blocks below the anchor.
     let mut other = chain.truncated(TOP - 20);
-    let resumed = crate::now_unix() as u64 - 3000;
+    let resumed = TEST_NOW as u64 - 3000;
     for i in 0..40 {
         other.push(vec![], resumed + i * 29, true);
     }
@@ -328,7 +329,7 @@ async fn an_anchor_needs_a_majority_of_the_configured_nodes() {
     // Two nodes giving different windows: neither is a majority.
     let mut world = World::new(2, &chain);
     let other = {
-        let mut other = TestChain::anchored_at(builder(), TOP, crate::now_unix() as u64 - 3599);
+        let mut other = TestChain::anchored_at(builder(), TOP, TEST_NOW as u64 - 3599);
         other.mine_empty(12);
         other
     };
@@ -371,7 +372,7 @@ async fn an_anchor_below_the_floor_or_with_a_failing_proof_is_refused() {
         TOP,
         DIFFICULTY_BLOCKS as u64,
         60,
-        crate::now_unix() as u64 - 200,
+        TEST_NOW as u64 - 200,
         1 << 40,
     );
     heavy.forge(vec![]);
@@ -394,7 +395,7 @@ async fn an_anchor_below_the_floor_or_with_a_failing_proof_is_refused() {
 
     // A window dated two days back (a 10-block-deep anchor should be 20
     // minutes old): the blocks after it could make the difficulty collapse.
-    let mut old = TestChain::anchored_at(builder(), TOP, crate::now_unix() as u64 - 172_800);
+    let mut old = TestChain::anchored_at(builder(), TOP, TEST_NOW as u64 - 172_800);
     old.mine_empty(12);
     let mut world = World::new(1, &old);
     world.round().await;
@@ -435,7 +436,7 @@ async fn a_restart_resumes_from_the_proven_chain_without_anchoring_again() {
     chain.mine_empty(3);
     chain.install(&world.nodes[0], TOP + 13);
     world.follower = Follower::new(NET, tuning()).unwrap();
-    world.round_at(crate::now_unix() + 100).await;
+    world.round_at(TEST_NOW + 100).await;
     let after = world
         .store
         .lock()
@@ -480,7 +481,7 @@ async fn a_block_from_the_future_waits_for_the_clock_and_one_before_the_median_i
     let mut world = World::new(1, &chain);
     world.round().await;
     let proven = world.proven_tip();
-    let now = crate::now_unix();
+    let now = TEST_NOW;
 
     let mut early = chain.clone();
     let three_hours = now as u64 + 3 * 3600;
@@ -544,7 +545,7 @@ async fn turning_checking_off_forgets_it_and_lets_every_node_back() {
 
     world
         .follower
-        .round(&world.db, &world.client, false, crate::now_unix())
+        .round(&world.db, &world.client, false, TEST_NOW)
         .await;
     assert_eq!(world.follower.status(), None);
     assert!(!world.client.is_excluded(0));
@@ -889,7 +890,7 @@ mod settlement {
             let mut world = World::new(n, chain);
             let custody = FlakyKeyCustody::default();
             let (tenant, handle, order) =
-                fixture_tenant_shared(&world.store, &custody, crate::now_unix() + 3600).await;
+                fixture_tenant_shared(&world.store, &custody, TEST_NOW + 3600).await;
             {
                 let store = world.store.lock();
                 let tip = chain.tip();
@@ -1051,3 +1052,6 @@ mod settlement {
         );
     }
 }
+
+#[path = "node_properties.rs"]
+mod properties;

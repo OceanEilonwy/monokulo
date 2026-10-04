@@ -4,6 +4,7 @@
 # it runs everything rather than stopping at the first failure, and writes a
 # JUnit report that scripts/test-summary.py turns into the job summary.
 [profile.ci]
+slow-timeout = { period = "120s", terminate-after = 10 }
 fail-fast = false
 # No retries: a test that fails once fails the run. A retry would let a
 # test that fails every other run keep CI green; a flaky test is a bug to
@@ -15,3 +16,20 @@ final-status-level = "slow"
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# Process-level watchdogs also catch blocking loops that Tokio cannot cancel.
+[profile.default]
+slow-timeout = { period = "120s", terminate-after = 10 }
+
+[test-groups.proof-workers]
+max-threads = 2
+
+[[profile.default.overrides]]
+filter = 'test(/^proof::/) | test(real_verifier_and_scanner)'
+test-group = 'proof-workers'
+slow-timeout = { period = "300s", terminate-after = 12 }
+
+[[profile.ci.overrides]]
+filter = 'test(/^proof::/) | test(real_verifier_and_scanner)'
+test-group = 'proof-workers'
+slow-timeout = { period = "300s", terminate-after = 12 }

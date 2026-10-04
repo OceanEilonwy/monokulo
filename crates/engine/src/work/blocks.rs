@@ -393,6 +393,8 @@ struct Rotation {
     visited: HashSet<u64>,
     /// Where the rotation stands this round (else the persisted position).
     last: Option<u64>,
+    /// Next existing group before this unit splits or merges tenant pages.
+    next_existing: Option<u64>,
 }
 
 impl Rotation {
@@ -403,7 +405,7 @@ impl Rotation {
         high_water: u64,
     ) -> Result<Option<u64>, ScannerError> {
         let (last, visited) = (self.last, self.visited.clone());
-        let group = round
+        let (group, next_existing) = round
             .db(move |s, network| -> Result<_, ScannerError> {
                 let after = match last {
                     Some(last) => Some(last),
@@ -413,12 +415,21 @@ impl Rotation {
                 if next.is_empty() && after.is_some() {
                     next = s.scan_group_cursors(network, high_water, None, 1)?;
                 }
-                Ok(next
+                let group = next
                     .first()
                     .copied()
-                    .filter(|group| !visited.contains(group)))
+                    .filter(|group| !visited.contains(group));
+                let next_existing = match group {
+                    Some(group) => s
+                        .scan_group_cursors(network, high_water, Some(group), 1)?
+                        .first()
+                        .copied(),
+                    None => None,
+                };
+                Ok((group, next_existing))
             })
             .await?;
+        self.next_existing = next_existing;
         if let Some(group) = group {
             self.visited.insert(group);
         }
@@ -432,7 +443,13 @@ impl Rotation {
         group: u64,
         reached: u64,
     ) -> Result<(), ScannerError> {
-        let position = reached.max(group);
+        // A bounded tenant page may move only part of a group. Never skip
+        // another group that existed before this unit, even if this page
+        // reaches or passes its cursor.
+        let position = self.next_existing.map_or_else(
+            || reached.max(group),
+            |next| reached.max(group).min(next.saturating_sub(1)),
+        );
         self.last = Some(position);
         round
             .db(move |s, network| s.set_scheduler_position::<CatchUpGroup>(network, &position))
@@ -785,7 +802,7 @@ async fn seed(round: &Round<'_>, tip: u64) -> Result<Progress, ScannerError> {
     }
 }
 
-/// Makes up to the tuning's `blocks_per_unit` block scans for the group at
+/// Makes up to the tuning's `blocks_per_unit` tenant-page block scans for the group at
 /// `cursor`, one after another, as far as its time allows (always at least
 /// one step of progress). The frontier stops at the tip; catch-up stops at the
 /// network's high-water mark, where it joins the frontier. Returns the
@@ -803,13 +820,14 @@ async fn advance_group(
     // Tenants already given block `cursor + 1` this unit, a page at a
     // time, while the rest of the group at `cursor` waits for its page.
     let mut given: Vec<TenantId> = Vec::new();
-    for scanned in 0..round.state.tuning().blocks_per_unit {
+    let mut scanned = 0;
+    while scanned < round.state.tuning().blocks_per_unit {
         let end = match group {
             Group::Frontier => tip,
             Group::CatchUp => high_water,
         };
-        // Out of time, a unit starts no new block; a block it started, it
-        // finishes for the whole group, so the group doesn't split.
+        // Each unit has a hard tenant-page bound. Remaining tenants retain
+        // their durable cursor and join catch-up on a subsequent unit.
         if cursor >= end || (given.is_empty() && scanned > 0 && Instant::now() >= until) {
             break;
         }
@@ -880,12 +898,16 @@ async fn advance_group(
             // same block (held already) before the group moves on, so a
             // group larger than a page moves together rather than its
             // first page running ahead of the rest.
-            BlockOutcome::Committed(Page::Full(page)) => given.extend(page),
+            BlockOutcome::Committed(Page::Full(page)) => {
+                given.extend(page);
+                scanned += 1;
+            }
             BlockOutcome::Committed(Page::Last) => {
                 round.blocks.cache.mark_scanned(cursor + 1);
                 given.clear();
                 cursor += 1;
                 high_water = high_water.max(cursor);
+                scanned += 1;
             }
             BlockOutcome::Interrupted | BlockOutcome::NobodyToScan => break,
             BlockOutcome::Diverged(reason) => {
@@ -991,13 +1013,24 @@ async fn scan_block(
     let group_page = round.state.tuning().group_page;
     let mut waiting = round.state.backoff.waiting();
     waiting.extend_from_slice(given);
+    let registered: Option<Vec<TenantId>> = (group == Group::CatchUp).then(|| {
+        round
+            .inputs
+            .tenants
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect()
+    });
     // A catch-up group none of whose stores can be scanned (keys not
     // registered, waiting to retry) waits where it is, before anything is
     // fetched. The frontier still records the block for the network.
     if group == Group::CatchUp {
         let excluded = waiting.clone();
+        let available = registered.clone().unwrap_or_default();
         let ids = round
-            .db(move |s, network| s.tenants_at_cursor(network, parent, &excluded, group_page))
+            .db(move |s, network| {
+                s.registered_tenants_at_cursor(network, parent, &excluded, &available, group_page)
+            })
             .await?;
         if !ids.iter().any(|id| round.handles.contains_key(id.as_str())) {
             return Ok(BlockOutcome::NobodyToScan);
@@ -1023,7 +1056,20 @@ async fn scan_block(
     };
     let plan = round
         .db(move |s, network| -> Result<_, ScannerError> {
-            let ids = s.tenants_at_cursor(network, parent, &waiting, group_page)?;
+            let ids = match registered {
+                Some(available) => s.registered_tenants_at_cursor(
+                    network, parent, &waiting, &available, group_page,
+                )?,
+                None => s.tenants_at_cursor(network, parent, &waiting, group_page)?,
+            };
+            // Persist attempts as well as successes: a custody failure must
+            // yield to the next tenant even when the round or process ends.
+            if let Some(last) = ids.last() {
+                s.set_scheduler_position::<crate::store::position::BlockTenantPage>(
+                    network,
+                    &last.to_string(),
+                )?;
+            }
             let page = if ids.len() == group_page {
                 Page::Full(ids.clone())
             } else {
@@ -1338,7 +1384,7 @@ fn checkpoint(
     progress: Vec<(TenantId, usize, Vec<ScanResult>)>,
     now: i64,
 ) -> Result<(), ScannerError> {
-    s.in_transaction(|s| -> Result<(), ScannerError> {
+    let result = s.in_transaction(|s| -> Result<(), ScannerError> {
         for (tenant_id, next_tx, scans) in progress {
             s.save_block_checkpoint(
                 network,
@@ -1353,8 +1399,15 @@ fn checkpoint(
                 stage_block_match(s, network, &tenant_id, &scan, now)?;
             }
         }
+        #[cfg(test)]
+        crate::store::crash_checkpoint("staging.before_commit");
         Ok(())
-    })
+    });
+    #[cfg(test)]
+    if result.is_ok() {
+        crate::store::crash_checkpoint("staging.after_commit");
+    }
+    result
 }
 
 /// The block being committed and where its idle tenants go.
@@ -1389,7 +1442,7 @@ fn commit(
     scanned: &[ScannedBlock],
     now: i64,
 ) -> Result<Option<(usize, usize)>, ScannerError> {
-    s.in_transaction(|s| -> Result<Option<(usize, usize)>, ScannerError> {
+    let result = s.in_transaction(|s| -> Result<Option<(usize, usize)>, ScannerError> {
         let height = block.height;
         if s.get_scanned_block_hash(network, block.parent)?
             .is_some_and(|parent| parent != block.prev_hash)
@@ -1452,8 +1505,17 @@ fn commit(
             block.since,
             block.grace,
         )?;
+        #[cfg(test)]
+        if matches > 0 {
+            crate::store::crash_checkpoint("publication.before_commit");
+        }
         Ok(Some((matches, idle)))
-    })
+    });
+    #[cfg(test)]
+    if matches!(result, Ok(Some((matches, _))) if matches > 0) {
+        crate::store::crash_checkpoint("publication.after_commit");
+    }
+    result
 }
 
 /// The run of blocks to fetch ahead, from `next` up to `end`, if `next`
@@ -1835,7 +1897,11 @@ async fn paged(round: &Round<'_>, header: &ChainHeader) -> Result<Paged, Scanner
         .blocks
         .note_fetch_time(started.elapsed().as_secs_f64());
     let outline = outline?;
-    if outline.hash != header.hash {
+    if outline.hash != header.hash
+        || outline.height != header.height
+        || outline.prev_hash != header.prev_hash
+        || outline.timestamp != header.timestamp
+    {
         return Err(ScannerError::Daemon(crate::daemon::DaemonError::Request(
             format!(
                 "block {} changed between its header and its outline",
