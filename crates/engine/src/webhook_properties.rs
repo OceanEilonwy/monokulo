@@ -43,6 +43,7 @@ async fn receive(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
+    let status = state.status.load(Ordering::SeqCst);
     let active = state.active.fetch_add(1, Ordering::SeqCst) + 1;
     state.peak.fetch_max(active, Ordering::SeqCst);
     let id = headers
@@ -62,7 +63,7 @@ async fn receive(
     state.active.fetch_sub(1, Ordering::SeqCst);
     if let Some(url) = state.redirect.lock().as_ref() {
         return (
-            StatusCode::from_u16(state.status.load(Ordering::SeqCst)).unwrap(),
+            StatusCode::from_u16(status).unwrap(),
             [("location", url.clone())],
         )
             .into_response();
@@ -98,6 +99,7 @@ struct Row {
     delivered: Option<i64>,
     gave_up: Option<i64>,
     status: Option<u16>,
+    last: Option<i64>,
     error: Option<String>,
 }
 struct World {
@@ -154,7 +156,7 @@ impl World {
     }
     fn rows(&self) -> Vec<Row> {
         let s = self.store.lock();
-        let mut stmt=s.conn_for_test().prepare("SELECT id,attempt_count,next_attempt_at_utc,delivered_at_utc,gave_up_at_utc,last_response_status,last_error FROM webhook_deliveries ORDER BY id").unwrap();
+        let mut stmt=s.conn_for_test().prepare("SELECT id,attempt_count,next_attempt_at_utc,delivered_at_utc,gave_up_at_utc,last_response_status,last_error,last_attempted_at_utc FROM webhook_deliveries ORDER BY id").unwrap();
         stmt.query_map([], |r| {
             Ok(Row {
                 id: r.get(0)?,
@@ -164,6 +166,7 @@ impl World {
                 gave_up: r.get(4)?,
                 status: r.get(5)?,
                 error: r.get(6)?,
+                last: r.get(7)?,
             })
         })
         .unwrap()
@@ -221,9 +224,9 @@ proptest! {
                 assert_eq!(w.tick(now,max,TIMEOUT).await.unwrap(),1);let row=w.rows()[0].clone();assert_eq!(row.attempts,attempt+1);assert_eq!(row.status,Some(if attempt<failures {503}else{status}));
                 for capture in server.state.captured.lock().iter() {verify(capture,&payload,"stable");assert_eq!(capture.headers["x-merchant"],"hello");}
                 w.restart();assert_eq!(w.rows()[0],row);
-                if attempt>=failures {assert_eq!(row.delivered,Some(now));assert_eq!(row.gave_up,None);assert_eq!(row.error,None);assert_eq!(w.tick(i64::MAX,max,TIMEOUT).await.unwrap(),0);break;}
-                if attempt+1==max {assert_eq!(row.gave_up,Some(now));assert!(row.error.is_some());assert_eq!(w.tick(i64::MAX,max,TIMEOUT).await.unwrap(),0);break;}
-                let expected=60*(1i64<<attempt.min(6));assert_eq!(row.due,now+expected);assert_eq!(w.tick(row.due-1,max,TIMEOUT).await.unwrap(),0);now=row.due;
+                if attempt>=failures {assert_eq!(row.delivered,row.last);assert!(row.last.unwrap()>=now);assert_eq!(row.gave_up,None);assert_eq!(row.error,None);assert_eq!(w.tick(i64::MAX,max,TIMEOUT).await.unwrap(),0);break;}
+                if attempt+1==max {assert_eq!(row.gave_up,row.last);assert!(row.last.unwrap()>=now);assert!(row.error.is_some());assert_eq!(w.tick(i64::MAX,max,TIMEOUT).await.unwrap(),0);break;}
+                let expected=60*(1i64<<attempt.min(6));assert_eq!(row.due,row.last.unwrap()+expected);assert_eq!(w.tick(row.due-1,max,TIMEOUT).await.unwrap(),0);now=row.due;
             }
         });
     }
@@ -280,13 +283,13 @@ proptest! {
         });
     }
     #[test]
-    fn timeout_and_disconnect_are_persisted_and_eventually_recover(kind in 0u8..3,millis in 1u64..16,max in 1u32..5) {
+    fn timeout_and_disconnect_are_persisted_and_eventually_recover(kind in 0u8..4,millis in 1u64..16,max in 1u32..5) {
         runtime().block_on(async {
-            let server=Server::new(200).await;let mut w=World::new(true);let url=if kind==2 {let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let url=format!("http://{}/hook?secret=do-not-store",listener.local_addr().unwrap());drop(listener);url}else{server.url.clone()};
+            let server=Server::new(200).await;let mut w=World::new(true);let mut reset_task=None;let url=if kind==3 {let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let url=format!("http://{}/hook",listener.local_addr().unwrap());reset_task=Some(tokio::spawn(async move {let (stream,_)=listener.accept().await.unwrap();drop(stream);}));url}else if kind==2 {let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let url=format!("http://{}/hook?secret=do-not-store",listener.local_addr().unwrap());drop(listener);url}else{server.url.clone()};
             w.seed(&url,1,1,1,"{}");if kind<2 {server.state.slow.lock().insert("event_0_0_0".into());}
             let timeout=if kind==0 {Duration::ZERO}else{Duration::from_millis(millis)};assert_eq!(w.tick(1000,max,timeout).await.unwrap(),1);let row=w.rows()[0].clone();assert_eq!(row.attempts,1);assert_eq!(row.delivered,None);assert!(row.error.as_ref().is_some_and(|e|!e.contains("do-not-store")));assert_eq!(row.status,None);
-            server.unblock();w.restart();assert_eq!(w.rows()[0],row);
-            if max==1 {assert_eq!(row.gave_up,Some(1000));assert_eq!(w.tick(10000,max,TIMEOUT).await.unwrap(),0);}else{w.store.lock().conn_for_test().execute("UPDATE webhooks SET url=?1",[&server.url]).unwrap();assert_eq!(w.tick(1060,max,TIMEOUT).await.unwrap(),1);let row=w.rows()[0].clone();assert_eq!(row.attempts,2);assert_eq!(row.delivered,Some(1060));assert_eq!(row.error,None);}
+            if let Some(task)=reset_task {task.abort();}server.unblock();w.restart();assert_eq!(w.rows()[0],row);
+            if max==1 {assert_eq!(row.gave_up,row.last);assert_eq!(w.tick(10000,max,TIMEOUT).await.unwrap(),0);}else{w.store.lock().conn_for_test().execute("UPDATE webhooks SET url=?1",[&server.url]).unwrap();assert_eq!(w.tick(row.due,max,TIMEOUT).await.unwrap(),1);let row=w.rows()[0].clone();assert_eq!(row.attempts,2);assert_eq!(row.delivered,row.last);assert_eq!(row.error,None);}
         });
     }
     #[test]
@@ -296,7 +299,7 @@ proptest! {
             for t in fast..fast+slow {server.state.slow.lock().insert(format!("event_{t}_0_0"));}
             let db=w.db.clone();let client=w.client.clone();let task=tokio::spawn(async move{run_delivery_tick_on(&db,&client,Duration::from_secs(30),8,1000).await});
             tokio::time::timeout(Duration::from_secs(5),async {loop {if w.rows().iter().filter(|r|r.delivered.is_some()).count()==fast && server.state.captured.lock().len()==fast+slow {break;}tokio::time::sleep(Duration::from_millis(1)).await;}}).await.unwrap();
-            task.abort();assert!(task.await.unwrap_err().is_cancelled());let rows=w.rows();assert!(rows[..fast].iter().all(|r|r.attempts==1 && r.delivered==Some(1000)));assert!(rows[fast..].iter().all(|r|r.attempts==0 && r.delivered.is_none()));
+            task.abort();assert!(task.await.unwrap_err().is_cancelled());let rows=w.rows();assert!(rows[..fast].iter().all(|r|r.attempts==1 && r.delivered.is_some_and(|at|at>=1000)));assert!(rows[fast..].iter().all(|r|r.attempts==0 && r.delivered.is_none()));
             server.unblock();assert_eq!(w.tick(1000,8,TIMEOUT).await.unwrap(),slow);assert!(w.rows().iter().all(|r|r.delivered.is_some()));assert!(server.state.peak.load(Ordering::SeqCst)<=16);
         });
     }
@@ -306,18 +309,18 @@ proptest! {
             let server=Server::new(200).await;let w=World::new(true);let ids=w.seed(&server.url,tenants,orders,events,"{}");let mut remaining=tenants*orders*events;
             while remaining>0 {let n=w.tick(1000,8,TIMEOUT).await.unwrap();assert!(n>0 && n<=50 && n<=tenants*4 && n<=tenants*orders);remaining-=n;}
             let captures=server.state.captured.lock();assert_eq!(captures.len(),tenants*orders*events);let mut next=HashMap::new();for c in captures.iter(){let v:Value=serde_json::from_slice(&c.body).unwrap();let parts:Vec<usize>=v["event_id"].as_str().unwrap().strip_prefix("event_").unwrap().split('_').map(|s|s.parse().unwrap()).collect();let e=next.entry((parts[0],parts[1])).or_insert(0);assert_eq!(*e,parts[2]);*e+=1;verify(c,std::str::from_utf8(&c.body).unwrap(),v["event_id"].as_str().unwrap());}
-            assert!(w.rows().iter().all(|r|r.attempts==1 && r.delivered==Some(1000)));assert!(server.state.peak.load(Ordering::SeqCst)<=16);assert_eq!(ids.len(),tenants);
+            assert!(w.rows().iter().all(|r|r.attempts==1 && r.delivered.is_some_and(|at|at>=1000)));assert!(server.state.peak.load(Ordering::SeqCst)<=16);assert_eq!(ids.len(),tenants);
         });
     }
     #[test]
-    fn sql_failures_leave_retryable_rows_and_do_not_discard_other_completed_outcomes(fault in 0usize..32,kind in 0u8..3) {
+    fn sql_failures_leave_retryable_rows_and_do_not_discard_other_completed_outcomes(fault in 0usize..32,kind in 0u8..4) {
         runtime().block_on(async {sql_fault_case(fault,kind).await;});
     }
     #[test]
     fn attempt_and_timestamp_limits_do_not_overflow(attempt in prop_oneof![0u32..16,Just(u32::MAX)],now in prop_oneof![1i64..100_000,Just(i64::MAX-1),Just(i64::MAX)]) {
         runtime().block_on(async {
-            assert_eq!(backoff_seconds(attempt),60*(1i64<<attempt.min(6)));let server=Server::new(503).await;let w=World::new(true);w.seed(&server.url,1,1,1,"{}");w.store.lock().conn_for_test().execute("UPDATE webhook_deliveries SET attempt_count=?1",[i64::from(attempt)]).unwrap();
-            w.tick(now,u32::MAX,TIMEOUT).await.unwrap();let row=w.rows()[0].clone();assert_eq!(row.attempts,if attempt==u32::MAX {attempt}else{attempt+1});assert_eq!(server.state.captured.lock().len(),usize::from(attempt<u32::MAX));if attempt>=u32::MAX-1 {assert!(row.gave_up.is_some());}else{assert_eq!(row.due,now.saturating_add(60*(1i64<<attempt.min(6))));}
+            assert_eq!(backoff_seconds(attempt),60*(1i64<<attempt.min(6)));let server=Server::new(503).await;let w=World::new(true);w.seed(&server.url,1,1,1,"{}");w.store.lock().conn_for_test().execute("UPDATE webhook_deliveries SET attempt_count=?1,next_attempt_at_utc=?2",rusqlite::params![i64::from(attempt),now]).unwrap();
+            w.tick(now,u32::MAX,TIMEOUT).await.unwrap();let row=w.rows()[0].clone();assert_eq!(row.attempts,if attempt==u32::MAX {attempt}else{attempt+1});assert_eq!(server.state.captured.lock().len(),usize::from(attempt<u32::MAX));if attempt>=u32::MAX-1 {assert!(row.gave_up.is_some());}else{assert_eq!(row.due,row.last.unwrap().saturating_add(60*(1i64<<attempt.min(6))));}
         });
     }
 }
@@ -345,7 +348,7 @@ proptest! {
     fn legacy_payloads_use_stable_fallback_identity(raw in any::<String>(),valid in any::<bool>(),numeric in any::<u64>()) {
         runtime().block_on(async {
             let server=Server::new(200).await;let w=World::new(true);w.seed(&server.url,1,1,1,"{}");let mut delivery=w.store.lock().due_webhook_deliveries_for_test(1000,1).unwrap().remove(0);
-            delivery.payload_json=if valid {serde_json::json!({"event_id":numeric,"message":raw}).to_string()}else{raw};
+            delivery.payload_json=if valid {serde_json::json!({"event_id":numeric,"message":raw}).to_string()}else{format!("legacy:{raw}")};
             let expected=serde_json::from_str::<Value>(&delivery.payload_json).ok().and_then(|v|v.get("event_id").and_then(Value::as_str).map(str::to_owned)).unwrap_or_else(||delivery.delivery_id.to_string());
             assert!(attempt_delivery(&w.client,&delivery,TIMEOUT).await.delivered);assert!(attempt_delivery(&w.client,&delivery,TIMEOUT).await.delivered);let captures=server.state.captured.lock();assert_eq!(captures.len(),2);for c in captures.iter(){verify(c,&delivery.payload_json,&expected);}
         });
@@ -357,12 +360,12 @@ proptest! {
             let tenant=w.store.lock().get_order_tenant_id(&first.order_id).unwrap().unwrap();
             let second=w.store.lock().create_webhook(&tenant,&server.url,"{}","whsec_property",1000).unwrap();
             for e in 0..events {w.store.lock().enqueue_webhook_delivery(&second.id,&first.order_id,"order.paid",&serde_json::json!({"event_id":format!("other_{e}")}).to_string(),1000).unwrap();}
-            assert_eq!(w.tick(1000,8,TIMEOUT).await.unwrap(),2);assert_eq!(w.tick(1059,8,TIMEOUT).await.unwrap(),0);
+            assert_eq!(w.tick(1000,8,TIMEOUT).await.unwrap(),2);assert_eq!(w.tick(1059,8,TIMEOUT).await.unwrap(),0);let ready=w.rows().iter().map(|r|r.due).max().unwrap();
             w.store.lock().conn_for_test().execute("UPDATE webhooks SET enabled=0 WHERE id=?1",[&first.webhook_id]).unwrap();server.state.status.store(200,Ordering::SeqCst);w.restart();
-            for _ in 0..events {assert_eq!(w.tick(1060,8,TIMEOUT).await.unwrap(),1);}
+            for _ in 0..events {assert_eq!(w.tick(ready,8,TIMEOUT).await.unwrap(),1);}
             assert_eq!(w.tick(10000,8,TIMEOUT).await.unwrap(),0);assert!(w.rows()[..events].iter().all(|r|r.delivered.is_none()));
             if deleted {assert!(w.store.lock().delete_webhook(&tenant,&first.webhook_id).unwrap());assert_eq!(w.tick(10000,8,TIMEOUT).await.unwrap(),0);assert_eq!(w.rows().len(),events);}else{
-                w.store.lock().conn_for_test().execute("UPDATE webhooks SET enabled=1 WHERE id=?1",[&first.webhook_id]).unwrap();w.restart();for _ in 0..events {assert_eq!(w.tick(1060,8,TIMEOUT).await.unwrap(),1);}assert!(w.rows().iter().all(|r|r.delivered.is_some()));
+                w.store.lock().conn_for_test().execute("UPDATE webhooks SET enabled=1 WHERE id=?1",[&first.webhook_id]).unwrap();w.restart();for _ in 0..events {assert_eq!(w.tick(ready,8,TIMEOUT).await.unwrap(),1);}assert!(w.rows().iter().all(|r|r.delivered.is_some()));
             }
             let captures=server.state.captured.lock();let mut first_next=0;let mut second_next=0;for c in captures.iter().skip(2) {let id=c.headers["x-monokulo-event-id"].to_str().unwrap();if id.starts_with("other_"){assert_eq!(id,format!("other_{second_next}"));second_next+=1;}else{assert_eq!(id,format!("event_0_0_{first_next}"));first_next+=1;}}
             assert_eq!(second_next,events);assert_eq!(first_next,if deleted {0}else{events});
@@ -385,10 +388,7 @@ proptest! {
     #![proptest_config(config())]
     #[test]
     fn webhook_deletion_is_tenant_scoped_and_atomic_on_sql_failure(fault in 0usize..24,wrong_tenant in any::<bool>()) {
-        let w=World::new(false);w.seed("invalid",2,1,2,"{}");let due=w.store.lock().due_webhook_deliveries_for_test(1000,4).unwrap();let target=&due[0];let tenant=w.store.lock().get_order_tenant_id(&due[if wrong_tenant {2}else{0}].order_id).unwrap().unwrap();let before=w.rows();
-        let trace=w.store.lock().fail_nth_access(Some(fault));let result=w.store.lock().delete_webhook(&tenant,&target.webhook_id);w.store.lock().fail_nth_access(None);let denied=trace.denied.load(Ordering::Relaxed)>0;
-        if denied {assert!(result.is_err());assert_eq!(w.rows(),before);}else{assert_eq!(result.unwrap(),!wrong_tenant);if wrong_tenant {assert_eq!(w.rows(),before);}else{assert_eq!(w.rows(),before[2..]);}}
-        assert!(w.store.lock().list_webhooks(&tenant).unwrap().len()<=1);
+        deletion_fault_case(fault,wrong_tenant);
     }
 }
 
@@ -473,18 +473,115 @@ fn full_width_attempt_count_and_retry_timestamp_do_not_crash_the_worker() {
     });
 }
 
+struct StalledResolver(Arc<AtomicUsize>);
+impl reqwest::dns::Resolve for StalledResolver {
+    fn resolve(&self, _: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Box::pin(std::future::pending())
+    }
+}
+proptest! {
+    #![proptest_config(config())]
+    #[test]
+    fn a_stalled_dns_resolution_is_bounded_and_retryable(millis in 1u64..16,max in 1u32..5) {
+        runtime().block_on(async {
+            let mut w=World::new(true);w.seed("http://stalled.test/hook",1,1,1,"{}");let entered=Arc::new(AtomicUsize::new(0));w.client.private_client=reqwest::Client::builder().no_proxy().dns_resolver(Arc::new(StalledResolver(Arc::clone(&entered)))).build().unwrap();
+            let start=std::time::Instant::now();assert_eq!(w.tick(1000,max,Duration::from_millis(millis)).await.unwrap(),1);assert!(start.elapsed()<Duration::from_secs(2));assert_eq!(entered.load(Ordering::SeqCst),1);let row=w.rows()[0].clone();assert_eq!(row.attempts,1);assert_eq!(row.delivered,None);assert_eq!(row.status,None);assert!(row.error.is_some());assert_eq!(row.gave_up.is_some(),max==1);if max>1 {assert_eq!(row.due,row.last.unwrap()+60);}
+            let server=Server::new(200).await;w.store.lock().conn_for_test().execute("UPDATE webhooks SET url=?1",[&server.url]).unwrap();w.client=WebhookClient::build().unwrap();w.client.set_allow_private(true);w.restart();assert_eq!(w.tick(row.due,max,TIMEOUT).await.unwrap(),usize::from(max>1));if max>1 {assert!(w.rows()[0].delivered.is_some());}
+        });
+    }
+}
+
+proptest! {
+    #![proptest_config(config())]
+    #[test]
+    fn overlapping_ticks_preserve_success_when_a_previous_request_fails_late(status in 400u16..600,max in 1u32..9) {
+        runtime().block_on(async {
+            let server=Server::new(status).await;let w=World::new(true);w.seed(&server.url,1,1,2,"{}");server.state.slow.lock().insert("event_0_0_0".into());let db=w.db.clone();let client=w.client.clone();let first=tokio::spawn(async move {run_delivery_tick_on(&db,&client,Duration::from_secs(30),max,1000).await});
+            tokio::time::timeout(Duration::from_secs(5),async {loop {if server.state.captured.lock().len()==1 {break;}tokio::time::sleep(Duration::from_millis(1)).await;}}).await.unwrap();
+            server.state.slow.lock().clear();server.state.status.store(200,Ordering::SeqCst);assert_eq!(w.tick(1000,max,TIMEOUT).await.unwrap(),1);let success=w.rows()[0].clone();assert_eq!(success.attempts,1);assert!(success.delivered.is_some_and(|at|at>=1000));assert_eq!(w.tick(1000,max,TIMEOUT).await.unwrap(),1);
+            server.state.release.notify_waiters();assert_eq!(first.await.unwrap().unwrap(),1);assert_eq!(w.rows()[0],success);let captures=server.state.captured.lock();assert_eq!(captures.len(),3);assert_eq!(captures[0].body,captures[1].body);assert_ne!(captures[1].body,captures[2].body);
+        });
+    }
+}
+
+fn deletion_fault_case(fault: usize, wrong_tenant: bool) -> bool {
+    let w = World::new(false);
+    w.seed("invalid", 2, 1, 2, "{}");
+    let due = w
+        .store
+        .lock()
+        .due_webhook_deliveries_for_test(1000, 4)
+        .unwrap();
+    let target = &due[0];
+    let tenant = w
+        .store
+        .lock()
+        .get_order_tenant_id(&due[if wrong_tenant { 2 } else { 0 }].order_id)
+        .unwrap()
+        .unwrap();
+    let before = w.rows();
+    let trace = w.store.lock().fail_nth_access(Some(fault));
+    let result = w.store.lock().delete_webhook(&tenant, &target.webhook_id);
+    w.store.lock().fail_nth_access(None);
+    let denied = trace.denied.load(Ordering::Relaxed) > 0;
+    if denied {
+        assert!(result.is_err());
+        assert_eq!(w.rows(), before);
+    } else {
+        assert_eq!(result.unwrap(), !wrong_tenant);
+        if wrong_tenant {
+            assert_eq!(w.rows(), before);
+        } else {
+            assert_eq!(w.rows(), before[2..]);
+        }
+    }
+    assert!(w.store.lock().list_webhooks(&tenant).unwrap().len() <= 1);
+    denied
+}
+#[test]
+fn deletion_recovers_at_every_reached_sql_boundary() {
+    for wrong_tenant in [false, true] {
+        let mut reached = 0;
+        for fault in 0..64 {
+            if !deletion_fault_case(fault, wrong_tenant) {
+                break;
+            }
+            reached += 1;
+        }
+        assert!(reached >= 4);
+    }
+}
+
 async fn sql_fault_case(fault: usize, kind: u8) -> bool {
     let server = Server::new(if kind == 0 { 200 } else { 503 }).await;
     let mut w = World::new(false);
     w.inline();
     w.seed(&server.url, 3, 1, 1, "{}");
+    if kind == 3 {
+        w.store
+            .lock()
+            .conn_for_test()
+            .execute("UPDATE webhook_deliveries SET attempt_count=1", [])
+            .unwrap();
+    }
     let trace = w.store.lock().fail_nth_access(Some(fault));
-    let result = w.tick(1000, if kind == 2 { 1 } else { 8 }, TIMEOUT).await;
+    let result = w.tick(1000, if kind >= 2 { 1 } else { 8 }, TIMEOUT).await;
     w.store.lock().fail_nth_access(None);
     let reached = trace.denied.load(Ordering::Relaxed) > 0;
     assert_eq!(result.is_err(), reached);
     let rows = w.rows();
     assert!(rows.iter().all(|r| r.attempts <= 1));
+    if reached
+        && kind == 3
+        && trace
+            .action
+            .lock()
+            .as_ref()
+            .is_some_and(|a| a.starts_with("Update"))
+    {
+        assert_eq!(rows.iter().filter(|r| r.gave_up.is_some()).count(), 2);
+    }
     if reached && server.state.captured.lock().len() == 3 {
         assert_eq!(
             rows.iter().filter(|r| r.attempts == 1).count(),
@@ -504,7 +601,7 @@ async fn sql_fault_case(fault: usize, kind: u8) -> bool {
 #[test]
 fn every_reached_sql_boundary_recovers_for_all_outcome_types() {
     runtime().block_on(async {
-        for kind in 0..3 {
+        for kind in 0..4 {
             let mut reached = 0;
             for fault in 0..64 {
                 if !sql_fault_case(fault, kind).await {
@@ -582,7 +679,7 @@ async fn crash_case(kind: u8, after: bool) {
     assert_eq!(row.delivered.is_some(), after && kind == 0);
     assert_eq!(row.gave_up.is_some(), after && kind >= 2);
     if after && kind == 1 {
-        assert_eq!(row.due, 1060);
+        assert_eq!(row.due, row.last.unwrap() + 60);
     }
     assert_eq!(
         w.store

@@ -21,11 +21,11 @@ use crate::webhook_sign::{is_disallowed_address, sign_payload};
 
 /// Reusable HTTP clients for the two destination policies.
 ///
-/// Its resolver is what makes the SSRF check hold: the addresses a name
+/// Each resolver is what makes the SSRF check hold: the addresses a name
 /// resolves to are checked (`is_disallowed_address`) by the lookup the
 /// connection is made from, not by a separate lookup an attacker's DNS
 /// could answer differently; a name with any private address among its
-/// answers isn't connected to at all. One client, not one per delivery:
+/// answers isn't connected to at all. Both clients are reused across deliveries:
 /// building a client loads and parses the system's CA store with blocking
 /// file I/O. Each policy has its own pool so tightening the live policy
 /// cannot reuse a connection opened while private destinations were allowed.
