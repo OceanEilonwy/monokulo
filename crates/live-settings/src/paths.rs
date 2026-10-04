@@ -106,18 +106,18 @@ mod tests {
         let wanted = dir.join("monokulo").join("engine.toml");
         assert_eq!(usable_or_cwd(Some(wanted.clone()), "engine.toml"), wanted);
         assert!(writable(&wanted));
+        let file = dir.join("a-file");
+        std::fs::write(&file, "").unwrap();
+        let under_a_file = file.join("nowhere").join("engine.toml");
         assert_eq!(
-            usable_or_cwd(
-                Some(PathBuf::from("/proc/nowhere/engine.toml")),
-                "engine.toml"
-            ),
+            usable_or_cwd(Some(under_a_file.clone()), "engine.toml"),
             PathBuf::from("engine.toml")
         );
         assert_eq!(
             usable_or_cwd(None, "engine.toml"),
             PathBuf::from("engine.toml")
         );
-        assert!(!writable(Path::new("/proc/nowhere/engine.toml")));
+        assert!(!writable(&under_a_file));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -147,6 +147,9 @@ jobs:
       - name: Summarize
         if: always()
         shell: bash
+        env:
+          # The table's marks aren't in Windows' default code page.
+          PYTHONUTF8: '1'
         run: |
           # Windows runners name their Python `python`.
           python=python3; if test "$RUNNER_OS" = Windows; then python=python; fi

@@ -308,9 +308,10 @@ impl WalletFile {
     /// Takes the exclusive lock on `path`'s sibling `<path>.lock`. If
     /// another holder (another process, or another task in this one) has
     /// it, `on_busy` is told who and chooses: try again, wait for it, or
-    /// give up with [`WalletError::Locked`]. Once taken, the lock file
-    /// records who holds it, for the next process's `on_busy`. Everything
-    /// runs off the async runtime's worker threads.
+    /// give up with [`WalletError::Locked`]. Once taken, who holds it is
+    /// written beside it (`<path>.lock.holder`, since Windows won't let
+    /// another process read a locked file), for the next process's
+    /// `on_busy`. Everything runs off the async runtime's worker threads.
     ///
     /// An OS file lock is released when its process exits, however it
     /// exits, so a lock is never left behind by a crash.
@@ -336,13 +337,13 @@ impl WalletFile {
                     .open(&lock_path)
                     .map_err(open_error)?;
                 match file.try_lock() {
-                    Ok(()) => return Ok(WalletFileLock::recording_holder(file)),
+                    Ok(()) => return Ok(WalletFileLock::recording_holder(file, &lock_path)),
                     Err(std::fs::TryLockError::WouldBlock) => {}
                     Err(std::fs::TryLockError::Error(e)) => return Err(lock_error(e)),
                 }
                 let holder = LockHolder {
                     lock_path: lock_path.clone(),
-                    description: std::fs::read_to_string(&lock_path)
+                    description: std::fs::read_to_string(holder_path(&lock_path))
                         .ok()
                         .filter(|held_by| !held_by.trim().is_empty())
                         .unwrap_or_else(|| "an unknown process".to_string()),
@@ -351,7 +352,7 @@ impl WalletFile {
                     BusyChoice::Retry => continue,
                     BusyChoice::Wait => {
                         file.lock().map_err(lock_error)?;
-                        return Ok(WalletFileLock::recording_holder(file));
+                        return Ok(WalletFileLock::recording_holder(file, &lock_path));
                     }
                     BusyChoice::Cancel => return Err(WalletError::Locked(holder.to_string())),
                 }
@@ -387,10 +388,9 @@ impl WalletFile {
 }
 
 impl WalletFileLock {
-    /// Writes who now holds the lock into the lock file, so a process that
-    /// finds it busy can say who's using the wallet.
-    fn recording_holder(mut file: std::fs::File) -> Self {
-        use std::io::Write;
+    /// Writes who now holds the lock beside the lock file, so a process
+    /// that finds it busy can say who's using the wallet.
+    fn recording_holder(file: std::fs::File, lock_path: &Path) -> Self {
         let program = std::env::args()
             .next()
             .map(|path| {
@@ -405,9 +405,7 @@ impl WalletFileLock {
         let mut holder = format!("pid {} ({program} {})", std::process::id(), args.join(" "));
         holder.truncate(200);
         // Best effort: the lock itself is what matters, not the note.
-        let _ = file
-            .set_len(0)
-            .and_then(|()| file.write_all(holder.trim_end().as_bytes()));
+        let _ = std::fs::write(holder_path(lock_path), holder.trim_end());
         WalletFileLock { _file: file }
     }
 }
@@ -493,6 +491,13 @@ fn lock_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".lock");
     path.with_file_name(name)
+}
+
+/// Where a lock's holder writes who it is: `<lock>.holder`.
+fn holder_path(lock_path: &Path) -> PathBuf {
+    let mut name = lock_path.file_name().unwrap_or_default().to_os_string();
+    name.push(".holder");
+    lock_path.with_file_name(name)
 }
 
 /// What [`migrate_legacy`] did.
