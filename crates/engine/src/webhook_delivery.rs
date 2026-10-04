@@ -45,12 +45,14 @@ impl WebhookClient {
     /// resolver. Fails only if the TLS backend can't initialise.
     pub fn build() -> reqwest::Result<Self> {
         let build = |allow| {
-            reqwest::Client::builder()
+            let builder = reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .dns_resolver(Arc::new(CheckingResolver {
                     allow_private: Arc::new(AtomicBool::new(allow)),
-                }))
-                .build()
+                }));
+            // A proxy connects to the origin on our behalf, bypassing the
+            // checked resolver. Guarded requests must connect directly.
+            if allow { builder } else { builder.no_proxy() }.build()
         };
         Ok(Self {
             client: build(false)?,
@@ -1225,5 +1227,6 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[path = "webhook_properties.rs"]
 mod properties;

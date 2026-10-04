@@ -716,3 +716,91 @@ fn all_eight_delivery_durability_boundaries_are_exercised() {
         }
     });
 }
+
+#[test]
+fn proxy_policy_child() {
+    if std::env::var_os("MONOKULO_WEBHOOK_PROXY_CHILD").is_none() {
+        return;
+    }
+    runtime().block_on(async {
+        let w = World::new(true);
+        w.client.set_allow_private(false);
+        w.seed("http://localhost:9/hook", 1, 1, 1, "{}");
+        let delivery = w
+            .store
+            .lock()
+            .due_webhook_deliveries_for_test(1000, 1)
+            .unwrap()
+            .remove(0);
+        let outcome = attempt_delivery(&w.client, &delivery, TIMEOUT).await;
+        assert!(
+            !outcome.delivered,
+            "a proxy bypassed the private-destination check"
+        );
+        assert!(outcome.error.is_some());
+    });
+}
+proptest! {
+    #![proptest_config(config())]
+    #[test]
+    fn system_proxy_settings_cannot_bypass_destination_checks(proxy_key in 0usize..4) {
+        runtime().block_on(proxy_case(proxy_key));
+    }
+}
+
+async fn proxy_case(proxy_key: usize) {
+    let proxy = Server::new(200).await;
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command.args([
+        "--exact",
+        "webhook_delivery::properties::proxy_policy_child",
+        "--nocapture",
+    ]);
+    for key in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ] {
+        command.env_remove(key);
+    }
+    command
+        .env(
+            ["HTTP_PROXY", "ALL_PROXY", "http_proxy", "all_proxy"][proxy_key],
+            &proxy.url,
+        )
+        .env("NO_PROXY", "")
+        .env("MONOKULO_WEBHOOK_PROXY_CHILD", "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let mut child = CrashChild(Some(command.spawn().unwrap()));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if child.0.as_mut().unwrap().try_wait().unwrap().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let output = child.finish();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(proxy.state.captured.lock().is_empty());
+}
+#[test]
+fn every_proxy_environment_variant_preserves_destination_checks() {
+    runtime().block_on(async {
+        for proxy_key in 0..4 {
+            proxy_case(proxy_key).await;
+        }
+    });
+}
