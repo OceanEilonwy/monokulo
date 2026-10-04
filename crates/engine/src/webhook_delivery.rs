@@ -19,7 +19,7 @@ use serde_json::Value;
 use crate::store::{DueDelivery, SharedStore};
 use crate::webhook_sign::{is_disallowed_address, sign_payload};
 
-/// The one HTTP client webhooks are sent with.
+/// Reusable HTTP clients for the two destination policies.
 ///
 /// Its resolver is what makes the SSRF check hold: the addresses a name
 /// resolves to are checked (`is_disallowed_address`) by the lookup the
@@ -27,13 +27,15 @@ use crate::webhook_sign::{is_disallowed_address, sign_payload};
 /// could answer differently; a name with any private address among its
 /// answers isn't connected to at all. One client, not one per delivery:
 /// building a client loads and parses the system's CA store with blocking
-/// file I/O, and a new client has no connection to reuse.
+/// file I/O. Each policy has its own pool so tightening the live policy
+/// cannot reuse a connection opened while private destinations were allowed.
 ///
 /// `allow_private` is live (`webhooks.allow_private_urls`, read each tick):
 /// a self-hoster testing against their own LAN turns the check off.
 #[derive(Clone)]
 pub struct WebhookClient {
     client: reqwest::Client,
+    private_client: reqwest::Client,
     allow_private: Arc<AtomicBool>,
 }
 
@@ -42,16 +44,18 @@ impl WebhookClient {
     /// not be followed blindly, `docs/DESIGN.md` §11) and the checking
     /// resolver. Fails only if the TLS backend can't initialise.
     pub fn build() -> reqwest::Result<Self> {
-        let allow_private = Arc::new(AtomicBool::new(false));
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .dns_resolver(Arc::new(CheckingResolver {
-                allow_private: Arc::clone(&allow_private),
-            }))
-            .build()?;
+        let build = |allow| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .dns_resolver(Arc::new(CheckingResolver {
+                    allow_private: Arc::new(AtomicBool::new(allow)),
+                }))
+                .build()
+        };
         Ok(Self {
-            client,
-            allow_private,
+            client: build(false)?,
+            private_client: build(true)?,
+            allow_private: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -177,6 +181,20 @@ pub struct DeliveryOutcome {
     pub error: Option<String>,
 }
 
+/// Shared with admission validation; old queue rows also cannot override the protocol.
+pub(crate) fn is_reserved_webhook_header(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.starts_with("x-monokulo-")
+        || [
+            "host",
+            "content-length",
+            "content-type",
+            "transfer-encoding",
+            "connection",
+        ]
+        .contains(&name.as_str())
+}
+
 /// Performs one delivery attempt.
 ///
 /// SSRF-validates the resolved address, signs the payload, sends the request
@@ -216,14 +234,19 @@ async fn attempt_delivery_inner(
         }
     };
 
-    if let Err(e) = check_ip_literal(&parsed_url, client.allows_private()) {
+    let allow_private = client.allows_private();
+    if let Err(e) = check_ip_literal(&parsed_url, allow_private) {
         return DeliveryOutcome {
             delivered: false,
             response_status: None,
             error: Some(e.to_string()),
         };
     }
-    let client = &client.client;
+    let client = if allow_private {
+        &client.private_client
+    } else {
+        &client.client
+    };
 
     // Signed at the moment of sending, so the receiver's tolerance window
     // is measured from this attempt, not from when the event happened.
@@ -252,6 +275,9 @@ async fn attempt_delivery_inner(
 
     if let Value::Object(map) = extra_headers {
         for (k, v) in map {
+            if is_reserved_webhook_header(&k) {
+                continue;
+            }
             if let Some(v) = v.as_str() {
                 request = request.header(k, v);
             }
@@ -284,7 +310,7 @@ fn log_outcome(delivery: &DueDelivery, outcome: &DeliveryOutcome, max_attempts: 
     let status = outcome.response_status;
     if outcome.delivered {
         tracing::info!(http.response.status_code = status, "webhook delivered");
-    } else if delivery.attempt_count + 1 >= max_attempts {
+    } else if delivery.attempt_count.saturating_add(1) >= max_attempts {
         tracing::warn!(
             http.response.status_code = status,
             error = outcome.error.as_deref(),
@@ -312,7 +338,8 @@ const DELIVERY_PER_TENANT: u32 = 4;
 /// A delivery that fails is rescheduled with backoff up to `max_attempts`
 /// (`webhooks.max_attempts`), after which it is given up: visible through
 /// the admin API, never retried forever or dropped in silence. Returns how
-/// many were attempted; a full batch means more may be due now.
+/// many rows were processed (including already-exhausted budgets); a full
+/// batch means more may be due now.
 ///
 /// `now` picks what is due. Each outcome is recorded at `now` plus the time
 /// elapsed since the tick began, so a retry after a slow batch is scheduled
@@ -355,14 +382,19 @@ pub async fn run_delivery_tick_on(
                 webhook.id = %delivery.webhook_id,
                 order.id = %delivery.order_id,
                 webhook.event = %delivery.event_type,
-                attempt = delivery.attempt_count + 1,
+                attempt = delivery.attempt_count.saturating_add(1),
             );
             tracing::Instrument::instrument(
                 async move {
+                    if delivery.attempt_count >= max_attempts {
+                        return (delivery, None, now);
+                    }
                     let outcome = attempt_delivery(client, &delivery, timeout).await;
-                    let attempted_at = now + started.elapsed().as_secs() as i64;
+                    let attempted_at = now.saturating_add(
+                        i64::try_from(started.elapsed().as_secs()).unwrap_or(i64::MAX),
+                    );
                     log_outcome(&delivery, &outcome, max_attempts);
-                    (delivery, outcome, attempted_at)
+                    (delivery, Some(outcome), attempted_at)
                 },
                 span,
             )
@@ -376,13 +408,16 @@ pub async fn run_delivery_tick_on(
     while let Some((delivery, outcome, at)) = outcomes.next().await {
         let written = db
             .run(Class::Webhook, move |store| {
+                let Some(outcome) = outcome else {
+                    return store.retire_exhausted_webhook_delivery(delivery.delivery_id, at);
+                };
                 if outcome.delivered {
                     store.mark_webhook_delivered(
                         delivery.delivery_id,
                         outcome.response_status.unwrap_or(0),
                         at,
                     )
-                } else if delivery.attempt_count + 1 >= max_attempts {
+                } else if delivery.attempt_count.saturating_add(1) >= max_attempts {
                     // Give up: the row stays for inspection, never retried -
                     // see docs/DESIGN.md §11.
                     store.give_up_webhook_delivery(
@@ -394,7 +429,7 @@ pub async fn run_delivery_tick_on(
                 } else {
                     store.schedule_webhook_retry(
                         delivery.delivery_id,
-                        at + backoff_seconds(delivery.attempt_count),
+                        at.saturating_add(backoff_seconds(delivery.attempt_count)),
                         outcome.response_status,
                         outcome.error.as_deref(),
                         at,
@@ -1188,3 +1223,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "webhook_properties.rs"]
+mod properties;
