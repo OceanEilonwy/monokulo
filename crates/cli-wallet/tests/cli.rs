@@ -1,7 +1,8 @@
 //! Drives the real `stagenet-wallet-cli` binary through the commands that
 //! need no node: creating a wallet, then an interactive session run over
 //! stdin, as a person would type it. Commands that talk to a node are
-//! covered by hand against stagenet (see the crate README).
+//! covered by hand against stagenet (see the crate README), except that
+//! one fails to reach an unreachable node.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -205,6 +206,101 @@ fn one_command_runs_and_exits_and_existing_wallets_are_never_replaced() {
 
     let testnet = cli(&dir, &["--testnet", "--wallet-file", "bob", "version"], "");
     assert!(!testnet.status.success());
+    assert!(
+        stderr(&testnet).contains("is a stagenet wallet, not testnet"),
+        "{}",
+        stderr(&testnet)
+    );
+}
+
+#[test]
+fn a_testnet_wallet_is_created_with_the_flag_and_opened_without_it() {
+    let dir = temp_dir("testnet");
+    let created = cli(
+        &dir,
+        &["--testnet", "--generate-new-wallet", "erin", "wallet_info"],
+        "",
+    );
+    assert!(created.status.success(), "{}", stderr(&created));
+    let text = stdout(&created);
+    let address = text
+        .lines()
+        .find_map(|l| l.strip_prefix("Generated new wallet: "))
+        .unwrap()
+        .to_string();
+    assert!(address.starts_with('9'), "a testnet address: {address}");
+    assert!(text.contains("Network type: Testnet"), "{text}");
+    let file = std::fs::read_to_string(dir.join("erin.json")).unwrap();
+    assert!(file.contains("\"network\": \"testnet\""), "{file}");
+
+    // No flag: the file says testnet. Its subaddresses and integrated
+    // addresses are testnet's, and stagenet addresses are refused.
+    let session = cli(
+        &dir,
+        &["--wallet-file", "erin"],
+        "address new shop\n\
+         integrated_address 0123456789abcdef\n\
+         address_book add 5AAAA stagenet\n\
+         wallet_info\n\
+         exit\n",
+    );
+    assert!(session.status.success(), "{}", stderr(&session));
+    let out = stdout(&session);
+    assert!(out.contains("Opened wallet: 9"), "{out}");
+    assert!(out.contains("  B"), "a testnet subaddress: {out}");
+    assert!(
+        out.contains("Matching integrated address: A"),
+        "a testnet integrated address: {out}"
+    );
+    assert!(out.contains("Network type: Testnet"), "{out}");
+    assert!(
+        stderr(&session).contains("failed to parse address 5AAAA"),
+        "{}",
+        stderr(&session)
+    );
+
+    let stagenet = cli(
+        &dir,
+        &["--stagenet", "--wallet-file", "erin", "version"],
+        "",
+    );
+    assert!(!stagenet.status.success());
+    assert!(
+        stderr(&stagenet).contains("is a testnet wallet, not stagenet"),
+        "{}",
+        stderr(&stagenet)
+    );
+    let both = cli(
+        &dir,
+        &[
+            "--stagenet",
+            "--testnet",
+            "--wallet-file",
+            "erin",
+            "version",
+        ],
+        "",
+    );
+    assert!(!both.status.success(), "the flags conflict");
+
+    // An unreachable node fails as a testnet node.
+    let unreachable = cli(
+        &dir,
+        &[
+            "--daemon-address",
+            "127.0.0.1:9",
+            "--wallet-file",
+            "erin",
+            "bc_height",
+        ],
+        "",
+    );
+    assert!(!unreachable.status.success());
+    assert!(
+        stderr(&unreachable).contains("cannot reach the testnet node at http://127.0.0.1:9"),
+        "{}",
+        stderr(&unreachable)
+    );
 }
 
 #[test]

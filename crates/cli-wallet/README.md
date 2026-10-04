@@ -1,10 +1,36 @@
 # cli-wallet
 
-A fast, stagenet-only test wallet: the library the real-stagenet e2e suites
+A fast stagenet and testnet test wallet: the library the real-stagenet e2e suites
 pay orders with, and `stagenet-wallet-cli`, which speaks
 [`monero-wallet-cli`](https://docs.getmonero.org/interacting/monero-wallet-cli-reference/)'s
 commands over the same wallets. See `src/lib.rs` for why it never scans the
 chain, and `e2e/README.md` for how the e2e suites use it.
+
+## Testnet
+
+Each wallet file records its network (`"network": "stagenet"` or
+`"testnet"`). `--testnet` with `--generate-new-wallet`,
+`--restore-deterministic-wallet` or `--generate-from-spend-key` creates a
+testnet wallet; after that the wallet opens on testnet with no flag, since
+the file says so. `--testnet` or `--stagenet` on an existing wallet must
+match its file, or the wallet is refused. Mainnet wallet files are refused
+outright: every key here is kept in plaintext.
+
+```sh
+cargo run -p cli-wallet --bin stagenet-wallet-cli -- --testnet --generate-new-wallet ~/testnet/me.json
+cargo run -p cli-wallet --bin stagenet-wallet-cli -- --wallet-file ~/testnet/me.json balance
+```
+
+On testnet:
+
+- The default nodes are node, node2 and node3.monerodevs.org on port
+  28089; `--daemon-address` picks others.
+- There is no committed decoy-distribution snapshot, so each connection
+  fetches the distribution from the node (a single large request) before
+  a send. To avoid that, write a snapshot with `refresh-decoy-pool`
+  against a testnet node and pass it with `--decoy-distribution-path`.
+- No faucet is assumed. Send testnet XMR to the wallet from another wallet
+  (or mine to it), then record the txid with `add_output <txid>`.
 
 ## One file per wallet
 
@@ -79,7 +105,7 @@ never outlives the process holding it, even if it crashes.
 The limits applied: a JSON file per wallet as the only wallet state, and no
 chain scanning, except `rescan` when asked. Single node calls that aren't scans are fine (chain height,
 fee rate, broadcast, one transaction's block, whether key images are spent).
-Stagenet only; ring size 16.
+Stagenet and testnet (see above); ring size 16.
 
 #### Help and status
 | Command | Supported | Notes |
@@ -106,7 +132,7 @@ Stagenet only; ring size 16.
 | `sweep_all`, `sweep_account`, `sweep_below`, `sweep_single` | Yes | `sweep_single` takes a key image |
 | `--do-not-relay` | Yes | Signed transaction written to `raw_monero_tx`; the wallet file is untouched |
 | `locked_transfer`, `locked_sweep_all` | No | monero-wallet always builds transactions with no unlock time |
-| `sweep_unmixable` | No | No pre-RingCT outputs exist on stagenet |
+| `sweep_unmixable` | No | No pre-RingCT outputs exist on stagenet, and monero-wallet signs RingCT only |
 
 #### History
 | Command | Supported | Notes |
@@ -131,7 +157,7 @@ Stagenet only; ring size 16.
 |---|---|---|
 | `seed`, `spendkey`, `viewkey` | Yes | `seed` derives the 25-word seed when none is recorded |
 | `encrypted_seed` | No | Needs cn_slow_hash |
-| `password` | No | Wallet files are plaintext by design (stagenet only) |
+| `password` | No | Wallet files are plaintext by design (stagenet and testnet only) |
 
 #### Proofs and transaction keys
 | Command | Supported | Notes |
@@ -151,10 +177,11 @@ Stagenet only; ring size 16.
 #### Startup flags
 | Flag | Supported | Notes |
 |---|---|---|
-| `--wallet-file`, `--daemon-address`, `--stagenet`, `--do-not-relay` | Yes | `--wallet-file` takes a name in `--wallet-dir` or a path |
+| `--wallet-file`, `--daemon-address`, `--do-not-relay` | Yes | `--wallet-file` takes a name in `--wallet-dir` or a path |
+| `--stagenet`, `--testnet` | Yes | The network for a new wallet; for an existing one, it must match the file |
 | `--generate-new-wallet`, `--restore-deterministic-wallet`, `--electrum-seed`, `--generate-from-spend-key`, `--mnemonic-language` | Yes | Restores 16-word Polyseed and 25-word seeds |
 | `--generate-from-view-key` | No | Every wallet here holds its spend key |
-| `--testnet`, mainnet, `--password*`, `--restore-height`, logging, `--generate-from-device` | No | |
+| mainnet, `--password*`, `--restore-height`, logging, `--generate-from-device` | No | |
 
 Not in the reference wallet:
 
@@ -167,7 +194,7 @@ Not in the reference wallet:
 - `add_output <txid>` records a payment received, e.g. from the faucet.
 - `rescan <blocks>` is the one chain scan, and only runs when asked: it
   scans a range of blocks on the configured node (`--daemon-address`, or
-  the default stagenet nodes) for outputs paying any address the wallet
+  the network's default nodes) for outputs paying any address the wallet
   has created, records each one the wallet file is missing (resolving
   pending txids among them), then checks every output's spent status as
   `rescan_spent` does. `<blocks>` is a height or `^<blocks back>` on either

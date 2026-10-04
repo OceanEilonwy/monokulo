@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::meta::WalletMeta;
-use crate::{WalletCredentials, WalletError};
+use crate::{network_name, parse_network, Network, WalletCredentials, WalletError};
 
 /// Bumped whenever [`WalletData`]'s on-disk shape changes incompatibly.
 pub const FORMAT_VERSION: u32 = 1;
@@ -25,6 +25,8 @@ pub const FORMAT_VERSION: u32 = 1;
 #[derive(Clone, Serialize, Deserialize)]
 pub struct WalletData {
     pub version: u32,
+    /// `stagenet` or `testnet` (see [`crate::NETWORKS`]): which network the
+    /// keys derive addresses for - [`Self::network`] reads it.
     pub network: String,
     pub address: String,
     pub private_spend_key: String,
@@ -125,11 +127,12 @@ pub struct SentDestination {
 }
 
 impl WalletData {
-    /// A fresh wallet file's contents for `credentials`: no outputs yet.
-    pub fn new(credentials: WalletCredentials) -> Self {
+    /// A fresh wallet file's contents for `credentials`, on `network`: no
+    /// outputs yet.
+    pub fn new(network: Network, credentials: WalletCredentials) -> Self {
         WalletData {
             version: FORMAT_VERSION,
-            network: "stagenet".to_string(),
+            network: network_name(network).to_string(),
             address: credentials.address,
             private_spend_key: credentials.private_spend_key_hex,
             private_view_key: credentials.private_view_key_hex,
@@ -141,6 +144,11 @@ impl WalletData {
             tx_notes: BTreeMap::new(),
             extra: serde_json::Map::new(),
         }
+    }
+
+    /// The network this wallet is on, refusing one it doesn't work on.
+    pub fn network(&self) -> Result<Network, WalletError> {
+        parse_network(&self.network)
     }
 
     /// Adds `txid` to the pending list, unless it's already there.
@@ -182,14 +190,10 @@ impl WalletFile {
                 data.version
             )));
         }
-        // This wallet derives stagenet addresses only: keys recorded for
-        // another network would be used as if they were stagenet's.
-        if data.network != "stagenet" {
-            return Err(WalletError::WalletFile(format!(
-                "{} is a {} wallet; this tool works on stagenet only",
-                path.display(),
-                data.network
-            )));
+        // Addresses are derived for the recorded network, so it has to be
+        // one this wallet works on (never mainnet).
+        if let Err(e) = data.network() {
+            return Err(WalletError::WalletFile(format!("{}: {e}", path.display())));
         }
         Ok(WalletFile {
             path: path.to_path_buf(),
@@ -557,7 +561,8 @@ pub fn migrate_legacy(
                             wallets_json.display()
                         ))
                     })?;
-                let mut data = WalletData::new(credentials);
+                // The legacy files only ever held stagenet wallets.
+                let mut data = WalletData::new(Network::Stagenet, credentials);
                 for (key, field) in entry {
                     if ![
                         "address",
@@ -669,12 +674,15 @@ mod tests {
         let path = dir.join("w.json");
         let file = WalletFile {
             path: path.clone(),
-            data: WalletData::new(crate::WalletCredentials {
-                address: "a".into(),
-                private_spend_key_hex: "00".repeat(32),
-                private_view_key_hex: "00".repeat(32),
-                mnemonic: None,
-            }),
+            data: WalletData::new(
+                Network::Stagenet,
+                crate::WalletCredentials {
+                    address: "a".into(),
+                    private_spend_key_hex: "00".repeat(32),
+                    private_view_key_hex: "00".repeat(32),
+                    mnemonic: None,
+                },
+            ),
         };
         file.save().unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();

@@ -1,5 +1,6 @@
 //! `stagenet-wallet-cli`: `monero-wallet-cli`'s commands over this crate's
-//! fast, no-scanning, one-JSON-file-per-wallet stagenet wallet.
+//! fast, no-scanning, one-JSON-file-per-wallet stagenet (or, with
+//! `--testnet`, testnet) wallet.
 //!
 //! Open a wallet and get a prompt, as with the reference wallet:
 //!
@@ -25,8 +26,8 @@ use std::sync::{Arc, Mutex};
 use clap::{CommandFactory, Parser, Subcommand};
 use cli_wallet::file::{migrate_legacy, WalletData, WalletFile};
 use cli_wallet::{
-    credentials_from_seed, credentials_from_spend_key_hex, generate_credentials, WalletCtx,
-    SEED_LANGUAGE_NAMES,
+    credentials_from_seed, credentials_from_spend_key_hex, generate_credentials, Network,
+    WalletCtx, SEED_LANGUAGE_NAMES,
 };
 
 use commands::{CliError, Command, Session};
@@ -39,7 +40,7 @@ const DEFAULT_WALLET: &str = "spender";
 #[command(
     name = "stagenet-wallet-cli",
     version,
-    about = "monero-wallet-cli's commands for the stagenet e2e test wallets",
+    about = "monero-wallet-cli's commands for the stagenet e2e test wallets, and testnet wallets",
     after_help = "With no command, opens the wallet and prompts for commands, as monero-wallet-cli does."
 )]
 struct Cli {
@@ -55,17 +56,20 @@ struct Cli {
     #[arg(long, global = true)]
     wallet_dir: Option<PathBuf>,
 
-    /// Stagenet node to use (instead of node, node2 and node3.monerodevs.org).
-    /// Repeat it to give several, tried in order.
+    /// Node to use (instead of node, node2 and node3.monerodevs.org on the
+    /// wallet's network). Repeat it to give several, tried in order.
     #[arg(long, visible_alias = "node-url", global = true)]
     daemon_address: Vec<String>,
 
-    /// Accepted for monero-wallet-cli compatibility: stagenet is the only
-    /// network this wallet supports.
-    #[arg(long, global = true)]
+    /// Use stagenet: a new wallet is created on it, and an existing wallet
+    /// must be on it. The default for new wallets.
+    #[arg(long, global = true, conflicts_with = "testnet")]
     stagenet: bool,
 
-    #[arg(long, global = true, hide = true)]
+    /// Use testnet: a new wallet is created on it, and an existing wallet
+    /// must be on it. Without either flag, an existing wallet opens on
+    /// the network its file records.
+    #[arg(long, global = true)]
     testnet: bool,
 
     /// Sign transactions but don't broadcast them: each is written to
@@ -73,7 +77,9 @@ struct Cli {
     #[arg(long, global = true)]
     do_not_relay: bool,
 
-    /// Overrides the decoy-distribution snapshot file.
+    /// Overrides the decoy-distribution snapshot file. Stagenet has one
+    /// committed; testnet, without one, fetches the distribution from the
+    /// node.
     #[arg(long, global = true)]
     decoy_distribution_path: Option<String>,
 
@@ -131,8 +137,21 @@ struct PromptLine {
 }
 
 impl Cli {
-    fn ctx(&self) -> WalletCtx {
-        let mut ctx = WalletCtx::default();
+    /// The network `--stagenet`/`--testnet` asked for, if either.
+    fn requested_network(&self) -> Option<Network> {
+        if self.testnet {
+            Some(Network::Testnet)
+        } else if self.stagenet {
+            Some(Network::Stagenet)
+        } else {
+            None
+        }
+    }
+
+    /// Settings for wallets on `network`, with the command line's
+    /// overrides.
+    fn ctx(&self, network: Network) -> WalletCtx {
+        let mut ctx = WalletCtx::for_network(network);
         if !self.daemon_address.is_empty() {
             ctx.node_urls = self
                 .daemon_address
@@ -144,7 +163,7 @@ impl Cli {
             ctx.wallet_dir = dir.clone();
         }
         if let Some(path) = &self.decoy_distribution_path {
-            ctx.decoy_distribution_path = path.clone();
+            ctx.decoy_distribution_path = Some(path.clone());
         }
         ctx
     }
@@ -200,30 +219,31 @@ fn read_stdin_line(line: &mut String) -> std::io::Result<usize> {
 }
 
 /// `--generate-new-wallet`/`--generate-from-spend-key`: writes the new
-/// wallet file and returns its path.
+/// wallet file, on `ctx`'s network, and returns its path.
 fn create_wallet(cli: &Cli, ctx: &WalletCtx) -> Result<Option<PathBuf>, CliError> {
+    let network = ctx.network;
     let (name, credentials) = if let Some(name) = &cli.generate_new_wallet {
         let credentials = if cli.restore_deterministic_wallet {
             let seed = match &cli.electrum_seed {
                 Some(seed) => seed.clone(),
                 None => prompt("Specify Electrum seed: ")?,
             };
-            credentials_from_seed(&seed)?
+            credentials_from_seed(network, &seed)?
         } else {
-            generate_credentials(&cli.mnemonic_language)?
+            generate_credentials(network, &cli.mnemonic_language)?
         };
         (name, credentials)
     } else if let Some(name) = &cli.generate_from_spend_key {
         (
             name,
-            credentials_from_spend_key_hex(&prompt("Secret spend key: ")?)?,
+            credentials_from_spend_key_hex(network, &prompt("Secret spend key: ")?)?,
         )
     } else {
         return Ok(None);
     };
     let path = ctx.wallet_path(name);
     let generated_seed = cli.generate_new_wallet.is_some() && !cli.restore_deterministic_wallet;
-    let file = WalletFile::create(&path, WalletData::new(credentials))?;
+    let file = WalletFile::create(&path, WalletData::new(network, credentials))?;
     println!("Generated new wallet: {}", file.data.address);
     println!("Wallet file: {}", path.display());
     if generated_seed {
@@ -235,13 +255,12 @@ fn create_wallet(cli: &Cli, ctx: &WalletCtx) -> Result<Option<PathBuf>, CliError
     Ok(Some(path))
 }
 
-async fn run(cli: Cli) -> Result<(), CliError> {
-    if cli.testnet {
-        return Err("only stagenet is supported".into());
-    }
-    let ctx = cli.ctx();
+async fn run(mut cli: Cli) -> Result<(), CliError> {
+    let requested = cli.requested_network();
+    // A new wallet goes on the network asked for, stagenet by default.
+    let ctx = cli.ctx(requested.unwrap_or(Network::Stagenet));
     let created = create_wallet(&cli, &ctx)?;
-    let command = match cli.command {
+    let command = match cli.command.take() {
         Some(TopCommand::Completions { shell }) => {
             clap_complete::generate(
                 shell,
@@ -277,6 +296,12 @@ async fn run(cli: Cli) -> Result<(), CliError> {
     };
 
     let path = created.unwrap_or_else(|| ctx.wallet_path(&cli.wallet_file));
+    // An existing wallet opens on the network its file records, unless a
+    // flag asked for one (and then it has to match).
+    let ctx = match requested {
+        Some(_) => ctx,
+        None => cli.ctx(WalletFile::load(&path)?.data.network()?),
+    };
     let mut session = Session::open(&ctx, &path, cli.do_not_relay)?;
     match command {
         Some(command) => commands::run(&mut session, command).await,

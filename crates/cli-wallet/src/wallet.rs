@@ -33,7 +33,8 @@ use crate::{
 
 /// The highest fee rate (piconero per unit of weight) this crate accepts
 /// from a node - comfortably above the `priority` level (about 4_000_000 on
-/// stagenet today), still far below anything that could drain a wallet.
+/// stagenet and testnet today), still far below anything that could drain a
+/// wallet.
 const MAX_FEE_PER_WEIGHT: u64 = 20_000_000;
 
 /// Everything a wallet can do without a node: its keys and addresses, and
@@ -43,6 +44,7 @@ pub struct WalletKeys {
     view_pair: ViewPair,
     spend_key: Zeroizing<Scalar>,
     view_key: Zeroizing<Scalar>,
+    network: Network,
     address: MoneroAddress,
     path: PathBuf,
     /// Decides what happens when another process holds the wallet file's
@@ -116,7 +118,8 @@ impl WalletKeys {
         let view_pair = ViewPair::new(public_spend, view_key.clone()).map_err(|_| {
             WalletError::WalletFile("the spend key in the wallet file is torsioned".to_string())
         })?;
-        let address = view_pair.legacy_address(Network::Stagenet);
+        let network = data.network()?;
+        let address = view_pair.legacy_address(network);
         if address.to_string() != data.address {
             return Err(WalletError::WalletFile(
                 "private_spend_key/private_view_key don't match the recorded address".to_string(),
@@ -126,6 +129,7 @@ impl WalletKeys {
             view_pair,
             spend_key,
             view_key,
+            network,
             address,
             path,
             busy_handler: default_busy_handler(),
@@ -134,6 +138,17 @@ impl WalletKeys {
 
     pub fn address(&self) -> String {
         self.address.to_string()
+    }
+
+    /// The network this wallet's addresses are for.
+    pub fn network(&self) -> Network {
+        self.network
+    }
+
+    /// `address` parsed as an address on this wallet's network.
+    pub fn parse_address(&self, address: &str) -> Result<MoneroAddress, WalletError> {
+        MoneroAddress::from_str(self.network, address)
+            .map_err(|e| WalletError::Invalid(format!("failed to parse address {address}: {e}")))
     }
 
     /// The wallet file this wallet lives in.
@@ -152,7 +167,7 @@ impl WalletKeys {
         match SubaddressIndex::new(account, index) {
             Some(subaddress) => self
                 .view_pair
-                .subaddress(Network::Stagenet, subaddress)
+                .subaddress(self.network, subaddress)
                 .to_string(),
             None => self.address(),
         }
@@ -160,7 +175,7 @@ impl WalletKeys {
 
     pub fn integrated_address(&self, payment_id: [u8; 8]) -> String {
         self.view_pair
-            .legacy_integrated_address(Network::Stagenet, payment_id)
+            .legacy_integrated_address(self.network, payment_id)
             .to_string()
     }
 
@@ -881,7 +896,7 @@ impl Wallet {
                 outputs,
                 select,
             } => {
-                let address = parse_address(address)?;
+                let address = self.parse_address(address)?;
                 let selected: Vec<OwnedOutput> = match select {
                     SweepSelect::All => candidates,
                     SweepSelect::KeyImage(key_image) => candidates
@@ -936,7 +951,7 @@ impl Wallet {
                     spent.push(owned.id());
                     inputs.push(self.with_decoys(decoy_block_number, owned.output).await?);
                 }
-                let own_address = parse_address(&self.subaddress(request.account, 0))?;
+                let own_address = self.parse_address(&self.subaddress(request.account, 0))?;
                 let total_in: u64 = inputs.iter().map(|i| i.commitment().amount).sum();
                 let pieces = *pieces as u64;
                 // `pieces - 1` payments to the account's own address; the
@@ -959,7 +974,7 @@ impl Wallet {
             } => {
                 let destinations: Vec<(MoneroAddress, u64)> = destinations
                     .iter()
-                    .map(|(to, amount)| Ok((parse_address(to)?, *amount)))
+                    .map(|(to, amount)| Ok((self.parse_address(to)?, *amount)))
                     .collect::<Result<_, WalletError>>()?;
                 if let Some(bad) = subtract_fee_from.iter().find(|&&i| i >= destinations.len()) {
                     return Err(WalletError::Invalid(format!(
@@ -982,6 +997,7 @@ impl Wallet {
                                 .iter()
                                 .map(|i: &OutputWithDecoys| i.commitment().amount)
                                 .sum(),
+                            network: self.network,
                             address: self.address(),
                         });
                     };
@@ -1213,11 +1229,6 @@ pub struct WalletBalance {
     pub spendable_outputs: usize,
     pub pending_piconero: u64,
     pub pending_outputs: usize,
-}
-
-pub(crate) fn parse_address(address: &str) -> Result<MoneroAddress, WalletError> {
-    MoneroAddress::from_str(Network::Stagenet, address)
-        .map_err(|e| WalletError::Invalid(format!("failed to parse address {address}: {e}")))
 }
 
 /// A built transaction plus the payments it was built with -
