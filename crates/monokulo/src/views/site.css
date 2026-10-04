@@ -518,11 +518,10 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
   position: relative;
 }
 .site-nav-brand { color: var(--chrome-ink); text-decoration: none; font-weight: 700; letter-spacing: -0.02em; display: inline-flex; align-items: center; gap: 0.45em; }
-/* The logo mark (`views::logo_mark`): drawn in `currentColor`, so the
-   one inline SVG suits either theme's bar, with a Monero-orange pupil. */
+/* The logo mark (`views::logo_mark`): its lines are `currentColor`, so the
+   one inline SVG suits either theme's bar; its facets are the `--logo-*` roles. */
 .site-nav-logo { display: block; }
 .logo-mark { flex: none; }
-.logo-mark .logo-pupil { fill: var(--brand-orange); }
 .site-nav-links { display: flex; align-items: center; flex-wrap: wrap; }
 .site-nav-links a, .site-nav-links .nav-link-button {
   color: var(--chrome-ink);

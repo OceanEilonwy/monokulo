@@ -453,9 +453,10 @@ pub async fn qr_decoder_script(headers: axum::http::HeaderMap) -> Response {
 const LOGO_SVG: &str = include_str!("../../static/logo.svg");
 const FAVICON_SVG: &str = include_str!("../../static/favicon.svg");
 
-/// `GET /static/logo.svg` - the full Monokulo mark, ink-on-paper, for other
-/// sites to link to. monokulo's own pages draw it inline
-/// (`views::logo_mark`), in the text colour of either theme.
+/// `GET /static/logo.svg` - the full Monokulo mark (with the chain and the
+/// facet lines), ink-on-paper, for other sites to link to. monokulo's own
+/// pages draw it inline (`views::logo_mark`), in the text colour of either
+/// theme. Written by `scripts/logo.py`.
 /// Served the same way as [`client_library`] (a plain, unauthenticated
 /// static asset baked into the binary) for the same reason: no third-party
 /// CDN dependency in a page real customers may end up on.
@@ -463,10 +464,10 @@ pub async fn logo_svg(headers: axum::http::HeaderMap) -> Response {
     static_asset(&headers, "image/svg+xml", LONG_LIVED, LOGO_SVG.as_bytes())
 }
 
-/// `GET /static/favicon.svg` - the simplified, small-size version of the
-/// same mark, linked from `_styles.html.hbs` (`<link rel="icon">`) so every
-/// page that includes the `styles` partial gets a browser-tab icon for
-/// free.
+/// `GET /static/favicon.svg` - the square version of the same mark (no
+/// chain, no facet lines, the lens filling the box), linked from every
+/// page's head (`views::layout`, `<link rel="icon">`). Its rim turns light
+/// on a dark browser. Written by `scripts/logo.py`.
 pub async fn favicon_svg(headers: axum::http::HeaderMap) -> Response {
     static_asset(
         &headers,

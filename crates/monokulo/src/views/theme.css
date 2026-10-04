@@ -30,6 +30,10 @@
   --accent-ink: #111111;
   --accent-text: #b34700;
   --brand-orange: #ff6600;
+  /* The logo's other two facet oranges and its glint (`--logo-*` below). */
+  --brand-orange-warm: #e85d00;
+  --brand-orange-deep: #c24e00;
+  --brand-glint: #fff3e8;
   --error: #b00020;
   --error-ink: #ffffff;
   --success: #1a7f37;
@@ -97,6 +101,12 @@
   --tint-warning: color-mix(in srgb, var(--warning) 14%, var(--paper-raised));
   --tint-neutral: color-mix(in srgb, var(--muted) 12%, var(--paper-raised));
   --tint-highlight: color-mix(in srgb, var(--brand-orange) 20%, var(--paper-raised));
+  /* The logo's facets (`views::logo_mark`, the POS loading mark): the
+     same oranges in both themes, only its lines follow the text colour. */
+  --logo-facet-mid: var(--brand-orange);
+  --logo-facet-warm: var(--brand-orange-warm);
+  --logo-facet-deep: var(--brand-orange-deep);
+  --logo-glint: var(--brand-glint);
 
   /* ---- order states (`.state-*` in site.css) ---- */
   --state-pending-bg: #fff6d8; --state-pending-border: #ac7600; --state-pending-ink: #634800;
