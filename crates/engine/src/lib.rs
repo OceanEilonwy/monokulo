@@ -30,6 +30,9 @@ pub mod link;
 pub mod loops;
 pub mod network;
 pub mod node_events;
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) mod node_test_support;
 pub mod pow;
 pub mod proof;
 pub mod run;

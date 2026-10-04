@@ -86,6 +86,82 @@ pub struct FallbackDaemonClient {
     excluded: Mutex<Vec<bool>>,
 }
 
+/// The caller can have a tighter deadline than this layer. Dropping a request
+/// before its answer must still cool down that node, or the next pinned round
+/// selects the same hung node indefinitely.
+struct Attempt<'a> {
+    client: &'a FallbackDaemonClient,
+    idx: usize,
+    completed: bool,
+}
+
+impl Drop for Attempt<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.client.note_failure(
+                self.idx,
+                &DaemonError::TimedOut("node call cancelled before an answer".to_owned()),
+            );
+        }
+    }
+}
+
+struct CorroborationBudget {
+    deadline: Instant,
+    remaining_calls: std::cell::Cell<u32>,
+}
+
+tokio::task_local! {
+    static CORROBORATION_DEADLINE: CorroborationBudget;
+}
+
+/// Reserve time for subsequent corroboration and durable writes in this caller.
+/// The scope follows the future rather than a global setting, so concurrent
+/// scanner rounds and independent API callers cannot change each other's budget.
+pub(crate) async fn with_corroboration_deadline<T>(
+    deadline: Instant,
+    calls: u32,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    CORROBORATION_DEADLINE
+        .scope(
+            CorroborationBudget {
+                deadline,
+                remaining_calls: std::cell::Cell::new(calls),
+            },
+            future,
+        )
+        .await
+}
+
+// Allocate once per evidence operation, shared by its concurrent peer requests.
+// The final operation can use the remaining time; keep a small write margin.
+fn corroboration_budget() -> Duration {
+    CORROBORATION_DEADLINE
+        .try_with(|scope| {
+            let remaining = scope.deadline.saturating_duration_since(Instant::now());
+            let calls = scope.remaining_calls.get().max(1);
+            scope.remaining_calls.set(calls - 1);
+            remaining.saturating_sub(Duration::from_millis(50).min(remaining / 20)) / calls
+        })
+        .unwrap_or(MAX_ATTEMPT)
+        .min(MAX_ATTEMPT)
+}
+
+/// Corroboration waits for every node concurrently, but never indefinitely:
+/// healthy answers must survive a peer whose client fails to time itself out.
+async fn corroborate<T>(
+    call: impl std::future::Future<Output = Result<T, DaemonError>>,
+    budget: Duration,
+) -> Result<T, DaemonError> {
+    match tokio::time::timeout(budget, call).await {
+        Ok(answer) => answer,
+        Err(_) => Err(DaemonError::TimedOut(
+            "no corroborating answer within the node deadline".to_owned(),
+        )),
+    }
+}
+
 impl FallbackDaemonClient {
     /// `nodes` must be non-empty (enforced by every real construction path: a
     /// `[monero_node.<network>]` table always has at least its primary node, even
@@ -292,12 +368,18 @@ impl FallbackDaemonClient {
             let _ = tried;
             let node = self.nodes[idx].client.as_ref();
             let this_attempt = remaining.min(per_node(node));
+            let mut attempt = Attempt {
+                client: self,
+                idx,
+                completed: false,
+            };
             let outcome = match tokio::time::timeout(this_attempt, call(node)).await {
                 Ok(outcome) => outcome,
                 Err(_) => Err(DaemonError::TimedOut(format!(
                     "no answer within {this_attempt:?}"
                 ))),
             };
+            attempt.completed = true;
             match outcome {
                 Ok(v) => {
                     self.note_success(idx);
@@ -347,12 +429,18 @@ impl PinnedDaemon<'_> {
         let Some(node) = self.inner.nodes.get(self.idx) else {
             return Err(FallbackDaemonClient::note_all_failed());
         };
+        let mut attempt = Attempt {
+            client: self.inner,
+            idx: self.idx,
+            completed: false,
+        };
         let outcome = match tokio::time::timeout(deadline, call(node.client.as_ref())).await {
             Ok(outcome) => outcome,
             Err(_) => Err(DaemonError::TimedOut(format!(
                 "no answer within the call's {deadline:?} deadline"
             ))),
         };
+        attempt.completed = true;
         match &outcome {
             Ok(_) => self.inner.note_success(self.idx),
             Err(e) => self.inner.note_failure(self.idx, e),
@@ -662,13 +750,14 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         txid: &str,
     ) -> Result<Option<TxLocation>, DaemonError> {
         let nodes = self.trusted();
+        let budget = corroboration_budget();
         if nodes.len() < 2 {
             return Ok(None);
         }
         let answers = futures_util::future::join_all(
             nodes
                 .iter()
-                .map(|node| node.client.locate_transaction(txid)),
+                .map(|node| corroborate(node.client.locate_transaction(txid), budget)),
         )
         .await;
         let mut best: Option<TxLocation> = None;
@@ -739,10 +828,11 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         // Every node at once: the answer waits for the slowest node, not
         // for each in turn.
         let nodes = self.trusted();
+        let budget = corroboration_budget();
         let answers = futures_util::future::join_all(
             nodes
                 .iter()
-                .map(|node| node.client.is_key_image_spent(key_images)),
+                .map(|node| corroborate(node.client.is_key_image_spent(key_images), budget)),
         )
         .await;
         let mut responses: Vec<Vec<KeyImageStatus>> = Vec::new();

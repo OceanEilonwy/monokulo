@@ -38,6 +38,7 @@ pub(crate) struct SettlementState {
 
 #[derive(Default)]
 pub(crate) struct SettlementRound {
+    tip_observed: bool,
     vanished_done: bool,
     recomputed: HashSet<crate::store::OrderId>,
 }
@@ -49,6 +50,15 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
     let Some(tip) = round.tip else {
         return Progress::Blocked(Wait::ChainHeightUnknown);
     };
+    if !round.settlement.tip_observed {
+        if let Err(error) = round
+            .db(move |s, network| s.observe_settlement_tip(network, tip))
+            .await
+        {
+            return Progress::Failed(error);
+        }
+        round.settlement.tip_observed = true;
+    }
     let mut failure = None;
     if !round.settlement.vanished_done {
         round.settlement.vanished_done = true;
@@ -121,7 +131,11 @@ async fn vanished(round: &Round<'_>, tip: u64, until: Instant) -> Result<(), Sca
             .collect();
         tokio::time::timeout(
             vanished_deadline,
-            vanished_hints(round.inputs.daemon, &txids, &due),
+            crate::daemon_fallback::with_corroboration_deadline(
+                Instant::now() + vanished_deadline,
+                1,
+                vanished_hints(round.inputs.daemon, &txids, &due),
+            ),
         )
         .await
     };
@@ -158,14 +172,18 @@ async fn vanished(round: &Round<'_>, tip: u64, until: Instant) -> Result<(), Sca
         let payment_id = payment.id;
         let checked = tokio::time::timeout(
             vanished_deadline,
-            check_vanished_candidates(
-                db,
-                round.inputs.daemon,
-                &txids,
-                tip,
-                round.now,
-                vec![payment],
-                &hints,
+            crate::daemon_fallback::with_corroboration_deadline(
+                Instant::now() + vanished_deadline,
+                2,
+                check_vanished_candidates(
+                    db,
+                    round.inputs.daemon,
+                    &txids,
+                    tip,
+                    round.now,
+                    vec![payment],
+                    &hints,
+                ),
             ),
         )
         .await;

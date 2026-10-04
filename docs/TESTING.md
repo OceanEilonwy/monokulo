@@ -27,6 +27,322 @@ implement it. Organized by component, in roughly the order a component would be 
   mitigation, and webhook signature verification each get dedicated adversarial tests,
   not incidental coverage from happy-path tests.
 
+### Generated engine tests
+
+The engine uses [Proptest](https://proptest-rs.github.io/proptest/) as a dev-only
+dependency. The first suite, `status::properties`, checks status derivation against
+an independent aggregate specification and checks payment ordering, confirmation
+growth, additional payments, expiry, and splitting payments with identical evidence.
+Generators mix small values with full-width integers and funding boundaries,
+including saturated totals. They respect the order API's positive expected amount
+and the rule that mempool payments have zero confirmations. Named example tests
+remain alongside these generated checks.
+
+These are ordinary, always-enabled Rust tests. `cargo test`, nextest, the existing
+Linux/macOS CI test jobs, and Rust coverage all run them. Status properties use **256
+generated cases per property**; scanner properties use **64 cases per property**, and the four verifier
+history properties plus the real verifier/scanner integration use **16 cases per property** because they use real proof
+fixtures and verifier workers,
+plus any persisted regressions. `PROPTEST_CASES` overrides these budgets; no live daemon or
+extra test service is needed. Run from the repository root:
+
+```sh
+# Status properties and existing status examples.
+cargo test -p engine --lib --locked status::
+
+# Properties alone through the same runner used by CI.
+cargo nextest run -p engine --lib --locked -E 'test(/^status::properties::/)'
+
+# Extended local exploration: 10,000 cases per property.
+PROPTEST_CASES=10000 cargo test -p engine --lib --locked status::properties::
+
+# Repeat an exploration with a chosen decimal u64 RNG seed.
+PROPTEST_CASES=10000 PROPTEST_RNG_SEED=42 cargo test -p engine --lib --locked status::properties::
+
+# Scanner histories and the named regressions they discovered.
+cargo nextest run -p engine --lib --locked -E 'test(/^work::tests::properties::/)'
+
+# Larger reproducible scanner exploration (128 cases for each property).
+PROPTEST_CASES=128 PROPTEST_RNG_SEED=42 cargo test -p engine --lib --locked work::tests::properties::
+```
+
+Normal runs use fresh randomness. For a failure, Proptest shrinks the input and
+prints the counterexample; it also saves a replay seed under
+`crates/engine/proptest-regressions/` (`status/properties.txt`, `work/properties.txt`, `work/money_properties.txt`, `work/expansion_properties.txt`,
+`work/node_properties.txt` and `proof/node_properties.txt`). Subsequent
+runs replay persisted seeds before new cases. CI uploads these directories on
+test/coverage failure. Download the artifact and restore the directory under the
+corresponding crate, then rerun the failing test. Keep regression files in Git after
+a fix, and add a named example for a discovered bug: seeds depend on the strategy,
+so a concrete example protects the case when generators change. Do not ignore the
+regression directory. See [Proptest's persistence documentation](https://proptest-rs.github.io/proptest/proptest/failure-persistence.html).
+
+The scanner suite (`crates/engine/src/work/properties.rs`, registered under
+`work::tests::properties`) has forty-three generated properties. The first five cover:
+
+- Histories of up to 24 optional events: mining, pool arrival/removal, forks,
+  double-spend evidence, daemon/custody outages, failures of individual daemon calls,
+  SQLite statement faults, rounds, recovery checks, and restarts. Every case also includes initial payment observation/mining, a final
+  fork and restart. A separate model tracks the canonical chain, transaction
+  location and evidence, without calling production status/reorg decision helpers.
+- Interrupted block scans with a real payment staged before the block finishes,
+  followed by a restart and a fork whose replacement may or may not pay the order.
+  Uncommitted matches must never become payments, and old checkpoints must clear.
+- Reorg jobs interrupted by daemon and custody outages, restarted while still
+  open, then recovered. Double-spend evidence may void a missing transaction;
+  mining the original transaction again must restore the same payment row.
+- Replacement branches of different lengths, including shorter tips, with a
+  payment moved, removed, or unchanged below the fork. Confirmation counts and
+  settlement must converge to the new depth after restart. These replacements
+  also appear in the general histories.
+- Two to five tenants sharing the fixture wallet through distinct custody handles,
+  with one backend failing. Tenant pages range from one to three entries; healthy
+  tenants must reach the tip without duplicate payments, while the failed tenant
+  stays put, then catches up after recovery and restart.
+
+Fifteen additional properties in `work/money_properties.rs` exercise money guarantees:
+
+| Generated scenario | Guarantee checked |
+|---|---|
+| Up to eight independent payments across three orders; partial, exact and excess funding; different mining depths and replacement survivors | Each output credits only its destination order once; settlement requires enough funds at the configured depth; affirmative double spends remove only affected funds; re-mining restores credit |
+| Late additional payment after an order is settled; disappearance with or without spent-input evidence | Confirmed funds continue covering the order; no false unconfirmed/confirming downgrade or webhook; only affected extra money loses credit |
+| Multiple outputs in one transaction, including unassigned subaddresses | Every matching output retains its own index and amount; no output credits the wrong order; tenant defaults and order confirmation overrides apply independently |
+| Two to five transactions reusing one output key | Credit only one spendable output; never settle unresolved copies, even with a zero-confirmation policy; the credited winner changes correctly through forks and disappearance |
+| Payment mined before expiry while custody is down | Expiry waits for catch-up; delayed scanning finds money rather than prematurely expiring the order |
+| Late pool payments just inside, at, or outside a closed order's grace boundary | The configured grace boundary controls rescanning, including expired orders reopening when paid |
+| Tenants registering keys after the network has scanned their payment blocks; small catch-up pages | Unregistered keys cannot hide healthy tenants behind the page limit; every tenant catches up and credits once when registered |
+| New order added while its transaction is already cached | A changed subaddress scan window finds the new order without crediting a different order |
+| Concurrent fast passes, rounds and API order creation through the production SQLite worker; stale pool sightings during mining | Exactly-once credit and settlement notifications survive task interleavings, changed scan windows and restarts; pool rediscovery cannot erase a committed block height |
+| Arbitrary sequences of fast mempool passes, ordinary rounds and restarts | Both paths share exactly-once credit; mining preserves one row and settles at the required depth |
+| Missing transaction with unspent, pool-spent, disputed, failed or empty key-image answers | Ambiguous evidence cannot void or erase observed money |
+| Distinct fixture wallets sharing a daemon and scheduler | Each wallet credits only its own outputs, regardless of arrival order and restart |
+| Trusted verifier results lag the node tip or disagree with the payment attestation | Settlement waits for both verified depth and the correct payment block; advancing the verified chain releases the obligation without PoW arithmetic |
+| Mainnet and stagenet tenants registered together | One network's rounds do not credit or advance another network's orders; each scheduler progresses independently |
+| Large blocks scanned in pages, fetch failures, interruptions, restarts and replacement blocks | Incomplete blocks do not publish staged payments; recovery or fork handling converges to the correct payment state |
+
+Seven further properties in `work/expansion_properties.rs` target storage and
+recovery boundaries. All ranges in this table are inclusive:
+
+| Property | Generated range / assertion |
+|---|---|
+| Large amounts survive real output scans, mining and reopen | Total 1–`i64::MAX`, biased toward the storage maximum and exact integer boundaries around 2^53; two outputs, thresholds 0–8; invoices just below, equal to or just above the received total, clamped to the supported positive range |
+| Unsupported amounts and aggregates fail atomically | Individual amounts above `i64::MAX`, or two individually supported payments whose sum exceeds it; the transaction rolls back payments and status without queuing notifications |
+| Unsupported invoices preserve address allocation and idempotency | Rejected invoice above `i64::MAX`; retry with a valid amount reuses the same address index/key exactly once |
+| Reorg collection/processing crosses queue limits | 15/16/17, 255/256/257 and 511/512/513 outputs; initially mined or pooled; interruption after 1–24 zero-budget rounds, SQLite fault position 0–199, restart, reconciliation and re-mining preserve output identity |
+| Settlement queue rotation reaches every order | 63/64/65 and 127/128/129 orders, thresholds 1–4, optional restart; pending recomputes drain and exactly one paid notification is queued per order |
+| Repeated multi-order histories preserve money | Three orders, 3–9 independent payments of 1–999 piconero, thresholds 0–5; 2–8 replacement phases of 1–6 blocks; varied mined/pool destinations, custody outages, nine RPC-failure bits, SQLite faults and restarts; an independent model checks every recovered phase |
+| Actual process death during SQLite execution recovers | Pool credit, interrupted block scanning or reorg reconciliation; kill after 0–2999 SQLite VM progress callbacks; three outputs of 1–999 piconero each; reopen, integrity check, no leaked staged block credit, exactly-once recovery and one paid notification |
+
+SQLite stores nonnegative amounts up to `i64::MAX`; these integration properties
+exercise that supported range and reject unrepresentable values. Pure status
+properties still explore all of `u64`. The aggregate boundary regression found
+an unchecked signed cast: recomputing a total above the storage maximum could
+write a negative received amount. A checked SQLite binding now fails that write,
+so transactional callers roll it back. A named regression fixes the concrete
+`i64::MAX + 1` case independently of generator changes. A second recovered failure
+showed stale confirmations when the tip shrank above the scanner's recorded
+height: no recorded hash diverged, so no reorg job opened. Settlement now
+persists its observed tip and atomically queues mined-payment recomputes on a
+decrease. A named restart regression covers confirming and previously settled
+orders; SQL fault sweeps verify the position/obligations commit together and
+remain scoped to their network. First use also queues recomputes for legacy
+state that has no recorded settlement tip.
+
+The subprocess crash test launches the current Rust test binary with only its
+child helper selected. The child reconstructs the fixture wallet/daemon, opens
+the real database file, and stops inside a SQLite progress callback. The parent
+kills it and waits for termination before reopening the database. Rust destructors
+and rollback cleanup cannot run in the killed process. Each rendezvous has a
+ten-second deadline and temporary database/marker cleanup; no daemon service or
+new dependency is required. This models process death, not power loss, an OS
+crash or a filesystem failure. Candidate recovery uses a positive work budget:
+zero-budget rounds intentionally process one candidate and cannot drain 513
+candidates within the smaller scenarios' 120-round recovery bound.
+
+Sixteen properties in `work/node_properties.rs` now use the production
+`FallbackDaemonClient` and a newly pinned client for each actual money round.
+Each node has its own chain, pool, per-RPC errors/hangs, response delays and
+adversarial answers. The tests use real SQLite and wallet output scanning.
+They do not substitute a single logical daemon for multi-node failover.
+
+| Generated property | Inclusive ranges / checks |
+|---|---|
+| Transport failover, exclusion, cooldown and recovery | 1–5 nodes, healthy/error/hanging/delayed responses; delays 0–99 ms; generated excluded sets, including refusal to exclude every node; bounded aggregate calls; recovery of the highest-priority eligible node |
+| Spent-input corroboration against independent vote model | 1–5 nodes, 1–5 key images, four evidence values per image; errors, hangs, truncated and oversized vectors, exclusions; disagreement is disputed, absent valid answers is an error, a single valid vote follows the existing trust policy |
+| Location corroboration against independent evidence model | 1–5 nodes; NotFound/pool/block-2/block-3/block-4 answers; errors, hangs and exclusions; positive location evidence takes precedence; no answers returns an error; one eligible configured node uses the existing no-second-opinion path |
+| Total outage and recovery through one returning node | 2–5 nodes, each failing or hanging; 1–5 outage rounds; restart optional; amount 1–999, required depth 1–4; observed money does not disappear, later mining preserves identity and queues one paid event |
+| False spent votes and sole-reachable-node policy | 1–5 nodes, arbitrary liar position; honest peers reachable or unavailable; 1–7 rounds, restart optional; conflicting votes preserve money, the accepted sole-vote policy can void it, re-mining restores the same payment |
+| Inconsistent block/outline and malformed body responses | Eleven modes: truncated, duplicated, reordered or unsolicited bodies; no block; wrong block parent/height; wrong outline hash/height/parent/timestamp; 1–4 rounds, restart optional, amount 1–999; invalid responses cannot advance the block cursor or publish staged money; valid duplicate/reorder responses do not duplicate credit |
+| Inflated tips and false attestation with checking enabled | 2–5 nodes, inflation 1–99 blocks, required depth 1–5, partial/full verified ceiling, wrong/correct attestation, restart optional; only the correct verified depth/attestation releases settlement |
+| Explicit zero-confirmation and unchecked-height policies | 1–5 nodes, amount 1–999, thresholds 0–5, inflation 6–99; checking on/off; zero-confirmation pool acceptance and unchecked-height trust remain explicit policy limits |
+| Combined multi-node money histories | 2–5 nodes, three orders, 3–6 payments of 1–999; 2–12 phases; independent per-node RPC error/hang masks 0–511; divergent branches, pool omission, inflated heights, false absence, SQLite faults 0–199 and restarts; no void without affirmative evidence or settlement before verification, then exactly-once recovery for all orders |
+| Cancellation at every pinned RPC | All nine scanner RPC kinds; a 1-ms caller deadline cancels a hanging request; failure enters cooldown and the next pin selects a healthy peer without mixing answers within the call |
+| Timeout boundary behaviour | Responses at 14,999 / 15,000 / 15,001 ms around the per-node deadline; bounded failover and later primary recovery; an exact-deadline tie may validly resolve either way |
+| Pool omission and unrelated transactions | 2–5 nodes, 1–5 rounds, restart optional; all nodes omit the payment from their pool view; an honest later block still detects it and unrelated transactions cannot credit it |
+| False mining location without block membership | 2–5 nodes; fabricated block location 3–12, required depth 1–5, restart optional; no matching transaction in the proven block means no settlement; actual subsequent mining restores one correct payment identity |
+| Secondary hangs under the actual settlement deadline | 2–5 nodes; location/spent/both secondary RPCs hang; healthy peers delayed 0–900 ms, including explicit 800 ms cases and an all-healthy control; amounts 1–999; restart optional; a formerly paid zero-confirmation transaction proven double-spent loses credit and queues one detection event; counters prove the hang was reached and cancelled |
+| Bounded tenant-page service and recovery | Tenant page 1–3, pages per unit 1–3, group size `2 * page * units + extra` with extra 1–4; one unit advances at most `page * units` tenants, the pool tier also runs, then all tenants recover both payments across optional restart |
+| Real verifier/scanner fork integration | 3–5 nodes, amount 1–999, required depth 1–3; one shared store/client; initially verified Paid payment removed on a heavier valid fork, optional forged primary is excluded, actual branch validation/reconciliation must be reached; SQL access fault 0–49, restarts and paced intermediate proof progress; re-mining preserves payment IDs and exactly two legitimate Paid transitions |
+
+
+Four generated properties in `proof/node_properties.rs` run the real `Follower`
+with existing mined/forged proof fixtures, not a substitute verifier. They test
+scheduling and settlement trust rather than fuzzing PoW arithmetic:
+
+| Generated property | Inclusive ranges / checks |
+|---|---|
+| Verifier histories through dishonest branches and outages | 2–5 nodes, 1–6 phases with healthy/error/hanging/forged states and optional repeated follower restarts; every case also forces all-down and all-hanging phases; a forged branch never becomes proven; recovery converges to the honest chain and restores node eligibility |
+| Configured-majority anchoring | 2–5 configured nodes with exactly one answering; remaining nodes fail or hang; anchoring stays held until a configured majority returns, including follower restart |
+| Deep verifier RPC failures | 3–5 nodes; hash, difficulty-header or sampled-block-blob request fails/hangs on one peer; healthy peers supply the anchor; transport failure is not a dishonesty exclusion; restart optional |
+| Malformed and wrong-ID sample retry | 3–5 agreeing nodes; arbitrary liar supplies undecodable bytes or another valid block's bytes; optional follower restart; faulty sample and healthy responses must be completed, and healthy peers establish the honest anchor |
+
+
+Four fixed scanner examples and a fixed verifier example complement the random
+cases: outer-timeout failover, hanging corroborating peers, all eleven malformed
+response shapes, sole-configured/sole-reachable/disagreeing spent votes, and an
+anchor member withholding sampled blocks.
+
+These tests found four production failures: cancellation before a pinned
+client's own deadline did not record node failure; corroboration had no independent
+bound for hanging peers; a paged outline could disagree with its header's height;
+and one agreeing anchor member withholding a sampled blob blocked a healthy
+majority. Cancellation now records failure, each corroborating call has a bound,
+outline height/parent/timestamp must match its header, and missing, malformed or wrong-ID sampled blobs
+are retried against other members of the agreed window. All existing proof checks
+still validate a returned sampled blob.
+
+Review follow-up also bounds each block unit by tenant pages, preserving durable
+catch-up cursors for the remaining tenants. A durable tenant-page rotation
+includes failed attempts, so an unavailable wallet cannot repeatedly hide healthy
+tenants after a restart. Its fairness assertion requires a new
+pool payment to be recorded in the same round. Settlement divides the caller's
+deadline between its remaining evidence operations and reserves time for durable
+writes: the final operation uses the remaining budget, so two healthy 800 ms
+responses can complete even while another peer hangs.
+
+The tests explicitly preserve three existing trust policies: a sole reachable
+spent-input vote is accepted; checking disabled trusts reported height; a
+zero-confirmation policy accepts pool evidence even with checking enabled.
+Testing these policies does not remove their trust assumptions. Anchor creation,
+in contrast, still requires a majority of the configured nodes, not merely a
+majority of the nodes that happened to answer.
+
+Run the node-focused suites with the same runners:
+
+```sh
+PROPTEST_CASES=128 PROPTEST_RNG_SEED=47 cargo test -p engine --lib --locked money::nodes::
+PROPTEST_CASES=16 PROPTEST_RNG_SEED=47 cargo test -p engine --lib --locked proof::tests::properties::
+cargo nextest run -p engine --lib --locked -E 'test(::money::nodes::) | test(proof::tests::properties::)'
+```
+
+The daily workflow includes these properties in both feature configurations and
+retains their regression files. Daily runs use 512 cases for ordinary properties
+and 32 for real verifier and integration properties. Manual runs select these
+budgets independently; `ENGINE_PROOF_CASES` overrides `PROPTEST_CASES` for the
+proof and integration families. Each job has a 90-minute limit.
+
+Both default and CI nextest profiles kill an ordinary test process after ten
+120-second slow periods (20 minutes), and a proof process after twelve 300-second
+periods (60 minutes). The `proof-workers` group admits at most two proof test
+processes, including the integration property, to limit CPU/memory contention.
+These are outer watchdogs for synchronous hangs; scenario-level deadlines remain
+much shorter. Plain `cargo test` does not provide these process watchdogs, so use
+nextest for sustained exploration. Failed tests are never retried automatically.
+
+RPC faults use the shared `Rpc` operation enum and named mask bits. Each adversarial
+node records attempted, completed and cancelled calls, including cancellation of
+an unfinished future. SQL fault traces record checks, whether the requested denial
+fired and its authorization action. Generated out-of-range SQL positions remain
+valid no-fault cases; targeted SQL sweeps and the fixed initial denial ensure actual
+failure paths are also reached.
+
+Proof fixtures use a fixed clock (`TEST_NOW = 1_800_000_000`). Test-only anchor
+sampling uses `PROPTEST_RNG_SEED` (47 when unset), prints its seed and selected
+heights in captured output, and leaves production sampling unpredictable. Preserve
+the seed, generated input, regression files and failure output together for replay.
+The seed controls generated inputs and test samples, but real worker scheduling,
+process timing and UUIDs remain nondeterministic; it does not reproduce every task
+interleaving.
+
+The process-death runner retains random SQLite opcode interruption and adds eight
+named checkpoints: before/after commit for staged block matches, payment publication,
+status recompute plus webhook creation, and reorg completion. The parent verifies
+the exact rendezvous, kills the child without Rust cleanup, reopens the database,
+checks integrity and converges to the expected money/identity/event state. Hooks are
+compiled only into tests and activated only in the crash subprocess.
+
+The money oracle independently totals funds that have reached the required depth;
+it does not call production status or conflict functions. After convergence, another
+round must preserve money state and webhook event counts. Amounts and thresholds,
+transaction ordering, work budgets, batch sizes and fault positions vary. The
+existing RingCT fixture is complemented by clear-amount transactions with real
+one-time-key derivation and distinct inputs. These test output scanning; they do
+not claim consensus validity or validate transaction signatures.
+
+Normal CI runs all properties on Linux and macOS. The separate
+`.github/workflows/engine-properties.yml` workflow runs **512 cases per property
+every day**, both with default features and with `zmq`, using the GitHub run ID as
+a recorded replay seed. Manual runs offer 128–1024 cases. It retains regression
+seeds and the JUnit report. This workflow is configured locally; it starts once
+published to GitHub. Larger local exploration uses the same commands above.
+
+Assertions run both during histories (no duplicates, no new void without evidence,
+no new settlement while reconciliation is open) and after bounded recovery
+(correct payment height, credited amount, status, cursor and canonical hashes).
+Stored confirmations on settled orders are snapshots; the model requires them to
+meet the threshold rather than keep increasing on every block. Stable extra rounds
+must preserve payment/order state and webhook event counts. Named regressions also
+cover a second fork after a candidate was processed, and after rewind but before
+replacement blocks were scanned. The discovered fix remembers the replacement
+branch durably, recollects candidates when it changes, and retains a hash anchor
+across the gap before rescanning. It uses the existing scheduler position table,
+so no schema migration is needed.
+Further named regressions cover stale confirmations after a shorter replacement,
+reopening a settled order whose payment is below the fork, and tenant starvation
+with a one-page work limit and multiple tenant pages. Rewind queues durable
+confirmation recomputes. The block work limit counts tenant pages, and durable
+page rotation prevents failed wallets from blocking later tenants. A zero-confirmation settlement also reopens when a reorg removes
+the confirmed winner of an output-key conflict; unresolved copies cannot remain
+settled merely because the order was paid before. A separate named regression
+covers a healthy catch-up tenant hidden behind an unregistered tenant; catch-up
+queries now filter registered keys before applying the page limit.
+
+Each case and shrink attempt gets a fresh SQLite file, real output scanner and
+Monero transaction fixture, and scripted `FakeDaemonClient`. Most properties use
+a paused current-thread Tokio runtime. Restarts close all SQLite handles, reopen the file, and replace
+`ScanState`; the independent key-custody backend stays alive. The harness advances
+Tokio time and passes explicit Unix time to the same round executor used by
+`run_round`, so both in-memory backoff and persisted retry deadlines advance
+without sleeps. History rounds use a zero work budget (one unit per tier) and
+one transaction per scan batch to expose interruptions. Money scenarios also vary
+budgets and batch sizes and control exact expiry/grace boundaries. Every round has
+a five-second virtual async timeout. SQLite runs through `Db::over_shared` for
+deterministic sequential execution. The concurrent property switches to the
+production `Db::open` worker and a real two-thread Tokio runtime, runs independently
+spawned fast-loop, round-loop and API tasks with generated yield schedules, and
+bounds each concurrent phase by a ten-second real timeout. It checks stable
+recovery and exactly one paid notification per order, as well as payment identity
+and amount. It adds no wall-clock sleeps.
+
+The generated models still have explicit limits:
+
+- Generated concurrent scenarios sample real task interleavings; they do not
+  exhaustively control the executor or explore every weak-memory ordering. The new subprocess harness samples abrupt
+  process death during SQLite execution. It does not model OS crashes/power loss or exhaust every crash point.
+  Existing concurrency and SQL fault-sweep tests complement these cases.
+- Reorg models retain two bootstrap blocks and stay within the configured window.
+  Bootstrap/genesis and deeper-than-window forks have example tests, but are not
+  generated histories yet; hashes outside the retained window cannot establish
+  a fork without additional evidence.
+- Wallet isolation uses two deterministic key pairs and valid output derivations;
+  it does not fuzz arbitrary cryptographic keys, encodings or signatures.
+- The settlement-ceiling property supplies trusted verifier-result fixtures.
+  It does not run PoW arithmetic or explore proof-verifier task scheduling.
+
+Daemon response parsing and PoW arithmetic remain deliberately deferred.
+Proptest shrinks vector length and individual event fields; [its state-machine companion](https://proptest-rs.github.io/proptest/proptest/state-machine.html)
+remains an option when future models need state-dependent transition shrinking.
+
 ## 1. `KeyCustody` Boundary
 
 Already implemented in `src/key_custody/plain.rs` (4 tests passing as of this

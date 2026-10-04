@@ -92,7 +92,7 @@ Sources are grouped in tiers. The order is the priority within a round:
 | Chain | reorg detection, reorg job (collect, process, rewind) | `reorg_jobs`, `reorg_work` |
 | Blocks | frontier and catch-up block scans, grouped by tenant cursor | tenant cursors, `scanned_blocks`, `partial_block_*` |
 | Mempool | pool poll, body fetch, rotating scan (and the fast path, below) | memory only (rebuilt from the pool) |
-| Settlement | vanished-mempool check, recompute (obligations, then due orders) | `pending_payment_recomputes`, `orders.next_due_*`, `scheduler_positions` |
+| Settlement | tip-decrease observation, vanished-mempool check, recompute (obligations, then due orders) | `pending_payment_recomputes`, `orders.next_due_*`, `scheduler_positions` |
 | Upkeep | scanned-range bookkeeping, void recheck, pruning, WAL checkpoint | `scheduler_positions` |
 
 ### Round budget
@@ -147,19 +147,19 @@ catch-up).
 - **Blocks:** tenants are grouped by cursor. Each group scans its next block
   once: one fetch, then one view-key scan per tenant. Catch-up groups are
   served round-robin from a persisted rotation position (`Rotation`, keyed
-  by the cursor a group reached, so a group that moved isn't served twice).
+  by the cursor a group reached, capped before the next group that already
+  existed so partial pages cannot skip it).
   While the frontier (the group at the network high-water mark) is behind
   the node, turns alternate between it and catch-up. The turn is kept
   across rounds, so even one-unit rounds alternate.
-- **Big groups:** one block scan covers at most 256 tenants of a group (a
-  page, in id order) and one commit moves them. With more at one cursor,
-  the unit scans the same block (held in the cache) for the next page
-  before the group moves on, and a block it has started it finishes for
-  every page whatever the time, so the group moves together. Only past the
-  unit's 8 scans does the rest stay behind as a catch-up group. (When the
-  first page moved on alone, 1000 tenants at one cursor split into groups
-  that fetched the same blocks again: 2.5 blocks a second against 4.9 now,
-  in the round length sweep.)
+- **Big groups:** one block scan covers at most 256 tenants of a group
+  and one commit moves that page. Each unit serves at most 8 tenant pages
+  before yielding; remaining tenants keep their durable cursors and resume
+  through catch-up. Pages rotate after the last attempted tenant, using a
+  persisted scheduler position, so unavailable wallets cannot hide later
+  tenants across rounds or restarts. Catch-up queries filter registered keys
+  before applying the page limit. The current block remains cached while the
+  unit serves another page of it.
 - **Idle stores:** a store with nothing that could have been paid from a
   block on (every order closed before the block's time) moves straight to
   the high-water mark, whether it is at the frontier or catching up, even
@@ -211,12 +211,30 @@ network):
 3. **Rewind.** Once `reorg_work` is empty, read the ancestor hash. Then, in
    one transaction: delete the scanned blocks at and above the fork,
    re-anchor the ancestor if the window is empty, clamp cursors, and delete
-   the job. If the ancestor can't be read, the losing hashes and the job
+   the job, and queue recomputes for mined payments on this network. A shorter
+   replacement can reduce confirmations even for an unchanged payment below
+   the fork; next-height schedules alone cannot notice that reduction.
+   If the ancestor can't be read, the losing hashes and the job
    stay, and rewind retries.
 
 A deeper fork found while a job is open lowers the job's fork and re-enters
-Collect (idempotent `INSERT OR IGNORE`). A fork above the job's fork needs
-nothing: the rewind covers it.
+Collect. The job also remembers a replacement branch's height and hash in
+`scheduler_positions`, with the fork it covers. Before each job unit, the node's
+hash at that height must still match. An extension advances the remembered height
+without discarding completed work; another fork restarts collection and clears
+retries, so payments processed on the previous replacement are examined again.
+This includes another fork at the same point or above the job's fork: rewind alone
+cannot undo a payment already reconciled onto a discarded replacement.
+
+After rewind, this branch identity remains until the scanner records its anchor
+hash. If the branch changes before then, detection reopens reconciliation from
+the remembered fork (or a lower divergence found in the scanned window). The
+network high-water mark and tenant cursors still rewind to the common ancestor;
+the branch anchor does not claim that replacement blocks have been scanned.
+Branch updates and collection resets commit atomically, survive restarts, and
+require no schema migration. An older open job with no branch identity is
+recollected once before continuing. The synthetic genesis-divergence case clears
+the identity along with the scanned window and reseeds on the next tick.
 
 While a job exists:
 
@@ -225,6 +243,11 @@ While a job exists:
 - Mempool and upkeep run normally.
 
 ## Recompute scheduling
+
+Settlement also durably remembers its last observed node tip in
+`scheduler_positions`. A decrease atomically queues recomputes for this network's
+nonvoid mined payments, including shorter branches that diverge above every
+recorded scan block. First observation repairs state without that position.
 
 `orders.next_due_at` (unix time) and `orders.next_due_height` are written by
 `recompute_order_status` in the same `UPDATE` as the status:

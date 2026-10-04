@@ -1127,4 +1127,4 @@ pub async fn run_loop(
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-mod tests;
+pub(crate) mod tests;
