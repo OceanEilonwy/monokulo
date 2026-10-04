@@ -3,14 +3,16 @@ name: CI
 # Stages, each a set of jobs that run side by side:
 #   lint      rustfmt (the defaults) and clippy, every warning an error
 #   tests     the workspace's Rust tests on every platform we build for
+#             (Linux, macOS, Windows)
 #   coverage  each coverage collector in a job of its own (Linux only), then
 #             one report job that joins their outputs into the artifact
-#   publish   release binaries, key-custody-cli for every computer merchants
-#             use, and the Docker image (main and version tags), once lint,
-#             tests and coverage passed; a version tag also makes a GitHub
-#             release (with build provenance for the CLI) and pushes the
-#             image to ghcr.io. A version tag must name the workspace's
-#             version: monokulo links the CLI release by it.
+#   publish   monokulo zips for Linux, macOS and Windows, key-custody-cli for
+#             every computer merchants use, and the Docker image (main and
+#             version tags), once lint, tests and coverage passed. A version
+#             tag also makes a GitHub release (with build provenance for the
+#             CLI) and pushes the image to ghcr.io; main updates the
+#             latest-main prerelease. A version tag must name the
+#             workspace's version: monokulo links the CLI release by it.
 # lint, tests and coverage start together: none needs another's build.
 # Every test and coverage job writes a summary table and lists its failures.
 
@@ -97,11 +99,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Not Windows: monokulo and the engine run on Linux (and macOS for
-        # development); only key-custody-cli is built for Windows (publish-cli).
-        os: [ubuntu-latest, macos-latest]
+        # Every platform monokulo is released for (publish).
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # Windows runners build the workspace about twice as slowly.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 30 }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -146,13 +148,16 @@ jobs:
         if: always()
         shell: bash
         run: |
-          python3 scripts/test-summary.py 'Tests (${{ matrix.os }})' \
+          # Windows runners name their Python `python`.
+          python=python3; if test "$RUNNER_OS" = Windows; then python=python; fi
+          "$python" scripts/test-summary.py 'Tests (${{ matrix.os }})' \
             rust=target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY"
           echo "Doctests: ${{ steps.doctest.outcome }}" >> "$GITHUB_STEP_SUMMARY"
           echo "Engine without ZMQ: ${{ steps.nextest_no_zmq.outcome }}" >> "$GITHUB_STEP_SUMMARY"
           echo "Engine without SEV-SNP: ${{ steps.nextest_no_snp.outcome }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Fail on test failure
         if: always()
+        shell: bash
         run: test '${{ steps.nextest.outcome }}' = success && test '${{ steps.nextest_no_zmq.outcome }}' = success && test '${{ steps.nextest_no_snp.outcome }}' = success && test '${{ steps.doctest.outcome }}' = success
 
   coverage-rust:
@@ -383,9 +388,15 @@ jobs:
         run: test '${{ steps.report.outcome }}' = success
 
   publish:
+    # monokulo (the engine inside it: one executable) for every computer a
+    # merchant might run it on, as monokulo-{version}-{target}.zip with its
+    # SHA-256. Runs on main and version tags (the release jobs below put the
+    # files on the repository's Releases page) and on a manual run of any
+    # branch (Actions > CI > Run workflow), which keeps them as the run's
+    # artifacts only.
     name: publish (${{ matrix.target }})
     needs: [lint, tests, coverage]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -394,8 +405,14 @@ jobs:
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
           - { os: macos-latest, target: aarch64-apple-darwin }
+          # Built on Intel, not cross-built on Apple silicon: RandomX's CMake
+          # picks its JIT sources from the machine it builds on.
+          - { os: macos-15-intel, target: x86_64-apple-darwin }
+          # Needs the Microsoft Visual C++ runtime (vcruntime140.dll), which
+          # RandomX links and nearly every Windows machine has.
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 30 }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -410,49 +427,60 @@ jobs:
         with:
           components: rustfmt, clippy
           # monokulo's build script builds key custody's browser module.
-          targets: wasm32-unknown-unknown
+          targets: ${{ matrix.target }}, wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: publish-${{ matrix.target }}
       - name: Check the tag names this version
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
-          version=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          # The workspace version (no Python on every runner).
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
           test "$GITHUB_REF_NAME" = "v$version" || { echo "tag $GITHUB_REF_NAME doesn't match the workspace version $version"; exit 1; }
-      - name: Build release binaries
+      - name: Build monokulo
         env:
           # Which key-custody-cli release monokulo's key entry links.
           MONOKULO_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
           MONOKULO_GIT_COMMIT: ${{ github.sha }}
-        run: >-
-          cargo build --release --locked
-          -p engine --bin monokulo-engine
-          -p monokulo --bin monokulo
+        # With the engine's `zmq` feature, as the Docker image and the
+        # OpenWrt package are built.
+        run: cargo build --release --locked -p monokulo --bin monokulo --features engine/zmq --target ${{ matrix.target }}
+      - name: Check it runs
+        shell: bash
+        run: target/${{ matrix.target }}/release/monokulo --version
       - name: Package
         id: package
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          if test "$GITHUB_REF_TYPE" != tag; then version="main-${GITHUB_SHA::7}"; fi
+          # A version tag's files are named for it; main's keep one name, so
+          # the latest-main release's links never change.
+          if test "$GITHUB_REF_TYPE" = tag; then version="${GITHUB_REF_NAME#v}"
+          elif test "$GITHUB_REF" = refs/heads/main; then version=main
+          else version="dev-${GITHUB_SHA::7}"; fi
           name="monokulo-${version}-${{ matrix.target }}"
+          bin=monokulo
+          if test "$RUNNER_OS" = Windows; then bin=monokulo.exe; fi
           mkdir -p "dist/$name"
-          cp target/release/monokulo-engine target/release/monokulo README.md "dist/$name/"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
-          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          cp "target/${{ matrix.target }}/release/$bin" README.md "dist/$name/"
+          cd dist
+          # zip keeps the executable bit, for unzip and macOS's Archive Utility.
+          if test "$RUNNER_OS" = Windows; then 7z a "$name.zip" "$name" > /dev/null; else zip -qr "$name.zip" "$name"; fi
+          if command -v sha256sum > /dev/null; then sha256sum "$name.zip" > "$name.zip.sha256"; else shasum -a 256 "$name.zip" > "$name.zip.sha256"; fi
           echo "name=$name" >> "$GITHUB_OUTPUT"
           {
-            echo "## Release binaries (${{ matrix.target }})"
+            echo "## monokulo (${{ matrix.target }})"
             echo
             echo "| File | Size |"
             echo "| --- | ---: |"
-            for f in monokulo-engine monokulo; do
-              echo "| \`$f\` | $(du -h "dist/$name/$f" | cut -f1) |"
-            done
+            echo "| \`$bin\` | $(du -h "$name/$bin" | cut -f1) |"
+            echo "| \`$name.zip\` | $(du -h "$name.zip" | cut -f1) |"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.package.outputs.name }}
           path: |
-            dist/*.tar.gz
+            dist/*.zip
             dist/*.sha256
           if-no-files-found: error
 
@@ -570,13 +598,15 @@ jobs:
           cache-to: type=gha,mode=max
 
   release:
-    # A version tag's binaries as a GitHub release, for merchants to download.
+    # A version tag's binaries as a GitHub release, for merchants to download
+    # (the repository's Releases page, and releases/latest).
     needs: [publish, publish-cli]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           pattern: monokulo-*
@@ -589,7 +619,62 @@ jobs:
           pattern: key-custody-cli-*
           path: dist
           merge-multiple: true
+      - name: Write the download notes
+        run: scripts/release-notes.sh "$GITHUB_REF_NAME" "${GITHUB_REF_NAME#v}" > notes.md
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
+          body_path: notes.md
           generate_release_notes: true
+
+  release-main:
+    # main's latest binaries as one prerelease, latest-main, brought up to
+    # date on every push to main: the same file names every time, so its
+    # download links never change. A prerelease, so releases/latest stays
+    # the newest version tag.
+    needs: [publish, publish-cli]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # One update at a time; a newer push waits for the one before it.
+    concurrency:
+      group: release-main
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: latest-main
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: monokulo-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: key-custody-cli-*
+          path: dist
+          merge-multiple: true
+      - name: Update the latest-main release
+        run: |
+          title="main (${GITHUB_SHA::7})"
+          {
+            scripts/release-notes.sh "$TAG" main
+            echo
+            echo "Built from $GITHUB_SHA, the newest commit on main that passed CI. For a released version, see the [latest release](https://github.com/$GITHUB_REPOSITORY/releases/latest)."
+          } > notes.md
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            # Move the tag to this commit, replace the files in place, and
+            # drop any this build no longer makes (an older key-custody-cli
+            # version's).
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+            gh release upload "$TAG" dist/* --clobber
+            gh release view "$TAG" --json assets -q '.assets[].name' | while read -r asset; do
+              test -e "dist/$asset" || gh release delete-asset "$TAG" "$asset" --yes
+            done
+            gh release edit "$TAG" --title "$title" --notes-file notes.md --prerelease
+          else
+            gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "$title" --notes-file notes.md --prerelease
+          fi
+          echo "Updated [$TAG](https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG) to ${GITHUB_SHA::7}." >> "$GITHUB_STEP_SUMMARY"

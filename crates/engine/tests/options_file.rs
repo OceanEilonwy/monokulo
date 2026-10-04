@@ -133,6 +133,21 @@ fn without_a_home_the_options_file_is_in_the_working_directory() {
     assert!(dir.0.join("engine.toml").exists());
 }
 
+/// Windows sets no `HOME`: the file goes under `%APPDATA%`.
+#[cfg(windows)]
+#[test]
+fn on_windows_without_a_home_the_options_file_is_in_appdata() {
+    let dir = TempDir::new("appdata");
+    let appdata = dir.0.join("appdata");
+    let output = run(engine(&dir.0)
+        .env_remove("HOME")
+        .env("APPDATA", &appdata)
+        .arg("--init"));
+    assert!(output.status.success(), "{}", text(&output));
+    assert!(appdata.join("monokulo").join("engine.toml").exists());
+    assert!(!dir.0.join("engine.toml").exists());
+}
+
 /// A file with anything wrong in it stops the engine before it does
 /// anything, naming each problem by line; so does one it can't read, and a
 /// missing engine token. None of them creates a database.

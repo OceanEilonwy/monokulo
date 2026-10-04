@@ -89,12 +89,21 @@ The design and the CPU and capacity figures are in `docs/flint2_openwrt_apk.md`.
 
 ### From release binaries or source
 
-Each version tag's GitHub release has `monokulo` and `monokulo-engine` for
-Linux (x86_64, aarch64) and macOS (arm64), and `key-custody-cli` (what
-merchants run to encrypt their keys for an SEV-SNP engine without a
-browser; monokulo's key entry forms link the release that matches them) for
-Linux, macOS and Windows. CI's `publish` jobs also keep them for every push
-to main. With those, skip step 1.
+Download `monokulo` (one executable, the engine inside it) as a zip for
+Windows (x86_64), macOS (Apple silicon and Intel) or Linux (x86_64, ARM64):
+
+- [the latest release](https://github.com/OceanEilonwy/monokulo/releases/latest),
+  for each version tag;
+- [latest-main](https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main),
+  a prerelease brought up to date with every push to main that passes CI.
+
+Each release's notes link the file for each computer and say how to start
+it (and what macOS and Windows ask of an unsigned binary). Each also has
+`key-custody-cli` (what merchants run to encrypt their keys for an SEV-SNP
+engine without a browser; monokulo's key entry forms link the release that
+matches them) for the same computers. With a download, skip step 1. The
+standalone `monokulo-engine` isn't in them: build it (below), or take it
+from the Docker image.
 
 1. Build a release binary from the repository root. The project builds on
    the latest nightly Rust (`rust-toolchain.toml`; rustup installs it on
@@ -118,8 +127,9 @@ to main. With those, skip step 1.
    `MONOKULO_ENCRYPTION_KEY` must be 64 hex characters decoding to exactly 32
    bytes - generate one with `openssl rand -hex 32` and keep it, since it's
    what encrypts data at rest in monokulo's database. monokulo keeps it at
-   `~/.local/share/monokulo/monokulo.db` unless `--database-path` says
-   otherwise, the engine's `engine.db` beside it, and listens on
+   `~/.local/share/monokulo/monokulo.db` (on Windows,
+   `%LOCALAPPDATA%\monokulo\monokulo.db`, and its options file in
+   `%APPDATA%\monokulo`) unless `--database-path` says otherwise, the engine's `engine.db` beside it, and listens on
    `127.0.0.1:8081` unless `--server-bind` says otherwise. The engine
    inside it scans on threads of its own (`engine-worker`, as many as
    `--engine-server-worker-threads` says), and its lines in the log are
