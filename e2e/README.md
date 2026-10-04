@@ -80,12 +80,12 @@ so a full run is fast (seconds, not minutes) and doesn't depend on a large
 
 ## Inspecting/driving a wallet by hand
 
-`stagenet-wallet-cli` speaks `monero-wallet-cli`'s commands over the same
+`wallet-cli` speaks `monero-wallet-cli`'s commands over the same
 wallet files the suites use. Open a wallet and type commands at its prompt,
 as with the reference wallet:
 
 ```sh
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- --wallet-file spender
+cargo run -p cli-wallet --bin wallet-cli -- --wallet-file spender
 [wallet 5648a3]: balance
 [wallet 5648a3]: show_transfers
 [wallet 5648a3]: transfer <address> 0.001
@@ -95,7 +95,7 @@ cargo run -p cli-wallet --bin stagenet-wallet-cli -- --wallet-file spender
 or run one command and exit:
 
 ```sh
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- --wallet-file spender balance
+cargo run -p cli-wallet --bin wallet-cli -- --wallet-file spender balance
 ```
 
 Amounts are in XMR, as in the reference wallet (`set unit` changes that).
@@ -119,7 +119,7 @@ New wallets: `--generate-new-wallet <name>` (fresh keys), plus
 16-word Polyseed or 25-word seed, or `--generate-from-spend-key <name>`.
 `--wallet-file` defaults to `spender`; `--daemon-address` picks another
 node, `--do-not-relay` signs without broadcasting. Shell completions:
-`stagenet-wallet-cli completions <bash|zsh|fish|...>`.
+`wallet-cli completions <bash|zsh|fish|...>`.
 
 ## One-time setup
 
@@ -196,7 +196,7 @@ into 16 equal outputs of its own, the most one transaction can hold (the
 change output is one of the 16):
 
 ```sh
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- pocketchange
+cargo run -p cli-wallet --bin wallet-cli -- pocketchange
 # Splitting 0.006250000000 from 1 output(s) into 16 outputs of 0.000382893750 each ...
 ```
 
@@ -218,10 +218,10 @@ If `wallets/spender.json`'s outputs ever run dry (everything spent, and
 change too small/young to help):
 
 1. Open https://stagenet-faucet.xmr-tw.org/ and send funds to the spender's
-   address (`stagenet-wallet-cli address`; no need to generate a new wallet -
+   address (`wallet-cli address`; no need to generate a new wallet -
    the same address can receive any number of faucet payouts).
 2. Record the faucet's txid: `cargo run -p cli-wallet --bin
-   stagenet-wallet-cli -- add_output <txid>`. It stays pending until it
+   wallet-cli -- add_output <txid>`. It stays pending until it
    confirms, then resolves on the next `refresh` (or send).
 3. Once it's spendable (10 confirmations), turn the one big faucet output
    into many test-sized ones: `pocketchange` (see above). Repeat on the

@@ -234,7 +234,7 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
             "\n\nspender wallet has only {} piconero spendable across {} output(s) (needs at least \
              {MIN_SPENDABLE_PICONERO}) - fund it from the stagenet faucet \
              (https://stagenet-faucet.xmr-tw.org/, send to {}), record the resulting txid \
-             (stagenet-wallet-cli --wallet-file {} add_output <txid>), then wait ~20 minutes \
+             (wallet-cli --wallet-file {} add_output <txid>), then wait ~20 minutes \
              for it to mature.\n",
             balance.spendable_piconero, balance.spendable_outputs, spender.address, spender.path.display(),
         );

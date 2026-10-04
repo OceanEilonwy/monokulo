@@ -3,7 +3,7 @@
 //! replace `engine::e2e_wallet::StagenetSpendWallet` as the thing this
 //! repo's real-stagenet e2e suites use to pay a real order with a real,
 //! signed, broadcast transaction, and driven by hand through the
-//! `stagenet-wallet-cli` binary, whose commands follow `monero-wallet-cli`.
+//! `wallet-cli` binary, whose commands follow `monero-wallet-cli`.
 //! A wallet file records which of the two networks it's for
 //! ([`file::WalletData::network`]); mainnet is refused, since every key here
 //! is kept in plaintext.
@@ -138,12 +138,12 @@ fn funding_steps(network: Network, address: &str) -> String {
             "fund the wallet from the stagenet faucet:\n\
              1. open https://stagenet-faucet.xmr-tw.org/\n\
              2. send to: {address}\n\
-             3. record the faucet's txid: stagenet-wallet-cli add_output <txid>"
+             3. record the faucet's txid: wallet-cli add_output <txid>"
         ),
         other => format!(
             "fund the wallet with {} XMR (from another wallet or by mining to it):\n\
              1. send to: {address}\n\
-             2. record the txid: stagenet-wallet-cli add_output <txid>",
+             2. record the txid: wallet-cli add_output <txid>",
             network_name(other)
         ),
     }

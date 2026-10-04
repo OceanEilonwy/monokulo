@@ -1,11 +1,11 @@
-//! `stagenet-wallet-cli`: `monero-wallet-cli`'s commands over this crate's
+//! `wallet-cli`: `monero-wallet-cli`'s commands over this crate's
 //! fast, no-scanning, one-JSON-file-per-wallet stagenet (or, with
 //! `--testnet`, testnet) wallet.
 //!
 //! Open a wallet and get a prompt, as with the reference wallet:
 //!
 //! ```sh
-//! cargo run -p cli-wallet --bin stagenet-wallet-cli -- --wallet-file spender
+//! cargo run -p cli-wallet --bin wallet-cli -- --wallet-file spender
 //! [wallet 56Lc1x]: balance
 //! [wallet 56Lc1x]: transfer <address> 0.01
 //! ```
@@ -38,7 +38,7 @@ const DEFAULT_WALLET: &str = "spender";
 
 #[derive(Parser)]
 #[command(
-    name = "stagenet-wallet-cli",
+    name = "wallet-cli",
     version,
     about = "monero-wallet-cli's commands for the stagenet e2e test wallets, and testnet wallets",
     after_help = "With no command, opens the wallet and prompts for commands, as monero-wallet-cli does."
@@ -265,7 +265,7 @@ async fn run(mut cli: Cli) -> Result<(), CliError> {
             clap_complete::generate(
                 shell,
                 &mut Cli::command(),
-                "stagenet-wallet-cli",
+                "wallet-cli",
                 &mut std::io::stdout(),
             );
             return Ok(());

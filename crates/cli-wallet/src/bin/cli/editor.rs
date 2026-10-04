@@ -611,8 +611,8 @@ impl Prompt for WalletPrompt {
     }
 }
 
-/// Where prompt history is kept: `$XDG_STATE_HOME/stagenet-wallet-cli/`,
-/// else `~/.local/state/stagenet-wallet-cli/`. `None` if neither is known.
+/// Where prompt history is kept: `$XDG_STATE_HOME/wallet-cli/`,
+/// else `~/.local/state/wallet-cli/`. `None` if neither is known.
 fn history_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_STATE_HOME")
         .filter(|dir| !dir.is_empty())
@@ -620,7 +620,7 @@ fn history_path() -> Option<PathBuf> {
         .or_else(|| {
             std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
         })?;
-    let dir = base.join("stagenet-wallet-cli");
+    let dir = base.join("wallet-cli");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir.join("history"))
 }

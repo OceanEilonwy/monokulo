@@ -239,29 +239,29 @@ targets under the `cli-wallet` package:
 ```sh
 # monero-wallet-cli's commands over one JSON file per wallet (e2e/wallets/).
 # With no command it opens the wallet and prompts, like the reference wallet:
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- --wallet-file spender
+cargo run -p cli-wallet --bin wallet-cli -- --wallet-file spender
 #   [wallet 5648a3]: balance
 #   [wallet 5648a3]: transfer <address> 0.001      (amounts in XMR)
 #   [wallet 5648a3]: show_transfers
 #   [wallet 5648a3]: help
 
 # ...or runs one command and exits
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- --wallet-file spender balance
+cargo run -p cli-wallet --bin wallet-cli -- --wallet-file spender balance
 
 # Split the largest output into 16 equal outputs (the most one transaction
 # holds), so the e2e tests have enough mature outputs to run fast - see
 # e2e/README.md "Keeping enough outputs"
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- pocketchange
+cargo run -p cli-wallet --bin wallet-cli -- pocketchange
 
 # Record a payment by hand (e.g. after a faucet payment)
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- add_output <txid>
+cargo run -p cli-wallet --bin wallet-cli -- add_output <txid>
 
 # New wallet file: fresh keys, or restored from a seed phrase
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- --generate-new-wallet <name>
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- --generate-new-wallet <name> --restore-deterministic-wallet --electrum-seed "<phrase>"
+cargo run -p cli-wallet --bin wallet-cli -- --generate-new-wallet <name>
+cargo run -p cli-wallet --bin wallet-cli -- --generate-new-wallet <name> --restore-deterministic-wallet --electrum-seed "<phrase>"
 
 # Shell completions
-cargo run -p cli-wallet --bin stagenet-wallet-cli -- completions <bash|zsh|fish|...>
+cargo run -p cli-wallet --bin wallet-cli -- completions <bash|zsh|fish|...>
 
 # Refresh the committed decoy-selection cache (rarely needed - see that
 # bin's own doc comment)
