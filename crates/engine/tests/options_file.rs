@@ -49,6 +49,10 @@ fn engine(dir: &Path) -> Command {
         .env("HOME", dir.join("home"))
         .current_dir(dir)
         .stdin(Stdio::null());
+    // Windows can't open a socket without it.
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        command.env("SystemRoot", root);
+    }
     command
 }
 
@@ -232,12 +236,16 @@ fn the_engine_starts_without_a_file_and_follows_one_and_its_options() {
         .arg("--server-bind")
         .arg(format!("127.0.0.1:{port}"))
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(dir.0.join("start.log")).unwrap())
         .spawn()
         .unwrap();
     let up = listening(&mut child, port);
     stop(child);
-    assert!(up, "the engine started with no options file");
+    assert!(
+        up,
+        "the engine started with no options file: {}",
+        std::fs::read_to_string(dir.0.join("start.log")).unwrap_or_default()
+    );
     assert!(data.join("monokulo").join("engine.db").exists());
     assert!(!missing.exists(), "nothing is written until a save");
 

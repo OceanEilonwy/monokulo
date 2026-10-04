@@ -2462,9 +2462,12 @@ url = \"http://node:18081\"
     /// A file of its own in the system's temporary directory.
     fn temp_file(tag: &str, text: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "live-settings-nested-{tag}-{}-{:?}",
+            "live-settings-nested-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("outer.toml");
