@@ -311,7 +311,7 @@ fn upgrade(version: usize, amount: i64, payload: &str, fault: Option<usize>) -> 
 proptest! {
     #![proptest_config(config())]
     #[test]
-    fn upgrades_preserve_money_queues_and_interrupted_work(version in 1usize..=26, amount in 1i64..=i64::MAX, payload in any::<String>(), fault in 0usize..400) {
+    fn upgrades_preserve_money_queues_and_interrupted_work(version in 1usize..=MIGRATIONS.len(), amount in 1i64..=i64::MAX, payload in any::<String>(), fault in 0usize..400) {
         upgrade(version,amount,&payload,Some(fault));
     }
 }
@@ -327,9 +327,9 @@ fn every_historic_schema_upgrades_with_existing_money_and_work() {
 fn every_reached_upgrade_fault_recovers_without_partial_schema() {
     // The last migration is a short representative transaction; deny every
     // authorizer boundary, including bookkeeping and commit operations.
-    let count = upgrade(25, 42, "fault sweep", Some(usize::MAX));
+    let count = upgrade(MIGRATIONS.len() - 1, 42, "fault sweep", Some(usize::MAX));
     for at in 0..count {
-        upgrade(25, 42, "fault sweep", Some(at));
+        upgrade(MIGRATIONS.len() - 1, 42, "fault sweep", Some(at));
     }
 }
 
@@ -390,7 +390,7 @@ async fn crash_upgrade(version: usize, amount: i64, payload: &str, point: &str) 
         if point.ends_with("before_commit") {
             version as i64
         } else {
-            26
+            MIGRATIONS.len() as i64
         }
     );
     drop(conn);
@@ -415,7 +415,7 @@ async fn crash_upgrade(version: usize, amount: i64, payload: &str, point: &str) 
 proptest! {
     #![proptest_config(config())]
     #[test]
-    fn historic_upgrades_recover_from_process_death(version in 1usize..26, amount in 1i64..=i64::MAX, payload in any::<String>(), after in any::<bool>()) {
+    fn historic_upgrades_recover_from_process_death(version in 1usize..MIGRATIONS.len(), amount in 1i64..=i64::MAX, payload in any::<String>(), after in any::<bool>()) {
         crate::property_support::runtime().block_on(crash_upgrade(version,amount,&payload,if after {"migration.after_commit"} else {"migration.before_commit"}));
     }
 }
