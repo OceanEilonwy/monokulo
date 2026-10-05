@@ -92,9 +92,9 @@ MUTATIONS = (
              "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id IN",
              "DELETE FROM partial_block_matches WHERE 0 AND network = ?1 AND tenant_id IN", STAGING_TEST,
              expected_failure="BOUNDARY: reorg-staging-matches"),
-    Mutation("retain-stale-custody-epoch", "crates/engine/src/key_custody/router.rs",
+    Mutation("retain-stale-custody-epoch", "crates/key-custody/src/router.rs",
              "if epoch > previous {", "if false && epoch > previous {",
-             "key_custody::router::properties::backend_epoch_changes_invalidate_only_the_restarted_backend",
+             "router::properties::backend_epoch_changes_invalidate_only_the_restarted_backend",
              expected_failure="BOUNDARY: stale-custody-epoch"),
 )
 
@@ -135,6 +135,14 @@ def boundary_hits(text):
         except (ValueError, TypeError) as error:
             errors.append(str(error))
     return hits, errors
+
+
+def test_command(test, feature):
+    package = "key-custody" if test.startswith("router::properties::") else "engine"
+    command = ["cargo", "test", "-p", package, "--lib", "--locked"]
+    if feature == "zmq" and package == "engine":
+        command += ["--features", "zmq"]
+    return command + [test, "--", "--exact", "--nocapture"]
 
 
 def positive(value):
@@ -252,10 +260,7 @@ def main():
             for feature in features:
                 for test in dict.fromkeys([m.test for m in MUTATIONS] + list(REQUIRED_HITS)):
                     index = len(baselines)
-                    command = ["cargo", "test", "-p", "engine", "--lib", "--locked"]
-                    if feature == "zmq":
-                        command += ["--features", "zmq"]
-                    command += [test, "--", "--exact", "--nocapture"]
+                    command = test_command(test, feature)
                     result = run(command, tree, env, output / f"baseline-{feature}-{index}.log", args.timeout,
                                  required_hits=REQUIRED_HITS.get(test, ()))
                     baselines[(feature, test)] = result
@@ -278,10 +283,7 @@ def main():
                             entry["outcome"] = "invalid-patch"
                         else:
                             path.write_text(original.replace(mutation.before, mutation.after))
-                            command = ["cargo", "test", "-p", "engine", "--lib", "--locked"]
-                            if feature == "zmq":
-                                command += ["--features", "zmq"]
-                            command += [mutation.test, "--", "--exact", "--nocapture"]
+                            command = test_command(mutation.test, feature)
                             entry.update(run(command, tree, env,
                                              output / f"{mutation.name}-{feature}.log", args.timeout,
                                              expected_failure=mutation.expected_failure))

@@ -6,4 +6,6 @@
 [toolchain]
 channel = "nightly"
 components = ["rustfmt", "clippy"]
+# Monokulo's build script builds key custody's browser module for it.
+targets = ["wasm32-unknown-unknown"]
 profile = "minimal"

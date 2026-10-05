@@ -273,6 +273,7 @@ async fn main() {
             backends: Arc::clone(&key_custody),
             default_backend: "plain".to_owned(),
             wallet_handles: Arc::clone(&wallet_handles),
+            snp: None,
         },
         networks: engine::http::Networks {
             daemons: engine::engine_settings::Daemons::fixed(HashMap::from([(

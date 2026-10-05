@@ -1353,27 +1353,27 @@ fn http_url_round_trips_and_refuses_other_schemes() {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Backend {
     Plain,
-    Socket,
+    Snp,
 }
 
 impl SettingValue for Backend {
     fn parse(raw: &str) -> Result<Self, String> {
         match raw.trim() {
             "plain" => Ok(Backend::Plain),
-            "socket" => Ok(Backend::Socket),
-            _ => Err("Choose plain or socket.".to_string()),
+            "snp" => Ok(Backend::Snp),
+            _ => Err("Choose plain or snp.".to_string()),
         }
     }
     fn render(&self) -> String {
         match self {
             Backend::Plain => "plain",
-            Backend::Socket => "socket",
+            Backend::Snp => "snp",
         }
         .to_string()
     }
     fn kind() -> SettingKind {
         SettingKind::Choice {
-            choices: vec!["plain", "socket"],
+            choices: vec!["plain", "snp"],
         }
     }
 }
@@ -1391,17 +1391,17 @@ fn comma_list_round_trips_and_names_the_bad_item() {
     );
     assert_eq!(<CommaList<u16>>::kind(), SettingKind::Text);
 
-    let backends = <CommaList<Backend>>::parse("socket, plain").unwrap();
-    assert_eq!(backends, CommaList(vec![Backend::Socket, Backend::Plain]));
+    let backends = <CommaList<Backend>>::parse("snp, plain").unwrap();
+    assert_eq!(backends, CommaList(vec![Backend::Snp, Backend::Plain]));
     assert_eq!(
         <CommaList<Backend>>::kind(),
         SettingKind::ChoiceList {
-            choices: vec!["plain", "socket"]
+            choices: vec!["plain", "snp"]
         }
     );
     assert_eq!(
         <CommaList<Backend>>::parse("plain, tpm").unwrap_err(),
-        "\"tpm\": Choose plain or socket."
+        "\"tpm\": Choose plain or snp."
     );
 
     let secrets = <CommaList<Secret>>::parse("a, b").unwrap();
@@ -2462,9 +2462,12 @@ url = \"http://node:18081\"
     /// A file of its own in the system's temporary directory.
     fn temp_file(tag: &str, text: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "live-settings-nested-{tag}-{}-{:?}",
+            "live-settings-nested-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("outer.toml");

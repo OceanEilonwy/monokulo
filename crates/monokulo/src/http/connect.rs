@@ -209,15 +209,29 @@ async fn render_confirm_form(
         Ok(_) => public_url_for_plugins(state).await.err(),
     };
     let chrome = super::page_chrome(state, Some(user), format!("/connect/{platform}")).await;
+    let custody_choices = super::status_page::custody_choice_views(
+        state,
+        resubmit.and_then(|f| f.key_custody_backend.as_deref()),
+    );
+    let snp_entry = if unavailable.is_none() {
+        super::key_entry::prepare(
+            state,
+            &user.id,
+            super::key_entry::Purpose::Create,
+            &super::key_entry::offered_backends(state, &custody_choices),
+        )
+        .await
+    } else {
+        None
+    };
     let data = PlatformConnectViewModel {
         platform: platform.to_string(),
         site_url: site_url.to_string(),
         return_url: return_url.to_string(),
         nonce: nonce.to_string(),
         error: error.map(str::to_string),
-        view_key_hex: resubmit
-            .and_then(|f| f.view_key_hex.clone())
-            .unwrap_or_default(),
+        // Never echoed back: the private view key isn't put in a page.
+        view_key_hex: String::new(),
         spend_pubkey_hex: resubmit
             .and_then(|f| f.spend_pubkey_hex.clone())
             .unwrap_or_default(),
@@ -225,10 +239,8 @@ async fn render_confirm_form(
         network_stagenet_selected,
         network_testnet_selected,
         currency_options,
-        custody_choices: super::status_page::custody_choice_views(
-            &state.engine,
-            resubmit.and_then(|f| f.key_custody_backend.as_deref()),
-        ),
+        custody_choices,
+        snp_entry,
         existing_stores,
         unavailable,
     };
@@ -333,6 +345,10 @@ pub struct ConfirmForm {
     pub view_key_hex: Option<String>,
     #[serde(default)]
     pub spend_pubkey_hex: Option<String>,
+    /// The keys encrypted for SEV-SNP key storage (`key_entry`), instead of
+    /// the two above.
+    #[serde(default)]
+    pub encrypted_keys: Option<String>,
     #[serde(default)]
     pub network: Option<String>,
     /// Not shown on the confirm screen (no UI field for it yet) — carried purely so
@@ -419,6 +435,7 @@ async fn confirm_new_store(
         site_url: form.site_url.clone(),
         view_key_hex: form.view_key_hex.clone().unwrap_or_default(),
         spend_pubkey_hex: form.spend_pubkey_hex.clone().unwrap_or_default(),
+        encrypted_keys: form.encrypted_keys.clone(),
         network: form.network.clone(),
         domains: Vec::new(),
         confirmations_required: form.confirmations_required,
@@ -1330,13 +1347,13 @@ mod tests {
     }
 
     /// Same real UX bug `http/tests.rs`'s
-    /// `a_rejected_connect_submission_re_fills_every_field_the_merchant_typed`
+    /// `a_rejected_connect_submission_re_fills_what_the_merchant_typed_but_the_view_key`
     /// covers for `/dashboard/connect`, here for the plugin-driven
     /// `/connect/{platform}` confirm form: a rejected submission must not
     /// throw away the site_url/view key/spend key/network/allowed_origins
     /// the merchant already typed in.
     #[tokio::test]
-    async fn a_rejected_confirm_submission_re_fills_every_field_the_merchant_typed() {
+    async fn a_rejected_confirm_submission_re_fills_what_the_merchant_typed_but_the_view_key() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -1374,8 +1391,8 @@ mod tests {
             "expected a visible error, got: {html}"
         );
         assert!(
-            html.contains(&format!(r#"value="{TEST_VIEW_KEY_HEX}""#)),
-            "expected the valid view key kept, got: {html}"
+            !html.contains(TEST_VIEW_KEY_HEX),
+            "the private view key is never put back in a page: {html}"
         );
         assert!(
             html.contains(&format!(r#"value="{}""#, "ff".repeat(32))),

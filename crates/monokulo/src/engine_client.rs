@@ -590,6 +590,37 @@ impl EngineClient {
             .parsed()
     }
 
+    /// `POST /api/v1/admin/key-custody/bundle` — a bundle to encrypt a new
+    /// store's keys against, for `backend` (one that takes keys only
+    /// encrypted to it). One per key entry form.
+    pub async fn create_key_bundle(
+        &self,
+        backend: &str,
+    ) -> Result<KeyBundleAnswer, EngineClientError> {
+        self.send(
+            Call::post("/api/v1/admin/key-custody/bundle")
+                .json(&serde_json::json!({ "backend": backend })),
+        )
+        .await?
+        .parsed()
+    }
+
+    /// `POST /api/v1/admin/tenant/key-custody/bundle` — as
+    /// [`Self::create_key_bundle`], for moving `sk`'s store's keys.
+    pub async fn move_key_bundle(
+        &self,
+        sk: &RawToken,
+        backend: &str,
+    ) -> Result<KeyBundleAnswer, EngineClientError> {
+        self.send(
+            Call::post("/api/v1/admin/tenant/key-custody/bundle")
+                .store(sk)
+                .json(&serde_json::json!({ "backend": backend })),
+        )
+        .await?
+        .parsed()
+    }
+
     /// `PUT /api/v1/admin/tenant/key-custody` — moves `sk`'s store
     /// to another key custody backend. The keys must be the store's own
     /// wallet's; the engine checks.
@@ -597,17 +628,12 @@ impl EngineClient {
         &self,
         sk: &RawToken,
         backend: &str,
-        view_key_hex: &str,
-        spend_pubkey_hex: &str,
+        keys: &StoreKeys,
     ) -> Result<TenantView, EngineClientError> {
         self.send(
             Call::new(Method::PUT, "/api/v1/admin/tenant/key-custody")
                 .store(sk)
-                .json(&SwitchKeyCustodyRequest {
-                    backend,
-                    view_key_hex,
-                    spend_pubkey_hex,
-                }),
+                .json(&SwitchKeyCustodyRequest { backend, keys }),
         )
         .await?
         .parsed()
@@ -990,8 +1016,8 @@ pub enum EngineClientError {
 /// monokulo's alone (`crate::embed_domains`).
 #[derive(Serialize)]
 pub struct CreateTenantRequest {
-    pub view_key_hex: String,
-    pub spend_pubkey_hex: String,
+    #[serde(flatten)]
+    pub keys: StoreKeys,
     pub network: Option<String>,
     pub confirmations_required: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
@@ -1000,11 +1026,31 @@ pub struct CreateTenantRequest {
     pub key_custody_backend: Option<String>,
 }
 
+/// A store's keys as the engine takes them: in the clear (`plain`), or
+/// encrypted to the backend (`encrypted_keys`, for `snp`), never both.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct StoreKeys {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub view_key_hex: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub spend_pubkey_hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_keys: Option<String>,
+}
+
 #[derive(Serialize)]
 struct SwitchKeyCustodyRequest<'a> {
     backend: &'a str,
-    view_key_hex: &'a str,
-    spend_pubkey_hex: &'a str,
+    #[serde(flatten)]
+    keys: &'a StoreKeys,
+}
+
+/// Mirrors the engine's own `KeyBundleResponse`: the bundle, passed on to
+/// the browser or `key-custody-cli` as it is. Which images to trust is
+/// monokulo's own policy (`settings::SnpEntryPolicy`), not the engine's.
+#[derive(Debug, Clone, Deserialize)]
+pub struct KeyBundleAnswer {
+    pub bundle: serde_json::Value,
 }
 
 /// Mirrors the engine's own `CreateTenantResponse`.
@@ -1264,6 +1310,10 @@ pub struct EngineStatusResponse {
     pub key_custody: Vec<CustodyBackendStatus>,
     #[serde(default)]
     pub key_custody_default: Option<String>,
+    /// Which images the engine's `snp` backend trusts with keys, when it
+    /// is set up: compared with monokulo's own policy.
+    #[serde(default)]
+    pub key_custody_snp_trust: Option<SnpTrustStatus>,
     /// The engine process's CPU and memory over the last hour.
     #[serde(default)]
     pub resources: Option<shared::resources::ResourceReport>,
@@ -1273,6 +1323,16 @@ pub struct EngineStatusResponse {
 pub struct CustodyBackendStatus {
     pub backend: String,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct SnpTrustStatus {
+    /// SHA-384 of the ID key images must be signed with, hex.
+    pub id_key_digest: String,
+    pub min_guest_svn: u32,
+    /// `bootloader,tee,snp,microcode`, or empty for no floor.
+    #[serde(default)]
+    pub min_tcb: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -1362,8 +1422,11 @@ mod tests {
 
     fn test_create_tenant_request() -> CreateTenantRequest {
         CreateTenantRequest {
-            view_key_hex: TEST_VIEW_KEY_HEX.to_string(),
-            spend_pubkey_hex: TEST_SPEND_PUBKEY_HEX.to_string(),
+            keys: StoreKeys {
+                view_key_hex: TEST_VIEW_KEY_HEX.to_string(),
+                spend_pubkey_hex: TEST_SPEND_PUBKEY_HEX.to_string(),
+                encrypted_keys: None,
+            },
             network: Some("mainnet".to_string()),
             confirmations_required: None,
             order_expiry_seconds: None,
@@ -1872,8 +1935,11 @@ mod contract_tests {
 
         let created = client
             .create_tenant(CreateTenantRequest {
-                view_key_hex: VIEW_KEY_HEX.to_string(),
-                spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
+                keys: StoreKeys {
+                    view_key_hex: VIEW_KEY_HEX.to_string(),
+                    spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
+                    encrypted_keys: None,
+                },
                 network: Some("mainnet".to_string()),
                 confirmations_required: None,
                 order_expiry_seconds: None,
@@ -2137,8 +2203,11 @@ mod contract_tests {
         let (_engine, client, engine_runtime) = engine_and_client("embedded on its runtime").await;
         let created = client
             .create_tenant(CreateTenantRequest {
-                view_key_hex: VIEW_KEY_HEX.to_string(),
-                spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
+                keys: StoreKeys {
+                    view_key_hex: VIEW_KEY_HEX.to_string(),
+                    spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
+                    encrypted_keys: None,
+                },
                 network: Some("mainnet".to_string()),
                 confirmations_required: None,
                 order_expiry_seconds: None,

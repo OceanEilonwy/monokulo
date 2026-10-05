@@ -1224,10 +1224,15 @@ async fn scan_block(
     // to them in the whole gap).
     let idle_to = if frontier { height } else { high_water };
     let checkpointed = plan.checkpoints.into_keys().collect();
+    let txids = (!header_only).then(|| match &source {
+        Source::Whole(block) => block.txids.iter().cloned().collect(),
+        Source::Pages(paged) => paged.outline.txids.iter().cloned().collect(),
+    });
     let commit_block = CommitBlock {
         height,
         checkpointed,
         hash,
+        txids,
         prev_hash,
         parent,
         idle_to,
@@ -1417,6 +1422,9 @@ struct CommitBlock {
     /// or dropped.
     checkpointed: HashSet<TenantId>,
     hash: String,
+    /// The ids of the block's transactions, unless it was recorded from its
+    /// header alone.
+    txids: Option<HashSet<String>>,
     prev_hash: String,
     parent: u64,
     idle_to: u64,
@@ -1460,6 +1468,24 @@ fn commit(
                     .is_none_or(|max| max + 1 == height)
                 {
                     s.set_scanned_block(network, height, &block.hash)?;
+                }
+            }
+        }
+        // A payment can be given this height on a node's word before the
+        // block is scanned (the vanished-payment check). The block it named
+        // may since have been replaced above every recorded hash, where no
+        // fork is detected: if this block doesn't hold the transaction, the
+        // payment isn't in it. Unconfirmed, the vanished-payment check
+        // follows it again.
+        if let Some(txids) = &block.txids {
+            for payment in s.payments_at_height(network, height)? {
+                if !txids.contains(&payment.txid) {
+                    s.update_payment_block_height(
+                        &payment.order_id,
+                        &payment.txid,
+                        payment.output_index,
+                        None,
+                    )?;
                 }
             }
         }

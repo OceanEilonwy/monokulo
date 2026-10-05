@@ -2,6 +2,7 @@ import { createEffect, createMemo, createSignal, flush, For, onSettled, Show, un
 import { render } from '@solidjs/web';
 import { StatusBadge, StatusIcon, StatusSymbols, stateOf, statusName } from './status';
 import { addressFromQr, decodeImageFile, looksLikeAddress, scanCamera } from './refund';
+import { LOADING_MARK } from './logo';
 import { applyTheme, type Theme } from './theme';
 import { createTimeline, routeOf, watchPage } from './timeline';
 import './pos.css';
@@ -289,7 +290,7 @@ function PaymentCard(props: { order: Order }) {
         aria-invalid={refundState() === 'invalid' ? 'true' : 'false'} aria-describedby="pos-refund-note"/>
       <span class="pos-refund-state" role="status" aria-label={refundState() === 'saving' ? 'Saving refund address' : refundState() === 'saved' ? 'Refund address saved' : ''}>
         <Show when={refundState() === 'saved'}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L19 7"/></svg></Show>
-        <Show when={refundState() === 'saving'}><span class="pos-spinner pos-spinner-small"/></Show>
+        <Show when={refundState() === 'saving'}><span class="pos-loading-mark" innerHTML={LOADING_MARK}/></Show>
       </span>
     </div>
     <div class="pos-refund-tools">

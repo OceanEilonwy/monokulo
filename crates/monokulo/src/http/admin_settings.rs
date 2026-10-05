@@ -347,6 +347,12 @@ async fn build_view_model(
     let clock = views::time::Clock::for_user(admin);
     let mut monokulo_fields = monokulo_fields(state);
     with_time_limits(&mut monokulo_fields, &clock);
+    // A refused save's word on a setting, beside it.
+    for field in &mut monokulo_fields {
+        if let Some((_, message)) = field_errors.iter().find(|(key, _)| *key == field.key) {
+            field.problem = Some(message.clone());
+        }
+    }
     let options_files = state
         .settings
         .registry
@@ -647,6 +653,9 @@ async fn save_monokulo(state: &AppState, form: &HashMap<String, String>) -> Save
             ..SaveOutcome::refused(why)
         };
     }
+    if let Some(refused) = check_snp_entry_against_engine(state, registry, form).await {
+        return refused;
+    }
     let changes: live_settings::Changes = crate::settings::ALL
         .iter()
         .filter_map(|setting| {
@@ -715,6 +724,85 @@ async fn save_monokulo(state: &AppState, form: &HashMap<String, String>) -> Save
             )
         }
     }
+}
+
+/// The SEV-SNP key entry settings as `form` would leave them, checked
+/// against the engine's before anything is saved: a policy that disagrees
+/// with the engine's (or requires a backend it doesn't have) is refused,
+/// each setting with what differs. A change isn't saved while the engine
+/// can't be asked. `None` lets the save go on (values that don't parse are
+/// the registry's to refuse).
+async fn check_snp_entry_against_engine(
+    state: &AppState,
+    registry: &live_settings::Registry,
+    form: &HashMap<String, String>,
+) -> Option<SaveOutcome> {
+    use crate::settings::{
+        SnpEntryPolicy, KEY_CUSTODY_SNP_ENTRY_ID_KEY as ID_KEY,
+        KEY_CUSTODY_SNP_ENTRY_MIN_GUEST_SVN as MIN_SVN, KEY_CUSTODY_SNP_ENTRY_MIN_TCB as MIN_TCB,
+        KEY_CUSTODY_SNP_ENTRY_REQUIRED as REQUIRED,
+    };
+    use live_settings::Section;
+    if !SnpEntryPolicy::keys()
+        .iter()
+        .any(|setting| form.contains_key(setting.key()))
+    {
+        return None;
+    }
+    let saved: HashMap<&str, String> = registry
+        .describe()
+        .into_iter()
+        .map(|view| (view.key, view.value))
+        .collect();
+    let value = |key: &str| {
+        form.get(key)
+            .or_else(|| saved.get(key))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let proposed = SnpEntryPolicy::from_values(
+        ID_KEY.parse(&value(ID_KEY.key)).ok()?.as_deref(),
+        MIN_SVN.parse(&value(MIN_SVN.key)).ok()?,
+        MIN_TCB.parse(&value(MIN_TCB.key)).ok()?.as_deref(),
+        REQUIRED.parse(&value(REQUIRED.key)).ok()?,
+    )
+    .ok()?;
+    let changed = proposed != *state.settings.snp_entry.load();
+    if changed {
+        // Asked now, not taken from a status cached before the change.
+        super::status_page::invalidate_status_cache(&state.engine);
+    }
+    let status = match super::status_page::get_status_cached(&state.engine).await {
+        Ok(status) => status,
+        Err(_) if !changed => return None,
+        Err(e) => {
+            return Some(SaveOutcome {
+                error_key: Some((ID_KEY.key.to_owned(), SettingOwner::Monokulo)),
+                ..SaveOutcome::refused(format!(
+                    "Nothing was saved: the SEV-SNP key entry settings are checked against the engine's before they're saved, and the engine isn't answering ({e})."
+                ))
+            })
+        }
+    };
+    let problems = super::status_page::snp_policy_problems(&proposed, &status);
+    if problems.is_empty() {
+        return None;
+    }
+    let message: Vec<&str> = problems
+        .iter()
+        .map(|(_, problem)| problem.as_str())
+        .collect();
+    Some(SaveOutcome {
+        error_key: Some((problems[0].0.to_owned(), SettingOwner::Monokulo)),
+        field_errors: problems
+            .iter()
+            .map(|(key, problem)| ((*key).to_owned(), problem.clone()))
+            .collect(),
+        ..SaveOutcome::refused(format!(
+            "Nothing was saved: the SEV-SNP key entry settings must match the engine's. {}.",
+            message.join("; ")
+        ))
+    })
 }
 
 #[derive(serde::Serialize, Default)]
@@ -1647,6 +1735,8 @@ mod tests {
             ("server.bind", "127.0.0.1:9081"),
             ("engine.mode", "remote"),
             ("engine.url", "http://127.0.0.1:9443"),
+            ("key_custody.snp_bundles_per_user", "17"),
+            ("key_custody.snp_bundles_per_user_per_min", "29"),
         ];
         // Every monokulo setting the page can save must be covered here, or
         // this test would silently stop proving anything about a setting
@@ -1657,6 +1747,9 @@ mod tests {
             crate::settings::ALL
                 .iter()
                 .filter(|s| (s.sources().toml || s.sources().database) && s.editable())
+                // Checked against the engine's before saving: their own
+                // test below.
+                .filter(|s| !s.key().starts_with("key_custody.snp_entry_"))
                 .count(),
             "this test must cover every known monokulo setting"
         );
@@ -1703,8 +1796,6 @@ mod tests {
         let new_values: &[(&str, &str)] = &[
             ("key_custody.enabled_backends", "plain"),
             ("key_custody.default_backend", "plain"),
-            ("key_custody.socket_path", ""),
-            ("key_custody.socket_connections", "7"),
             ("payment.confirmations_required", "5"),
             ("payment.order_expiry_minutes", "45"),
             ("payment.reorg_check_depth", "15"),
@@ -1777,14 +1868,6 @@ mod tests {
 
         let html = settings_tabs_html(&router, &cookie).await;
         for (key, value) in new_values {
-            // `key_custody.socket_path`'s new value is the empty string - an
-            // empty `value=""` attribute is still real output to look for,
-            // just not distinguishable via a bare `value` search, so it's
-            // skipped here (its round-trip is still exercised - a wrong
-            // value there would still show up as *something* nonempty).
-            if value.is_empty() {
-                continue;
-            }
             assert!(
                 shows_value(&html, value),
                 "expected {key}={value:?} to have round-tripped, got: {html}"
@@ -1815,10 +1898,10 @@ mod tests {
         let form = super::joined(pairs(&[
             ("list", ""),
             ("list", "plain"),
-            ("list", "socket"),
+            ("list", "snp"),
             ("other", "a,b"),
         ]));
-        assert_eq!(form["list"], "plain,socket");
+        assert_eq!(form["list"], "plain,snp");
         assert_eq!(form["other"], "a,b");
         assert_eq!(super::joined(pairs(&[("list", "")]))["list"], "");
     }
@@ -2063,6 +2146,131 @@ mod tests {
 
     /// Secrets come from the environment only: each process's is shown
     /// locked, as dots, and a hand-made form that sends one is refused.
+    /// This site's SEV-SNP key entry settings sit in the snp backend's
+    /// section, and are checked against the engine's before they're saved:
+    /// a value the engine doesn't share is refused, named beside its field,
+    /// and nothing changes; matching values save and apply at once.
+    #[tokio::test]
+    async fn sev_snp_key_entry_settings_are_saved_only_when_they_match_the_engines() {
+        let engine = engine_test_support::TestEngineConfig::new()
+            .embedded()
+            .with_snp_backend()
+            .spawn()
+            .await;
+        let state = test_app_state_in_process(&engine).await;
+        let settings = state.settings.clone();
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let engines = hex::encode(engine_test_support::snp_test_trust().id_key_digest);
+        let other = "cd".repeat(48);
+        let custody = crate::views::admin::SettingsTab::Custody;
+
+        let html = body_text(get(&router, &custody.href(), Some(&cookie)).await).await;
+        let section = html.find(r#"data-custody-backend="snp""#).expect(&html);
+        assert!(
+            html.find(r#"name="key_custody.snp_entry_id_key""#)
+                .expect(&html)
+                > section,
+            "in the snp backend's section: {html}"
+        );
+
+        let before = settings.snp_entry.load();
+        let save = |fields: Vec<(&'static str, String)>| {
+            let router = router.clone();
+            let cookie = cookie.clone();
+            async move {
+                let mut form: Vec<(&str, &str)> = vec![("tab", "custody")];
+                form.extend(fields.iter().map(|(k, v)| (*k, v.as_str())));
+                router
+                    .oneshot(authed_form_request(
+                        "POST",
+                        "/dashboard/admin/settings",
+                        &cookie,
+                        &form,
+                    ))
+                    .await
+                    .unwrap()
+            }
+        };
+        let refused = save(vec![("key_custody.snp_entry_id_key", other.clone())]).await;
+        assert_eq!(refused.status(), StatusCode::OK);
+        let html = unescaped(&body_text(refused).await);
+        assert!(html.contains("must match the engine's"), "{html}");
+        assert!(
+            html.contains(&format!("key_custody.snp_entry_id_key here is {other}")),
+            "{html}"
+        );
+        assert_eq!(settings.snp_entry.load(), before, "nothing changed");
+
+        let saved = save(vec![
+            ("key_custody.snp_entry_id_key", engines.clone()),
+            ("key_custody.snp_entry_min_guest_svn", "0".into()),
+            ("key_custody.snp_entry_required", "true".into()),
+        ])
+        .await;
+        assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+        let policy = settings.snp_entry.load();
+        assert_eq!(
+            policy.trust.map(|t| t.id_key_digest),
+            Some(engine_test_support::snp_test_trust().id_key_digest)
+        );
+        assert!(policy.required);
+
+        let refused = save(vec![("key_custody.snp_entry_min_guest_svn", "3".into())]).await;
+        assert_eq!(refused.status(), StatusCode::OK);
+        let html = unescaped(&body_text(refused).await);
+        assert!(
+            html.contains("key_custody.snp_entry_min_guest_svn here is 3, the engine's key_custody.snp_min_guest_svn is 0"),
+            "{html}"
+        );
+        assert_eq!(settings.snp_entry.load().trust.unwrap().min_guest_svn, 0);
+    }
+
+    /// Settings that disagree with the engine's from the start (the options
+    /// file): a red alert on the status page naming what differs, for the
+    /// operator, and SEV-SNP key storage isn't a choice on the forms.
+    #[tokio::test]
+    async fn a_mismatch_from_the_options_file_is_a_red_alert_and_snp_is_not_offered() {
+        let engine = engine_test_support::TestEngineConfig::new()
+            .embedded()
+            .with_snp_backend()
+            .spawn()
+            .await;
+        let other = "cd".repeat(48);
+        let state = test_app_state_with_client(
+            EngineClient::embedded_for_tests(engine.router()),
+            live_settings::OptionsFile::in_memory(format!(
+                "[signup]\nmode = \"public\"\n[key_custody]\nsnp_entry_id_key = \"{other}\"\n"
+            )),
+        )
+        .await;
+        crate::http::status_page::get_status_cached(&state.engine)
+            .await
+            .unwrap();
+        assert!(crate::http::key_entry::snp_unusable(&state).is_some());
+        assert_eq!(
+            crate::http::key_entry::usable_custody_backends(&state),
+            vec!["plain".to_owned()]
+        );
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let html = unescaped(&body_text(get(&router, "/status", Some(&cookie)).await).await);
+        assert!(
+            html.contains(r#"<div class="error" role="alert" id="snp-policy-alert">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!("key_custody.snp_entry_id_key here is {other}")),
+            "{html}"
+        );
+        let anonymous = unescaped(&body_text(get(&router, "/status", None).await).await);
+        assert!(anonymous.contains("snp-policy-alert"), "{anonymous}");
+        assert!(
+            !anonymous.contains(&other),
+            "which settings differ is for operators"
+        );
+    }
+
     #[tokio::test]
     async fn a_secret_is_shown_locked_and_a_form_sending_one_is_refused() {
         let state = test_app_state_over_http("127.0.0.1:1".parse().unwrap()).await;
@@ -3274,8 +3482,6 @@ mod tests {
         let new_values: &[(&str, &str)] = &[
             ("key_custody.enabled_backends", "plain"),
             ("key_custody.default_backend", "plain"),
-            ("key_custody.socket_path", ""),
-            ("key_custody.socket_connections", "7"),
             ("payment.confirmations_required", "5"),
             ("payment.order_expiry_minutes", "45"),
             ("payment.reorg_check_depth", "15"),
@@ -3934,10 +4140,13 @@ mod tests {
 
     fn stagenet_tenant() -> crate::engine_client::CreateTenantRequest {
         crate::engine_client::CreateTenantRequest {
-            view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707"
-                .to_string(),
-            spend_pubkey_hex: "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90"
-                .to_string(),
+            keys: crate::engine_client::StoreKeys {
+                view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707"
+                    .to_string(),
+                spend_pubkey_hex:
+                    "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90".to_string(),
+                encrypted_keys: None,
+            },
             network: Some("stagenet".to_string()),
             confirmations_required: None,
             order_expiry_seconds: None,

@@ -54,6 +54,7 @@ async fn late_commit(change: u8, cancelled: bool, staged: bool) {
     };
     let block = CommitBlock {
         height: 3,
+        txids: Some(HashSet::from([txid])),
         checkpointed: if staged {
             HashSet::from([tenant.clone()])
         } else {

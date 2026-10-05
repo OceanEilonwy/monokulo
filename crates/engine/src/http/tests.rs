@@ -1,5 +1,5 @@
 //! HTTP-layer integration tests, driven through the real `Router` via
-//! `tower::ServiceExt::oneshot` - no bound socket needed. These exercise the same
+//! `tower::ServiceExt::oneshot` - no bound snp needed. These exercise the same
 //! IDOR/auth properties `store.rs` already tests at the repository level, but end to
 //! end through real request parsing, auth extraction, and JSON (de)serialization,
 //! per `docs/TESTING.md` §5.
@@ -2184,23 +2184,47 @@ async fn a_partially_invalid_save_changes_nothing_not_just_the_valid_half() {
     );
 }
 
+/// An engine built without the `snp` feature refuses to enable it, says
+/// why, and keeps what it had.
+#[cfg(not(feature = "snp"))]
 #[tokio::test]
-async fn enabling_the_socket_key_custody_backend_without_a_socket_path_is_rejected() {
+async fn enabling_snp_is_refused_by_an_engine_built_without_snp() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
     let router = build_router(state, 1_000_000);
-
     let post = router
+        .clone()
         .oneshot(settings_request(
             "POST",
-            Some(serde_json::json!({ "scalars": { "key_custody.enabled_backends": "plain,socket" } })),
+            Some(serde_json::json!({
+                "scalars": {
+                    "key_custody.enabled_backends": "plain,snp",
+                    "key_custody.default_backend": "plain"
+                }
+            })),
         ))
         .await
         .unwrap();
     assert_eq!(post.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(post).await;
+    assert_eq!(body["fields"][0]["key"], "key_custody.enabled_backends");
+    assert!(
+        body["fields"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("`snp` feature"),
+        "{body}"
+    );
+    let get = router.oneshot(settings_request("GET", None)).await.unwrap();
+    let body = body_json(get).await;
+    assert_eq!(
+        body["scalars"]["key_custody.enabled_backends"]["value"],
+        "plain"
+    );
 }
 
+#[cfg(feature = "snp")]
 #[tokio::test]
-async fn enabling_the_socket_key_custody_backend_with_a_socket_path_in_the_same_request_succeeds() {
+async fn enabling_the_snp_key_custody_backend_is_saved_and_reported() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
     let router = build_router(state, 1_000_000);
 
@@ -2210,9 +2234,8 @@ async fn enabling_the_socket_key_custody_backend_with_a_socket_path_in_the_same_
             "POST",
             Some(serde_json::json!({
                 "scalars": {
-                    "key_custody.enabled_backends": "plain,socket",
-                    "key_custody.default_backend": "socket",
-                    "key_custody.socket_path": "/run/moneropay/key-custody.sock"
+                    "key_custody.enabled_backends": "plain,snp",
+                    "key_custody.default_backend": "snp"
                 }
             })),
         ))
@@ -2229,44 +2252,35 @@ async fn enabling_the_socket_key_custody_backend_with_a_socket_path_in_the_same_
     let body = body_json(get).await;
     assert_eq!(
         body["scalars"]["key_custody.default_backend"]["value"],
-        "socket"
+        "snp"
     );
     assert_eq!(
         body["scalars"]["key_custody.enabled_backends"]["value"],
-        "plain, socket"
+        "plain, snp"
     );
 }
 
+/// Which engine images are trusted with keys is set where the engine is
+/// deployed (options file, environment), never through the settings API.
 #[tokio::test]
-async fn enabling_the_socket_key_custody_backend_using_an_already_saved_socket_path_succeeds() {
-    // The cross-field check must consider the *merged* state, not just this one
-    // request's own body - a caller enabling "socket" in a request
-    // that doesn't also repeat an already-saved `socket_path` must still succeed.
+async fn the_snp_trust_settings_cannot_be_changed_through_the_settings_api() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
     let router = build_router(state, 1_000_000);
 
-    router
-        .clone()
-        .oneshot(settings_request(
-            "POST",
-            Some(serde_json::json!({ "scalars": { "key_custody.socket_path": "/run/moneropay/key-custody.sock" } })),
-        ))
-        .await
-        .unwrap();
-
-    let post = router
-        .oneshot(settings_request(
-            "POST",
-            Some(serde_json::json!({ "scalars": { "key_custody.enabled_backends": "socket", "key_custody.default_backend": "socket" } })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        post.status(),
-        StatusCode::OK,
-        "expected success, got: {:?}",
-        body_json(post).await
-    );
+    for (key, value) in [
+        ("key_custody.snp_trusted_id_key", "ab".repeat(48)),
+        ("key_custody.snp_min_guest_svn", "0".to_owned()),
+    ] {
+        let post = router
+            .clone()
+            .oneshot(settings_request(
+                "POST",
+                Some(serde_json::json!({ "scalars": { key: value } })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(post.status(), StatusCode::BAD_REQUEST, "{key}");
+    }
 }
 
 /// Ports on 127.0.0.1 where nothing listens: bound and released, so a node
@@ -3347,22 +3361,22 @@ async fn saving_nodes_that_dont_answer_for_a_network_stores_use_is_reported() {
 
 // -- Per-store key custody (admin_settings_v2.md part 5) --------------------
 
-/// Two in-process backends, named as the real ones, so a store can be moved
-/// between them without a key-custody-server running.
+/// Two in-process backends, named as the real ones (plain stands in for
+/// snp), so a store can be moved between them without SEV-SNP hardware.
 fn test_app_state_with_two_custody_backends() -> (AppState, Arc<dyn KeyCustody>, Arc<dyn KeyCustody>)
 {
     let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-    let socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+    let snp: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let router = crate::key_custody::CustodyRouter::new(
         HashMap::from([
             ("plain".to_owned(), Arc::clone(&plain)),
-            ("socket".to_owned(), Arc::clone(&socket)),
+            ("snp".to_owned(), Arc::clone(&snp)),
         ]),
         "plain",
     );
     let mut state = AppState::for_tests();
     state.custody.backends = Arc::new(router);
-    (state, plain, socket)
+    (state, plain, snp)
 }
 
 async fn own_tenant_view(router: &Router, token: &str) -> serde_json::Value {
@@ -3423,7 +3437,7 @@ async fn a_new_store_goes_to_the_default_backend_or_the_one_it_asks_for() {
             &serde_json::json!({
                 "view_key_hex": valid_view_key_hex(3),
                 "spend_pubkey_hex": valid_spend_pubkey_hex(4),
-                "key_custody_backend": "socket",
+                "key_custody_backend": "snp",
             }),
         ))
         .await
@@ -3435,7 +3449,7 @@ async fn a_new_store_goes_to_the_default_backend_or_the_one_it_asks_for() {
         .to_owned();
     assert_eq!(
         own_tenant_view(&router, &token).await["key_custody_backend"],
-        "socket"
+        "snp"
     );
     assert_eq!(
         create_order_for(&router, &token).await.status(),
@@ -3466,7 +3480,7 @@ async fn a_new_store_can_not_use_a_backend_that_is_not_enabled() {
 
 #[tokio::test]
 async fn moving_a_store_to_another_backend_keeps_it_taking_orders_and_frees_the_old_registration() {
-    let (state, plain, socket) = test_app_state_with_two_custody_backends();
+    let (state, plain, snp) = test_app_state_with_two_custody_backends();
     let wallet_handles = Arc::clone(&state.custody.wallet_handles);
     let store = Arc::clone(state.db.shared_store_for_test());
     let router = build_router(state, 1_000_000);
@@ -3482,12 +3496,12 @@ async fn moving_a_store_to_another_backend_keeps_it_taking_orders_and_frees_the_
 
     let response = router
         .clone()
-        .oneshot(switch_request(&tenant.secret_token, "socket", 1))
+        .oneshot(switch_request(&tenant.secret_token, "snp", 1))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let view = body_json(response).await;
-    assert_eq!(view["key_custody_backend"], "socket");
+    assert_eq!(view["key_custody_backend"], "snp");
     assert!(
         view.get("view_key_hex").is_none(),
         "keys are never echoed back"
@@ -3495,14 +3509,13 @@ async fn moving_a_store_to_another_backend_keeps_it_taking_orders_and_frees_the_
 
     let new_handle = wallet_handles.read().values().copied().next().unwrap();
     assert!(
-        socket
-            .derive_subaddress(
-                new_handle,
-                crate::key_custody::SubaddressIndex::default(),
-                Network::Mainnet
-            )
-            .await
-            .is_ok(),
+        snp.derive_subaddress(
+            new_handle,
+            crate::key_custody::SubaddressIndex::default(),
+            Network::Mainnet
+        )
+        .await
+        .is_ok(),
         "the store's keys are in the new backend"
     );
     assert!(
@@ -3527,7 +3540,7 @@ async fn moving_a_store_to_another_backend_keeps_it_taking_orders_and_frees_the_
         .into_iter()
         .find(|t| t.public_key == tenant.public_key)
         .unwrap();
-    assert_eq!(tenant_row.key_custody_backend, "socket");
+    assert_eq!(tenant_row.key_custody_backend, "snp");
     assert_eq!(
         tenant_row.primary_address,
         before["primary_address"].as_str().unwrap()
@@ -3552,7 +3565,7 @@ async fn moving_a_store_needs_the_keys_of_its_own_wallet() {
 
     let response = router
         .clone()
-        .oneshot(switch_request(&tenant.secret_token, "socket", 7))
+        .oneshot(switch_request(&tenant.secret_token, "snp", 7))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -3608,8 +3621,8 @@ async fn an_order_made_while_the_backend_has_just_lost_the_store_still_succeeds(
     );
 }
 
-/// A backend that holds wallets but whose health check fails, as a
-/// key-custody-server does once its socket stops answering.
+/// A backend that holds wallets but whose health check fails, as a backend
+/// in another process does once it stops answering.
 #[derive(Default)]
 struct UnansweringKeyCustody {
     inner: PlainKeyCustody,
@@ -3670,11 +3683,11 @@ impl KeyCustody for UnansweringKeyCustody {
 #[tokio::test]
 async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() {
     let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-    let socket: Arc<dyn KeyCustody> = Arc::new(UnansweringKeyCustody::default());
+    let snp: Arc<dyn KeyCustody> = Arc::new(UnansweringKeyCustody::default());
     let router_custody = Arc::new(crate::key_custody::CustodyRouter::new(
         HashMap::from([
             ("plain".to_owned(), Arc::clone(&plain)),
-            ("socket".to_owned(), socket),
+            ("snp".to_owned(), snp),
         ]),
         "plain",
     ));
@@ -3693,7 +3706,7 @@ async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() 
             &serde_json::json!({
                 "view_key_hex": valid_view_key_hex(3),
                 "spend_pubkey_hex": valid_spend_pubkey_hex(4),
-                "key_custody_backend": "socket",
+                "key_custody_backend": "snp",
             }),
         ))
         .await
@@ -3706,7 +3719,7 @@ async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() 
     let status = get_status_json(router.clone()).await;
     assert_eq!(
         status["key_custody"],
-        serde_json::json!([{ "backend": "plain", "error": null }, { "backend": "socket", "error": "key custody backend unavailable: connection refused" }]),
+        serde_json::json!([{ "backend": "plain", "error": null }, { "backend": "snp", "error": "key custody backend unavailable: connection refused" }]),
         "{status}"
     );
     let reasons: Vec<(String, String)> = status["unserved_tenants"]
@@ -3786,9 +3799,9 @@ async fn a_store_a_block_or_two_behind_is_not_reported_but_one_further_behind_is
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_overlapping_moves_of_one_store_leave_its_row_and_its_live_keys_in_the_same_backend() {
     let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-    let socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+    let snp: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let custody = Arc::new(crate::key_custody::CustodyRouter::new(
-        HashMap::from([("plain".to_owned(), plain), ("socket".to_owned(), socket)]),
+        HashMap::from([("plain".to_owned(), plain), ("snp".to_owned(), snp)]),
         "plain",
     ));
     let mut state = AppState::for_tests();
@@ -3800,7 +3813,7 @@ async fn two_overlapping_moves_of_one_store_leave_its_row_and_its_live_keys_in_t
     for _ in 0..10 {
         let a = tokio::spawn(router.clone().oneshot(switch_request(
             &tenant.secret_token,
-            "socket",
+            "snp",
             1,
         )));
         let b = tokio::spawn(router.clone().oneshot(switch_request(
@@ -3844,7 +3857,7 @@ fn a_disabled_store_can_not_be_moved() {
         .tenant;
     store.disable_tenant(&tenant.id, 2).unwrap();
     assert!(matches!(
-        store.update_tenant_key_custody(&tenant.id, "socket", &[2]),
+        store.update_tenant_key_custody(&tenant.id, "snp", &[2]),
         Err(crate::store::StoreError::NotFound)
     ));
 }

@@ -12,10 +12,11 @@ moneropay.db-wal
 # CONTROL_PLANE_ENCRYPTION_KEY) - see that script's own header comment.
 /.dev-run/
 
-# cli-wallet wallet files: the lock taken around every change, and the
-# temp file an atomic save writes before renaming it into place.
-/e2e/wallets/*.json.lock
-/e2e/wallets/*.json.tmp
+# cli-wallet wallet files: the lock taken around every change (and the
+# note of who holds it), and SQLite's journal while a write is under way.
+/e2e/wallets/*.db.lock
+/e2e/wallets/*.db.lock.holder
+/e2e/wallets/*.db-journal
 
 # scripts/build-openwrt.sh: the binaries it drops into the package, the
 # packages and repository, and the landing page site.

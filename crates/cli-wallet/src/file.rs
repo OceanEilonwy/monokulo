@@ -1,66 +1,56 @@
-//! One JSON file per wallet - keys, `monero-wallet-cli`-style metadata,
-//! and the wallet's own ledger of outputs and sends, all together (see
-//! [`WalletData`]). The file is the whole wallet: nothing about one wallet
-//! lives anywhere else, and no two wallets share a file.
+//! One SQLite database file per wallet - keys, `monero-wallet-cli`-style
+//! metadata, and the wallet's own ledger of outputs and sends, all
+//! together (see [`WalletData`], and [`crate::store`] for the schema). The
+//! file is the whole wallet: nothing about one wallet lives anywhere else,
+//! and no two wallets share a file.
 //!
 //! Every change is a read-modify-write under an exclusive lock on a
-//! sibling `<file>.lock` ([`WalletFile::lock`]), and every write is atomic
-//! (temp file, then rename), so parallel e2e runs sending from the same
-//! wallet can neither corrupt the file nor lose each other's updates.
+//! sibling `<file>.lock` ([`WalletFile::lock`]), and every write is one
+//! database transaction, so parallel e2e runs sending from the same wallet
+//! can neither corrupt the file nor lose each other's updates.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::meta::WalletMeta;
-use crate::{WalletCredentials, WalletError};
+use crate::{network_name, parse_network, Network, WalletCredentials, WalletError};
 
-/// Bumped whenever [`WalletData`]'s on-disk shape changes incompatibly.
-pub const FORMAT_VERSION: u32 = 1;
-
-/// Everything one wallet file holds. Its `Debug` leaves out the private
-/// keys and the mnemonic.
-#[derive(Clone, Serialize, Deserialize)]
+/// Everything one wallet file holds, read whole into memory. Its `Debug`
+/// leaves out the private keys and the mnemonic.
+#[derive(Clone, PartialEq)]
 pub struct WalletData {
-    pub version: u32,
+    /// `stagenet` or `testnet` (see [`crate::NETWORKS`]): which network the
+    /// keys derive addresses for - [`Self::network`] reads it.
     pub network: String,
     pub address: String,
     pub private_spend_key: String,
     pub private_view_key: String,
     /// The seed phrase these keys came from, when known - what `seed`
     /// prints.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mnemonic: Option<String>,
-    #[serde(flatten)]
     pub meta: WalletMeta,
     /// Every output this wallet has been told about and resolved - see the
     /// crate docs for the "informed, not scanned" model.
-    #[serde(default)]
     pub outputs: Vec<OutputRecord>,
     /// Transactions expected to pay this wallet that haven't confirmed yet
     /// (a send's own change, a faucet payout added with `add_output`).
-    #[serde(default)]
     pub pending: Vec<PendingTx>,
     /// Transactions this wallet built and broadcast - what
     /// `show_transfers` lists as `out`. Nothing on-chain says where a
     /// transaction's money went, so only this record knows.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sent: Vec<SentRecord>,
     /// `set_tx_note`: txid to note.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tx_notes: BTreeMap<String, String>,
     /// Anything else recorded about this wallet (its e2e role, where it
     /// was funded from), kept as-is.
-    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, Value>,
 }
 
 impl std::fmt::Debug for WalletData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WalletData")
-            .field("version", &self.version)
             .field("network", &self.network)
             .field("address", &self.address)
             .field("private_spend_key", &"<redacted>")
@@ -74,15 +64,14 @@ impl std::fmt::Debug for WalletData {
 
 /// One resolved output: the whole `WalletOutput`, serialized, so reading
 /// it back never touches the chain.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OutputRecord {
     pub txid: String,
     pub height: u64,
     /// The confirming block's timestamp. `None` for outputs resolved
     /// before it was recorded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<u64>,
-    /// Hex-encoded `WalletOutput::serialize()`.
+    /// Hex-encoded `WalletOutput::serialize()` (a BLOB in the file).
     pub serialized_output_hex: String,
     /// Informational - the authoritative amount is inside the serialized
     /// output.
@@ -90,20 +79,18 @@ pub struct OutputRecord {
     pub spent: bool,
     /// `freeze <key_image>`: never picked as an input, and left out of the
     /// balance, until thawed.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub frozen: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PendingTx {
     pub txid: String,
     /// What the transaction is expected to pay this wallet, when known
     /// (a send's change) - informational only.
-    #[serde(default)]
     pub amount_piconero: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SentRecord {
     pub txid: String,
     pub account: u32,
@@ -112,24 +99,22 @@ pub struct SentRecord {
     pub change_piconero: u64,
     /// Filled in once the transaction's own change output resolves (same
     /// block, so no extra lookup).
-    #[serde(default)]
     pub height: Option<u64>,
-    #[serde(default)]
     pub timestamp: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SentDestination {
     pub address: String,
     pub amount_piconero: u64,
 }
 
 impl WalletData {
-    /// A fresh wallet file's contents for `credentials`: no outputs yet.
-    pub fn new(credentials: WalletCredentials) -> Self {
+    /// A fresh wallet file's contents for `credentials`, on `network`: no
+    /// outputs yet.
+    pub fn new(network: Network, credentials: WalletCredentials) -> Self {
         WalletData {
-            version: FORMAT_VERSION,
-            network: "stagenet".to_string(),
+            network: network_name(network).to_string(),
             address: credentials.address,
             private_spend_key: credentials.private_spend_key_hex,
             private_view_key: credentials.private_view_key_hex,
@@ -141,6 +126,11 @@ impl WalletData {
             tx_notes: BTreeMap::new(),
             extra: serde_json::Map::new(),
         }
+    }
+
+    /// The network this wallet is on, refusing one it doesn't work on.
+    pub fn network(&self) -> Result<Network, WalletError> {
+        parse_network(&self.network)
     }
 
     /// Adds `txid` to the pending list, unless it's already there.
@@ -169,27 +159,11 @@ pub struct WalletFileLock {
 impl WalletFile {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, WalletError> {
         let path = path.as_ref();
-        let contents = std::fs::read_to_string(path).map_err(|e| {
-            WalletError::WalletFile(format!("failed to read {}: {e}", path.display()))
-        })?;
-        let data: WalletData = serde_json::from_str(&contents).map_err(|e| {
-            WalletError::WalletFile(format!("failed to parse {}: {e}", path.display()))
-        })?;
-        if data.version != FORMAT_VERSION {
-            return Err(WalletError::WalletFile(format!(
-                "{} is format version {}, this build reads {FORMAT_VERSION}",
-                path.display(),
-                data.version
-            )));
-        }
-        // This wallet derives stagenet addresses only: keys recorded for
-        // another network would be used as if they were stagenet's.
-        if data.network != "stagenet" {
-            return Err(WalletError::WalletFile(format!(
-                "{} is a {} wallet; this tool works on stagenet only",
-                path.display(),
-                data.network
-            )));
+        let data = crate::store::read(path)?;
+        // Addresses are derived for the recorded network, so it has to be
+        // one this wallet works on (never mainnet).
+        if let Err(e) = data.network() {
+            return Err(WalletError::WalletFile(format!("{}: {e}", path.display())));
         }
         Ok(WalletFile {
             path: path.to_path_buf(),
@@ -226,7 +200,11 @@ impl WalletFile {
             path: path.to_path_buf(),
             data,
         };
-        file.save()?;
+        // A wallet that couldn't be written leaves no empty file behind.
+        if let Err(e) = file.save() {
+            let _ = std::fs::remove_file(path);
+            return Err(e);
+        }
         Ok(file)
     }
 
@@ -234,68 +212,16 @@ impl WalletFile {
         &self.path
     }
 
-    /// Atomically and durably replaces the file on disk with `self.data`.
-    /// Callers changing a file that already exists hold its [`Self::lock`].
+    /// Atomically and durably replaces what the file holds with
+    /// `self.data`: one transaction, synced before it commits, so a crash
+    /// just after a send can't lose the outputs it spent and let the next
+    /// send double-spend them. Callers changing a file that already exists
+    /// hold its [`Self::lock`].
     ///
     /// The file holds spend keys and a mnemonic, so it is readable by its
-    /// owner alone (0600 on unix). It is synced before it replaces the old
-    /// one, and the directory after: without that, a crash just after a
-    /// send could leave an empty or truncated file on disk, losing every
-    /// output and spent flag, and the next send would double-spend.
+    /// owner alone (0600 on unix).
     pub fn save(&self) -> Result<(), WalletError> {
-        use std::io::Write;
-        let tmp_path = self.path.with_extension("json.tmp");
-        let failed = |e: std::io::Error| {
-            WalletError::WalletFile(format!("failed to write {}: {e}", tmp_path.display()))
-        };
-        let body =
-            serde_json::to_string_pretty(&self.data).expect("WalletData always serializes") + "\n";
-        let written = (|| -> std::io::Result<()> {
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create(true).truncate(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options.open(&tmp_path)?;
-            // `mode` applies only to a file being created; one left over
-            // from an earlier run is tightened too.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-            }
-            file.write_all(body.as_bytes())?;
-            file.sync_all()
-        })();
-        if let Err(e) = written {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(failed(e));
-        }
-        std::fs::rename(&tmp_path, &self.path).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp_path);
-            WalletError::WalletFile(format!(
-                "failed to move {} into place over {}: {e}",
-                tmp_path.display(),
-                self.path.display()
-            ))
-        })?;
-        // The rename itself is durable once the directory is synced.
-        #[cfg(unix)]
-        if let Some(dir) = self.path.parent() {
-            let dir = if dir.as_os_str().is_empty() {
-                Path::new(".")
-            } else {
-                dir
-            };
-            std::fs::File::open(dir)
-                .and_then(|dir| dir.sync_all())
-                .map_err(|e| {
-                    WalletError::WalletFile(format!("failed to sync {}: {e}", dir.display()))
-                })?;
-        }
-        Ok(())
+        crate::store::write(&self.path, &self.data)
     }
 
     /// Takes the exclusive lock on `path`'s sibling `<path>.lock`, with
@@ -308,9 +234,10 @@ impl WalletFile {
     /// Takes the exclusive lock on `path`'s sibling `<path>.lock`. If
     /// another holder (another process, or another task in this one) has
     /// it, `on_busy` is told who and chooses: try again, wait for it, or
-    /// give up with [`WalletError::Locked`]. Once taken, the lock file
-    /// records who holds it, for the next process's `on_busy`. Everything
-    /// runs off the async runtime's worker threads.
+    /// give up with [`WalletError::Locked`]. Once taken, who holds it is
+    /// written beside it (`<path>.lock.holder`, since Windows won't let
+    /// another process read a locked file), for the next process's
+    /// `on_busy`. Everything runs off the async runtime's worker threads.
     ///
     /// An OS file lock is released when its process exits, however it
     /// exits, so a lock is never left behind by a crash.
@@ -336,13 +263,13 @@ impl WalletFile {
                     .open(&lock_path)
                     .map_err(open_error)?;
                 match file.try_lock() {
-                    Ok(()) => return Ok(WalletFileLock::recording_holder(file)),
+                    Ok(()) => return Ok(WalletFileLock::recording_holder(file, &lock_path)),
                     Err(std::fs::TryLockError::WouldBlock) => {}
                     Err(std::fs::TryLockError::Error(e)) => return Err(lock_error(e)),
                 }
                 let holder = LockHolder {
                     lock_path: lock_path.clone(),
-                    description: std::fs::read_to_string(&lock_path)
+                    description: std::fs::read_to_string(holder_path(&lock_path))
                         .ok()
                         .filter(|held_by| !held_by.trim().is_empty())
                         .unwrap_or_else(|| "an unknown process".to_string()),
@@ -351,7 +278,7 @@ impl WalletFile {
                     BusyChoice::Retry => continue,
                     BusyChoice::Wait => {
                         file.lock().map_err(lock_error)?;
-                        return Ok(WalletFileLock::recording_holder(file));
+                        return Ok(WalletFileLock::recording_holder(file, &lock_path));
                     }
                     BusyChoice::Cancel => return Err(WalletError::Locked(holder.to_string())),
                 }
@@ -387,10 +314,9 @@ impl WalletFile {
 }
 
 impl WalletFileLock {
-    /// Writes who now holds the lock into the lock file, so a process that
-    /// finds it busy can say who's using the wallet.
-    fn recording_holder(mut file: std::fs::File) -> Self {
-        use std::io::Write;
+    /// Writes who now holds the lock beside the lock file, so a process
+    /// that finds it busy can say who's using the wallet.
+    fn recording_holder(file: std::fs::File, lock_path: &Path) -> Self {
         let program = std::env::args()
             .next()
             .map(|path| {
@@ -405,9 +331,7 @@ impl WalletFileLock {
         let mut holder = format!("pid {} ({program} {})", std::process::id(), args.join(" "));
         holder.truncate(200);
         // Best effort: the lock itself is what matters, not the note.
-        let _ = file
-            .set_len(0)
-            .and_then(|()| file.write_all(holder.trim_end().as_bytes()));
+        let _ = std::fs::write(holder_path(lock_path), holder.trim_end());
         WalletFileLock { _file: file }
     }
 }
@@ -449,7 +373,7 @@ fn redacted_args(args: impl Iterator<Item = String>) -> Vec<String> {
 #[derive(Debug, Clone)]
 pub struct LockHolder {
     pub lock_path: PathBuf,
-    /// e.g. `pid 1234 (stagenet-wallet-cli transfer ...)`.
+    /// e.g. `pid 1234 (wallet-cli transfer ...)`.
     pub description: String,
 }
 
@@ -495,138 +419,11 @@ fn lock_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// What [`migrate_legacy`] did.
-#[derive(Debug, Default)]
-pub struct MigrationReport {
-    /// `(wallet name, file written, outputs, pending txids)`.
-    pub written: Vec<(String, PathBuf, usize, usize)>,
-    /// Resolved ledger outputs no migrated wallet owns.
-    pub unowned_outputs: Vec<String>,
-}
-
-/// Splits the old shared layout - every wallet's keys in one
-/// `stagenet-wallets.json`, every wallet's outputs in one
-/// `stagenet-known-outputs.json` ledger - into one [`WalletData`] file per
-/// wallet in `out_dir`.
-///
-/// Each resolved output goes to the wallet that owns it (its key is that
-/// wallet's spend key plus its `key_offset`). Still-pending txids can't be
-/// attributed that way, so they go to `pending_owner` (the wallet that
-/// sends, whose change they are). Top-level bookkeeping in the wallets
-/// file (faucet txids and the like) goes into `pending_owner`'s `extra`;
-/// the file's `_comment` goes into every wallet's.
-pub fn migrate_legacy(
-    wallets_json: &Path,
-    ledger_json: &Path,
-    out_dir: &Path,
-    pending_owner: &str,
-) -> Result<MigrationReport, WalletError> {
-    let read = |path: &Path| -> Result<Value, WalletError> {
-        let contents = std::fs::read_to_string(path).map_err(|e| {
-            WalletError::WalletFile(format!("failed to read {}: {e}", path.display()))
-        })?;
-        serde_json::from_str(&contents).map_err(|e| {
-            WalletError::WalletFile(format!("failed to parse {}: {e}", path.display()))
-        })
-    };
-    let Value::Object(wallets) = read(wallets_json)? else {
-        return Err(WalletError::WalletFile(format!(
-            "{} isn't a JSON object",
-            wallets_json.display()
-        )));
-    };
-    let ledger = read(ledger_json)?;
-
-    // Wallet entries are the objects carrying keys; everything else at the
-    // top level is bookkeeping.
-    let mut datas: Vec<(String, WalletData)> = Vec::new();
-    let mut bookkeeping = serde_json::Map::new();
-    let comment = wallets.get("_comment").cloned();
-    for (name, value) in &wallets {
-        match value {
-            Value::Object(entry) if entry.contains_key("private_spend_key") => {
-                let credentials: WalletCredentials = serde_json::from_value(value.clone())
-                    .map_err(|e| {
-                        WalletError::WalletFile(format!(
-                            "wallet {name:?} in {}: {e}",
-                            wallets_json.display()
-                        ))
-                    })?;
-                let mut data = WalletData::new(credentials);
-                for (key, field) in entry {
-                    if ![
-                        "address",
-                        "private_spend_key",
-                        "private_view_key",
-                        "mnemonic",
-                    ]
-                    .contains(&key.as_str())
-                    {
-                        data.extra.insert(key.clone(), field.clone());
-                    }
-                }
-                if let Some(comment) = &comment {
-                    data.extra.insert("_comment".to_string(), comment.clone());
-                }
-                datas.push((name.clone(), data));
-            }
-            // `network` is a field of every wallet file already.
-            _ if name == "_comment" || name == "network" => {}
-            _ => {
-                bookkeeping.insert(name.clone(), value.clone());
-            }
-        }
-    }
-    let Some(owner_index) = datas.iter().position(|(name, _)| name == pending_owner) else {
-        return Err(WalletError::WalletFile(format!(
-            "no wallet named {pending_owner:?} in {}",
-            wallets_json.display()
-        )));
-    };
-    datas[owner_index].1.extra.extend(bookkeeping);
-
-    let keys: Vec<crate::WalletKeys> = datas
-        .iter()
-        .map(|(_, data)| crate::WalletKeys::from_data(data, PathBuf::new()))
-        .collect::<Result<_, _>>()?;
-    let mut report = MigrationReport::default();
-    for entry in ledger["entries"].as_array().cloned().unwrap_or_default() {
-        let txid = entry["txid"].as_str().unwrap_or_default().to_string();
-        let (Some(height), Some(hex_bytes)) = (
-            entry["height"].as_u64(),
-            entry["serialized_output_hex"].as_str(),
-        ) else {
-            datas[owner_index]
-                .1
-                .add_pending(&txid, entry["amount_piconero"].as_u64().unwrap_or(0));
-            continue;
-        };
-        let output = crate::decode_output(&txid, hex_bytes)?;
-        let Some(owner) = keys.iter().position(|k| k.owns(&output)) else {
-            report
-                .unowned_outputs
-                .push(format!("{txid}:{}", output.index_in_transaction()));
-            continue;
-        };
-        datas[owner].1.outputs.push(OutputRecord {
-            txid,
-            height,
-            timestamp: None,
-            serialized_output_hex: hex_bytes.to_string(),
-            // Early ledger entries recorded 0 here; the output knows.
-            amount_piconero: output.commitment().amount,
-            spent: entry["spent"].as_bool().unwrap_or(false),
-            frozen: false,
-        });
-    }
-
-    for (name, data) in datas {
-        let path = out_dir.join(format!("{name}.json"));
-        let (outputs, pending) = (data.outputs.len(), data.pending.len());
-        WalletFile::create(&path, data)?;
-        report.written.push((name, path, outputs, pending));
-    }
-    Ok(report)
+/// Where a lock's holder writes who it is: `<lock>.holder`.
+fn holder_path(lock_path: &Path) -> PathBuf {
+    let mut name = lock_path.file_name().unwrap_or_default().to_os_string();
+    name.push(".holder");
+    lock_path.with_file_name(name)
 }
 
 #[cfg(test)]
@@ -661,15 +458,18 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("cli-wallet-perms-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("w.json");
+        let path = dir.join("w.db");
         let file = WalletFile {
             path: path.clone(),
-            data: WalletData::new(crate::WalletCredentials {
-                address: "a".into(),
-                private_spend_key_hex: "00".repeat(32),
-                private_view_key_hex: "00".repeat(32),
-                mnemonic: None,
-            }),
+            data: WalletData::new(
+                Network::Stagenet,
+                crate::WalletCredentials {
+                    address: "a".into(),
+                    private_spend_key_hex: "00".repeat(32),
+                    private_view_key_hex: "00".repeat(32),
+                    mnemonic: None,
+                },
+            ),
         };
         file.save().unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();

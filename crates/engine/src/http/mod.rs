@@ -24,8 +24,9 @@
 //! per-origin checks; everything a customer's browser, a merchant or a
 //! plugin touches is served by monokulo.
 //!
-//! Not implemented in this pass: TLS termination (expected to sit behind a reverse
-//! proxy or terminate via `rustls` in `main`, not implemented here).
+//! The engine serves plain HTTP; TLS, where monokulo isn't on the same
+//! machine, is a proxy or tunnel in front of it (`deploy/sev-snp/README.md`,
+//! decision 40 of the snp-key-custody workpack).
 
 mod activity;
 mod admin;
@@ -71,6 +72,10 @@ pub struct Custody {
     pub default_backend: String,
     /// Each registered tenant's wallet handle.
     pub wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>>,
+    /// The `snp` backend's slot, for what only it does (its trust policy,
+    /// handing its master key over); `None` where it can't run (tests,
+    /// tools).
+    pub snp: Option<Arc<crate::key_custody::SnpSlot>>,
 }
 
 /// The networks the engine serves.
@@ -154,6 +159,7 @@ impl AppState {
                 backends: Arc::new(crate::key_custody::PlainKeyCustody::default()),
                 default_backend: "plain".to_owned(),
                 wallet_handles: Arc::default(),
+                snp: None,
             },
             networks: Networks {
                 daemons: crate::engine_settings::Daemons::fixed(HashMap::from([(
@@ -181,11 +187,21 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
     // request without an `sk_` on its address.
     let unauthenticated_router = Router::new()
         .route("/api/v1/admin/tenants", post(admin::create_tenant))
-        .route("/status", get(status_page::status_page))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            admin_rate_limit_middleware,
-        ));
+        .route(
+            "/api/v1/admin/key-custody/bundle",
+            post(admin::create_key_bundle),
+        )
+        .route("/status", get(status_page::status_page));
+    // An upgraded engine image asking for the snp master key.
+    #[cfg(feature = "snp")]
+    let unauthenticated_router = unauthenticated_router.route(
+        "/api/v1/admin/key-custody/handoff",
+        post(admin::answer_handoff),
+    );
+    let unauthenticated_router = unauthenticated_router.layer(middleware::from_fn_with_state(
+        state.clone(),
+        admin_rate_limit_middleware,
+    ));
 
     // Every route here requires a real `Authorization: Bearer sk_...` (see
     // `AuthedTenant`), so each gets its own per-token budget.
@@ -203,6 +219,10 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         .route(
             "/api/v1/admin/tenant/key-custody",
             axum::routing::put(admin::switch_key_custody),
+        )
+        .route(
+            "/api/v1/admin/tenant/key-custody/bundle",
+            post(admin::move_key_bundle),
         )
         .route(
             "/api/v1/admin/tenant/orders",

@@ -183,6 +183,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
             backends: Arc::clone(&key_custody),
             default_backend: "plain".to_owned(),
             wallet_handles,
+            snp: None,
         },
         // This test drives scanning directly via `run_scan_tick` below (not
         // through `AppState` at all - see that call site's own comment), so

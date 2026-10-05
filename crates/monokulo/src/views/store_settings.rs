@@ -178,6 +178,8 @@ pub struct KeyStorageView {
     pub current_disabled: bool,
     /// The backends the keys could move to (never the current one).
     pub move_to: Vec<super::connect::CustodyChoice>,
+    /// Encrypted key entry, when the keys may move to SEV-SNP key storage.
+    pub snp_entry: Option<super::key_entry::SnpKeyEntry>,
 }
 
 /// The error a form in `section` was just refused with, shown in the
@@ -227,15 +229,15 @@ fn key_storage_section(
                     }
                 }
             }
-            label {
-                "View key (hex)"
-                input type="password" name="view_key_hex" value="" required pattern="[0-9a-fA-F]{64}" autocomplete="off" placeholder="64 hex characters";
-                span class="field-help" { "This store's private view key, entered again: keys are never copied between storage backends." }
-            }
-            label {
-                "Spend public key (hex)"
-                input type="text" name="spend_pubkey_hex" value="" required pattern="[0-9a-fA-F]{64}" autocomplete="off" placeholder="64 hex characters";
-                span class="field-help" { "They must be the same wallet this store already uses - it's checked before anything moves." }
+            (super::key_entry::key_fields(
+                "",
+                "",
+                key_storage.snp_entry.as_ref(),
+                html! { "This store's private view key, entered again: keys are never copied between storage backends." },
+                html! { "They must be the same wallet this store already uses - it's checked before anything moves." },
+            ))
+            @if let Some(entry) = &key_storage.snp_entry {
+                (super::key_entry::snp_section(entry, Some("backend")))
             }
             button type="submit" { "Move keys" }
         }

@@ -2,12 +2,9 @@
 //! strings in the wallet's display unit (`set unit`), exact to the
 //! piconero - never a float, so `0.1` is always exactly 100_000_000_000.
 
-use serde::{Deserialize, Serialize};
-
 /// `monero-wallet-cli`'s `set unit` choices. Every amount the CLI reads or
 /// prints is in this unit.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Unit {
     #[default]
     Monero,

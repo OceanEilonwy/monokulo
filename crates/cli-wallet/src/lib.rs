@@ -1,9 +1,12 @@
-//! A purpose-built, fast, reliable **stagenet-only test wallet** - not a
+//! A purpose-built, fast, reliable **stagenet and testnet test wallet** - not a
 //! general-purpose Monero wallet, and never meant to become one. Built to
 //! replace `engine::e2e_wallet::StagenetSpendWallet` as the thing this
 //! repo's real-stagenet e2e suites use to pay a real order with a real,
 //! signed, broadcast transaction, and driven by hand through the
-//! `stagenet-wallet-cli` binary, whose commands follow `monero-wallet-cli`.
+//! `wallet-cli` binary, whose commands follow `monero-wallet-cli`.
+//! A wallet file records which of the two networks it's for
+//! ([`file::WalletData::network`]); mainnet is refused, since every key here
+//! is kept in plaintext.
 //!
 //! # Why this exists
 //!
@@ -31,8 +34,11 @@
 //!   block is then scanned once it confirms - rather than rediscovering
 //!   them by asking the chain "what's mine?" on every run. Once resolved,
 //!   an output's entire [`monero_wallet::WalletOutput`] is serialized into
-//!   the wallet's own JSON file ([`file::WalletData`]) and committed, so
+//!   the wallet's own SQLite file ([`file::WalletData`]) and committed, so
 //!   every later run reads it straight off disk with zero RPC calls.
+//!   The one exception is `rescan <blocks>` ([`Wallet::rescan`]), which
+//!   scans a chosen range of blocks ([`block_range::BlockRange`]) - only
+//!   when asked, never as part of any other operation.
 //! - **Decoy selection still runs the real, correct algorithm** (still
 //!   picks genuine, unlocked, on-chain outputs - a node will reject
 //!   anything less, stagenet or not) but is fed from a *cached, committed*
@@ -52,8 +58,10 @@
 //! wallet's.
 
 pub mod amount;
+pub mod block_range;
 pub mod file;
 pub mod meta;
+mod store;
 mod wallet;
 
 use std::ops::RangeBounds;
@@ -62,7 +70,6 @@ use std::path::{Path, PathBuf};
 use monero_daemon_rpc::{prelude::*, HttpTransport, MoneroDaemon};
 use monero_seed::{Language as ElectrumLanguage, Seed as ElectrumSeed};
 use monero_wallet::{
-    address::Network,
     ed25519::{Point, Scalar},
     interface::ProvidesUnvalidatedDecoys,
     send::SendError,
@@ -70,15 +77,15 @@ use monero_wallet::{
 };
 use polyseed::{Language as PolyseedLanguage, Polyseed};
 use rand_core::OsRng;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zeroize::Zeroizing;
 
 pub use file::{WalletData, WalletFile};
+pub use monero_wallet::address::Network;
 pub use monero_wallet::interface::FeePriority;
 pub use wallet::{
-    CommittedTransfer, DaemonVersion, OwnedOutput, PreparedTransfer, SweepSelect, TransferKind,
-    TransferRequest, Wallet, WalletBalance, WalletKeys, MAX_OUTPUTS,
+    CommittedTransfer, DaemonVersion, OwnedOutput, PreparedTransfer, RescanReport, SweepSelect,
+    TransferKind, TransferRequest, Wallet, WalletBalance, WalletKeys, MAX_OUTPUTS,
 };
 
 /// The ring size required for the `ClsagBulletproofPlus` RCT type this
@@ -90,23 +97,77 @@ pub const RING_LEN: u8 = 16;
 /// spendable - `CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE`, a real consensus rule.
 pub const SPENDABLE_AGE: u64 = 10;
 
+/// The networks this wallet works on, by the name a wallet file records
+/// ([`file::WalletData::network`]). Mainnet isn't one: every key here is
+/// kept in plaintext.
+pub const NETWORKS: [(&str, Network); 2] = [
+    ("stagenet", Network::Stagenet),
+    ("testnet", Network::Testnet),
+];
+
+/// `network`'s name in a wallet file and in messages: `stagenet`,
+/// `testnet` (and `mainnet`, which no wallet file may name).
+pub fn network_name(network: Network) -> &'static str {
+    match network {
+        Network::Mainnet => "mainnet",
+        Network::Stagenet => "stagenet",
+        Network::Testnet => "testnet",
+    }
+}
+
+/// The network a wallet file names, refusing any this wallet doesn't work
+/// on (see [`NETWORKS`]).
+pub fn parse_network(name: &str) -> Result<Network, WalletError> {
+    NETWORKS
+        .iter()
+        .find(|(known, _)| *known == name)
+        .map(|(_, network)| *network)
+        .ok_or_else(|| {
+            WalletError::Invalid(format!(
+                "{name} isn't a network this wallet works on - one of {:?}",
+                NETWORKS.map(|(known, _)| known)
+            ))
+        })
+}
+
+/// How to fund a wallet on `network` that has run out, for
+/// [`WalletError::InsufficientFunds`].
+fn funding_steps(network: Network, address: &str) -> String {
+    match network {
+        Network::Stagenet => format!(
+            "fund the wallet from the stagenet faucet:\n\
+             1. open https://stagenet-faucet.xmr-tw.org/\n\
+             2. send to: {address}\n\
+             3. record the faucet's txid: wallet-cli add_output <txid>"
+        ),
+        other => format!(
+            "fund the wallet with {} XMR (from another wallet or by mining to it):\n\
+             1. send to: {address}\n\
+             2. record the txid: wallet-cli add_output <txid>",
+            network_name(other)
+        ),
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum WalletError {
-    #[error("cannot reach the stagenet node at {url}: {source}")]
-    DaemonUnreachable { url: String, source: InterfaceError },
+    #[error("cannot reach the {} node at {url}: {source}", network_name(*.network))]
+    DaemonUnreachable {
+        network: Network,
+        url: String,
+        source: InterfaceError,
+    },
     #[error(
         "insufficient funds: this payment needs {needed} piconero, but only {available} \
          piconero of spendable outputs were found (an output needs {SPENDABLE_AGE} \
          confirmations before it's spendable - if a recent send's change is still that young, \
          this is expected; wait and retry).\n\
-         Otherwise, fund the wallet from the stagenet faucet:\n\
-         1. open https://stagenet-faucet.xmr-tw.org/\n\
-         2. send to: {address}\n\
-         3. record the faucet's txid: stagenet-wallet-cli add_output <txid>"
+         Otherwise, {}", funding_steps(*.network, .address)
     )]
     InsufficientFunds {
         needed: u64,
         available: u64,
+        network: Network,
         address: String,
     },
     #[error("failed to build/sign the transaction: {0}")]
@@ -209,9 +270,12 @@ impl HttpTransport for ReqwestTransport {
 /// below) block heights get sampled from. `monero-interface`'s own
 /// `ProvidesUnvalidatedDecoys` doc comment says as much directly: "This
 /// SHOULD be satisfied by a local store" - this is that store.
+///
+/// With no snapshot (`distribution: None`, testnet's case) the distribution
+/// is fetched from the node like everything else.
 struct DecoyCache {
     daemon: MoneroDaemon<ReqwestTransport>,
-    distribution: Vec<u64>,
+    distribution: Option<Vec<u64>>,
 }
 
 impl ProvidesBlockchainMeta for DecoyCache {
@@ -225,13 +289,22 @@ impl ProvidesBlockchainMeta for DecoyCache {
 impl ProvidesUnvalidatedDecoys for DecoyCache {
     fn ringct_output_distribution(
         &self,
-        _range: impl Send + RangeBounds<usize>,
+        range: impl Send + RangeBounds<usize>,
     ) -> impl Send + std::future::Future<Output = Result<Vec<u64>, InterfaceError>> {
-        // The range argument is deliberately ignored - see this type's own
-        // doc comment for why that's safe for how the one real caller
-        // (`select_n`) actually uses the result.
-        let distribution = self.distribution.clone();
-        async move { Ok(distribution) }
+        // With a snapshot, the range argument is deliberately ignored - see
+        // this type's own doc comment for why that's safe for how the one
+        // real caller (`select_n`) actually uses the result.
+        let cached = self.distribution.clone();
+        let live = cached
+            .is_none()
+            .then(|| ProvidesUnvalidatedDecoys::ringct_output_distribution(&self.daemon, range));
+        async move {
+            match (cached, live) {
+                (Some(distribution), _) => Ok(distribution),
+                (None, Some(live)) => live.await,
+                (None, None) => unreachable!("no snapshot means a live fetch"),
+            }
+        }
     }
 
     fn unlocked_ringct_outputs(
@@ -244,24 +317,19 @@ impl ProvidesUnvalidatedDecoys for DecoyCache {
     }
 }
 
-/// A wallet's key material: what a new wallet file starts from, and how
-/// the old shared `stagenet-wallets.json` recorded each wallet (hence the
-/// serde names).
+/// A wallet's key material: what a new wallet file starts from.
 ///
 /// The keys and seed are plain `String`s and are not zeroised on drop, nor
-/// are their copies in [`WalletData`], `ResolvedWallet` or the JSON
+/// are their copies in [`WalletData`], `ResolvedWallet` or the SQLite
 /// buffers. These are stagenet test wallets whose files hold the same keys
 /// in plaintext, so clearing memory would protect nothing. The
 /// `Zeroizing` scalars in the signing code clear only those working copies.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct WalletCredentials {
     pub address: String,
-    #[serde(rename = "private_spend_key")]
     pub private_spend_key_hex: String,
-    #[serde(rename = "private_view_key")]
     pub private_view_key_hex: String,
     /// The seed phrase these keys came from, when known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mnemonic: Option<String>,
 }
 
@@ -271,7 +339,10 @@ pub struct WalletCredentials {
 /// callers need to name at all.
 #[derive(Debug, Clone)]
 pub struct WalletCtx {
-    /// Stagenet nodes to use, in order of preference. A node that can't be
+    /// The network the wallets are on. A wallet file for another network
+    /// is refused ([`ResolvedWallet::open`]).
+    pub network: Network,
+    /// Nodes to use, in order of preference. A node that can't be
     /// reached (public nodes rate-limit, and one busy address - an e2e
     /// test's own engine talking to the same node - is enough to have
     /// connections reset) is skipped for the next one; see
@@ -279,9 +350,13 @@ pub struct WalletCtx {
     pub node_urls: Vec<String>,
     pub accept_invalid_certs: bool,
     /// Where wallet files live: a wallet named `spender` is
-    /// `<wallet_dir>/spender.json`.
+    /// `<wallet_dir>/spender.db`.
     pub wallet_dir: PathBuf,
-    pub decoy_distribution_path: String,
+    /// The decoy-distribution snapshot to select decoys from (see
+    /// [`DecoyCache`]). `None` fetches the distribution from the node on
+    /// each connection instead - what testnet does, having no committed
+    /// snapshot.
+    pub decoy_distribution_path: Option<String>,
 }
 
 /// `nodes` in the order a connection attempt tries them: starting at index
@@ -295,6 +370,13 @@ fn nodes_in_order(nodes: &[String], start: usize) -> Vec<String> {
         })
         .collect()
 }
+
+/// See [`WalletCtx::node_urls`].
+pub const DEFAULT_TESTNET_NODES: [&str; 3] = [
+    "http://node.monerodevs.org:28089",
+    "http://node2.monerodevs.org:28089",
+    "http://node3.monerodevs.org:28089",
+];
 
 /// See [`WalletCtx::node_urls`].
 pub const DEFAULT_STAGENET_NODES: [&str; 3] = [
@@ -324,30 +406,44 @@ impl Default for WalletCtx {
     /// The standard layout every real e2e suite in this repo already uses -
     /// see `e2e/README.md`.
     fn default() -> Self {
-        Self {
-            // The same three community stagenet nodes monokulo's stagenet
-            // config uses (`e2e/moneropay-stagenet.toml`): separate
-            // machines, so one rate-limiting us doesn't block the others.
-            node_urls: DEFAULT_STAGENET_NODES
-                .iter()
-                .map(|url| url.to_string())
-                .collect(),
-            accept_invalid_certs: true,
-            wallet_dir: PathBuf::from(e2e_path!("wallets")),
-            decoy_distribution_path: e2e_path!("stagenet-decoy-distribution.json").to_string(),
-        }
+        Self::for_network(Network::Stagenet)
     }
 }
 
 impl WalletCtx {
+    /// [`WalletCtx::default`]'s layout for wallets on `network`: its
+    /// default nodes, and the committed decoy snapshot where there is one
+    /// (stagenet's).
+    pub fn for_network(network: Network) -> Self {
+        let (nodes, decoy_distribution_path) = match network {
+            Network::Testnet => (DEFAULT_TESTNET_NODES, None),
+            // The same three community stagenet nodes monokulo's stagenet
+            // config uses (`e2e/moneropay-stagenet.toml`): separate
+            // machines, so one rate-limiting us doesn't block the others.
+            _ => (
+                DEFAULT_STAGENET_NODES,
+                Some(e2e_path!("stagenet-decoy-distribution.json").to_string()),
+            ),
+        };
+        Self {
+            network,
+            node_urls: nodes.iter().map(|url| url.to_string()).collect(),
+            accept_invalid_certs: true,
+            wallet_dir: PathBuf::from(e2e_path!("wallets")),
+            decoy_distribution_path,
+        }
+    }
+
     /// A `--wallet-file` argument as a path: a bare name (`spender`) is
-    /// `<wallet_dir>/<name>.json`; anything that looks like a path is used
-    /// as given.
+    /// `<wallet_dir>/<name>.db`; anything that looks like a path (a
+    /// directory, or an extension of its own) is used as given.
     pub fn wallet_path(&self, name_or_path: &str) -> PathBuf {
-        if name_or_path.contains(std::path::MAIN_SEPARATOR) || name_or_path.ends_with(".json") {
+        if name_or_path.contains(std::path::MAIN_SEPARATOR)
+            || Path::new(name_or_path).extension().is_some()
+        {
             PathBuf::from(name_or_path)
         } else {
-            self.wallet_dir.join(format!("{name_or_path}.json"))
+            self.wallet_dir.join(format!("{name_or_path}.db"))
         }
     }
 }
@@ -362,10 +458,12 @@ pub struct ResolvedWallet {
     pub address: String,
     pub private_spend_key_hex: String,
     pub private_view_key_hex: String,
+    pub network: Network,
     /// See [`WalletCtx::node_urls`].
     pub node_urls: Vec<String>,
     pub accept_invalid_certs: bool,
-    pub decoy_distribution_path: String,
+    /// See [`WalletCtx::decoy_distribution_path`].
+    pub decoy_distribution_path: Option<String>,
 }
 
 /// Without the private keys or the mnemonic.
@@ -383,20 +481,32 @@ impl std::fmt::Debug for ResolvedWallet {
         f.debug_struct("ResolvedWallet")
             .field("path", &self.path)
             .field("address", &self.address)
+            .field("network", &self.network)
             .field("node_urls", &self.node_urls)
             .finish_non_exhaustive()
     }
 }
 
 impl ResolvedWallet {
-    /// Reads the wallet file at `path`, with `ctx`'s node settings.
+    /// Reads the wallet file at `path`, with `ctx`'s node settings,
+    /// refusing it unless it's for `ctx`'s network.
     pub fn open(ctx: &WalletCtx, path: impl AsRef<Path>) -> Result<Self, WalletError> {
         let file = WalletFile::load(path.as_ref())?;
+        let network = file.data.network()?;
+        if network != ctx.network {
+            return Err(WalletError::WalletFile(format!(
+                "{} is a {} wallet, not {}",
+                path.as_ref().display(),
+                network_name(network),
+                network_name(ctx.network)
+            )));
+        }
         Ok(ResolvedWallet {
             path: path.as_ref().to_path_buf(),
             address: file.data.address,
             private_spend_key_hex: file.data.private_spend_key,
             private_view_key_hex: file.data.private_view_key,
+            network,
             node_urls: ctx.node_urls.clone(),
             accept_invalid_certs: ctx.accept_invalid_certs,
             decoy_distribution_path: ctx.decoy_distribution_path.clone(),
@@ -422,18 +532,22 @@ impl ResolvedWallet {
     /// hex-encoded private spend/view keys, refusing them unless the
     /// derived address is `self.address`.
     pub fn keys(&self) -> Result<WalletKeys, WalletError> {
-        let data = WalletData::new(WalletCredentials {
-            address: self.address.clone(),
-            private_spend_key_hex: self.private_spend_key_hex.clone(),
-            private_view_key_hex: self.private_view_key_hex.clone(),
-            mnemonic: None,
-        });
+        let data = WalletData::new(
+            self.network,
+            WalletCredentials {
+                address: self.address.clone(),
+                private_spend_key_hex: self.private_spend_key_hex.clone(),
+                private_view_key_hex: self.private_view_key_hex.clone(),
+                mnemonic: None,
+            },
+        );
         WalletKeys::from_data(&data, self.path.clone())
     }
 
     /// Connects to the first of `self.node_urls` that answers and loads
     /// the cached decoy-distribution snapshot at
-    /// `self.decoy_distribution_path`.
+    /// `self.decoy_distribution_path` (or, with none, fetches the
+    /// distribution from that node).
     pub async fn connect(&self) -> Result<Wallet, WalletError> {
         self.connect_starting_at(0).await
     }
@@ -451,7 +565,11 @@ impl ResolvedWallet {
             .timeout(std::time::Duration::from_secs(60))
             .build()
             .expect("failed to build reqwest client");
-        assert!(!self.node_urls.is_empty(), "no stagenet node configured");
+        assert!(
+            !self.node_urls.is_empty(),
+            "no {} node configured",
+            network_name(self.network)
+        );
         let mut last_error = None;
         let mut connected = None;
         for node_url in nodes_in_order(&self.node_urls, start) {
@@ -466,6 +584,7 @@ impl ResolvedWallet {
                 }
                 Err(source) => {
                     let error = WalletError::DaemonUnreachable {
+                        network: self.network,
                         url: node_url,
                         source,
                     };
@@ -477,7 +596,10 @@ impl ResolvedWallet {
         let Some((rpc, node_url)) = connected else {
             return Err(last_error.expect("at least one node was tried"));
         };
-        let distribution = load_decoy_distribution(&self.decoy_distribution_path)?;
+        let distribution = match &self.decoy_distribution_path {
+            Some(path) => Some(load_decoy_distribution(path)?),
+            None => None,
+        };
         let decoy_cache = DecoyCache {
             daemon: rpc.clone(),
             distribution,
@@ -509,7 +631,7 @@ impl WalletStore {
         Ok(Self { ctx: ctx.clone() })
     }
 
-    /// The wallet named `name` (`<wallet_dir>/<name>.json`). Every wallet
+    /// The wallet named `name` (`<wallet_dir>/<name>.db`). Every wallet
     /// this crate manages is a worthless stagenet fixture, so every one has
     /// its spend key recorded - even moneropay's own tenant (`merchant`);
     /// only the *public* half ([`ResolvedWallet::spend_public_key_hex`]) is
@@ -586,6 +708,7 @@ fn seed_language(name: &str) -> Result<ElectrumLanguage, WalletError> {
 /// wallet derives it) and the address from both, rather than trusting a
 /// caller-supplied pair.
 fn credentials_from_spend_key(
+    network: Network,
     spend_key: Zeroizing<Scalar>,
     mnemonic: Option<String>,
 ) -> WalletCredentials {
@@ -595,7 +718,7 @@ fn credentials_from_spend_key(
         Point::from(&*spend_key_dalek * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE);
     let address = ViewPair::new(public_spend, Zeroizing::new(*view_key))
         .expect("a freshly derived spend key is never torsioned")
-        .legacy_address(Network::Stagenet);
+        .legacy_address(network);
     WalletCredentials {
         address: address.to_string(),
         private_spend_key_hex: hex::encode(<[u8; 32]>::from(*spend_key)),
@@ -604,23 +727,28 @@ fn credentials_from_spend_key(
     }
 }
 
-/// `--generate-new-wallet`: fresh random keys, recorded with their 25-word
-/// seed in `language`.
-pub fn generate_credentials(language: &str) -> Result<WalletCredentials, WalletError> {
+/// `--generate-new-wallet`: fresh random keys for a wallet on `network`,
+/// recorded with their 25-word seed in `language`.
+pub fn generate_credentials(
+    network: Network,
+    language: &str,
+) -> Result<WalletCredentials, WalletError> {
     let seed = ElectrumSeed::new(&mut OsRng, seed_language(language)?);
     let spend_key = Zeroizing::new(
         Scalar::read(&mut &seed.entropy()[..])
             .expect("a generated legacy Seed's own entropy is always a canonical scalar"),
     );
     Ok(credentials_from_spend_key(
+        network,
         spend_key,
         Some(seed.to_string().to_string()),
     ))
 }
 
-/// `--generate-from-spend-key`: the wallet a hex private spend key belongs
-/// to.
+/// `--generate-from-spend-key`: the wallet on `network` a hex private spend
+/// key belongs to.
 pub fn credentials_from_spend_key_hex(
+    network: Network,
     spend_key_hex: &str,
 ) -> Result<WalletCredentials, WalletError> {
     let bytes: [u8; 32] = hex::decode(spend_key_hex.trim())
@@ -630,14 +758,21 @@ pub fn credentials_from_spend_key_hex(
     let spend_key = Scalar::read(&mut &bytes[..]).map_err(|_| {
         WalletError::Invalid("spend key isn't a canonical ed25519 scalar".to_string())
     })?;
-    Ok(credentials_from_spend_key(Zeroizing::new(spend_key), None))
+    Ok(credentials_from_spend_key(
+        network,
+        Zeroizing::new(spend_key),
+        None,
+    ))
 }
 
-/// `--restore-deterministic-wallet`: the wallet a real Monero seed phrase
-/// restores - either a 16-word Polyseed or a 24/25-word legacy
+/// `--restore-deterministic-wallet`: the wallet on `network` a real Monero
+/// seed phrase restores - either a 16-word Polyseed or a 24/25-word legacy
 /// Electrum-style seed, tried against every language each format supports
 /// (neither crate autodetects language from the words alone).
-pub fn credentials_from_seed(phrase: &str) -> Result<WalletCredentials, WalletError> {
+pub fn credentials_from_seed(
+    network: Network,
+    phrase: &str,
+) -> Result<WalletCredentials, WalletError> {
     let phrase = Zeroizing::new(phrase.split_whitespace().collect::<Vec<_>>().join(" "));
     let word_count = phrase.split_whitespace().count();
 
@@ -648,6 +783,7 @@ pub fn credentials_from_seed(phrase: &str) -> Result<WalletCredentials, WalletEr
                     curve25519_dalek::Scalar::from_bytes_mod_order(*seed.key()),
                 ));
                 return Ok(credentials_from_spend_key(
+                    network,
                     spend_key,
                     Some(phrase.to_string()),
                 ));
@@ -667,6 +803,7 @@ pub fn credentials_from_seed(phrase: &str) -> Result<WalletCredentials, WalletEr
                         .expect("a parsed legacy Seed's own entropy is always a canonical scalar"),
                 );
                 return Ok(credentials_from_spend_key(
+                    network,
                     spend_key,
                     Some(phrase.to_string()),
                 ));
@@ -751,13 +888,9 @@ pub async fn refresh_decoy_distribution(
         client,
         base_url: node_url.trim_end_matches('/').to_string(),
     };
-    let daemon =
-        MoneroDaemon::new(transport)
-            .await
-            .map_err(|source| WalletError::DaemonUnreachable {
-                url: node_url.to_string(),
-                source,
-            })?;
+    let daemon = MoneroDaemon::new(transport)
+        .await
+        .map_err(|source| WalletError::Rpc(format!("cannot reach {node_url}: {source}")))?;
     let distribution = ProvidesUnvalidatedDecoys::ringct_output_distribution(&daemon, from..=to)
         .await
         .map_err(|e| WalletError::Rpc(e.to_string()))?;
@@ -843,8 +976,8 @@ pub async fn send_payment(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::{migrate_legacy, OutputRecord};
-    use crate::wallet::record_resolved;
+    use crate::file::OutputRecord;
+    use crate::wallet::{record_resolved, record_scanned, ScannedOutput};
 
     #[test]
     fn each_retry_starts_from_the_next_node_and_still_tries_them_all() {
@@ -908,7 +1041,7 @@ mod tests {
         };
         WalletCredentials {
             mnemonic: None,
-            ..credentials_from_spend_key_hex(spend_key).unwrap()
+            ..credentials_from_spend_key_hex(Network::Stagenet, spend_key).unwrap()
         }
     }
 
@@ -916,8 +1049,8 @@ mod tests {
     fn temp_wallet(test: &str, name: &str) -> (PathBuf, WalletData) {
         let dir = std::env::temp_dir().join(format!("cli-wallet-{test}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let data = WalletData::new(fixture_wallet(name));
-        let path = dir.join(format!("{name}.json"));
+        let data = WalletData::new(Network::Stagenet, fixture_wallet(name));
+        let path = dir.join(format!("{name}.db"));
         WalletFile::create(&path, data.clone()).unwrap();
         (path, data)
     }
@@ -958,6 +1091,35 @@ mod tests {
         assert_eq!(data.outputs.len(), 3);
     }
 
+    /// A rescan finds a transaction's outputs one block-scan result at a
+    /// time; they're recorded per transaction, resolving it if it was
+    /// pending, and a rescan over the same blocks again changes nothing.
+    #[test]
+    fn a_rescan_records_what_it_found_once_and_resolves_pending() {
+        let (txid, height, outputs) = split_transaction();
+        let (_, mut data) = temp_wallet("record-scanned", "spender");
+        data.add_pending(&txid, 0);
+        let found: Vec<ScannedOutput> = outputs
+            .into_iter()
+            .map(|output| ScannedOutput {
+                height,
+                timestamp: 1_700_000_000,
+                output,
+            })
+            .collect();
+
+        assert_eq!(record_scanned(&mut data, &found), 3);
+        assert!(data.pending.is_empty());
+        assert!(data
+            .outputs
+            .iter()
+            .all(|o| o.txid == txid && o.height == height && o.timestamp == Some(1_700_000_000)));
+
+        assert_eq!(record_scanned(&mut data, &found), 0);
+        assert_eq!(data.outputs.len(), 3);
+        assert_eq!(record_scanned(&mut data, &[]), 0);
+    }
+
     /// Resolving a transaction this wallet sent dates its sent record, so
     /// `show_transfers` can place it.
     #[test]
@@ -978,19 +1140,6 @@ mod tests {
             (data.sent[0].height, data.sent[0].timestamp),
             (Some(height), Some(42))
         );
-    }
-
-    /// The ownership check is what splits the old shared ledger between
-    /// wallets: each output belongs to exactly the wallet that received it.
-    #[test]
-    fn outputs_belong_to_the_wallet_that_received_them_only() {
-        let (_, _, outputs) = split_transaction();
-        let (spender_path, spender) = temp_wallet("owns-spender", "spender");
-        let (merchant_path, merchant) = temp_wallet("owns-merchant", "merchant");
-        let spender = WalletKeys::from_data(&spender, spender_path).unwrap();
-        let merchant = WalletKeys::from_data(&merchant, merchant_path).unwrap();
-        assert!(outputs.iter().all(|o| spender.owns(o)));
-        assert!(outputs.iter().all(|o| !merchant.owns(o)));
     }
 
     /// Key images are what `freeze`/`sweep_single` name outputs by, so
@@ -1052,11 +1201,7 @@ mod tests {
             "an existing wallet file is never replaced"
         );
         let reloaded = WalletFile::load(&path).unwrap().data;
-        assert_eq!(reloaded.address, data.address);
-        assert_eq!(
-            serde_json::to_value(&reloaded).unwrap(),
-            serde_json::to_value(&data).unwrap()
-        );
+        assert!(reloaded == data);
     }
 
     /// Concurrent read-modify-writes from many tasks each land - the lock
@@ -1114,7 +1259,7 @@ mod tests {
             "names the holder: {}",
             seen[0]
         );
-        assert!(seen[0].contains("spender.json is locked by"), "{}", seen[0]);
+        assert!(seen[0].contains("spender.db is locked by"), "{}", seen[0]);
 
         let wait: BusyHandler = Arc::new(|_: &LockHolder| BusyChoice::Wait);
         let release = tokio::spawn(async move {
@@ -1127,94 +1272,128 @@ mod tests {
         release.await.unwrap();
     }
 
-    /// The old shared layout splits into one file per wallet, each output
-    /// going to its owner, pending txids to the sender.
-    #[test]
-    fn legacy_shared_files_split_into_one_file_per_wallet() {
-        let (txid, height, outputs) = split_transaction();
-        let dir = std::env::temp_dir().join(format!("cli-wallet-migrate-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let credentials = |name: &str| {
-            let keys = fixture_wallet(name);
-            serde_json::json!({ "address": keys.address, "private_spend_key": keys.private_spend_key_hex, "private_view_key": keys.private_view_key_hex, "role": name })
-        };
-        let wallets = serde_json::json!({
-            "_comment": "stagenet only",
-            "spender": credentials("spender"),
-            "merchant": credentials("merchant"),
-            "faucet_used": "https://stagenet-faucet.xmr-tw.org/",
-        });
-        let mut entries: Vec<Value> = outputs
-            .iter()
-            .map(|o| serde_json::json!({ "txid": txid, "height": height, "serialized_output_hex": hex::encode(o.serialize()), "amount_piconero": 0, "spent": false }))
-            .collect();
-        entries.push(serde_json::json!({ "txid": "ab".repeat(32), "height": null, "serialized_output_hex": null, "amount_piconero": 5, "spent": false }));
-        std::fs::write(dir.join("wallets.json"), wallets.to_string()).unwrap();
-        std::fs::write(
-            dir.join("ledger.json"),
-            serde_json::json!({ "entries": entries }).to_string(),
-        )
-        .unwrap();
-
-        let out = dir.join("wallets");
-        let report = migrate_legacy(
-            &dir.join("wallets.json"),
-            &dir.join("ledger.json"),
-            &out,
-            "spender",
-        )
-        .unwrap();
-        assert!(report.unowned_outputs.is_empty());
-
-        let spender = WalletFile::load(out.join("spender.json")).unwrap().data;
-        let merchant = WalletFile::load(out.join("merchant.json")).unwrap().data;
-        assert_eq!(spender.outputs.len(), 3);
-        assert!(
-            spender.outputs.iter().all(|o| o.amount_piconero > 0),
-            "amounts come from the outputs themselves"
-        );
-        assert_eq!(spender.pending.len(), 1);
-        assert_eq!(
-            spender.extra["faucet_used"],
-            "https://stagenet-faucet.xmr-tw.org/"
-        );
-        assert_eq!(spender.extra["_comment"], "stagenet only");
-        assert!(merchant.outputs.is_empty() && merchant.pending.is_empty());
-        assert_eq!(merchant.extra["role"], "merchant");
-        assert!(!merchant.extra.contains_key("faucet_used"));
-        assert!(
-            migrate_legacy(
-                &dir.join("wallets.json"),
-                &dir.join("ledger.json"),
-                &out,
-                "spender"
-            )
-            .is_err(),
-            "never overwrites"
-        );
-    }
-
     #[test]
     fn seeds_restore_the_keys_they_came_from() {
-        let generated = generate_credentials("English").unwrap();
-        let phrase = generated.mnemonic.clone().unwrap();
-        assert_eq!(phrase.split_whitespace().count(), 25);
-        assert_eq!(
-            credentials_from_seed(&phrase).unwrap().address,
-            generated.address
+        for (_, network) in NETWORKS {
+            let generated = generate_credentials(network, "English").unwrap();
+            let phrase = generated.mnemonic.clone().unwrap();
+            assert_eq!(phrase.split_whitespace().count(), 25);
+            assert_eq!(
+                credentials_from_seed(network, &phrase).unwrap().address,
+                generated.address
+            );
+            assert_eq!(
+                legacy_seed_for(&generated.private_spend_key_hex, "English").unwrap(),
+                phrase
+            );
+            assert_eq!(
+                credentials_from_spend_key_hex(network, &generated.private_spend_key_hex)
+                    .unwrap()
+                    .address,
+                generated.address
+            );
+        }
+        assert!(generate_credentials(Network::Stagenet, "Klingon").is_err());
+    }
+
+    /// One seed is one wallet on either network, with each network's own
+    /// addresses: `5` on stagenet, `9` or `A` on testnet (prefix 53 encodes
+    /// to either, depending on the keys).
+    #[test]
+    fn a_seed_restores_to_the_network_asked_for() {
+        let stagenet = generate_credentials(Network::Stagenet, "English").unwrap();
+        let phrase = stagenet.mnemonic.clone().unwrap();
+        let testnet = credentials_from_seed(Network::Testnet, &phrase).unwrap();
+        assert!(stagenet.address.starts_with('5'), "{}", stagenet.address);
+        assert!(
+            testnet.address.starts_with(['9', 'A']),
+            "{}",
+            testnet.address
         );
         assert_eq!(
-            legacy_seed_for(&generated.private_spend_key_hex, "English").unwrap(),
-            phrase
+            testnet.private_spend_key_hex,
+            stagenet.private_spend_key_hex
         );
-        assert_eq!(
-            credentials_from_spend_key_hex(&generated.private_spend_key_hex)
-                .unwrap()
-                .address,
-            generated.address
+        assert_eq!(testnet.private_view_key_hex, stagenet.private_view_key_hex);
+    }
+
+    /// A testnet wallet file opens as testnet - its addresses, its nodes,
+    /// no decoy snapshot - and is refused where stagenet is expected, and
+    /// the other way round.
+    #[test]
+    fn a_testnet_wallet_file_opens_only_on_testnet() {
+        let dir = std::env::temp_dir().join(format!("cli-wallet-testnet-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let credentials = generate_credentials(Network::Testnet, "English").unwrap();
+        let path = dir.join("t.db");
+        WalletFile::create(
+            &path,
+            WalletData::new(Network::Testnet, credentials.clone()),
+        )
+        .unwrap();
+        assert_eq!(WalletFile::load(&path).unwrap().data.network, "testnet");
+
+        let ctx = WalletCtx::for_network(Network::Testnet);
+        let resolved = ResolvedWallet::open(&ctx, &path).unwrap();
+        assert_eq!(resolved.network, Network::Testnet);
+        assert!(resolved.node_urls.iter().all(|url| url.ends_with(":28089")));
+        assert_eq!(resolved.decoy_distribution_path, None);
+        let keys = resolved.keys().unwrap();
+        assert_eq!(keys.network(), Network::Testnet);
+        assert_eq!(keys.address(), credentials.address);
+        assert!(
+            keys.subaddress(0, 1).starts_with('B'),
+            "a testnet subaddress"
         );
-        assert!(generate_credentials("Klingon").is_err());
+        assert!(
+            keys.integrated_address([1; 8]).starts_with('A'),
+            "a testnet integrated address"
+        );
+
+        let error = ResolvedWallet::open(&WalletCtx::default(), &path).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("is a testnet wallet, not stagenet"),
+            "{error}"
+        );
+        let (stagenet_path, _) = temp_wallet("testnet-refused", "spender");
+        let error = ResolvedWallet::open(&ctx, &stagenet_path).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("is a stagenet wallet, not testnet"),
+            "{error}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(stagenet_path.parent().unwrap());
+    }
+
+    /// Every key here is plaintext, so a mainnet wallet is never written,
+    /// nor one for a network nobody's heard of; the file keeps what it had.
+    #[test]
+    fn a_wallet_file_for_mainnet_or_an_unknown_network_is_refused() {
+        let (path, data) = temp_wallet("mainnet-refused", "spender");
+        for network in ["mainnet", "regtest"] {
+            let mut file = WalletFile::load(&path).unwrap();
+            file.data.network = network.to_string();
+            let error = file.save().unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("{network} isn't a network this wallet works on")),
+                "{error}"
+            );
+            assert_eq!(WalletFile::load(&path).unwrap().data.network, data.network);
+
+            let mut data = data.clone();
+            data.network = network.to_string();
+            let other = path.with_file_name(format!("{network}.db"));
+            assert!(WalletFile::create(&other, data).is_err());
+            assert!(!other.exists(), "a refused create leaves no file");
+        }
+        assert_eq!(network_name(Network::Mainnet), "mainnet");
+        assert!(parse_network("mainnet").is_err());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

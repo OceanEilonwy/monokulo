@@ -1,38 +1,57 @@
 [package]
 name = "snp-attest"
-version = "0.1.0"
+version.workspace = true
+repository.workspace = true
 edition = "2021"
 
-# WBS 2.2.1: "an attestation-verification script - its pass/fail on the
-# signature chain and reported patch level is the test." This crate is that
-# script (as a real Rust binary + a unit-tested library, matching this
-# workspace's existing key-custody-service/key-custody-server split rather
-# than a one-off shell script - the certificate/signature parsing this needs
-# is genuinely easier and safer to get right in a typed language than in
-# `openssl` CLI invocations glued together with shell).
+# AMD SEV-SNP attestation: parsing a report, checking it against AMD's
+# certificate chain, and (inside a guest) asking the security processor for a
+# report or a derived key.
 #
-# Deliberately pure-Rust crypto throughout (no `openssl` dependency), matching
-# this workspace's existing convention (`rusqlite`'s `bundled` feature,
-# `monero-wallet`'s own pure-Rust curve25519-dalek-based signing) - see
-# src/verify.rs's module doc comment for why the AMD ARK/ASK certificate
-# chain needs RSA-PSS-SHA384 (`rsa`), not ECDSA, despite the attestation
-# report itself being ECDSA P-384 (`p384`/`ecdsa`).
+# Pure-Rust crypto throughout (no `openssl`, no `ring`): the verifier also
+# runs in the browser as WebAssembly (`key-custody`'s `wasm` feature), where
+# C code doesn't build without extra toolchains. The AMD chain is
+# RSASSA-PSS-SHA384 (`rsa`), the report's own signature ECDSA P-384
+# (`p384`/`ecdsa`) - see src/verify.rs.
+#
+# Features:
+# - `kds` (default): fetches certificates from AMD's KDS (`reqwest`, `tokio`).
+#   Off for WebAssembly, where the evidence arrives in the bundle instead.
+# - `guest` (default): talks to `/dev/sev-guest` (Linux only).
+# - `test-support`: `guest::TestGuest`, a stand-in device for tests. Enabled
+#   only from other crates' dev-dependencies, never in production.
+[features]
+default = ["kds", "guest"]
+kds = ["dep:reqwest", "dep:tokio", "dep:hex"]
+guest = ["dep:libc"]
+test-support = []
+
 [dependencies]
-hex = "0.4.3"
+hex = { version = "0.4.3", optional = true }
 p384 = { version = "0.14.0", features = ["ecdsa"] }
 ecdsa = "0.17.0"
-reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"], optional = true }
+# `rsa` 0.9 is built on the `digest` 0.10 family, so it takes `sha2` 0.10.
+# No `std` feature: it turns on `rand_core/std`, whose `getrandom` doesn't
+# build for WebAssembly, and verifying needs no randomness.
+rsa = { version = "0.9.10", default-features = false }
+sha2-rsa = { package = "sha2", version = "0.10.9" }
+sha2 = "0.11.0"
 thiserror = "2.0.20"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
-# "verify" pulls in `ring` to implement X509Certificate::verify_signature -
-# used for the AMD ARK/ASK/VCEK issuance chain (RSASSA-PSS-SHA384). The
-# report's own signature (ECDSA P-384 over a raw byte blob, not an X.509
-# structure) is verified separately, directly against `p384`/`ecdsa` - see
-# src/verify.rs.
-x509-parser = { version = "0.18.1", features = ["verify"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"], optional = true }
+x509-parser = "0.18.1"
+zeroize = "1.9.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
+hex = "0.4.3"
 rand = "0.10.2"
+
+[[bin]]
+name = "verify-snp-attestation"
+required-features = ["kds"]
 
 [lints]
 workspace = true

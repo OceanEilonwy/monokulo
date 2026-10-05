@@ -1,6 +1,7 @@
 [package]
 name = "cli-wallet"
-version = "0.1.0"
+version.workspace = true
+repository.workspace = true
 edition = "2021"
 
 # A standalone, test-only crate by construction - it exists purely to make
@@ -36,6 +37,13 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.20"
 zeroize = { version = "1.9.0", features = ["derive"] }
+# Each wallet file is a SQLite database (see src/store.rs) - the same
+# version and bundled build as the rest of the workspace; `serde_json`
+# stores the free-form `extra` values as JSON text. Not `fallible_uint`:
+# features unify across the workspace, and it would let engine/monokulo bind
+# a u64 directly instead of through their checked `Unsigned` (store.rs has
+# its own copy).
+rusqlite = { version = "0.40.2", features = ["bundled", "serde_json"] }
 # Needed by the `refresh-decoy-pool` [[bin]] below (a [[bin]] target only
 # ever sees a package's normal [dependencies], never [dev-dependencies] -
 # the same reason crates/engine/Cargo.toml has its own comment on this) and,
@@ -50,7 +58,7 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
 # dependency, not a registry version pin, until that catches up.
 monero-seed = { git = "https://github.com/kayabaNerve/monero-wallet-util", branch = "develop", package = "monero-seed" }
 polyseed = { git = "https://github.com/kayabaNerve/monero-wallet-util", branch = "develop", package = "polyseed" }
-# Backs the `stagenet-wallet-cli` [[bin]] below: --help/usage generation and
+# Backs the `wallet-cli` [[bin]] below: --help/usage generation and
 # `clap_complete`'s shell-completion support come for free from the same
 # derive macros, worth the dependency for a CLI meant to stick around.
 clap = { version = "4", features = ["derive"] }
@@ -58,7 +66,7 @@ clap_complete = "4"
 reedline = "0.49.0"
 nu-ansi-term = "0.50"
 
-# The CLI restores the default SIGPIPE action, so `stagenet-wallet-cli
+# The CLI restores the default SIGPIPE action, so `wallet-cli
 # show_transfers | head` exits quietly instead of panicking.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -68,7 +76,7 @@ name = "refresh-decoy-pool"
 path = "src/bin/refresh_decoy_pool.rs"
 
 [[bin]]
-name = "stagenet-wallet-cli"
+name = "wallet-cli"
 path = "src/bin/cli/main.rs"
 
 [lints]

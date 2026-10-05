@@ -242,6 +242,64 @@ settings! {
         description: "Requests a minute a shop's server may make with its store's secret key (for example the WooCommerce plugin creating orders). These are never challenged.",
         example: "600",
     },
+    KEY_CUSTODY_CLI_DOWNLOAD_URL: String {
+        key: "key_custody.cli_download_url",
+        default: concat!(env!("CARGO_PKG_REPOSITORY"), "/releases/download/v{version}/{file}").to_owned(),
+        check: |v: &String| check_cli_url(v, "{file}"),
+        description: "Where merchants download key-custody-cli, the tool that encrypts their keys for an SEV-SNP engine without a browser. {version} is this monokulo's version and {file} the release file for their computer (key-custody-cli-{version}-{target}.tar.gz, or .zip for Windows). Change it only if you publish your own builds.",
+        example: "https://github.com/OceanEilonwy/monokulo/releases/download/v{version}/{file}",
+        applies: Restart,
+        editable: false,
+    },
+    KEY_CUSTODY_CLI_SOURCE_URL: String {
+        key: "key_custody.cli_source_url",
+        default: concat!(env!("CARGO_PKG_REPOSITORY"), "/tree/{ref}/crates/key-custody-cli").to_owned(),
+        check: |v: &String| check_cli_url(v, ""),
+        description: "Where merchants read key-custody-cli's source. {ref} is this build's release tag (v{version}), or its commit for a build that isn't a release.",
+        example: "https://github.com/OceanEilonwy/monokulo/tree/{ref}/crates/key-custody-cli",
+        applies: Restart,
+        editable: false,
+    },
+    KEY_CUSTODY_SNP_ENTRY_ID_KEY: Option<String> {
+        key: "key_custody.snp_entry_id_key",
+        default: None,
+        check: check_id_key_digest,
+        description: "The SHA-384 digest (96 hex characters) of the ID key an engine image must be signed with before this site's key entry forms encrypt merchants' keys to it. Leave empty for the official monokulo releases. Set here, not taken from the engine, so whoever runs the engine's machine can't loosen it; the status page shows an alert when it differs from the engine's key_custody.snp_trusted_id_key.",
+        example: "",
+    },
+    KEY_CUSTODY_SNP_ENTRY_MIN_GUEST_SVN: u32 {
+        key: "key_custody.snp_entry_min_guest_svn",
+        default: 0,
+        description: "The lowest engine image security version (the ID block's guest SVN) this site's key entry forms encrypt keys to. Keep it equal to the engine's key_custody.snp_min_guest_svn; the status page shows an alert when they differ.",
+        example: "1",
+    },
+    KEY_CUSTODY_SNP_ENTRY_MIN_TCB: Option<String> {
+        key: "key_custody.snp_entry_min_tcb",
+        default: None,
+        check: check_tcb_floor,
+        description: "The lowest firmware this site's key entry forms encrypt keys to, as the security patch levels bootloader,tee,snp,microcode of the attested TCB; empty checks only this release's own floor, which always applies. Keep it equal to the engine's key_custody.snp_min_tcb; the status page shows an alert when they differ.",
+        example: "10,0,23,213",
+    },
+    KEY_CUSTODY_SNP_ENTRY_REQUIRED: bool {
+        key: "key_custody.snp_entry_required",
+        default: false,
+        description: "Whether every store's keys must go to the engine's SEV-SNP backend, encrypted in the merchant's browser or with key-custody-cli. On, this site never shows a form for keys in the clear and never sends typed keys to the engine, even if the engine says it has no SEV-SNP backend: key entry is then unavailable, and the status page shows an alert.",
+        example: "true",
+    },
+    KEY_CUSTODY_SNP_BUNDLES_PER_USER: usize {
+        key: "key_custody.snp_bundles_per_user",
+        default: 20,
+        check: range(1, 10_000),
+        description: "How many SEV-SNP key entry forms one account may have open at once. Each form holds a single-use challenge from the engine; past this, opening another expires that account's oldest, never anyone else's.",
+        example: "20",
+    },
+    KEY_CUSTODY_SNP_BUNDLES_PER_USER_PER_MIN: u32 {
+        key: "key_custody.snp_bundles_per_user_per_min",
+        default: 30,
+        check: range(1, 10_000),
+        description: "How many SEV-SNP key entry forms one account may open per minute. Past this, the form shows an alert asking them to wait a minute, and no challenge is taken from the engine.",
+        example: "30",
+    },
     PUBLIC_URL: String {
         key: "public_url",
         default: String::new(),
@@ -494,6 +552,181 @@ impl Section for EngineConnection {
 pub struct PerRequest {
     pub signup_mode: SignupMode,
     pub public_url: String,
+}
+
+/// Where merchants get key-custody-cli (`http::key_entry`): URL templates,
+/// read once at start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CliLinks {
+    pub download: String,
+    pub source: String,
+}
+
+impl Section for CliLinks {
+    const NAME: &'static str = "key custody cli";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[&KEY_CUSTODY_CLI_DOWNLOAD_URL, &KEY_CUSTODY_CLI_SOURCE_URL]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(CliLinks {
+            download: snapshot.get(&KEY_CUSTODY_CLI_DOWNLOAD_URL),
+            source: snapshot.get(&KEY_CUSTODY_CLI_SOURCE_URL),
+        })
+    }
+}
+
+/// How many SEV-SNP key entry forms one account may hold and open
+/// (`http::key_entry`), so one account can't expire everyone else's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnpBundleLimits {
+    pub per_user: usize,
+    pub per_user_per_min: u32,
+}
+
+impl Default for SnpBundleLimits {
+    fn default() -> Self {
+        SnpBundleLimits {
+            per_user: KEY_CUSTODY_SNP_BUNDLES_PER_USER.default_value(),
+            per_user_per_min: KEY_CUSTODY_SNP_BUNDLES_PER_USER_PER_MIN.default_value(),
+        }
+    }
+}
+
+impl Section for SnpBundleLimits {
+    const NAME: &'static str = "sev-snp key entry limits";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[
+            &KEY_CUSTODY_SNP_BUNDLES_PER_USER,
+            &KEY_CUSTODY_SNP_BUNDLES_PER_USER_PER_MIN,
+        ]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(SnpBundleLimits {
+            per_user: snapshot.get(&KEY_CUSTODY_SNP_BUNDLES_PER_USER),
+            per_user_per_min: snapshot.get(&KEY_CUSTODY_SNP_BUNDLES_PER_USER_PER_MIN),
+        })
+    }
+}
+
+/// Which engine images this site's key entry forms encrypt merchants' keys
+/// to, and whether every store's keys must go there (`http::key_entry`):
+/// monokulo's own, never the engine's. A save is checked against the
+/// engine's first (`http::admin_settings`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnpEntryPolicy {
+    /// `None` when no ID key is set and this build has no official one:
+    /// encrypted key entry is then unavailable.
+    pub trust: Option<key_custody::transport::TrustPolicy>,
+    pub required: bool,
+}
+
+impl SnpEntryPolicy {
+    /// Whether `trust` names the official ID key this build carries, which
+    /// key-custody-cli and the browser's checker trust without being told.
+    pub fn is_official(&self) -> bool {
+        self.trust.is_some_and(|trust| {
+            key_custody::transport::official_id_key_digest() == Some(trust.id_key_digest)
+        })
+    }
+}
+
+impl Section for SnpEntryPolicy {
+    const NAME: &'static str = "key custody snp entry";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[
+            &KEY_CUSTODY_SNP_ENTRY_ID_KEY,
+            &KEY_CUSTODY_SNP_ENTRY_MIN_GUEST_SVN,
+            &KEY_CUSTODY_SNP_ENTRY_MIN_TCB,
+            &KEY_CUSTODY_SNP_ENTRY_REQUIRED,
+        ]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        SnpEntryPolicy::from_values(
+            snapshot.get(&KEY_CUSTODY_SNP_ENTRY_ID_KEY).as_deref(),
+            snapshot.get(&KEY_CUSTODY_SNP_ENTRY_MIN_GUEST_SVN),
+            snapshot.get(&KEY_CUSTODY_SNP_ENTRY_MIN_TCB).as_deref(),
+            snapshot.get(&KEY_CUSTODY_SNP_ENTRY_REQUIRED),
+        )
+        .map_err(|e| vec![e])
+    }
+}
+
+impl SnpEntryPolicy {
+    /// The policy the four `key_custody.snp_entry_*` settings make: no ID
+    /// key set is the official one, when this build has one.
+    pub fn from_values(
+        id_key: Option<&str>,
+        min_guest_svn: u32,
+        min_tcb: Option<&str>,
+        required: bool,
+    ) -> Result<Self, FieldError> {
+        use key_custody::transport::{
+            official_id_key_digest, parse_id_key_digest, TcbFloor, TrustPolicy,
+        };
+        let digest =
+            match id_key {
+                Some(text) => Some(parse_id_key_digest(text).map_err(|e| {
+                    FieldError::new(KEY_CUSTODY_SNP_ENTRY_ID_KEY.key, e.to_string())
+                })?),
+                None => official_id_key_digest(),
+            };
+        let min_tcb = TcbFloor::parse(min_tcb.unwrap_or_default())
+            .map_err(|e| FieldError::new(KEY_CUSTODY_SNP_ENTRY_MIN_TCB.key, e.to_string()))?;
+        if required && digest.is_none() {
+            return Err(FieldError::new(
+                KEY_CUSTODY_SNP_ENTRY_ID_KEY.key,
+                "key_custody.snp_entry_required is on, but this build has no official engine ID key: set this to the digest of the key your engine image is signed with",
+            ));
+        }
+        Ok(SnpEntryPolicy {
+            trust: digest.map(|id_key_digest| TrustPolicy {
+                id_key_digest,
+                min_guest_svn,
+                min_tcb,
+            }),
+            required,
+        })
+    }
+}
+
+/// An ID key digest setting: empty, or 96 hex characters.
+#[expect(
+    clippy::ref_option,
+    reason = "the settings macro passes a setting's value by reference"
+)]
+fn check_id_key_digest(digest: &Option<String>) -> Result<(), String> {
+    digest.as_deref().map_or(Ok(()), |text| {
+        key_custody::transport::parse_id_key_digest(text)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
+}
+
+/// A TCB floor setting: empty, or four numbers.
+#[expect(
+    clippy::ref_option,
+    reason = "the settings macro passes a setting's value by reference"
+)]
+fn check_tcb_floor(floor: &Option<String>) -> Result<(), String> {
+    floor.as_deref().map_or(Ok(()), |text| {
+        key_custody::transport::TcbFloor::parse(text)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
+}
+
+/// A key-custody-cli link template: an http(s) address, with `needs` in it
+/// when given.
+fn check_cli_url(value: &str, needs: &str) -> Result<(), String> {
+    if !(value.starts_with("https://") || value.starts_with("http://")) {
+        return Err("Must be an http:// or https:// address.".to_owned());
+    }
+    if !needs.is_empty() && !value.contains(needs) {
+        return Err(format!(
+            "Must contain {needs}, where the file for the merchant's computer goes."
+        ));
+    }
+    Ok(())
 }
 
 /// Read once at start: how many read connections the database opens
@@ -870,6 +1103,13 @@ pub struct MonokuloSettings {
     pub server: live_settings::Live<ServerConfig>,
     /// Who may sign up and this instance's public address.
     pub per_request: live_settings::Live<PerRequest>,
+    /// Where merchants get key-custody-cli, read once at start.
+    pub cli_links: live_settings::Live<CliLinks>,
+    /// What the key entry forms check an SEV-SNP engine against: at start
+    /// and after every save.
+    pub snp_entry: live_settings::Live<SnpEntryPolicy>,
+    /// How many key entry forms one account may hold and open.
+    pub snp_bundle_limits: live_settings::Live<SnpBundleLimits>,
 }
 
 impl MonokuloSettings {
@@ -885,6 +1125,23 @@ impl MonokuloSettings {
     /// No registry, with the given signup mode and public address: for
     /// tests.
     pub fn fixed(per_request: PerRequest) -> Arc<Self> {
+        Self::fixed_with_snp_entry(
+            per_request,
+            SnpEntryPolicy {
+                trust: key_custody::transport::official_id_key_digest().map(|id_key_digest| {
+                    key_custody::transport::TrustPolicy {
+                        id_key_digest,
+                        min_guest_svn: 0,
+                        min_tcb: key_custody::transport::TcbFloor::default(),
+                    }
+                }),
+                required: false,
+            },
+        )
+    }
+
+    /// [`Self::fixed`], with the given SEV-SNP key entry policy: for tests.
+    pub fn fixed_with_snp_entry(per_request: PerRequest, snp_entry: SnpEntryPolicy) -> Arc<Self> {
         Arc::new(MonokuloSettings {
             registry: None,
             server: live_settings::Live::new(ServerConfig {
@@ -893,6 +1150,12 @@ impl MonokuloSettings {
                 engine_url: ENGINE_URL.default_value(),
             }),
             per_request: live_settings::Live::new(per_request),
+            cli_links: live_settings::Live::new(CliLinks {
+                download: KEY_CUSTODY_CLI_DOWNLOAD_URL.default_value(),
+                source: KEY_CUSTODY_CLI_SOURCE_URL.default_value(),
+            }),
+            snp_entry: live_settings::Live::new(snp_entry),
+            snp_bundle_limits: live_settings::Live::new(SnpBundleLimits::default()),
         })
     }
 
@@ -943,6 +1206,9 @@ impl MonokuloSettings {
         }
         // Read per request: nothing to rebuild when they change.
         let per_request = builder.section::<PerRequest>();
+        let cli_links = builder.section::<CliLinks>();
+        let snp_entry = builder.section::<SnpEntryPolicy>();
+        let snp_bundle_limits = builder.section::<SnpBundleLimits>();
         // Read once at start, before the registry exists (`main.rs`).
         builder.section::<DatabaseConfig>();
         builder.section::<BootConfig>();
@@ -964,6 +1230,9 @@ impl MonokuloSettings {
             registry: Some(registry),
             server,
             per_request,
+            cli_links,
+            snp_entry,
+            snp_bundle_limits,
         }))
     }
 }
@@ -1195,6 +1464,9 @@ mod tests {
         let covered: std::collections::BTreeSet<&str> = [
             EngineConnection::keys(),
             PerRequest::keys(),
+            CliLinks::keys(),
+            SnpEntryPolicy::keys(),
+            SnpBundleLimits::keys(),
             ExchangeRateConfig::keys(),
             AbuseConfig::keys(),
             OnionListenerConfig::keys(),

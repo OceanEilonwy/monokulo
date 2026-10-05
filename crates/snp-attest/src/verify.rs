@@ -5,33 +5,39 @@
 //!
 //! 1. **The AMD issuance chain** (ARK -> ASK -> VCEK): three X.509
 //!    certificates, each signed by the previous with **RSASSA-PSS-SHA384**
-//!    over a 4096-bit RSA key - confirmed directly by fetching AMD's real
-//!    `cert_chain` response and reading it with `openssl x509 -text` rather
-//!    than assumed to be ECDSA (a very easy, very wrong assumption to make
-//!    given the report signature itself *is* ECDSA - see point 2). Verified
-//!    here via `x509_parser::X509Certificate::verify_signature`, which
-//!    handles RSASSA-PSS's explicit AlgorithmIdentifier parameters
-//!    (hash/MGF/salt length) itself rather than this crate reimplementing
-//!    PSS padding by hand.
+//!    (48-byte salt) over a 4096-bit RSA key - confirmed directly by fetching
+//!    AMD's real `cert_chain` response and reading it with
+//!    `openssl x509 -text` rather than assumed to be ECDSA (a very easy, very
+//!    wrong assumption to make given the report signature itself *is* ECDSA -
+//!    see point 2). Verified here with the pure-Rust `rsa` crate over each
+//!    certificate's signed bytes, so the verifier builds for WebAssembly too.
 //! 2. **The attestation report's own signature**: the VCEK's public key
 //!    (itself P-384 EC, even though the *certificate* that carries it was
 //!    RSA-PSS-signed by the ASK) signs the report with plain
 //!    **ECDSA P-384 / SHA-384** over the report's first 0x2A0 raw bytes -
 //!    verified directly against `p384`/`ecdsa`, after undoing the report's
 //!    little-endian r/s encoding (see `report::RawSignature`'s doc comment).
+//!
+//! [`verify_evidence`] does all of it offline, from certificates the caller
+//! already has and a time the caller supplies: the browser and
+//! `key-custody-cli` get them in a key custody bundle. [`verify`] (the `kds`
+//! feature) fetches them from AMD first.
 
+#[cfg(feature = "kds")]
 use crate::kds;
 use crate::pinned_ark;
-use crate::report::{AttestationReport, Product, TcbVersion};
+use crate::report::{AttestationReport, Product, TcbVersion, SIGNING_KEY_VCEK};
 use ecdsa::signature::Verifier;
 use p384::ecdsa::{Signature as P384Signature, VerifyingKey as P384VerifyingKey};
 use x509_parser::certificate::X509Certificate;
 use x509_parser::pem::Pem;
 use x509_parser::prelude::FromDer;
 use x509_parser::revocation_list::CertificateRevocationList;
+use x509_parser::time::ASN1Time;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyError {
+    #[cfg(feature = "kds")]
     #[error("KDS request failed: {0}")]
     Kds(#[from] kds::KdsError),
     #[error("failed to parse a certificate: {0}")]
@@ -56,8 +62,12 @@ pub enum VerifyError {
     CertExpired { which: &'static str },
     #[error("the guest's policy allows the hypervisor to debug it (policy bit 19): its memory is not protected, whatever the report says")]
     DebugAllowed,
+    #[error("the report was not signed by the chip's own key (VCEK)")]
+    NotSignedByVcek,
     #[error("AMD's revocation list does not verify against the pinned ARK - refusing to trust it")]
     CrlNotSignedByArk,
+    #[error("AMD's revocation list is out of date (or not yet in force): an old list could hide a revocation")]
+    CrlStale,
     #[error("AMD has revoked the {which} certificate: its key is not to be trusted")]
     Revoked { which: &'static str },
 }
@@ -75,6 +85,17 @@ pub struct VerifiedReport {
     pub chain_verified: bool,
 }
 
+/// The certificates a report is checked against, apart from the pinned
+/// root: AMD's intermediate (ASK), the chip's own key (VCEK, issued for the
+/// report's exact TCB) and AMD's revocation list, all DER. Untrusted until
+/// checked: each must verify up to the pinned ARK.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Evidence {
+    pub ask_der: Vec<u8>,
+    pub vcek_der: Vec<u8>,
+    pub crl_der: Vec<u8>,
+}
+
 fn parse_der_cert(der: &[u8]) -> Result<X509Certificate<'_>, VerifyError> {
     let (_, cert) =
         X509Certificate::from_der(der).map_err(|e| VerifyError::CertParse(e.to_string()))?;
@@ -83,7 +104,7 @@ fn parse_der_cert(der: &[u8]) -> Result<X509Certificate<'_>, VerifyError> {
 
 /// Splits a "ASK then ARK" concatenated PEM (AMD KDS's `cert_chain`
 /// response format) into its two `Pem` entries.
-fn parse_pem_chain(pem_str: &str) -> Result<Vec<Pem>, VerifyError> {
+pub(crate) fn parse_pem_chain(pem_str: &str) -> Result<Vec<Pem>, VerifyError> {
     let mut certs = Vec::new();
     let mut input = pem_str.as_bytes();
     while !input.trim_ascii().is_empty() {
@@ -95,102 +116,110 @@ fn parse_pem_chain(pem_str: &str) -> Result<Vec<Pem>, VerifyError> {
     Ok(certs)
 }
 
-/// Full verification pipeline: fetches the live ASK+ARK chain and the VCEK
-/// from AMD's KDS, checks every link, and verifies the report's own
-/// signature. Does **not** check any minimum patch-level threshold - that's
-/// a separate, deliberately explicit step in the CLI (see `main.rs`), since
-/// "what SPL corresponds to AMD-SB-3019" is operator-supplied configuration,
-/// not something this crate hardcodes as if it were a settled fact - see
-/// that binary's own `--min-*-spl` flag documentation for why.
-pub async fn verify(
-    client: &reqwest::Client,
+/// The pinned ARK for `product`, as DER.
+fn pinned_ark_der(product: Product) -> Result<Vec<u8>, VerifyError> {
+    parse_pem_chain(pinned_ark::pinned_ark_pem(product))?
+        .into_iter()
+        .next()
+        .map(|pem| pem.contents)
+        .ok_or_else(|| VerifyError::CertParse("pinned ARK PEM is empty".into()))
+}
+
+/// Whether `signature` over `signed` verifies with `issuer`'s RSA key under
+/// RSASSA-PSS-SHA384 with a 48-byte salt, the only scheme AMD's chain uses.
+fn rsa_pss_verifies(signed: &[u8], signature: &[u8], issuer: &X509Certificate<'_>) -> bool {
+    use rsa::pkcs1::DecodeRsaPublicKey as _;
+    let Ok(key) = rsa::RsaPublicKey::from_pkcs1_der(&issuer.public_key().subject_public_key.data)
+    else {
+        return false;
+    };
+    let Ok(signature) = rsa::pss::Signature::try_from(signature) else {
+        return false;
+    };
+    rsa::signature::Verifier::verify(
+        &rsa::pss::VerifyingKey::<sha2_rsa::Sha384>::new(key),
+        signed,
+        &signature,
+    )
+    .is_ok()
+}
+
+/// Whether `cert` was signed by `issuer`.
+fn signed_by(cert: &X509Certificate<'_>, issuer: &X509Certificate<'_>) -> bool {
+    rsa_pss_verifies(
+        cert.tbs_certificate.as_ref(),
+        &cert.signature_value.data,
+        issuer,
+    )
+}
+
+/// `now_unix` (seconds since the epoch) as a certificate time.
+fn asn1_time(now_unix: i64) -> Result<ASN1Time, VerifyError> {
+    ASN1Time::from_timestamp(now_unix).map_err(|e| VerifyError::CertParse(e.to_string()))
+}
+
+/// Full verification, offline: `report` was signed by a genuine AMD chip,
+/// whose key (`evidence.vcek_der`) AMD issued through `evidence.ask_der`
+/// under the pinned root for `product`, at `now_unix`, with nothing on
+/// AMD's revocation list, from a guest the hypervisor can't debug.
+///
+/// Does **not** check any minimum patch level or the guest's identity
+/// (measurement, ID key, SVN): those are the caller's policy, applied to the
+/// report once this has established it is genuine.
+pub fn verify_evidence(
     product: Product,
     report: &AttestationReport,
+    evidence: &Evidence,
+    now_unix: i64,
 ) -> Result<VerifiedReport, VerifyError> {
-    // 1. Live ASK+ARK chain, checked against our pinned root.
-    let chain_pem = kds::fetch_cert_chain_pem(client, product).await?;
-    let parsed_chain = parse_pem_chain(&chain_pem)?;
-    if parsed_chain.len() != 2 {
-        return Err(VerifyError::CertParse(format!(
-            "expected 2 certs in AMD's cert_chain response, got {}",
-            parsed_chain.len()
-        )));
-    }
-    let ask_pem = &parsed_chain[0];
-    let live_ark_pem = &parsed_chain[1];
-
-    let pinned_ark_pem_str = pinned_ark::pinned_ark_pem(product);
-    let pinned_ark_parsed = parse_pem_chain(pinned_ark_pem_str)?;
-    let pinned_ark_pem_entry = pinned_ark_parsed
-        .first()
-        .ok_or_else(|| VerifyError::CertParse("pinned ARK PEM is empty".into()))?;
-
-    if live_ark_pem.contents != pinned_ark_pem_entry.contents {
-        return Err(VerifyError::ArkMismatch);
-    }
-
-    let pinned_ark_cert = pinned_ark_pem_entry
-        .parse_x509()
-        .map_err(|e| VerifyError::CertParse(e.to_string()))?;
-    let ask_cert = ask_pem
-        .parse_x509()
-        .map_err(|e| VerifyError::CertParse(e.to_string()))?;
+    let now = asn1_time(now_unix)?;
+    let ark_der = pinned_ark_der(product)?;
+    let ark = parse_der_cert(&ark_der)?;
+    let ask = parse_der_cert(&evidence.ask_der)?;
+    let vcek = parse_der_cert(&evidence.vcek_der)?;
 
     // Each certificate must be in its validity period: a signature that
     // checks out says nothing about a certificate that has expired.
-    for (which, cert) in [("ARK", &pinned_ark_cert), ("ASK", &ask_cert)] {
-        if !cert.validity().is_valid() {
+    for (which, cert) in [("ARK", &ark), ("ASK", &ask), ("VCEK", &vcek)] {
+        if !cert.validity().is_valid_at(now) {
             return Err(VerifyError::CertExpired { which });
         }
     }
 
     // AMD signs the ASK and every VCEK with RSASSA-PSS: anything else is
     // not AMD's chain, whatever else checks out.
-    require_pss("ASK", &ask_cert)?;
+    require_pss("ASK", &ask)?;
+    require_pss("VCEK", &vcek)?;
 
-    // 2. ASK must be signed by our pinned ARK.
-    ask_cert
-        .verify_signature(Some(pinned_ark_cert.public_key()))
-        .map_err(|_| VerifyError::AskNotSignedByArk)?;
-
-    // 3. Fetch the VCEK for this exact chip + reported TCB, and check it's
-    //    signed by the (now-trusted) ASK.
-    let vcek_der = kds::fetch_vcek_der(client, product, report).await?;
-    let vcek_cert = parse_der_cert(&vcek_der)?;
-    vcek_cert
-        .verify_signature(Some(ask_cert.public_key()))
-        .map_err(|_| VerifyError::VcekNotSignedByAsk)?;
-    if !vcek_cert.validity().is_valid() {
-        return Err(VerifyError::CertExpired { which: "VCEK" });
+    // The ASK must be signed by the pinned ARK, the VCEK by the ASK.
+    if !signed_by(&ask, &ark) {
+        return Err(VerifyError::AskNotSignedByArk);
     }
-    require_pss("VCEK", &vcek_cert)?;
+    if !signed_by(&vcek, &ask) {
+        return Err(VerifyError::VcekNotSignedByAsk);
+    }
 
-    //    And neither may be on AMD's revocation list: a chip whose key was
-    //    revoked still signs reports that check out against the chain.
-    let crl_der = kds::fetch_crl_der(client, product).await?;
+    // And neither may be on AMD's revocation list: a chip whose key was
+    // revoked still signs reports that check out against the chain.
     check_not_revoked(
-        &crl_der,
-        &pinned_ark_cert,
-        &[("ASK", &ask_cert), ("VCEK", &vcek_cert)],
+        &evidence.crl_der,
+        &ark,
+        &[("ASK", &ask), ("VCEK", &vcek)],
+        now,
     )?;
 
-    // 4. Cross-check the VCEK's own embedded TCB extensions against the
-    //    report's reported_tcb - a VCEK is issued bound to one specific TCB
-    //    tuple, so this catches a report paired with the wrong VCEK (e.g. a
-    //    stale cached one) even though the fetch URL itself already encodes
-    //    the same values (belt-and-suspenders on a value that flows through
-    //    two independent paths - the URL query string and the cert's own
-    //    signed extensions - rather than trusting either alone).
-    verify_vcek_tcb_extensions(&vcek_cert, &report.reported_tcb)?;
-    //    Likewise the chip: the fetch URL carries the report's chip_id, and
-    //    the VCEK's own signed hwID extension must name the same chip.
-    verify_vcek_hw_id(&vcek_cert, product, &report.chip_id)?;
+    // A VCEK is issued bound to one TCB tuple and one chip: this catches a
+    // report paired with the wrong VCEK (a stale one, or another chip's).
+    verify_vcek_tcb_extensions(&vcek, &report.reported_tcb)?;
+    verify_vcek_hw_id(&vcek, product, &report.chip_id)?;
 
-    // 5. The report's own ECDSA P-384 signature, verified against the VCEK's
-    //    public key.
-    verify_report_signature(report, &vcek_cert)?;
+    // The report's own ECDSA P-384 signature, by the VCEK.
+    if report.signing_key() != SIGNING_KEY_VCEK {
+        return Err(VerifyError::NotSignedByVcek);
+    }
+    verify_report_signature(report, &vcek)?;
 
-    // 6. A guest the hypervisor may debug has no confidentiality to attest.
+    // A guest the hypervisor may debug has no confidentiality to attest.
     if report.debug_allowed() {
         return Err(VerifyError::DebugAllowed);
     }
@@ -202,17 +231,81 @@ pub async fn verify(
     })
 }
 
+/// Fetches the evidence for `report` from AMD's KDS: the ASK (after checking
+/// the chain's root is the pinned ARK), the VCEK for the report's chip and
+/// reported TCB, and the revocation list.
+#[cfg(feature = "kds")]
+pub async fn fetch_evidence(
+    client: &reqwest::Client,
+    product: Product,
+    report: &AttestationReport,
+) -> Result<Evidence, VerifyError> {
+    let chain_pem = kds::fetch_cert_chain_pem(client, product).await?;
+    let mut chain = parse_pem_chain(&chain_pem)?;
+    if chain.len() != 2 {
+        return Err(VerifyError::CertParse(format!(
+            "expected 2 certs in AMD's cert_chain response, got {}",
+            chain.len()
+        )));
+    }
+    let live_ark = chain.pop().map(|pem| pem.contents).unwrap_or_default();
+    if live_ark != pinned_ark_der(product)? {
+        return Err(VerifyError::ArkMismatch);
+    }
+    let ask_der = chain.pop().map(|pem| pem.contents).unwrap_or_default();
+    let vcek_der = kds::fetch_vcek_der(client, product, report).await?;
+    let crl_der = kds::fetch_crl_der(client, product).await?;
+    Ok(Evidence {
+        ask_der,
+        vcek_der,
+        crl_der,
+    })
+}
+
+/// Seconds since the Unix epoch, now.
+#[cfg(feature = "kds")]
+pub fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// [`fetch_evidence`], then [`verify_evidence`] at the current time. Does
+/// **not** check any minimum patch-level threshold - that's a separate,
+/// deliberately explicit step in the CLI (see `main.rs`), since "what SPL
+/// corresponds to AMD-SB-3019" is operator-supplied configuration, not
+/// something this crate hardcodes as if it were a settled fact - see that
+/// binary's own `--min-*-spl` flag documentation for why.
+#[cfg(feature = "kds")]
+pub async fn verify(
+    client: &reqwest::Client,
+    product: Product,
+    report: &AttestationReport,
+) -> Result<VerifiedReport, VerifyError> {
+    let evidence = fetch_evidence(client, product, report).await?;
+    verify_evidence(product, report, &evidence, unix_now())
+}
+
 /// Refuses `certs` if the revocation list `crl_der`, which must be signed
-/// by `ark`, lists any of them.
+/// by `ark` and in force at `now`, lists any of them.
 fn check_not_revoked(
     crl_der: &[u8],
     ark: &X509Certificate<'_>,
     certs: &[(&'static str, &X509Certificate<'_>)],
+    now: ASN1Time,
 ) -> Result<(), VerifyError> {
     let (_, crl) = CertificateRevocationList::from_der(crl_der)
         .map_err(|e| VerifyError::CertParse(e.to_string()))?;
-    crl.verify_signature(ark.public_key())
-        .map_err(|_| VerifyError::CrlNotSignedByArk)?;
+    if crl.signature_algorithm.algorithm != x509_parser::oid_registry::OID_PKCS1_RSASSAPSS
+        || !rsa_pss_verifies(crl.tbs_cert_list.as_ref(), &crl.signature_value.data, ark)
+    {
+        return Err(VerifyError::CrlNotSignedByArk);
+    }
+    // A list past its next update could be an old one replayed from before
+    // a revocation.
+    if crl.last_update() > now || crl.next_update().is_some_and(|next| next < now) {
+        return Err(VerifyError::CrlStale);
+    }
     for (which, cert) in certs {
         if crl
             .iter_revoked_certificates()
@@ -326,7 +419,7 @@ fn verify_vcek_hw_id(
 
 /// Whether a hwID extension value (a DER `OCTET STRING`) names the chip
 /// `chip_id`. The extension holds the chip ID in the form KDS indexes the
-/// product's VCEKs by (`kds::hw_id_for_product`: 8 bytes on Turin, all 64
+/// product's VCEKs by (`report::hw_id_for_product`: 8 bytes on Turin, all 64
 /// elsewhere); the full 64 bytes are accepted too, since they name the
 /// same chip.
 fn hw_id_matches(der: &[u8], product: Product, chip_id: &[u8; 64]) -> bool {
@@ -335,7 +428,8 @@ fn hw_id_matches(der: &[u8], product: Product, chip_id: &[u8; 64]) -> bool {
         [0x04, len, value @ ..] if usize::from(*len) == value.len() && *len < 0x80 => value,
         _ => return false,
     };
-    value == kds::hw_id_for_product(product, chip_id).as_slice() || value == chip_id.as_slice()
+    value == crate::report::hw_id_for_product(product, chip_id).as_slice()
+        || value == chip_id.as_slice()
 }
 
 fn verify_report_signature(
@@ -345,12 +439,12 @@ fn verify_report_signature(
     let spki_bytes = vcek_cert.public_key().subject_public_key.as_ref();
     let verifying_key =
         P384VerifyingKey::from_sec1_bytes(spki_bytes).map_err(|_| VerifyError::InvalidVcekKey)?;
-    verify_report_signature_with_key(report, &verifying_key)
+    verify_report_signed_by(report, &verifying_key)
 }
 
-/// The report's own signature against a VCEK's key: the decoding the
-/// tests exercise directly with a key of their own.
-fn verify_report_signature_with_key(
+/// The report's own signature against a VCEK's key, for a caller that
+/// already trusts that key (and for tests, with a key of their own).
+pub fn verify_report_signed_by(
     report: &AttestationReport,
     verifying_key: &P384VerifyingKey,
 ) -> Result<(), VerifyError> {
@@ -392,6 +486,36 @@ fn verify_report_signature_with_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-10-02, inside every test certificate's validity period and
+    /// every fixture revocation list's.
+    const NOW: i64 = 1_790_899_200;
+
+    fn at(unix: i64) -> ASN1Time {
+        ASN1Time::from_timestamp(unix).unwrap()
+    }
+
+    /// A revocation list past its next update, or not yet issued, is
+    /// refused: an old list could hide a revocation.
+    #[test]
+    fn an_out_of_date_revocation_list_is_refused() {
+        let chain =
+            parse_pem_chain(include_str!("../tests/fixtures/genoa_ask_ark_chain.pem")).unwrap();
+        let ask = chain[0].parse_x509().unwrap();
+        let pinned = parse_pem_chain(pinned_ark::pinned_ark_pem(Product::Genoa)).unwrap();
+        let ark = pinned[0].parse_x509().unwrap();
+        let crl = include_bytes!("../tests/fixtures/genoa_crl.der");
+        // 2026-12-01, after its next update (2026-11-09).
+        assert!(matches!(
+            check_not_revoked(crl, &ark, &[("ASK", &ask)], at(1_796_083_200)),
+            Err(VerifyError::CrlStale)
+        ));
+        // 2026-09-01, before it was issued (2026-09-22).
+        assert!(matches!(
+            check_not_revoked(crl, &ark, &[("ASK", &ask)], at(1_788_220_800)),
+            Err(VerifyError::CrlStale)
+        ));
+    }
     use p384::ecdsa::{Signature as SigT, SigningKey};
 
     /// Proves the ASK-by-ARK link of the real AMD chain verifies correctly
@@ -424,11 +548,10 @@ mod tests {
             let pinned_parsed = parse_pem_chain(pinned).unwrap();
             let pinned_ark_cert = pinned_parsed[0].parse_x509().unwrap();
 
-            ask_cert
-                .verify_signature(Some(pinned_ark_cert.public_key()))
-                .unwrap_or_else(|e| {
-                    panic!("{product:?}: real ASK must verify against pinned ARK: {e:?}")
-                });
+            assert!(
+                signed_by(&ask_cert, &pinned_ark_cert),
+                "{product:?}: real ASK must verify against pinned ARK"
+            );
         }
     }
 
@@ -459,7 +582,7 @@ mod tests {
             let ask = chain[0].parse_x509().unwrap();
             let pinned = parse_pem_chain(pinned_ark::pinned_ark_pem(product)).unwrap();
             let ark = pinned[0].parse_x509().unwrap();
-            check_not_revoked(crl, &ark, &[("ASK", &ask)])
+            check_not_revoked(crl, &ark, &[("ASK", &ask)], at(NOW))
                 .unwrap_or_else(|e| panic!("{product:?}: {e}"));
         }
 
@@ -469,6 +592,7 @@ mod tests {
                 include_bytes!("../tests/fixtures/milan_crl.der"),
                 &genoa[0].parse_x509().unwrap(),
                 &[],
+                at(NOW),
             ),
             Err(VerifyError::CrlNotSignedByArk)
         ));
@@ -484,15 +608,20 @@ mod tests {
             parse_der_cert(include_bytes!("../tests/fixtures/test_crl/revoked.der")).unwrap();
         let good = parse_der_cert(include_bytes!("../tests/fixtures/test_crl/good.der")).unwrap();
 
-        assert!(check_not_revoked(crl, &ca, &[("VCEK", &good)]).is_ok());
+        assert!(check_not_revoked(crl, &ca, &[("VCEK", &good)], at(NOW)).is_ok());
         assert!(matches!(
-            check_not_revoked(crl, &ca, &[("ASK", &good), ("VCEK", &revoked)]),
+            check_not_revoked(crl, &ca, &[("ASK", &good), ("VCEK", &revoked)], at(NOW)),
             Err(VerifyError::Revoked { which: "VCEK" })
         ));
         // Signed by someone else: refused before its contents count.
         let milan = parse_pem_chain(pinned_ark::pinned_ark_pem(Product::Milan)).unwrap();
         assert!(matches!(
-            check_not_revoked(crl, &milan[0].parse_x509().unwrap(), &[("VCEK", &good)]),
+            check_not_revoked(
+                crl,
+                &milan[0].parse_x509().unwrap(),
+                &[("VCEK", &good)],
+                at(NOW)
+            ),
             Err(VerifyError::CrlNotSignedByArk)
         ));
     }
@@ -506,9 +635,10 @@ mod tests {
             let pinned = pinned_ark::pinned_ark_pem(product);
             let parsed = parse_pem_chain(pinned).unwrap();
             let ark_cert = parsed[0].parse_x509().unwrap();
-            ark_cert
-                .verify_signature(Some(ark_cert.public_key()))
-                .unwrap_or_else(|e| panic!("{product:?}: ARK must be self-signed: {e:?}"));
+            assert!(
+                signed_by(&ark_cert, &ark_cert),
+                "{product:?}: ARK must be self-signed"
+            );
         }
     }
 
@@ -524,9 +654,7 @@ mod tests {
         let genoa_ark_certs = parse_pem_chain(genoa_ark_pem).unwrap();
         let genoa_ark = genoa_ark_certs[0].parse_x509().unwrap();
 
-        assert!(milan_ask
-            .verify_signature(Some(genoa_ark.public_key()))
-            .is_err());
+        assert!(!signed_by(&milan_ask, &genoa_ark));
     }
 
     /// The report's own ECDSA P-384 signature path, exercised against a
@@ -561,8 +689,59 @@ mod tests {
 
         // Through the real parser and the real decoder.
         let report = crate::report::parse(&raw, Product::Milan).unwrap();
-        verify_report_signature_with_key(&report, signing_key.verifying_key())
+        verify_report_signed_by(&report, signing_key.verifying_key())
             .expect("round-tripped signature must verify");
+    }
+
+    /// Evidence built from AMD's real Genoa ASK and revocation list, with
+    /// `vcek_der` as the chip key.
+    fn genoa_evidence(vcek_der: &[u8]) -> Evidence {
+        let chain =
+            parse_pem_chain(include_str!("../tests/fixtures/genoa_ask_ark_chain.pem")).unwrap();
+        Evidence {
+            ask_der: chain[0].contents.clone(),
+            vcek_der: vcek_der.to_vec(),
+            crl_der: include_bytes!("../tests/fixtures/genoa_crl.der").to_vec(),
+        }
+    }
+
+    fn any_report() -> AttestationReport {
+        let mut raw = [0u8; crate::report::REPORT_LEN];
+        raw[0x34..0x38].copy_from_slice(&1u32.to_le_bytes());
+        crate::report::parse(&raw, Product::Genoa).unwrap()
+    }
+
+    /// The offline pipeline refuses a chip key AMD's ASK didn't issue, a
+    /// chain under another product's root, and certificates out of date,
+    /// each by name.
+    #[test]
+    fn evidence_that_does_not_lead_to_the_pinned_root_is_refused() {
+        let report = any_report();
+        let not_amds = include_bytes!("../tests/fixtures/test_crl/good.der");
+        assert!(matches!(
+            verify_evidence(Product::Genoa, &report, &genoa_evidence(not_amds), NOW),
+            Err(VerifyError::VcekNotSignedByAsk)
+        ));
+        assert!(matches!(
+            verify_evidence(Product::Milan, &report, &genoa_evidence(not_amds), NOW),
+            Err(VerifyError::AskNotSignedByArk)
+        ));
+        // 2100: the roots have expired by then.
+        assert!(matches!(
+            verify_evidence(
+                Product::Genoa,
+                &report,
+                &genoa_evidence(not_amds),
+                4_102_444_800
+            ),
+            Err(VerifyError::CertExpired { .. })
+        ));
+        let mut garbage = genoa_evidence(not_amds);
+        garbage.ask_der = vec![0x30, 0x00];
+        assert!(matches!(
+            verify_evidence(Product::Genoa, &report, &garbage, NOW),
+            Err(VerifyError::CertParse(_))
+        ));
     }
 
     #[test]
@@ -631,7 +810,7 @@ mod tests {
 
         let report = crate::report::parse(&raw, Product::Milan).unwrap();
         assert!(matches!(
-            verify_report_signature_with_key(&report, signing_key.verifying_key()),
+            verify_report_signed_by(&report, signing_key.verifying_key()),
             Err(VerifyError::ReportSignatureInvalid)
         ));
     }

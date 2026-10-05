@@ -1,0 +1,65 @@
+name: snp-id-block
+
+# Signs an engine image's ID block with the engine ID key (SNP_ID_KEY), for
+# launching that image in an SEV-SNP confidential VM
+# (deploy/sev-snp/README.md §3). Whoever can sign can make an image
+# merchants' keys are trusted to, so:
+# - SNP_ID_KEY is a secret of the `snp-id-key` environment, which must have
+#   required reviewers and allow only the main branch and version tags
+#   (Settings → Environments); not a repository secret;
+# - the job runs only from main or a version tag;
+# - no build cache is restored (a poisoned cache would run with the key);
+# - every action is pinned to a commit.
+on:
+  workflow_dispatch:
+    inputs:
+      measurement:
+        description: The image's launch measurement (96 hex characters)
+        required: true
+      guest_svn:
+        description: Its security version (raise it with every security fix)
+        required: true
+      policy:
+        description: The guest policy it is launched with (hex)
+        default: '30000'
+      family_id:
+        description: Family ID (32 hex characters; empty for the default)
+        default: ''
+      image_id:
+        description: Image ID (32 hex characters; empty for the default)
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  sign:
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: snp-id-key
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # The latest nightly, as rust-toolchain.toml names it.
+      - uses: dtolnay/rust-toolchain@0e28dd9a7764e5f83064112bb1f24025a14c313c # nightly
+      - name: Sign
+        env:
+          SNP_ID_KEY: ${{ secrets.SNP_ID_KEY }}
+          MEASUREMENT: ${{ inputs.measurement }}
+          GUEST_SVN: ${{ inputs.guest_svn }}
+          POLICY: ${{ inputs.policy }}
+          FAMILY_ID: ${{ inputs.family_id }}
+          IMAGE_ID: ${{ inputs.image_id }}
+        shell: bash
+        run: |
+          args=(--measurement "$MEASUREMENT" --guest-svn "$GUEST_SVN" --policy "$POLICY" --out id)
+          if test -n "$FAMILY_ID"; then args+=(--family-id "$FAMILY_ID"); fi
+          if test -n "$IMAGE_ID"; then args+=(--image-id "$IMAGE_ID"); fi
+          cargo xtask snp-id-block "${args[@]}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: snp-id-block-${{ inputs.guest_svn }}
+          path: id/
+          if-no-files-found: error

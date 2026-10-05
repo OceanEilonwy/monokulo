@@ -29,7 +29,9 @@ pub mod create_order;
 pub mod dashboard;
 pub mod engine;
 pub mod integration_help;
+pub mod key_entry;
 pub mod landing;
+mod logo_art;
 pub mod logs;
 pub mod orders;
 pub mod pos;
@@ -258,21 +260,22 @@ fn page_shell(
     }
 }
 
-/// The Monokulo mark, inline: a looking glass doubling as a monocle, watching
-/// an eye with a Monero-orange pupil. Its lines are `currentColor`, so it
-/// takes the text colour of whatever it sits on in either theme; the pupil
-/// is `--brand-orange` (`.logo-pupil` in site.css). `static/logo.svg` is
-/// the same drawing for other sites to link to.
+/// The Monokulo mark, inline: a monocle whose lens is cut like a stone, its
+/// facets laid out as a curve tree (`scripts/logo.py` draws it and explains
+/// the design). Its lines are `currentColor`, so it takes the text colour of
+/// whatever it sits on in either theme; the facets are the `--logo-*` roles.
+/// Below 48px the facet lines would blur into the fill, so the small drawing
+/// leaves them out and thickens the chain. `static/logo.svg` is the full
+/// drawing for other sites to link to.
 pub fn logo_mark(size: u32, class: &str) -> Markup {
+    let art = if size >= 48 {
+        logo_art::FULL
+    } else {
+        logo_art::SMALL
+    };
     html! {
         svg class=(format!("logo-mark {class}")) viewBox="0 0 64 64" width=(size) height=(size) aria-hidden="true" focusable="false" {
-            line x1="19.7" y1="16.3" x2="15.5" y2="12.5" stroke="currentColor" stroke-width="2.25" {}
-            circle cx="13.5" cy="10.5" r="2.25" fill="none" stroke="currentColor" stroke-width="2.25" {}
-            line x1="39.3" y1="39.3" x2="56" y2="56" stroke="currentColor" stroke-width="6" stroke-linecap="round" {}
-            circle cx="28" cy="28" r="16" fill="none" stroke="currentColor" stroke-width="5" {}
-            path d="M19,28 Q28,20.5 37,28 Q28,35.5 19,28 Z" fill="none" stroke="currentColor" stroke-width="1.75" {}
-            circle class="logo-pupil" cx="28" cy="28" r="5" stroke="currentColor" stroke-width="1" {}
-            rect x="26.1" y="26.1" width="3.8" height="3.8" fill="currentColor" transform="rotate(45 28 28)" {}
+            (PreEscaped(art))
         }
     }
 }

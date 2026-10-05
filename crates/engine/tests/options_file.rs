@@ -49,6 +49,10 @@ fn engine(dir: &Path) -> Command {
         .env("HOME", dir.join("home"))
         .current_dir(dir)
         .stdin(Stdio::null());
+    // Windows can't open a socket without it.
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        command.env("SystemRoot", root);
+    }
     command
 }
 
@@ -131,6 +135,21 @@ fn without_a_home_the_options_file_is_in_the_working_directory() {
     let output = run(engine(&dir.0).env_remove("HOME").arg("--init"));
     assert!(output.status.success(), "{}", text(&output));
     assert!(dir.0.join("engine.toml").exists());
+}
+
+/// Windows sets no `HOME`: the file goes under `%APPDATA%`.
+#[cfg(windows)]
+#[test]
+fn on_windows_without_a_home_the_options_file_is_in_appdata() {
+    let dir = TempDir::new("appdata");
+    let appdata = dir.0.join("appdata");
+    let output = run(engine(&dir.0)
+        .env_remove("HOME")
+        .env("APPDATA", &appdata)
+        .arg("--init"));
+    assert!(output.status.success(), "{}", text(&output));
+    assert!(appdata.join("monokulo").join("engine.toml").exists());
+    assert!(!dir.0.join("engine.toml").exists());
 }
 
 /// A file with anything wrong in it stops the engine before it does
@@ -217,22 +236,28 @@ fn the_engine_starts_without_a_file_and_follows_one_and_its_options() {
         .arg("--server-bind")
         .arg(format!("127.0.0.1:{port}"))
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(dir.0.join("start.log")).unwrap())
         .spawn()
         .unwrap();
     let up = listening(&mut child, port);
     stop(child);
-    assert!(up, "the engine started with no options file");
+    assert!(
+        up,
+        "the engine started with no options file: {}",
+        std::fs::read_to_string(dir.0.join("start.log")).unwrap_or_default()
+    );
     assert!(data.join("monokulo").join("engine.db").exists());
     assert!(!missing.exists(), "nothing is written until a save");
 
     let path = dir.0.join("engine.toml");
     let file_port = free_port();
     let option_port = free_port();
+    // The path as a TOML literal string: a Windows path's backslashes
+    // aren't escapes.
     std::fs::write(
         &path,
         format!(
-            "[server]\nbind = \"127.0.0.1:{file_port}\"\n[database]\npath = \"{}\"\n",
+            "[server]\nbind = \"127.0.0.1:{file_port}\"\n[database]\npath = '{}'\n",
             dir.0.join("mine.db").display()
         ),
     )

@@ -147,8 +147,7 @@ build() {
 # settings page. The stagenet node and payment thresholds are the ones
 # e2e/moneropay-stagenet.toml and crates/engine/tests/support/mod.rs's
 # e2e_fixture use. Key custody is per store; this enables only the
-# in-process `plain` backend, the right choice for a dev stack with no
-# key-custody-server.
+# `plain` backend: the `snp` one needs an AMD SEV-SNP confidential VM.
 ensure_options_files() {
     if [[ ! -f "$ENGINE_OPTIONS" ]]; then
         echo "==> writing the dev engine options file ($ENGINE_OPTIONS)"

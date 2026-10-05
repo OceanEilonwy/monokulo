@@ -511,6 +511,12 @@ Automates what was manually verified live against `sqlite3` during design (§DES
 
 ## 10. Integration / End-to-End
 
+**Logs from a test.** Set `MONOKULO_TEST_LOG` to a `tracing` filter to see what the
+engine, monokulo and the harness log while a test runs, on standard error, even if the
+test hangs: `MONOKULO_TEST_LOG=debug cargo test -p mock-woocommerce <test>` (or
+`cargo nextest run --no-capture ...`). Every test engine turns it on as it starts
+(`engine_test_support::init_test_logging`); unset, nothing is logged.
+
 **Why a separate tier from §3's mocked-daemon tests**: unit-level correctness against
 a scripted fake doesn't prove the pieces compose correctly against a *real* Monero
 node's actual RPC responses (real serialization quirks, real field-naming, real error
@@ -596,11 +602,11 @@ subsequent valid writes can recover.
 
 ### Key-custody properties
 
-Twelve generated properties in `key_custody::{plain,router}::properties` use 64
-cases by default, with real Monero keys and a real paying RingCT transaction.
-They run under the existing CI/daily property filter. Run `cargo nextest run
--p engine --lib --locked -E 'test(key_custody::plain::properties::) |
-test(key_custody::router::properties::)'`.
+Twelve generated properties in the `key-custody` crate's
+`{plain,router}::properties` use 64 cases by default, with real Monero keys and
+a real paying RingCT transaction. They run under the existing CI/daily property
+filter. Run `cargo nextest run -p key-custody --lib --locked -E
+'test(plain::properties::) | test(router::properties::)'`.
 
 | Property family | Inclusive ranges and guarantees |
 |---|---|
@@ -1039,7 +1045,7 @@ assertion bearing the defect’s specified `BOUNDARY:` marker on the mutant. All
 
 Compiler/linker errors, zero selected tests, unrelated panics, wall timeouts and
 failed rendezvous/virtual deadlines are invalid runs, never successful detections.
-A surviving mutant or any invalid result fails the command. Fourteen runner checks
+A surviving mutant or any invalid result fails the command. Sixteen runner checks
 use real tiny Cargo test programs to verify those outcome classes, including
 process-group cleanup on POSIX timeout. The isolated worktree is removed even
 when a mutant fails; output contains the revision, tracked local patch hash,
@@ -1174,3 +1180,5 @@ python3 scripts/engine-mutations.py --features both --cases 32 --seed 241
 # Human-readable evidence, including per-suite boundary observations:
 python3 -m json.tool target/engine-mutations/report.json
 ```
+
+Custody policies and their generated properties live in the extracted `key-custody` crate. The mutation runner selects that package for epoch checks; ZMQ build choices apply to engine tests.

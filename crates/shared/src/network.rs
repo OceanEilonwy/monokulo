@@ -10,16 +10,8 @@
 //! creation could otherwise silently derive an address for one chain while never
 //! being scanned against it, or against the wrong one).
 //!
-//! Moved here from `engine`'s own `src/network.rs` alongside
-//! `key_custody` for WBS 2.1.3 (see that module's doc comment for the full
-//! reasoning): `key-custody-service`'s wire DTOs need the same mainnet/stagenet/
-//! testnet string mapping `engine` already uses everywhere else, and
-//! reimplementing a second copy of it there risked exactly the kind of drift
-//! this module's own doc comment above already warns against (a network name
-//! silently meaning something different in two places). `engine`'s
-//! `src/network.rs` now just re-exports this module verbatim, so every existing
-//! `crate::network::{parse_network, network_str}` call in the engine keeps
-//! compiling unchanged.
+//! Shared so the engine and monokulo read and write network names the same
+//! way; `engine`'s `src/network.rs` re-exports it.
 
 use monero::Network;
 

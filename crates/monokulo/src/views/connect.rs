@@ -31,6 +31,8 @@ pub struct ConnectViewModel {
     pub currency_options: Vec<crate::currencies::CurrencyOptionView>,
     /// Where the store's keys can be kept; empty unless there's a choice.
     pub custody_choices: Vec<CustodyChoice>,
+    /// Encrypted key entry, when the keys may go to SEV-SNP key storage.
+    pub snp_entry: Option<super::key_entry::SnpKeyEntry>,
 }
 
 /// One key custody backend a new store can choose (part 5).
@@ -58,6 +60,8 @@ pub struct PlatformConnectViewModel {
     pub network_testnet_selected: bool,
     pub currency_options: Vec<crate::currencies::CurrencyOptionView>,
     pub custody_choices: Vec<CustodyChoice>,
+    /// Encrypted key entry, when the keys may go to SEV-SNP key storage.
+    pub snp_entry: Option<super::key_entry::SnpKeyEntry>,
     /// Every store this user already has connected (any platform) - lets
     /// the confirm screen offer "use an existing store" instead of always
     /// forcing a brand-new tenant to be provisioned.
@@ -154,29 +158,29 @@ pub fn page(chrome: &PageChrome, data: &ConnectViewModel) -> Markup {
                             "your store's domains, ready for you to verify in Settings."
                         }
                     }
-                    label {
-                        "View key (hex)"
-                        input type="password" name="view_key_hex" value=(data.view_key_hex) required pattern="[0-9a-fA-F]{64}" autocomplete="off" placeholder="64 hex characters";
-                        span class="field-help" {
+                    (super::key_entry::key_fields(
+                        &data.view_key_hex,
+                        &data.spend_pubkey_hex,
+                        data.snp_entry.as_ref(),
+                        html! {
                             "The " em { "private view key" } " of a watch-only wallet - lets this "
                             "service detect incoming payments. This is not your spend key and cannot move funds by itself."
-                        }
-                    }
-                    label {
-                        "Spend public key (hex)"
-                        input type="text" name="spend_pubkey_hex" value=(data.spend_pubkey_hex) required pattern="[0-9a-fA-F]{64}" autocomplete="off" placeholder="64 hex characters";
-                        span class="field-help" {
+                        },
+                        html! {
                             "The " em { "public" } " half of your spend key pair (not the private spend "
                             "key - never enter that anywhere). Together with the view key above, this is everything needed to "
                             "watch a wallet without ever being able to spend from it."
-                        }
-                    }
+                        },
+                    ))
                     label {
                         "Network"
                         (network_select(data.network_mainnet_selected, data.network_stagenet_selected, data.network_testnet_selected))
                         span class="field-help" { "Leave on " code { "mainnet" } " unless this is a test wallet." }
                     }
                     (custody_select(&data.custody_choices))
+                    @if let Some(entry) = &data.snp_entry {
+                        (super::key_entry::snp_section(entry, (!data.custody_choices.is_empty()).then_some("key_custody_backend")))
+                    }
                     label {
                         "Base currency"
                         (currency_select(&data.currency_options))
@@ -246,21 +250,21 @@ pub fn platform_page(chrome: &PageChrome, data: &PlatformConnectViewModel) -> Ma
                 input type="hidden" name="return_url" value=(data.return_url);
                 input type="hidden" name="nonce" value=(data.nonce);
                 input type="hidden" name="mode" value="new";
-                label {
-                    "View key (hex)"
-                    input type="password" name="view_key_hex" value=(data.view_key_hex) required pattern="[0-9a-fA-F]{64}" autocomplete="off" placeholder="64 hex characters";
-                    span class="field-help" { "The private view key of a watch-only wallet." }
-                }
-                label {
-                    "Spend public key (hex)"
-                    input type="text" name="spend_pubkey_hex" value=(data.spend_pubkey_hex) required pattern="[0-9a-fA-F]{64}" autocomplete="off" placeholder="64 hex characters";
-                    span class="field-help" { "The public half of your spend key pair - never your private spend key." }
-                }
+                (super::key_entry::key_fields(
+                    &data.view_key_hex,
+                    &data.spend_pubkey_hex,
+                    data.snp_entry.as_ref(),
+                    html! { "The private view key of a watch-only wallet." },
+                    html! { "The public half of your spend key pair - never your private spend key." },
+                ))
                 label {
                     "Network"
                     (network_select(data.network_mainnet_selected, data.network_stagenet_selected, data.network_testnet_selected))
                 }
                 (custody_select(&data.custody_choices))
+                @if let Some(entry) = &data.snp_entry {
+                    (super::key_entry::snp_section(entry, (!data.custody_choices.is_empty()).then_some("key_custody_backend")))
+                }
                 label {
                     "Base currency"
                     (currency_select(&data.currency_options))
@@ -325,6 +329,7 @@ mod tests {
             network_testnet_selected: false,
             currency_options: vec![],
             custody_choices: vec![],
+            snp_entry: None,
         }
     }
 
@@ -426,6 +431,7 @@ mod tests {
             network_testnet_selected: false,
             currency_options: vec![],
             custody_choices: vec![],
+            snp_entry: None,
             existing_stores: vec![],
             unavailable: None,
         }

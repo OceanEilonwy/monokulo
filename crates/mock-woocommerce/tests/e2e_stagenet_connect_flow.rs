@@ -2,7 +2,7 @@
 //! everything WBS 1.4.1-1.4.4 built, wired together for real: a fresh
 //! monokulo account signs up, runs the *real* connect flow
 //! (`mock_woocommerce::run_connect_flow_with_wallet`) using the real stagenet
-//! **merchant** wallet's view key/spend pubkey from `e2e/wallets/merchant.json`
+//! **merchant** wallet's view key/spend pubkey from `e2e/wallets/merchant.db`
 //! against a real, stagenet-configured engine, creates a real order, pays it
 //! with a real, signed stagenet transaction sent from the **customer** wallet
 //! (`cli_wallet::send_payment` - the exact same fast, no-scanning,
@@ -278,7 +278,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
             "\n\nspender wallet has only {} piconero spendable across {} output(s) (needs at least \
              {MIN_SPENDABLE_PICONERO}) - fund it from the stagenet faucet \
              (https://stagenet-faucet.xmr-tw.org/, send to {}), record the resulting txid \
-             (stagenet-wallet-cli --wallet-file {} add_output <txid>), then wait ~20 minutes \
+             (wallet-cli --wallet-file {} add_output <txid>), then wait ~20 minutes \
              for it to mature.\n",
             balance.spendable_piconero, balance.spendable_outputs, spender.address, spender.path.display(),
         );

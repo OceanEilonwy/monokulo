@@ -564,7 +564,8 @@ impl SettingsTab {
         use SettingOwner::{Engine, Monokulo};
         match self {
             SettingsTab::General | SettingsTab::Abuse => &[(None, Monokulo)],
-            SettingsTab::Nodes | SettingsTab::Custody => &[(None, Engine)],
+            SettingsTab::Nodes => &[(None, Engine)],
+            SettingsTab::Custody => &[(None, Engine), (Some(CLI_DOWNLOADS), Monokulo)],
             SettingsTab::Payments => &[
                 (None, Engine),
                 (Some("Webhooks"), Engine),
@@ -584,6 +585,9 @@ impl SettingsTab {
     }
 }
 
+/// The Custody tab's heading over where merchants get key-custody-cli.
+const CLI_DOWNLOADS: &str = "key-custody-cli downloads";
+
 /// Where a setting shows on the admin page: its tab, and the heading it
 /// sits under on a tab that has more than one group. The one map both the
 /// page and the save use, so a setting can't be shown on one tab and then
@@ -597,6 +601,7 @@ pub fn setting_placement(key: &str, owner: SettingOwner) -> (SettingsTab, Option
             "abuse" | "rate_limit" => (SettingsTab::Abuse, None),
             "http_cache" | "database" | "server" | "crypto" => (SettingsTab::Server, None),
             "logging" => (SettingsTab::Logging, Some("Monokulo")),
+            "key_custody" => (SettingsTab::Custody, Some(CLI_DOWNLOADS)),
             _ => (SettingsTab::Other, None),
         },
         SettingOwner::Engine => match prefix {
@@ -945,7 +950,7 @@ fn custody_backends(fields: &[AdminScalarFieldView]) -> Vec<(String, bool)> {
 }
 
 /// The backend a key custody setting belongs to: one only that backend
-/// uses is named `key_custody.<backend>_...` (`key_custody.socket_path`).
+/// uses is named `key_custody.<backend>_...` (`key_custody.snp_product`).
 fn custody_backend_of<'a>(
     field: &AdminScalarFieldView,
     backends: &'a [(String, bool)],
@@ -960,10 +965,23 @@ fn custody_backend_of<'a>(
         })
 }
 
+/// The backend one of monokulo's own key custody settings is for:
+/// `key_custody.<backend>_...` (`key_custody.snp_entry_id_key`), all but
+/// the key-custody-cli links.
+fn monokulo_custody_backend_of(field: &AdminScalarFieldView) -> Option<&str> {
+    let rest = field.key.strip_prefix("key_custody.")?;
+    if rest.starts_with("cli_") {
+        return None;
+    }
+    rest.split('_').next()
+}
+
 /// A section of its own for each backend, shown only while it's turned on
-/// (at once with JavaScript, after saving without).
+/// (at once with JavaScript, after saving without): the engine's settings
+/// for it, then this site's own (what its key entry forms check).
 fn custody_backend_sections(
-    fields: &[AdminScalarFieldView],
+    engine_fields: &[AdminScalarFieldView],
+    monokulo_fields: &[AdminScalarFieldView],
     backends: &[(String, bool)],
 ) -> Markup {
     html! {
@@ -971,12 +989,30 @@ fn custody_backend_sections(
             section class="custody-backend" data-custody-backend=(backend) hidden[!enabled] {
                 h3 { "Key custody: " (backend) }
                 @let own: Vec<&AdminScalarFieldView> =
-                    fields.iter().filter(|f| custody_backend_of(f, backends) == Some(backend.as_str())).collect();
-                @if own.is_empty() {
+                    engine_fields.iter().filter(|f| custody_backend_of(f, backends) == Some(backend.as_str())).collect();
+                @let ours: Vec<&AdminScalarFieldView> =
+                    monokulo_fields.iter().filter(|f| monokulo_custody_backend_of(f) == Some(backend.as_str())).collect();
+                @if own.is_empty() && ours.is_empty() {
                     p class="hint" { "Nothing to set up for this backend." }
                 }
                 @for field in own { (scalar_field(field)) }
+                (site_custody_fields(&ours))
             }
+        }
+    }
+}
+
+/// This site's own settings for a key custody backend, under their own
+/// heading.
+fn site_custody_fields(fields: &[&AdminScalarFieldView]) -> Markup {
+    html! {
+        @if !fields.is_empty() {
+            h4 { "This site's key entry" }
+            p class="hint" {
+                "What this site's forms check before they encrypt a merchant's keys. They must match the engine's settings above: "
+                "they are checked against the engine when saved, and the status page shows an alert if they ever differ."
+            }
+            @for field in fields { (scalar_field(field)) }
         }
     }
 }
@@ -1416,10 +1452,27 @@ fn tab_fields(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
                 @let fields = group_fields(data, tab, *heading, *owner);
                 @if !fields.is_empty() {
                     @if let Some(heading) = heading { h3 { (heading) } }
-                    @for field in fields.iter().filter(|f| custody_backend_of(f, &backends).is_none()) {
+                    @for field in fields.iter().filter(|f| custody_backend_of(f, &backends).is_none() && (*owner == SettingOwner::Engine || monokulo_custody_backend_of(f).is_none())) {
                         (scalar_field(field))
                     }
-                    @if tab == SettingsTab::Custody { (custody_backend_sections(&data.engine_fields, &backends)) }
+                    @if tab == SettingsTab::Custody && *owner == SettingOwner::Engine {
+                        (custody_backend_sections(&data.engine_fields, &data.monokulo_fields, &backends))
+                    }
+                    // This site's own settings for a backend the engine
+                    // shows no section for (it can't be reached, or doesn't
+                    // list it) are still shown.
+                    @if tab == SettingsTab::Custody && *owner == SettingOwner::Monokulo {
+                        @let ours: Vec<&AdminScalarFieldView> = fields
+                            .iter()
+                            .copied()
+                            .filter(|f| {
+                                monokulo_custody_backend_of(f).is_some_and(|backend| {
+                                    engine_down || !backends.iter().any(|(listed, _)| listed == backend)
+                                })
+                            })
+                            .collect();
+                        (site_custody_fields(&ours))
+                    }
                 }
             }
         }
@@ -1596,8 +1649,60 @@ mod tests {
             ("proof_of_work.testnet", E, Nodes, None),
             ("key_custody.enabled_backends", E, Custody, None),
             ("key_custody.default_backend", E, Custody, None),
-            ("key_custody.socket_path", E, Custody, None),
-            ("key_custody.socket_connections", E, Custody, None),
+            ("key_custody.snp_product", E, Custody, None),
+            ("key_custody.snp_trusted_id_key", E, Custody, None),
+            ("key_custody.snp_min_guest_svn", E, Custody, None),
+            ("key_custody.snp_min_tcb", E, Custody, None),
+            ("key_custody.snp_handoff_url", E, Custody, None),
+            (
+                "key_custody.cli_download_url",
+                M,
+                Custody,
+                Some(CLI_DOWNLOADS),
+            ),
+            (
+                "key_custody.cli_source_url",
+                M,
+                Custody,
+                Some(CLI_DOWNLOADS),
+            ),
+            // Shown in the snp backend's own section (`custody_backend_sections`).
+            (
+                "key_custody.snp_entry_id_key",
+                M,
+                Custody,
+                Some(CLI_DOWNLOADS),
+            ),
+            (
+                "key_custody.snp_entry_min_guest_svn",
+                M,
+                Custody,
+                Some(CLI_DOWNLOADS),
+            ),
+            (
+                "key_custody.snp_entry_min_tcb",
+                M,
+                Custody,
+                Some(CLI_DOWNLOADS),
+            ),
+            (
+                "key_custody.snp_entry_required",
+                M,
+                Custody,
+                Some(CLI_DOWNLOADS),
+            ),
+            (
+                "key_custody.snp_bundles_per_user",
+                M,
+                Custody,
+                Some(CLI_DOWNLOADS),
+            ),
+            (
+                "key_custody.snp_bundles_per_user_per_min",
+                M,
+                Custody,
+                Some(CLI_DOWNLOADS),
+            ),
             ("payment.confirmations_required", E, Payments, None),
             ("payment.order_expiry_minutes", E, Payments, None),
             (
@@ -1709,9 +1814,10 @@ mod tests {
             SettingsTab::Nodes.href(),
             "/dashboard/admin/settings?tab=nodes"
         );
-        assert!(SettingsTab::Nodes.engine_only() && SettingsTab::Custody.engine_only());
+        assert!(SettingsTab::Nodes.engine_only());
         assert!(
-            !SettingsTab::Payments.engine_only()
+            !SettingsTab::Custody.engine_only()
+                && !SettingsTab::Payments.engine_only()
                 && !SettingsTab::Server.engine_only()
                 && !SettingsTab::Logging.engine_only()
         );
@@ -2491,7 +2597,7 @@ mod tests {
             ..Default::default()
         };
         let backends = || SettingKindView::ChoiceList {
-            choices: vec!["plain".into(), "socket".into()],
+            choices: vec!["plain".into(), "snp".into()],
         };
         let page = |enabled: &str| {
             let data = AdminSettingsViewModel {
@@ -2502,21 +2608,17 @@ mod tests {
                         "key_custody.default_backend",
                         "plain",
                         SettingKindView::Choice {
-                            choices: vec!["plain".into(), "socket".into()],
+                            choices: vec!["plain".into(), "snp".into()],
                         },
                     ),
                     field("key_custody.enabled_backends", enabled, backends()),
+                    field("key_custody.snp_trusted_id_key", "", SettingKindView::Path),
                     field(
-                        "key_custody.socket_path",
-                        "/run/kc.sock",
-                        SettingKindView::Path,
-                    ),
-                    field(
-                        "key_custody.socket_connections",
+                        "key_custody.snp_min_guest_svn",
                         "",
                         SettingKindView::Integer {
-                            min: Some(1),
-                            max: Some(1024),
+                            min: Some(0),
+                            max: Some(4_294_967_295),
                         },
                     ),
                 ],
@@ -2535,7 +2637,7 @@ mod tests {
         assert!(html.contains(r#"<input type="checkbox" name="key_custody.enabled_backends" value="plain" checked>"#), "{html}");
         assert!(
             html.contains(
-                r#"<input type="checkbox" name="key_custody.enabled_backends" value="socket">"#
+                r#"<input type="checkbox" name="key_custody.enabled_backends" value="snp">"#
             ),
             "{html}"
         );
@@ -2543,23 +2645,25 @@ mod tests {
             html.find(r#"name="key_custody.enabled_backends""#).unwrap()
                 < html.find(r#"name="key_custody.default_backend""#).unwrap()
         );
-        // The socket's path and its number of connections sit in the
-        // socket's own section, hidden while socket is off; plain has
-        // nothing to set.
-        let socket = html
-            .find(r#"<section class="custody-backend" data-custody-backend="socket" hidden>"#)
+        // The snp backend's device and minimum security version sit in its
+        // own section, hidden while snp is off; plain has nothing to set.
+        let snp = html
+            .find(r#"<section class="custody-backend" data-custody-backend="snp" hidden>"#)
             .expect(&html);
         assert!(
-            html.find(r#"name="key_custody.socket_path""#).unwrap() > socket,
-            "{html}"
-        );
-        // Left empty (one per CPU core), the number is an empty box.
-        assert!(
-            html.find(r#"<input type="number" name="key_custody.socket_connections" value="" min="1" max="1024""#).unwrap() > socket,
+            html.find(r#"name="key_custody.snp_trusted_id_key""#)
+                .unwrap()
+                > snp,
             "{html}"
         );
         assert!(
-            html.find(r#"name="key_custody.default_backend""#).unwrap() < socket,
+            html.find(r#"name="key_custody.snp_min_guest_svn""#)
+                .unwrap()
+                > snp,
+            "{html}"
+        );
+        assert!(
+            html.find(r#"name="key_custody.default_backend""#).unwrap() < snp,
             "{html}"
         );
         assert!(html.contains(r#"<section class="custody-backend" data-custody-backend="plain"><h3>Key custody: plain</h3><p class="hint">Nothing to set up"#), "{html}");
@@ -2568,9 +2672,9 @@ mod tests {
             "shown as soon as it's ticked, with JavaScript"
         );
 
-        let html = page("plain,socket");
-        assert!(html.contains(r#"<section class="custody-backend" data-custody-backend="socket"><h3>Key custody: socket</h3>"#), "{html}");
-        assert!(html.contains(r#"value="socket" checked"#), "{html}");
+        let html = page("plain,snp");
+        assert!(html.contains(r#"<section class="custody-backend" data-custody-backend="snp"><h3>Key custody: snp</h3>"#), "{html}");
+        assert!(html.contains(r#"value="snp" checked"#), "{html}");
     }
 
     #[test]

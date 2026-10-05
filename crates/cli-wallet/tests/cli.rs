@@ -1,22 +1,22 @@
-//! Drives the real `stagenet-wallet-cli` binary through the commands that
+//! Drives the real `wallet-cli` binary through the commands that
 //! need no node: creating a wallet, then an interactive session run over
 //! stdin, as a person would type it. Commands that talk to a node are
-//! covered by hand against stagenet (see the crate README).
+//! covered by hand against stagenet (see the crate README), except that
+//! one fails to reach an unreachable node.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 fn temp_dir(test: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("stagenet-wallet-cli-{test}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("wallet-cli-{test}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
 fn cli(dir: &Path, args: &[&str], stdin: &str) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_stagenet-wallet-cli"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wallet-cli"))
         .args(["--wallet-dir", dir.to_str().unwrap()])
         .args(args)
         .current_dir(dir)
@@ -42,6 +42,14 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// One value from a wallet file, read straight from its database.
+fn query<T: rusqlite::types::FromSql>(wallet: &Path, sql: &str) -> T {
+    rusqlite::Connection::open_with_flags(wallet, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .unwrap()
+        .query_row(sql, [], |row| row.get(0))
+        .unwrap()
+}
+
 #[test]
 fn a_new_wallet_can_be_opened_and_driven_interactively() {
     let dir = temp_dir("interactive");
@@ -55,7 +63,7 @@ fn a_new_wallet_can_be_opened_and_driven_interactively() {
         .to_string();
     assert!(address.starts_with('5'), "a stagenet address: {address}");
     assert!(
-        dir.join("alice.json").exists(),
+        dir.join("alice.db").exists(),
         "the whole wallet is one file"
     );
     assert!(
@@ -113,11 +121,22 @@ fn a_new_wallet_can_be_opened_and_driven_interactively() {
         .expect("the 25-word seed");
 
     // Everything set above persisted in the one file.
-    let file: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("alice.json")).unwrap()).unwrap();
-    assert_eq!(file["description"], "test wallet");
-    assert_eq!(file["settings"]["unit"], "millinero");
-    assert_eq!(file["accounts"][0]["subaddress_labels"][1], "shop till");
+    let file = dir.join("alice.db");
+    assert_eq!(
+        query::<String>(&file, "SELECT description FROM wallet"),
+        "test wallet"
+    );
+    assert_eq!(
+        query::<String>(&file, "SELECT unit FROM wallet"),
+        "millinero"
+    );
+    assert_eq!(
+        query::<String>(
+            &file,
+            "SELECT label FROM subaddresses WHERE account_index = 0 AND address_index = 1"
+        ),
+        "shop till"
+    );
 
     // The seed restores the same wallet.
     let restored = cli(
@@ -205,6 +224,107 @@ fn one_command_runs_and_exits_and_existing_wallets_are_never_replaced() {
 
     let testnet = cli(&dir, &["--testnet", "--wallet-file", "bob", "version"], "");
     assert!(!testnet.status.success());
+    assert!(
+        stderr(&testnet).contains("is a stagenet wallet, not testnet"),
+        "{}",
+        stderr(&testnet)
+    );
+}
+
+#[test]
+fn a_testnet_wallet_is_created_with_the_flag_and_opened_without_it() {
+    let dir = temp_dir("testnet");
+    let created = cli(
+        &dir,
+        &["--testnet", "--generate-new-wallet", "erin", "wallet_info"],
+        "",
+    );
+    assert!(created.status.success(), "{}", stderr(&created));
+    let text = stdout(&created);
+    let address = text
+        .lines()
+        .find_map(|l| l.strip_prefix("Generated new wallet: "))
+        .unwrap()
+        .to_string();
+    // Prefix 53 encodes to a leading `9` or `A`, depending on the keys.
+    assert!(
+        address.starts_with(['9', 'A']),
+        "a testnet address: {address}"
+    );
+    assert!(text.contains("Network type: Testnet"), "{text}");
+    assert_eq!(
+        query::<String>(&dir.join("erin.db"), "SELECT network FROM wallet"),
+        "testnet"
+    );
+
+    // No flag: the file says testnet. Its subaddresses and integrated
+    // addresses are testnet's, and stagenet addresses are refused.
+    let session = cli(
+        &dir,
+        &["--wallet-file", "erin"],
+        "address new shop\n\
+         integrated_address 0123456789abcdef\n\
+         address_book add 5AAAA stagenet\n\
+         wallet_info\n\
+         exit\n",
+    );
+    assert!(session.status.success(), "{}", stderr(&session));
+    let out = stdout(&session);
+    assert!(out.contains(&format!("Opened wallet: {address}")), "{out}");
+    assert!(out.contains("  B"), "a testnet subaddress: {out}");
+    assert!(
+        out.contains("Matching integrated address: A"),
+        "a testnet integrated address: {out}"
+    );
+    assert!(out.contains("Network type: Testnet"), "{out}");
+    assert!(
+        stderr(&session).contains("failed to parse address 5AAAA"),
+        "{}",
+        stderr(&session)
+    );
+
+    let stagenet = cli(
+        &dir,
+        &["--stagenet", "--wallet-file", "erin", "version"],
+        "",
+    );
+    assert!(!stagenet.status.success());
+    assert!(
+        stderr(&stagenet).contains("is a testnet wallet, not stagenet"),
+        "{}",
+        stderr(&stagenet)
+    );
+    let both = cli(
+        &dir,
+        &[
+            "--stagenet",
+            "--testnet",
+            "--wallet-file",
+            "erin",
+            "version",
+        ],
+        "",
+    );
+    assert!(!both.status.success(), "the flags conflict");
+
+    // An unreachable node fails as a testnet node.
+    let unreachable = cli(
+        &dir,
+        &[
+            "--daemon-address",
+            "127.0.0.1:9",
+            "--wallet-file",
+            "erin",
+            "bc_height",
+        ],
+        "",
+    );
+    assert!(!unreachable.status.success());
+    assert!(
+        stderr(&unreachable).contains("cannot reach the testnet node at http://127.0.0.1:9"),
+        "{}",
+        stderr(&unreachable)
+    );
 }
 
 #[test]
@@ -241,4 +361,47 @@ fn transfer_arguments_are_checked_before_any_node_is_contacted() {
             stderr(&output)
         );
     }
+}
+
+#[test]
+fn rescan_takes_a_block_range_and_leaves_the_file_alone_without_a_node() {
+    let dir = temp_dir("rescan");
+    assert!(cli(&dir, &["--generate-new-wallet", "dave", "version"], "")
+        .status
+        .success());
+    let before = std::fs::read(dir.join("dave.db")).unwrap();
+    // An unreachable node: the bad arguments fail before connecting, and
+    // the good one fails to connect.
+    let node = ["--daemon-address", "127.0.0.1:9"];
+    for (args, expected) in [
+        (vec!["rescan"], "<BLOCKS>"),
+        (vec!["rescan", "200"], "a bare number is ambiguous"),
+        (vec!["rescan", "lots"], "expected ^<blocks back>"),
+        (vec!["rescan", "5..x"], "expected ^<blocks back>"),
+        (
+            vec!["rescan", "http://node:38089", "^10"],
+            "unexpected argument",
+        ),
+        (
+            vec!["rescan", "^200..^100"],
+            "cannot reach the stagenet node at http://127.0.0.1:9",
+        ),
+    ] {
+        let output = cli(
+            &dir,
+            &[&node[..], &["--wallet-file", "dave"], &args[..]].concat(),
+            "",
+        );
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            stderr(&output).contains(expected),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
+    assert_eq!(
+        std::fs::read(dir.join("dave.db")).unwrap(),
+        before,
+        "a rescan that never reached a node changes nothing"
+    );
 }

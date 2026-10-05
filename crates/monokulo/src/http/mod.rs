@@ -58,6 +58,7 @@ pub mod engine_page;
 pub mod fx;
 mod home;
 mod invites;
+pub mod key_entry;
 mod login;
 mod logout;
 mod logs_page;
@@ -174,6 +175,9 @@ pub struct Engine {
     /// The engine page's link to the engine's activity
     /// (`docs/engine_visualizer.md`): one poller per watched network.
     pub activity: Arc<crate::engine_view::relay::Relay>,
+    /// Bundles handed out with key entry forms, for `key-custody-cli`
+    /// (`key_entry`).
+    pub key_bundles: key_entry::KeyBundles,
 }
 
 impl Engine {
@@ -183,6 +187,7 @@ impl Engine {
             activity: Arc::new(crate::engine_view::relay::Relay::new(client.clone())),
             client,
             status_cache: status_page::new_status_cache(),
+            key_bundles: key_entry::KeyBundles::default(),
         }
     }
 }
@@ -690,6 +695,19 @@ pub fn build_router(state: AppState) -> Router {
         "/static/engine-view.js",
         axum::routing::get(pay::engine_view_script),
     );
+    let router = router
+        .route(
+            "/static/key-custody.js",
+            axum::routing::get(key_entry::script),
+        )
+        .route(
+            "/static/key-custody.wasm",
+            axum::routing::get(key_entry::module),
+        )
+        .route(
+            "/key-custody/bundles/{id}",
+            axum::routing::get(key_entry::bundle),
+        );
     let router = router.route("/static/ssexi.js", axum::routing::get(pay::ssexi_script));
     let router = router.route(
         "/static/fx-glue.js",
@@ -889,6 +907,7 @@ pub(crate) async fn page_chrome(
     // (docs/engine_scaling.md section 5).
     if user.is_some_and(|user| user.is_admin) {
         alerts.extend(status_page::known_slow_blocks(&state.engine));
+        alerts.extend(status_page::known_snp_policy_alert(state));
     }
     let mut chrome = crate::views::PageChrome::from_user(user, current_path)
         .with_health(status_page::known_health(&state.engine))

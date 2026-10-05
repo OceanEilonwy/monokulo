@@ -46,6 +46,10 @@ fn monokulo(dir: &Path) -> Command {
         .env("HOME", dir.join("home"))
         .current_dir(dir)
         .stdin(Stdio::null());
+    // Windows can't open a socket without it.
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        command.env("SystemRoot", root);
+    }
     command
 }
 
@@ -234,12 +238,16 @@ fn monokulo_starts_without_a_file_and_follows_one() {
         .arg("--server-bind")
         .arg(format!("127.0.0.1:{port}"))
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(dir.0.join("start.log")).unwrap())
         .spawn()
         .unwrap();
     let up = listening(&mut child, port);
     stop(child);
-    assert!(up, "monokulo started with no options file");
+    assert!(
+        up,
+        "monokulo started with no options file: {}",
+        std::fs::read_to_string(dir.0.join("start.log")).unwrap_or_default()
+    );
     assert!(data.join("monokulo").join("monokulo.db").exists());
     assert!(
         data.join("monokulo").join("engine.db").exists(),
@@ -249,10 +257,12 @@ fn monokulo_starts_without_a_file_and_follows_one() {
 
     let path = dir.0.join("monokulo.toml");
     let port = free_port();
+    // The path as a TOML literal string: a Windows path's backslashes
+    // aren't escapes.
     std::fs::write(
         &path,
         format!(
-            "[server]\nbind = \"127.0.0.1:{port}\"\n[database]\npath = \"{}\"\n",
+            "[server]\nbind = \"127.0.0.1:{port}\"\n[database]\npath = '{}'\n",
             dir.0.join("mine.db").display()
         ),
     )

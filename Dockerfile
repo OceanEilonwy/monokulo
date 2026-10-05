@@ -1,12 +1,10 @@
 # Monokulo for production: one image holding monokulo (`monokulo`, with the
-# engine inside it by default), the standalone engine (`monokulo-engine`) and
-# the optional key storage service (`key-custody-server`).
+# engine inside it by default) and the standalone engine (`monokulo-engine`).
 # `docker build -t monokulo .` builds it; compose.yaml runs it.
 #
 # The default command runs monokulo, the engine inside it; `monokulo-engine`
-# and `key-custody-server` are on the PATH for setups that run them as
-# containers of their own. The SQLite databases go in /var/lib/monokulo, the
-# image's one volume.
+# is on the PATH for setups that run it as a container of its own. The SQLite
+# databases go in /var/lib/monokulo, the image's one volume.
 
 # The base image only supplies rustup: the build installs the latest nightly,
 # as rust-toolchain.toml names it.
@@ -38,13 +36,16 @@ COPY . .
 # the scan at once (docs/monero_zmq.md); it does nothing until a node setting
 # names a `zmq_pub`. `--build-arg ENGINE_FEATURES=` builds without it.
 ARG ENGINE_FEATURES=zmq
+# Which release this is, for the key-custody-cli links monokulo's key entry
+# shows (CI passes them; a local build links the source).
+ARG MONOKULO_RELEASE_TAG=
+ARG MONOKULO_GIT_COMMIT=
 RUN cargo build --release --locked \
         ${ENGINE_FEATURES:+--features engine/${ENGINE_FEATURES}} \
         -p engine --bin monokulo-engine \
         -p monokulo --bin monokulo \
-        -p key-custody-server --bin key-custody-server \
  && mkdir /out \
- && cp target/release/monokulo-engine target/release/monokulo target/release/key-custody-server /out/
+ && cp target/release/monokulo-engine target/release/monokulo /out/
 
 FROM debian:${DEBIAN_VERSION}-slim
 # libstdc++: the engine's RandomX is C++.

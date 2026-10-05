@@ -302,42 +302,213 @@ Invariants every implementation (including future ones) must uphold:
    boundary — they're public data readable directly from a transaction's inputs,
    unrelated to any wallet's keys, and the chain scanner reads them directly.
 
-### 6.3 `PlainKeyCustody`
+### 6.3 Backends
 
-The in-process backend (`plain`); `socket` forwards the same calls to a separate
-`key-custody-server`. In-process `RwLock<HashMap<WalletHandle, WalletEntry>>`,
-where `WalletEntry` holds the `ViewPair` plus a `Mutex<Option<CachedTable>>` for the
-per-range table cache described above. No encryption at rest, no process isolation.
+- **`plain`** (`PlainKeyCustody`): in-process `RwLock<HashMap<WalletHandle, WalletEntry>>`,
+  where `WalletEntry` holds the `ViewPair` plus a `Mutex<Option<CachedTable>>` for the
+  per-range table cache described above. No encryption at rest, no isolation. Keys
+  arrive in the clear (from monokulo's forms, which relay them once).
+- **`snp`** (`key_custody::snp::SnpKeyCustody`): for an engine running inside an AMD
+  SEV-SNP confidential VM (`deploy/sev-snp/`).
+  - *In use*: the same in-memory registry as `plain`, in memory the hardware encrypts
+    against the host and the hypervisor.
+  - *In transit*: merchants' keys arrive encrypted to the backend itself (§6.5); it
+    refuses keys in the clear.
+  - *At rest*: `seal` encrypts a store's keys (AES-256-GCM) under a master key. The
+    master key is stored wrapped, once per engine image, in `snp_master_keys`, under a
+    key the security processor derives from the chip and the image's **launch
+    measurement** (`SNP_GET_DERIVED_KEY`, policy + measurement), mixed with the ID key
+    digest the launch's own report attests. The measurement and not the ID block's
+    family/image IDs: the firmware doesn't mix the ID key into derived keys, so a host
+    could launch its own image with a self-signed ID block carrying the same IDs and
+    derive the same key; and the attested ID key, so the same image relaunched under
+    another ID key can't unwrap either.
+  - *Upgrades*: a new image can't unwrap the old image's wrap. It gets the master key
+    from the engine it replaces (`key_custody.snp_handoff_url`): it sends a bundle for
+    the `handoff` action; the old engine checks, against AMD's chain, that it comes
+    from an image signed by its own ID key at the same security version or later, and
+    encrypts the master key to it, attesting the answer with a report of its own whose
+    REPORT_DATA binds the envelope (`POST /api/v1/admin/key-custody/handoff`). The new
+    engine takes only such an answer, from an engine signed by its own ID key. So every
+    upgrade signed with the same ID key keeps every store's keys, and nothing else can
+    take them or plant a master key.
+  - *Firmware*: the wrapping key is also bound to the platform's committed TCB (its
+    firmware version) when the wrap was made (`FIELD_TCB_VERSION`). The firmware
+    derives a key only for a TCB no newer than the one it has committed to, so after a
+    rollback to older firmware the wrap doesn't open, whatever the settings say; the
+    backend waits and says so. After a firmware update, the next start opens the wrap
+    at its old TCB and wraps the key again at the new one, replacing it.
+  - *At start*: a wrap for this image is unwrapped; no wraps at all is a new
+    installation (a master key is made); only other images' wraps leaves the backend
+    waiting for a handoff, reported unavailable with the reason. A store whose sealed
+    keys don't open (another chip, a lost master key) is reported unavailable, and its
+    owner enters its keys again.
+  - The engine checks its own report at start: launched with an ID block signed by the
+    trusted ID key (`key_custody.snp_trusted_id_key`, else the official one), at
+    `key_custody.snp_min_guest_svn` or later, on firmware at `key_custody.snp_min_tcb`
+    and at this release's own floor or later (below), not debuggable, and with no migration agent allowed (guest policy bit 18,
+    which could export its memory). Otherwise the backend doesn't start and a stand-in
+    reports why, so `plain` stores carry on.
+  - *Rollback*: each wrap records the security version of the image that made it. An
+    image older than any wrap in the database is refused the master key, so once an
+    upgrade has run, the host can't go back to an older image with a known flaw. A host
+    that restores a copy of the database from before the upgrade defeats this: the
+    database is the host's.
 
 ### 6.4 Key custody per store
 
 Each store's keys live in one backend, named on its row (`tenants.key_custody_backend`):
-`plain` (in the engine's memory) or `socket` (a separate `key-custody-server` process).
-The engine's custody is a `CustodyRouter` over the enabled backends, itself a
-`KeyCustody`, which routes every call on a handle to the backend that issued it.
+`plain` or `snp`. The engine's custody is a `CustodyRouter` over the enabled backends,
+itself a `KeyCustody`, which routes every call on a handle to the backend that issued
+it. The trait and the backends are the `key-custody` crate.
 
-- **Settings** (applied as soon as they're saved): `key_custody.enabled_backends`,
-  `key_custody.default_backend` (where new stores go unless they ask for another),
-  `key_custody.socket_path` and `key_custody.socket_connections`. Turning a backend
-  off leaves its stores unscanned, and reported as such to their owners, until it's
-  turned on again or they move; nothing is deleted.
-- **Socket connections**: a connection to the `key-custody-server` carries one call at
-  a time, so the engine scans as many stores on the socket backend at once as it keeps
-  connections: `key_custody.socket_connections`, or one per CPU core when that is left
-  empty. They are opened as calls overlap. A new number is set on the client in use,
-  so the stores registered through it stay registered.
+- **Build**: the `snp` backend (the `/dev/sev-guest` device, AMD's key distribution
+  service, the handoff route) is compiled in only with the engine's `snp` Cargo
+  feature (`key-custody`'s `snp`; monokulo passes it through for its embedded
+  engine). It is off by default: release binaries and the Docker image leave it out,
+  and such an engine refuses `snp` in `key_custody.enabled_backends`, so it can't be
+  saved and silently not run.
+- **Settings**: `key_custody.enabled_backends` and `key_custody.default_backend` (where
+  new stores go unless they ask for another) apply as soon as they're saved. Turning a
+  backend off leaves its stores unscanned, and reported as such to their owners, until
+  it's turned on again or they move; nothing is deleted. The `snp` backend's settings
+  (`key_custody.snp_product`, `snp_trusted_id_key`, `snp_min_guest_svn`, `snp_min_tcb`,
+  `snp_handoff_url`) apply at a restart and can't be changed through the settings API;
+  it starts the first time it is enabled.
 - **Moving a store** (`PUT /api/v1/admin/tenant/key-custody`, and the store settings
-  page): the keys are entered again and must be the store's own wallet (spend key,
-  view key and network checked against its primary address). Nothing is ever copied
-  between backends. The new registration and the row update happen before the old
-  registration is removed, so the store always has a live handle.
-- **Recovery**: a backend that loses a store's handle (it restarted, or it was
-  replaced by pointing the socket backend elsewhere) is noticed on the next call, and
-  the scan loop registers the store again from its sealed keys within seconds. While
-  a store has no handle its scan cursor stays put, and catch-up scans the blocks it
-  missed once it's back, so no payment is lost.
-- **Reporting**: `/status` lists each backend's health and the stores left unserved
-  (`custody_disabled`, `custody_unavailable`); monokulo alerts each owner.
+  page): the keys are entered again and must be the store's own wallet (checked against
+  its primary address: by the keys for `plain`, by the address the backend derives for
+  `snp`). Nothing is ever copied between backends. The new registration and the row
+  update happen before the old registration is removed, so the store always has a live
+  handle.
+- **Recovery**: a backend that loses a store's handle is noticed on the next call
+  (`check_state`, for a backend that can lose its wallets independently of the engine),
+  and the scan loop registers the store again from its sealed keys within seconds.
+  While a store has no handle its scan cursor stays put, and catch-up scans the blocks
+  it missed once it's back, so no payment is lost.
+- **Reporting**: `/status` lists each backend's health (`snp` waiting for its master
+  key, or unable to start, says why) and the stores left unserved (`custody_disabled`,
+  `custody_unavailable`); monokulo alerts each owner.
+
+### 6.5 Keys sent encrypted to the `snp` backend
+
+`key_custody::transport`. The backend makes an X25519 key pair at start and asks the
+security processor for a report whose REPORT_DATA is a hash of the public key. A
+**bundle** carries that report, AMD's certificates for it (fetched from AMD's KDS, kept
+fresh twice a day for the revocation list), the public key and a single-use
+**challenge** issued for one action (`create`, or `move` for one store), accepted for
+an hour (`POST /api/v1/admin/key-custody/bundle`,
+`POST /api/v1/admin/tenant/key-custody/bundle`).
+
+Each key entry form monokulo shows takes one. So that one account can't expire
+everyone else's by opening forms over and over, each account holds at most
+`key_custody.snp_bundles_per_user` (20) at once, and opening another drops that
+account's own oldest. It may also open at most `key_custody.snp_bundles_per_user_per_min`
+(30) a minute; past that, the form shows an alert asking them to wait a minute, and
+no challenge is taken from the engine. The engine's own cap (10,000 outstanding, oldest
+first) remains behind them.
+
+The client checks the bundle: the report chains to AMD's pinned root for its product,
+with a revocation list in force; the guest can't be debugged; its image is signed by
+the trusted ID key at the minimum security version or later, on firmware at the minimum
+TCB and this release's floor or later; and the public key is the one the report
+vouches for. Then it
+encrypts the keys with HPKE (RFC 9180: X25519, HKDF-SHA256, AES-256-GCM), binding the
+challenge, action and store. Monokulo and the engine's HTTP layer only relay the
+**envelope** (`encrypted_keys`); only the backend opens it, once.
+
+Two clients, one implementation:
+
+- **The browser**: monokulo's key entry forms run `key-custody` built as WebAssembly
+  (`static/key-custody.js`, built by monokulo's build script). It protects against
+  everything except monokulo itself being compromised when the page loads, since
+  monokulo serves the code.
+- **`key-custody-cli`**: the merchant's own tool, released with every version and
+  linked (version-matched, with its source) from the forms, which also work without
+  JavaScript through it. It pins AMD's roots and the official ID key itself, so it holds
+  even against a compromised monokulo. `--trust-id-key` replaces the official key for
+  an instance running its own signed image, with a warning.
+
+The trusted ID key is the one whose digest is in
+`crates/key-custody/src/official_id_key_digest.txt` (made with `cargo xtask snp-id-key`;
+the private key is the `snp-id-key` environment's secret `SNP_ID_KEY`), unless an
+instance sets its own.
+
+**Monokulo's own policy.** What the forms check a bundle against is monokulo's
+configuration, not the engine's, so whoever runs the engine's machine can't loosen it:
+`key_custody.snp_entry_id_key` (empty: the official key), `snp_entry_min_guest_svn` and
+`snp_entry_min_tcb`, shown in the snp backend's section of the admin page's Custody tab.
+The engine reports its own (`snp_trusted_id_key`, `snp_min_guest_svn`, `snp_min_tcb`)
+on `/status` (`key_custody_snp_trust`), and the two must match:
+
+- a save of monokulo's is checked against the engine's first, and refused, each
+  differing setting named, if they differ (a changed value isn't saved while the engine
+  can't be asked);
+- while they differ (the engine's changed at its restart, or the options files were
+  edited), `snp` isn't offered: it isn't a choice on any form, keys for it are refused,
+  and a store whose engine default is `snp` goes to the next backend, named; the status
+  page and the admin's alert bar show a red alert with what differs.
+
+`key_custody.snp_entry_required` makes `snp` the only way in: no form for keys in the
+clear is shown and typed keys are never sent on, whatever the engine reports, so an
+engine (or a host faking its `/status`) can't have keys typed in the clear by saying it
+has no `snp` backend. Key entry is then unavailable until `snp` is usable.
+
+The CLI command monokulo prints quotes every value for the shell.
+
+The forms link a `gh attestation verify` command for the downloaded CLI: the checksum
+next to a download only shows the file arrived intact; build provenance shows the
+project's release workflow built it.
+
+#### Limits
+
+What the `snp` backend does not hide from the host, by design or for now:
+
+- **Which payments are a store's, and their amounts.** SEV-SNP keeps a store's keys
+  from being read or used anywhere but a trusted engine; it doesn't keep the store's
+  payment history from the host, because the engine scans with the keys for whoever
+  asks, and the host can ask in three ways:
+  - *the node*: the host runs `monerod`, so it can feed the engine crafted blocks and
+    see from what the engine records and reports which outputs it matched;
+  - *the database*: it is on the host's disk, unencrypted. The host reads every
+    recorded payment and amount, and can edit the scan state (add orders at
+    subaddress indices of its choosing, rewind scan cursors) so the engine scans what
+    it wants;
+  - *the admin API*: the engine token crosses the link from monokulo, and the
+    engine's settings and environment are the host's, so the host can create orders
+    itself.
+
+  Authenticating the scan state alone wouldn't close this (the node and the API
+  remain). Encrypting the database inside the guest would hide recorded payments at
+  rest, but not the node route; it isn't done.
+- **The link from monokulo.** The engine serves plain HTTP, and the host sees it: the
+  engine token, `plain` stores' keys and the engine's answers (payments, `/status`).
+  The host holds the token anyway (the engine's environment is on its disk) and
+  controls the node and database, so encrypting the link wouldn't keep any of this
+  from it. Keys for `snp` stores are encrypted to the attested engine, and with
+  `snp_entry_required` a forged `/status` can't get keys typed in the clear. Against
+  the network, the deploy guide requires a private network or a tunnel (WireGuard, or
+  a TLS proxy in the guest, which monokulo reaches with an `https://` `engine.url`).
+- **Time.** The engine's clock is the host's. Bundle and certificate freshness, the
+  revocation list's validity and challenge expiry are checked against it, so a host can
+  make a stale revocation list look current. The merchant's client checks a bundle
+  against its own clock.
+- **The firmware floor.** The engine's `snp_min_tcb` is a setting, and the engine's
+  settings are the host's. Two things don't depend on it:
+  - each release carries a floor per product
+    (`crates/key-custody/src/release_tcb_floors.txt`, from AMD's security bulletins,
+    raised before each release). The engine (where it is part of the measured image),
+    the browser's WASM and `key-custody-cli` all hold reports to the higher of it and
+    the configured floor, so no setting lowers it;
+  - the master key's wrap is bound to the committed TCB, so firmware rolled back below
+    the version it was last wrapped at can't open it.
+
+  What remains: a host that kept a copy of the database from before a firmware update
+  can roll the firmware back to the older version and open that older wrap, as long as
+  the older version is at or above the floor of the release it boots. A release that
+  raises the floor for a published break closes this for firmware below it; an older
+  release image, with its older floor, can still be booted with such a copy, the same
+  limit as rolling back the image (above).
 
 ## 7. Chain Scanning & Payment Detection
 

@@ -1,5 +1,7 @@
 //! Builds the POS terminal app (`pos-ui/`, Solid 2 + Vite) into `OUT_DIR`,
-//! where `http::pay` embeds it; the built files are not kept in git.
+//! where `http::pay` embeds it, and key custody's browser module (the
+//! `key-custody` crate for `wasm32-unknown-unknown`), which `http::key_entry`
+//! embeds; the built files are not kept in git.
 //!
 //! A debug build gets Solid's development build (its diagnostics, unminified
 //! code); a release build gets the minified production one.
@@ -9,6 +11,10 @@
 //! in `crates/monokulo/pos-ui`). This script never installs anything itself:
 //! a build that reaches the network would break offline builds and make
 //! builds depend on the registry.
+
+// Built separately for WebAssembly (`build_key_custody_wasm`); a build
+// dependency only so its crates are fetched first.
+extern crate key_custody as _;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -67,6 +73,92 @@ fn main() {
             out.join(file).exists(),
             "the POS build did not produce {file}"
         );
+    }
+
+    build_key_custody_wasm(&manifest);
+    release_identity();
+}
+
+/// Builds the `key-custody` crate's browser module (`--features wasm`,
+/// without its backends) into `OUT_DIR/key_custody.wasm`, with the same
+/// lockfile, offline: its dependencies are this crate's build dependencies
+/// too, so they're already fetched. Always optimised for size, whatever this
+/// build's profile: it is downloaded by every key entry form.
+fn build_key_custody_wasm(manifest: &Path) {
+    let workspace = manifest.join("../..");
+    for input in [
+        "crates/key-custody/src",
+        "crates/key-custody/Cargo.toml",
+        "crates/snp-attest/src",
+        "crates/snp-attest/Cargo.toml",
+        "Cargo.lock",
+        ".cargo/config.toml",
+    ] {
+        println!("cargo:rerun-if-changed={}", workspace.join(input).display());
+    }
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let target_dir = out.join("key-custody-wasm");
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let mut command = Command::new(cargo);
+    command
+        // From the workspace, so its `.cargo/config.toml` applies (the
+        // WebAssembly target's randomness comes from the page).
+        .current_dir(&workspace)
+        .args([
+            "build",
+            "--offline",
+            "--locked",
+            "--release",
+            "--package",
+            "key-custody",
+            "--lib",
+            "--no-default-features",
+            "--features",
+            "wasm",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--target-dir",
+        ])
+        .arg(&target_dir)
+        .env("CARGO_PROFILE_RELEASE_OPT_LEVEL", "s")
+        .env("CARGO_PROFILE_RELEASE_LTO", "true")
+        .env("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "1")
+        .env("CARGO_PROFILE_RELEASE_PANIC", "abort")
+        .env("CARGO_PROFILE_RELEASE_STRIP", "true");
+    // What this build was given for its own target (coverage
+    // instrumentation, a wrapper) is not for WebAssembly.
+    for var in [
+        "RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "CARGO_BUILD_RUSTFLAGS",
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_TARGET_DIR",
+        "CARGO_BUILD_TARGET",
+        "CARGO_MAKEFLAGS",
+        "LLVM_PROFILE_FILE",
+    ] {
+        command.env_remove(var);
+    }
+    let status = command.status().unwrap_or_else(|e| {
+        panic!("could not run cargo to build key custody's browser module: {e}")
+    });
+    assert!(
+        status.success(),
+        "\n\nBuilding key custody's browser module failed. It needs the WebAssembly target \
+         (rust-toolchain.toml installs it; otherwise `rustup target add wasm32-unknown-unknown`).\n"
+    );
+    let built = target_dir.join("wasm32-unknown-unknown/release/key_custody.wasm");
+    std::fs::copy(&built, out.join("key_custody.wasm"))
+        .unwrap_or_else(|e| panic!("copying {}: {e}", built.display()));
+}
+
+/// Which release this build is, for the key-custody-cli download links: CI
+/// sets `MONOKULO_RELEASE_TAG` on a version tag's build, and
+/// `MONOKULO_GIT_COMMIT` on every build it makes.
+fn release_identity() {
+    for var in ["MONOKULO_RELEASE_TAG", "MONOKULO_GIT_COMMIT"] {
+        println!("cargo:rerun-if-env-changed={var}");
     }
 }
 

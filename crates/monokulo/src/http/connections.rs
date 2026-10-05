@@ -36,8 +36,17 @@ use super::{ApiError, AppState, AuthedUser};
 pub struct CreateConnectionRequest {
     pub platform: String,
     pub site_url: String,
+    /// The store's keys in the clear, for a backend that takes them that
+    /// way; empty when `encrypted_keys` carries them.
+    #[serde(default)]
     pub view_key_hex: String,
+    #[serde(default)]
     pub spend_pubkey_hex: String,
+    /// The store's keys encrypted to the engine's SEV-SNP key storage
+    /// (from `key-custody-cli`), for the `snp` backend, which takes them
+    /// only that way.
+    #[serde(default)]
+    pub encrypted_keys: Option<String>,
     pub network: Option<String>,
     /// Extra domains the store's checkout will be embedded on, besides the
     /// site's own. Each joins the store's domains waiting for DNS
@@ -78,6 +87,9 @@ pub(super) struct CreateConnectionFields {
     pub site_url: String,
     pub view_key_hex: String,
     pub spend_pubkey_hex: String,
+    /// The keys encrypted to the engine's SEV-SNP key storage, instead of
+    /// the two above (`key_entry`).
+    pub encrypted_keys: Option<String>,
     pub network: Option<String>,
     pub domains: Vec<String>,
     pub confirmations_required: Option<u64>,
@@ -136,16 +148,33 @@ pub(super) async fn create_connection_for_user(
             ))
         })?;
 
+    // Keys typed in the clear never go on to a backend that takes them only
+    // encrypted: with no backend named, the engine's default decides, so its
+    // status is read first if it isn't known.
+    if req.key_custody_backend.is_none() {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(1500),
+            super::status_page::get_status_cached(&state.engine),
+        )
+        .await;
+    }
+    let (key_custody_backend, keys) = super::key_entry::store_keys(
+        state,
+        req.key_custody_backend.as_deref(),
+        &req.view_key_hex,
+        &req.spend_pubkey_hex,
+        req.encrypted_keys.as_deref(),
+    )
+    .map_err(CreateConnectionError::BadRequest)?;
     let created = state
         .engine
         .client
         .create_tenant(CreateTenantRequest {
-            view_key_hex: req.view_key_hex,
-            spend_pubkey_hex: req.spend_pubkey_hex,
+            keys,
             network: req.network,
             confirmations_required: req.confirmations_required,
             order_expiry_seconds: req.order_expiry_seconds,
-            key_custody_backend: req.key_custody_backend,
+            key_custody_backend,
         })
         .await
         .map_err(|e| match e {
@@ -230,6 +259,7 @@ pub async fn create_connection(
     let fields = CreateConnectionFields {
         platform: req.platform,
         site_url: req.site_url,
+        encrypted_keys: req.encrypted_keys,
         view_key_hex: req.view_key_hex,
         spend_pubkey_hex: req.spend_pubkey_hex,
         network: req.network,

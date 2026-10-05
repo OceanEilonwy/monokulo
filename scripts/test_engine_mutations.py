@@ -48,6 +48,16 @@ class OutcomeTests(unittest.TestCase):
                     time.sleep(0.02)
             return result
 
+    def test_custody_mutation_selects_the_extracted_package(self):
+        command = RUNNER.test_command("router::properties::epoch", "zmq")
+        self.assertIn("key-custody", command)
+        self.assertNotIn("--features", command)
+
+    def test_engine_mutations_select_the_requested_features(self):
+        command = RUNNER.test_command("work::test", "zmq")
+        self.assertIn("engine", command)
+        self.assertEqual(command[command.index("--features")+1], "zmq")
+
     def test_healthy_assertion_is_a_baseline(self):
         result = self.exercise("#[test] fn healthy(){assert_eq!(1,1);}")
         self.assertTrue(result["passed"])

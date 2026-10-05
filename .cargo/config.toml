@@ -1,2 +1,8 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# The key custody verifier built for the browser (`key-custody`'s `wasm`
+# feature): `getrandom` there takes its bytes from the page's
+# `crypto.getRandomValues`, through the function `key_custody::wasm` defines.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", 'getrandom_backend="custom"']

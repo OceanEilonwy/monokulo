@@ -78,11 +78,40 @@ impl Product {
 }
 
 impl TcbVersion {
+    /// The raw 8 bytes as the firmware's `TCB_VERSION` integer, as a derived
+    /// key request carries it.
+    pub fn as_u64(&self) -> u64 {
+        u64::from_le_bytes(self.raw)
+    }
+
+    /// Whether every security patch level is at least `other`'s: firmware
+    /// at `self` is no older than `other` in any part.
+    pub fn at_least(&self, other: &TcbVersion) -> bool {
+        self.fmc.unwrap_or(0) >= other.fmc.unwrap_or(0)
+            && self.bootloader >= other.bootloader
+            && self.tee >= other.tee
+            && self.snp >= other.snp
+            && self.microcode >= other.microcode
+    }
+
+    /// The patch levels as `bootloader,tee,snp,microcode` (with `fmc,`
+    /// first on Turin and later).
+    pub fn to_text(&self) -> String {
+        let levels = format!(
+            "{},{},{},{}",
+            self.bootloader, self.tee, self.snp, self.microcode
+        );
+        match self.fmc {
+            Some(fmc) => format!("fmc {fmc}, {levels}"),
+            None => levels,
+        }
+    }
+
     /// Decodes an 8-byte `TCB_VERSION` per the product's own generation
     /// layout. Legacy (Milan/Genoa/Bergamo/Siena):
     /// `[bootloader, tee, _, _, _, _, snp, microcode]`. Turin+:
     /// `[fmc, bootloader, tee, snp, _, _, _, microcode]`.
-    fn decode(raw: [u8; 8], product: Product) -> Self {
+    pub fn decode(raw: [u8; 8], product: Product) -> Self {
         if product.is_turin_generation() {
             TcbVersion {
                 raw,
@@ -125,6 +154,10 @@ pub struct AttestationReport {
     pub sig_algo: u32,
     pub current_tcb: TcbVersion,
     pub reported_tcb: TcbVersion,
+    /// The TCB the platform has committed to (0x1E0): firmware older than
+    /// it can no longer be loaded, and no derived key can be bound to a TCB
+    /// above it.
+    pub committed_tcb: TcbVersion,
     /// 64 bytes on Milan/Genoa/Bergamo/Siena; only the first 8 are
     /// meaningful on Turin+ (the rest zero) - see `crate::kds`'s hwID
     /// handling, which trims accordingly per AMD's own KDS behavior.
@@ -136,18 +169,46 @@ pub struct AttestationReport {
     pub report_data: [u8; 64],
     /// The launch measurement of the guest (0x90): which image is running.
     pub measurement: [u8; 48],
+    /// The guest's security version (0x04), from its ID block: raised by a
+    /// release that must not be rolled back from.
+    pub guest_svn: u32,
+    /// The privilege level the report was requested at (0x30).
+    pub vmpl: u32,
+    /// Report flags (0x48): bit 0 author key present, bit 1 chip key
+    /// masked, bits 2-4 which key signed (0 = VCEK).
+    pub flags: u32,
+    /// SHA-384 of the public key that signed the guest's ID block (0xE0);
+    /// all zero when the guest was launched without one.
+    pub id_key_digest: [u8; 48],
     pub signature: RawSignature,
 }
+
+/// Which key signed a report (flags bits 2-4).
+pub const SIGNING_KEY_VCEK: u32 = 0;
 
 /// Guest policy bit 19: the hypervisor may debug the guest, reading and
 /// writing its memory. A report from such a guest proves nothing about
 /// what it keeps secret.
 pub const POLICY_DEBUG: u64 = 1 << 19;
 
+/// Guest policy bit 18: a migration agent may be associated with the guest,
+/// which can export its memory. Key custody refuses such guests.
+pub const POLICY_MIGRATE_MA: u64 = 1 << 18;
+
 impl AttestationReport {
     /// Whether the guest's policy lets the hypervisor debug it.
     pub fn debug_allowed(&self) -> bool {
         self.policy & POLICY_DEBUG != 0
+    }
+
+    /// Which key signed the report: [`SIGNING_KEY_VCEK`] for the chip's own.
+    pub fn signing_key(&self) -> u32 {
+        (self.flags >> 2) & 0b111
+    }
+
+    /// Whether the guest was launched with an ID block (its digest is set).
+    pub fn has_id_key(&self) -> bool {
+        self.id_key_digest.iter().any(|b| *b != 0)
     }
 }
 
@@ -166,6 +227,7 @@ pub fn parse(bytes: &[u8], product: Product) -> Result<AttestationReport, Report
 
     let current_tcb_raw: [u8; 8] = raw[0x38..0x40].try_into().unwrap();
     let reported_tcb_raw: [u8; 8] = raw[0x180..0x188].try_into().unwrap();
+    let committed_tcb_raw: [u8; 8] = raw[0x1E0..0x1E8].try_into().unwrap();
     let mut chip_id = [0u8; 64];
     chip_id.copy_from_slice(&raw[0x1A0..0x1E0]);
     let policy = u64::from_le_bytes(raw[0x08..0x10].try_into().unwrap());
@@ -173,6 +235,11 @@ pub fn parse(bytes: &[u8], product: Product) -> Result<AttestationReport, Report
     report_data.copy_from_slice(&raw[0x50..0x90]);
     let mut measurement = [0u8; 48];
     measurement.copy_from_slice(&raw[0x90..0xC0]);
+    let u32_at = |at: usize| u32::from_le_bytes(raw[at..at + 4].try_into().unwrap());
+    let guest_svn = u32_at(0x04);
+    let vmpl = u32_at(0x30);
+    let flags = u32_at(0x48);
+    let id_key_digest: [u8; 48] = raw[0xE0..0x110].try_into().unwrap();
 
     let mut r_le = [0u8; 72];
     let mut s_le = [0u8; 72];
@@ -185,12 +252,26 @@ pub fn parse(bytes: &[u8], product: Product) -> Result<AttestationReport, Report
         sig_algo,
         current_tcb: TcbVersion::decode(current_tcb_raw, product),
         reported_tcb: TcbVersion::decode(reported_tcb_raw, product),
+        committed_tcb: TcbVersion::decode(committed_tcb_raw, product),
         chip_id,
         policy,
         report_data,
         measurement,
+        guest_svn,
+        vmpl,
+        flags,
+        id_key_digest,
         signature: RawSignature { r_le, s_le },
     })
+}
+
+/// The hwID KDS expects in the VCEK URL path - full 64-byte `chip_id` on
+/// legacy products, first 8 bytes only on Turin+.
+pub fn hw_id_for_product(product: Product, chip_id: &[u8; 64]) -> Vec<u8> {
+    match product {
+        Product::Turin => chip_id[..8].to_vec(),
+        _ => chip_id.to_vec(),
+    }
 }
 
 #[cfg(test)]
@@ -240,6 +321,29 @@ mod tests {
         );
         bytes[0x08..0x10].copy_from_slice(&0x30000u64.to_le_bytes());
         assert!(!parse(&bytes, Product::Milan).unwrap().debug_allowed());
+    }
+
+    /// The ID-block fields key custody checks come from their offsets.
+    #[test]
+    fn identity_fields_are_read_from_their_offsets() {
+        let mut bytes = synthetic_report_bytes();
+        bytes[0x04..0x08].copy_from_slice(&7u32.to_le_bytes());
+        bytes[0x30..0x34].copy_from_slice(&1u32.to_le_bytes());
+        bytes[0x48..0x4C].copy_from_slice(&(1u32 << 2 | 1).to_le_bytes());
+        bytes[0xE0] = 0xD1;
+        bytes[0x10F] = 0xD2;
+        let report = parse(&bytes, Product::Genoa).unwrap();
+        assert_eq!(report.guest_svn, 7);
+        assert_eq!(report.vmpl, 1);
+        assert_eq!(report.signing_key(), 1, "bits 2-4");
+        assert_eq!(
+            (report.id_key_digest[0], report.id_key_digest[47]),
+            (0xD1, 0xD2)
+        );
+        assert!(report.has_id_key());
+        assert!(!parse(&synthetic_report_bytes(), Product::Genoa)
+            .unwrap()
+            .has_id_key());
     }
 
     #[test]

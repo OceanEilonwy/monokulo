@@ -1220,8 +1220,8 @@ pub async fn run_scan_tick_with(
 /// at the same time: the losing registration is removed again.
 /// With `handled_epoch`, first asks the key-custody backend whether it still
 /// holds the wallets registered with it (`KeyCustody::check_state`, task
-/// 5.8). If it has lost them since `handled_epoch` (a sidecar that
-/// restarted with empty memory), every handle in `wallet_handles` is
+/// 5.8). If it has lost them since `handled_epoch` (a backend in another
+/// process that restarted with empty memory), every handle in `wallet_handles` is
 /// useless, so the map is cleared (once per epoch, however many network
 /// loops notice) and this network's tenants are registered again from their
 /// sealed material. Nobody has to enter keys again.
@@ -11259,7 +11259,7 @@ pub(crate) mod tests {
                 store
                     .create_tenant(
                         &NewTenant {
-                            key_custody_backend: "socket".into(),
+                            key_custody_backend: "snp".into(),
                             sealed_key_material: sealed.clone(),
                             primary_address: "4x".into(),
                             network: "mainnet".into(),
@@ -11336,16 +11336,16 @@ pub(crate) mod tests {
         use crate::key_custody::{CustodyRouter, PlainKeyCustody};
         use std::sync::Arc;
         let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-        let socket: Arc<dyn KeyCustody> = Arc::new(ForgetfulKeyCustody::default());
+        let snp: Arc<dyn KeyCustody> = Arc::new(ForgetfulKeyCustody::default());
         let both = HashMap::from([
             ("plain".to_owned(), Arc::clone(&plain)),
-            ("socket".to_owned(), Arc::clone(&socket)),
+            ("snp".to_owned(), Arc::clone(&snp)),
         ]);
         let router = CustodyRouter::new(both.clone(), "plain");
         let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
         let store = Store::open_in_memory().unwrap();
         let mut ids = HashMap::new();
-        for backend in ["plain", "socket"] {
+        for backend in ["plain", "snp"] {
             let sealed = router.seal_in(backend, &material).await.unwrap();
             let tenant = store
                 .create_tenant(
@@ -11379,7 +11379,7 @@ pub(crate) mod tests {
         );
         let plain_handle = handles.read()[&ids["plain"]];
 
-        // The socket backend is turned off: its store drops out, quietly,
+        // The snp backend is turned off: its store drops out, quietly,
         // and the other store keeps its handle.
         router.replace(
             HashMap::from([("plain".to_owned(), Arc::clone(&plain))]),
@@ -11396,7 +11396,7 @@ pub(crate) mod tests {
             .await,
             0
         );
-        assert!(!handles.read().contains_key(&ids["socket"]));
+        assert!(!handles.read().contains_key(&ids["snp"]));
         assert_eq!(handles.read()[&ids["plain"]], plain_handle);
 
         // Turned back on: the store is registered again from its sealed keys.
@@ -11412,9 +11412,9 @@ pub(crate) mod tests {
             .await,
             1
         );
-        let socket_handle = handles.read()[&ids["socket"]];
+        let snp_handle = handles.read()[&ids["snp"]];
         router
-            .derive_subaddress(socket_handle, SubaddressIndex::default(), Network::Mainnet)
+            .derive_subaddress(snp_handle, SubaddressIndex::default(), Network::Mainnet)
             .await
             .unwrap();
         assert_eq!(
@@ -11430,11 +11430,11 @@ pub(crate) mod tests {
         use crate::key_custody::{CustodyRouter, PlainKeyCustody};
         use std::sync::Arc;
         let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-        let socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+        let snp: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let router = CustodyRouter::new(
             HashMap::from([
                 ("plain".to_owned(), Arc::clone(&plain)),
-                ("socket".to_owned(), Arc::clone(&socket)),
+                ("snp".to_owned(), Arc::clone(&snp)),
             ]),
             "plain",
         );
@@ -11443,8 +11443,8 @@ pub(crate) mod tests {
         let tenant = store
             .create_tenant(
                 &NewTenant {
-                    key_custody_backend: "socket".into(),
-                    sealed_key_material: router.seal_in("socket", &material).await.unwrap(),
+                    key_custody_backend: "snp".into(),
+                    sealed_key_material: router.seal_in("snp", &material).await.unwrap(),
                     primary_address: "4x".into(),
                     network: "mainnet".into(),
                     confirmations_required: None,
@@ -11472,7 +11472,7 @@ pub(crate) mod tests {
         // The backend loses the store without saying so (no epoch change):
         // the next scan call finds out, and the next tick registers it again.
         let handle = handles.read()[&tenant.id];
-        socket.remove_wallet(handle).await.unwrap();
+        snp.remove_wallet(handle).await.unwrap();
         let tx = unrelated_tx(1);
         let window = ScanIndices::range(0..1);
         assert!(
@@ -11496,13 +11496,13 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        // The socket backend is pointed at another server (a new instance
+        // The snp backend is pointed at another server (a new instance
         // under the same name): the store is registered there on the next tick.
-        let new_socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+        let new_snp: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         router.replace(
             HashMap::from([
                 ("plain".to_owned(), plain),
-                ("socket".to_owned(), Arc::clone(&new_socket)),
+                ("snp".to_owned(), Arc::clone(&new_snp)),
             ]),
             "plain",
         );
@@ -11518,7 +11518,7 @@ pub(crate) mod tests {
             1
         );
         let handle = handles.read()[&tenant.id];
-        new_socket
+        new_snp
             .derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet)
             .await
             .unwrap();
@@ -11533,18 +11533,18 @@ pub(crate) mod tests {
         use crate::key_custody::{CustodyRouter, PlainKeyCustody};
         use std::sync::Arc;
         let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-        let socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+        let snp: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let router = CustodyRouter::new(
             HashMap::from([
                 ("plain".to_owned(), Arc::clone(&plain)),
-                ("socket".to_owned(), socket),
+                ("snp".to_owned(), snp),
             ]),
             "plain",
         );
         let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
         let store = Store::open_in_memory().unwrap();
         let mut ids = HashMap::new();
-        for (network, backend) in [("mainnet", "plain"), ("stagenet", "socket")] {
+        for (network, backend) in [("mainnet", "plain"), ("stagenet", "snp")] {
             let tenant = store
                 .create_tenant(
                     &NewTenant {
@@ -11578,9 +11578,9 @@ pub(crate) mod tests {
         }
 
         // The stagenet store's backend is replaced; mainnet's loop runs first.
-        let socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+        let snp: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         router.replace(
-            HashMap::from([("plain".to_owned(), plain), ("socket".to_owned(), socket)]),
+            HashMap::from([("plain".to_owned(), plain), ("snp".to_owned(), snp)]),
             "plain",
         );
         let pass = register_missing_wallets_reporting(
@@ -12481,15 +12481,15 @@ pub(crate) mod tests {
         use std::sync::Arc;
         let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let forgetful = Arc::new(ForgetfulKeyCustody::default());
-        let socket: Arc<dyn KeyCustody> = Arc::<ForgetfulKeyCustody>::clone(&forgetful);
+        let snp: Arc<dyn KeyCustody> = Arc::<ForgetfulKeyCustody>::clone(&forgetful);
         let router = CustodyRouter::new(
-            HashMap::from([("plain".to_owned(), plain), ("socket".to_owned(), socket)]),
+            HashMap::from([("plain".to_owned(), plain), ("snp".to_owned(), snp)]),
             "plain",
         );
         let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
         let store = Store::open_in_memory().unwrap();
         let mut ids = HashMap::new();
-        for backend in ["plain", "socket"] {
+        for backend in ["plain", "snp"] {
             let tenant = store
                 .create_tenant(
                     &NewTenant {
@@ -12520,10 +12520,8 @@ pub(crate) mod tests {
             .await,
             2
         );
-        let (plain_handle, socket_handle) = (
-            handles.read()[&ids["plain"]],
-            handles.read()[&ids["socket"]],
-        );
+        let (plain_handle, snp_handle) =
+            (handles.read()[&ids["plain"]], handles.read()[&ids["snp"]]);
 
         forgetful.epoch.store(1, Ordering::SeqCst);
         assert_eq!(
@@ -12538,11 +12536,7 @@ pub(crate) mod tests {
             1
         );
         assert_eq!(handles.read()[&ids["plain"]], plain_handle, "untouched");
-        assert_ne!(
-            handles.read()[&ids["socket"]],
-            socket_handle,
-            "registered again"
-        );
+        assert_ne!(handles.read()[&ids["snp"]], snp_handle, "registered again");
         assert_eq!(handled_epoch.load(Ordering::SeqCst), 1);
     }
 

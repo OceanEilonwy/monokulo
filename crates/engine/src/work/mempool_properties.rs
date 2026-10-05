@@ -319,6 +319,7 @@ proptest! {
         callers in prop::collection::vec((0u8..4, 1u8..=255, any::<u32>()), 2..9),
     ) {
         let state = MempoolState::default();
+        let handles: [WalletHandle; 8] = std::array::from_fn(|_| WalletHandle::generate());
         let barrier = std::sync::Barrier::new(callers.len() + 1);
         let expected: std::collections::BTreeSet<_> = callers.iter().flat_map(|(tx,mask,_)| (0..8u8).filter(move |i| mask & (1 << i) != 0).map(move |i| (format!("tx-{tx}"), TenantId::new(format!("tenant-{i}"))))).collect();
         std::thread::scope(|scope| {
@@ -326,7 +327,7 @@ proptest! {
                 let state = &state;
                 let barrier = &barrier;
                 scope.spawn(move || {
-                    let windows: Vec<_> = (0..8u8).filter(|i| mask & (1 << i) != 0).map(|i| (TenantId::new(format!("tenant-{i}")),WalletHandle::from_bytes([i;16]),ScanIndices::new([window]))).collect();
+                    let windows: Vec<_> = (0..8u8).filter(|i| mask & (1 << i) != 0).map(|i| (TenantId::new(format!("tenant-{i}")),handles[usize::from(i)],ScanIndices::new([window]))).collect();
                     let txid = format!("tx-{tx}");
                     barrier.wait();
                     let (guard,claimed) = state.claim(&txid,&windows.iter().collect::<Vec<_>>());
@@ -534,7 +535,7 @@ async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
     let impaired = (
         b.clone(),
         if failure == 0 {
-            WalletHandle::from_bytes([0; 16])
+            WalletHandle::generate()
         } else {
             bh
         },

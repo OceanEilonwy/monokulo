@@ -171,7 +171,7 @@ impl SettingValue for PathBuf {
 }
 
 /// An optional value: an empty string means "not set". Several settings
-/// default to unset (`public_url`, `key_custody.socket_path`), and this
+/// default to unset (`public_url`, `key_custody.snp_trusted_id_key`), and this
 /// keeps that meaning in the type instead of in every reader.
 impl<T: SettingValue> SettingValue for Option<T> {
     fn parse(raw: &str) -> Result<Self, String> {

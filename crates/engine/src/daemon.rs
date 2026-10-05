@@ -145,14 +145,14 @@ impl ChainBlock {
 /// decoded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScanTx {
-    pub input: shared::key_custody::ScanInput,
+    pub input: crate::key_custody::ScanInput,
     pub key_images: Vec<[u8; 32]>,
 }
 
 impl ScanTx {
     pub fn of(tx: &Transaction) -> Self {
         Self {
-            input: shared::key_custody::ScanInput::of(tx),
+            input: crate::key_custody::ScanInput::of(tx),
             key_images: tx
                 .prefix
                 .inputs
