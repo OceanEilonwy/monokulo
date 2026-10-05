@@ -1,0 +1,38 @@
+[
+  {
+    "height": 3102660,
+    "block_hash": "3b9730261a42e08003c85e3f1462888a333573cc730bbcfb60ba247428333da6",
+    "txid": "4f2395b98dbc2a524fb8e52667d09040e1ad7d1c4645762df7492e868e4c8f5c",
+    "type": 6,
+    "tagged": true,
+    "outputs": 2,
+    "network": "testnet",
+    "file": "testnet_bulletproof_plus.hex",
+    "expected_wallet_outputs": [],
+    "captured_at": "2026-10-05",
+    "inputs": 2
+  },
+  {
+    "height": 1900003,
+    "block_hash": "f5268d7c9c564056543f97ba6c61f2137820b81c9e9ba70d14d7781a97470c15",
+    "txid": "572e4e93bbe8906ed7574c201a189385a176d0b473ab995a4e09b5a21aec55c6",
+    "type": 5,
+    "tagged": false,
+    "outputs": 2,
+    "network": "testnet",
+    "file": "testnet_clsag.hex",
+    "expected_wallet_outputs": [],
+    "captured_at": "2026-10-05",
+    "inputs": 2
+  },
+  {
+    "file": "ringct_two_inputs.hex",
+    "txid": "5a420317e377d3d95b652fb93e65cfe97ef7d89e04be329a2ca94e73ec57b74e",
+    "type": 4,
+    "tagged": false,
+    "inputs": 2,
+    "outputs": 2,
+    "expected_wallet_outputs": [],
+    "source": "monero-rs 0.22.0 blockdata::transaction::tests::transaction_hash"
+  }
+]

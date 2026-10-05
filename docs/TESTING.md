@@ -1107,3 +1107,31 @@ DB reopen. This is controlled generation replacement, not an OS scheduling proof
 Run the `concurrency` and `mempool` engine tests (both feature builds), and
 `cargo test --manifest-path fuzz/Cargo.toml --locked --test interleavings` (append
 `--features zmq`). Existing daily property and Loom jobs discover the expansions.
+
+## Recorded and generated paying RingCT histories
+
+The shared portfolio harness selects a recorded-corpus mode with input bit 7;
+bit 6 selects whole/pruned daemon body presentation. This mode has 2–4 wallets
+and 3–4 transactions. It combines the frozen paying Bulletproof2 transaction
+(output 1/minor 1/exactly 7,000,000,000 piconero), untouched recorded foreign
+Bulletproof2/CLSAG/tagged Bulletproof+ transactions, and generated mixed-wallet
+additional-key payments. The independent ledger now carries explicit output
+indexes, including noncontiguous known recipients. Positive amount decryption
+for CLSAG/tagged Bulletproof+ additionally uses clearly labelled synthetic pruned
+bases; these preserve the known ciphertext/commitment but have no network-valid
+signatures. Untouched recorded signatures remain in the foreign corpus.
+
+A fixed 36-history sweep forces inline/worker × whole/pruned × three foreign
+variants × exact/partial/insufficient goals, with thresholds 1–3. Histories include
+pool observation, mining, multiple forks, spent disagreement, void/restoration,
+custody replacement, DB reopen and delivery. Exact amounts, output indexes,
+wallet isolation, statuses, stable whole-transaction IDs and recovery obligations
+are checked throughout. The fixture-curation test checks frozen IDs, input/output
+counts, RingCT type, tagged/untagged shape, signatures and known recipient results
+using the crypto library directly. Recorded provenance and upstream licensing
+are in `tests/fixtures/RECORDED_TRANSACTIONS.md` and its JSON manifest.
+
+Run `cargo test -p engine --lib recorded_ringct` and the existing `mixed_wallet`
+properties in both feature builds. Reviewed recorded/CLSAG portfolio seeds are
+shared with the existing sanitizer fuzzer and daily CI; no external node is needed
+for any test or fuzz execution.

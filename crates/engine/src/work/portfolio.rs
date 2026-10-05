@@ -30,6 +30,7 @@ enum Location {
     Block(u64),
 }
 struct Output {
+    index: usize,
     wallet: usize,
     minor: u32,
     amount: u64,
@@ -58,20 +59,47 @@ pub(crate) fn explore(data: &[u8]) {
         .unwrap();
     runtime.block_on(async {
         let mut bytes = Bytes(data, 0);
-        let wallets = 2 + usize::from(bytes.next() % 3);
-        let count = 2 + usize::from(bytes.next() % 3);
+        let first = bytes.next();
+        let recorded = first & 128 != 0;
+        let wallets = 2 + usize::from(first % 3);
+        let count = if recorded {
+            3 + usize::from(bytes.next() % 2)
+        } else {
+            2 + usize::from(bytes.next() % 3)
+        };
         let mode = bytes.next() % 3;
         let worker = bytes.next() % 2 == 1;
-        let pairs = (0..wallets)
+        let mut pairs = (0..wallets)
             .map(|i| pair(10 + i as u8 * 2))
             .collect::<Vec<_>>();
+        if recorded {
+            pairs[0] = super::portfolio_fixture::recorded_pair();
+        }
         let mut outputs = Vec::new();
         let mut transactions = Vec::new();
         for t in 0..count {
             let mut planned = Vec::new();
-            if t == 0 {
+            if recorded && t == 0 {
+                transactions.push(super::portfolio_fixture::recorded_payment(
+                    (mode + (first >> 4)) % 3,
+                ));
+                outputs.push(vec![Output {
+                    index: 1,
+                    wallet: 0,
+                    minor: 1,
+                    amount: 7_000_000_000,
+                }]);
+                continue;
+            }
+            if recorded && t == count - 1 {
+                transactions.push(super::portfolio_fixture::recorded_foreign(bytes.next()));
+                outputs.push(vec![]);
+                continue;
+            }
+            if t == 0 || (recorded && t == 1) {
                 for wallet in 0..wallets {
                     planned.push(Output {
+                        index: planned.len(),
                         wallet,
                         minor: 1,
                         amount: 1 + u64::from(bytes.next()),
@@ -88,6 +116,7 @@ pub(crate) fn explore(data: &[u8]) {
                 };
                 let amount = 1 + u64::from(bytes.next()) + 256 * u64::from(bytes.next());
                 planned.push(Output {
+                    index: planned.len(),
                     wallet,
                     minor,
                     amount,
@@ -104,6 +133,7 @@ pub(crate) fn explore(data: &[u8]) {
         let (store, path) = super::history_fixture::file_store();
         let custody = FlakyKeyCustody::default();
         let daemon = World::new().await;
+        daemon.body_variant(recorded && first & 64 != 0);
         let mut tenants = Vec::new();
         let mut invoices = Vec::new();
         for (wallet, pair) in pairs.iter().enumerate() {
@@ -426,10 +456,10 @@ async fn settle(
                     .iter()
                     .enumerate()
                     .flat_map(|(t, v)| {
-                        v.iter().enumerate().filter_map(move |(i, o)| {
+                        v.iter().filter_map(move |o| {
                             (o.wallet == invoice.wallet && o.minor == invoice.minor).then_some((
                                 txids[t].clone(),
-                                i as i64,
+                                o.index as i64,
                                 o.amount,
                                 match locations[t] {
                                     Location::Block(h) => Some(h as i64),
@@ -474,7 +504,7 @@ async fn settle(
         let mut eligible = 0u64;
         let mut mined = false;
         for (t, planned) in outputs.iter().enumerate() {
-            for (i, o) in planned.iter().enumerate() {
+            for o in planned {
                 if o.wallet != invoice.wallet || o.minor != invoice.minor {
                     continue;
                 }
@@ -482,7 +512,7 @@ async fn settle(
                     Location::Block(h) => Some(h as i64),
                     Location::Pool | Location::Gone => None,
                 };
-                expected.insert((txids[t].clone(), i as i64), (o.amount, height));
+                expected.insert((txids[t].clone(), o.index as i64), (o.amount, height));
                 if voided[t] {
                     continue;
                 }

@@ -12,7 +12,7 @@ use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use crate::key_custody::WalletHandle;
 use crate::node_test_support::{AdversarialNode, Behavior, Rpc};
 use crate::store::{db::Class, Db, SharedStore, Store, TenantId};
-use crate::work::{fast_pass, run_round, ScanState};
+use crate::work::{fast_pass, run_round_at, ScanState};
 use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
@@ -44,6 +44,7 @@ pub(super) struct World {
     nodes: [Arc<AdversarialNode>; 3],
     chain: RefCell<BTreeMap<u64, String>>,
     known: RefCell<Vec<monero::Transaction>>,
+    pruned: Cell<bool>,
     pub(super) now: Cell<i64>,
     pub(super) ceiling: Cell<u64>,
     pub(super) mismatch: Cell<bool>,
@@ -95,6 +96,7 @@ impl World {
             nodes,
             chain: RefCell::new(BTreeMap::new()),
             known: RefCell::default(),
+            pruned: Cell::new(false),
             now: Cell::new(crate::now_unix()),
             ceiling: Cell::new(0),
             mismatch: Cell::new(false),
@@ -102,6 +104,18 @@ impl World {
             receiver,
             expected_events: RefCell::default(),
             _server: server,
+        }
+    }
+    pub(super) fn body_variant(&self, pruned: bool) {
+        self.pruned.set(pruned);
+        self.healthy();
+    }
+    fn healthy(&self) {
+        for node in &self.nodes {
+            *node.behavior.lock() = Behavior {
+                pruned: self.pruned.get(),
+                ..Behavior::default()
+            };
         }
     }
     pub(super) async fn advance(&self) {
@@ -242,9 +256,7 @@ impl World {
             assert!(counts.attempted >= counts.completed + counts.cancelled);
         }
         tokio::time::resume();
-        for n in &self.nodes {
-            *n.behavior.lock() = Behavior::default();
-        }
+        self.healthy();
         // Disagreement and primary failure while the real fast path scans.
         self.nodes[0].behavior.lock().failures = Rpc::Pool.bit();
         custody.fail(tenants[0].1);
@@ -275,14 +287,20 @@ impl World {
                 > before
         );
         custody.recover(tenants[0].1);
-        *self.nodes[0].behavior.lock() = Behavior::default();
+        self.healthy();
         let trace = db
             .run(Class::Admin, |s| {
                 Ok::<_, crate::store::StoreError>(s.fail_nth_access(Some(0)))
             })
             .await
             .unwrap();
-        let _ = run_round(state, &inputs(db, custody, self, tenants), Duration::ZERO).await;
+        let _ = run_round_at(
+            state,
+            &inputs(db, custody, self, tenants),
+            Duration::ZERO,
+            self.now.get(),
+        )
+        .await;
         db.run(Class::Admin, |s| {
             s.fail_nth_access(None);
             Ok::<_, crate::store::StoreError>(())
@@ -316,7 +334,13 @@ impl World {
         for n in &self.nodes {
             n.behavior.lock().failures = Rpc::Tip.bit();
         }
-        let _ = run_round(state, &inputs(db, custody, self, tenants), Duration::ZERO).await;
+        let _ = run_round_at(
+            state,
+            &inputs(db, custody, self, tenants),
+            Duration::ZERO,
+            self.now.get(),
+        )
+        .await;
         for (i, (t, _)) in tenants.iter().enumerate() {
             assert_eq!(
                 store
@@ -329,16 +353,17 @@ impl World {
             );
         }
         assert_eq!(money(), funds_before, "outage changed money");
-        for n in &self.nodes {
-            *n.behavior.lock() = Behavior::default();
-        }
+        self.healthy();
     }
     pub(super) fn check_events(&self, store: &Store, invoices: &[Invoice]) {
         let mut last_status = BTreeMap::new();
-        for d in store
+        let mut events = store
             .due_webhook_deliveries_for_test(i64::MAX, 1000)
-            .unwrap()
-        {
+            .unwrap();
+        // FIFO is enqueue-ID order, not retry/attempt timestamp order. Fast
+        // scans use wall time while history rounds deliberately use virtual UTC.
+        events.sort_unstable_by_key(|d| d.delivery_id);
+        for d in events {
             let invoice = invoices.iter().find(|i| i.id == d.order_id).unwrap();
             let hook = store.list_webhooks(&invoice.tenant).unwrap();
             let owner = hook.iter().find(|h| h.id == d.webhook_id).unwrap();

@@ -615,3 +615,97 @@ fn combined_portfolio_interactions_have_fixed_positive_controls() {
         crate::work::portfolio::explore(&data);
     }
 }
+
+#[test]
+fn recorded_ringct_shapes_and_recipient_expectations_are_frozen() {
+    use crate::work::portfolio_fixture::{recorded_foreign, recorded_pair};
+    use monero::blockdata::transaction::TxOutTarget;
+    let manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/recorded_transactions.json"
+    ))
+    .unwrap();
+    for which in 0..3 {
+        let tx = recorded_foreign(which);
+        let id = tx_id_hex(&tx);
+        let entry = manifest
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["txid"] == id)
+            .unwrap();
+        assert_eq!(
+            tx.prefix.inputs.len(),
+            entry["inputs"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            tx.prefix.outputs.len(),
+            entry["outputs"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            tx.rct_signatures.sig.as_ref().unwrap().rct_type as u8,
+            entry["type"].as_u64().unwrap() as u8
+        );
+        assert_eq!(
+            tx.prefix.outputs.iter().all(|o| matches!(
+                o.target,
+                TxOutTarget::ToTaggedKey {
+                    key: _,
+                    view_tag: _
+                }
+            )),
+            entry["tagged"].as_bool().unwrap()
+        );
+        assert!(
+            tx.rct_signatures.p.is_some(),
+            "recorded whole signatures must be present"
+        );
+        // This fixture-curation check uses the trusted crypto library directly,
+        // independently of engine scanner/payment/status/database results.
+        assert!(tx
+            .check_outputs(&recorded_pair(), 0..1, 0..100)
+            .unwrap()
+            .is_empty());
+    }
+    for variant in 0..3 {
+        let paying = crate::work::portfolio_fixture::recorded_payment(variant);
+        let owned = paying
+            .check_outputs(&recorded_pair(), 0..1, 0..100)
+            .unwrap();
+        assert_eq!(owned.len(), 1);
+        assert_eq!(owned[0].index(), 1);
+        assert_eq!(owned[0].sub_index().minor, 1);
+        assert_eq!(owned[0].amount().unwrap().as_pico(), 7_000_000_000);
+    }
+}
+
+#[test]
+fn every_recorded_ringct_variant_runs_complete_money_histories() {
+    for worker in 0..=1 {
+        for pruned in [false, true] {
+            for foreign in 0..3 {
+                for goal in 0..3 {
+                    let mut data = vec![0; 16];
+                    data[0] = if pruned { 193 } else { 129 };
+                    data[2] = goal;
+                    data[3] = worker;
+                    data[11] = foreign;
+                    data[12..16].fill(1 + goal);
+                    for event in [
+                        [0, 0, 0],
+                        [0, 1, 1],
+                        [0, 2, 2],
+                        [7, 0, 0],
+                        [6, 0, 0],
+                        [3, 0, 0],
+                        [9, 1, 0],
+                        [1, 0, 0],
+                        [0, 0, 1],
+                    ] {
+                        data.extend(event);
+                    }
+                    crate::work::portfolio::explore(&data);
+                }
+            }
+        }
+    }
+}
