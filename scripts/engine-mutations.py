@@ -36,6 +36,11 @@ PROOF_SCHEDULE_TEST = "work::tests::properties::concurrency::every_proof_config_
 
 BLOCK_TEST = "work::blocks::properties::every_late_commit_boundary_is_exercised_with_and_without_staging"
 MUTATIONS = (
+    Mutation("never-forget-retries", "crates/engine/src/work/retry.rs",
+             "now.saturating_sub(self.last_failure) >= Self::FORGET_AFTER",
+             "false && now.saturating_sub(self.last_failure) >= Self::FORGET_AFTER",
+             "work::scheduler::properties::retry_expiry_boundaries_use_production_upkeep",
+             expected_failure="BOUNDARY: retry-expiry"),
     Mutation("double-credit-amount", "crates/engine/src/store/mod.rs",
              "sum.saturating_add(v.amount_piconero)",
              "sum.saturating_add(v.amount_piconero).saturating_add(v.amount_piconero)",
@@ -229,7 +234,10 @@ def main():
     parser.add_argument("--timeout", type=positive, default=900,
                         help="wall seconds per compile/test command")
     parser.add_argument("--output", type=Path, default=Path("target/engine-mutations"))
+    parser.add_argument("--only", action="append", choices=[m.name for m in MUTATIONS],
+                        help="select named defects; default checks the full catalogue")
     args = parser.parse_args()
+    mutations = tuple(m for m in MUTATIONS if not args.only or m.name in args.only)
     root = Path(__file__).resolve().parent.parent
     output = args.output if args.output.is_absolute() else root / args.output
     output.mkdir(parents=True, exist_ok=True)
@@ -240,7 +248,7 @@ def main():
     untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "-z",
                                          "crates/engine"], cwd=root).decode().split("\0")
     report = {"schema_version": 2, "status": "running", "revision": revision, "tracked_patch_sha256": hashlib.sha256(patch).hexdigest(),
-              "cases": args.cases, "seed": args.seed, "results": []}
+              "cases": args.cases, "seed": args.seed, "selected_mutations": [m.name for m in mutations], "results": []}
     persist(output, report)
     env = os.environ.copy()
     env.update(PROPTEST_CASES=str(args.cases), PROPTEST_RNG_SEED=str(args.seed),
@@ -269,7 +277,7 @@ def main():
             # failure from an earlier mutant or masquerade as a broken baseline.
             baselines = {}
             for feature in features:
-                for test in dict.fromkeys([m.test for m in MUTATIONS] + list(REQUIRED_HITS)):
+                for test in dict.fromkeys([m.test for m in mutations] + ([] if args.only else list(REQUIRED_HITS))):
                     index = len(baselines)
                     command = test_command(test, feature)
                     result = run(command, tree, env, output / f"baseline-{feature}-{index}.log", args.timeout,
@@ -281,7 +289,7 @@ def main():
             report["baselines"] = [{"features": f, "test": t, **result}
                                    for (f, t), result in baselines.items()]
             for feature in features:
-                for mutation in MUTATIONS:
+                for mutation in mutations:
                     entry = {"name": mutation.name, "features": feature, "test": mutation.test,
                              "source": mutation.path, "before": mutation.before, "after": mutation.after,
                              "expected_failure": mutation.expected_failure}
@@ -315,7 +323,7 @@ def main():
     }
     report["status"] = "failed" if failed else "passed"
     report["summary"] = {"detected": sum(r["outcome"] == "detected" for r in report["results"]),
-                         "expected": len(features) * len(MUTATIONS)}
+                         "expected": len(features) * len(mutations)}
     persist(output, report)
     print(f"Report: {output / 'report.json'}", flush=True)
     return int(failed)

@@ -121,26 +121,63 @@ proptest! {
 
     #[test]
     fn retry_histories_reset_and_expire_independently(events in prop::collection::vec((0usize..8, 0u8..4, 0u16..4000), 1..256)) {
-        let mut retries = [None; 8];
-        let mut counts = [0u32; 8];
-        let mut last = [Duration::ZERO; 8];
-        let mut now = Duration::ZERO;
-        for (key, action, elapsed) in events {
-            now += Duration::from_secs(u64::from(elapsed));
-            match action {
-                0 => { retries[key] = None; counts[key] = 0; }
-                1 => {
-                    counts[key] += 1; last[key] = now;
-                    retries[key] = Some(Retry::failed(retries[key], now));
-                }
-                _ => {
-                    for i in 0..8 {
-                        if now.saturating_sub(last[i]) >= Duration::from_secs(3600) { retries[i] = None; counts[i] = 0; }
+        crate::property_support::runtime().block_on(retry_history(&events));
+    }
+}
+
+async fn retry_history(events: &[(usize, u8, u16)]) {
+    tokio::time::pause();
+    let retries = crate::work::Backoff::<usize>::default();
+    let mut counts = [0u32; 8];
+    let mut last = [Duration::ZERO; 8];
+    let mut now = Duration::ZERO;
+    for &(key, action, elapsed) in events {
+        let elapsed = Duration::from_secs(u64::from(elapsed));
+        now += elapsed;
+        tokio::time::advance(elapsed).await;
+        match action {
+            0 => {
+                retries.succeeded(&key);
+                counts[key] = 0;
+            }
+            1 => {
+                counts[key] += 1;
+                last[key] = now;
+                retries.failed(&key);
+            }
+            _ => {
+                retries.waiting(); // Production upkeep owns expiry of the SUT.
+                for i in 0..8 {
+                    if now.saturating_sub(last[i]) >= Duration::from_secs(3600) {
+                        counts[i] = 0;
                     }
                 }
             }
-            for i in 0..8 { prop_assert_eq!(retries[i].map_or(0, |r| r.failures), counts[i]); }
         }
+        let actual = retries.failures.lock();
+        for (key, &expected) in counts.iter().enumerate() {
+            assert_eq!(
+                actual.get(&key).map_or(0, |retry| retry.failures),
+                expected,
+                "BOUNDARY: retry-expiry; key={key} now={now:?} action={action}"
+            );
+        }
+    }
+}
+
+#[test]
+fn retry_expiry_boundaries_use_production_upkeep() {
+    for elapsed in [0, 1, 3599, 3600, 3601, 3999] {
+        crate::property_support::runtime().block_on(retry_history(&[
+            (0, 1, 0),
+            (1, 1, 1),
+            (0, 2, elapsed),
+            (1, 0, 0),
+            (0, 1, 0),
+            (2, 1, 0),
+            (0, 0, 0),
+            (2, 2, 3600),
+        ]));
     }
 }
 
