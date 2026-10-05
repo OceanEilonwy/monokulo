@@ -246,7 +246,11 @@ fn a_testnet_wallet_is_created_with_the_flag_and_opened_without_it() {
         .find_map(|l| l.strip_prefix("Generated new wallet: "))
         .unwrap()
         .to_string();
-    assert!(address.starts_with('9'), "a testnet address: {address}");
+    // Prefix 53 encodes to a leading `9` or `A`, depending on the keys.
+    assert!(
+        address.starts_with(['9', 'A']),
+        "a testnet address: {address}"
+    );
     assert!(text.contains("Network type: Testnet"), "{text}");
     assert_eq!(
         query::<String>(&dir.join("erin.db"), "SELECT network FROM wallet"),
@@ -266,7 +270,7 @@ fn a_testnet_wallet_is_created_with_the_flag_and_opened_without_it() {
     );
     assert!(session.status.success(), "{}", stderr(&session));
     let out = stdout(&session);
-    assert!(out.contains("Opened wallet: 9"), "{out}");
+    assert!(out.contains(&format!("Opened wallet: {address}")), "{out}");
     assert!(out.contains("  B"), "a testnet subaddress: {out}");
     assert!(
         out.contains("Matching integrated address: A"),

@@ -318,14 +318,11 @@ pub fn candidates(
         ("set", ["always-confirm-transfers"]) => words(&["1", "0"]),
         ("set", ["default-ring-size"]) => words(&["16"]),
         ("transfer", _) => {
-            // Priority only fits before the first address.
-            let mut list = if args
-                .iter()
-                .any(|arg| arg.starts_with('5') || arg.starts_with('7'))
-            {
-                vec![]
-            } else {
+            // Priority only fits first, before the first address.
+            let mut list = if args.is_empty() {
                 priorities()
+            } else {
+                vec![]
             };
             list.extend(data.addresses.clone());
             list
@@ -832,11 +829,16 @@ mod tests {
         assert!(
             transfer.contains(&"elevated".to_string()) && transfer.contains(&"5AAAA".to_string())
         );
-        let after_address = names(candidates(&specs, &data, &["transfer", "5AAAA", "1"]));
-        assert!(
-            !after_address.contains(&"elevated".to_string()),
-            "priority only fits before the first address"
-        );
+        for previous in [
+            ["transfer", "5AAAA", "1"],
+            ["transfer", "A2ZqoS9ZE5", "1"],
+            ["transfer", "elevated", "5AAAA"],
+        ] {
+            assert!(
+                !names(candidates(&specs, &data, &previous)).contains(&"elevated".to_string()),
+                "priority only fits before the first address: {previous:?}"
+            );
+        }
     }
 
     #[test]
