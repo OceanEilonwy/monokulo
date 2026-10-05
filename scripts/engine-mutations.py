@@ -41,6 +41,35 @@ MUTATIONS = (
              "false && now.saturating_sub(self.last_failure) >= Self::FORGET_AFTER",
              "work::scheduler::properties::retry_expiry_boundaries_use_production_upkeep",
              expected_failure="BOUNDARY: retry-expiry"),
+    # Systematic comparison/guard perturbations at critical decision boundaries.
+    *(Mutation(name, "crates/engine/src/status.rs", before, after,
+               "status::properties::status_decision_boundaries_match_independent_grid",
+               expected_failure="BOUNDARY: status-decision-grid")
+      for name, before, after in (
+          ("funding-boundary-strict", "if total >= inputs.xmr_amount_piconero {", "if total > inputs.xmr_amount_piconero {"),
+          ("confirmation-boundary-strict", "min_confirmations >= inputs.confirmations_required", "min_confirmations > inputs.confirmations_required"),
+          ("expiry-boundary-inclusive", "inputs.now > inputs.expires_at", "inputs.now >= inputs.expires_at"),
+          ("overpayment-boundary-inclusive", "if total > inputs.xmr_amount_piconero {", "if total >= inputs.xmr_amount_piconero {"),
+      )),
+    *(Mutation(name, "crates/engine/src/work/retry.rs", before, after, test,
+               expected_failure=marker)
+      for name, before, after, test, marker in (
+          ("retry-expiry-late", "now.saturating_sub(self.last_failure) >= Self::FORGET_AFTER", "now.saturating_sub(self.last_failure) > Self::FORGET_AFTER",
+           "work::scheduler::properties::retry_expiry_boundaries_use_production_upkeep", "BOUNDARY: retry-expiry"),
+          ("retry-expiry-early", "now.saturating_sub(self.last_failure) >= Self::FORGET_AFTER", "now.saturating_sub(self.last_failure) >= Self::FORGET_AFTER.saturating_sub(Duration::from_secs(1))",
+           "work::scheduler::properties::retry_expiry_boundaries_use_production_upkeep", "BOUNDARY: retry-expiry"),
+          ("retry-deadline-inclusive", "now < self.retry_at", "now <= self.retry_at",
+           "work::scheduler::properties::retry_policy_decision_grid_checks_free_attempts_and_deadlines", "BOUNDARY: retry-policy-grid"),
+          ("retry-second-attempt-delayed", "if failures <= 2 {", "if failures < 2 {",
+           "work::scheduler::properties::retry_policy_decision_grid_checks_free_attempts_and_deadlines", "BOUNDARY: retry-policy-grid"),
+      )),
+    *(Mutation(name, "crates/engine/src/work/reservations.rs", before, after,
+               "work::mempool::properties::reservation_decision_grid_checks_completed_busy_and_changed_windows",
+               expected_failure="BOUNDARY: reservation-decision-grid")
+      for name, before, after in (
+          ("rescan-completed-window", "if self.completed(txid, tenant) == Some(generation) {", "if false && self.completed(txid, tenant) == Some(generation) {"),
+          ("admit-concurrent-window-owner", "if !self.in_flight.insert(key) {", "if false && !self.in_flight.insert(key) {"),
+      )),
     Mutation("double-credit-amount", "crates/engine/src/store/mod.rs",
              "sum.saturating_add(v.amount_piconero)",
              "sum.saturating_add(v.amount_piconero).saturating_add(v.amount_piconero)",
@@ -121,6 +150,7 @@ REQUIRED_HITS = {
     RECORDED_TEST: ("recorded-ringct-history", "recorded-pruned-history", "recorded-whole-history"),
     PORTFOLIO_TEST: (
         "rpc-timeout-cancelled", "custody-error-reached", "sql-denial-reached",
+        "engine-rpc-timeout-cancelled", "engine-custody-error-reached", "engine-fault-payment-recovered",
         "all-node-outage-preserves-money-and-cursors", "connection-reopened-mid-history",
         "custody-handle-replaced", "unanimous-spent-void-checked", "disputed-spent-retains-funds",
         "void-restored-to-canonical-block", "missing-proof-holds-settlement",

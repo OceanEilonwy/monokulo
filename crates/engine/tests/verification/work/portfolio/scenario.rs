@@ -12,7 +12,7 @@ pub(crate) enum Command {
     Proof { lag: u8, mismatch: bool },
     Advance(u8),
     Restart,
-    Fault,
+    Fault { writes: bool, position: u8 },
     Deliver(bool),
     Round,
 }
@@ -54,7 +54,10 @@ impl Scenario {
                     },
                     7 => Command::Advance(a),
                     8 => Command::Restart,
-                    9 => Command::Fault,
+                    9 => Command::Fault {
+                        writes: b & 1 != 0,
+                        position: a % 4,
+                    },
                     10 => Command::Deliver(a & 1 != 0),
                     _ => Command::Round,
                 }
@@ -86,7 +89,7 @@ impl Scenario {
                 Command::Proof { lag, mismatch } => (6, lag, u8::from(mismatch)),
                 Command::Advance(n) => (7, n, 0),
                 Command::Restart => (8, 0, 0),
-                Command::Fault => (9, 0, 0),
+                Command::Fault { writes, position } => (9, position, u8::from(writes)),
                 Command::Deliver(f) => (10, u8::from(f), 0),
                 Command::Round => (11, 0, 0),
             };
@@ -111,7 +114,7 @@ pub(crate) fn strategy() -> impl proptest::strategy::Strategy<Value = Scenario> 
         (0u8..8, any::<bool>()).prop_map(|(lag, mismatch)| Command::Proof { lag, mismatch }),
         (0u8..8).prop_map(Command::Advance),
         Just(Command::Restart),
-        Just(Command::Fault),
+        (any::<bool>(), 0u8..4).prop_map(|(writes, position)| Command::Fault { writes, position }),
         any::<bool>().prop_map(Command::Deliver),
         Just(Command::Round),
     ];

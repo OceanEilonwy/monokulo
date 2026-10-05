@@ -279,3 +279,31 @@ fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_run
         ),
     )
 }
+
+#[test]
+fn retry_policy_decision_grid_checks_free_attempts_and_deadlines() {
+    for (count, seconds) in [0, 0, 0, 2, 4, 8, 16, 32, 60, 60].into_iter().enumerate() {
+        let delay = Duration::from_secs(seconds);
+        assert_eq!(
+            Retry::delay(count as u32),
+            delay,
+            "assertion failed: BOUNDARY: retry-policy-grid"
+        );
+        let now = Duration::from_secs(100);
+        let retry = Retry {
+            failures: count as u32,
+            last_failure: now,
+            retry_at: now + delay,
+        };
+        assert!(
+            !retry.waiting(now + delay),
+            "assertion failed: BOUNDARY: retry-policy-grid"
+        );
+        if seconds > 0 {
+            assert!(
+                retry.waiting((now + delay).checked_sub(Duration::from_secs(1)).unwrap()),
+                "assertion failed: BOUNDARY: retry-policy-grid"
+            );
+        }
+    }
+}

@@ -68,7 +68,7 @@ jobs:
   interleavings:
     env:
       RUSTUP_TOOLCHAIN: nightly-2026-10-02
-    name: bounded effect interleavings (${{ matrix.features || 'default' }})
+    name: exhaustive serialized effect orders (${{ matrix.features || 'default' }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -84,7 +84,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz -> target
-      - name: Explore completion interleavings
+      - name: Enumerate serialized completion orders
         env:
           FUZZ_FEATURES: ${{ matrix.features }}
         run: cargo test --manifest-path fuzz/Cargo.toml --locked --features "$FUZZ_FEATURES" --test interleavings

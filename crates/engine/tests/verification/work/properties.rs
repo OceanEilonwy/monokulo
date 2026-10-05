@@ -804,7 +804,10 @@ fn typed_portfolio_composes_arrival_extension_reorg_proof_expiry_and_faults() {
                     mismatch: true,
                 },
                 Advance(7),
-                Fault,
+                Fault {
+                    writes: true,
+                    position: 2,
+                },
                 Restart,
                 Proof {
                     lag: 0,
@@ -823,5 +826,36 @@ fn typed_portfolio_composes_arrival_extension_reorg_proof_expiry_and_faults() {
                 .unwrap_or_default()
                 > 0
         );
+    }
+}
+
+#[test]
+fn typed_portfolio_selects_every_sql_operation_class_and_position() {
+    use crate::work::portfolio::scenario::{Command, Scenario, SETUP_BYTES};
+    for writes in [false, true] {
+        for position in 0..4 {
+            for worker in 0..=1 {
+                let mut scenario = Scenario {
+                    setup: vec![0; SETUP_BYTES],
+                    commands: vec![Command::Fault { writes, position }],
+                };
+                scenario.setup[3] = worker;
+                let hits = crate::work::portfolio::explore(&scenario.encode());
+                assert!(
+                    hits.get("engine-fault-payment-recovered")
+                        .copied()
+                        .unwrap_or_default()
+                        > 0
+                );
+                if writes {
+                    assert!(
+                        hits.get("engine-sql-write-denied")
+                            .copied()
+                            .unwrap_or_default()
+                            > 0
+                    );
+                }
+            }
+        }
     }
 }

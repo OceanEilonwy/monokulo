@@ -39,6 +39,11 @@ impl Drop for Server {
         self.0.abort();
     }
 }
+#[derive(Clone, Copy, Default)]
+pub(super) struct SqlFailure {
+    pub(super) writes: bool,
+    pub(super) position: usize,
+}
 pub(super) struct World {
     pub(super) client: FallbackDaemonClient,
     nodes: [Arc<AdversarialNode>; 3],
@@ -271,12 +276,19 @@ impl World {
         tenants: &[(TenantId, WalletHandle)],
         state: &ScanState,
         store: &SharedStore,
+        selected: SqlFailure,
     ) {
         // A separate outstanding invoice makes these engine-path controls
         // meaningful even when all original portfolio invoices are terminal.
         use crate::key_custody::{KeyCustody as _, WalletMaterial};
         use crate::store::{NewOrder, NewTenant};
-        let pair = super::super::portfolio_fixture::pair(190);
+        let episode = self
+            .hits
+            .borrow()
+            .get("engine-fault-payment-recovered")
+            .copied()
+            .unwrap_or_default();
+        let pair = super::super::portfolio_fixture::pair(128 + (episode % 64) as u8 * 2);
         let material = WalletMaterial::new(pair.view.to_bytes(), pair.spend.to_bytes());
         let sealed = custody.seal(&material).await.unwrap();
         let handle = custody.register_wallet(material).await.unwrap();
@@ -399,10 +411,18 @@ impl World {
         self.healthy();
         // Sweep independently positioned SELECT/transaction/write checks in
         // actual rounds; keep action and index in semantic evidence.
-        for position in 0..4 {
+        for failure in std::iter::once(selected).chain((0..4).map(|position| SqlFailure {
+            writes: false,
+            position,
+        })) {
+            let position = failure.position % 4;
             let trace = db
                 .run(Class::Admin, move |s| {
-                    Ok::<_, crate::store::StoreError>(s.fail_nth_access(Some(position)))
+                    Ok::<_, crate::store::StoreError>(if failure.writes {
+                        s.fail_nth_write(Some(position))
+                    } else {
+                        s.fail_nth_access(Some(position))
+                    })
                 })
                 .await
                 .unwrap();
@@ -426,6 +446,15 @@ impl World {
                 "BOUNDARY: engine-sql-denial"
             );
             let action = trace.action.lock().clone().unwrap();
+            if failure.writes {
+                assert!(
+                    action.starts_with("Insert")
+                        || action.starts_with("Update")
+                        || action.starts_with("Delete"),
+                    "BOUNDARY: write-fault-selected"
+                );
+                self.hit("engine-sql-write-denied");
+            }
             self.hit(&format!("engine-sql-position-{position}:{action}"));
             if report.into_status_result().is_err() {
                 self.hit("engine-sql-error-reported");
