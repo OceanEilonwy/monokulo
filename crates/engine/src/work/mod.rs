@@ -616,3 +616,8 @@ pub(crate) fn explore_mempool(data: &[u8]) {
 pub(crate) mod history;
 #[cfg(any(test, feature = "fuzzing"))]
 pub(crate) mod history_fixture;
+
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) mod portfolio;
+#[cfg(any(test, feature = "fuzzing"))]
+mod portfolio_fixture;

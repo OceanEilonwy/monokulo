@@ -76,3 +76,10 @@ path="fuzz_targets/notifications.rs"
 test=false
 doc=false
 bench=false
+
+[[bin]]
+name="portfolio"
+path="fuzz_targets/portfolio.rs"
+test=false
+doc=false
+bench=false

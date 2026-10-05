@@ -570,3 +570,21 @@ fn reviewed_engine_history_seeds_replay() {
 
 #[path = "concurrency_properties.rs"]
 mod concurrency;
+
+proptest! {
+    #![proptest_config(config())]
+    #[test]
+    fn mixed_wallet_transaction_histories_match_independent_ledger(data in prop::collection::vec(any::<u8>(),0..193)) {
+        crate::work::portfolio::explore(&data);
+    }
+}
+#[test]
+fn reviewed_mixed_wallet_histories_replay() {
+    for data in [
+        include_bytes!("../../../../fuzz/seeds/portfolio/mixed-forks").as_slice(),
+        include_bytes!("../../../../fuzz/seeds/portfolio/worker-restarts").as_slice(),
+        include_bytes!("../../../../fuzz/seeds/portfolio/partial-payments").as_slice(),
+    ] {
+        crate::work::portfolio::explore(data);
+    }
+}

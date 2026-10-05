@@ -255,3 +255,8 @@ pub fn history(data: &[u8]) {
 pub fn notifications(data: &[u8]) {
     crate::notification_exploration::explore(data);
 }
+
+/// Explore mixed-wallet transaction histories against a recipient ledger.
+pub fn portfolio(data: &[u8]) {
+    crate::work::portfolio::explore(data);
+}

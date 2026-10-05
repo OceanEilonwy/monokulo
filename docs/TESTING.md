@@ -750,7 +750,7 @@ cargo test --manifest-path fuzz/Cargo.toml --locked --features zmq --test interl
 The fuzz runner copies reviewed `fuzz/seeds/` into ignored mutable corpora, supplies
 an explicit seed, limits inputs to 4 KiB and individual executions to ten seconds,
 and uses AddressSanitizer. The daily/manual `engine-fuzz.yml` workflow exercises
-all eight targets under both feature configurations, caches evolving corpora and
+all nine targets under both feature configurations, caches evolving corpora and
 uploads corpora and failure artifacts. Its separate Loom jobs explore completion
 ordering with the actual scheduler policy. Loom instruments the small harness's
 synchronization; **it does not instrument or exhaustively verify Tokio channels,
@@ -980,3 +980,35 @@ Paused-clock worker tests explicitly hold virtual time until OS replies arrive;
 subprocess rendezvous uses a wall-clock deadline and wall-clock polling.
 Run `PROPTEST_CASES=64 cargo nextest run -p engine --lib --locked -E
 \'test(work::tests::properties::money::expansions::)\'` in both feature builds.
+
+
+## Mixed-wallet transaction history exploration
+
+The shared `portfolio` property/fuzz harness generates 2–4 distinct wallets,
+2 orders per wallet, and 2–4 distinct transactions. One transaction always pays
+multiple wallets. Each transaction has 1–4 additional outputs (up to 20 total
+across the scenario), with amounts 1–65,536, paying minor indices 1/2 or an
+unassigned 99. Invoices deliberately request the exact total, half the total or
+one more than the total, with confirmation thresholds 0–3. The independent ledger
+comes from recipient instructions, not scanner results or the database.
+
+All outputs are first observed in the pool. Up to eight commands then independently
+mine, return or drop transactions, replace branches, reopen a worker/reset scanner
+state, repeat the fast path, and change chain length. Absence without positive
+spent evidence must preserve the funds. At each quiescent point, exact recipient,
+transaction/output identity, amount, height, non-void/non-superseded state, status,
+and foreign-tenant rejection agree with the ledger. IDs remain stable. Final
+forced mining with cold scanner state and a SQLite reopen provide positive controls.
+Both inline and production file-backed worker modes are generated. Property byte
+vectors contain 0–192 bytes; the decoder bounds work and ignores any unused tail.
+
+These are scanner-valid transparent crypto fixtures with derived one-time keys
+and per-output transaction keys, not fully signed transactions accepted by a live
+Monero network. Consensus proof/signature arithmetic and daemon decoding remain
+outside this package. Three reviewed seeds force mixed forks, worker restarts and
+partial payments. `portfolio` is the ninth default/ZMQ daily fuzz target; its corpus
+and failures use the existing runner/artifact workflow.
+
+Run `PROPTEST_CASES=64 cargo test -p engine --lib mixed_wallet`, adding
+`--features zmq` for that build. Run `ENGINE_FUZZ_SEED=229 scripts/engine-fuzz.sh
+portfolio 60` and append `zmq` for fuzzing that configuration.
