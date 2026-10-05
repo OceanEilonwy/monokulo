@@ -756,3 +756,60 @@ Fuzzing explores paths rather than proving every execution. The retained-window
 trust limitation remains explicit; daemon response decoding and PoW arithmetic
 remain deferred. Every discovered product bug should get a named regression in
 addition to its minimized input or persisted Proptest seed.
+
+## Concurrent mempool scan reservations and cache locks
+
+The fast mempool loop and round mempool tier now atomically reserve each
+transaction/tenant before calling custody. The reservation rechecks the completed
+scan window, so two callers that previously selected the same work cannot both
+scan it. Different transactions and tenants can still scan concurrently; changed
+windows for one transaction/tenant wait until its current reservation ends, then
+are rediscovered by the round rotation. This prevents simultaneous old/new-window owners
+from completing out of order. Cached older windows can still require a subsequent
+rescan; window generations identify content rather than chronological order.
+
+Reservations are ownership guards, not held mutex guards. Success records the
+completed window and releases its reservation atomically. Failure, cancellation
+and unwinding release unfinished reservations without marking them successful.
+Pool eviction and cache clearing preserve live reservations. A cancelled caller's
+accepted custody/blocking computation or database job can still finish; retrying
+that work may be necessary. Database idempotency remains the protection against
+repeated payment publication. Body fetching is not coalesced by these scan claims.
+The fast-path scanned count excludes transactions for which no scan was reserved.
+
+Body serialization, remembered-ID sorting/shortening, and full-cache destruction
+on `forget` now happen outside the mempool mutex. Remaining critical sections
+include cache insertion, ID snapshot copying, pool pruning, and reservation
+bookkeeping; none awaits network, custody, or database work while locked.
+
+`work::mempool::properties` compares 1–255 ownership events against an independent
+model, with eight caller slots, four transaction IDs, four tenants and four scan
+windows. Fixed tests cover competing callers, custody failure, cancellation during
+custody and after real database admission, changed windows, cache eviction,
+unrelated work, and panic after partial batch completion. Existing two-thread
+fast/round/API money properties continue to exercise the complete production paths.
+
+A manual diagnostic compares identical cache operations behind `parking_lot` and
+Tokio mutexes on two Tokio worker threads, at 256 and 20,000 cache entries. It
+reports acquisition wait and critical-section hold p50/p99/max; sorting occurs
+outside both locks. Run it separately from correctness tests:
+
+```sh
+cargo test -p engine --lib --locked compare_blocking_and_yielding_cache_mutexes \
+  -- --ignored --nocapture
+# Use --release for deployment-oriented measurements; debug timings are diagnostic.
+```
+
+The initial debug run found typical holds around 6 microseconds at 256 entries,
+but full-cache operations at 20,000 entries reached millisecond holds. Tokio's
+mutex did not shorten those CPU operations and had greater p99 acquisition delay
+in that workload. These synthetic timings are machine/load dependent and are not
+production latency guarantees, and this diagnostic does not measure HTTP latency
+or unrelated-task responsiveness. Keep `parking_lot` for the current synchronous
+ownership guards; reduce or shard large cache operations before treating an async
+mutex as a general cure. An async mutex yields waiting tasks but still executes
+critical-section CPU work on its holder's runtime thread. Switching the reservation
+mutex also requires redesigning synchronous cancellation cleanup, which cannot
+await a lock in `Drop`.
+
+[Tokio’s mutex guidance](https://docs.rs/tokio/latest/tokio/sync/struct.Mutex.html#which-kind-of-mutex-should-you-use) likewise recommends a blocking mutex for ordinary shared data when the critical section does not span an await.

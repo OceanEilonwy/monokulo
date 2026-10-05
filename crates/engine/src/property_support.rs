@@ -44,6 +44,10 @@ pub(crate) struct GateCustody {
     pub(crate) epoch: AtomicU64,
     pub(crate) registration_mode: AtomicU8,
     pub(crate) registrations: AtomicUsize,
+    pub(crate) scan_mode: AtomicU8,
+    pub(crate) scans: AtomicUsize,
+    pub(crate) scan_entered: tokio::sync::Notify,
+    pub(crate) scan_release: tokio::sync::Notify,
     pub(crate) registration_entered: tokio::sync::Notify,
     pub(crate) registration_release: tokio::sync::Notify,
     pub(crate) entered: tokio::sync::Notify,
@@ -132,6 +136,16 @@ impl KeyCustody for GateCustody {
         txs: &[ScanInput],
         indices: &ScanIndices,
     ) -> Result<Vec<TxMatches>, KeyCustodyError> {
+        self.scans.fetch_add(1, Ordering::SeqCst);
+        if self.scan_mode.load(Ordering::SeqCst) == 2 {
+            self.scan_entered.notify_one();
+            self.scan_release.notified().await;
+        }
+        if self.scan_mode.load(Ordering::SeqCst) == 1 {
+            return Err(KeyCustodyError::BackendUnavailable(
+                "injected scan failure".into(),
+            ));
+        }
         self.inner.scan_txs_for_indices(handle, txs, indices).await
     }
 }
