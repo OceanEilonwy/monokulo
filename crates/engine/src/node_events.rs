@@ -568,5 +568,5 @@ pub(crate) fn announcement(frame: &[u8]) -> Option<Announcement> {
 }
 
 #[cfg(test)]
-#[path = "notification_properties.rs"]
+#[path = "../tests/internal/notification_properties.rs"]
 mod properties;

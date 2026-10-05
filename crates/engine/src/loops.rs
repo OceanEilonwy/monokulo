@@ -1020,6 +1020,6 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "loop_properties.rs"]
+#[path = "../tests/internal/loop_properties.rs"]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod properties;

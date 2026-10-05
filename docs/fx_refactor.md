@@ -194,10 +194,10 @@ against the engine's current public API.
     `compute_xmr_amount`
   - what: `AppState.exchange_rate: Arc<dyn ExchangeRateProvider>` is
     removed entirely — every construction site (`main.rs`,
-    `engine-test-support`, `src/http/tests.rs`, both e2e tests) loses this
+    `engine-test-support`, `tests/internal/http/tests.rs`, both e2e tests) loses this
     field, same mechanical-but-wide blast radius the rate-limiter field
     addition had this session, just in reverse
-  - test: existing `create_order`-family tests in `src/http/tests.rs`
+  - test: existing `create_order`-family tests in `tests/internal/http/tests.rs`
     rewritten to pass `xmr_amount_piconero` directly; delete tests that
     were purely about fiat-to-XMR conversion correctness (that logic now
     lives, and is tested, in `shared`/monokulo per Phase 1)

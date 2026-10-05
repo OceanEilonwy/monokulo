@@ -896,17 +896,17 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "mempool_properties.rs"]
+#[path = "../../tests/internal/work/mempool_properties.rs"]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod properties;
 
 #[cfg(test)]
-#[path = "mempool_lock_profile.rs"]
+#[path = "../../tests/internal/work/mempool_lock_profile.rs"]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod lock_profile;
 
 #[cfg(any(test, feature = "fuzzing"))]
-#[path = "mempool_exploration.rs"]
+#[path = "../../tests/internal/work/mempool_exploration.rs"]
 mod exploration;
 
 #[cfg(any(test, feature = "fuzzing"))]

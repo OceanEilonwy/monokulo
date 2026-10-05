@@ -99,7 +99,7 @@ pub fn derive_status(payments: &[PaymentView], inputs: StatusInputs) -> OrderSta
 }
 
 #[cfg(test)]
-#[path = "status/properties.rs"]
+#[path = "../tests/internal/status/properties.rs"]
 mod properties;
 
 #[cfg(test)]
@@ -401,5 +401,5 @@ mod tests {
 }
 
 #[cfg(any(test, feature = "fuzzing"))]
-#[path = "status/exploration.rs"]
+#[path = "../tests/internal/status/exploration.rs"]
 pub(crate) mod exploration;

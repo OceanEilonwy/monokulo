@@ -35,7 +35,7 @@ Commit SHAs: each step's commit records its own SHA in the *next* PROGRESS updat
 
 ## Known issues
 
-- Pre-existing flake (not from this work): `scanner http::tests::saving_an_out_of_range_scalar_is_rejected_and_nothing_changes` can fail when another test sets `ENGINE_PAYMENT_CONFIRMATIONS_REQUIRED` concurrently (`crates/engine/src/http/tests.rs:1363`). Seen once; passes on rerun.
+- Pre-existing flake (not from this work): `scanner http::tests::saving_an_out_of_range_scalar_is_rejected_and_nothing_changes` can fail when another test sets `ENGINE_PAYMENT_CONFIRMATIONS_REQUIRED` concurrently (`crates/engine/tests/internal/http/tests.rs:1363`). Seen once; passes on rerun.
 - POS-owned clippy warning (`match_single_binding`) at `crates/monokulo/src/http/pos.rs:344`, from the POS redesign; not touched per the shared-worktree rule.
 - `wp-env start` can't mount this plugin (its directory is named `woocommerce`, colliding with WooCommerce); decision 13 describes the workaround used.
 
