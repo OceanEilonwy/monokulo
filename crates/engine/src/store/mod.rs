@@ -4994,6 +4994,6 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "migration_properties.rs"]
+#[path = "../../tests/internal/store/migration_properties.rs"]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod properties;

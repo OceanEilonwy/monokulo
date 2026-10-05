@@ -341,7 +341,7 @@ No SQLite call runs on a Tokio worker thread in production:
 | `crates/engine/src/work/mempool.rs` | mempool rotation and the fast path |
 | `crates/engine/src/work/settlement.rs` | vanished payments, recompute |
 | `crates/engine/src/work/upkeep.rs` | pruning, scanned ranges, void recheck |
-| `crates/engine/src/work/tests.rs` | the scheduler's guarantees |
+| `crates/engine/tests/internal/work/tests.rs` | the scheduler's guarantees |
 | `crates/engine/src/store/work.rs` | the durable state (migrations 0019, 0020) |
 | `crates/engine/src/store/db.rs` | the database worker |
 | `crates/engine/src/loops.rs` | the per-network round loop and fast mempool loop |

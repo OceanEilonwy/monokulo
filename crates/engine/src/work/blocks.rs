@@ -2181,11 +2181,11 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "block_effect_properties.rs"]
+#[path = "../../tests/internal/work/block_effect_properties.rs"]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod properties;
 
 #[cfg(test)]
-#[path = "block_scale_properties.rs"]
+#[path = "../../tests/internal/work/block_scale_properties.rs"]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod scale;

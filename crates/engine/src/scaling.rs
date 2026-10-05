@@ -397,6 +397,6 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "resource_properties.rs"]
+#[path = "../tests/internal/resource_properties.rs"]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod properties;

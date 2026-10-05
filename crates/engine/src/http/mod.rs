@@ -37,6 +37,7 @@ pub mod rate_limit;
 mod status_page;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+#[path = "../../tests/internal/http/tests.rs"]
 mod tests;
 
 use parking_lot::RwLock;
