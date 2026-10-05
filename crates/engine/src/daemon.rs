@@ -545,5 +545,5 @@ pub trait MoneroDaemonClient: Send + Sync {
 /// unnoticed for a long time otherwise).
 #[cfg(any(test, feature = "fuzzing"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[path = "../tests/internal/daemon/fake.rs"]
+#[path = "../tests/verification/daemon/fake.rs"]
 pub mod fake;

@@ -611,6 +611,6 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "../../tests/internal/store/queue_properties.rs"]
+#[path = "../../tests/verification/store/queue_properties.rs"]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod properties;

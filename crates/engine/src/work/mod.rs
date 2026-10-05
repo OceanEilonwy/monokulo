@@ -606,7 +606,7 @@ impl From<&Progress> for UnitProgress {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[path = "../../tests/internal/work/tests.rs"]
+#[path = "../../tests/verification/work/tests.rs"]
 mod tests;
 
 #[cfg(any(test, feature = "fuzzing"))]
@@ -615,15 +615,15 @@ pub(crate) fn explore_mempool(data: &[u8]) {
 }
 
 #[cfg(any(test, feature = "fuzzing"))]
-#[path = "../../tests/internal/work/history.rs"]
+#[path = "../../tests/verification/work/history/runner.rs"]
 pub(crate) mod history;
 #[cfg(any(test, feature = "fuzzing"))]
-#[path = "../../tests/internal/work/history_fixture.rs"]
+#[path = "../../tests/verification/work/history/fixtures.rs"]
 pub(crate) mod history_fixture;
 
 #[cfg(any(test, feature = "fuzzing"))]
-#[path = "../../tests/internal/work/portfolio.rs"]
+#[path = "../../tests/verification/work/portfolio/runner.rs"]
 pub(crate) mod portfolio;
 #[cfg(any(test, feature = "fuzzing"))]
-#[path = "../../tests/internal/work/portfolio_fixture.rs"]
+#[path = "../../tests/verification/work/portfolio/fixtures.rs"]
 mod portfolio_fixture;

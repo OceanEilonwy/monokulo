@@ -30,7 +30,7 @@ implement it. Organized by component, in roughly the order a component would be 
 ### Generated engine tests
 
 Property tests, scale scenarios, fuzz oracles and shared fixtures are centralized
-under [`crates/engine/tests/internal/`](../crates/engine/tests/internal/README.md),
+under [`crates/engine/tests/verification/`](../crates/engine/tests/verification/README.md),
 grouped by engine area. Production modules contain short `#[path]` registrations;
 the tests retain their private access and existing module names. Cargo-fuzz drivers
 and seeds remain in the root `fuzz/` package. Saved regression files have explicitly
@@ -84,7 +84,7 @@ a fix, and add a named example for a discovered bug: seeds depend on the strateg
 so a concrete example protects the case when generators change. Do not ignore the
 regression directory. See [Proptest's persistence documentation](https://proptest-rs.github.io/proptest/proptest/failure-persistence.html).
 
-The scanner suite (`crates/engine/tests/internal/work/properties.rs`, registered under
+The scanner suite (`crates/engine/tests/verification/work/properties.rs`, registered under
 `work::tests::properties`) has forty-three generated properties. The first five cover:
 
 - Histories of up to 24 optional events: mining, pool arrival/removal, forks,
@@ -461,7 +461,7 @@ audit.
 | `pk_` alone, on any `/api/v1/admin/*` route | `pk_` must never be usable as authorization anywhere | Every admin route, called with a bearer value that's actually a `pk_`; assert rejected |
 | A rotated `sk_` stops working immediately | Rotation must invalidate the old token, not just issue a new one alongside it | Rotate; retry a request with the pre-rotation token; assert rejected |
 | A single-bit-flipped valid token is rejected | Confirms the real SHA-256 hash-compare path is being used rather than e.g. a prefix or length check | Flip one character of a known-valid `sk_`; assert rejected |
-| The engine serves no public (`/api/v1/t/{pk}/...`) routes and grants CORS to no origin on any route | The engine is private (DESIGN.md §4, §10.3); a public route or a CORS grant coming back would reopen a surface nothing but monokulo should reach | `the_engine_serves_no_public_order_routes_and_no_cors` (`crates/engine/tests/internal/http/tests.rs`): the old routes answer 404 and preflights get no `Access-Control-Allow-Origin` |
+| The engine serves no public (`/api/v1/t/{pk}/...`) routes and grants CORS to no origin on any route | The engine is private (DESIGN.md §4, §10.3); a public route or a CORS grant coming back would reopen a surface nothing but monokulo should reach | `the_engine_serves_no_public_order_routes_and_no_cors` (`crates/engine/tests/verification/http/tests.rs`): the old routes answer 404 and preflights get no `Access-Control-Allow-Origin` |
 | Monokulo only ever calls the engine's admin API and `/status` | Keeps the boundary from eroding one call at a time | `every_engine_call_uses_the_admin_api_or_status` (`crates/monokulo/src/engine_client.rs`) checks every URL the engine client builds |
 | Two tenants issued back-to-back never receive the same `pk_`/`sk_`, and a tenant's `sk_` is never recoverable via any `GET` | Basic credential hygiene | Direct assertions on creation responses and subsequent `GET`s |
 
@@ -494,7 +494,7 @@ construction — these tests must actually generate concurrency.
 
 | Test | Why | How |
 |---|---|---|
-| The engine's per-token rate limit trips after the configured request count within the window (keyed on the `sk_`, or on the address for the token-less tenant-creation and `/status` routes), and resets after the window elapses | Core mechanism correctness | `admin_rate_limit_middleware_*` and `unauthenticated_routes_are_limited_per_address_by_the_admin_limiter` (`crates/engine/tests/internal/http/tests.rs`) drive requests past a small limit with a fabricated `ConnectInfo` |
+| The engine's per-token rate limit trips after the configured request count within the window (keyed on the `sk_`, or on the address for the token-less tenant-creation and `/status` routes), and resets after the window elapses | Core mechanism correctness | `admin_rate_limit_middleware_*` and `unauthenticated_routes_are_limited_per_address_by_the_admin_limiter` (`crates/engine/tests/verification/http/tests.rs`) drive requests past a small limit with a fabricated `ConnectInfo` |
 | An oversized request body is rejected before JSON parsing | Defends against a cheap way to waste CPU on parsing before validation | Send a body larger than `max_body_bytes`; assert rejection and that no parse work occurred (e.g. via a spy/log assertion, if feasible) |
 | Monokulo's challenge: a correct proof is accepted; an insufficient one, an expired one, one signed with another key, one for another client, a replayed one and a wait token presented before its 10 seconds are refused; the replay store is capped and fails closed | The challenge is what stands between "past soft" and the checkout; each refusal path is a way to skip it | `abuse::challenge` unit tests (`crates/monokulo/src/abuse/challenge.rs`) |
 | Client identity: `X-Forwarded-For` is only believed from a trusted proxy (last untrusted hop wins), IPv6 is grouped by `/64`, PROXY v1 headers parse (circuit id from `fc00::/16`) and malformed ones are refused, and the ordinary listener never honours a PROXY header | One identity drives every limit; a spoofable identity would make them all worthless | `abuse::identity` / `abuse::proxy_protocol` unit tests; `clients_behind_a_trusted_proxy_...` (`http/abuse.rs`); `crates/monokulo/tests/onion_listener.rs` (real sockets, synthetic PROXY headers: per-circuit budgets, header-less connections dropped, the public listener refuses PROXY) - runs by default |

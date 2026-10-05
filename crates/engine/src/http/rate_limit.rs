@@ -91,4 +91,4 @@ pub async fn admin_rate_limit_middleware(
 // `RateLimiter<K>`'s own unit tests moved to `shared::rate_limit` along with
 // the type itself (see this module's own doc comment) - the middleware
 // wiring tests (real router, real `ConnectInfo`) stay in
-// `tests/internal/http/tests.rs`, unaffected by this move.
+// `tests/verification/http/tests.rs`, unaffected by this move.

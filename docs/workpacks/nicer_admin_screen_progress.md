@@ -200,7 +200,7 @@ commits of its own (`admin settings: adapt to <what landed>`), and push
   and `network`, both `#[serde(default)]`.
 - `crates/engine-test-support/src/bin/fake-monerod.rs`: `--nettype`
   (default `stagenet`), served by JSON-RPC `get_info` and `/get_info`.
-- Acceptance: engine tests in `crates/engine/tests/internal/http/tests.rs`
+- Acceptance: engine tests in `crates/engine/tests/verification/http/tests.rs`
   (`a_stagenet_node_that_says_it_is_on_mainnet_is_refused_and_nothing_changes`,
   also covering a wrong fallback and that the rest of the request isn't
   saved; `nodes_that_do_not_answer_or_do_not_say_are_saved` for a node that
@@ -324,5 +324,5 @@ commits of its own (`admin settings: adapt to <what landed>`), and push
   `value_json` went in steps 3 and 5. A module comment in
   `http/admin_settings.rs` no longer mentions two forms.
 - Acceptance: `grep -rn 'scanner-settings\|monokulo_section\|engine_section\|monero_node_' crates e2e`
-  finds only two engine API tests in `crates/engine/tests/internal/http/tests.rs`
+  finds only two engine API tests in `crates/engine/tests/verification/http/tests.rs`
   whose names contain `monero_node_` (they test the engine's JSON API).

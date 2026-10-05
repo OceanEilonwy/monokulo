@@ -1127,5 +1127,5 @@ pub async fn run_loop(
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[path = "../../tests/internal/proof/tests.rs"]
+#[path = "../../tests/verification/proof/tests.rs"]
 pub(crate) mod tests;

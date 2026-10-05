@@ -21,7 +21,7 @@ axum = { version = "0.8.9", default-features = false, features = ["form", "http1
 hex = "0.4.3"
 hmac = "0.13.0"
 # Reads response bodies (`.collect().await.to_bytes()`) - this crate's own
-# `tests/internal/http/tests.rs` (a plain, always-run lib test, hence unconditional here
+# `tests/verification/http/tests.rs` (a plain, always-run lib test, hence unconditional here
 # rather than dev-only/feature-gated).
 http-body = "1.1.0"
 http-body-util = "0.1.5"

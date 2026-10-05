@@ -21,7 +21,7 @@ use crate::store::{Db, OrderId, SharedStore, Store, TenantId};
 use crate::work::{run_round_at, RoundInputs, RoundReport, ScanState, ScanTuning};
 use std::sync::Arc;
 use std::time::Duration;
-#[path = "property_daemon.rs"]
+#[path = "daemon.rs"]
 mod property_daemon;
 pub(crate) use property_daemon::ScriptedDaemon;
 const NETWORK: monero::Network = monero::Network::Mainnet;

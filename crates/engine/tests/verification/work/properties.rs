@@ -16,10 +16,10 @@ use std::time::Duration;
 const NETWORK: monero::Network = monero::Network::Mainnet;
 const RETRY_TIME: Duration = Duration::from_secs(61);
 
-#[path = "money_properties.rs"]
+#[path = "money/properties.rs"]
 mod money;
 
-#[path = "lifecycle_properties.rs"]
+#[path = "lifecycle/properties.rs"]
 mod lifecycle;
 
 use crate::work::history::{Destination, Event, Harness, Model, ScriptedDaemon};
@@ -568,7 +568,7 @@ fn reviewed_engine_history_seeds_replay() {
     }
 }
 
-#[path = "concurrency_properties.rs"]
+#[path = "concurrency/properties.rs"]
 mod concurrency;
 
 proptest! {

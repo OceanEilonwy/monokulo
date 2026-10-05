@@ -76,9 +76,9 @@ pub(crate) fn recorded_pair() -> ViewPair {
 }
 pub(crate) fn recorded_foreign(which: u8) -> Transaction {
     let hex = match which % 3 {
-        0 => include_str!("../../fixtures/testnet_bulletproof_plus.hex"),
-        1 => include_str!("../../fixtures/ringct_two_inputs.hex"),
-        _ => include_str!("../../fixtures/testnet_clsag.hex"),
+        0 => include_str!("../../../fixtures/testnet_bulletproof_plus.hex"),
+        1 => include_str!("../../../fixtures/ringct_two_inputs.hex"),
+        _ => include_str!("../../../fixtures/testnet_clsag.hex"),
     };
     monero::consensus::encode::deserialize(&hex::decode(hex.trim()).unwrap()).unwrap()
 }

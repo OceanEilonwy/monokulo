@@ -25,10 +25,10 @@ pub mod daemon_fallback;
 pub mod daemon_rpc;
 pub mod engine_settings;
 #[cfg(any(test, feature = "fuzzing"))]
-#[path = "../tests/internal/exploration.rs"]
+#[path = "../tests/verification/support/exploration.rs"]
 pub mod exploration;
 #[cfg(any(test, feature = "fuzzing"))]
-#[path = "../tests/internal/exploration_rpc.rs"]
+#[path = "../tests/verification/support/rpc.rs"]
 pub(crate) mod exploration_rpc;
 pub mod http;
 pub mod key_custody;
@@ -38,16 +38,16 @@ pub mod network;
 pub mod node_events;
 #[cfg(any(test, feature = "fuzzing"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[path = "../tests/internal/node_test_support.rs"]
+#[path = "../tests/verification/support/nodes.rs"]
 pub(crate) mod node_test_support;
 #[cfg(any(test, feature = "fuzzing"))]
-#[path = "../tests/internal/notification_exploration.rs"]
+#[path = "../tests/verification/notifications/model.rs"]
 pub(crate) mod notification_exploration;
 pub mod pow;
 pub mod proof;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[path = "../tests/internal/property_support.rs"]
+#[path = "../tests/verification/support/properties.rs"]
 pub(crate) mod property_support;
 pub mod run;
 pub mod scaling;
@@ -58,7 +58,7 @@ pub mod status;
 pub mod store;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[path = "../tests/internal/test_log.rs"]
+#[path = "../tests/verification/support/test_log.rs"]
 pub(crate) mod test_log;
 pub mod threads;
 pub mod webhook_delivery;

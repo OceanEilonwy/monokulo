@@ -35,11 +35,11 @@ proptest! {
 #[test]
 fn reviewed_notification_histories_replay() {
     for data in [
-        include_bytes!("../../../../fuzz/seeds/notifications/burst-isolation").as_slice(),
-        include_bytes!("../../../../fuzz/seeds/notifications/topic-pool").as_slice(),
-        include_bytes!("../../../../fuzz/seeds/notifications/topic-chain").as_slice(),
-        include_bytes!("../../../../fuzz/seeds/notifications/cancel-assigned").as_slice(),
-        include_bytes!("../../../../fuzz/seeds/notifications/replace-pending").as_slice(),
+        include_bytes!("../../../../../fuzz/seeds/notifications/burst-isolation").as_slice(),
+        include_bytes!("../../../../../fuzz/seeds/notifications/topic-pool").as_slice(),
+        include_bytes!("../../../../../fuzz/seeds/notifications/topic-chain").as_slice(),
+        include_bytes!("../../../../../fuzz/seeds/notifications/cancel-assigned").as_slice(),
+        include_bytes!("../../../../../fuzz/seeds/notifications/replace-pending").as_slice(),
     ] {
         crate::exploration::notifications(data);
     }
