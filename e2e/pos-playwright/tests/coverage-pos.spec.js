@@ -265,6 +265,46 @@ test('customer pays while the order is on screen and the merchant starts the nex
   await expect(page.locator('.pos-keypad')).toBeVisible();
 });
 
+test('a delayed order read cannot undo a live payment, but a later reorg can', async ({ page, request }) => {
+  const initial = await (await request.get(`${posUrl()}/orders/${fixture.order_id}`,
+    { headers: { cookie: `session=${fixture.session}` } })).json();
+  await page.addInitScript(() => {
+    window.EventSource = class {
+      constructor() { window.__statusListeners = []; }
+      addEventListener(name, listener) { if (name === 'status') window.__statusListeners.push(listener); }
+      close() {}
+    };
+    window.__status = update => window.__statusListeners.forEach(listener => listener({ data: JSON.stringify(update) }));
+  });
+  let release;
+  const delayed = new Promise(resolve => { release = resolve; });
+  let started;
+  const reading = new Promise(resolve => { started = resolve; });
+  await page.route(`**/pos/orders/${fixture.order_id}`, async route => {
+    started();
+    await delayed;
+    await route.fulfill({ json: initial });
+  });
+  await page.goto(posUrl());
+  await reading;
+  await page.waitForFunction(() => window.__statusListeners?.length > 0);
+  // Equal timestamps reproduce a read and a payment within the same second.
+  await page.evaluate(({ qr_svg, ...order }) => window.__status({ ...order, status: 'unconfirmed',
+    received_xmr: order.xmr_amount, remaining_xmr: '0.000000000000', is_terminal: false }), initial);
+  await expect(page.locator('.pos-stage-msg')).toHaveText('Waiting for confirmation. Payment seen. Waiting for its first confirmation.');
+  const response = page.waitForResponse(`**/pos/orders/${fixture.order_id}`);
+  release();
+  await (await response).finished();
+  // Wait for the application's fetch/JSON continuation, not just the response headers.
+  await page.waitForFunction(() => document.querySelector('.pos-qr svg'));
+  await expect(page.locator('.pos-stage-msg')).toHaveText('Waiting for confirmation. Payment seen. Waiting for its first confirmation.');
+  await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
+  // No monotonic-status assumption: a subsequent stream snapshot may regress.
+  await page.evaluate(order => window.__status({ ...order, is_terminal: false }), initial);
+  await expect(page.locator('.pos-stage-msg')).toContainText('Send 0.001 XMR.');
+  await expect(page.getByRole('button', { name: 'Cancel order' })).toBeVisible();
+});
+
 test('customer underpays: the card asks for the rest and the order cannot be cancelled', async ({ page, request }) => {
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();

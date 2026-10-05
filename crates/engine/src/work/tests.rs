@@ -1517,48 +1517,77 @@ async fn backoff_forgets_keys_that_stopped_failing() {
     );
 }
 
-/// Mempool bodies that couldn't be fetched are asked for again next round,
-/// not skipped until the rotation comes round again.
+/// Unavailable slices yield to other work, then retry on the next lap. A
+/// transient fetch failure must neither drop IDs nor hide a real payment.
 #[tokio::test]
-async fn a_failed_mempool_body_fetch_is_retried_next_round() {
+async fn a_failed_mempool_body_fetch_retries_every_id_without_starving_other_slices() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
     fake.push_block("a2", vec![]);
-    fake.set_mempool((0..100u8).map(unrelated_tx).collect());
+    let mut pool: Vec<_> = (0..100u8).map(unrelated_tx).collect();
+    pool.push(fixture_tx());
+    fake.set_mempool(pool);
+    let expected: HashSet<_> = fake
+        .get_mempool_txids()
+        .await
+        .unwrap()
+        .into_iter()
+        .collect();
     let daemon = Lookups::new(&fake);
     daemon.fail_bodies.store(true, Ordering::Relaxed);
     let tenants = [(tenant, handle)];
     let state = ScanState::default();
+    let db = Db::over_shared(Arc::clone(&store));
     run_round(
         &state,
-        &inputs(
-            &Db::over_shared(Arc::clone(&store)),
-            &custody,
-            &daemon,
-            &tenants,
-        ),
+        &inputs(&db, &custody, &daemon, &tenants),
         ScanTuning::DEFAULT.round_budget,
     )
     .await;
+    assert!(store.lock().get_all_payments(&order).unwrap().is_empty());
+    assert!(
+        custody.attempts.lock().is_empty(),
+        "failed body fetch reached custody"
+    );
     daemon.fail_bodies.store(false, Ordering::Relaxed);
-    run_round(
-        &state,
-        &inputs(
-            &Db::over_shared(Arc::clone(&store)),
-            &custody,
-            &daemon,
-            &tenants,
-        ),
-        ScanTuning::DEFAULT.round_budget,
-    )
-    .await;
+    for _ in 0..3 {
+        run_round(
+            &state,
+            &inputs(&db, &custody, &daemon, &tenants),
+            ScanTuning::DEFAULT.round_budget,
+        )
+        .await
+        .into_result()
+        .unwrap();
+    }
     let requests = daemon.body_requests.lock();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0], requests[1], "the same slice again");
+    assert!(requests.len() >= 3, "missing bodies were never retried");
+    assert_ne!(
+        requests[0], requests[1],
+        "an unavailable prefix blocked every other slice"
+    );
+    let recovered: HashSet<_> = requests.iter().skip(1).flatten().cloned().collect();
+    assert_eq!(
+        recovered, expected,
+        "some transaction IDs were lost after a fetch failure"
+    );
+    assert_eq!(
+        custody.attempts.lock()[&handle],
+        expected.len() as u32,
+        "recovered transactions were skipped or scanned twice"
+    );
+    let rows = store.lock().get_all_payments(&order).unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "fetch recovery lost or duplicated a real payment"
+    );
+    assert_eq!(rows[0].amount_piconero, 7_000_000_000);
+    assert_eq!(rows[0].output_index, 1);
 }
 
 /// A node that takes its time serving blocks.
@@ -5676,3 +5705,6 @@ async fn a_reorg_moves_a_superseded_payment_without_restoring_it() {
     let order_row = store.lock().get_order(&tenant, &order).unwrap().unwrap();
     assert_eq!(order_row.double_spend_detected_at, None);
 }
+
+#[path = "work_scale_properties.rs"]
+mod scale;

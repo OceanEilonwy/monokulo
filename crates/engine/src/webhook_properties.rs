@@ -804,3 +804,6 @@ fn every_proxy_environment_variant_preserves_destination_checks() {
         }
     });
 }
+
+#[path = "webhook_scale_properties.rs"]
+mod scale;

@@ -344,6 +344,10 @@ function App() {
       .filter(o => !term || o.order_id.toLowerCase().includes(term) || (o.merchant_order_id || '').toLowerCase().includes(term));
   });
   const amountText = createMemo(() => displayAmount(digits()));
+  // A live snapshot can arrive while an HTTP read is in flight. Unix-second
+  // timestamps cannot order those responses, and reorgs can regress status.
+  const statusRevisions = new Map<string, number>();
+  const statusRevision = (id: string) => statusRevisions.get(id) ?? 0;
   let lostTimer: number | undefined;
   let listElement: HTMLElement | undefined;
   let pendingRequest: { amount: string; reference: string; key: string } | null = null;
@@ -353,6 +357,17 @@ function App() {
   function merge(previous: Order, next: Partial<Order> & { updated_at?: number }): Order {
     if (previous.updated_at !== undefined && next.updated_at !== undefined && next.updated_at < previous.updated_at) return previous;
     return { ...previous, ...next, qr_svg: next.qr_svg ?? previous.qr_svg, refund_address: next.refund_address !== undefined ? next.refund_address : previous.refund_address };
+  }
+  function mergeRead(previous: Order, next: Order, revision: number): Order {
+    const merged = merge(previous, next);
+    if (statusRevision(next.order_id) === revision) return merged;
+    // Keep status received after this read began, while filling in details
+    // (such as the initial QR) that the live snapshot may not include.
+    return { ...merged, status: previous.status, confirmations: previous.confirmations,
+      confirmations_required: previous.confirmations_required, error: previous.error,
+      updated_at: previous.updated_at, received_xmr: previous.received_xmr,
+      remaining_xmr: previous.remaining_xmr, cancelled_at: previous.cancelled_at,
+      qr_svg: previous.qr_svg ?? merged.qr_svg };
   }
   /** Every change to the orders goes through here, so an order that turns
    * final is noted as finished at that moment. */
@@ -389,12 +404,13 @@ function App() {
    * finished ones. An order that was open here but is no longer is read
    * once more, so it moves to Finished with its final state. */
   async function refresh() {
+    const revisions = new Map(statusRevisions);
     try {
       const data = await json<{ orders: Order[] }>(`${api}/orders?state=active`);
       const open = new Set(data.orders.map(o => o.order_id));
       const gone = orders().filter(o => !terminal(o) && !open.has(o.order_id)).map(o => o.order_id);
       updateOrders(previous => [
-        ...data.orders.map(o => { const known = previous.find(p => p.order_id === o.order_id); return known ? merge(known, o) : o; }),
+        ...data.orders.map(o => { const known = previous.find(p => p.order_id === o.order_id); return known ? mergeRead(known, o, revisions.get(o.order_id) ?? 0) : o; }),
         ...previous.filter(o => !open.has(o.order_id) && (terminal(o) || gone.includes(o.order_id))),
       ]);
       for (const id of gone) void loadOrder(id).catch(() => {});
@@ -408,8 +424,10 @@ function App() {
     } catch (e) { setError((e as Error).message); }
   }
   async function loadOrder(id: string) {
+    const revision = statusRevision(id);
     const order = await json<Order>(`${api}/orders/${encodeURIComponent(id)}`);
-    upsert(order);
+    const known = orders().find(o => o.order_id === id);
+    upsert(known ? mergeRead(known, order, revision) : order);
     return order;
   }
   /** The orders the live stream follows: the one on screen, those shown in
@@ -444,6 +462,7 @@ function App() {
       let update: StatusEvent;
       try { update = JSON.parse((event as MessageEvent).data) as StatusEvent; }
       catch { return; /* A malformed event is ignored; the next snapshot reconciles. */ }
+      statusRevisions.set(update.order_id, statusRevision(update.order_id) + 1);
       updateOrders(previous => previous.map(o => o.order_id === update.order_id ? merge(o, update) : o));
     });
     // The browser retries a dropped stream every few seconds; the counter is

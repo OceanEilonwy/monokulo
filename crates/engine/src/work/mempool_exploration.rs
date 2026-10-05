@@ -16,6 +16,7 @@ struct Owner<'a> {
 
 /// Exercise actual reservations and cache operations without I/O or randomness.
 pub(super) fn explore(data: &[u8]) {
+    explore_rotation(data);
     let state = MempoolState::default();
     let mut owners: Vec<Option<Owner<'_>>> = std::iter::repeat_with(|| None).take(8).collect();
     let mut completed: BTreeMap<Key, u64> = BTreeMap::new();
@@ -229,5 +230,62 @@ fn release(owner: &mut Option<Owner<'_>>, occupied: &mut BTreeMap<Key, usize>) {
             occupied.remove(&(owner.txid.clone(), id.clone()));
         }
         drop(owner);
+    }
+}
+
+// A monotonic-ticket reference model is independent of the production deque:
+// oldest admitted/service ticket wins; departures cancel their ticket.
+fn explore_rotation(data: &[u8]) {
+    let state = MempoolState::default();
+    let mut tickets: BTreeMap<String, u64> = BTreeMap::new();
+    let mut ticket = 0u64;
+    for &[mask, count, completion] in data.as_chunks::<3>().0.iter().take(1024) {
+        let pool: Vec<_> = (0..8)
+            .rev()
+            .filter(|i| mask & (1 << i) != 0)
+            .map(|i| format!("pool-{i}"))
+            .collect();
+        let present: HashSet<_> = pool.iter().cloned().collect();
+        tickets.retain(|id, _| present.contains(id));
+        let mut admissions = pool.clone();
+        admissions.sort();
+        for id in admissions {
+            if let std::collections::btree_map::Entry::Vacant(entry) = tickets.entry(id) {
+                entry.insert(ticket);
+                ticket += 1;
+            }
+        }
+        let mut ordered: Vec<_> = tickets.iter().map(|(id, &t)| (t, id.clone())).collect();
+        ordered.sort();
+        let expected: Vec<_> = ordered.into_iter().map(|(_, id)| id).collect();
+        assert_eq!(
+            super::select(&state, pool),
+            expected,
+            "pool membership/order differs from ticket oracle"
+        );
+        let completed: HashSet<&str> = expected
+            .iter()
+            .take(usize::from(count) % 9)
+            .enumerate()
+            .filter(|(i, _)| completion & (1 << i) != 0)
+            .map(|(_, id)| id.as_str())
+            .collect();
+        for id in &expected {
+            if completed.contains(id.as_str()) {
+                tickets.insert(id.clone(), ticket);
+                ticket += 1;
+            }
+        }
+        state.rotation.lock().served(&completed);
+        let queue = state.rotation.lock();
+        assert_eq!(
+            queue.queue.len(),
+            present.len(),
+            "rotation contains duplicate or stale IDs"
+        );
+        assert_eq!(
+            queue.members, present,
+            "rotation membership differs from the latest pool"
+        );
     }
 }

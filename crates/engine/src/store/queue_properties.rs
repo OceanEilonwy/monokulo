@@ -190,3 +190,6 @@ fn continuously_ready_classes_are_served_within_three_turns() {
         }
     }
 }
+
+#[path = "queue_scale_properties.rs"]
+mod scale;

@@ -7,9 +7,9 @@
 //!   and records, recomputes and wakes webhook delivery for what they pay,
 //!   in one go. A per-pass scan budget keeps a flood of new transactions
 //!   from taking the CPU: what doesn't fit is left to the rotation.
-//! - The round's mempool tier ([`step`]) is the safety net: new transactions
-//!   first, then a rotating slice of the pool against a rotating page of
-//!   stores, rescanning a transaction for a store whose scan window changed.
+//! - The round's mempool tier ([`step`]) is the safety net: a fair rotating
+//!   slice of the pool, with a separate tenant-page cursor per transaction,
+//!   rescanning a transaction for a store whose scan window changed.
 //!
 //! What is remembered (task 7.3), so a transaction sitting in the pool is
 //! fetched once and scanned once per store, not every second:
@@ -29,7 +29,7 @@
 //! its start ([`watching`], `run_round`): one request for both.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -73,9 +73,8 @@ type Windows = Arc<Vec<(crate::store::TenantId, Vec<u32>)>>;
 #[derive(Default)]
 pub(crate) struct MempoolState {
     inner: parking_lot::Mutex<Remembered>,
-    next_tx_offset: AtomicUsize,
-    next_tenant_offset: AtomicUsize,
-    tenant_page_after: parking_lot::Mutex<String>,
+    rotation: parking_lot::Mutex<PoolRotation>,
+    tenant_page_after: parking_lot::Mutex<HashMap<String, String>>,
     /// Every store's window as of recently, for the fast path.
     windows: parking_lot::Mutex<Option<(Instant, Windows)>>,
     /// The chain height the last round saw, for the fast path's recomputes.
@@ -160,9 +159,15 @@ impl std::ops::DerefMut for Remembered {
 impl MempoolState {
     /// Forgets what left the pool.
     fn retain_pool(&self, in_pool: &HashSet<String>) {
-        let mut remembered = self.inner.lock();
-        remembered.bodies.retain(|txid| in_pool.contains(txid));
-        remembered.scanned.retain(|txid, _| in_pool.contains(txid));
+        {
+            let mut remembered = self.inner.lock();
+            remembered.bodies.retain(|txid| in_pool.contains(txid));
+            remembered.scanned.retain(|txid, _| in_pool.contains(txid));
+        }
+        self.tenant_page_after
+            .lock()
+            .retain(|txid, _| in_pool.contains(txid));
+        self.rotation.lock().retain_pool(in_pool);
     }
 
     /// How many pool transactions are remembered, and the first `limit` of
@@ -189,6 +194,8 @@ impl MempoolState {
 
     /// Drops everything remembered: the pool isn't being watched.
     fn forget(&self) {
+        *self.rotation.lock() = PoolRotation::default();
+        self.tenant_page_after.lock().clear();
         let forgotten = {
             let mut remembered = self.inner.lock();
             (
@@ -202,16 +209,6 @@ impl MempoolState {
     /// Whether any store has been scanned for this transaction yet.
     fn is_new(&self, txid: &str) -> bool {
         !self.inner.lock().scanned.contains_key(txid)
-    }
-
-    #[cfg(test)]
-    fn mark_scanned(&self, txid: &str, tenant_id: &crate::store::TenantId, generation: u64) {
-        self.inner
-            .lock()
-            .scanned
-            .entry(txid.to_owned())
-            .or_default()
-            .insert(tenant_id.clone(), generation);
     }
 
     /// Atomically recheck completed work and reserve each transaction/tenant.
@@ -360,18 +357,13 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
     if pool_txids.is_empty() {
         return Progress::Advanced;
     }
-    let tenants = match tenant_page(round).await {
-        Ok(tenants) => tenants,
-        Err(error) => return Progress::Failed(error),
-    };
-    // Nobody to scan for (the poll was for the vanished-payment check, or
-    // no store's keys are registered): no bodies are fetched.
-    if tenants.is_empty() {
+    // With no registered keys the poll is only for vanished-payment checks.
+    if round.handles.is_empty() {
         return Progress::Advanced;
     }
     let state = &round.state.mempool;
     let selected = select(state, pool_txids);
-    let (pool, fetch_failed) = bodies(state, round.inputs, &selected).await;
+    let (pool, _) = bodies(state, round.inputs, &selected).await;
     // A tenant that fails is retried next round, not once per transaction:
     // one unresponsive backend mustn't spend the round on deadlines.
     let mut failed: HashSet<crate::store::TenantId> = HashSet::new();
@@ -381,16 +373,14 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
             break;
         }
         attempted += 1;
-        let mut due = state.due(txid, &tenants, &failed);
+        let tenants = match tenant_page(round, txid).await {
+            Ok(tenants) => tenants,
+            Err(error) => return Progress::Failed(error),
+        };
+        let due = state.due(txid, &tenants, &failed);
         if due.is_empty() {
             continue;
         }
-        let offset = state
-            .next_tenant_offset
-            .fetch_add(TENANTS_PER_TX, Ordering::Relaxed)
-            % due.len();
-        due.rotate_left(offset);
-        due.truncate(TENANTS_PER_TX);
         let outcome = scan_and_record(round.state, round.inputs, tx, txid, &due, None).await;
         record_match(round.state, PoolPath::Round, txid, &outcome);
         failed.extend(outcome.failed);
@@ -398,15 +388,23 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
             tracing::warn!(network = crate::network::network_str(network), error = %error, "recording a mempool match failed (retried next round)");
         }
     }
-    // Advance by the work actually attempted, so a slow first transaction
-    // isn't revisited forever when the time allowance stops the slice early.
-    // A slice whose bodies couldn't be fetched is tried again next round.
-    let advance = match (attempted, fetch_failed) {
-        (0, true) => 0,
-        (0, false) => selected.len(),
-        (attempted, _) => attempted,
-    };
-    state.next_tx_offset.fetch_add(advance, Ordering::Relaxed);
+    // Move attempted bodies and unavailable bodies to the back. A withheld
+    // body must not prevent cached/healthy transactions from getting a turn.
+    // Failed scans remain due and retry on their next turn. Unattempted bodies
+    // keep their place when the time allowance expires.
+    let fetched: HashSet<&str> = pool.iter().map(|(id, _)| id.as_str()).collect();
+    let served: HashSet<&str> = pool
+        .iter()
+        .take(attempted)
+        .map(|(id, _)| id.as_str())
+        .chain(
+            selected
+                .iter()
+                .filter(|id| !fetched.contains(id.as_str()))
+                .map(String::as_str),
+        )
+        .collect();
+    state.rotation.lock().served(&served);
     round.state.activity().record(Event::PoolScanned {
         path: PoolPath::Round,
         pool: count(round.pool_txids.as_ref().map_or(0, HashSet::len)),
@@ -610,20 +608,51 @@ fn readable(
     }
 }
 
-/// The round's slice of the pool: transactions no store has been scanned
-/// for yet come first, then a rotating slice of the rest.
-fn select(state: &MempoolState, pool_txids: Vec<String>) -> Vec<String> {
-    let (mut new, mut seen): (Vec<String>, Vec<String>) =
-        pool_txids.into_iter().partition(|txid| state.is_new(txid));
-    new.sort_unstable();
-    seen.sort_unstable();
-    if !seen.is_empty() {
-        let offset = state.next_tx_offset.load(Ordering::Relaxed) % seen.len();
-        seen.rotate_left(offset);
+/// Stable FIFO membership prevents new arrivals from displacing transactions
+/// already waiting for a rescan. IDs cost O(current pool size), separately from
+/// the count/byte-bounded body cache. No bodies or tenant windows live here.
+#[derive(Default)]
+struct PoolRotation {
+    queue: std::collections::VecDeque<String>,
+    members: HashSet<String>,
+}
+impl PoolRotation {
+    fn update(&mut self, sorted: Vec<String>) {
+        let current: HashSet<&str> = sorted.iter().map(String::as_str).collect();
+        self.queue.retain(|id| current.contains(id.as_str()));
+        self.members.retain(|id| current.contains(id.as_str()));
+        for id in sorted {
+            if self.members.insert(id.clone()) {
+                self.queue.push_back(id);
+            }
+        }
     }
-    new.extend(seen);
-    new.truncate(TXS_PER_ROUND);
-    new
+    fn retain_pool(&mut self, present: &HashSet<String>) {
+        self.queue.retain(|id| present.contains(id));
+        self.members.retain(|id| present.contains(id));
+    }
+    fn served(&mut self, ids: &HashSet<&str>) {
+        let mut deferred = Vec::new();
+        self.queue.retain(|id| {
+            if ids.contains(id.as_str()) {
+                deferred.push(id.clone());
+                false
+            } else {
+                true
+            }
+        });
+        self.queue.extend(deferred);
+    }
+}
+
+/// Sorting runs outside the rotation mutex, which is separate from scan/cache
+/// ownership. The fast path keeps its new-transaction latency optimization.
+fn select(state: &MempoolState, mut pool_txids: Vec<String>) -> Vec<String> {
+    pool_txids.sort_unstable();
+    pool_txids.dedup();
+    let mut rotation = state.rotation.lock();
+    rotation.update(pool_txids);
+    rotation.queue.iter().take(TXS_PER_ROUND).cloned().collect()
 }
 
 /// The bodies of `txids`, fetching those not remembered in one call.
@@ -688,20 +717,31 @@ async fn bodies(
     (pool, fetch_failed)
 }
 
+/// Each transaction owns its tenant cursor. Sharing a global transaction and
+/// tenant rotation can phase-lock (e.g. three txs and three tenant pages),
+/// permanently missing pairs. One bounded page per attempted body traverses
+/// every tenant independently, including retrying failed tenants on later laps.
 /// The next page of stores with something in scope, with their scan windows
 /// as of now, for the round's rotation. Wraps round to the first page after
 /// the last.
-async fn tenant_page(round: &Round<'_>) -> Result<Vec<TenantWindow>, ScannerError> {
+async fn tenant_page(round: &Round<'_>, txid: &str) -> Result<Vec<TenantWindow>, ScannerError> {
     let (grace, now) = (round.inputs.grace_period_seconds, round.now);
-    let after = round.state.mempool.tenant_page_after.lock().clone();
+    let after = round
+        .state
+        .mempool
+        .tenant_page_after
+        .lock()
+        .get(txid)
+        .cloned()
+        .unwrap_or_default();
     let (page, next_after) = round
         .db(move |s, network| -> Result<_, ScannerError> {
             let mut page: Vec<crate::store::TenantId> = s
-                .active_tenants_page(network, now, grace, &after, TENANT_PAGE)?
+                .active_tenants_page(network, now, grace, &after, TENANTS_PER_TX)?
                 .into_iter()
                 .map(|(id, _)| id)
                 .collect();
-            let full = page.len() == TENANT_PAGE;
+            let full = page.len() == TENANTS_PER_TX;
             let next_after = if full {
                 page.last().map_or_default(ToString::to_string)
             } else {
@@ -710,7 +750,7 @@ async fn tenant_page(round: &Round<'_>) -> Result<Vec<TenantWindow>, ScannerErro
             if !full && !after.is_empty() {
                 // Wrap round: fill the page from the start.
                 page.extend(
-                    s.active_tenants_page(network, now, grace, "", TENANT_PAGE - page.len())?
+                    s.active_tenants_page(network, now, grace, "", TENANTS_PER_TX - page.len())?
                         .into_iter()
                         .map(|(id, _)| id),
                 );
@@ -726,7 +766,12 @@ async fn tenant_page(round: &Round<'_>) -> Result<Vec<TenantWindow>, ScannerErro
             ))
         })
         .await?;
-    *round.state.mempool.tenant_page_after.lock() = next_after;
+    round
+        .state
+        .mempool
+        .tenant_page_after
+        .lock()
+        .insert(txid.to_owned(), next_after);
     Ok(with_handles(round.state, &round.handles, &page))
 }
 
@@ -837,16 +882,16 @@ mod tests {
         assert!(bodies.contains_key("c"), "freed bytes are reused");
     }
 
-    /// New transactions (no store scanned for them yet) come before the
-    /// rotation, which then rotates through the rest.
     #[test]
-    fn new_transactions_come_first_then_the_rotation() {
+    fn arrivals_join_behind_waiting_transactions() {
         let state = MempoolState::default();
-        state.mark_scanned("b", &shared::ids::TenantId::new("t"), 1);
-        state.mark_scanned("c", &shared::ids::TenantId::new("t"), 1);
-        state.next_tx_offset.store(1, Ordering::Relaxed);
-        let selected = select(&state, vec!["c".into(), "b".into(), "z".into(), "a".into()]);
-        assert_eq!(selected, vec!["a", "z", "c", "b"]);
+        assert_eq!(select(&state, vec!["c".into(), "b".into()]), vec!["b", "c"]);
+        state.rotation.lock().served(&HashSet::from(["b"]));
+        assert_eq!(
+            select(&state, vec!["a".into(), "c".into(), "b".into()]),
+            vec!["c", "b", "a"]
+        );
+        assert_eq!(select(&state, vec!["a".into(), "b".into()]), vec!["b", "a"]);
     }
 }
 

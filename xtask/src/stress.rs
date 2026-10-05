@@ -265,7 +265,7 @@ fn report(
         .first()
         .and_then(|r| r["fixture"]["large_window_orders"].as_u64())
         .unwrap_or(0);
-    page.push_str(&format!("<p><strong>Observed capacity bracket:</strong> {bracket}. Workload: two open orders per tenant plus one tenant with {large} open orders, one transaction per block, one new block per tick, {readers} database readers, {http_readers} HTTP status readers, {writers} admin writer, a {lock_ms} ms SQLite write lock per tick, 5 second tick budget, at most three blocks of oldest lag. Only this machine and schedule were tested.</p>"));
+    page.push_str(&format!("<p><strong>Observed capacity bracket:</strong> {bracket}. Workload: open orders per tenant as recorded in run.json plus one tenant with {large} open orders, one transaction per block, one new block per tick, {readers} database readers, {http_readers} HTTP status readers, {writers} admin writer, a {lock_ms} ms SQLite write lock per tick, 5 second tick budget, at most three blocks of oldest lag. Only this machine and schedule were tested.</p>"));
     page.push_str(&svg(
         results,
         "measured_duration_ms",
@@ -276,6 +276,13 @@ fn report(
         "final_lagging_tenants",
         "Lagging tenants after drain",
     ));
+    if results.iter().any(|r| r["peak_resident_bytes"].is_number()) {
+        page.push_str(&svg(
+            results,
+            "peak_resident_bytes",
+            "Whole-process peak resident memory (bytes; Linux)",
+        ));
+    }
     page.push_str("<table><thead><tr><th>Tenants</th><th>Status</th><th>Measured time</th><th>Tick p50/p95/p99</th><th>Timer delay</th><th>DB reads/writes</th><th>HTTP reads</th><th>Max DB read/write latency</th><th>Max queue wait read/write</th><th>Max query read/write</th><th>Max HTTP latency</th><th>WAL pending pages</th><th>Lag after drain</th><th>Raw data</th></tr></thead><tbody>");
     for result in results {
         let n = result["tenants"].as_u64().unwrap_or(0);
@@ -410,13 +417,18 @@ pub(crate) fn fresh_db(output: &Path, name: &str) -> std::path::PathBuf {
     db
 }
 
-/// `cargo xtask stress <ci|full|open> [driver]`. The default driver's report
+/// `cargo xtask stress <ci|full|scale|open> [driver]`. The default driver's report
 /// goes to `target/coverage/stress`; another driver's to
 /// `target/coverage/stress-<driver>`, so two engines can be compared.
 pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
+    let family = if profile_name == "scale" {
+        "stress-scale"
+    } else {
+        "stress"
+    };
     let output = match driver {
-        None => root().join("target/coverage/stress"),
-        Some(name) => root().join(format!("target/coverage/stress-{name}")),
+        None => root().join(format!("target/coverage/{family}")),
+        Some(name) => root().join(format!("target/coverage/{family}-{name}")),
     };
     let driver = driver.unwrap_or(DEFAULT_DRIVER);
     if profile_name == "open" {
@@ -430,14 +442,19 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
             .status()?
             .success());
     }
-    if profile_name != "ci" && profile_name != "full" {
+    if profile_name != "ci" && profile_name != "full" && profile_name != "scale" {
         return Ok(false);
     }
     if output.exists() {
         fs::remove_dir_all(&output)?;
     }
     fs::create_dir_all(&output)?;
-    let raw_scenario = fs::read(root().join("xtask/stress/scenario_v3.json"))?;
+    let scenario_file = if profile_name == "scale" {
+        "xtask/stress/scenario_scale_v1.json"
+    } else {
+        "xtask/stress/scenario_v3.json"
+    };
+    let raw_scenario = fs::read(root().join(scenario_file))?;
     let scenario: Value = serde_json::from_slice(&raw_scenario)?;
     let checksum = hex::encode(Sha256::digest(&raw_scenario));
     let built = Command::new("cargo")
@@ -556,7 +573,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
             || min_cursor <= initial_min_cursor
             || progressed_tenants != tenants
             || !background_progress
-            || !responsive
+            || (profile_name != "scale" && !responsive)
         {
             "failed"
         } else if backlog_not_growing
@@ -567,10 +584,16 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
         } else {
             "overloaded"
         };
-        let result = json!({"tenants":tenants,"status":status,"exit_code":exit_code,
+        let peak_resident_bytes = fixture["points"].as_array().and_then(|points| {
+            points
+                .iter()
+                .filter_map(|p| p["process_memory"]["peak_resident_bytes"].as_u64())
+                .max()
+        });
+        let result = json!({"peak_resident_bytes":peak_resident_bytes,"tenants":tenants,"status":status,"exit_code":exit_code,
             "scenario_version":scenario["schema_version"],"scenario_checksum":checksum,"seed":scenario["seed"],
             "command":command,"hardware":"hardware.json","measured_duration_ms":fixture["measured_duration_ms"],
-            "timer_max_delay_us":fixture["timer_max_delay_us"],"final_lagging_tenants":final_lagging,
+            "timer_max_delay_us":fixture["timer_max_delay_us"],"responsive":responsive,"final_lagging_tenants":final_lagging,
             "final_oldest_lag_blocks":oldest_lag,"min_tenant_cursor":min_cursor,
             "progressed_tenants":progressed_tenants,"fixture":fixture});
         atomic_json(&output.join(format!("{name}.json")), &result)?;
@@ -606,7 +629,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
         ),
         (
             "fault-sqlite-lock",
-            "1.5 s blocked SQLite writer, then recovery",
+            "blocked SQLite writer, then recovery",
             vec![
                 (
                     "--write-lock-ms",
@@ -657,6 +680,12 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
         let common = success
             && fixture["schema_version"] == scenario["schema_version"]
             && min_cursor >= 2
+            && (profile_name != "scale"
+                || (min_cursor > 2
+                    && points
+                        .and_then(|p| p.last())
+                        .and_then(|p| p["progressed_tenants"].as_u64())
+                        == Some(fault_tenants)))
             && points.is_some_and(|p| p.iter().rev().take(3).all(|row| row["ok"] == true))
             && fixture["background_http_reads_completed"]
                 .as_u64()
@@ -672,8 +701,9 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
             ),
             "fault-sqlite-lock" => (
                 common
-                    && fixture["timer_max_delay_us"].as_u64().unwrap_or(u64::MAX)
-                        <= scenario["max_timer_delay_ms"].as_u64().unwrap_or(0) * 1000,
+                    && (profile_name == "scale"
+                        || fixture["timer_max_delay_us"].as_u64().unwrap_or(u64::MAX)
+                            <= scenario["max_timer_delay_ms"].as_u64().unwrap_or(0) * 1000),
                 format!(
                     "{} ms per tick for two ticks",
                     scenario["fault_sqlite_lock_ms"]
@@ -682,7 +712,8 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
             _ => (
                 common
                     && fixture["custody_scans_completed"].as_u64().unwrap_or(0) > 0
-                    && fixture["custody_max_wait_us"].as_u64().unwrap_or(0) > 1000,
+                    && fixture["custody_max_wait_us"].as_u64().unwrap_or(0)
+                        > if profile_name == "scale" { 0 } else { 1000 },
                 format!(
                     "{} scans; max slot wait {} µs",
                     fixture["custody_scans_completed"].as_u64().unwrap_or(0),

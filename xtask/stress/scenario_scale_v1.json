@@ -1,0 +1,35 @@
+{
+  "schema_version": 3,
+  "seed": 24601,
+  "orders_per_tenant": 4,
+  "large_window_orders": 1024,
+  "warmup_ticks": 2,
+  "measured_ticks": 4,
+  "drain_ticks": 4,
+  "poll_interval_ms": 5000,
+  "max_oldest_lag_blocks": 3,
+  "max_http_latency_ms": 250,
+  "max_timer_delay_ms": 100,
+  "background_readers": 2,
+  "background_http_readers": 2,
+  "background_admin_writers": 1,
+  "write_lock_hold_ms_per_tick": 25,
+  "fault_tenants": 256,
+  "fault_rpc_delay_ms": 2,
+  "fault_rpc_fail_until_height": 2,
+  "fault_rpc_fail_every": 3,
+  "fault_sqlite_lock_ms": 1500,
+  "fault_custody_slots": 1,
+  "fault_custody_delay_ms": 5,
+  "fault_drain_ticks": 8,
+  "ci_tenant_points": [
+    512,
+    1024,
+    2048
+  ],
+  "full_tenant_points": [
+    512,
+    1024,
+    2048
+  ]
+}
