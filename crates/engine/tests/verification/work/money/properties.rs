@@ -11,10 +11,10 @@ use std::time::Duration;
 
 const GRACE: i64 = 100_000;
 
-#[path = "expansion_properties.rs"]
+#[path = "../history/properties.rs"]
 mod expansions;
 
-#[path = "node_properties.rs"]
+#[path = "../nodes/properties.rs"]
 mod nodes;
 
 fn configure(h: &Harness, amount: u64, threshold: Option<u64>, expiry: i64) {

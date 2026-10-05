@@ -15,11 +15,11 @@ use super::history_fixture::FlakyKeyCustody;
 use super::portfolio_fixture::{pair, transaction};
 use super::{fast_pass, run_round_at, RoundInputs, ScanState};
 use crate::daemon::fake::tx_id_hex;
-#[path = "portfolio_backend.rs"]
+#[path = "backend.rs"]
 mod backend;
-#[path = "portfolio_scenario.rs"]
+#[path = "scenario.rs"]
 pub(crate) mod scenario;
-#[path = "portfolio_world.rs"]
+#[path = "effects.rs"]
 mod world;
 use crate::key_custody::{KeyCustody as _, WalletMaterial};
 use crate::status::OrderStatus;

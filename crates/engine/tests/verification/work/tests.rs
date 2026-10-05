@@ -5706,5 +5706,5 @@ async fn a_reorg_moves_a_superseded_payment_without_restoring_it() {
     assert_eq!(order_row.double_spend_detected_at, None);
 }
 
-#[path = "work_scale_properties.rs"]
+#[path = "scale/properties.rs"]
 mod scale;

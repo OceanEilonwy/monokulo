@@ -1416,7 +1416,7 @@ pub struct Registration {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[path = "../tests/internal/scanner/tests.rs"]
+#[path = "../tests/verification/scanner/tests.rs"]
 pub(crate) mod tests;
 
 #[cfg(test)]

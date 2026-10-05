@@ -1228,5 +1228,5 @@ mod tests {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[path = "../tests/internal/webhook_properties.rs"]
+#[path = "../tests/verification/webhooks/properties.rs"]
 mod properties;

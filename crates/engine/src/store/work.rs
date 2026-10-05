@@ -1152,5 +1152,5 @@ impl Store {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[path = "../../tests/internal/store/work_tests.rs"]
+#[path = "../../tests/verification/store/work_tests.rs"]
 mod tests;

@@ -805,7 +805,7 @@ fn every_proxy_environment_variant_preserves_destination_checks() {
     });
 }
 
-#[path = "webhook_scale_properties.rs"]
+#[path = "scale.rs"]
 mod scale;
 
 fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_runner::Config {

@@ -385,11 +385,12 @@ proptest! {
 #[test]
 fn reviewed_fuzz_histories_remain_valid_regressions() {
     for data in [
-        include_bytes!("../../../../../fuzz/seeds/mempool/partial-cancel").as_slice(),
-        include_bytes!("../../../../../fuzz/seeds/mempool/evict-live-window").as_slice(),
-        include_bytes!("../../../../../fuzz/seeds/mempool/cache-boundaries").as_slice(),
-        include_bytes!("../../../../../fuzz/seeds/mempool/stale-owner").as_slice(),
-        include_bytes!("../../../../../fuzz/seeds/mempool/fair-arrivals-and-departures").as_slice(),
+        include_bytes!("../../../../../../fuzz/seeds/mempool/partial-cancel").as_slice(),
+        include_bytes!("../../../../../../fuzz/seeds/mempool/evict-live-window").as_slice(),
+        include_bytes!("../../../../../../fuzz/seeds/mempool/cache-boundaries").as_slice(),
+        include_bytes!("../../../../../../fuzz/seeds/mempool/stale-owner").as_slice(),
+        include_bytes!("../../../../../../fuzz/seeds/mempool/fair-arrivals-and-departures")
+            .as_slice(),
     ] {
         crate::exploration::mempool(data);
     }
@@ -699,7 +700,7 @@ fn a_completion_for_another_window_cannot_publish_or_release_its_owner() {
     assert!(state.claim("tx", &[&newer]).1.is_empty());
 }
 
-#[path = "mempool_scale_properties.rs"]
+#[path = "scale.rs"]
 mod scale;
 
 fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_runner::Config {

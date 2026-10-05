@@ -2,8 +2,7 @@
 
 Engine property tests, scale scenarios, independent fuzz oracles, and their
 shared fixtures live here. The `src/` tree keeps shipping code and short module
-registrations. Files are grouped by the engine area they exercise; shared
-oracles and fixtures live at this directory's root.
+registrations. Files are grouped by the engine area they exercise; cross-domain support lives under `support/`.
 
 These files remain **in-crate tests**, loaded through `#[path]` from their owning
 modules. That preserves access to private implementation details without adding
@@ -12,13 +11,23 @@ nextest filters, crash subprocesses, mutation checks and coverage exclusions
 continue to work. The large scanner, work, HTTP and proof scenario modules live
 here too because the properties share their fixtures.
 
-- `work/`: scheduler, block effects, mempool, engine histories, portfolio models,
-  concurrency, lifecycle and scale scenarios.
-- `store/`: migration, worker queue, reorg staging and queue scale scenarios.
-- `http/`, `proof/`, `status/`: authorization, order boundaries, verifier histories
-  and pure status derivation.
-- `daemon/`, `scanner/`: scripted daemon and scanner scenarios used by the suites.
-- Root files: shared support, notification/lifecycle, resource and webhook checks.
+- `work/portfolio/`: versioned scenarios, runner, effects, fixtures and backend controls.
+- `work/history/`: single-wallet histories, daemon scripts, fixtures and expansions.
+- `work/scheduler/`, `work/blocks/`, `work/mempool/`: policy/model properties and scale checks.
+- `work/money/`, `work/nodes/`, `work/concurrency/`, `work/lifecycle/`: composed effect scenarios.
+- `store/`: migrations, worker queue, durable reorg work and scale scenarios.
+- `http/`, `proof/`, `status/`: authorization, verifier histories and status derivation.
+- `notifications/`, `lifecycle/`, `resources/`, `inputs/`, `webhooks/`: their domain checks.
+- `daemon/`, `scanner/`: reusable daemon and scanner fixtures/scenarios.
+- `support/`: shared runtime/config, rendezvous, RPC and fuzz adapters.
+
+Within domains, `properties.rs` generates cases, `scenario.rs` defines commands,
+`model.rs` derives independent expectations, `fixtures.rs` creates inputs,
+`effects.rs` supplies controllable IO, and `scale.rs` holds expensive bounds.
+Descriptive existing filenames remain where a domain has several distinct suites.
+These roles are organizational: a model must remain independent of the production
+algorithm even when property and fuzz drivers share that model. No suite is copied
+into a second fuzz-only implementation.
 
 `#[cfg(test)]` includes generated tests only in test builds. Shared fuzz oracles
 and fixtures use `#[cfg(any(test, feature = "fuzzing"))]`; ordinary engine builds

@@ -165,7 +165,7 @@ pub fn inputs(data: &[u8]) {
 }
 
 #[cfg(test)]
-#[path = "input_properties.rs"]
+#[path = "../inputs/properties.rs"]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod properties;
 

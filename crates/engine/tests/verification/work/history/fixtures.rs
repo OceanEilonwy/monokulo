@@ -20,7 +20,7 @@ use monero::{Address, Network, PrivateKey, PublicKey, Transaction};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 pub(crate) fn fixture_tx() -> Transaction {
-    let raw_tx = hex::decode(include_str!("../../fixtures/subaddress_tx.hex")).unwrap();
+    let raw_tx = hex::decode(include_str!("../../../fixtures/subaddress_tx.hex")).unwrap();
     deserialize(&raw_tx).unwrap()
 }
 
