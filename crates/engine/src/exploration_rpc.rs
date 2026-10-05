@@ -12,9 +12,7 @@ pub(crate) enum Rpc {
     Transactions,
     Location,
     Spent,
-    #[cfg(test)]
     Difficulty,
-    #[cfg(test)]
     Blob,
 }
 impl Rpc {

@@ -4,13 +4,24 @@
     clippy::missing_assert_message,
     reason = "bounded exploration asserts scanner and durable money invariants"
 )]
+#![cfg_attr(
+    not(test),
+    expect(
+        clippy::future_not_send,
+        reason = "single-thread exploration borrows its independent ledger"
+    )
+)]
+use super::history_fixture::FlakyKeyCustody;
 use super::portfolio_fixture::{pair, transaction};
-use super::{fast_pass, run_round, RoundInputs, ScanState};
-use crate::daemon::fake::{tx_id_hex, FakeDaemonClient};
-use crate::key_custody::{KeyCustody as _, PlainKeyCustody, WalletMaterial};
+use super::{fast_pass, run_round_at, RoundInputs, ScanState};
+use crate::daemon::fake::tx_id_hex;
+#[path = "portfolio_world.rs"]
+mod world;
+use crate::key_custody::{KeyCustody as _, WalletMaterial};
 use crate::status::OrderStatus;
 use crate::store::{Db, NewOrder, NewTenant, OrderId, Store, TenantId};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use world::World;
 const NETWORK: monero::Network = monero::Network::Mainnet;
 #[derive(Clone, Copy)]
 enum Location {
@@ -91,7 +102,8 @@ pub(crate) fn explore(data: &[u8]) {
         }
         let txids = transactions.iter().map(tx_id_hex).collect::<Vec<_>>();
         let (store, path) = super::history_fixture::file_store();
-        let custody = PlainKeyCustody::default();
+        let custody = FlakyKeyCustody::default();
+        let daemon = World::new().await;
         let mut tenants = Vec::new();
         let mut invoices = Vec::new();
         for (wallet, pair) in pairs.iter().enumerate() {
@@ -112,6 +124,9 @@ pub(crate) fn explore(data: &[u8]) {
                 )
                 .unwrap();
             let tenant = created.tenant.id;
+            store
+                .create_webhook(&tenant, &daemon.url, "{}", "secret", 1000)
+                .unwrap();
             tenants.push((tenant.clone(), handle));
             for minor in 1..=2 {
                 assert_eq!(store.allocate_minor_index(&tenant).unwrap(), minor);
@@ -158,9 +173,9 @@ pub(crate) fn explore(data: &[u8]) {
         } else {
             Db::over_shared(Arc::clone(&store))
         };
-        let daemon = FakeDaemonClient::new();
-        daemon.push_block("base-1", vec![]);
-        daemon.push_block("base-2", vec![]);
+        let mut voided = vec![false; count];
+        daemon.push_block(&world::hash(0, 1), vec![]);
+        daemon.push_block(&world::hash(0, 2), vec![]);
         let mut state = ScanState::default();
         let mut locations = vec![Location::Pool; count];
         let mut epoch = 0u64;
@@ -168,6 +183,7 @@ pub(crate) fn explore(data: &[u8]) {
         // First observe all transactions: disappearance alone may never void
         // their outputs, so the independent ledger retains the same funds.
         daemon.set_mempool(transactions.clone());
+        daemon.proof(&db, 2, false).await;
         settle(
             &db,
             &custody,
@@ -179,20 +195,33 @@ pub(crate) fn explore(data: &[u8]) {
             &outputs,
             &txids,
             &locations,
+            &voided,
             2,
             &mut identities,
         )
         .await;
-        for _ in 0..8 {
+        // Forced interactions are positive controls, including before any
+        // generated commands: faults must be reached, then the ledger recovers.
+        daemon
+            .fault_episode(&db, &custody, &tenants, &state, &store)
+            .await;
+        state = ScanState::default();
+        for step in 0..16 {
             if bytes.1 >= data.len() {
                 break;
             }
-            let action = bytes.next() % 6;
+            let action = bytes.next() % 12;
             let target = usize::from(bytes.next()) % count;
             let slot = u64::from(bytes.next() % 4);
             match action {
-                0 => locations[target] = Location::Block(3 + slot),
-                1 => locations[target] = Location::Pool,
+                0 => {
+                    locations[target] = Location::Block(3 + slot);
+                    voided[target] = false;
+                }
+                1 => {
+                    locations[target] = Location::Pool;
+                    voided[target] = false;
+                }
                 2 => locations[target] = Location::Gone,
                 3 => {
                     state = ScanState::default();
@@ -208,6 +237,12 @@ pub(crate) fn explore(data: &[u8]) {
                     fast_pass(&state, &input).await.unwrap();
                     fast_pass(&state, &input).await.unwrap();
                 }
+                6 | 7 => {
+                    locations[target] = Location::Gone;
+                    // Only unanimous affirmative evidence may remove funds.
+                    // A previously voided transaction stays void until mined.
+                    voided[target] |= action == 6;
+                }
                 _ => {}
             }
             epoch += 1;
@@ -215,7 +250,7 @@ pub(crate) fn explore(data: &[u8]) {
             let blocks = (3..3 + span)
                 .map(|height| {
                     (
-                        format!("branch-{epoch}-{height}"),
+                        world::hash(epoch, height),
                         transactions
                             .iter()
                             .zip(&locations)
@@ -240,6 +275,41 @@ pub(crate) fn explore(data: &[u8]) {
                     .map(|(t, _)| t.clone())
                     .collect(),
             );
+            for (t, location) in locations.iter().enumerate() {
+                if !matches!(location, Location::Gone) {
+                    daemon.clear_spent(&transactions[t]);
+                }
+            }
+            if action == 6 || action == 7 {
+                daemon.spent(&transactions[target], action == 6);
+            }
+            // Hold settlement through the first three branch changes, first
+            // by missing proof, then by a mismatching proven chain. Release
+            // thereafter: proof checking gates NEW settlements, not ones an
+            // operator already accepted. Reorg depth remains independently checked.
+            daemon
+                .proof(
+                    &db,
+                    if step == 0 { 2 } else { 2 + span },
+                    step == 1 || step == 2,
+                )
+                .await;
+            if matches!(action, 9 | 10) {
+                daemon
+                    .fault_episode(&db, &custody, &tenants, &state, &store)
+                    .await;
+                // Replace the backend handle while retaining durable identity.
+                let wallet = target % wallets;
+                custody.remove_wallet(tenants[wallet].1).await.unwrap();
+                tenants[wallet].1 = custody
+                    .register_wallet(WalletMaterial::new(
+                        pairs[wallet].view.to_bytes(),
+                        pairs[wallet].spend.to_bytes(),
+                    ))
+                    .await
+                    .unwrap();
+                state = ScanState::default();
+            }
             settle(
                 &db,
                 &custody,
@@ -251,6 +321,7 @@ pub(crate) fn explore(data: &[u8]) {
                 &outputs,
                 &txids,
                 &locations,
+                &voided,
                 2 + span,
                 &mut identities,
             )
@@ -260,10 +331,12 @@ pub(crate) fn explore(data: &[u8]) {
         // all distinct outputs mined together, then cold state and stable IDs.
         daemon.set_mempool(vec![]);
         epoch += 1;
-        let hash = format!("final-{epoch}");
+        let hash = world::hash(epoch, 3);
         daemon.reorg_from(3, vec![(hash.as_str(), transactions)]);
         locations.fill(Location::Block(3));
+        voided.fill(false);
         state = ScanState::default();
+        daemon.proof(&db, 3, false).await;
         settle(
             &db,
             &custody,
@@ -275,10 +348,13 @@ pub(crate) fn explore(data: &[u8]) {
             &outputs,
             &txids,
             &locations,
+            &voided,
             3,
             &mut identities,
         )
         .await;
+        daemon.deliver(&db, &store, true).await;
+        daemon.deliver(&db, &store, false).await;
         let reopened = Store::open_file(&path).unwrap();
         for invoice in &invoices {
             assert_eq!(
@@ -294,14 +370,14 @@ pub(crate) fn explore(data: &[u8]) {
 }
 fn inputs<'a>(
     db: &'a Db,
-    custody: &'a PlainKeyCustody,
-    daemon: &'a FakeDaemonClient,
+    custody: &'a FlakyKeyCustody,
+    daemon: &'a World,
     tenants: &'a [(TenantId, crate::key_custody::WalletHandle)],
 ) -> RoundInputs<'a> {
     RoundInputs {
         db,
         custody,
-        daemon,
+        daemon: &daemon.client,
         tenants,
         network: NETWORK,
         reorg_check_depth: 20,
@@ -315,8 +391,8 @@ fn inputs<'a>(
 )]
 async fn settle(
     db: &Db,
-    custody: &PlainKeyCustody,
-    daemon: &FakeDaemonClient,
+    custody: &FlakyKeyCustody,
+    daemon: &World,
     tenants: &[(TenantId, crate::key_custody::WalletHandle)],
     state: &ScanState,
     store: &crate::store::SharedStore,
@@ -324,17 +400,26 @@ async fn settle(
     outputs: &[Vec<Output>],
     txids: &[String],
     locations: &[Location],
+    voided: &[bool],
     tip: u64,
     identities: &mut BTreeMap<(String, String, i64), i64>,
 ) {
+    daemon.advance().await;
     let input = inputs(db, custody, daemon, tenants);
     for _ in 0..32 {
-        run_round(state, &input, Duration::ZERO)
+        run_round_at(state, &input, Duration::ZERO, daemon.now.get())
             .await
             .into_result()
             .unwrap();
         let s = store.lock();
         if s.reorg_job(NETWORK).unwrap().is_none()
+            && tenants.iter().all(|(id, _)| {
+                s.get_tenant_by_id(id)
+                    .unwrap()
+                    .unwrap()
+                    .scanned_through_height
+                    == Some(tip)
+            })
             && invoices.iter().all(|invoice| {
                 let rows = s.get_all_payments(&invoice.id).unwrap();
                 let expected = outputs
@@ -366,13 +451,20 @@ async fn settle(
                     })
                     .collect::<std::collections::BTreeSet<_>>();
                 actual == expected
-                    && s.pending_payment_recomputes_page(NETWORK, "", 100)
-                        .unwrap()
-                        .is_empty()
+                    && rows.iter().all(|p| {
+                        voided[txids.iter().position(|id| id == &p.txid).unwrap()]
+                            == p.voided_at.is_some()
+                    })
             })
         {
             break;
         }
+    }
+    for _ in 0..2 {
+        run_round_at(state, &input, Duration::ZERO, daemon.now.get())
+            .await
+            .into_result()
+            .unwrap();
     }
     let s = store.lock();
     assert!(s.reorg_job(NETWORK).unwrap().is_none());
@@ -391,8 +483,18 @@ async fn settle(
                     Location::Pool | Location::Gone => None,
                 };
                 expected.insert((txids[t].clone(), i as i64), (o.amount, height));
+                if voided[t] {
+                    continue;
+                }
                 total += o.amount;
-                let depth = height.map_or(0, |h| tip.saturating_sub(h as u64) + 1);
+                let depth = height.map_or(0, |h| {
+                    let top = tip.min(daemon.ceiling.get());
+                    if daemon.mismatch.get() || h as u64 > top {
+                        0
+                    } else {
+                        top - h as u64 + 1
+                    }
+                });
                 if depth >= invoice.threshold {
                     eligible += o.amount;
                 }
@@ -406,7 +508,10 @@ async fn settle(
                 expected.get(&(row.txid.clone(), row.output_index)),
                 Some(&(row.amount_piconero, row.block_height))
             );
-            assert!(row.voided_at.is_none());
+            assert_eq!(
+                row.voided_at.is_some(),
+                voided[txids.iter().position(|id| id == &row.txid).unwrap()]
+            );
             assert!(row.superseded_by.is_none());
             let key = (invoice.id.as_str().to_owned(), row.txid, row.output_index);
             if let Some(old) = identities.insert(key, row.id) {
@@ -432,15 +537,18 @@ async fn settle(
         };
         let actual = s.get_order(&invoice.tenant, &invoice.id).unwrap().unwrap();
         assert_eq!(actual.amount_received_piconero, total);
-        assert_eq!(actual.status, status);
+        assert_eq!(actual.status, status, "tip={tip} ceil={} mismatch={} required={} total={total} eligible={eligible} goal={} proof={:?} views={:?}", daemon.ceiling.get(), daemon.mismatch.get(), invoice.threshold, invoice.goal, s.proof_ceiling(NETWORK).unwrap(), s.proven_views(NETWORK, &invoice.id,tip,&std::collections::HashSet::default()).unwrap());
         for (other, _) in tenants {
             if other != &invoice.tenant {
                 assert!(s.get_order(other, &invoice.id).unwrap().is_none());
             }
         }
     }
-    assert!(s
-        .pending_payment_recomputes_page(NETWORK, "", 100)
-        .unwrap()
-        .is_empty());
+    daemon.check_events(&s, invoices);
+    if !daemon.mismatch.get() && daemon.ceiling.get() >= tip {
+        assert!(s
+            .pending_payment_recomputes_page(NETWORK, "", 100)
+            .unwrap()
+            .is_empty());
+    }
 }

@@ -135,7 +135,7 @@ impl MoneroDaemonClient for AdversarialNode {
                 5 => blocks.clear(),
                 6 => {
                     if let Some(first) = blocks.first_mut() {
-                        first.prev_hash = "false-parent".to_owned();
+                        "false-parent".clone_into(&mut first.prev_hash);
                     }
                 }
                 7 => {
@@ -167,9 +167,9 @@ impl MoneroDaemonClient for AdversarialNode {
         self.call(Rpc::Outline, async |b| {
             let mut outline = self.fake.get_block_outline(height, tx_count).await?;
             match b.corrupt {
-                8 => outline.hash = "false-outline".to_owned(),
+                8 => "false-outline".clone_into(&mut outline.hash),
                 9 => outline.height += 1,
-                10 => outline.prev_hash = "false-parent".to_owned(),
+                10 => "false-parent".clone_into(&mut outline.prev_hash),
                 11 => outline.timestamp += 1,
                 _ => {}
             }
@@ -205,7 +205,7 @@ impl MoneroDaemonClient for AdversarialNode {
                 3 => txs.reverse(),
                 4 => {
                     for tx in &mut txs {
-                        tx.txid = "unsolicited".to_owned();
+                        "unsolicited".clone_into(&mut tx.txid);
                     }
                 }
                 _ => {}

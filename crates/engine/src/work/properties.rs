@@ -588,3 +588,30 @@ fn reviewed_mixed_wallet_histories_replay() {
         crate::work::portfolio::explore(data);
     }
 }
+
+#[test]
+fn combined_portfolio_interactions_have_fixed_positive_controls() {
+    // Two wallets/two txs, one additional output each, all thresholds one.
+    // This forces disagreement, corroborated void, proof lag/mismatch,
+    // custody replacement, SQL recovery, restart and eventual restoration.
+    for worker in 0..=1 {
+        let mut data = vec![0; 20];
+        data[3] = worker;
+        data[16..20].fill(1);
+        for event in [
+            [0, 0, 0],
+            [0, 1, 1],
+            [7, 0, 0],
+            [6, 0, 0],
+            [8, 0, 0],
+            [11, 0, 0],
+            [9, 1, 0],
+            [10, 1, 0],
+            [3, 0, 0],
+            [0, 0, 2],
+        ] {
+            data.extend(event);
+        }
+        crate::work::portfolio::explore(&data);
+    }
+}

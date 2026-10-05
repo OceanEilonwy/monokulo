@@ -1007,8 +1007,8 @@ impl Store {
         seen
     }
 
-    /// The connection itself, for tests that query it directly.
-    #[cfg(test)]
+    /// The connection itself, for exploration that queries it directly.
+    #[cfg(any(test, feature = "fuzzing"))]
     pub(crate) fn conn_for_test(&self) -> &Connection {
         &self.conn
     }

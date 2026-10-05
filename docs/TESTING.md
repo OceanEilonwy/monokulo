@@ -1050,3 +1050,32 @@ in its `build/` directory. A weekly/manual `engine-mutations.yml` job runs both
 configurations and retains JSON plus logs. These checks demonstrate detection of
 these six chosen defects; they are not a percentage score for every possible bug.
 The money, crash, concurrency, fuzz and authorization suites remain complementary.
+
+## Combined money, proof, node, custody and delivery histories
+
+The shared `portfolio` property/fuzz harness now composes three real adversarial
+nodes through production fallback/corroboration, independent multi-wallet money
+accounting, trusted verifier results, wallet handle replacement, SQL denial,
+restart/reorg recovery and the production webhook executor against local HTTP.
+Generated histories have up to 16 commands (previously eight), 2–4 wallets,
+2–4 transactions, amounts 1–65536 and confirmation thresholds 0–3. The first
+three branch changes exercise missing/mismatching proof before proof catches up;
+zero-confirmation acceptance remains the explicitly configured trust boundary.
+Proof fixtures exercise integration; they do not replace real-verifier properties.
+Unanimous spent evidence voids absent transactions; conflicting evidence cannot.
+Final canonical mining restores every output and retains its original payment ID.
+
+Every input forces a real pending RPC timeout, a reached custody fault, a reached
+SQL denial, and an all-node outage with unchanged money/cursors. Fixed inline and
+worker histories force spent disagreement, void/restoration, proof holds, handle
+replacement and reopen. Recovery requires all tenant cursors to reach the model
+chain tip before comparing settlement depth, rather than stopping when payment
+rows alone match. Proof holds deliberately retain settlement obligations; healthy
+final recovery drains them. Status commits must have their corresponding durable
+webhook, delivery fails once through actual HTTP, retries preserve exact event
+bytes, and every expected event eventually reaches its tenant's destination.
+
+Run `cargo test -p engine --lib mixed_wallet` and `cargo test -p engine --lib
+combined_portfolio`; append `--features zmq` for that build. The existing portfolio
+fuzzer and daily matrix automatically run this same expanded harness; reviewed
+`combined-worker-0`/`combined-worker-1` seeds force the combined interactions.
