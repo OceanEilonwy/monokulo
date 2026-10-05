@@ -11,9 +11,6 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 engine = { path = "../crates/engine", features = ["fuzzing"] }
 
-[dev-dependencies]
-loom = "0.7"
-
 [features]
 zmq = ["engine/zmq"]
 

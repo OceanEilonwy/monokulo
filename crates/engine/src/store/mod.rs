@@ -954,11 +954,22 @@ impl Store {
     /// checked, each time it runs. Returns the running count of checks, so a
     /// sweep knows when `n` was past the last one.
     #[cfg(any(test, feature = "fuzzing"))]
+    pub(crate) fn fail_nth_access(&self, n: Option<usize>) -> Arc<SqlFaultTrace> {
+        self.fail_nth_access_kind(n, false)
+    }
+
+    /// Select write statements independently of preceding reads/transactions.
+    #[cfg(any(test, feature = "fuzzing"))]
+    pub(crate) fn fail_nth_write(&self, n: Option<usize>) -> Arc<SqlFaultTrace> {
+        self.fail_nth_access_kind(n, true)
+    }
+
+    #[cfg(any(test, feature = "fuzzing"))]
     #[expect(
         clippy::unwrap_used,
-        reason = "fault injection must successfully install/remove the exploration authorizer"
+        reason = "fault injection must install/remove its authorizer"
     )]
-    pub(crate) fn fail_nth_access(&self, n: Option<usize>) -> Arc<SqlFaultTrace> {
+    fn fail_nth_access_kind(&self, n: Option<usize>, writes_only: bool) -> Arc<SqlFaultTrace> {
         use std::sync::atomic::Ordering;
         let seen = Arc::new(SqlFaultTrace::default());
         if let Some(n) = n {
@@ -994,7 +1005,18 @@ impl Store {
                                     pragma_value: _
                                 }
                         );
-                    if statement && counter.checks.fetch_add(1, Ordering::Relaxed) == n {
+                    let selected = !writes_only
+                        || matches!(
+                            context.action,
+                            Insert { table_name: _ }
+                                | Update {
+                                    table_name: _,
+                                    column_name: _
+                                }
+                                | Delete { table_name: _ }
+                        );
+                    if statement && selected && counter.checks.fetch_add(1, Ordering::Relaxed) == n
+                    {
                         counter.denied.fetch_add(1, Ordering::Relaxed);
                         *counter.action.lock() = Some(format!("{:?}", context.action));
                         rusqlite::hooks::Authorization::Deny

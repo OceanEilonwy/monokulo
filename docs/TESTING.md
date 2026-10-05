@@ -727,7 +727,7 @@ cargo nextest run -p engine -p shared --lib --locked --features zmq
 
 Coverage-guided fuzzing lives in the isolated `fuzz/` Cargo workspace. Its lockfile
 uses the application's locked versions for shared dependencies; `libfuzzer-sys`
-and Loom are additional test-only tools. `engine/fuzzing` exposes only exploration
+and exhaustive policy event orders are additional test-only checks. `engine/fuzzing` exposes only exploration
 entry points and is absent from ordinary shipping builds. All eight targets invoke
 actual production policy or boundary code through the same oracles used in normal
 properties:
@@ -755,7 +755,7 @@ ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh mempool 60 zmq
 # Replay a saved failing input directly; replace the artifact filename.
 cargo fuzz run --fuzz-dir fuzz inputs fuzz/artifacts/inputs/crash-HASH
 
-# Explore bounded completion event interleavings with Loom.
+# Enumerate every serialized policy event ordering.
 cargo test --manifest-path fuzz/Cargo.toml --locked --test interleavings
 cargo test --manifest-path fuzz/Cargo.toml --locked --features zmq --test interleavings
 ```
@@ -764,11 +764,14 @@ The fuzz runner copies reviewed `fuzz/seeds/` into ignored mutable corpora, supp
 an explicit seed and per-target input/deadline settings,
 and uses AddressSanitizer. The daily/manual `engine-fuzz.yml` workflow exercises
 all nine targets under both feature configurations, caches evolving corpora and
-uploads corpora and failure artifacts. Its separate Loom jobs explore completion
-ordering with the actual scheduler policy. Loom instruments the small harness's
-synchronization; **it does not instrument or exhaustively verify Tokio channels,
-SQLite, network operations or the whole application**. Real worker, HTTP and crash
-properties remain responsible for those effects.
+uploads corpora, reports and failure artifacts. Separate jobs enumerate all
+serialized event permutations against the actual scheduler/reservation policies
+(two events: two orders; three events: six orders). These replace the former Loom
+models whose mutex serialized every entire policy operation. They cover the same
+policy event order space directly; they do not model memory races or instrument
+Tokio, parking_lot, SQLite or network effects. Real worker/custody rendezvous,
+notification, HTTP and subprocess-crash scenarios test those effects.
+
 
 Fuzzing explores paths rather than proving every execution. The retained-window
 trust limitation remains explicit; daemon response decoding and PoW arithmetic
@@ -1005,7 +1008,7 @@ unassigned 99. Invoices deliberately request the exact total, half the total or
 one more than the total, with confirmation thresholds 0–3. The independent ledger
 comes from recipient instructions, not scanner results or the database.
 
-All outputs are first observed in the pool. Up to sixteen commands then independently
+In legacy byte histories, all outputs are first observed in the pool. Up to sixteen commands then independently
 mine, return or drop transactions, replace branches, reopen a worker/reset scanner
 state, repeat the fast path, and change chain length. Absence without positive
 spent evidence must preserve the funds. At each quiescent point, exact recipient,
@@ -1024,11 +1027,11 @@ and failures use the existing runner/artifact workflow.
 
 Run `PROPTEST_CASES=64 cargo test -p engine --lib mixed_wallet`, adding
 `--features zmq` for that build. Run `ENGINE_FUZZ_SEED=229 scripts/engine-fuzz.sh
-portfolio 60` and append `zmq` for fuzzing that configuration.
+portfolio 900` and append `zmq` for fuzzing that configuration.
 
 ## Named mutation checks: testing the tests
 
-`scripts/engine-mutations.py` deliberately introduces seventeen defects, one at a time,
+`scripts/engine-mutations.py` deliberately introduces 27 defects, one at a time,
 in a disposable detached worktree. The caller's engine sources are never edited.
 Each selected test must first pass on the healthy snapshot, then fail by an
 assertion bearing the defect’s specified `BOUNDARY:` marker on the mutant. All defects are checked in default and ZMQ builds:
@@ -1072,7 +1075,7 @@ python3 scripts/engine-mutations.py --features zmq --cases 64
 JSON and logs live in ignored `target/engine-mutations/`, with compiled artifacts
 in its `build/` directory. A weekly/manual `engine-mutations.yml` job runs both
 configurations and retains JSON plus logs. These checks demonstrate detection of
-these seventeen chosen defects; they are not a percentage score for every possible bug.
+these 27 selected defects; they are not a percentage score for every possible bug.
 The money, crash, concurrency, fuzz and authorization suites remain complementary.
 
 ## Combined money, proof, node, custody and delivery histories
@@ -1112,8 +1115,8 @@ RAII guard releases unfinished leases on cancellation/panic. Completed generatio
 and live ownership remain separate from body-cache eviction. A completion carrying
 a different window generation cannot mark success or release the current owner.
 Existing independent property/fuzz ownership models run through this production
-adapter unchanged. Two added Loom models explore completion/rescan ordering and
-cancellation/cache-reset ordering using the production policy under a Loom mutex.
+adapter unchanged. Exhaustive event permutations explore completion/rescan and
+cancellation/cache-reset ordering using the production policy.
 This explores atomic policy-call order, not parking_lot internals or the whole
 Tokio/SQLite runtime; the existing real-thread/real-caller tests remain necessary.
 
@@ -1130,7 +1133,7 @@ DB reopen. This is controlled generation replacement, not an OS scheduling proof
 
 Run the `concurrency` and `mempool` engine tests (both feature builds), and
 `cargo test --manifest-path fuzz/Cargo.toml --locked --test interleavings` (append
-`--features zmq`). Existing daily property and Loom jobs discover the expansions.
+`--features zmq`). Existing daily property and event-order jobs discover the expansions.
 
 ## Recorded and generated paying RingCT histories
 
@@ -1303,3 +1306,15 @@ Manual budgets override defaults. Exact tool-version artifacts allow replay usin
 the recorded toolchain even when local builds use another nightly.
 
 A fuzz campaign that completes only seed initialization is rejected as insufficient exploration; `executions_after_initialization` makes this explicit. Increase its budget rather than treating replay-only work as a successful campaign.
+
+
+Mutation checks include a systematic operator/guard grid around funding,
+confirmation, expiry, overpayment, retry deadlines/expiry/free attempts and scan
+ownership, alongside the domain defect examples. Deterministic boundary grids
+make equality mutations falsifiable without depending on random sampling.
+Healthy baselines and exact intended assertions remain mandatory. Any survivor
+or invalid run fails the campaign and retains its source patch and execution log
+for investigation. These 27 selected mutations are acceptance checks, not a
+statistical mutation score or evidence of complete decision coverage.
+
+Typed fault commands independently select SQL writes versus all statement accesses and positions 0–3. A fixed operation/position sweep requires actual denial and exact payment recovery for every choice, with denied operation names retained in semantic reports.

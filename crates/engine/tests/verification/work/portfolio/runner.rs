@@ -23,7 +23,7 @@ mod world;
 use crate::key_custody::{KeyCustody as _, WalletMaterial};
 use crate::store::{Db, NewOrder, NewTenant, TenantId};
 use std::{collections::BTreeMap, time::Duration};
-use world::World;
+use world::{SqlFailure, World};
 #[path = "model.rs"]
 mod model;
 use model::{Invoice, Ledger, Location, Oracle, Output};
@@ -254,7 +254,14 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             // Forced interactions are positive controls, including before any
             // generated commands: faults must be reached, then the ledger recovers.
             daemon
-                .fault_episode(backend.db(), &custody, &tenants, &state, backend.store())
+                .fault_episode(
+                    backend.db(),
+                    &custody,
+                    &tenants,
+                    &state,
+                    backend.store(),
+                    SqlFailure::default(),
+                )
                 .await;
             state = ScanState::default();
             if let Some(scenario) = &semantic {
@@ -345,7 +352,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                                 daemon.hit("worker-restarted-mid-history");
                             }
                         }
-                        Command::Fault => {
+                        Command::Fault { writes, position } => {
                             daemon
                                 .fault_episode(
                                     backend.db(),
@@ -353,6 +360,10 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                                     &tenants,
                                     &state,
                                     backend.store(),
+                                    SqlFailure {
+                                        writes,
+                                        position: usize::from(position),
+                                    },
                                 )
                                 .await;
                         }
@@ -476,7 +487,17 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                     .await;
                 if matches!(action, 9 | 10) {
                     daemon
-                        .fault_episode(backend.db(), &custody, &tenants, &state, backend.store())
+                        .fault_episode(
+                            backend.db(),
+                            &custody,
+                            &tenants,
+                            &state,
+                            backend.store(),
+                            SqlFailure {
+                                writes: action == 10,
+                                position: slot as usize,
+                            },
+                        )
                         .await;
                     // Replace the backend handle while retaining durable identity.
                     let wallet = target % wallets;

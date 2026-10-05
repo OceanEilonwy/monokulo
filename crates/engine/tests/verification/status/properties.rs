@@ -202,3 +202,33 @@ fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_run
         ),
     )
 }
+
+#[test]
+fn status_decision_boundaries_match_independent_grid() {
+    for goal in [1u64, 2, u64::MAX] {
+        for amount in [0, 1, goal.saturating_sub(1), goal, goal.saturating_add(1)] {
+            for confirmations in [0, 1, 2, u64::MAX] {
+                for required in [0, 1, 2, u64::MAX] {
+                    for now in [-1, 0, 1] {
+                        let payments = [PaymentView {
+                            amount_piconero: amount,
+                            confirmations,
+                            is_zero_conf: confirmations == 0,
+                        }];
+                        let inputs = StatusInputs {
+                            xmr_amount_piconero: goal,
+                            confirmations_required: required,
+                            now,
+                            expires_at: 0,
+                        };
+                        assert_eq!(
+                            derive_status(&payments, inputs),
+                            reference_status(&payments, inputs),
+                            "BOUNDARY: status-decision-grid"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

@@ -712,3 +712,66 @@ fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_run
         ),
     )
 }
+
+#[test]
+fn reservation_decision_grid_checks_completed_busy_and_changed_windows() {
+    for minor in 0..4 {
+        let state = MempoolState::default();
+        let id = TenantId::new("owner");
+        let window = (
+            id.clone(),
+            WalletHandle::generate(),
+            ScanIndices::new([minor]),
+        );
+        let changed = (id.clone(), window.1, ScanIndices::new([minor + 1]));
+        let (mut owner, due) = state.claim("tx", &[&window]);
+        assert_eq!(
+            due.len(),
+            1,
+            "assertion failed: BOUNDARY: reservation-decision-grid"
+        );
+        assert_eq!(
+            state.inner.lock().in_flight.len(),
+            1,
+            "assertion failed: BOUNDARY: reservation-decision-grid"
+        );
+        for candidate in [&window, &changed] {
+            let (_, due) = state.claim("tx", &[candidate]);
+            assert!(
+                due.is_empty(),
+                "assertion failed: BOUNDARY: reservation-decision-grid"
+            );
+        }
+        state.forget();
+        let (_, due) = state.claim("tx", &[&changed]);
+        assert!(
+            due.is_empty(),
+            "assertion failed: BOUNDARY: reservation-decision-grid"
+        );
+        owner.complete(&id, window.2.generation());
+        drop(owner);
+        let (_, due) = state.claim("tx", &[&window]);
+        assert!(
+            due.is_empty(),
+            "assertion failed: BOUNDARY: reservation-decision-grid"
+        );
+        let (next, due) = state.claim("tx", &[&changed]);
+        assert_eq!(
+            due.len(),
+            1,
+            "assertion failed: BOUNDARY: reservation-decision-grid"
+        );
+        drop(next);
+        let (other, due) = state.claim("other-tx", &[&window]);
+        assert_eq!(
+            due.len(),
+            1,
+            "assertion failed: BOUNDARY: reservation-decision-grid"
+        );
+        drop(other);
+        assert!(
+            state.inner.lock().in_flight.is_empty(),
+            "assertion failed: BOUNDARY: reservation-decision-grid"
+        );
+    }
+}
