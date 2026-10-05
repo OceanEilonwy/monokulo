@@ -1,40 +1,30 @@
 //! Everything `monero-wallet-cli` keeps in its wallet file besides keys and
 //! chain data: accounts and subaddress labels, the address book, the
-//! description, and `set` options. Flattened into the wallet's own file
-//! ([`crate::file::WalletData`]); nothing is written until it's set.
+//! description, and `set` options. Part of the wallet's own file
+//! ([`crate::file::WalletData`]).
 
 use std::collections::BTreeMap;
-
-use serde::{Deserialize, Serialize};
 
 use crate::amount::Unit;
 
 /// The label `monero-wallet-cli` gives account 0 and its address 0.
 pub const PRIMARY_ACCOUNT_LABEL: &str = "Primary account";
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WalletMeta {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Empty means "just the primary account" - see [`Self::accounts`].
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     accounts: Vec<AccountMeta>,
-    #[serde(skip_serializing_if = "is_zero")]
     pub current_account: u32,
     /// Account tag name to its description (`account tag_description`).
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub tag_descriptions: BTreeMap<String, String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub address_book: Vec<AddressBookEntry>,
-    #[serde(skip_serializing_if = "Settings::is_default")]
     pub settings: Settings,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountMeta {
     pub label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     /// One label per subaddress this account has created, index 0 (the
     /// account's own address) first - so its length is the number of
@@ -42,40 +32,21 @@ pub struct AccountMeta {
     pub subaddress_labels: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddressBookEntry {
     pub address: String,
-    #[serde(default)]
     pub description: String,
 }
 
 /// The `set` options this wallet actually honours.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
     /// `set priority`: 0 (default) to 4, as in the reference wallet.
-    #[serde(skip_serializing_if = "is_zero")]
     pub priority: u32,
-    #[serde(skip_serializing_if = "is_default_unit")]
     pub unit: Unit,
     /// `set always-confirm-transfers 0`: send without asking "Is this
     /// okay?".
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub skip_transfer_confirmation: bool,
-}
-
-impl Settings {
-    fn is_default(&self) -> bool {
-        *self == Settings::default()
-    }
-}
-
-fn is_zero(n: &u32) -> bool {
-    *n == 0
-}
-
-fn is_default_unit(unit: &Unit) -> bool {
-    *unit == Unit::default()
 }
 
 impl WalletMeta {
@@ -214,13 +185,12 @@ mod tests {
 
     #[test]
     fn a_wallet_without_metadata_has_just_the_primary_account() {
-        let meta: WalletMeta = serde_json::from_str("{}").unwrap();
+        let meta = WalletMeta::default();
         assert_eq!(meta.accounts().len(), 1);
         assert_eq!(meta.subaddress_indexes(), [(0, 0)]);
-        assert_eq!(
-            serde_json::to_string(&meta).unwrap(),
-            "{}",
-            "nothing set writes nothing"
+        assert!(
+            meta.stored_accounts().is_empty(),
+            "nothing set stores nothing"
         );
     }
 
@@ -235,9 +205,5 @@ mod tests {
         assert_eq!(meta.account(1).unwrap().subaddress_labels[0], "rainy day");
         assert!(meta.add_subaddress(2, "x").is_err());
         assert!(meta.label_subaddress(0, 5, "x").is_err());
-
-        let reloaded: WalletMeta =
-            serde_json::from_value(serde_json::to_value(&meta).unwrap()).unwrap();
-        assert_eq!(reloaded.subaddress_indexes(), meta.subaddress_indexes());
     }
 }

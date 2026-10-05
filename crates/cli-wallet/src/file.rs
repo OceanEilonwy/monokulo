@@ -12,20 +12,15 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::meta::WalletMeta;
 use crate::{network_name, parse_network, Network, WalletCredentials, WalletError};
 
-pub use crate::store::FORMAT_VERSION;
-
 /// Everything one wallet file holds, read whole into memory. Its `Debug`
-/// leaves out the private keys and the mnemonic. It still (de)serializes as
-/// JSON: the shape [`import_json`] reads.
-#[derive(Clone, Serialize, Deserialize)]
+/// leaves out the private keys and the mnemonic.
+#[derive(Clone, PartialEq)]
 pub struct WalletData {
-    pub version: u32,
     /// `stagenet` or `testnet` (see [`crate::NETWORKS`]): which network the
     /// keys derive addresses for - [`Self::network`] reads it.
     pub network: String,
@@ -34,36 +29,28 @@ pub struct WalletData {
     pub private_view_key: String,
     /// The seed phrase these keys came from, when known - what `seed`
     /// prints.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mnemonic: Option<String>,
-    #[serde(flatten)]
     pub meta: WalletMeta,
     /// Every output this wallet has been told about and resolved - see the
     /// crate docs for the "informed, not scanned" model.
-    #[serde(default)]
     pub outputs: Vec<OutputRecord>,
     /// Transactions expected to pay this wallet that haven't confirmed yet
     /// (a send's own change, a faucet payout added with `add_output`).
-    #[serde(default)]
     pub pending: Vec<PendingTx>,
     /// Transactions this wallet built and broadcast - what
     /// `show_transfers` lists as `out`. Nothing on-chain says where a
     /// transaction's money went, so only this record knows.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sent: Vec<SentRecord>,
     /// `set_tx_note`: txid to note.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tx_notes: BTreeMap<String, String>,
     /// Anything else recorded about this wallet (its e2e role, where it
     /// was funded from), kept as-is.
-    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, Value>,
 }
 
 impl std::fmt::Debug for WalletData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WalletData")
-            .field("version", &self.version)
             .field("network", &self.network)
             .field("address", &self.address)
             .field("private_spend_key", &"<redacted>")
@@ -77,13 +64,12 @@ impl std::fmt::Debug for WalletData {
 
 /// One resolved output: the whole `WalletOutput`, serialized, so reading
 /// it back never touches the chain.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OutputRecord {
     pub txid: String,
     pub height: u64,
     /// The confirming block's timestamp. `None` for outputs resolved
     /// before it was recorded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<u64>,
     /// Hex-encoded `WalletOutput::serialize()` (a BLOB in the file).
     pub serialized_output_hex: String,
@@ -93,20 +79,18 @@ pub struct OutputRecord {
     pub spent: bool,
     /// `freeze <key_image>`: never picked as an input, and left out of the
     /// balance, until thawed.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub frozen: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PendingTx {
     pub txid: String,
     /// What the transaction is expected to pay this wallet, when known
     /// (a send's change) - informational only.
-    #[serde(default)]
     pub amount_piconero: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SentRecord {
     pub txid: String,
     pub account: u32,
@@ -115,13 +99,11 @@ pub struct SentRecord {
     pub change_piconero: u64,
     /// Filled in once the transaction's own change output resolves (same
     /// block, so no extra lookup).
-    #[serde(default)]
     pub height: Option<u64>,
-    #[serde(default)]
     pub timestamp: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SentDestination {
     pub address: String,
     pub amount_piconero: u64,
@@ -132,7 +114,6 @@ impl WalletData {
     /// outputs yet.
     pub fn new(network: Network, credentials: WalletCredentials) -> Self {
         WalletData {
-            version: FORMAT_VERSION,
             network: network_name(network).to_string(),
             address: credentials.address,
             private_spend_key: credentials.private_spend_key_hex,
@@ -443,166 +424,6 @@ fn holder_path(lock_path: &Path) -> PathBuf {
     let mut name = lock_path.file_name().unwrap_or_default().to_os_string();
     name.push(".holder");
     lock_path.with_file_name(name)
-}
-
-/// What [`migrate_legacy`] did.
-#[derive(Debug, Default)]
-pub struct MigrationReport {
-    /// `(wallet name, file written, outputs, pending txids)`.
-    pub written: Vec<(String, PathBuf, usize, usize)>,
-    /// Resolved ledger outputs no migrated wallet owns.
-    pub unowned_outputs: Vec<String>,
-}
-
-/// Splits the old shared layout - every wallet's keys in one
-/// `stagenet-wallets.json`, every wallet's outputs in one
-/// `stagenet-known-outputs.json` ledger - into one [`WalletData`] file per
-/// wallet in `out_dir`.
-///
-/// Each resolved output goes to the wallet that owns it (its key is that
-/// wallet's spend key plus its `key_offset`). Still-pending txids can't be
-/// attributed that way, so they go to `pending_owner` (the wallet that
-/// sends, whose change they are). Top-level bookkeeping in the wallets
-/// file (faucet txids and the like) goes into `pending_owner`'s `extra`;
-/// the file's `_comment` goes into every wallet's.
-pub fn migrate_legacy(
-    wallets_json: &Path,
-    ledger_json: &Path,
-    out_dir: &Path,
-    pending_owner: &str,
-) -> Result<MigrationReport, WalletError> {
-    let read = |path: &Path| -> Result<Value, WalletError> {
-        let contents = std::fs::read_to_string(path).map_err(|e| {
-            WalletError::WalletFile(format!("failed to read {}: {e}", path.display()))
-        })?;
-        serde_json::from_str(&contents).map_err(|e| {
-            WalletError::WalletFile(format!("failed to parse {}: {e}", path.display()))
-        })
-    };
-    let Value::Object(wallets) = read(wallets_json)? else {
-        return Err(WalletError::WalletFile(format!(
-            "{} isn't a JSON object",
-            wallets_json.display()
-        )));
-    };
-    let ledger = read(ledger_json)?;
-
-    // Wallet entries are the objects carrying keys; everything else at the
-    // top level is bookkeeping.
-    let mut datas: Vec<(String, WalletData)> = Vec::new();
-    let mut bookkeeping = serde_json::Map::new();
-    let comment = wallets.get("_comment").cloned();
-    for (name, value) in &wallets {
-        match value {
-            Value::Object(entry) if entry.contains_key("private_spend_key") => {
-                let credentials: WalletCredentials = serde_json::from_value(value.clone())
-                    .map_err(|e| {
-                        WalletError::WalletFile(format!(
-                            "wallet {name:?} in {}: {e}",
-                            wallets_json.display()
-                        ))
-                    })?;
-                // The legacy files only ever held stagenet wallets.
-                let mut data = WalletData::new(Network::Stagenet, credentials);
-                for (key, field) in entry {
-                    if ![
-                        "address",
-                        "private_spend_key",
-                        "private_view_key",
-                        "mnemonic",
-                    ]
-                    .contains(&key.as_str())
-                    {
-                        data.extra.insert(key.clone(), field.clone());
-                    }
-                }
-                if let Some(comment) = &comment {
-                    data.extra.insert("_comment".to_string(), comment.clone());
-                }
-                datas.push((name.clone(), data));
-            }
-            // `network` is a field of every wallet file already.
-            _ if name == "_comment" || name == "network" => {}
-            _ => {
-                bookkeeping.insert(name.clone(), value.clone());
-            }
-        }
-    }
-    let Some(owner_index) = datas.iter().position(|(name, _)| name == pending_owner) else {
-        return Err(WalletError::WalletFile(format!(
-            "no wallet named {pending_owner:?} in {}",
-            wallets_json.display()
-        )));
-    };
-    datas[owner_index].1.extra.extend(bookkeeping);
-
-    let keys: Vec<crate::WalletKeys> = datas
-        .iter()
-        .map(|(_, data)| crate::WalletKeys::from_data(data, PathBuf::new()))
-        .collect::<Result<_, _>>()?;
-    let mut report = MigrationReport::default();
-    for entry in ledger["entries"].as_array().cloned().unwrap_or_default() {
-        let txid = entry["txid"].as_str().unwrap_or_default().to_string();
-        let (Some(height), Some(hex_bytes)) = (
-            entry["height"].as_u64(),
-            entry["serialized_output_hex"].as_str(),
-        ) else {
-            datas[owner_index]
-                .1
-                .add_pending(&txid, entry["amount_piconero"].as_u64().unwrap_or(0));
-            continue;
-        };
-        let output = crate::decode_output(&txid, hex_bytes)?;
-        let Some(owner) = keys.iter().position(|k| k.owns(&output)) else {
-            report
-                .unowned_outputs
-                .push(format!("{txid}:{}", output.index_in_transaction()));
-            continue;
-        };
-        datas[owner].1.outputs.push(OutputRecord {
-            txid,
-            height,
-            timestamp: None,
-            serialized_output_hex: hex_bytes.to_string(),
-            // Early ledger entries recorded 0 here; the output knows.
-            amount_piconero: output.commitment().amount,
-            spent: entry["spent"].as_bool().unwrap_or(false),
-            frozen: false,
-        });
-    }
-
-    for (name, data) in datas {
-        let path = out_dir.join(format!("{name}.db"));
-        let (outputs, pending) = (data.outputs.len(), data.pending.len());
-        WalletFile::create(&path, data)?;
-        report.written.push((name, path, outputs, pending));
-    }
-    Ok(report)
-}
-
-/// Converts a JSON wallet file - the format before wallet files were
-/// SQLite databases - into a new wallet file at `out`, which mustn't
-/// exist. The JSON file is left as it is.
-pub fn import_json(json: &Path, out: &Path) -> Result<WalletFile, WalletError> {
-    let contents = std::fs::read_to_string(json)
-        .map_err(|e| WalletError::WalletFile(format!("failed to read {}: {e}", json.display())))?;
-    let data: WalletData = serde_json::from_str(&contents)
-        .map_err(|e| WalletError::WalletFile(format!("failed to parse {}: {e}", json.display())))?;
-    if data.version != 1 {
-        return Err(WalletError::WalletFile(format!(
-            "{} is JSON format version {}, only version 1 can be imported",
-            json.display(),
-            data.version
-        )));
-    }
-    // Refused before anything is created.
-    data.network()
-        .map_err(|e| WalletError::WalletFile(format!("{}: {e}", json.display())))?;
-    let data = WalletData {
-        version: FORMAT_VERSION,
-        ..data
-    };
-    WalletFile::create(out, data)
 }
 
 #[cfg(test)]

@@ -77,7 +77,6 @@ use monero_wallet::{
 };
 use polyseed::{Language as PolyseedLanguage, Polyseed};
 use rand_core::OsRng;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zeroize::Zeroizing;
 
@@ -318,24 +317,19 @@ impl ProvidesUnvalidatedDecoys for DecoyCache {
     }
 }
 
-/// A wallet's key material: what a new wallet file starts from, and how
-/// the old shared `stagenet-wallets.json` recorded each wallet (hence the
-/// serde names).
+/// A wallet's key material: what a new wallet file starts from.
 ///
 /// The keys and seed are plain `String`s and are not zeroised on drop, nor
 /// are their copies in [`WalletData`], `ResolvedWallet` or the SQLite
 /// buffers. These are stagenet test wallets whose files hold the same keys
 /// in plaintext, so clearing memory would protect nothing. The
 /// `Zeroizing` scalars in the signing code clear only those working copies.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct WalletCredentials {
     pub address: String,
-    #[serde(rename = "private_spend_key")]
     pub private_spend_key_hex: String,
-    #[serde(rename = "private_view_key")]
     pub private_view_key_hex: String,
     /// The seed phrase these keys came from, when known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mnemonic: Option<String>,
 }
 
@@ -982,7 +976,7 @@ pub async fn send_payment(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::{migrate_legacy, OutputRecord};
+    use crate::file::OutputRecord;
     use crate::wallet::{record_resolved, record_scanned, ScannedOutput};
 
     #[test]
@@ -1148,19 +1142,6 @@ mod tests {
         );
     }
 
-    /// The ownership check is what splits the old shared ledger between
-    /// wallets: each output belongs to exactly the wallet that received it.
-    #[test]
-    fn outputs_belong_to_the_wallet_that_received_them_only() {
-        let (_, _, outputs) = split_transaction();
-        let (spender_path, spender) = temp_wallet("owns-spender", "spender");
-        let (merchant_path, merchant) = temp_wallet("owns-merchant", "merchant");
-        let spender = WalletKeys::from_data(&spender, spender_path).unwrap();
-        let merchant = WalletKeys::from_data(&merchant, merchant_path).unwrap();
-        assert!(outputs.iter().all(|o| spender.owns(o)));
-        assert!(outputs.iter().all(|o| !merchant.owns(o)));
-    }
-
     /// Key images are what `freeze`/`sweep_single` name outputs by, so
     /// distinct outputs must get distinct, stable ones.
     #[test]
@@ -1220,11 +1201,7 @@ mod tests {
             "an existing wallet file is never replaced"
         );
         let reloaded = WalletFile::load(&path).unwrap().data;
-        assert_eq!(reloaded.address, data.address);
-        assert_eq!(
-            serde_json::to_value(&reloaded).unwrap(),
-            serde_json::to_value(&data).unwrap()
-        );
+        assert!(reloaded == data);
     }
 
     /// Concurrent read-modify-writes from many tasks each land - the lock
@@ -1293,75 +1270,6 @@ mod tests {
             .await
             .expect("waiting gets the lock once it's released");
         release.await.unwrap();
-    }
-
-    /// The old shared layout splits into one file per wallet, each output
-    /// going to its owner, pending txids to the sender.
-    #[test]
-    fn legacy_shared_files_split_into_one_file_per_wallet() {
-        let (txid, height, outputs) = split_transaction();
-        let dir = std::env::temp_dir().join(format!("cli-wallet-migrate-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let credentials = |name: &str| {
-            let keys = fixture_wallet(name);
-            serde_json::json!({ "address": keys.address, "private_spend_key": keys.private_spend_key_hex, "private_view_key": keys.private_view_key_hex, "role": name })
-        };
-        let wallets = serde_json::json!({
-            "_comment": "stagenet only",
-            "spender": credentials("spender"),
-            "merchant": credentials("merchant"),
-            "faucet_used": "https://stagenet-faucet.xmr-tw.org/",
-        });
-        let mut entries: Vec<Value> = outputs
-            .iter()
-            .map(|o| serde_json::json!({ "txid": txid, "height": height, "serialized_output_hex": hex::encode(o.serialize()), "amount_piconero": 0, "spent": false }))
-            .collect();
-        entries.push(serde_json::json!({ "txid": "ab".repeat(32), "height": null, "serialized_output_hex": null, "amount_piconero": 5, "spent": false }));
-        std::fs::write(dir.join("wallets.json"), wallets.to_string()).unwrap();
-        std::fs::write(
-            dir.join("ledger.json"),
-            serde_json::json!({ "entries": entries }).to_string(),
-        )
-        .unwrap();
-
-        let out = dir.join("wallets");
-        let report = migrate_legacy(
-            &dir.join("wallets.json"),
-            &dir.join("ledger.json"),
-            &out,
-            "spender",
-        )
-        .unwrap();
-        assert!(report.unowned_outputs.is_empty());
-
-        let spender = WalletFile::load(out.join("spender.db")).unwrap().data;
-        let merchant = WalletFile::load(out.join("merchant.db")).unwrap().data;
-        assert_eq!(spender.outputs.len(), 3);
-        assert!(
-            spender.outputs.iter().all(|o| o.amount_piconero > 0),
-            "amounts come from the outputs themselves"
-        );
-        assert_eq!(spender.pending.len(), 1);
-        assert_eq!(
-            spender.extra["faucet_used"],
-            "https://stagenet-faucet.xmr-tw.org/"
-        );
-        assert_eq!(spender.extra["_comment"], "stagenet only");
-        assert!(merchant.outputs.is_empty() && merchant.pending.is_empty());
-        assert_eq!(merchant.extra["role"], "merchant");
-        assert!(!merchant.extra.contains_key("faucet_used"));
-        assert!(
-            migrate_legacy(
-                &dir.join("wallets.json"),
-                &dir.join("ledger.json"),
-                &out,
-                "spender"
-            )
-            .is_err(),
-            "never overwrites"
-        );
     }
 
     #[test]

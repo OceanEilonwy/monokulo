@@ -17,8 +17,8 @@ match its file, or the wallet is refused. Mainnet wallet files are refused
 outright: every key here is kept in plaintext.
 
 ```sh
-cargo run -p cli-wallet --bin wallet-cli -- --testnet --generate-new-wallet ~/testnet/me.json
-cargo run -p cli-wallet --bin wallet-cli -- --wallet-file ~/testnet/me.json balance
+cargo run -p cli-wallet --bin wallet-cli -- --testnet --generate-new-wallet ~/testnet/me.db
+cargo run -p cli-wallet --bin wallet-cli -- --wallet-file ~/testnet/me.db balance
 ```
 
 On testnet:
@@ -65,10 +65,6 @@ them `diff=sqlite3`):
 ```sh
 git config diff.sqlite3.textconv 'sh -c "sqlite3 -readonly \"\$0\" .dump"'
 ```
-
-A JSON wallet file from before is converted with
-`wallet-cli import_json <file.json> [<wallet>]`, which writes a new
-`.db` file (by default beside it) and leaves the JSON file alone.
 
 ## The CLI
 
@@ -120,7 +116,7 @@ never outlives the process holding it, even if it crashes.
 
 ### What's supported
 
-The limits applied: a JSON file per wallet as the only wallet state, and no
+The limits applied: a SQLite file per wallet as the only wallet state, and no
 chain scanning, except `rescan` when asked. Single node calls that aren't scans are fine (chain height,
 fee rate, broadcast, one transaction's block, whether key images are spent).
 Stagenet and testnet (see above); ring size 16.
