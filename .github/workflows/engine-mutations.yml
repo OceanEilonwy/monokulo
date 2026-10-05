@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   mutations:
-    name: named defects (${{ matrix.features }})
+    name: named defects and boundaries (${{ matrix.features }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -36,9 +36,9 @@ jobs:
           key: mutations-${{ matrix.features }}
       - name: Check runner rejects invalid outcomes
         run: python3 scripts/test_engine_mutations.py
-      - name: Prove named defects are detected
+      - name: Prove intended defect assertions and required boundary observations
         run: python3 scripts/engine-mutations.py --features "$ENGINE_MUTATION_FEATURES" --cases "$ENGINE_MUTATION_CASES"
-      - name: Preserve baseline and mutation evidence
+      - name: Preserve baseline, mutation and boundary evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:

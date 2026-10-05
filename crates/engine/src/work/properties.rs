@@ -612,7 +612,33 @@ fn combined_portfolio_interactions_have_fixed_positive_controls() {
         ] {
             data.extend(event);
         }
-        crate::work::portfolio::explore(&data);
+        let hits = crate::work::portfolio::explore(&data);
+        for boundary in [
+            "rpc-timeout-cancelled",
+            "custody-error-reached",
+            "sql-denial-reached",
+            "all-node-outage-preserves-money-and-cursors",
+            "database-reopened-mid-history",
+            "custody-handle-replaced",
+            "unanimous-spent-void-checked",
+            "disputed-spent-retains-funds",
+            "void-restored-to-canonical-block",
+            "missing-proof-holds-settlement",
+            "mismatching-proof-holds-settlement",
+            "proven-settlement-released",
+            "http-503-reached",
+            "http-retry-stable-bytes-and-drained",
+            "database-reopened-final-ledger",
+        ] {
+            assert!(
+                hits.get(boundary).copied().unwrap_or_default() > 0,
+                "BOUNDARY: positive-control; {boundary} worker={worker}"
+            );
+        }
+        println!(
+            "ENGINE_BOUNDARY_HITS {}",
+            serde_json::to_string(&hits).unwrap()
+        );
     }
 }
 
@@ -680,6 +706,7 @@ fn recorded_ringct_shapes_and_recipient_expectations_are_frozen() {
 
 #[test]
 fn every_recorded_ringct_variant_runs_complete_money_histories() {
+    let mut hits = std::collections::BTreeMap::<String, u64>::new();
     for worker in 0..=1 {
         for pruned in [false, true] {
             for foreign in 0..3 {
@@ -704,8 +731,22 @@ fn every_recorded_ringct_variant_runs_complete_money_histories() {
                         data.extend(event);
                     }
                     crate::work::portfolio::explore(&data);
+                    for boundary in [
+                        "recorded-ringct-history",
+                        if pruned {
+                            "recorded-pruned-history"
+                        } else {
+                            "recorded-whole-history"
+                        },
+                    ] {
+                        *hits.entry(boundary.into()).or_default() += 1;
+                    }
                 }
             }
         }
     }
+    println!(
+        "ENGINE_BOUNDARY_HITS {}",
+        serde_json::to_string(&hits).unwrap()
+    );
 }

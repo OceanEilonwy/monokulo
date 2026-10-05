@@ -51,6 +51,7 @@ pub(super) struct World {
     pub(super) url: String,
     receiver: Arc<Receiver>,
     expected_events: RefCell<BTreeMap<String, String>>,
+    pub(super) hits: RefCell<BTreeMap<String, u64>>,
     _server: Server,
 }
 impl World {
@@ -103,8 +104,18 @@ impl World {
             url,
             receiver,
             expected_events: RefCell::default(),
+            hits: RefCell::default(),
             _server: server,
         }
+    }
+    pub(super) fn hit(&self, name: &str) {
+        *self.hits.borrow_mut().entry(name.to_owned()).or_default() += 1;
+    }
+    pub(super) fn spent_calls(&self) -> usize {
+        self.nodes
+            .iter()
+            .map(|n| n.counts(Rpc::Spent).completed)
+            .sum()
     }
     pub(super) fn body_variant(&self, pruned: bool) {
         self.pruned.set(pruned);
@@ -256,6 +267,7 @@ impl World {
             assert!(counts.attempted >= counts.completed + counts.cancelled);
         }
         tokio::time::resume();
+        self.hit("rpc-timeout-cancelled");
         self.healthy();
         // Disagreement and primary failure while the real fast path scans.
         self.nodes[0].behavior.lock().failures = Rpc::Pool.bit();
@@ -286,6 +298,7 @@ impl World {
                 .unwrap_or_default()
                 > before
         );
+        self.hit("custody-error-reached");
         custody.recover(tenants[0].1);
         self.healthy();
         let trace = db
@@ -309,6 +322,7 @@ impl World {
         .unwrap();
         trace.assert_outcome(0);
         assert_eq!(trace.denied.load(Ordering::Relaxed), 1);
+        self.hit("sql-denial-reached");
         // An all-node outage cannot manufacture or remove any recorded funds.
         let money = || {
             let s = store.lock();
@@ -352,7 +366,8 @@ impl World {
                 before[i]
             );
         }
-        assert_eq!(money(), funds_before, "outage changed money");
+        assert_eq!(money(), funds_before, "BOUNDARY: outage-money");
+        self.hit("all-node-outage-preserves-money-and-cursors");
         self.healthy();
     }
     pub(super) fn check_events(&self, store: &Store, invoices: &[Invoice]) {
@@ -427,6 +442,7 @@ impl World {
                 self.receiver.bodies.lock().len() > before,
                 "delivery failure must reach HTTP"
             );
+            self.hit("http-503-reached");
         } else {
             assert!(
                 store
@@ -450,6 +466,8 @@ impl World {
                 self.expected_events.borrow().len(),
                 "missing HTTP events"
             );
+            assert!(bodies.len() > stable.len(), "failed event must be retried");
+            self.hit("http-retry-stable-bytes-and-drained");
             for (id, expected) in self.expected_events.borrow().iter() {
                 assert_eq!(
                     stable.get(id).copied(),

@@ -184,7 +184,7 @@ proptest! {
         let stale = old.request(Duration::ZERO).unwrap();
         let mut current = Scheduler::with_generation(&ScanTuning::DEFAULT,Duration::ZERO,generation.wrapping_add(1)).unwrap();
         let effect = current.request(Duration::ZERO).unwrap();
-        prop_assert!(!current.complete(stale,Some(TierOutcome::Failed)));
+        prop_assert!(!current.complete(stale,Some(TierOutcome::Failed)), "BOUNDARY: stale-round-completion");
         prop_assert!(current.complete(effect,Some(TierOutcome::Idle)));
         prop_assert_eq!(current.steps()[Tier::Chain],1);
         prop_assert_eq!(current.outcomes()[Tier::Chain],TierOutcome::Idle);

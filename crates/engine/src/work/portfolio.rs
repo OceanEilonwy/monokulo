@@ -52,7 +52,7 @@ impl Bytes<'_> {
     }
 }
 
-pub(crate) fn explore(data: &[u8]) {
+pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -240,9 +240,11 @@ pub(crate) fn explore(data: &[u8]) {
             if bytes.1 >= data.len() {
                 break;
             }
+            let spent_before = daemon.spent_calls();
             let action = bytes.next() % 12;
             let target = usize::from(bytes.next()) % count;
             let slot = u64::from(bytes.next() % 4);
+            let was_voided = voided[target];
             match action {
                 0 => {
                     locations[target] = Location::Block(3 + slot);
@@ -256,6 +258,7 @@ pub(crate) fn explore(data: &[u8]) {
                 3 => {
                     state = ScanState::default();
                     let reopened = Store::open_file(&path).unwrap();
+                    daemon.hit("database-reopened-mid-history");
                     db = if worker {
                         Db::open(&path, &reopened).unwrap()
                     } else {
@@ -331,6 +334,7 @@ pub(crate) fn explore(data: &[u8]) {
                 // Replace the backend handle while retaining durable identity.
                 let wallet = target % wallets;
                 custody.remove_wallet(tenants[wallet].1).await.unwrap();
+                let old_handle = tenants[wallet].1;
                 tenants[wallet].1 = custody
                     .register_wallet(WalletMaterial::new(
                         pairs[wallet].view.to_bytes(),
@@ -338,6 +342,8 @@ pub(crate) fn explore(data: &[u8]) {
                     ))
                     .await
                     .unwrap();
+                assert_ne!(tenants[wallet].1, old_handle);
+                daemon.hit("custody-handle-replaced");
                 state = ScanState::default();
             }
             settle(
@@ -356,6 +362,16 @@ pub(crate) fn explore(data: &[u8]) {
                 &mut identities,
             )
             .await;
+            if was_voided && action == 0 {
+                daemon.hit("void-restored-to-canonical-block");
+            }
+            if matches!(action, 6 | 7) && daemon.spent_calls() > spent_before {
+                daemon.hit(if action == 6 {
+                    "unanimous-spent-void-checked"
+                } else {
+                    "disputed-spent-retains-funds"
+                });
+            }
         }
         // Force the most revealing transition even for empty/short inputs:
         // all distinct outputs mined together, then cold state and stable IDs.
@@ -364,6 +380,7 @@ pub(crate) fn explore(data: &[u8]) {
         let hash = world::hash(epoch, 3);
         daemon.reorg_from(3, vec![(hash.as_str(), transactions)]);
         locations.fill(Location::Block(3));
+        let restored = voided.iter().filter(|v| **v).count();
         voided.fill(false);
         state = ScanState::default();
         daemon.proof(&db, 3, false).await;
@@ -383,6 +400,9 @@ pub(crate) fn explore(data: &[u8]) {
             &mut identities,
         )
         .await;
+        if restored > 0 {
+            daemon.hit("void-restored-to-canonical-block");
+        }
         daemon.deliver(&db, &store, true).await;
         daemon.deliver(&db, &store, false).await;
         let reopened = Store::open_file(&path).unwrap();
@@ -396,7 +416,9 @@ pub(crate) fn explore(data: &[u8]) {
                     .count()
             );
         }
-    });
+        daemon.hit("database-reopened-final-ledger");
+        daemon.hits.into_inner()
+    })
 }
 fn inputs<'a>(
     db: &'a Db,
@@ -502,6 +524,7 @@ async fn settle(
         let mut expected = BTreeMap::new();
         let mut total = 0u64;
         let mut eligible = 0u64;
+        let mut observed_eligible = 0u64;
         let mut mined = false;
         for (t, planned) in outputs.iter().enumerate() {
             for o in planned {
@@ -525,6 +548,9 @@ async fn settle(
                         top - h as u64 + 1
                     }
                 });
+                if height.is_some_and(|h| tip.saturating_sub(h as u64) + 1 >= invoice.threshold) {
+                    observed_eligible += o.amount;
+                }
                 if depth >= invoice.threshold {
                     eligible += o.amount;
                 }
@@ -536,11 +562,13 @@ async fn settle(
         for row in rows {
             assert_eq!(
                 expected.get(&(row.txid.clone(), row.output_index)),
-                Some(&(row.amount_piconero, row.block_height))
+                Some(&(row.amount_piconero, row.block_height)),
+                "BOUNDARY: independent-output-ledger"
             );
             assert_eq!(
                 row.voided_at.is_some(),
-                voided[txids.iter().position(|id| id == &row.txid).unwrap()]
+                voided[txids.iter().position(|id| id == &row.txid).unwrap()],
+                "BOUNDARY: independent-void-ledger"
             );
             assert!(row.superseded_by.is_none());
             let key = (invoice.id.as_str().to_owned(), row.txid, row.output_index);
@@ -566,8 +594,21 @@ async fn settle(
             OrderStatus::Unconfirmed
         };
         let actual = s.get_order(&invoice.tenant, &invoice.id).unwrap().unwrap();
-        assert_eq!(actual.amount_received_piconero, total);
-        assert_eq!(actual.status, status, "tip={tip} ceil={} mismatch={} required={} total={total} eligible={eligible} goal={} proof={:?} views={:?}", daemon.ceiling.get(), daemon.mismatch.get(), invoice.threshold, invoice.goal, s.proof_ceiling(NETWORK).unwrap(), s.proven_views(NETWORK, &invoice.id,tip,&std::collections::HashSet::default()).unwrap());
+        assert_eq!(
+            actual.amount_received_piconero, total,
+            "BOUNDARY: independent-amount-ledger"
+        );
+        assert_eq!(actual.status, status, "BOUNDARY: independent-status; tip={tip} ceil={} mismatch={} required={} total={total} eligible={eligible} goal={} proof={:?} views={:?}", daemon.ceiling.get(), daemon.mismatch.get(), invoice.threshold, invoice.goal, s.proof_ceiling(NETWORK).unwrap(), s.proven_views(NETWORK, &invoice.id,tip,&std::collections::HashSet::default()).unwrap());
+        if observed_eligible >= invoice.goal && eligible < invoice.goal {
+            daemon.hit(if daemon.mismatch.get() {
+                "mismatching-proof-holds-settlement"
+            } else {
+                "missing-proof-holds-settlement"
+            });
+        }
+        if eligible >= invoice.goal {
+            daemon.hit("proven-settlement-released");
+        }
         for (other, _) in tenants {
             if other != &invoice.tenant {
                 assert!(s.get_order(other, &invoice.id).unwrap().is_none());

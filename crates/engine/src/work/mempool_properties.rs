@@ -682,7 +682,11 @@ fn a_completion_for_another_window_cannot_publish_or_release_its_owner() {
     let (mut owner, claimed) = state.claim("tx", &[&old]);
     assert_eq!(claimed.len(), 1);
     owner.complete(&old.0, newer.2.generation());
-    assert_eq!(state.inner.lock().in_flight.len(), 1);
+    assert_eq!(
+        state.inner.lock().in_flight.len(),
+        1,
+        "BOUNDARY: wrong-window-owner"
+    );
     assert!(state.inner.lock().scanned.is_empty());
     assert!(state.claim("tx", &[&newer]).1.is_empty());
     drop(owner);

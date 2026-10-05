@@ -373,7 +373,11 @@ async fn ownership_history(count: usize, worker: bool, events: Vec<(u8, usize, u
         } else {
             StatusCode::NOT_FOUND
         };
-        assert_eq!(response.status(), expected);
+        assert_eq!(
+            response.status(),
+            expected,
+            "BOUNDARY: tenant-authorization"
+        );
         let body = if action == 1 && owner {
             serde_json::Value::Null
         } else {

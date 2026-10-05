@@ -308,7 +308,8 @@ async fn overlap(ordering: usize, cancelled: u8, change: u8, repeats: usize) {
                 .iter()
                 .filter(|d| d.event_type == "order.paid")
                 .count(),
-            1
+            1,
+            "BOUNDARY: paid-webhook"
         );
     }
     let reopened = Store::open_file(&path.0).unwrap();
@@ -613,4 +614,5 @@ fn every_proof_config_shutdown_admission_schedule_recovers() {
             }
         }
     });
+    println!("ENGINE_BOUNDARY_HITS {{\"worker-proof-config-shutdown-schedules\":144,\"worker-custody-replacement-schedules\":72,\"worker-missing-anchor-schedules\":48,\"worker-mismatching-anchor-schedules\":48}}");
 }

@@ -128,7 +128,8 @@ async fn late_commit(change: u8, cancelled: bool, staged: bool) {
         .unwrap();
     assert_eq!(
         store.get_all_payments(&order).unwrap().is_empty(),
-        change != 0
+        change != 0,
+        "BOUNDARY: stale-block-publication"
     );
     if matches!(change, 2..=4) {
         assert!(result.is_none());
@@ -144,7 +145,8 @@ async fn late_commit(change: u8, cancelled: bool, staged: bool) {
             reopened
                 .pending_payment_recomputes_page(network, "", 10)
                 .unwrap(),
-            vec![order]
+            vec![order],
+            "BOUNDARY: durable-recompute-obligation"
         );
     }
 }

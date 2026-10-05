@@ -1445,6 +1445,107 @@ mod tests {
         cleanup(&path);
     }
 
+    fn staged_reorg_cleanup(network: monero::Network, fork: u64, restart: bool) {
+        let (mut store, path) = file_store();
+        let other = if network == monero::Network::Mainnet {
+            monero::Network::Stagenet
+        } else {
+            monero::Network::Mainnet
+        };
+        let mut staged = Vec::new();
+        for (net, height) in [
+            (network, fork - 1),
+            (network, fork),
+            (network, fork + 1),
+            (other, fork + 1),
+        ] {
+            let t = TenantId::new(tenant(&store, shared::network::network_str(net)));
+            let o = order(&store, t.as_str(), 100_000);
+            let hash = format!("{net:?}-{height}");
+            store
+                .save_block_checkpoint(
+                    net,
+                    &t,
+                    &BlockCheckpoint {
+                        height,
+                        hash: hash.clone(),
+                        next_tx: 1,
+                    },
+                )
+                .unwrap();
+            store.conn.execute("INSERT INTO partial_block_matches(network,tenant_id,order_id,txid,output_index,amount_piconero,key_images_json,seen_at_utc,output_key) VALUES(?1,?2,?3,'staged-tx',0,17,'[]',1000,'output-key')", params![shared::network::SqlNetwork(net),t,o]).unwrap();
+            staged.push((net, t, height, hash));
+        }
+        store.open_reorg_job(network, fork, 1000).unwrap();
+        while store.collect_reorg_candidates(network, 1, 1000).unwrap() != ReorgPhase::Process {}
+        if restart {
+            drop(store);
+            store = Store::open_file(&path).unwrap();
+        }
+        store
+            .finish_reorg(network, fork, Some((fork - 1, "ancestor")))
+            .unwrap();
+        // Completion is durable and only discards staging on the replaced branch.
+        drop(store);
+        let store = Store::open_file(&path).unwrap();
+        assert!(store.reorg_job(network).unwrap().is_none());
+        for (net, t, height, hash) in staged {
+            let discarded = net == network && height >= fork;
+            assert_eq!(
+                store.block_checkpoint(net, &t).unwrap().is_none(),
+                discarded,
+                "BOUNDARY: reorg-staging-cleanup"
+            );
+            let count: i64 = store
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM partial_block_matches WHERE network=?1 AND tenant_id=?2",
+                    params![shared::network::SqlNetwork(net), t],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                count,
+                i64::from(!discarded),
+                "BOUNDARY: reorg-staging-matches"
+            );
+            let matches = store.take_staged_payments(net, &t, &hash).unwrap();
+            assert_eq!(matches.len(), usize::from(!discarded));
+            if !discarded {
+                assert_eq!(matches[0].amount_piconero, 17);
+            }
+        }
+        drop(store);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn every_reorg_staging_cleanup_boundary_survives_reopen() {
+        for net in [
+            monero::Network::Mainnet,
+            monero::Network::Testnet,
+            monero::Network::Stagenet,
+        ] {
+            for fork in [1, 3, 1000] {
+                for restart in [false, true] {
+                    staged_reorg_cleanup(net, fork, restart);
+                }
+            }
+        }
+        println!("ENGINE_BOUNDARY_HITS {{\"reorg-staging-reopen-schedules\":18,\"reorg-staging-invalidated-at-or-above-fork\":36,\"reorg-staging-preserved-below-fork-or-other-network\":36}}");
+    }
+
+    mod properties {
+        use super::staged_reorg_cleanup;
+        proptest::proptest! {
+            #![proptest_config(crate::property_support::config())]
+            #[test]
+            fn generated_reorg_staging_is_scoped_and_durable(net in 0usize..3, fork in 1u64..2001, restart in proptest::prelude::any::<bool>()) {
+                staged_reorg_cleanup([monero::Network::Mainnet,monero::Network::Testnet,monero::Network::Stagenet][net],fork,restart);
+            }
+        }
+    }
+
     /// An open order is due at its deadline; recomputing it schedules the
     /// next point its status can move; a terminal one is unscheduled.
     #[test]

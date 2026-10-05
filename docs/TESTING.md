@@ -992,7 +992,7 @@ unassigned 99. Invoices deliberately request the exact total, half the total or
 one more than the total, with confirmation thresholds 0–3. The independent ledger
 comes from recipient instructions, not scanner results or the database.
 
-All outputs are first observed in the pool. Up to eight commands then independently
+All outputs are first observed in the pool. Up to sixteen commands then independently
 mine, return or drop transactions, replace branches, reopen a worker/reset scanner
 state, repeat the fast path, and change chain length. Absence without positive
 spent evidence must preserve the funds. At each quiescent point, exact recipient,
@@ -1015,10 +1015,10 @@ portfolio 60` and append `zmq` for fuzzing that configuration.
 
 ## Named mutation checks: testing the tests
 
-`scripts/engine-mutations.py` deliberately introduces six defects, one at a time,
+`scripts/engine-mutations.py` deliberately introduces fourteen defects, one at a time,
 in a disposable detached worktree. The caller's engine sources are never edited.
 Each selected test must first pass on the healthy snapshot, then fail by an
-assertion on the mutant. All defects are checked in default and ZMQ builds:
+assertion bearing the defect’s specified `BOUNDARY:` marker on the mutant. All defects are checked in default and ZMQ builds:
 
 | Intentional defect | Required detecting test |
 |---|---|
@@ -1028,10 +1028,18 @@ assertion on the mutant. All defects are checked in default and ZMQ builds:
 | Drop payment insert/update recompute obligations | Complete late-commit prerequisite sweep |
 | Commit paid status without its webhook | Combined real-worker concurrency sweep |
 | Accept another round's completion | Generated scheduler generation property |
+| Trust one node’s spent vote despite disagreement | Combined portfolio independent void ledger |
+| Publish completion for a different scan window | Held-owner wrong-window regression |
+| Bypass matching-proof settlement requirements | Combined portfolio independent status ledger |
+| Reverse the earliest-mined conflict winner | Durable conflict winner/reorg regression |
+| Send a later webhook event before an earlier retry | Production FIFO/backoff regression |
+| Retain an obsolete reorg staging checkpoint | Reopen/fork/network staging sweep |
+| Retain obsolete staged matches | Same sweep, independent staging-row assertion |
+| Keep custody handles live across backend epoch changes | Generated backend epoch isolation property |
 
 Compiler/linker errors, zero selected tests, unrelated panics, wall timeouts and
 failed rendezvous/virtual deadlines are invalid runs, never successful detections.
-A surviving mutant or any invalid result fails the command. Seven runner checks
+A surviving mutant or any invalid result fails the command. Fourteen runner checks
 use real tiny Cargo test programs to verify those outcome classes, including
 process-group cleanup on POSIX timeout. The isolated worktree is removed even
 when a mutant fails; output contains the revision, tracked local patch hash,
@@ -1048,7 +1056,7 @@ python3 scripts/engine-mutations.py --features zmq --cases 64
 JSON and logs live in ignored `target/engine-mutations/`, with compiled artifacts
 in its `build/` directory. A weekly/manual `engine-mutations.yml` job runs both
 configurations and retains JSON plus logs. These checks demonstrate detection of
-these six chosen defects; they are not a percentage score for every possible bug.
+these fourteen chosen defects; they are not a percentage score for every possible bug.
 The money, crash, concurrency, fuzz and authorization suites remain complementary.
 
 ## Combined money, proof, node, custody and delivery histories
@@ -1135,3 +1143,34 @@ Run `cargo test -p engine --lib recorded_ringct` and the existing `mixed_wallet`
 properties in both feature builds. Reviewed recorded/CLSAG portfolio seeds are
 shared with the existing sanitizer fuzzer and daily CI; no external node is needed
 for any test or fuzz execution.
+
+
+## Boundary observations and strict mutation evidence
+
+The mutation runner also executes four complete healthy boundary suites in each
+feature build. Its schema-v2 report retains counters and fails a baseline if a
+required observation is missing or malformed. Counters are emitted only after
+scenario assertions pass. They measure observed bounded scenarios, not source
+branch coverage or an exhaustive probability of catching bugs.
+
+| Healthy boundary suite | Observations per feature build |
+|---|---|
+| Combined portfolio, inline and worker | Each mode independently reaches cancelled real RPC deadlines, a custody scan error, actual SQL denial, all-node outage with unchanged money/cursors, disputed and unanimous spent evidence, missing and mismatching proof holds, proof release, handle replacement, mid-history/final reopen, canonical void restoration, real HTTP 503 and a retry with identical bytes followed by full drain. Counts come from observed successful checks. |
+| Proof/config/shutdown worker schedules | 144 completed schedules; 72 replace custody; 48 lose the anchor and 48 use a mismatching anchor. Six admission orders × four caller-abandonment positions × three proof states × two custody-generation choices. |
+| Reorg staging cleanup | 18 reopen schedules across all three networks, forks 1/3/1,000, with/without reopening before completion. 36 obsolete checkpoints/match sets removed; 36 below-fork/other-network sets preserved. The accompanying generated property explores fork heights 1–2,000 and both reopen choices. |
+| Recorded transaction histories | 36 complete histories, including 18 whole and 18 pruned presentations; both DB modes, all three frozen foreign RingCT types and three invoice goals/confirmation thresholds. Paying type-5/6 bases are explicitly synthetic; fixture provenance is documented separately. |
+
+Detection requires the expected marker inside an assertion panic. Printing the
+marker before an unrelated assertion cannot earn a detection. Runner tests cover
+wrong assertions, printed-marker false positives, malformed/missing counters and
+aggregation, in addition to compilation, zero-test, unrelated-panic and timeout
+rejection. Reports preserve baseline logs, each exact patch/command and the local
+snapshot hash; the weekly/manual workflow uploads the report and logs separately
+for default and ZMQ.
+
+```sh
+python3 scripts/test_engine_mutations.py
+python3 scripts/engine-mutations.py --features both --cases 32 --seed 241
+# Human-readable evidence, including per-suite boundary observations:
+python3 -m json.tool target/engine-mutations/report.json
+```
