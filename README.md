@@ -237,7 +237,7 @@ real dev/test orders without a full wallet-rpc process. It ships two `[[bin]]`
 targets under the `cli-wallet` package:
 
 ```sh
-# monero-wallet-cli's commands over one JSON file per wallet (e2e/wallets/).
+# monero-wallet-cli's commands over one SQLite file per wallet (e2e/wallets/).
 # With no command it opens the wallet and prompts, like the reference wallet:
 cargo run -p cli-wallet --bin wallet-cli -- --wallet-file spender
 #   [wallet 5648a3]: balance

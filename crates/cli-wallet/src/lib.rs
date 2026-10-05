@@ -34,7 +34,7 @@
 //!   block is then scanned once it confirms - rather than rediscovering
 //!   them by asking the chain "what's mine?" on every run. Once resolved,
 //!   an output's entire [`monero_wallet::WalletOutput`] is serialized into
-//!   the wallet's own JSON file ([`file::WalletData`]) and committed, so
+//!   the wallet's own SQLite file ([`file::WalletData`]) and committed, so
 //!   every later run reads it straight off disk with zero RPC calls.
 //!   The one exception is `rescan <blocks>` ([`Wallet::rescan`]), which
 //!   scans a chosen range of blocks ([`block_range::BlockRange`]) - only
@@ -61,6 +61,7 @@ pub mod amount;
 pub mod block_range;
 pub mod file;
 pub mod meta;
+mod store;
 mod wallet;
 
 use std::ops::RangeBounds;
@@ -322,7 +323,7 @@ impl ProvidesUnvalidatedDecoys for DecoyCache {
 /// serde names).
 ///
 /// The keys and seed are plain `String`s and are not zeroised on drop, nor
-/// are their copies in [`WalletData`], `ResolvedWallet` or the JSON
+/// are their copies in [`WalletData`], `ResolvedWallet` or the SQLite
 /// buffers. These are stagenet test wallets whose files hold the same keys
 /// in plaintext, so clearing memory would protect nothing. The
 /// `Zeroizing` scalars in the signing code clear only those working copies.
@@ -355,7 +356,7 @@ pub struct WalletCtx {
     pub node_urls: Vec<String>,
     pub accept_invalid_certs: bool,
     /// Where wallet files live: a wallet named `spender` is
-    /// `<wallet_dir>/spender.json`.
+    /// `<wallet_dir>/spender.db`.
     pub wallet_dir: PathBuf,
     /// The decoy-distribution snapshot to select decoys from (see
     /// [`DecoyCache`]). `None` fetches the distribution from the node on
@@ -440,13 +441,15 @@ impl WalletCtx {
     }
 
     /// A `--wallet-file` argument as a path: a bare name (`spender`) is
-    /// `<wallet_dir>/<name>.json`; anything that looks like a path is used
-    /// as given.
+    /// `<wallet_dir>/<name>.db`; anything that looks like a path (a
+    /// directory, or an extension of its own) is used as given.
     pub fn wallet_path(&self, name_or_path: &str) -> PathBuf {
-        if name_or_path.contains(std::path::MAIN_SEPARATOR) || name_or_path.ends_with(".json") {
+        if name_or_path.contains(std::path::MAIN_SEPARATOR)
+            || Path::new(name_or_path).extension().is_some()
+        {
             PathBuf::from(name_or_path)
         } else {
-            self.wallet_dir.join(format!("{name_or_path}.json"))
+            self.wallet_dir.join(format!("{name_or_path}.db"))
         }
     }
 }
@@ -634,7 +637,7 @@ impl WalletStore {
         Ok(Self { ctx: ctx.clone() })
     }
 
-    /// The wallet named `name` (`<wallet_dir>/<name>.json`). Every wallet
+    /// The wallet named `name` (`<wallet_dir>/<name>.db`). Every wallet
     /// this crate manages is a worthless stagenet fixture, so every one has
     /// its spend key recorded - even moneropay's own tenant (`merchant`);
     /// only the *public* half ([`ResolvedWallet::spend_public_key_hex`]) is
@@ -1053,7 +1056,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cli-wallet-{test}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let data = WalletData::new(Network::Stagenet, fixture_wallet(name));
-        let path = dir.join(format!("{name}.json"));
+        let path = dir.join(format!("{name}.db"));
         WalletFile::create(&path, data.clone()).unwrap();
         (path, data)
     }
@@ -1279,7 +1282,7 @@ mod tests {
             "names the holder: {}",
             seen[0]
         );
-        assert!(seen[0].contains("spender.json is locked by"), "{}", seen[0]);
+        assert!(seen[0].contains("spender.db is locked by"), "{}", seen[0]);
 
         let wait: BusyHandler = Arc::new(|_: &LockHolder| BusyChoice::Wait);
         let release = tokio::spawn(async move {
@@ -1333,8 +1336,8 @@ mod tests {
         .unwrap();
         assert!(report.unowned_outputs.is_empty());
 
-        let spender = WalletFile::load(out.join("spender.json")).unwrap().data;
-        let merchant = WalletFile::load(out.join("merchant.json")).unwrap().data;
+        let spender = WalletFile::load(out.join("spender.db")).unwrap().data;
+        let merchant = WalletFile::load(out.join("merchant.db")).unwrap().data;
         assert_eq!(spender.outputs.len(), 3);
         assert!(
             spender.outputs.iter().all(|o| o.amount_piconero > 0),
@@ -1409,7 +1412,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cli-wallet-testnet-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let credentials = generate_credentials(Network::Testnet, "English").unwrap();
-        let path = dir.join("t.json");
+        let path = dir.join("t.db");
         WalletFile::create(
             &path,
             WalletData::new(Network::Testnet, credentials.clone()),
@@ -1453,22 +1456,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(stagenet_path.parent().unwrap());
     }
 
-    /// Every key here is plaintext, so a mainnet wallet file is refused
-    /// outright, as is a network nobody's heard of.
+    /// Every key here is plaintext, so a mainnet wallet is never written,
+    /// nor one for a network nobody's heard of; the file keeps what it had.
     #[test]
     fn a_wallet_file_for_mainnet_or_an_unknown_network_is_refused() {
         let (path, data) = temp_wallet("mainnet-refused", "spender");
         for network in ["mainnet", "regtest"] {
-            let mut data = data.clone();
-            data.network = network.to_string();
-            std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
-            let error = WalletFile::load(&path).err().unwrap();
+            let mut file = WalletFile::load(&path).unwrap();
+            file.data.network = network.to_string();
+            let error = file.save().unwrap_err();
             assert!(
                 error
                     .to_string()
                     .contains(&format!("{network} isn't a network this wallet works on")),
                 "{error}"
             );
+            assert_eq!(WalletFile::load(&path).unwrap().data.network, data.network);
+
+            let mut data = data.clone();
+            data.network = network.to_string();
+            let other = path.with_file_name(format!("{network}.db"));
+            assert!(WalletFile::create(&other, data).is_err());
+            assert!(!other.exists(), "a refused create leaves no file");
         }
         assert_eq!(network_name(Network::Mainnet), "mainnet");
         assert!(parse_network("mainnet").is_err());

@@ -43,12 +43,12 @@ so a full run is fast (seconds, not minutes) and doesn't depend on a large
   `crates/engine/tests/support/mod.rs`'s `e2e_fixture` constants.
 - **Faucet**: https://stagenet-faucet.xmr-tw.org/ - funded the spender wallet
   below.
-- **`wallets/<name>.json`**: one file per wallet, holding *everything* about
+- **`wallets/<name>.db`**: one SQLite file per wallet, holding *everything* about
   it - keys and seed, `monero-wallet-cli`-style settings (accounts,
   subaddress labels, address book, description), and its own record of every
   output it has received, every transaction it has sent, and anything still
   waiting to confirm. Loaded through `cli-wallet` (never parsed by hand):
-  - `merchant.json` - moneropay's own tenant, bootstrapped into
+  - `merchant.db` - moneropay's own tenant, bootstrapped into
     `moneropay-stagenet.toml` with its view key + spend *public* key only
     (never the private spend key). Its full spend key is recorded too, like
     every other fixture here (there's no reason to withhold it - worthless
@@ -57,7 +57,7 @@ so a full run is fast (seconds, not minutes) and doesn't depend on a large
     ever goes to moneropay's real connect API
     (`ResolvedWallet::spend_public_key_hex`), so the e2e tests still exercise
     it exactly as a genuinely watch-only tenant would be.
-  - `spender.json` - an ordinary wallet that received faucet funds and is
+  - `spender.db` - an ordinary wallet that received faucet funds and is
     used to *send* test payments to orders. Never given to moneropay - it
     plays the role of "the person paying an invoice."
 
@@ -66,9 +66,10 @@ so a full run is fast (seconds, not minutes) and doesn't depend on a large
   than re-deriving it from the chain on every run, and writes back to it
   after each successful send (marking the spent outputs spent, recording the
   send, and adding its change as pending). That write-back is expected -
-  commit it. Changes happen under a `<name>.json.lock` file lock, so
+  commit it. Changes happen under a `<name>.db.lock` file lock, so
   parallel runs can't lose each other's updates (the lock files are
-  gitignored).
+  gitignored). The files are binary; see `crates/cli-wallet/README.md` for
+  reading them and for readable `git diff`s.
 
   These files contain real (if worthless - stagenet has no exchange value)
   private keys. Treat them like any other credentials file.
@@ -214,7 +215,7 @@ cargo run -p cli-wallet --bin wallet-cli -- pocketchange
 
 ## Reproducing from scratch (new faucet funds)
 
-If `wallets/spender.json`'s outputs ever run dry (everything spent, and
+If `wallets/spender.db`'s outputs ever run dry (everything spent, and
 change too small/young to help):
 
 1. Open https://stagenet-faucet.xmr-tw.org/ and send funds to the spender's

@@ -34,23 +34,41 @@ On testnet:
 
 ## One file per wallet
 
-Each wallet is one JSON file (`e2e/wallets/<name>.json`) holding
-everything about it:
+Each wallet is one SQLite database (`e2e/wallets/<name>.db`) holding
+everything about it. The schema is in `src/store.rs`; `PRAGMA
+user_version` is its format version.
 
-| Field | What it is |
+| Table | What it holds |
 |---|---|
-| `version`, `network`, `address`, `private_spend_key`, `private_view_key`, `mnemonic` | Keys, and the seed they came from |
-| `description`, `accounts`, `current_account`, `tag_descriptions`, `address_book`, `settings` | What `monero-wallet-cli` keeps in its wallet file (only written once set) |
-| `outputs` | Every output received, each fully serialized so it's read back with no RPC |
+| `wallet` | The one row: network, address, keys, the seed they came from, description, current account, and the `set` options (`priority`, `unit`, `skip_transfer_confirmation`) |
+| `accounts`, `subaddresses` | Accounts (label, tag) and every subaddress each has created, with its label; no rows means just the primary account |
+| `account_tags` | `account tag_description` |
+| `address_book` | The address book, in order |
+| `outputs` | Every output received, each fully serialized (`serialized_output`, a BLOB) so it's read back with no RPC, with its height, amount, `spent` and `frozen` |
 | `pending` | Txids expected to pay this wallet that haven't confirmed |
-| `sent` | Every transaction this wallet broadcast: destinations, fee, change |
+| `sent`, `sent_destinations` | Every transaction this wallet broadcast: fee, change, and each destination |
 | `tx_notes` | `set_tx_note` notes |
-| `extra` | Anything else recorded about the wallet, kept as-is |
+| `extra` | Anything else recorded about the wallet, as JSON values |
 
-Every change is a read-modify-write under an exclusive lock on
-`<name>.json.lock`, written atomically, so parallel runs never corrupt
-the file or lose one another's updates. A transfer holds the lock from input
-selection until it's recorded, so two senders can't pick the same output.
+The schema refuses a `network` other than `stagenet` or `testnet`. Every
+change is a read-modify-write under an exclusive lock on `<name>.db.lock`,
+written as one transaction, so parallel runs never corrupt the file or lose
+one another's updates. A transfer holds the lock from input selection until
+it's recorded, so two senders can't pick the same output. The journal is
+SQLite's default rollback journal, not WAL, so a wallet at rest is just its
+`.db` file.
+
+`sqlite3 e2e/wallets/spender.db` reads one directly. For readable `git diff`s
+of the committed wallets, tell git how to dump them (`.gitattributes` marks
+them `diff=sqlite3`):
+
+```sh
+git config diff.sqlite3.textconv 'sh -c "sqlite3 -readonly \"\$0\" .dump"'
+```
+
+A JSON wallet file from before is converted with
+`wallet-cli import_json <file.json> [<wallet>]`, which writes a new
+`.db` file (by default beside it) and leaves the JSON file alone.
 
 ## The CLI
 

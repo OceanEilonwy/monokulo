@@ -37,6 +37,11 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.20"
 zeroize = { version = "1.9.0", features = ["derive"] }
+# Each wallet file is a SQLite database (see src/store.rs) - the same
+# version and bundled build as the rest of the workspace; `serde_json`
+# stores the free-form `extra` values as JSON text; `fallible_uint` reads and
+# writes the u64 amounts and heights, refusing any past i64::MAX.
+rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint", "serde_json"] }
 # Needed by the `refresh-decoy-pool` [[bin]] below (a [[bin]] target only
 # ever sees a package's normal [dependencies], never [dev-dependencies] -
 # the same reason crates/engine/Cargo.toml has its own comment on this) and,

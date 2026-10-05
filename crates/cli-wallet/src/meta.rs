@@ -79,6 +79,32 @@ fn is_default_unit(unit: &Unit) -> bool {
 }
 
 impl WalletMeta {
+    /// Metadata as a wallet file stores it; `accounts` empty means just
+    /// the primary account.
+    pub(crate) fn from_parts(
+        description: Option<String>,
+        accounts: Vec<AccountMeta>,
+        current_account: u32,
+        tag_descriptions: BTreeMap<String, String>,
+        address_book: Vec<AddressBookEntry>,
+        settings: Settings,
+    ) -> Self {
+        WalletMeta {
+            description,
+            accounts,
+            current_account,
+            tag_descriptions,
+            address_book,
+            settings,
+        }
+    }
+
+    /// The accounts as stored: empty until one is created or labelled
+    /// (see [`Self::accounts`]).
+    pub(crate) fn stored_accounts(&self) -> &[AccountMeta] {
+        &self.accounts
+    }
+
     /// Every account, always at least the primary one.
     pub fn accounts(&self) -> Vec<AccountMeta> {
         if self.accounts.is_empty() {

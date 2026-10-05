@@ -42,6 +42,14 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// One value from a wallet file, read straight from its database.
+fn query<T: rusqlite::types::FromSql>(wallet: &Path, sql: &str) -> T {
+    rusqlite::Connection::open_with_flags(wallet, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .unwrap()
+        .query_row(sql, [], |row| row.get(0))
+        .unwrap()
+}
+
 #[test]
 fn a_new_wallet_can_be_opened_and_driven_interactively() {
     let dir = temp_dir("interactive");
@@ -55,7 +63,7 @@ fn a_new_wallet_can_be_opened_and_driven_interactively() {
         .to_string();
     assert!(address.starts_with('5'), "a stagenet address: {address}");
     assert!(
-        dir.join("alice.json").exists(),
+        dir.join("alice.db").exists(),
         "the whole wallet is one file"
     );
     assert!(
@@ -113,11 +121,22 @@ fn a_new_wallet_can_be_opened_and_driven_interactively() {
         .expect("the 25-word seed");
 
     // Everything set above persisted in the one file.
-    let file: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("alice.json")).unwrap()).unwrap();
-    assert_eq!(file["description"], "test wallet");
-    assert_eq!(file["settings"]["unit"], "millinero");
-    assert_eq!(file["accounts"][0]["subaddress_labels"][1], "shop till");
+    let file = dir.join("alice.db");
+    assert_eq!(
+        query::<String>(&file, "SELECT description FROM wallet"),
+        "test wallet"
+    );
+    assert_eq!(
+        query::<String>(&file, "SELECT unit FROM wallet"),
+        "millinero"
+    );
+    assert_eq!(
+        query::<String>(
+            &file,
+            "SELECT label FROM subaddresses WHERE account_index = 0 AND address_index = 1"
+        ),
+        "shop till"
+    );
 
     // The seed restores the same wallet.
     let restored = cli(
@@ -229,8 +248,10 @@ fn a_testnet_wallet_is_created_with_the_flag_and_opened_without_it() {
         .to_string();
     assert!(address.starts_with('9'), "a testnet address: {address}");
     assert!(text.contains("Network type: Testnet"), "{text}");
-    let file = std::fs::read_to_string(dir.join("erin.json")).unwrap();
-    assert!(file.contains("\"network\": \"testnet\""), "{file}");
+    assert_eq!(
+        query::<String>(&dir.join("erin.db"), "SELECT network FROM wallet"),
+        "testnet"
+    );
 
     // No flag: the file says testnet. Its subaddresses and integrated
     // addresses are testnet's, and stagenet addresses are refused.
@@ -344,7 +365,7 @@ fn rescan_takes_a_block_range_and_leaves_the_file_alone_without_a_node() {
     assert!(cli(&dir, &["--generate-new-wallet", "dave", "version"], "")
         .status
         .success());
-    let before = std::fs::read_to_string(dir.join("dave.json")).unwrap();
+    let before = std::fs::read(dir.join("dave.db")).unwrap();
     // An unreachable node: the bad arguments fail before connecting, and
     // the good one fails to connect.
     let node = ["--daemon-address", "127.0.0.1:9"];
@@ -375,8 +396,77 @@ fn rescan_takes_a_block_range_and_leaves_the_file_alone_without_a_node() {
         );
     }
     assert_eq!(
-        std::fs::read_to_string(dir.join("dave.json")).unwrap(),
+        std::fs::read(dir.join("dave.db")).unwrap(),
         before,
         "a rescan that never reached a node changes nothing"
+    );
+}
+
+#[test]
+fn a_json_wallet_file_is_imported_into_a_new_wallet_file() {
+    let dir = temp_dir("import-json");
+    assert!(
+        cli(&dir, &["--generate-new-wallet", "frank", "version"], "")
+            .status
+            .success()
+    );
+    let wallet = dir.join("frank.db");
+    let secret = |table_column: &str| {
+        query::<String>(&wallet, &format!("SELECT {table_column} FROM wallet"))
+    };
+    let address = secret("address");
+    let json = serde_json::json!({
+        "version": 1,
+        "network": "stagenet",
+        "address": address,
+        "private_spend_key": secret("private_spend_key"),
+        "private_view_key": secret("private_view_key"),
+        "description": "from json",
+        "outputs": [],
+        "pending": [{ "txid": "ab".repeat(32), "amount_piconero": 5 }],
+        "tx_notes": { "cd".repeat(32): "rent" },
+        "extra": { "role": "spender" }
+    });
+    std::fs::write(dir.join("old.json"), json.to_string()).unwrap();
+
+    let imported = cli(&dir, &["import_json", "old.json"], "");
+    assert!(imported.status.success(), "{}", stderr(&imported));
+    assert!(
+        stdout(&imported).contains("stagenet wallet") && stdout(&imported).contains("1 pending"),
+        "{}",
+        stdout(&imported)
+    );
+    let new = dir.join("old.db");
+    assert_eq!(query::<String>(&new, "SELECT address FROM wallet"), address);
+    assert_eq!(query::<String>(&new, "SELECT note FROM tx_notes"), "rent");
+    assert_eq!(
+        query::<String>(&new, "SELECT value FROM extra WHERE key = 'role'"),
+        "\"spender\""
+    );
+    let info = cli(
+        &dir,
+        &["--wallet-file", new.to_str().unwrap(), "wallet_info"],
+        "",
+    );
+    assert!(
+        stdout(&info).contains("Description: from json"),
+        "{}",
+        stdout(&info)
+    );
+
+    let again = cli(&dir, &["import_json", "old.json"], "");
+    assert!(!again.status.success(), "never overwrites");
+    assert!(
+        stderr(&again).contains("already exists"),
+        "{}",
+        stderr(&again)
+    );
+
+    let opened = cli(&dir, &["--wallet-file", "old.json", "version"], "");
+    assert!(!opened.status.success());
+    assert!(
+        stderr(&opened).contains("isn't a wallet database"),
+        "a JSON wallet file says how to convert it: {}",
+        stderr(&opened)
     );
 }
