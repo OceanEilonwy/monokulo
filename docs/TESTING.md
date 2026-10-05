@@ -1253,3 +1253,12 @@ signed Monero network transactions. High-cardinality fixtures are deliberately
 split to test each bound without requiring an 8193 × 2049 crypto cross product.
 
 Portfolio restart controls replace both the active observer and executor, compare every persisted table, and check that connection-local TEMP state disappears. `connection-reopened-*` means connection replacement; `worker-restarted-mid-history` additionally means a new worker executor. These controls do not claim a process crash; subprocess crash tests cover that boundary separately.
+
+Combined portfolio fault controls use an outstanding synthetic payment on the
+same database/executor. Daemon deadlines run through `run_round_at`; the custody
+attempt delta is captured after the separately named component scan; failed
+custody creates no payment. Four SQL access positions run through real rounds,
+with denied operation names recorded. Recovery must persist exactly one output
+with the planned amount. SQL denial may be handled by a fallback/retry; an
+additional counter distinguishes round-level errors. Isolated component entry
+is not counted as engine-path coverage.

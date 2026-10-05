@@ -616,6 +616,10 @@ fn combined_portfolio_interactions_have_fixed_positive_controls() {
         for boundary in [
             "rpc-timeout-cancelled",
             "custody-error-reached",
+            "component-custody-error-reached",
+            "engine-custody-error-reached",
+            "engine-rpc-timeout-cancelled",
+            "engine-fault-payment-recovered",
             "sql-denial-reached",
             "all-node-outage-preserves-money-and-cursors",
             "connection-reopened-mid-history",
