@@ -250,79 +250,172 @@ impl World {
         state: &ScanState,
         store: &SharedStore,
     ) {
-        // A real pending request must expire on each node, not an injected
-        // TimedOut return. Clock is paused only around network-only work.
+        // A separate outstanding invoice makes these engine-path controls
+        // meaningful even when all original portfolio invoices are terminal.
+        use crate::key_custody::{KeyCustody as _, WalletMaterial};
+        use crate::store::{NewOrder, NewTenant};
+        let pair = super::super::portfolio_fixture::pair(190);
+        let material = WalletMaterial::new(pair.view.to_bytes(), pair.spend.to_bytes());
+        let sealed = custody.seal(&material).await.unwrap();
+        let handle = custody.register_wallet(material).await.unwrap();
+        let (tenant, order) = db
+            .run(Class::Admin, move |s| {
+                let tenant = s
+                    .create_tenant(
+                        &NewTenant {
+                            key_custody_backend: "plain".into(),
+                            sealed_key_material: sealed,
+                            primary_address: "fault-control".into(),
+                            network: "mainnet".into(),
+                            confirmations_required: Some(0),
+                            order_expiry_seconds: None,
+                        },
+                        1000,
+                    )?
+                    .tenant
+                    .id;
+                let minor = s.allocate_minor_index(&tenant)?;
+                let order = s
+                    .create_order(&NewOrder {
+                        tenant_id: tenant.clone(),
+                        merchant_order_id: None,
+                        minor_index: minor,
+                        address: "fault-control".into(),
+                        xmr_amount_piconero: 7,
+                        description: None,
+                        created_at: 1000,
+                        expires_at: i64::MAX,
+                        confirmations_required_override: Some(0),
+                        idempotency_key: None,
+                    })?
+                    .id;
+                Ok::<_, crate::store::StoreError>((tenant, order))
+            })
+            .await
+            .unwrap();
+        let control = [(tenant, handle)];
+        let tx = super::super::portfolio_fixture::transaction(191, &[(&pair, 1, 7)]);
+        let id = crate::daemon::fake::tx_id_hex(&tx);
+        let previous = self.client.get_mempool_txids().await.unwrap();
+        let saved: Vec<_> = self
+            .known
+            .borrow()
+            .iter()
+            .filter(|t| previous.contains(&crate::daemon::fake::tx_id_hex(t)))
+            .cloned()
+            .collect();
+        self.set_mempool(vec![tx.clone()]);
+        let cold = ScanState::default();
+        let input = inputs(db, custody, self, &control);
+        let cancellations: usize = self
+            .nodes
+            .iter()
+            .map(|n| n.counts(Rpc::Tip).cancelled)
+            .sum();
         for n in &self.nodes {
-            n.behavior.lock().hangs = Rpc::Tip.bit();
+            n.behavior.lock().hangs = Rpc::Tip.bit() | Rpc::Pool.bit();
         }
         tokio::time::pause();
-        let timeout = self.client.get_tip();
+        let timeout = run_round_at(&cold, &input, Duration::ZERO, self.now.get());
         tokio::pin!(timeout);
         tokio::select! { biased; r=&mut timeout => panic!("hanging fleet unexpectedly returned: {r:?}"), ()=tokio::task::yield_now()=>{} }
         tokio::time::advance(Duration::from_secs(61)).await;
-        timeout.await.unwrap_err();
-        assert!(self.nodes.iter().any(|n| n.counts(Rpc::Tip).cancelled > 0));
-        for n in &self.nodes {
-            let counts = n.counts(Rpc::Tip);
-            assert!(counts.attempted >= counts.completed + counts.cancelled);
-        }
+        assert!(
+            timeout.await.into_status_result().is_err(),
+            "BOUNDARY: engine-timeout"
+        );
+        assert!(
+            self.nodes
+                .iter()
+                .map(|n| n.counts(Rpc::Tip).cancelled)
+                .sum::<usize>()
+                > cancellations
+        );
         tokio::time::resume();
         self.hit("rpc-timeout-cancelled");
+        self.hit("engine-rpc-timeout-cancelled");
         self.healthy();
-        // Disagreement and primary failure while the real fast path scans.
         self.nodes[0].behavior.lock().failures = Rpc::Pool.bit();
-        custody.fail(tenants[0].1);
-        let cold = ScanState::default();
-        let before = custody
-            .attempts
-            .lock()
-            .get(&tenants[0].1)
-            .copied()
-            .unwrap_or_default();
-        // Terminal orders can leave no fast-path windows. The direct real
-        // scanner call forces the custody fault even in those histories.
-        let tx = self.known.borrow()[0].clone();
-        let id = crate::daemon::fake::tx_id_hex(&tx);
+        custody.fail(handle);
         assert!(
-            crate::scanner::scan_transaction_as(custody, tenants[0].1, &id, &tx, 0..100)
+            crate::scanner::scan_transaction_as(custody, handle, &id, &tx, 0..100)
                 .await
                 .is_err()
         );
-        let _ = fast_pass(&cold, &inputs(db, custody, self, tenants)).await;
+        self.hit("component-custody-error-reached");
+        // Capture AFTER the component call: only actual fast-pass scanning can
+        // satisfy the engine counter. Failed custody cannot create money.
+        let before = custody
+            .attempts
+            .lock()
+            .get(&handle)
+            .copied()
+            .unwrap_or_default();
+        let report = fast_pass(&ScanState::default(), &input).await.unwrap();
+        assert!(report.scanned > 0, "BOUNDARY: engine-custody-scan");
         assert!(
             custody
                 .attempts
                 .lock()
-                .get(&tenants[0].1)
+                .get(&handle)
                 .copied()
                 .unwrap_or_default()
-                > before
+                > before,
+            "BOUNDARY: engine-custody-attempt"
+        );
+        assert!(
+            store.lock().get_all_payments(&order).unwrap().is_empty(),
+            "BOUNDARY: failed-custody-money"
         );
         self.hit("custody-error-reached");
-        custody.recover(tenants[0].1);
+        self.hit("engine-custody-error-reached");
+        custody.recover(handle);
         self.healthy();
-        let trace = db
-            .run(Class::Admin, |s| {
-                Ok::<_, crate::store::StoreError>(s.fail_nth_access(Some(0)))
+        // Sweep independently positioned SELECT/transaction/write checks in
+        // actual rounds; keep action and index in semantic evidence.
+        for position in 0..4 {
+            let trace = db
+                .run(Class::Admin, move |s| {
+                    Ok::<_, crate::store::StoreError>(s.fail_nth_access(Some(position)))
+                })
+                .await
+                .unwrap();
+            let report = run_round_at(
+                &ScanState::default(),
+                &input,
+                Duration::ZERO,
+                self.now.get(),
+            )
+            .await;
+            db.run(Class::Admin, |s| {
+                s.fail_nth_access(None);
+                Ok::<_, crate::store::StoreError>(())
             })
             .await
             .unwrap();
-        let _ = run_round_at(
-            state,
-            &inputs(db, custody, self, tenants),
-            Duration::ZERO,
-            self.now.get(),
-        )
-        .await;
-        db.run(Class::Admin, |s| {
-            s.fail_nth_access(None);
-            Ok::<_, crate::store::StoreError>(())
-        })
-        .await
-        .unwrap();
-        trace.assert_outcome(0);
-        assert_eq!(trace.denied.load(Ordering::Relaxed), 1);
-        self.hit("sql-denial-reached");
+            trace.assert_outcome(position);
+            assert_eq!(
+                trace.denied.load(Ordering::Relaxed),
+                1,
+                "BOUNDARY: engine-sql-denial"
+            );
+            let action = trace.action.lock().clone().unwrap();
+            self.hit(&format!("engine-sql-position-{position}:{action}"));
+            if report.into_status_result().is_err() {
+                self.hit("engine-sql-error-reported");
+            }
+            self.hit("sql-denial-reached");
+        }
+        let recovery = fast_pass(&ScanState::default(), &input).await.unwrap();
+        assert!(recovery.scanned > 0, "BOUNDARY: fault-recovery-scan");
+        let payments = store.lock().get_all_payments(&order).unwrap();
+        assert_eq!(payments.len(), 1, "BOUNDARY: fault-recovery-money");
+        assert_eq!(
+            payments[0].amount_piconero, 7,
+            "BOUNDARY: fault-recovery-money"
+        );
+        self.hit("engine-fault-payment-recovered");
+        self.set_mempool(saved);
         // An all-node outage cannot manufacture or remove any recorded funds.
         let money = || {
             let s = store.lock();
