@@ -905,3 +905,41 @@ all OS/socket interleavings.
 Run `cargo test -p engine --lib node_events::` and add `--features zmq` for transport
 properties; `ENGINE_FUZZ_SEED=167 scripts/engine-fuzz.sh notifications 60` runs the
 shared wait oracle (append `zmq` for that build). Both daily matrices discover it.
+
+
+## Engine authorization properties
+
+`http::tests::properties::authorization` sends requests through the production
+`build_router`, without the test token-injection layer. Its explicit matrix covers
+all 25 registered method/route combinations: tenant metadata/lifecycle, orders,
+refund addresses, payment lookup, webhooks and SSE, plus engine status, tenant
+creation, settings, logs, activity and proof-anchor administration. A fixed sweep
+runs every route with absent/wrong/tenant-as-engine credentials, and all 14 tenant
+routes with eight invalid tenant credential classes (missing, public key, revoked,
+disabled, wrong scheme, unknown, tampered and engine token as bearer).
+
+Generated tests use 2–4 real tenants, inline or production file-backed DB workers,
+1–32 ownership/rotation/disable/read/refund/list events, ASCII credential noise up
+to 128 bytes, order amounts 1–9,999, and 2–32 concurrent rejected writes or SSE
+requests, duplicate capability headers, eight malformed Bearer forms, filtered
+order/webhook lists and 1–12 foreign writes preceding a positive owner SSE event.
+Independent principal state checks current/revoked/disabled credentials;
+cross-tenant identifiers cannot expose or mutate another tenant, body identities
+cannot redirect an authenticated purchase, and rejected requests preserve a full
+ordered dump of every SQLite table. Positive owner controls prove rejection tests
+have not merely broken all access; repeated valid SSE opens check permit cleanup.
+The named history forces wrong-owner access, rotation, old-token rejection and
+terminal disablement even when random histories shrink. A real daemon/transaction
+fixture also exercises 1–4 repeated foreign payment lookups before and after the
+owner records its payment: forged body identity cannot expose its order or credit
+any wallet, and the full database stays unchanged for every foreign lookup.
+
+The engine token is the instance-wide administrative capability; tenant routes
+additionally require a tenant secret. These tests preserve that existing policy,
+not a separate operator-role scheme. Rotation/disablement assertions apply to new
+requests, not retroactive cancellation of an already authenticated stream/job.
+Primitive token hashing remains tested in `shared`, outside this engine package.
+
+Run `PROPTEST_CASES=128 PROPTEST_RNG_SEED=181 cargo test -p engine --lib
+http::tests::properties::authorization` (append `--features zmq` before the filter).
+The existing daily default/ZMQ property filter includes all new families.
