@@ -776,7 +776,7 @@ proptest! {
     #[test]
     fn typed_portfolio_histories_shrink_semantic_commands(scenario in crate::work::portfolio::scenario::strategy()) {
         let bytes = scenario.encode();
-        prop_assert_eq!(crate::work::portfolio::scenario::Scenario::decode(&bytes), Some(scenario.clone()));
+        prop_assert_eq!(crate::work::portfolio::scenario::Scenario::decode(&bytes), Some(scenario));
         crate::work::portfolio::explore(&bytes);
     }
 }
