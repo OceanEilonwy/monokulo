@@ -24,7 +24,7 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use clap::{CommandFactory, Parser, Subcommand};
-use cli_wallet::file::{import_json, migrate_legacy, WalletData, WalletFile};
+use cli_wallet::file::{WalletData, WalletFile};
 use cli_wallet::{
     credentials_from_seed, credentials_from_spend_key_hex, generate_credentials, Network,
     WalletCtx, SEED_LANGUAGE_NAMES,
@@ -114,22 +114,6 @@ enum TopCommand {
     Wallet(Command),
     /// Print a shell completion script to stdout.
     Completions { shell: clap_complete::Shell },
-    /// Convert a JSON wallet file (the format before SQLite) into a new
-    /// wallet file: `<wallet>` is a name or path, by default the JSON
-    /// file's own path with `.db` in place of `.json`. The JSON file is
-    /// left alone.
-    #[command(name = "import_json")]
-    ImportJson {
-        json: PathBuf,
-        wallet: Option<String>,
-    },
-    /// One-off: split the old shared e2e/stagenet-wallets.json +
-    /// e2e/stagenet-known-outputs.json into one file per wallet.
-    #[command(hide = true, name = "migrate_legacy")]
-    MigrateLegacy {
-        wallets_json: PathBuf,
-        known_outputs_json: PathBuf,
-    },
 }
 
 /// One line typed at the prompt.
@@ -276,47 +260,6 @@ async fn run(mut cli: Cli) -> Result<(), CliError> {
                 &mut Cli::command(),
                 "wallet-cli",
                 &mut std::io::stdout(),
-            );
-            return Ok(());
-        }
-        Some(TopCommand::MigrateLegacy {
-            ref wallets_json,
-            ref known_outputs_json,
-        }) => {
-            let report = migrate_legacy(
-                wallets_json,
-                known_outputs_json,
-                &ctx.wallet_dir,
-                DEFAULT_WALLET,
-            )?;
-            for (name, path, outputs, pending) in &report.written {
-                println!(
-                    "{name}: {} ({outputs} outputs, {pending} pending)",
-                    path.display()
-                );
-            }
-            for output in &report.unowned_outputs {
-                println!("not owned by any wallet, dropped: {output}");
-            }
-            return Ok(());
-        }
-        Some(TopCommand::ImportJson {
-            ref json,
-            ref wallet,
-        }) => {
-            let out = match wallet {
-                Some(wallet) => ctx.wallet_path(wallet),
-                None => json.with_extension("db"),
-            };
-            let file = import_json(json, &out)?;
-            println!(
-                "{}: {} wallet {} ({} outputs, {} pending, {} sent)",
-                out.display(),
-                file.data.network,
-                file.data.address,
-                file.data.outputs.len(),
-                file.data.pending.len(),
-                file.data.sent.len()
             );
             return Ok(());
         }

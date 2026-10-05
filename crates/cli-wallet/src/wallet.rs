@@ -195,14 +195,6 @@ impl WalletKeys {
         )
     }
 
-    /// Whether `output` is this wallet's: an output's key is always the
-    /// wallet's spend key plus `key_offset`.
-    pub(crate) fn owns(&self, output: &WalletOutput) -> bool {
-        let offset = output.key_offset().into();
-        output.key().into() - &offset * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE
-            == self.view_pair.spend().into()
-    }
-
     /// The key image `output` is spent under - what the chain records when
     /// it's spent, so it identifies an output in `freeze`, `sweep_single`
     /// and the rest the same way the reference wallet does.

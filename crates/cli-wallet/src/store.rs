@@ -35,8 +35,9 @@ pub const FORMAT_VERSION: u32 = 1;
 /// in practice.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Every table a wallet file has. Amounts are piconero; heights and
-/// timestamps are as the chain records them. `position` columns keep each
+/// Every table a wallet file has. Amounts are piconero, as INTEGER like
+/// engine's and monokulo's (through [`Unsigned`]); heights and timestamps
+/// are as the chain records them. `position` columns keep each
 /// list in the order the wallet recorded it.
 const SCHEMA: &str = "
 CREATE TABLE wallet (
@@ -168,21 +169,51 @@ fn user_version(conn: &Connection, path: &Path) -> Result<u32, WalletError> {
         .map_err(db_error(path, "read"))
 }
 
-/// A piconero amount, height or timestamp as SQLite's signed 64 bits.
-fn int(value: u64, path: &Path) -> Result<i64, WalletError> {
-    i64::try_from(value).map_err(|_| {
-        WalletError::WalletFile(format!(
-            "{value} is too large to store in {}",
-            path.display()
-        ))
-    })
+/// An unsigned value (an amount, height, timestamp, index or position)
+/// crossing into or out of SQLite, which stores only signed 64-bit
+/// integers. Both directions are checked: a value that doesn't fit, or a
+/// negative one read back, is an error rather than a silent wrap. The same
+/// type as `shared::sqlite::Unsigned`, which engine and monokulo store
+/// piconero through; copied rather than depended on, since this crate stays
+/// clear of `shared`'s dependencies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Unsigned<T>(T);
+
+impl<T: Copy + TryInto<i64>> rusqlite::ToSql for Unsigned<T>
+where
+    <T as TryInto<i64>>::Error: std::error::Error + Send + Sync + 'static,
+{
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        let value: i64 = self
+            .0
+            .try_into()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        Ok(value.into())
+    }
 }
 
-fn unit_name(unit: Unit) -> String {
-    match serde_json::to_value(unit).expect("a Unit always serializes") {
-        serde_json::Value::String(name) => name,
-        other => unreachable!("Unit serializes as a string, not {other}"),
+impl<T: TryFrom<i64>> rusqlite::types::FromSql for Unsigned<T> {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        let raw = value.as_i64()?;
+        T::try_from(raw)
+            .map(Unsigned)
+            .map_err(|_| rusqlite::types::FromSqlError::OutOfRange(raw))
     }
+}
+
+/// An unsigned column read through [`Unsigned`].
+fn unsigned<T: TryFrom<i64>>(row: &rusqlite::Row, index: usize) -> rusqlite::Result<T> {
+    Ok(row.get::<_, Unsigned<T>>(index)?.0)
+}
+
+/// A nullable unsigned column read through [`Unsigned`].
+fn unsigned_or_null<T: TryFrom<i64>>(
+    row: &rusqlite::Row,
+    index: usize,
+) -> rusqlite::Result<Option<T>> {
+    Ok(row
+        .get::<_, Option<Unsigned<T>>>(index)?
+        .map(|value| value.0))
 }
 
 /// Reads the whole wallet at `path`. A file that doesn't exist is an
@@ -191,13 +222,6 @@ pub(crate) fn read(path: &Path) -> Result<WalletData, WalletError> {
     if !path.is_file() {
         return Err(WalletError::WalletFile(format!(
             "failed to read {}: no such wallet file",
-            path.display()
-        )));
-    }
-    if !is_database(path) {
-        return Err(WalletError::WalletFile(format!(
-            "{} isn't a wallet database (a JSON wallet file can be converted with \
-             `wallet-cli import_json <json file> <wallet file>`)",
             path.display()
         )));
     }
@@ -252,8 +276,12 @@ fn read_tables(tx: &Transaction) -> rusqlite::Result<WalletData> {
         unit,
         skip_transfer_confirmation,
     ) = row;
-    let unit: Unit = serde_json::from_value(serde_json::Value::String(unit)).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e))
+    let unit = Unit::parse(&unit).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            8,
+            rusqlite::types::Type::Text,
+            format!("unknown unit {unit:?}").into(),
+        )
     })?;
 
     let mut accounts: Vec<AccountMeta> = tx
@@ -271,7 +299,7 @@ fn read_tables(tx: &Transaction) -> rusqlite::Result<WalletData> {
     )?;
     let mut rows = statement.query([])?;
     while let Some(row) = rows.next()? {
-        let account: usize = row.get(0)?;
+        let account: usize = unsigned(row, 0)?;
         if let Some(meta) = accounts.get_mut(account) {
             meta.subaddress_labels.push(row.get(1)?);
         }
@@ -301,10 +329,10 @@ fn read_tables(tx: &Transaction) -> rusqlite::Result<WalletData> {
         .query_map([], |row| {
             Ok(OutputRecord {
                 txid: row.get(0)?,
-                height: row.get(1)?,
-                timestamp: row.get(2)?,
+                height: unsigned(row, 1)?,
+                timestamp: unsigned_or_null(row, 2)?,
                 serialized_output_hex: hex::encode(row.get::<_, Vec<u8>>(3)?),
-                amount_piconero: row.get(4)?,
+                amount_piconero: unsigned(row, 4)?,
                 spent: row.get(5)?,
                 frozen: row.get(6)?,
             })
@@ -315,27 +343,27 @@ fn read_tables(tx: &Transaction) -> rusqlite::Result<WalletData> {
         .query_map([], |row| {
             Ok(PendingTx {
                 txid: row.get(0)?,
-                amount_piconero: row.get(1)?,
+                amount_piconero: unsigned(row, 1)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
 
-    let mut sent: Vec<(i64, SentRecord)> = tx
+    let mut sent: Vec<(usize, SentRecord)> = tx
         .prepare(
             "SELECT position, txid, account, fee_piconero, change_piconero, height, timestamp
              FROM sent ORDER BY position",
         )?
         .query_map([], |row| {
             Ok((
-                row.get(0)?,
+                unsigned(row, 0)?,
                 SentRecord {
                     txid: row.get(1)?,
                     account: row.get(2)?,
                     destinations: Vec::new(),
-                    fee_piconero: row.get(3)?,
-                    change_piconero: row.get(4)?,
-                    height: row.get(5)?,
-                    timestamp: row.get(6)?,
+                    fee_piconero: unsigned(row, 3)?,
+                    change_piconero: unsigned(row, 4)?,
+                    height: unsigned_or_null(row, 5)?,
+                    timestamp: unsigned_or_null(row, 6)?,
                 },
             ))
         })?
@@ -346,11 +374,11 @@ fn read_tables(tx: &Transaction) -> rusqlite::Result<WalletData> {
     )?;
     let mut rows = statement.query([])?;
     while let Some(row) = rows.next()? {
-        let sent_position: i64 = row.get(0)?;
+        let sent_position: usize = unsigned(row, 0)?;
         if let Some((_, record)) = sent.iter_mut().find(|(p, _)| *p == sent_position) {
             record.destinations.push(SentDestination {
                 address: row.get(1)?,
-                amount_piconero: row.get(2)?,
+                amount_piconero: unsigned(row, 2)?,
             });
         }
     }
@@ -372,7 +400,6 @@ fn read_tables(tx: &Transaction) -> rusqlite::Result<WalletData> {
         .collect::<rusqlite::Result<_>>()?;
 
     Ok(WalletData {
-        version: FORMAT_VERSION,
         network,
         address,
         private_spend_key,
@@ -462,7 +489,7 @@ fn write_tables(tx: &Transaction, data: &WalletData, path: &Path) -> Result<(), 
             meta.description,
             meta.current_account,
             meta.settings.priority,
-            unit_name(meta.settings.unit),
+            meta.settings.unit.name(),
             meta.settings.skip_transfer_confirmation,
         ],
     )
@@ -471,14 +498,14 @@ fn write_tables(tx: &Transaction, data: &WalletData, path: &Path) -> Result<(), 
     for (index, account) in meta.stored_accounts().iter().enumerate() {
         tx.execute(
             "INSERT INTO accounts (account_index, label, tag) VALUES (?1, ?2, ?3)",
-            params![index, account.label, account.tag],
+            params![Unsigned(index), account.label, account.tag],
         )
         .map_err(&failed)?;
         for (address_index, label) in account.subaddress_labels.iter().enumerate() {
             tx.execute(
                 "INSERT INTO subaddresses (account_index, address_index, label)
                  VALUES (?1, ?2, ?3)",
-                params![index, address_index, label],
+                params![Unsigned(index), Unsigned(address_index), label],
             )
             .map_err(&failed)?;
         }
@@ -493,7 +520,7 @@ fn write_tables(tx: &Transaction, data: &WalletData, path: &Path) -> Result<(), 
     for (position, entry) in meta.address_book.iter().enumerate() {
         tx.execute(
             "INSERT INTO address_book (position, address, description) VALUES (?1, ?2, ?3)",
-            params![position, entry.address, entry.description],
+            params![Unsigned(position), entry.address, entry.description],
         )
         .map_err(&failed)?;
     }
@@ -514,12 +541,12 @@ fn write_tables(tx: &Transaction, data: &WalletData, path: &Path) -> Result<(), 
         })?;
         insert
             .execute(params![
-                position,
+                Unsigned(position),
                 output.txid,
-                int(output.height, path)?,
-                output.timestamp.map(|t| int(t, path)).transpose()?,
+                Unsigned(output.height),
+                output.timestamp.map(Unsigned),
                 serialized,
-                int(output.amount_piconero, path)?,
+                Unsigned(output.amount_piconero),
                 output.spent,
                 output.frozen,
             ])
@@ -530,7 +557,11 @@ fn write_tables(tx: &Transaction, data: &WalletData, path: &Path) -> Result<(), 
     for (position, pending) in data.pending.iter().enumerate() {
         tx.execute(
             "INSERT INTO pending (position, txid, amount_piconero) VALUES (?1, ?2, ?3)",
-            params![position, pending.txid, int(pending.amount_piconero, path)?],
+            params![
+                Unsigned(position),
+                pending.txid,
+                Unsigned(pending.amount_piconero)
+            ],
         )
         .map_err(&failed)?;
     }
@@ -541,13 +572,13 @@ fn write_tables(tx: &Transaction, data: &WalletData, path: &Path) -> Result<(), 
                                timestamp)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
-                position,
+                Unsigned(position),
                 sent.txid,
                 sent.account,
-                int(sent.fee_piconero, path)?,
-                int(sent.change_piconero, path)?,
-                sent.height.map(|h| int(h, path)).transpose()?,
-                sent.timestamp.map(|t| int(t, path)).transpose()?,
+                Unsigned(sent.fee_piconero),
+                Unsigned(sent.change_piconero),
+                sent.height.map(Unsigned),
+                sent.timestamp.map(Unsigned),
             ],
         )
         .map_err(&failed)?;
@@ -557,10 +588,10 @@ fn write_tables(tx: &Transaction, data: &WalletData, path: &Path) -> Result<(), 
                                                 amount_piconero)
                  VALUES (?1, ?2, ?3, ?4)",
                 params![
-                    position,
-                    destination_position,
+                    Unsigned(position),
+                    Unsigned(destination_position),
                     destination.address,
-                    int(destination.amount_piconero, path)?,
+                    Unsigned(destination.amount_piconero),
                 ],
             )
             .map_err(&failed)?;
@@ -582,16 +613,6 @@ fn write_tables(tx: &Transaction, data: &WalletData, path: &Path) -> Result<(), 
         .map_err(&failed)?;
     }
     Ok(())
-}
-
-/// Whether `path` is a wallet database rather than something else (a
-/// JSON wallet file from before), by SQLite's file header.
-pub(crate) fn is_database(path: &Path) -> bool {
-    use std::io::Read;
-    let mut header = [0u8; 16];
-    std::fs::File::open(path)
-        .and_then(|mut file| file.read_exact(&mut header))
-        .is_ok_and(|()| &header == b"SQLite format 3\0")
 }
 
 /// The tables a wallet file has, by name - for tests and diagnostics.
@@ -694,12 +715,7 @@ mod tests {
         let path = temp_path("round-trip");
         let data = full_wallet();
         write(&path, &data).unwrap();
-        assert!(is_database(&path));
-        let read_back = read(&path).unwrap();
-        assert_eq!(
-            serde_json::to_value(&read_back).unwrap(),
-            serde_json::to_value(&data).unwrap()
-        );
+        assert!(read(&path).unwrap() == data);
 
         // A second write replaces, never appends.
         let mut fewer = data.clone();
@@ -707,10 +723,7 @@ mod tests {
         fewer.sent.clear();
         fewer.meta.address_book.clear();
         write(&path, &fewer).unwrap();
-        assert_eq!(
-            serde_json::to_value(read(&path).unwrap()).unwrap(),
-            serde_json::to_value(&fewer).unwrap()
-        );
+        assert!(read(&path).unwrap() == fewer);
         assert_eq!(
             tables(&path),
             [
@@ -744,10 +757,7 @@ mod tests {
         );
         write(&path, &data).unwrap();
         let read_back = read(&path).unwrap();
-        assert_eq!(
-            serde_json::to_value(&read_back).unwrap(),
-            serde_json::to_value(&data).unwrap()
-        );
+        assert!(read_back == data);
         assert_eq!(
             read_back.meta.accounts().len(),
             1,
@@ -784,6 +794,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    /// An amount past SQLite's signed 64 bits is refused, never wrapped
+    /// to a negative one, and the file keeps what it had.
+    #[test]
+    fn an_amount_past_i64_is_refused_not_wrapped() {
+        let path = temp_path("overflow");
+        let data = full_wallet();
+        write(&path, &data).unwrap();
+        let mut huge = data.clone();
+        huge.outputs[0].amount_piconero = i64::MAX as u64 + 1;
+        assert!(write(&path, &huge).is_err());
+        assert!(read(&path).unwrap() == data);
+
+        // A negative one (the schema refuses it, so past its checks) is an
+        // error when read, never a huge u64.
+        let conn = Connection::open(&path).unwrap();
+        assert!(conn
+            .execute("UPDATE pending SET amount_piconero = -1", [])
+            .is_err());
+        conn.pragma_update(None, "ignore_check_constraints", true)
+            .unwrap();
+        conn.execute("UPDATE pending SET amount_piconero = -1", [])
+            .unwrap();
+        drop(conn);
+        assert!(read(&path).is_err());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     /// The schema itself refuses a wallet for a network this wallet
     /// doesn't work on, whoever writes it.
     #[test]
@@ -798,11 +835,15 @@ mod tests {
     }
 
     #[test]
-    fn a_json_file_is_not_a_database() {
-        let path = temp_path("json");
+    fn a_file_that_isnt_a_database_is_refused() {
+        let path = temp_path("not-a-database");
         std::fs::write(&path, "{}").unwrap();
-        assert!(!is_database(&path));
         assert!(read(&path).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{}",
+            "left as it was"
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }
