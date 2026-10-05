@@ -770,3 +770,58 @@ fn persisted_config(config: Config) -> Config {
         ),
     )
 }
+
+proptest! {
+    #![proptest_config(persisted_config(config()))]
+    #[test]
+    fn typed_portfolio_histories_shrink_semantic_commands(scenario in crate::work::portfolio::scenario::strategy()) {
+        let bytes = scenario.encode();
+        prop_assert_eq!(crate::work::portfolio::scenario::Scenario::decode(&bytes), Some(scenario.clone()));
+        crate::work::portfolio::explore(&bytes);
+    }
+}
+#[test]
+fn typed_portfolio_composes_arrival_extension_reorg_proof_expiry_and_faults() {
+    use crate::work::portfolio::scenario::{Command::*, Scenario, SETUP_BYTES};
+    for worker in 0..=1 {
+        let mut setup = vec![0; SETUP_BYTES];
+        setup[3] = worker;
+        setup[17] = 1;
+        let scenario = Scenario {
+            setup,
+            commands: vec![
+                Arrive(0),
+                Mine(0),
+                Extend(2),
+                Proof {
+                    lag: 3,
+                    mismatch: false,
+                },
+                Reorg(2),
+                Arrive(1),
+                Proof {
+                    lag: 0,
+                    mismatch: true,
+                },
+                Advance(7),
+                Fault,
+                Restart,
+                Proof {
+                    lag: 0,
+                    mismatch: false,
+                },
+                Mine(1),
+                Deliver(true),
+                Deliver(false),
+            ],
+        };
+        let hits = crate::work::portfolio::explore(&scenario.encode());
+        assert!(hits.get("expiry-derived").copied().unwrap_or_default() > 0);
+        assert!(
+            hits.get("engine-fault-payment-recovered")
+                .copied()
+                .unwrap_or_default()
+                > 0
+        );
+    }
+}

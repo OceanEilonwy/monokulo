@@ -200,11 +200,26 @@ impl FakeDaemonClient {
 
     pub fn set_mempool(&self, txs: Vec<Transaction>) {
         let mut state = self.state.lock();
+        let incoming: std::collections::HashSet<_> = txs.iter().map(tx_id_hex).collect();
+        let removed: Vec<_> = state
+            .mempool
+            .iter()
+            .map(tx_id_hex)
+            .filter(|id| !incoming.contains(id))
+            .collect();
+        for id in removed {
+            if state.tx_locations.get(&id) == Some(&TxLocation::InPool) {
+                state.tx_locations.insert(id, TxLocation::NotFound);
+            }
+        }
         for tx in &txs {
-            state
+            let entry = state
                 .tx_locations
                 .entry(tx_id_hex(tx))
                 .or_insert(TxLocation::InPool);
+            if *entry == TxLocation::NotFound {
+                *entry = TxLocation::InPool;
+            }
         }
         state.mempool = txs;
     }

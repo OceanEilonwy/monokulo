@@ -1262,3 +1262,16 @@ with denied operation names recorded. Recovery must persist exactly one output
 with the planned amount. SQL denial may be handled by a fallback/retry; an
 additional counter distinguishes round-level errors. Isolated component entry
 is not counted as engine-path coverage.
+
+Portfolio semantic histories use `MKP\x01`, 128 fixed setup bytes, then four-byte
+command records (up to 32). Properties generate setup and typed commands
+independently (0–16 commands), shrink command lists structurally, and round-trip
+the codec. Fuzzing uses the same runner/oracle. Inputs without the v1 marker retain
+legacy decoding, so reviewed seeds and persisted byte regressions still replay.
+Typed commands independently control arrivals, mining, extension (1–4 blocks),
+reorg (up to four heights), disappearance, spent evidence, proof lag (0–7 blocks)
+and mismatch, elapsed time (1–8 × 301 seconds), restart, faults and delivery.
+Invoice goals, thresholds (0–3) and expiry are independently selected. Planned
+outputs enter the expected ledger only after observation; disappearance retains
+observed funds. The oracle tracks proof hashes independently across reorgs and
+accepted settlements across proof changes. Failures print decoded semantic traces.
