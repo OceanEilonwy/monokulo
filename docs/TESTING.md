@@ -1028,13 +1028,14 @@ portfolio 60` and append `zmq` for fuzzing that configuration.
 
 ## Named mutation checks: testing the tests
 
-`scripts/engine-mutations.py` deliberately introduces sixteen defects, one at a time,
+`scripts/engine-mutations.py` deliberately introduces seventeen defects, one at a time,
 in a disposable detached worktree. The caller's engine sources are never edited.
 Each selected test must first pass on the healthy snapshot, then fail by an
 assertion bearing the defect’s specified `BOUNDARY:` marker on the mutant. All defects are checked in default and ZMQ builds:
 
 | Intentional defect | Required detecting test |
 |---|---|
+| Never expire retry state | Production retry-map upkeep at expiry boundaries |
 | Double the persisted amount received | Mixed-wallet ledger seed replays |
 | Accept a scanned block despite a changed parent | Complete late-commit prerequisite sweep |
 | Read an order without checking its tenant | Named authorization/revocation history |
@@ -1071,7 +1072,7 @@ python3 scripts/engine-mutations.py --features zmq --cases 64
 JSON and logs live in ignored `target/engine-mutations/`, with compiled artifacts
 in its `build/` directory. A weekly/manual `engine-mutations.yml` job runs both
 configurations and retains JSON plus logs. These checks demonstrate detection of
-these fourteen chosen defects; they are not a percentage score for every possible bug.
+these seventeen chosen defects; they are not a percentage score for every possible bug.
 The money, crash, concurrency, fuzz and authorization suites remain complementary.
 
 ## Combined money, proof, node, custody and delivery histories
