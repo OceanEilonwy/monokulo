@@ -440,3 +440,6 @@ proptest! {
         });
     }
 }
+
+#[path = "authorization_properties.rs"]
+mod authorization;

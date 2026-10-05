@@ -305,6 +305,9 @@ fn crash_process_child() {
             .unwrap()
             .parse()
             .unwrap();
+        let _clock = std::env::var_os("MONOKULO_SCANNER_CRASH_WORKER")
+            .is_some()
+            .then(crate::property_support::hold_virtual_clock);
         let store = Store::open_file(&path).unwrap().into_shared();
         let custody = super::super::FlakyKeyCustody::default();
         let handle = register_fixture_wallet(&custody).await;
@@ -317,7 +320,13 @@ fn crash_process_child() {
             daemon.push_block(hash, vec![]);
         }
         let mut h = Harness {
-            db: Some(Db::over_shared(Arc::clone(&store))),
+            db: Some(
+                if std::env::var_os("MONOKULO_SCANNER_CRASH_WORKER").is_some() {
+                    Db::open(&path, &store.lock()).unwrap()
+                } else {
+                    Db::over_shared(Arc::clone(&store))
+                },
+            ),
             store: Some(store),
             path: super::super::TempDb(path.clone()),
             custody,
@@ -429,6 +438,10 @@ fn an_aggregate_one_piconero_above_the_storage_limit_rolls_back() {
 }
 
 async fn crash_history(phase: u8, steps: usize, amount: u64, point: Option<&str>) {
+    crash_history_on(phase, steps, amount, point, false).await;
+}
+async fn crash_history_on(phase: u8, steps: usize, amount: u64, point: Option<&str>, worker: bool) {
+    let _clock = worker.then(crate::property_support::hold_virtual_clock);
     let mut h = Harness::new().await;
     configure(&h, amount * 3, Some(0), i64::MAX);
     let orders = vec![h.order.clone()];
@@ -450,6 +463,9 @@ async fn crash_history(phase: u8, steps: usize, amount: u64, point: Option<&str>
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     if let Some(point) = point {
         command.env("MONOKULO_PROPERTY_CRASH_POINT", point);
+    }
+    if worker {
+        command.env("MONOKULO_SCANNER_CRASH_WORKER", "1");
     }
     let mut child = CrashProcess(Some(
         command
@@ -497,7 +513,11 @@ async fn crash_history(phase: u8, steps: usize, amount: u64, point: Option<&str>
             .unwrap(),
         "ok"
     );
-    h.db = Some(Db::over_shared(Arc::clone(&reopened)));
+    h.db = Some(if worker {
+        Db::open(&h.path, &reopened.lock()).unwrap()
+    } else {
+        Db::over_shared(Arc::clone(&reopened))
+    });
     h.store = Some(reopened);
     h.state = Harness::state();
     if let Some(point) = point {
@@ -581,4 +601,163 @@ fn named_money_durability_boundaries_recover_after_process_death() {
             crash_history(phase, 0, 17, Some(point)).await;
         }
     });
+}
+
+const MONEY_CRASH_POINTS: [(u8, &str); 8] = [
+    (1, "staging.before_commit"),
+    (1, "staging.after_commit"),
+    (1, "publication.before_commit"),
+    (1, "publication.after_commit"),
+    (1, "recompute.before_commit"),
+    (1, "recompute.after_commit"),
+    (2, "reorg.before_commit"),
+    (2, "reorg.after_commit"),
+];
+proptest! {
+    #![proptest_config(config())]
+    #[test]
+    fn production_worker_crashes_preserve_atomic_money(boundary in 0usize..8,amount in 1u64..10_000) {
+        let (phase,point)=MONEY_CRASH_POINTS[boundary];
+        runtime().block_on(crash_history_on(phase,0,amount,Some(point),true));
+    }
+    #[test]
+    fn repeated_recovery_process_deaths_preserve_obligations(prefix in 1usize..6,amount in 1u64..10_000) {
+        runtime().block_on(crash_pipeline(prefix,amount));
+    }
+}
+#[test]
+fn every_worker_crash_boundary_and_the_full_recovery_pipeline_run() {
+    runtime().block_on(async {
+        for (phase, point) in MONEY_CRASH_POINTS {
+            crash_history_on(phase, 0, 19, Some(point), true).await;
+        }
+        crash_pipeline(5, 23).await;
+    });
+}
+
+/// Five separate killed worker processes act on the SAME database. Recovery
+/// after publication is killed twice during status/event repair, then twice
+/// during reconciliation of a replacement branch.
+async fn crash_pipeline(prefix: usize, amount: u64) {
+    use crate::property_support::CrashChild;
+    let _clock = crate::property_support::hold_virtual_clock();
+    let mut h = Harness::new().await;
+    configure(&h, amount * 3, Some(0), i64::MAX);
+    h.db.take();
+    h.store.take();
+    let mut identities = None;
+    for (index, (phase, point)) in [
+        (1, "publication.after_commit"),
+        (1, "recompute.before_commit"),
+        (1, "recompute.after_commit"),
+        (2, "reorg.before_commit"),
+        (2, "reorg.after_commit"),
+    ]
+    .into_iter()
+    .take(prefix)
+    .enumerate()
+    {
+        let _ = std::fs::remove_file(format!("{}.ready", &*h.path));
+        let mut child = CrashChild(Some(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", CRASH_TEST, "--nocapture"])
+                .env(CRASH_PATH, &*h.path)
+                .env("MONOKULO_SCANNER_CRASH_WORKER", "1")
+                .env("MONOKULO_PROPERTY_CRASH_POINT", point)
+                .env("MONOKULO_PROPERTY_CRASH_TENANT", h.tenants[0].0.as_str())
+                .env("MONOKULO_PROPERTY_CRASH_ORDER", h.order.as_str())
+                .env("MONOKULO_PROPERTY_CRASH_AMOUNT", amount.to_string())
+                .env("MONOKULO_PROPERTY_CRASH_PHASE", phase.to_string())
+                .env("MONOKULO_PROPERTY_CRASH_STEPS", "0")
+                .env("MONOKULO_PROPERTY_CRASH_NOW", h.now.to_string())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ));
+        child.rendezvous(&h.path, point).await;
+        assert!(!child.finish().status.success());
+        let s = Store::open_file(&h.path).unwrap();
+        assert_eq!(
+            s.conn_for_test()
+                .query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        let foreign_keys = s
+            .conn_for_test()
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query_map([], |_| Ok(()))
+            .unwrap()
+            .count();
+        assert_eq!(foreign_keys, 0);
+        let rows = s.get_all_payments(&h.order).unwrap();
+        assert_eq!(rows.len(), 3);
+        let ids = rows
+            .iter()
+            .map(|p| (p.id, p.txid.clone(), p.output_index, p.amount_piconero))
+            .collect::<Vec<_>>();
+        if let Some(before) = &identities {
+            assert_eq!(&ids, before);
+        }
+        identities = Some(ids);
+        let invoice = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
+        let paid = s
+            .due_webhook_deliveries_for_test(i64::MAX, 100)
+            .unwrap()
+            .iter()
+            .filter(|e| e.event_type == "order.paid")
+            .count();
+        if index < 2 {
+            assert_ne!(invoice.status, OrderStatus::Paid);
+            assert_eq!(paid, 0);
+            assert_eq!(
+                s.pending_payment_recomputes_page(NETWORK, "", 100).unwrap(),
+                vec![h.order.clone()]
+            );
+        } else {
+            assert_eq!(invoice.status, OrderStatus::Paid);
+            assert_eq!(paid, 1);
+            assert_eq!(invoice.amount_received_piconero, amount * 3);
+        }
+        if index == 3 {
+            assert!(s.settlement_frozen(NETWORK).unwrap());
+        }
+        if index == 4 {
+            assert!(!s.settlement_frozen(NETWORK).unwrap());
+        }
+    }
+    let reopened = Store::open_file(&h.path).unwrap().into_shared();
+    h.db = Some(Db::open(&h.path, &reopened.lock()).unwrap());
+    h.store = Some(reopened);
+    h.state = Harness::state();
+    crash_world(&mut h, if prefix >= 4 { 2 } else { 1 }, amount);
+    let orders = vec![h.order.clone()];
+    converge(&mut h, &orders, Duration::ZERO, GRACE, |s, h| {
+        outputs_match(s, h, 3, amount, if prefix >= 4 { None } else { Some(3) })
+    })
+    .await;
+    let s = h.store().lock();
+    assert!(s.reorg_job(NETWORK).unwrap().is_none());
+    assert!(s
+        .pending_payment_recomputes_page(NETWORK, "", 100)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        s.due_webhook_deliveries_for_test(i64::MAX, 100)
+            .unwrap()
+            .iter()
+            .filter(|e| e.event_type == "order.paid")
+            .count(),
+        1
+    );
+    let ids = s
+        .get_all_payments(&h.order)
+        .unwrap()
+        .into_iter()
+        .map(|p| (p.id, p.txid, p.output_index, p.amount_piconero))
+        .collect::<Vec<_>>();
+    assert_eq!(Some(ids), identities);
+    let _ = std::fs::remove_file(format!("{}.ready", &*h.path));
 }

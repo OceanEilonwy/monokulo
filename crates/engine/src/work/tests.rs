@@ -123,30 +123,7 @@ fn inputs<'a>(
     }
 }
 
-fn file_store() -> (Store, TempDb) {
-    let path = std::env::temp_dir().join(format!("scanner_rounds_{}.db", uuid::Uuid::new_v4()));
-    let path = path.to_string_lossy().into_owned();
-    (Store::open_file(&path).unwrap(), TempDb(path))
-}
-
-/// A database file (and its WAL and shared-memory files) removed when the
-/// test ends, passed or failed.
-struct TempDb(String);
-
-impl std::ops::Deref for TempDb {
-    type Target = str;
-    fn deref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Drop for TempDb {
-    fn drop(&mut self) {
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", self.0));
-        }
-    }
-}
+pub(crate) use super::history_fixture::{file_store, TempDb};
 
 /// The production database path: a worker thread with its own connection.
 fn worker(store: &SharedStore, path: &str) -> Db {
@@ -3577,7 +3554,7 @@ impl MoneroDaemonClient for PoolOnly<'_> {
 /// A store whose scan fails is tried once per pass, not once per
 /// transaction, and the failure is reported; after repeated failures it
 /// waits out a delay and the pool isn't scanned for it meanwhile.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_failing_store_is_tried_once_per_pass_then_waits() {
     let (_guard, logs) = crate::test_log::capture();
     let (store, custody, fake, tenants, _) = seeded_network(1, 20).await;
@@ -3589,7 +3566,11 @@ async fn a_failing_store_is_tried_once_per_pass_then_waits() {
     let report = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants))
         .await
         .unwrap();
-    assert_eq!((report.scanned, report.paid_orders), (2, 0));
+    assert_eq!(
+        (report.scanned, report.paid_orders),
+        (1, 0),
+        "after the first failure this wallet is skipped for the rest of the pass"
+    );
     assert_eq!(
         custody.attempts.lock().get(&handle).copied(),
         Some(1),
@@ -3620,6 +3601,27 @@ async fn a_failing_store_is_tried_once_per_pass_then_waits() {
     .into_result()
     .unwrap();
     assert_eq!(custody.attempts.lock().get(&handle).copied(), before);
+    custody.recover(handle);
+    tokio::time::advance(Duration::from_secs(61)).await;
+    let recovered = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants))
+        .await
+        .unwrap();
+    assert_eq!(
+        (recovered.scanned, recovered.paid_orders),
+        (2, 0),
+        "both uncompleted transactions must retry after recovery"
+    );
+    assert_eq!(
+        custody.attempts.lock().get(&handle).copied().unwrap(),
+        before.unwrap() + 2
+    );
+    let repeated = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants))
+        .await
+        .unwrap();
+    assert_eq!(
+        repeated.scanned, 0,
+        "successfully scanned transactions must be remembered"
+    );
 }
 
 /// More stores than one page: the rotation's pages wrap round and the fast

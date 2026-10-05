@@ -1,6 +1,6 @@
 //! Shared fixtures for generated boundary tests. All crypto and SQL stay real.
 use crate::key_custody::*;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 pub(crate) fn runtime() -> tokio::runtime::Runtime {
@@ -41,8 +41,39 @@ pub(crate) struct GateCustody {
     pub(crate) inner: PlainKeyCustody,
     pub(crate) mode: AtomicU8,
     pub(crate) attempted: AtomicUsize,
+    pub(crate) epoch: AtomicU64,
+    pub(crate) registration_mode: AtomicU8,
+    pub(crate) registrations: AtomicUsize,
+    pub(crate) scan_mode: AtomicU8,
+    pub(crate) scans: AtomicUsize,
+    pub(crate) scan_entered: tokio::sync::Notify,
+    pub(crate) scan_release: tokio::sync::Notify,
+    pub(crate) registration_entered: tokio::sync::Notify,
+    pub(crate) registration_release: tokio::sync::Notify,
     pub(crate) entered: tokio::sync::Notify,
     pub(crate) release: tokio::sync::Notify,
+}
+impl GateCustody {
+    async fn scan_gate(&self) -> Result<(), KeyCustodyError> {
+        self.scans.fetch_add(1, Ordering::SeqCst);
+        if self.scan_mode.load(Ordering::SeqCst) == 2 {
+            self.scan_entered.notify_one();
+            self.scan_release.notified().await;
+        }
+        if self.scan_mode.load(Ordering::SeqCst) == 1 {
+            return Err(KeyCustodyError::BackendUnavailable(
+                "injected scan failure".into(),
+            ));
+        }
+        Ok(())
+    }
+    async fn registration_gate(&self) {
+        self.registrations.fetch_add(1, Ordering::Relaxed);
+        if self.registration_mode.load(Ordering::Relaxed) == 2 {
+            self.registration_entered.notify_one();
+            self.registration_release.notified().await;
+        }
+    }
 }
 #[async_trait::async_trait]
 impl KeyCustody for GateCustody {
@@ -50,7 +81,9 @@ impl KeyCustody for GateCustody {
         &self,
         material: WalletMaterial,
     ) -> Result<WalletHandle, KeyCustodyError> {
-        self.inner.register_wallet(material).await
+        let handle = self.inner.register_wallet(material).await?;
+        self.registration_gate().await;
+        Ok(handle)
     }
     async fn remove_wallet(&self, handle: WalletHandle) -> Result<(), KeyCustodyError> {
         self.inner.remove_wallet(handle).await
@@ -59,7 +92,24 @@ impl KeyCustody for GateCustody {
         self.inner.seal(material).await
     }
     async fn unseal_and_register(&self, sealed: &[u8]) -> Result<WalletHandle, KeyCustodyError> {
-        self.inner.unseal_and_register(sealed).await
+        let handle = self.inner.unseal_and_register(sealed).await?;
+        self.registration_gate().await;
+        Ok(handle)
+    }
+    async fn unseal_and_register_idempotent(
+        &self,
+        sealed: &[u8],
+        registration_id: &str,
+    ) -> Result<WalletHandle, KeyCustodyError> {
+        let handle = self
+            .inner
+            .unseal_and_register_idempotent(sealed, registration_id)
+            .await?;
+        self.registration_gate().await;
+        Ok(handle)
+    }
+    async fn check_state(&self) -> Result<u64, KeyCustodyError> {
+        Ok(self.epoch.load(Ordering::Relaxed))
     }
     async fn derive_subaddress(
         &self,
@@ -89,6 +139,7 @@ impl KeyCustody for GateCustody {
         major_range: std::ops::Range<u32>,
         minor_range: std::ops::Range<u32>,
     ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
+        self.scan_gate().await?;
         self.inner
             .scan_tx_outputs(handle, tx, major_range, minor_range)
             .await
@@ -99,6 +150,7 @@ impl KeyCustody for GateCustody {
         txs: &[ScanInput],
         indices: &ScanIndices,
     ) -> Result<Vec<TxMatches>, KeyCustodyError> {
+        self.scan_gate().await?;
         self.inner.scan_txs_for_indices(handle, txs, indices).await
     }
 }
@@ -123,7 +175,11 @@ impl CrashChild {
                     String::from_utf8_lossy(&output.stderr)
                 );
             }
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            // The deadline is wall time: virtual-clock tests may intentionally
+            // prevent automatic time jumps while an OS worker is outstanding.
+            tokio::task::spawn_blocking(|| std::thread::sleep(std::time::Duration::from_millis(2)))
+                .await
+                .unwrap();
         }
     }
     pub(crate) fn finish(&mut self) -> std::process::Output {
@@ -139,4 +195,73 @@ impl Drop for CrashChild {
             let _ = child.wait();
         }
     }
+}
+
+pub(crate) struct WorkerRelease(Option<std::sync::mpsc::Sender<()>>);
+impl WorkerRelease {
+    pub(crate) fn release(&mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(());
+        }
+    }
+}
+impl Drop for WorkerRelease {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// Holds a real worker between transactions, with a positive admission ack.
+pub(crate) async fn hold_worker(db: &crate::store::Db) -> WorkerRelease {
+    let (release, hold) = std::sync::mpsc::channel();
+    let (entered, ready) = tokio::sync::oneshot::channel();
+    let db = db.clone();
+    let task = tokio::spawn(async move {
+        db.run(
+            crate::store::db::Class::Admin,
+            move |_| -> Result<(), crate::store::StoreError> {
+                let _ = entered.send(());
+                let _ = hold.recv();
+                Ok(())
+            },
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), ready)
+        .await
+        .unwrap()
+        .unwrap();
+    // Dropping a JoinHandle detaches this bounded job. Release always unblocks it.
+    drop(task);
+    WorkerRelease(Some(release))
+}
+
+pub(crate) async fn wait_queued(
+    db: &crate::store::Db,
+    class: crate::store::db::Class,
+    count: usize,
+) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while db.queued(class) != count {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+/// Keep a paused clock from jumping past real OS-worker replies. Tests still
+/// advance it explicitly; the guard is aborted when the scenario ends.
+pub(crate) struct VirtualClockHold(tokio::task::JoinHandle<()>);
+impl Drop for VirtualClockHold {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+pub(crate) fn hold_virtual_clock() -> VirtualClockHold {
+    VirtualClockHold(tokio::spawn(async {
+        loop {
+            tokio::task::yield_now().await;
+        }
+    }))
 }

@@ -73,6 +73,8 @@ clap = "4.6.7"
 zeromq = { version = "0.6.0", default-features = false, features = ["tokio-runtime", "tcp-transport", "ipc-transport"], optional = true }
 
 [features]
+# Exploration entry points and fault/clock helpers; never enabled in production.
+fuzzing = ["tokio/test-util", "rusqlite/hooks"]
 # The `snp` key custody backend, for an engine inside an AMD SEV-SNP
 # confidential VM (`key_custody::snp`, `deploy/sev-snp/README.md`): the
 # `/dev/sev-guest` device, AMD's key distribution service and the master key

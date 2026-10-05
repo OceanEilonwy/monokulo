@@ -330,10 +330,11 @@ The generated models still have explicit limits:
   exhaustively control the executor or explore every weak-memory ordering. The new subprocess harness samples abrupt
   process death during SQLite execution. It does not model OS crashes/power loss or exhaust every crash point.
   Existing concurrency and SQL fault-sweep tests complement these cases.
-- Reorg models retain two bootstrap blocks and stay within the configured window.
-  Bootstrap/genesis and deeper-than-window forks have example tests, but are not
-  generated histories yet; hashes outside the retained window cannot establish
-  a fork without additional evidence.
+- The original reorg model retains two bootstrap blocks and stays within the
+  configured window. Separate lifecycle properties now generate bootstrap,
+  genesis replacement and deeper-than-window forks with failures and database
+  reopens. Hashes outside the retained window cannot establish a fork without
+  additional evidence.
 - Wallet isolation uses two deterministic key pairs and valid output derivations;
   it does not fuzz arbitrary cryptographic keys, encodings or signatures.
 - The settlement-ceiling property supplies trusted verifier-result fixtures.
@@ -677,3 +678,507 @@ PROPTEST_CASES=128 PROPTEST_RNG_SEED=83 cargo nextest run -p engine --lib --lock
 cargo nextest run -p engine --lib --locked -E \
   'test(http::tests::properties::) | test(key_custody::plain::properties::) | test(key_custody::router::properties::) | test(webhook_delivery::properties::)'
 ```
+
+## Deterministic scheduler, queue and boundary exploration
+
+The production round runner now delegates its two-pass scheduling decisions to
+`work::scheduler::Scheduler`. It accepts explicit elapsed monotonic time, issues
+one `RunUnit`, and accepts only that outstanding unit's completion. Tokens include
+an explicit round generation; duplicates and completions from another generation
+cannot alter progress. The runner still executes the real daemon/custody/SQLite
+operations, records activity, and preserves the first actual failure.
+`work::retry::Retry` similarly separates retry policy from the clock and map.
+`store::dispatch::Dispatch` supplies the real database worker's class rotation;
+Tokio channels and the worker thread still own admission, capacity and execution.
+
+This split supplements the existing integration suites. SQLite remains the source
+of durable truth: issuing an effect does not mean it committed. In particular,
+block publication rechecks the parent, block identity, tenant cursor and pending
+reorg inside its transaction. A cancelled caller's accepted database job can still
+commit, and must leave the same durable recompute obligation as an observed reply.
+
+| Suite | Generated surface and bounds | Required assertions |
+|---|---|---|
+| `work::scheduler::properties` | 0–99,999 ns budgets, 0–149,999 ns opening costs; 0–255 scripted units, each 0–999 ns; generated positive tier shares; every progress outcome; full `u32` retry counts, `u64` times/generations and full-width `Duration` budgets/opening costs | Full trace matches a separate interpreter of the pre-extraction two-pass contract; each tier gets its progress floor; terminal tiers stop; duplicate, outstanding and other-generation effects cannot change counts; retries saturate, reset and expire per key. A fixed sweep covers all 1,024 combinations of five tier outcomes. |
+| `store::db::properties` | Three classes, 1–66 submissions per class around capacity 64; cancellation before admission and after admission; injected job panics; 1–64 accepted jobs per class when all senders close | FIFO within each class, exact round-robin drain, no execution of cancelled unaccepted work, execution and durable writes of accepted abandoned work, isolated panic failure. A fixed sweep explores all 8^6 readiness histories for each continuously ready class. Fairness is measured in service turns, not wall-clock time. |
+| `work::blocks::properties` | Six late-commit situations × cancelled/observed caller × staged/direct real cryptographic scan; 1–255 cache actions, heights 0–31 and sizes/budgets 0–999,999 | Stale parents/hashes, rewound or advanced cursors and pending reorgs cannot publish money; valid abandoned writes survive reopen with a recompute obligation. Every late-commit combination also runs in a fixed sweep. Cache contents, byte accounting, protection, victim selection and discarded bytes agree with an independent eviction model. |
+| `loops::properties` | 1–39 generation actions over three networks; panic/return recovery; 1–11 real admin configuration saves with network masks 0–7, changing fallbacks and a local endpoint that holds RPC responses; 1–7 restart failures before stopping | Previous supervised futures are gone before replacement; other networks retain their generations; dropping ownership stops children; the actual manager follows saved settings; stopping during factory or loop restart backoff is immediate. |
+| Scanner lifecycle properties | Bootstrap heights 0–4; 1–11 outage/fault/reopen actions; tips 12–49, retention depths 1–9, forks 0–4 blocks below the edge, up to four full database reopens; genesis divergence histories | No bootstrap creates money; a newly arriving real payment is found once after recovery; retained-window evidence is reconciled, while payments below it retain the documented limitation; genesis replacement finishes without a stranded reorg. |
+| `scaling::properties` | Full-width counters, durations and timestamps; arbitrary floats plus fixed NaN/infinity/zero/extreme cases; 1–255 telemetry events; changing valid link costs and memory budgets | Requests remain bounded, increasing usable resources cannot reduce their size, timeouts stay within their floor/ceiling, timestamp/counter arithmetic cannot wrap or panic, telemetry stays bounded even with a stopped/backwards clock. |
+| `store::properties` | Every current schema version (1–27) with real historical migrations and existing money/queues; amounts 1–`i64::MAX`, Unicode payloads, SQL authorizer fault positions 0–399; generated process kills from every historic prefix (1–26) | Upgrade preserves payment identity/amounts, exact queued payloads, partial scans, recompute obligations and reorg work; migration versions remain contiguous after failure; reopening finishes the upgrade; integrity and foreign keys hold. Fixed sweeps cover all historical schemas, every reached boundary of the final migration, and kills before/after commits from every historic prefix. |
+| `exploration::properties` | Byte histories 0–4,095 bytes; all float bit patterns; CPU range/set histories and full-width endpoints | Shared fuzz oracles check scheduler/dispatch invariants, sizing, bounded CPU parsing, setting and identifier serialization, malformed input handling. |
+
+New properties default to **64 cases**, overridden by `PROPTEST_CASES`; regression
+seeds are replayed first. The existing ordinary and daily property jobs discover
+these suites through `::properties::`. Run the new surfaces or the complete suite:
+
+```sh
+PROPTEST_CASES=128 PROPTEST_RNG_SEED=47 ENGINE_PROOF_CASES=16 \
+  cargo nextest run -p engine --lib --locked -E 'test(::properties::)'
+cargo nextest run -p engine -p shared --lib --locked --features zmq
+```
+
+Coverage-guided fuzzing lives in the isolated `fuzz/` Cargo workspace. Its lockfile
+uses the application's locked versions for shared dependencies; `libfuzzer-sys`
+and Loom are additional test-only tools. `engine/fuzzing` exposes only exploration
+entry points and is absent from ordinary shipping builds. All eight targets invoke
+actual production policy or boundary code through the same oracles used in normal
+properties:
+
+- `scheduler`: time, progress outcomes and completion sequencing.
+- `status`: independent aggregate status oracle, full-width inputs and metamorphic checks.
+- `history`: real scanner, database and custody histories with independent money/recovery checks.
+- `notifications`: actual notification waits, coalescing, cancellation, network isolation and topic decoding.
+- `queue`: bounded arrivals, closed classes, class selection and draining.
+- `mempool`: batched scan reservations, partial completions, cancellation, eviction, changed windows, failed-tenant filtering, snapshots and cache budgets.
+- `resources`: arbitrary numeric bit patterns in request sizing, retries and timeouts.
+- `inputs`: CPU lists, node settings, scalar settings, identifiers, headers, URLs and signature header rejection.
+
+Install `cargo-fuzz` once, then use the bounded runner. The final parameter is an
+optional `zmq` feature selection. The budget excludes compilation.
+
+```sh
+cargo install cargo-fuzz --locked
+ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh scheduler 60
+ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh queue 60 zmq
+ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh resources 60
+ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh inputs 60
+ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh mempool 60 zmq
+
+# Replay a saved failing input directly; replace the artifact filename.
+cargo fuzz run --fuzz-dir fuzz inputs fuzz/artifacts/inputs/crash-HASH
+
+# Explore bounded completion event interleavings with Loom.
+cargo test --manifest-path fuzz/Cargo.toml --locked --test interleavings
+cargo test --manifest-path fuzz/Cargo.toml --locked --features zmq --test interleavings
+```
+
+The fuzz runner copies reviewed `fuzz/seeds/` into ignored mutable corpora, supplies
+an explicit seed, limits inputs to 4 KiB and individual executions to ten seconds,
+and uses AddressSanitizer. The daily/manual `engine-fuzz.yml` workflow exercises
+all nine targets under both feature configurations, caches evolving corpora and
+uploads corpora and failure artifacts. Its separate Loom jobs explore completion
+ordering with the actual scheduler policy. Loom instruments the small harness's
+synchronization; **it does not instrument or exhaustively verify Tokio channels,
+SQLite, network operations or the whole application**. Real worker, HTTP and crash
+properties remain responsible for those effects.
+
+Fuzzing explores paths rather than proving every execution. The retained-window
+trust limitation remains explicit; daemon response decoding and PoW arithmetic
+remain deferred. Every discovered product bug should get a named regression in
+addition to its minimized input or persisted Proptest seed.
+
+## Concurrent mempool scan reservations and cache locks
+
+The fast mempool loop and round mempool tier now atomically reserve each
+transaction/tenant before calling custody. The reservation rechecks the completed
+scan window, so two callers that previously selected the same work cannot both
+scan it. Different transactions and tenants can still scan concurrently; changed
+windows for one transaction/tenant wait until its current reservation ends, then
+are rediscovered by the round rotation. This prevents simultaneous old/new-window owners
+from completing out of order. Cached older windows can still require a subsequent
+rescan; window generations identify content rather than chronological order.
+
+Reservations are ownership guards, not held mutex guards. Success records the
+completed window and releases its reservation atomically. Failure, cancellation
+and unwinding release unfinished reservations without marking them successful.
+Pool eviction and cache clearing preserve live reservations. A cancelled caller's
+accepted custody/blocking computation or database job can still finish; retrying
+that work may be necessary. Database idempotency remains the protection against
+repeated payment publication. Body fetching is not coalesced by these scan claims.
+The fast-path scanned count excludes transactions for which no scan was reserved.
+
+Body serialization, remembered-ID sorting/shortening, and full-cache destruction
+on `forget` now happen outside the mempool mutex. Remaining critical sections
+include cache insertion, ID snapshot copying, pool pruning, and reservation
+bookkeeping; none awaits network, custody, or database work while locked.
+
+`work::mempool::properties` includes the following surfaces. Cases default to 64;
+`PROPTEST_CASES` and `PROPTEST_RNG_SEED` control expansion and replay. The existing
+property jobs discover them automatically, and the daily fuzz matrix runs `mempool`
+with both default and ZMQ features.
+
+| Property/scenario | Generated range | Assertions |
+| --- | --- | --- |
+| Single-tenant ownership histories | 1–255 events; 8 callers, 4 transactions, 4 tenants, 4 windows | Cancellation, completion and eviction agree with independent ownership model. |
+| Batched ownership/cache histories (`mempool` fuzz oracle) | 0–4,096 bytes; up to 682 complete events; 8 caller slots, transactions and tenants; tenant masks 0–255; window indices 0–255; cache count cap 0–16, byte cap 0–65,535 | Exact admitted tenants, owner keys and completed generations; partial/repeated/foreign completions; owner replacement; duplicate batch inputs; eviction preserves live ownership; due filtering; sorted/limited snapshots; duplicate bodies and byte/count caps. Every step compares complete maps/sets with independent ordered models. Four reviewed histories also run as normal regression tests. |
+| Concurrent overlapping batches on real OS threads | 2–8 callers; 4 transactions; nonempty masks across 8 tenants; full-width `u32` window indices | Every requested transaction/tenant has exactly one live owner; unrelated work is admitted; guards release all claims. Positive barriers keep owners alive while the main thread inspects actual state. |
+| Full-width body-cache accounting | 1–127 insert/remove events; 16 transaction IDs; count cap 0–16; all `usize` sizes and byte budgets | Accepted entries and retained bytes match a `u128` reference sum; duplicate insertions, removal and overflow cannot corrupt accounting or exceed caps. Sizes are supplied accounting inputs; this does not fuzz transaction decoding. |
+| Real fast-pass/round contention | Either entry point wins; success or cancellation; 1–8 competing calls | Losers do not call custody; abandoned owner releases work; retry publishes payment once; repeated calls preserve payment identity. Uses actual production entry points, cryptographic fixture and file-backed SQLite worker. A fixed sweep also covers all four winner/cancellation combinations. |
+| Mixed tenant outcomes | Custody failure, payment write failure, recompute-obligation write failure, inline status write failure, or empty scan then expanded window; both tenant orders; 1–8 repeat calls | A successful tenant remains complete while the affected tenant alone rescans; failed transactions leave neither payment nor credited amount; repair preserves stable payment identities. A fixed sweep runs all 10 outcome/order combinations regardless of random draws. |
+| Held-owner boundary sweep | Success, custody error, custody timeout, cancellation during custody or after accepted DB admission, failed payment write, cache clearing/eviction during custody | Competitors do not scan; no cache mutex remains held during awaits; unsuccessful claims are retryable; accepted abandoned database writes remain safe to repeat. Timeout uses Tokio's paused clock after a positive custody rendezvous. |
+
+Fixed tests additionally cover changed windows, unrelated work and panic after
+partial batch completion. Existing two-thread fast/round/API money properties
+continue to cover restarts and reorgs. The byte fuzzer runs real synchronized cache
+and reservation code sequentially; it does not model weak-memory thread schedules,
+network calls or SQLite. Separate thread and integration properties exercise concurrent callers, custody
+boundaries and SQLite publication. These checks do not assert that accepted backend work stops when its
+caller is cancelled, or that window generations impose chronological ordering.
+
+```sh
+PROPTEST_CASES=256 PROPTEST_RNG_SEED=113 cargo test -p engine --lib --locked \
+  work::mempool::properties
+ENGINE_FUZZ_SEED=113 scripts/engine-fuzz.sh mempool 60
+ENGINE_FUZZ_SEED=113 scripts/engine-fuzz.sh mempool 60 zmq
+```
+
+A manual diagnostic compares identical cache operations behind `parking_lot` and
+Tokio mutexes on two Tokio worker threads, at 256 and 20,000 cache entries. It
+reports acquisition wait and critical-section hold p50/p99/max; sorting occurs
+outside both locks. Run it separately from correctness tests:
+
+```sh
+cargo test -p engine --lib --locked compare_blocking_and_yielding_cache_mutexes \
+  -- --ignored --nocapture
+# Use --release for deployment-oriented measurements; debug timings are diagnostic.
+```
+
+The initial debug run found typical holds around 6 microseconds at 256 entries,
+but full-cache operations at 20,000 entries reached millisecond holds. Tokio's
+mutex did not shorten those CPU operations and had greater p99 acquisition delay
+in that workload. These synthetic timings are machine/load dependent and are not
+production latency guarantees, and this diagnostic does not measure HTTP latency
+or unrelated-task responsiveness. Keep `parking_lot` for the current synchronous
+ownership guards; reduce or shard large cache operations before treating an async
+mutex as a general cure. An async mutex yields waiting tasks but still executes
+critical-section CPU work on its holder's runtime thread. Switching the reservation
+mutex also requires redesigning synchronous cancellation cleanup, which cannot
+await a lock in `Drop`.
+
+[Tokio’s mutex guidance](https://docs.rs/tokio/latest/tokio/sync/struct.Mutex.html#which-kind-of-mutex-should-you-use) likewise recommends a blocking mutex for ordinary shared data when the critical section does not span an await.
+
+
+## Status coverage-guided fuzzing
+
+`status` shares the independent aggregate specification with the existing status
+properties. Inputs are capped at 4 KiB, with full-width expected amounts, required
+confirmations and signed timestamps, and up to 128 payment records. Expected amounts
+remain positive; pool payments have zero confirmations. Assertions check the exact
+status, ordering independence, equivalent payment splitting and settlement under
+confirmation growth. Reviewed seeds force expiry, saturation, mixed evidence and
+zero-confirmation boundaries. Normal properties also generate byte histories.
+
+Run `ENGINE_FUZZ_SEED=149 scripts/engine-fuzz.sh status 60` (append `zmq` for that
+configuration), or `cargo test -p engine --lib status::properties`. Daily fuzz jobs
+include both configurations and preserve corpus/replay artifacts.
+
+
+## Full scanner-history fuzzing
+
+`history` shares `work::history::Harness` with the original scanner properties,
+including the independent canonical-chain/money oracle and real wallet transaction.
+Each input runs up to 32 four-byte commands: mining, pool changes, same/shorter/longer
+forks, spent evidence, daemon/custody outages, nine RPC failures plus malformed spent
+answers, SQL denial positions 0–255, rounds, fast passes, cancellation attempts,
+reopens and recovery checks. Each run forces initial money observation, a final
+fork/reopen/recovery and re-mining with stable payment IDs. Rounds retain the existing
+five-second virtual deadline; SQL fault traces verify the requested denial was
+actually reached when applicable. Inputs above 128 bytes have an ignored tail.
+
+This exercises real tier executors, file-backed SQLite and crypto, using the same
+inline DB mode as sequential properties. Cancellation attempts use yielding inline
+admission; real worker/custody cancellation rendezvous remain in the dedicated
+integration properties. It does not fuzz response decoding, PoW, arbitrary valid
+transactions, every thread ordering or power loss. Each execution cleans its own DB.
+
+Run `ENGINE_FUZZ_SEED=157 scripts/engine-fuzz.sh history 60` and append `zmq` for
+that configuration. `coverage_guided_histories_recover_with_real_scanner` generates
+the same byte commands as a normal property; reviewed histories replay as tests.
+Daily default/ZMQ fuzz jobs retain evolving corpora and failure artifacts.
+
+
+## Notification and lifecycle exploration
+
+`notifications` checks real Tokio `NodeWakes` against an independent three-network,
+three-kind pending-permit model. Up to 128 commands generate bursts of 1–256 signals,
+wait intervals 0–255 ms, cancelled waits before the minimum gap or after registration,
+replacement wake state and arbitrary topics. Pool/chain/proof isolation, exact wake
+counters, polling deadlines and minimum-gap throttling are checked with virtual time.
+The topic decoder is shared with the production ZMQ subscriber in both feature builds.
+
+Normal properties also run the actual fast mempool loop with a real paying wallet
+under missing, wrong-network, burst and outage/recovery notifications, then positively
+join shutdown and prove stale signals cannot restart work. All four modes run in a
+fixed sweep. Under ZMQ, real TCP publishers disconnect/rebind, switch endpoints,
+duplicate endpoints, disable/reenable settings and send invalid/stale topics. Counters
+prove receipt and reconnect; the fixed lifecycle history complements generated 1–7
+configuration changes. Existing manager/supervisor histories cover loop replacement,
+panics, stop signals and configuration saves. Notifications never substitute for RPC
+money evidence. Transport histories use bounded real deadlines; they do not enumerate
+all OS/socket interleavings.
+
+Run `cargo test -p engine --lib node_events::` and add `--features zmq` for transport
+properties; `ENGINE_FUZZ_SEED=167 scripts/engine-fuzz.sh notifications 60` runs the
+shared wait oracle (append `zmq` for that build). Both daily matrices discover it.
+
+
+## Engine authorization properties
+
+`http::tests::properties::authorization` sends requests through the production
+`build_router`, without the test token-injection layer. Its explicit matrix covers
+all 25 registered method/route combinations: tenant metadata/lifecycle, orders,
+refund addresses, payment lookup, webhooks and SSE, plus engine status, tenant
+creation, settings, logs, activity and proof-anchor administration. A fixed sweep
+runs every route with absent/wrong/tenant-as-engine credentials, and all 14 tenant
+routes with eight invalid tenant credential classes (missing, public key, revoked,
+disabled, wrong scheme, unknown, tampered and engine token as bearer).
+
+Generated tests use 2–4 real tenants, inline or production file-backed DB workers,
+1–32 ownership/rotation/disable/read/refund/list events, ASCII credential noise up
+to 128 bytes, order amounts 1–9,999, and 2–32 concurrent rejected writes or SSE
+requests, duplicate capability headers, eight malformed Bearer forms, filtered
+order/webhook lists and 1–12 foreign writes preceding a positive owner SSE event.
+Independent principal state checks current/revoked/disabled credentials;
+cross-tenant identifiers cannot expose or mutate another tenant, body identities
+cannot redirect an authenticated purchase, and rejected requests preserve a full
+ordered dump of every SQLite table. Positive owner controls prove rejection tests
+have not merely broken all access; repeated valid SSE opens check permit cleanup.
+The named history forces wrong-owner access, rotation, old-token rejection and
+terminal disablement even when random histories shrink. A real daemon/transaction
+fixture also exercises 1–4 repeated foreign payment lookups before and after the
+owner records its payment: forged body identity cannot expose its order or credit
+any wallet, and the full database stays unchanged for every foreign lookup.
+
+The engine token is the instance-wide administrative capability; tenant routes
+additionally require a tenant secret. These tests preserve that existing policy,
+not a separate operator-role scheme. Rotation/disablement assertions apply to new
+requests, not retroactive cancellation of an already authenticated stream/job.
+Primitive token hashing remains tested in `shared`, outside this engine package.
+
+Run `PROPTEST_CASES=128 PROPTEST_RNG_SEED=181 cargo test -p engine --lib
+http::tests::properties::authorization` (append `--features zmq` before the filter).
+The existing daily default/ZMQ property filter includes all new families.
+
+## Combined production-worker concurrency histories
+
+`work::tests::properties::concurrency` holds an actual block scan, fast mempool
+pass and production-router payment lookup at positive custody rendezvous. All
+three then reach admitted writes on the file-backed database worker before it is
+released. Six admission permutations, four caller-abandonment choices, secret
+rotation/refund/configuration changes and a persisted reorg guard run with 1–4
+replays. A fixed sweep forces all six permutations and all four cancellation
+choices. Recovery recreates volatile scanner state, drains the actual tiers and
+checks exact amount, stable payment identity, mined location, no pending reorg or
+recompute work, and exactly one paid webhook. Reopening preserves the payment.
+The scan gate covers both batched engine scans and single HTTP lookup scans.
+
+Run `PROPTEST_CASES=128 cargo test -p engine --lib
+work::tests::properties::concurrency` with default and `--features zmq` builds.
+These properties use explicit barriers, not sleeps to guess whether work started;
+they cover these controlled interleavings rather than every OS thread schedule.
+
+## Production-worker and repeated scanner crash recovery
+
+The scanner durability suite now runs all eight staging/publication/status/reorg
+before/after-commit checkpoints with the actual file-backed worker as well as the
+existing inline harness. Generated amounts are 1–9,999 piconero per output.
+A separate 1–5-process pipeline kills successive recovery workers on the SAME
+SQLite file: publication after commit, recompute before/after commit, then reorg
+completion before/after commit. Every intermediate reopen checks integrity,
+foreign keys, all three output identities and amounts, status/event atomicity,
+persisted recompute obligations and the reorg settlement freeze. Final recovery
+must drain both queues and retain exactly one paid event and the original IDs.
+The fixed sweep forces all eight checkpoints and the complete five-kill pipeline.
+
+These are process-death tests, not simulations of power loss or torn storage.
+Paused-clock worker tests explicitly hold virtual time until OS replies arrive;
+subprocess rendezvous uses a wall-clock deadline and wall-clock polling.
+Run `PROPTEST_CASES=64 cargo nextest run -p engine --lib --locked -E
+\'test(work::tests::properties::money::expansions::)\'` in both feature builds.
+
+
+## Mixed-wallet transaction history exploration
+
+The shared `portfolio` property/fuzz harness generates 2–4 distinct wallets,
+2 orders per wallet, and 2–4 distinct transactions. One transaction always pays
+multiple wallets. Each transaction has 1–4 additional outputs (up to 20 total
+across the scenario), with amounts 1–65,536, paying minor indices 1/2 or an
+unassigned 99. Invoices deliberately request the exact total, half the total or
+one more than the total, with confirmation thresholds 0–3. The independent ledger
+comes from recipient instructions, not scanner results or the database.
+
+All outputs are first observed in the pool. Up to sixteen commands then independently
+mine, return or drop transactions, replace branches, reopen a worker/reset scanner
+state, repeat the fast path, and change chain length. Absence without positive
+spent evidence must preserve the funds. At each quiescent point, exact recipient,
+transaction/output identity, amount, height, non-void/non-superseded state, status,
+and foreign-tenant rejection agree with the ledger. IDs remain stable. Final
+forced mining with cold scanner state and a SQLite reopen provide positive controls.
+Both inline and production file-backed worker modes are generated. Property byte
+vectors contain 0–192 bytes; the decoder bounds work and ignores any unused tail.
+
+These are scanner-valid transparent crypto fixtures with derived one-time keys
+and per-output transaction keys, not fully signed transactions accepted by a live
+Monero network. Consensus proof/signature arithmetic and daemon decoding remain
+outside this package. Three reviewed seeds force mixed forks, worker restarts and
+partial payments. `portfolio` is the ninth default/ZMQ daily fuzz target; its corpus
+and failures use the existing runner/artifact workflow.
+
+Run `PROPTEST_CASES=64 cargo test -p engine --lib mixed_wallet`, adding
+`--features zmq` for that build. Run `ENGINE_FUZZ_SEED=229 scripts/engine-fuzz.sh
+portfolio 60` and append `zmq` for fuzzing that configuration.
+
+## Named mutation checks: testing the tests
+
+`scripts/engine-mutations.py` deliberately introduces fourteen defects, one at a time,
+in a disposable detached worktree. The caller's engine sources are never edited.
+Each selected test must first pass on the healthy snapshot, then fail by an
+assertion bearing the defect’s specified `BOUNDARY:` marker on the mutant. All defects are checked in default and ZMQ builds:
+
+| Intentional defect | Required detecting test |
+|---|---|
+| Double the persisted amount received | Mixed-wallet ledger seed replays |
+| Accept a scanned block despite a changed parent | Complete late-commit prerequisite sweep |
+| Read an order without checking its tenant | Named authorization/revocation history |
+| Drop payment insert/update recompute obligations | Complete late-commit prerequisite sweep |
+| Commit paid status without its webhook | Combined real-worker concurrency sweep |
+| Accept another round's completion | Generated scheduler generation property |
+| Trust one node’s spent vote despite disagreement | Combined portfolio independent void ledger |
+| Publish completion for a different scan window | Held-owner wrong-window regression |
+| Bypass matching-proof settlement requirements | Combined portfolio independent status ledger |
+| Reverse the earliest-mined conflict winner | Durable conflict winner/reorg regression |
+| Send a later webhook event before an earlier retry | Production FIFO/backoff regression |
+| Retain an obsolete reorg staging checkpoint | Reopen/fork/network staging sweep |
+| Retain obsolete staged matches | Same sweep, independent staging-row assertion |
+| Keep custody handles live across backend epoch changes | Generated backend epoch isolation property |
+
+Compiler/linker errors, zero selected tests, unrelated panics, wall timeouts and
+failed rendezvous/virtual deadlines are invalid runs, never successful detections.
+A surviving mutant or any invalid result fails the command. Sixteen runner checks
+use real tiny Cargo test programs to verify those outcome classes, including
+process-group cleanup on POSIX timeout. The isolated worktree is removed even
+when a mutant fails; output contains the revision, tracked local patch hash,
+cases/seed, baseline results, exact mutations/commands and full failure logs.
+Tracked local edits and new engine modules are snapshotted for pre-commit checks.
+
+```sh
+python3 scripts/test_engine_mutations.py
+python3 scripts/engine-mutations.py --cases 32 --seed 241
+# Optional single configuration:
+python3 scripts/engine-mutations.py --features zmq --cases 64
+```
+
+JSON and logs live in ignored `target/engine-mutations/`, with compiled artifacts
+in its `build/` directory. A weekly/manual `engine-mutations.yml` job runs both
+configurations and retains JSON plus logs. These checks demonstrate detection of
+these fourteen chosen defects; they are not a percentage score for every possible bug.
+The money, crash, concurrency, fuzz and authorization suites remain complementary.
+
+## Combined money, proof, node, custody and delivery histories
+
+The shared `portfolio` property/fuzz harness now composes three real adversarial
+nodes through production fallback/corroboration, independent multi-wallet money
+accounting, trusted verifier results, wallet handle replacement, SQL denial,
+restart/reorg recovery and the production webhook executor against local HTTP.
+Generated histories have up to 16 commands (previously eight), 2–4 wallets,
+2–4 transactions, amounts 1–65536 and confirmation thresholds 0–3. The first
+three branch changes exercise missing/mismatching proof before proof catches up;
+zero-confirmation acceptance remains the explicitly configured trust boundary.
+Proof fixtures exercise integration; they do not replace real-verifier properties.
+Unanimous spent evidence voids absent transactions; conflicting evidence cannot.
+Final canonical mining restores every output and retains its original payment ID.
+
+Every input forces a real pending RPC timeout, a reached custody fault, a reached
+SQL denial, and an all-node outage with unchanged money/cursors. Fixed inline and
+worker histories force spent disagreement, void/restoration, proof holds, handle
+replacement and reopen. Recovery requires all tenant cursors to reach the model
+chain tip before comparing settlement depth, rather than stopping when payment
+rows alone match. Proof holds deliberately retain settlement obligations; healthy
+final recovery drains them. Status commits must have their corresponding durable
+webhook, delivery fails once through actual HTTP, retries preserve exact event
+bytes, and every expected event eventually reaches its tenant's destination.
+
+Run `cargo test -p engine --lib mixed_wallet` and `cargo test -p engine --lib
+combined_portfolio`; append `--features zmq` for that build. The existing portfolio
+fuzzer and daily matrix automatically run this same expanded harness; reviewed
+`combined-worker-0`/`combined-worker-1` seeds force the combined interactions.
+
+## Proof/configuration/shutdown schedules and scan ownership
+
+The mempool executor now delegates admission/completion/release to the pure
+`Reservations` policy. Each admitted scan owns a non-cloneable lease; its existing
+RAII guard releases unfinished leases on cancellation/panic. Completed generations
+and live ownership remain separate from body-cache eviction. A completion carrying
+a different window generation cannot mark success or release the current owner.
+Existing independent property/fuzz ownership models run through this production
+adapter unchanged. Two added Loom models explore completion/rescan ordering and
+cancellation/cache-reset ordering using the production policy under a Loom mutex.
+This explores atomic policy-call order, not parking_lot internals or the whole
+Tokio/SQLite runtime; the existing real-thread/real-caller tests remain necessary.
+
+Actual file-backed worker schedules additionally compose a block scan, proof
+publication/anchor forgetting/mismatching proof, and tenant confirmation changes.
+All six admission orders × four cancellation boundaries × three proof states ×
+two custody replacement choices run in a fixed 144-case sweep, plus generated
+properties. Gates prove entry into custody and worker admission. Accepted effects
+must drain after callers abandon them, and a fresh scanner generation with the
+replacement custody handle must preserve one exact payment/stable ID. Confirmation
+and proof holds must produce no paid webhook; subsequent canonical proof catch-up
+must settle once, enqueue exactly one paid event, drain recomputes, and survive a
+DB reopen. This is controlled generation replacement, not an OS scheduling proof.
+
+Run the `concurrency` and `mempool` engine tests (both feature builds), and
+`cargo test --manifest-path fuzz/Cargo.toml --locked --test interleavings` (append
+`--features zmq`). Existing daily property and Loom jobs discover the expansions.
+
+## Recorded and generated paying RingCT histories
+
+The shared portfolio harness selects a recorded-corpus mode with input bit 7;
+bit 6 selects whole/pruned daemon body presentation. This mode has 2–4 wallets
+and 3–4 transactions. It combines the frozen paying Bulletproof2 transaction
+(output 1/minor 1/exactly 7,000,000,000 piconero), untouched recorded foreign
+Bulletproof2/CLSAG/tagged Bulletproof+ transactions, and generated mixed-wallet
+additional-key payments. The independent ledger now carries explicit output
+indexes, including noncontiguous known recipients. Positive amount decryption
+for CLSAG/tagged Bulletproof+ additionally uses clearly labelled synthetic pruned
+bases; these preserve the known ciphertext/commitment but have no network-valid
+signatures. Untouched recorded signatures remain in the foreign corpus.
+
+A fixed 36-history sweep forces inline/worker × whole/pruned × three foreign
+variants × exact/partial/insufficient goals, with thresholds 1–3. Histories include
+pool observation, mining, multiple forks, spent disagreement, void/restoration,
+custody replacement, DB reopen and delivery. Exact amounts, output indexes,
+wallet isolation, statuses, stable whole-transaction IDs and recovery obligations
+are checked throughout. The fixture-curation test checks frozen IDs, input/output
+counts, RingCT type, tagged/untagged shape, signatures and known recipient results
+using the crypto library directly. Recorded provenance and upstream licensing
+are in `tests/fixtures/RECORDED_TRANSACTIONS.md` and its JSON manifest.
+
+Run `cargo test -p engine --lib recorded_ringct` and the existing `mixed_wallet`
+properties in both feature builds. Reviewed recorded/CLSAG portfolio seeds are
+shared with the existing sanitizer fuzzer and daily CI; no external node is needed
+for any test or fuzz execution.
+
+
+## Boundary observations and strict mutation evidence
+
+The mutation runner also executes four complete healthy boundary suites in each
+feature build. Its schema-v2 report retains counters and fails a baseline if a
+required observation is missing or malformed. Counters are emitted only after
+scenario assertions pass. They measure observed bounded scenarios, not source
+branch coverage or an exhaustive probability of catching bugs.
+
+| Healthy boundary suite | Observations per feature build |
+|---|---|
+| Combined portfolio, inline and worker | Each mode independently reaches cancelled real RPC deadlines, a custody scan error, actual SQL denial, all-node outage with unchanged money/cursors, disputed and unanimous spent evidence, missing and mismatching proof holds, proof release, handle replacement, mid-history/final reopen, canonical void restoration, real HTTP 503 and a retry with identical bytes followed by full drain. Counts come from observed successful checks. |
+| Proof/config/shutdown worker schedules | 144 completed schedules; 72 replace custody; 48 lose the anchor and 48 use a mismatching anchor. Six admission orders × four caller-abandonment positions × three proof states × two custody-generation choices. |
+| Reorg staging cleanup | 18 reopen schedules across all three networks, forks 1/3/1,000, with/without reopening before completion. 36 obsolete checkpoints/match sets removed; 36 below-fork/other-network sets preserved. The accompanying generated property explores fork heights 1–2,000 and both reopen choices. |
+| Recorded transaction histories | 36 complete histories, including 18 whole and 18 pruned presentations; both DB modes, all three frozen foreign RingCT types and three invoice goals/confirmation thresholds. Paying type-5/6 bases are explicitly synthetic; fixture provenance is documented separately. |
+
+Detection requires the expected marker inside an assertion panic. Printing the
+marker before an unrelated assertion cannot earn a detection. Runner tests cover
+wrong assertions, printed-marker false positives, malformed/missing counters and
+aggregation, in addition to compilation, zero-test, unrelated-panic and timeout
+rejection. Reports preserve baseline logs, each exact patch/command and the local
+snapshot hash; the weekly/manual workflow uploads the report and logs separately
+for default and ZMQ.
+
+```sh
+python3 scripts/test_engine_mutations.py
+python3 scripts/engine-mutations.py --features both --cases 32 --seed 241
+# Human-readable evidence, including per-suite boundary observations:
+python3 -m json.tool target/engine-mutations/report.json
+```
+
+Custody policies and their generated properties live in the extracted `key-custody` crate. The mutation runner selects that package for epoch checks; ZMQ build choices apply to engine tests.

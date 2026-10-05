@@ -28,6 +28,7 @@ use crate::status::{derive_status, OrderStatus, PaymentView, StatusInputs};
 
 mod conflicts;
 pub mod db;
+pub mod dispatch;
 pub mod proof;
 mod work;
 pub use db::{Db, DbMetrics};
@@ -311,14 +312,14 @@ impl Database {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzzing"))]
 #[derive(Default)]
 pub(crate) struct SqlFaultTrace {
     checks: std::sync::atomic::AtomicUsize,
     pub(crate) denied: std::sync::atomic::AtomicUsize,
     pub(crate) action: Mutex<Option<String>>,
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzzing"))]
 impl SqlFaultTrace {
     pub(crate) fn load(&self, ordering: std::sync::atomic::Ordering) -> usize {
         self.checks.load(ordering)
@@ -326,8 +327,16 @@ impl SqlFaultTrace {
     pub(crate) fn assert_outcome(&self, target: usize) {
         use std::sync::atomic::Ordering;
         let denied = self.denied.load(Ordering::Relaxed);
-        assert_eq!(denied, usize::from(self.load(Ordering::Relaxed) > target));
-        assert_eq!(self.action.lock().is_some(), denied == 1);
+        assert_eq!(
+            denied,
+            usize::from(self.load(Ordering::Relaxed) > target),
+            "reached SQL fault must fire exactly once"
+        );
+        assert_eq!(
+            self.action.lock().is_some(),
+            denied == 1,
+            "fault trace must retain the denied action"
+        );
     }
 }
 
@@ -944,7 +953,11 @@ impl Store {
     /// armed the statement cache is off, so every statement is prepared, and
     /// checked, each time it runs. Returns the running count of checks, so a
     /// sweep knows when `n` was past the last one.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fuzzing"))]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "fault injection must successfully install/remove the exploration authorizer"
+    )]
     pub(crate) fn fail_nth_access(&self, n: Option<usize>) -> Arc<SqlFaultTrace> {
         use std::sync::atomic::Ordering;
         let seen = Arc::new(SqlFaultTrace::default());
@@ -954,7 +967,9 @@ impl Store {
             let counter = Arc::clone(&seen);
             self.conn
                 .authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
-                    use rusqlite::hooks::AuthAction::*;
+                    use rusqlite::hooks::AuthAction::{
+                        Delete, Insert, Pragma, Savepoint, Select, Transaction, Update,
+                    };
                     // Counted once per statement (its kind), not per
                     // column it reads, and not inside triggers: failing
                     // a later check of the same statement takes the
@@ -1000,8 +1015,8 @@ impl Store {
         seen
     }
 
-    /// The connection itself, for tests that query it directly.
-    #[cfg(test)]
+    /// The connection itself, for exploration that queries it directly.
+    #[cfg(any(test, feature = "fuzzing"))]
     pub(crate) fn conn_for_test(&self) -> &Connection {
         &self.conn
     }
@@ -2578,7 +2593,7 @@ impl Store {
     /// Every undelivered, not given-up delivery due by `now`, oldest first,
     /// for tests that assert on what was enqueued. The engine picks what to
     /// send with [`Self::due_webhook_deliveries_fair`].
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fuzzing"))]
     pub fn due_webhook_deliveries_for_test(
         &self,
         now: i64,
@@ -4977,3 +4992,8 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "migration_properties.rs"]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod properties;

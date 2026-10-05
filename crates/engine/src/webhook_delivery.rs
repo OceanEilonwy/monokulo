@@ -1023,7 +1023,7 @@ mod tests {
             .unwrap();
         assert!(
             !picked.iter().any(|d| d.order_id == orders[0]),
-            "nothing for order 0 until its first event is delivered or abandoned: {picked:?}"
+            "assertion failed: BOUNDARY: retry-fifo; nothing for order 0 until its first event is delivered or abandoned: {picked:?}"
         );
         let picked = store
             .due_webhook_deliveries_fair(5_000, DELIVERY_PER_TENANT, DELIVERY_BATCH)

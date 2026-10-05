@@ -1,0 +1,84 @@
+name: Engine fuzz exploration
+
+on:
+  schedule:
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Fuzzing seconds per target (excluding build)
+        type: choice
+        options: ['60', '300', '900']
+        default: '300'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: fuzz ${{ matrix.target }} (${{ matrix.features || 'default' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [scheduler, resources, inputs, queue, mempool, status, history, notifications, portfolio]
+        features: ['', 'zmq']
+    env:
+      ENGINE_FUZZ_SEED: ${{ github.run_id }}
+      FUZZ_SECONDS: ${{ inputs.seconds || '300' }}
+      FUZZ_TARGET: ${{ matrix.target }}
+      FUZZ_FEATURES: ${{ matrix.features }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+          key: fuzz-${{ matrix.features }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: actions/cache@v6
+        with:
+          path: fuzz/corpus
+          key: engine-fuzz-${{ matrix.target }}-${{ matrix.features }}-${{ github.run_id }}
+          restore-keys: engine-fuzz-${{ matrix.target }}-${{ matrix.features }}-
+      - name: Record replay settings
+        run: |
+          echo "Target: $FUZZ_TARGET; features: ${FUZZ_FEATURES:-default}; seed: $ENGINE_FUZZ_SEED; budget: ${FUZZ_SECONDS}s" >> "$GITHUB_STEP_SUMMARY"
+      - name: Explore
+        run: scripts/engine-fuzz.sh "$FUZZ_TARGET" "$FUZZ_SECONDS" "$FUZZ_FEATURES"
+      - name: Preserve corpus, failures and seeds
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: engine-fuzz-${{ matrix.target }}-${{ matrix.features || 'default' }}-${{ github.run_id }}
+          path: |
+            fuzz/corpus/
+            fuzz/artifacts/
+            fuzz/seeds/
+          if-no-files-found: ignore
+
+  interleavings:
+    name: bounded effect interleavings (${{ matrix.features || 'default' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ['', 'zmq']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+      - name: Explore completion interleavings
+        env:
+          FUZZ_FEATURES: ${{ matrix.features }}
+        run: cargo test --manifest-path fuzz/Cargo.toml --locked --features "$FUZZ_FEATURES" --test interleavings

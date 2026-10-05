@@ -3,10 +3,10 @@ use crate::daemon::{
     fake::FakeDaemonClient, BlockOutline, ChainBlock, ChainHeader, ChainTip, DaemonError,
     FetchedTx, KeyImageStatus, MoneroDaemonClient, TxLocation,
 };
-use crate::node_test_support::Rpc;
+use crate::exploration_rpc::Rpc;
 use std::sync::atomic::{AtomicU16, Ordering};
 
-pub(super) struct ScriptedDaemon {
+pub(crate) struct ScriptedDaemon {
     inner: FakeDaemonClient,
     failures: AtomicU16,
 }
@@ -16,16 +16,16 @@ pub(super) struct ScriptedDaemon {
 const TRUNCATED_SPENT: u16 = 1 << 9;
 
 impl ScriptedDaemon {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: FakeDaemonClient::new(),
             failures: AtomicU16::new(0),
         }
     }
-    pub(super) fn fail_calls(&self, mask: u16) {
+    pub(crate) fn fail_calls(&self, mask: u16) {
         self.failures.store(mask, Ordering::Relaxed);
     }
-    pub(super) fn calls_healthy(&self) -> bool {
+    pub(crate) fn calls_healthy(&self) -> bool {
         self.failures.load(Ordering::Relaxed) == 0
     }
     fn check(&self, op: Rpc) -> Result<(), DaemonError> {

@@ -21,6 +21,8 @@ pub use shared::scaling::{
 const RECENT_BLOCKS: usize = 64;
 /// How far back "recent" reaches for blocks a minute and the time split.
 const RECENT_SECS: i64 = 600;
+// Bound telemetry even if the wall clock stops or moves backwards.
+const MAX_SAMPLES: usize = 4096;
 
 /// One network's scan progress, shared between its scan loop and `/status`.
 ///
@@ -94,7 +96,7 @@ impl ScanProgress {
     /// Blocks' headers are read before the blocks for the next
     /// [`HEADERS_FIRST_SECS`], because of `reason`.
     pub fn want_headers_first(&mut self, now_unix: i64, reason: HeadersFirstReason) {
-        self.headers_first = Some((now_unix + HEADERS_FIRST_SECS, reason));
+        self.headers_first = Some((now_unix.saturating_add(HEADERS_FIRST_SECS), reason));
     }
 
     /// Whether blocks' headers are being read before the blocks.
@@ -146,7 +148,7 @@ impl ScanProgress {
         self.recent.push_back(DoneBlock {
             height,
             wire_bytes: block.wire_bytes.unwrap_or(0),
-            secs: (now_unix - block.started_unix).max(0) as f64,
+            secs: now_unix.saturating_sub(block.started_unix).max(0) as f64,
             finished_unix: now_unix,
         });
         while self.recent.len() > RECENT_BLOCKS {
@@ -161,10 +163,13 @@ impl ScanProgress {
             scan_secs,
             tx_scans,
         });
+        while self.time.len() > MAX_SAMPLES {
+            self.time.pop_front();
+        }
         while self
             .time
             .front()
-            .is_some_and(|t| t.unix < now_unix - RECENT_SECS)
+            .is_some_and(|t| t.unix < now_unix.saturating_sub(RECENT_SECS))
         {
             self.time.pop_front();
         }
@@ -175,19 +180,24 @@ impl ScanProgress {
         if bytes == 0 {
             return;
         }
-        self.discarded_cache_bytes += bytes;
+        self.discarded_cache_bytes = self.discarded_cache_bytes.saturating_add(bytes);
         self.discarded_recent.push_back((now_unix, bytes));
+        while self.discarded_recent.len() > MAX_SAMPLES {
+            self.discarded_recent.pop_front();
+        }
         while self
             .discarded_recent
             .front()
-            .is_some_and(|(unix, _)| *unix < now_unix - RECENT_SECS)
+            .is_some_and(|(unix, _)| *unix < now_unix.saturating_sub(RECENT_SECS))
         {
             self.discarded_recent.pop_front();
         }
     }
 
     pub fn cache_bytes(&mut self, bytes: u64, now_unix: i64) {
-        let stale = self.peak_cache.is_some_and(|(at, _)| at < now_unix - 3600);
+        let stale = self
+            .peak_cache
+            .is_some_and(|(at, _)| at < now_unix.saturating_sub(3600));
         if stale || self.peak_cache.is_none_or(|(_, peak)| bytes >= peak) {
             self.peak_cache = Some((now_unix, bytes));
         }
@@ -195,10 +205,9 @@ impl ScanProgress {
 
     /// Seconds one transaction takes to scan for one store, lately.
     pub fn secs_per_tx_scan(&self) -> Option<f64> {
-        let (secs, scans) = self
-            .time
-            .iter()
-            .fold((0.0, 0u64), |(s, n), t| (s + t.scan_secs, n + t.tx_scans));
+        let (secs, scans) = self.time.iter().fold((0.0, 0u64), |(s, n), t| {
+            (s + t.scan_secs, n.saturating_add(t.tx_scans))
+        });
         (scans > 0).then(|| secs / scans as f64)
     }
 
@@ -207,7 +216,7 @@ impl ScanProgress {
         let recent = self
             .recent
             .iter()
-            .filter(|b| b.finished_unix >= now_unix - RECENT_SECS)
+            .filter(|b| b.finished_unix >= now_unix.saturating_sub(RECENT_SECS))
             .count();
         let blocks_per_minute = recent as f64 / (RECENT_SECS as f64 / 60.0);
         let (fetch, scan) = self
@@ -227,23 +236,22 @@ impl ScanProgress {
             in_progress_secs: self
                 .in_progress
                 .as_ref()
-                .map(|b| (now_unix - b.started_unix).max(0)),
+                .map(|b| now_unix.saturating_sub(b.started_unix).max(0)),
             peak_cache_bytes: self
                 .peak_cache
-                .filter(|(at, _)| *at >= now_unix - 3600)
+                .filter(|(at, _)| *at >= now_unix.saturating_sub(3600))
                 .map(|(_, bytes)| bytes),
             discarded_cache_bytes_recent: self
                 .discarded_recent
                 .iter()
-                .filter(|(unix, _)| *unix >= now_unix - RECENT_SECS)
-                .map(|(_, bytes)| bytes)
-                .sum(),
+                .filter(|(unix, _)| *unix >= now_unix.saturating_sub(RECENT_SECS))
+                .fold(0u64, |total, (_, bytes)| total.saturating_add(*bytes)),
             round_budget_secs: Some(self.round_budget.as_secs()),
             headers_first: self
                 .headers_first
                 .filter(|(until, _)| *until > now_unix)
                 .map(|(until, reason)| HeadersFirst {
-                    remaining_secs: until - now_unix,
+                    remaining_secs: until.saturating_sub(now_unix),
                     reason,
                 }),
         }
@@ -257,7 +265,7 @@ fn trend(sizes: &[u64]) -> Trend {
         return Trend::Steady;
     }
     let half = sizes.len() / 2;
-    let avg = |s: &[u64]| s.iter().sum::<u64>() as f64 / s.len() as f64;
+    let avg = |s: &[u64]| s.iter().map(|&n| n as f64).sum::<f64>() / s.len() as f64;
     let (earlier, later) = (avg(&sizes[..half]), avg(&sizes[half..]));
     if later > earlier * 1.2 {
         Trend::Rising
@@ -387,3 +395,8 @@ mod tests {
         assert_eq!(progress.report(5_000).peak_cache_bytes, Some(100));
     }
 }
+
+#[cfg(test)]
+#[path = "resource_properties.rs"]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod properties;

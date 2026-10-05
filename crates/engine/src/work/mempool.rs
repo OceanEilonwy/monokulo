@@ -117,15 +117,25 @@ impl Bodies {
     /// `max_bytes` serialized bytes: past either (a pool far bigger than
     /// any real one) bodies are fetched each time instead, and memory stays
     /// bounded.
-    fn remember(&mut self, txid: &str, tx: &Arc<Transaction>, max_count: usize, max_bytes: usize) {
+    fn remember(
+        &mut self,
+        txid: &str,
+        tx: &Arc<Transaction>,
+        size: usize,
+        max_count: usize,
+        max_bytes: usize,
+    ) {
         if self.by_txid.len() >= max_count || self.by_txid.contains_key(txid) {
             return;
         }
-        let size = monero::consensus::encode::serialize(tx.as_ref()).len();
-        if self.bytes + size > max_bytes {
+        let Some(bytes) = self
+            .bytes
+            .checked_add(size)
+            .filter(|&bytes| bytes <= max_bytes)
+        else {
             return;
-        }
-        self.bytes += size;
+        };
+        self.bytes = bytes;
         self.by_txid.insert(txid.to_owned(), (Arc::clone(tx), size));
     }
 }
@@ -133,8 +143,18 @@ impl Bodies {
 #[derive(Default)]
 struct Remembered {
     bodies: Bodies,
-    /// txid -> store -> the window generation it was scanned with.
-    scanned: HashMap<String, HashMap<crate::store::TenantId, u64>>,
+    ownership: super::reservations::Reservations,
+}
+impl std::ops::Deref for Remembered {
+    type Target = super::reservations::Reservations;
+    fn deref(&self) -> &Self::Target {
+        &self.ownership
+    }
+}
+impl std::ops::DerefMut for Remembered {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.ownership
+    }
 }
 
 impl MempoolState {
@@ -148,15 +168,18 @@ impl MempoolState {
     /// How many pool transactions are remembered, and the first `limit` of
     /// their ids (shortened), in order: for the engine page.
     pub(super) fn remembered(&self, limit: usize) -> (usize, Vec<String>) {
-        let remembered = self.inner.lock();
-        let mut txids: Vec<&String> = remembered.scanned.keys().collect();
+        let mut txids: Vec<String> = {
+            let remembered = self.inner.lock();
+            remembered.scanned.keys().cloned().collect()
+        };
+        let count = txids.len();
         txids.sort_unstable();
         let listed = txids
             .into_iter()
             .take(limit)
-            .map(|txid| shared::activity::short_id(txid))
+            .map(|txid| shared::activity::short_id(&txid))
             .collect();
-        (remembered.scanned.len(), listed)
+        (count, listed)
     }
 
     /// Whether the last round looked at the pool (see the module doc).
@@ -166,9 +189,14 @@ impl MempoolState {
 
     /// Drops everything remembered: the pool isn't being watched.
     fn forget(&self) {
-        let mut remembered = self.inner.lock();
-        remembered.bodies = Bodies::default();
-        remembered.scanned = HashMap::new();
+        let forgotten = {
+            let mut remembered = self.inner.lock();
+            (
+                std::mem::take(&mut remembered.bodies),
+                std::mem::take(&mut remembered.scanned),
+            )
+        };
+        drop(forgotten);
     }
 
     /// Whether any store has been scanned for this transaction yet.
@@ -176,6 +204,7 @@ impl MempoolState {
         !self.inner.lock().scanned.contains_key(txid)
     }
 
+    #[cfg(test)]
     fn mark_scanned(&self, txid: &str, tenant_id: &crate::store::TenantId, generation: u64) {
         self.inner
             .lock()
@@ -183,6 +212,33 @@ impl MempoolState {
             .entry(txid.to_owned())
             .or_default()
             .insert(tenant_id.clone(), generation);
+    }
+
+    /// Atomically recheck completed work and reserve each transaction/tenant.
+    /// Different windows serialize too, preventing simultaneous window owners
+    /// from completing out of order. Busy tenants retry via the round rotation.
+    fn claim<'s, 'w>(
+        &'s self,
+        txid: &str,
+        due: &[&'w TenantWindow],
+    ) -> (ScanClaims<'s>, Vec<&'w TenantWindow>) {
+        let mut remembered = self.inner.lock();
+        let mut pending = std::collections::BTreeMap::new();
+        let mut claimed = Vec::new();
+        for tenant in due.iter().copied() {
+            let (id, _, window) = tenant;
+            if let Some(lease) = remembered.ownership.claim(txid, id, window.generation()) {
+                pending.insert(id.clone(), lease);
+                claimed.push(tenant);
+            }
+        }
+        (
+            ScanClaims {
+                state: self,
+                pending,
+            },
+            claimed,
+        )
     }
 
     /// The stores in `tenants` not yet scanned for `txid` with their current
@@ -200,6 +256,36 @@ impl MempoolState {
             .filter(|(id, _, _)| !failed.contains(id))
             .filter(|(id, _, window)| done.and_then(|d| d.get(id)) != Some(&window.generation()))
             .collect()
+    }
+}
+
+/// Owns scan reservations, not a mutex guard. Cancellation, panic, or failure
+/// releases unfinished reservations; only an observed success marks work done.
+struct ScanClaims<'a> {
+    state: &'a MempoolState,
+    pending: std::collections::BTreeMap<crate::store::TenantId, super::reservations::Reservation>,
+}
+impl ScanClaims<'_> {
+    fn complete(&mut self, tenant: &crate::store::TenantId, generation: u64) {
+        let Some(lease) = self.pending.remove(tenant) else {
+            return;
+        };
+        if lease.generation() != generation {
+            self.pending.insert(tenant.clone(), lease);
+            return;
+        }
+        self.state.inner.lock().ownership.complete(lease);
+    }
+}
+impl Drop for ScanClaims<'_> {
+    fn drop(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let mut remembered = self.state.inner.lock();
+        for (_, lease) in std::mem::take(&mut self.pending) {
+            remembered.ownership.release(lease);
+        }
     }
 }
 
@@ -399,7 +485,7 @@ pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<Fa
         let due = mempool.due(txid, &tenants, &failed);
         let outcome = scan_and_record(state, inputs, tx, txid, &due, tip).await;
         record_match(state, PoolPath::Fast, txid, &outcome);
-        report.scanned += 1;
+        report.scanned += usize::from(outcome.attempted);
         report.paid_orders += outcome.touched;
         failed.extend(outcome.failed);
     }
@@ -417,6 +503,7 @@ pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<Fa
 /// What scanning one transaction for some stores did.
 #[derive(Default)]
 struct ScanOutcome {
+    attempted: bool,
     touched: usize,
     /// Orders whose status changed in the same job (the fast path).
     transitions: Vec<shared::activity::Transition>,
@@ -438,9 +525,11 @@ async fn scan_and_record(
     tip: Option<u64>,
 ) -> ScanOutcome {
     let mut outcome = ScanOutcome::default();
+    let (mut claims, due) = state.mempool.claim(txid, due);
     if due.is_empty() {
         return outcome;
     }
+    outcome.attempted = true;
     let generations: HashMap<&str, u64> = due
         .iter()
         .map(|(id, _, w)| (id.as_str(), w.generation()))
@@ -449,7 +538,7 @@ async fn scan_and_record(
         inputs.custody,
         txid,
         tx,
-        due,
+        &due,
         state.tuning(),
         super::Tier::Mempool,
     )
@@ -470,7 +559,7 @@ async fn scan_and_record(
             .copied()
             .unwrap_or_default();
         let Some(scan) = scan else {
-            state.mempool.mark_scanned(txid, &tenant_id, generation);
+            claims.complete(&tenant_id, generation);
             continue;
         };
         let (id, now) = (tenant_id.clone(), crate::now_unix());
@@ -495,7 +584,7 @@ async fn scan_and_record(
             Ok((touched, transitions)) => {
                 outcome.touched += touched;
                 outcome.transitions.extend(transitions);
-                state.mempool.mark_scanned(txid, &tenant_id, generation);
+                claims.complete(&tenant_id, generation);
             }
             Err(error) => {
                 outcome.store_error.get_or_insert(error);
@@ -558,14 +647,25 @@ async fn bodies(
     if !missing.is_empty() {
         match bounded(inputs.daemon.get_transactions_with_ids(&missing)).await {
             Ok(txs) => {
-                let mut remembered = state.inner.lock();
-                for crate::daemon::FetchedTx { txid, tx } in txs {
-                    let tx = Arc::new(tx);
-                    remembered
-                        .bodies
-                        .remember(&txid, &tx, MAX_BODIES, MAX_BODY_BYTES);
-                    fetched.insert(txid, tx);
+                // Serialization can be costly; prepare sizes before taking
+                // the shared cache lock. Keep the fetched bodies even if the
+                // cache is full, so this caller can still scan them.
+                let prepared: Vec<_> = txs
+                    .into_iter()
+                    .map(|crate::daemon::FetchedTx { txid, tx }| {
+                        let size = monero::consensus::encode::serialize(&tx).len();
+                        (txid, Arc::new(tx), size)
+                    })
+                    .collect();
+                {
+                    let mut remembered = state.inner.lock();
+                    for (txid, tx, size) in &prepared {
+                        remembered
+                            .bodies
+                            .remember(txid, tx, *size, MAX_BODIES, MAX_BODY_BYTES);
+                    }
                 }
+                fetched.extend(prepared.into_iter().map(|(txid, tx, _)| (txid, tx)));
             }
             Err(error) => {
                 fetch_failed = true;
@@ -718,22 +818,22 @@ mod tests {
         let tx = Arc::new(crate::scanner::tests::fixture_tx());
         let size = monero::consensus::encode::serialize(tx.as_ref()).len();
         let mut bodies = Bodies::default();
-        bodies.remember("a", &tx, 2, usize::MAX);
-        bodies.remember("b", &tx, 2, usize::MAX);
-        bodies.remember("c", &tx, 2, usize::MAX);
+        bodies.remember("a", &tx, size, 2, usize::MAX);
+        bodies.remember("b", &tx, size, 2, usize::MAX);
+        bodies.remember("c", &tx, size, 2, usize::MAX);
         let mut kept: Vec<&String> = bodies.by_txid.keys().collect();
         kept.sort();
         assert_eq!(kept, ["a", "b"]);
 
         let mut bodies = Bodies::default();
-        bodies.remember("a", &tx, 100, size * 2);
-        bodies.remember("b", &tx, 100, size * 2);
-        bodies.remember("c", &tx, 100, size * 2);
+        bodies.remember("a", &tx, size, 100, size * 2);
+        bodies.remember("b", &tx, size, 100, size * 2);
+        bodies.remember("c", &tx, size, 100, size * 2);
         assert_eq!(bodies.by_txid.len(), 2, "the byte cap holds");
         assert_eq!(bodies.bytes, size * 2);
         bodies.retain(|txid| txid != "a");
         assert_eq!(bodies.bytes, size);
-        bodies.remember("c", &tx, 100, size * 2);
+        bodies.remember("c", &tx, size, 100, size * 2);
         assert!(bodies.contains_key("c"), "freed bytes are reused");
     }
 
@@ -748,4 +848,23 @@ mod tests {
         let selected = select(&state, vec!["c".into(), "b".into(), "z".into(), "a".into()]);
         assert_eq!(selected, vec!["a", "z", "c", "b"]);
     }
+}
+
+#[cfg(test)]
+#[path = "mempool_properties.rs"]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod properties;
+
+#[cfg(test)]
+#[path = "mempool_lock_profile.rs"]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod lock_profile;
+
+#[cfg(any(test, feature = "fuzzing"))]
+#[path = "mempool_exploration.rs"]
+mod exploration;
+
+#[cfg(any(test, feature = "fuzzing"))]
+pub(super) fn explore(data: &[u8]) {
+    exploration::explore(data);
 }

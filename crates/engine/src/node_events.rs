@@ -19,7 +19,7 @@ use tokio::sync::Notify;
 
 /// The shortest gap between two passes, however often the node announces:
 /// a burst of pool transactions is taken in a few passes, not one each.
-const MIN_GAP: Duration = Duration::from_millis(20);
+pub(crate) const MIN_GAP: Duration = Duration::from_millis(20);
 
 /// What a network's node has announced since its loops last looked.
 ///
@@ -35,8 +35,8 @@ pub struct NodeWakes {
     /// The chain too, for proof-of-work checking's own loop: one `Notify`
     /// wakes one waiter, and the scan loop waits on `chain`.
     proof: Notify,
-    pool_passes_woken: AtomicU64,
-    rounds_woken: AtomicU64,
+    pub(crate) pool_passes_woken: AtomicU64,
+    pub(crate) rounds_woken: AtomicU64,
     publishers: parking_lot::Mutex<Vec<shared::announcements::Publisher>>,
 }
 
@@ -146,30 +146,9 @@ mod subscriber {
     use super::NodeWakes;
     use crate::engine_settings::EngineSettings;
 
-    /// monerod's topics for a transaction entering the pool and for a new
-    /// main-chain tip, in their small forms: only the topic is read.
-    pub(super) const POOL_TOPIC: &str = "json-minimal-txpool_add";
-    pub(super) const CHAIN_TOPIC: &str = "json-minimal-chain_main";
-
+    use super::{announcement, Announcement, CHAIN_TOPIC, POOL_TOPIC};
     const FIRST_RETRY: Duration = Duration::from_secs(1);
     const LAST_RETRY: Duration = Duration::from_secs(60);
-
-    #[derive(Debug, PartialEq)]
-    pub(super) enum Announcement {
-        Pool,
-        Chain,
-    }
-
-    /// What one message announces. monerod sends each as one frame,
-    /// `<topic>:<json>`; the JSON is not read.
-    pub(super) fn announcement(frame: &[u8]) -> Option<Announcement> {
-        let end = frame.iter().position(|&b| b == b':')?;
-        match &frame[..end] {
-            topic if topic == POOL_TOPIC.as_bytes() => Some(Announcement::Pool),
-            topic if topic == CHAIN_TOPIC.as_bytes() => Some(Announcement::Chain),
-            _ => None,
-        }
-    }
 
     /// Every `zmq_pub` configured for `network`'s node and its fallbacks,
     /// with its node's `host:port`; one named twice is listened to once.
@@ -412,10 +391,9 @@ mod tests {
 
         use zeromq::{PubSocket, Socket as _, SocketSend as _, ZmqMessage};
 
-        use super::super::subscriber::{
-            announcement, listen, Announcement, CHAIN_TOPIC, POOL_TOPIC,
-        };
+        use super::super::subscriber::listen;
         use super::super::NodeWakes;
+        use super::super::{announcement, Announcement, CHAIN_TOPIC, POOL_TOPIC};
 
         #[test]
         fn only_the_two_topics_are_announcements() {
@@ -562,3 +540,33 @@ mod tests {
         }
     }
 }
+
+/// monerod's topics for a transaction entering the pool and for a new
+/// main-chain tip, in their small forms: only the topic is read.
+#[cfg(any(test, feature = "fuzzing", feature = "zmq"))]
+pub(crate) const POOL_TOPIC: &str = "json-minimal-txpool_add";
+#[cfg(any(test, feature = "fuzzing", feature = "zmq"))]
+pub(crate) const CHAIN_TOPIC: &str = "json-minimal-chain_main";
+
+#[cfg(any(test, feature = "fuzzing", feature = "zmq"))]
+#[derive(Debug, PartialEq)]
+pub(crate) enum Announcement {
+    Pool,
+    Chain,
+}
+
+/// What one message announces. monerod sends each as one frame,
+/// `<topic>:<json>`; the JSON is not read.
+#[cfg(any(test, feature = "fuzzing", feature = "zmq"))]
+pub(crate) fn announcement(frame: &[u8]) -> Option<Announcement> {
+    let end = frame.iter().position(|&b| b == b':')?;
+    match &frame[..end] {
+        topic if topic == POOL_TOPIC.as_bytes() => Some(Announcement::Pool),
+        topic if topic == CHAIN_TOPIC.as_bytes() => Some(Announcement::Chain),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+#[path = "notification_properties.rs"]
+mod properties;

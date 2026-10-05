@@ -6,42 +6,7 @@ use crate::daemon::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-/// Stable mask positions used by generated fault histories.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
-pub(crate) enum Rpc {
-    Tip,
-    Hash,
-    Blocks,
-    Headers,
-    Outline,
-    Pool,
-    Transactions,
-    Location,
-    Spent,
-    Difficulty,
-    Blob,
-}
-impl Rpc {
-    pub(crate) const ALL: [Self; 11] = [
-        Self::Tip,
-        Self::Hash,
-        Self::Blocks,
-        Self::Headers,
-        Self::Outline,
-        Self::Pool,
-        Self::Transactions,
-        Self::Location,
-        Self::Spent,
-        Self::Difficulty,
-        Self::Blob,
-    ];
-    pub(crate) const SCANNER_MASK: u16 = (1 << 9) - 1;
-    pub(crate) const ALL_MASK: u16 = (1 << Self::ALL.len()) - 1;
-    pub(crate) const fn bit(self) -> u16 {
-        1 << self as usize
-    }
-}
+pub(crate) use crate::exploration_rpc::Rpc;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CallCounts {
@@ -80,6 +45,8 @@ pub(crate) struct Behavior {
     /// 4 unrelated bodies, 5 no blocks, 6 wrong block parent,
     /// 7 wrong block height, 8 mismatched outline hash, 9 wrong outline height, 10 wrong outline parent, 11 wrong outline timestamp.
     pub(crate) corrupt: u8,
+    /// Preserve daemon transaction IDs while dropping only prunable signatures.
+    pub(crate) pruned: bool,
     pub(crate) blob: Option<Vec<u8>>,
 }
 
@@ -170,7 +137,7 @@ impl MoneroDaemonClient for AdversarialNode {
                 5 => blocks.clear(),
                 6 => {
                     if let Some(first) = blocks.first_mut() {
-                        first.prev_hash = "false-parent".to_owned();
+                        "false-parent".clone_into(&mut first.prev_hash);
                     }
                 }
                 7 => {
@@ -202,9 +169,9 @@ impl MoneroDaemonClient for AdversarialNode {
         self.call(Rpc::Outline, async |b| {
             let mut outline = self.fake.get_block_outline(height, tx_count).await?;
             match b.corrupt {
-                8 => outline.hash = "false-outline".to_owned(),
+                8 => "false-outline".clone_into(&mut outline.hash),
                 9 => outline.height += 1,
-                10 => outline.prev_hash = "false-parent".to_owned(),
+                10 => "false-parent".clone_into(&mut outline.prev_hash),
                 11 => outline.timestamp += 1,
                 _ => {}
             }
@@ -240,10 +207,20 @@ impl MoneroDaemonClient for AdversarialNode {
                 3 => txs.reverse(),
                 4 => {
                     for tx in &mut txs {
-                        tx.txid = "unsolicited".to_owned();
+                        "unsolicited".clone_into(&mut tx.txid);
                     }
                 }
                 _ => {}
+            }
+            if b.pruned {
+                for fetched in &mut txs {
+                    if let Some(base) = &fetched.tx.rct_signatures.sig {
+                        let mut blob = monero::consensus::encode::serialize(&fetched.tx.prefix);
+                        blob.extend(monero::consensus::encode::serialize(base));
+                        fetched.tx = shared::monero_tx::decode_pruned(&blob)
+                            .map_err(|e| DaemonError::Request(e.to_string()))?;
+                    }
+                }
             }
             Ok(txs)
         })

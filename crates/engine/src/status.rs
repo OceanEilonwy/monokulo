@@ -399,3 +399,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(any(test, feature = "fuzzing"))]
+#[path = "status/exploration.rs"]
+pub(crate) mod exploration;

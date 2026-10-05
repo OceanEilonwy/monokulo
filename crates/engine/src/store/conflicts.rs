@@ -318,7 +318,11 @@ mod tests {
             payment(&store, &order, "a").id,
             payment(&store, &order, "b").id,
         );
-        assert_eq!(payment(&store, &order, "b").superseded_by, Some(a));
+        assert_eq!(
+            payment(&store, &order, "b").superseded_by,
+            Some(a),
+            "BOUNDARY: canonical-conflict-winner"
+        );
 
         store
             .update_payment_block_height(&order, "a", 0, None)

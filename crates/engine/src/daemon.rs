@@ -543,10 +543,13 @@ pub trait MoneroDaemonClient: Send + Sync {
 /// live or regtest `monerod` - see `docs/TESTING.md` §3 for why this matters
 /// (reorgs are rare in production, so bugs here are exactly the kind that go
 /// unnoticed for a long time otherwise).
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzzing"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub mod fake {
-    use super::*;
+    use super::{
+        ChainBlock, ChainHeader, ChainTip, DaemonError, DifficultyHeader, FetchedTx,
+        KeyImageStatus, MoneroDaemonClient, PoolOutlook, ScanTx, Transaction, TxLocation,
+    };
     use parking_lot::Mutex;
     use std::collections::HashMap;
 

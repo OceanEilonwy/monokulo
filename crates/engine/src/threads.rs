@@ -45,7 +45,7 @@ pub const THREAD_PREFIX: &str = "engine-";
 /// A CPU list as `taskset -c` takes it: numbers and ranges, comma
 /// separated (`2,3`, `0-1,4`). Empty is every CPU.
 pub fn parse_cpu_list(text: &str) -> Result<Vec<usize>, String> {
-    let mut cpus = Vec::new();
+    let mut cpus = std::collections::BTreeSet::new();
     for part in text
         .split(',')
         .map(str::trim)
@@ -56,25 +56,30 @@ pub fn parse_cpu_list(text: &str) -> Result<Vec<usize>, String> {
                 .parse::<usize>()
                 .map_err(|e| format!("{part:?} isn't a CPU number or a range such as 2-3 ({e})."))
         };
-        match part.split_once('-') {
-            Some((first, last)) => {
-                let (first, last) = (number(first)?, number(last)?);
-                if first > last {
-                    return Err(format!(
-                        "{part:?} runs backwards: write the lower CPU first."
-                    ));
-                }
-                cpus.extend(first..=last);
+        if let Some((first, last)) = part.split_once('-') {
+            let (first, last) = (number(first)?, number(last)?);
+            if first > last {
+                return Err(format!(
+                    "{part:?} runs backwards: write the lower CPU first."
+                ));
             }
-            None => cpus.push(number(part)?),
+            if last - first >= 1024 {
+                return Err("At most 1024 CPUs.".to_owned());
+            }
+            for cpu in first..=last {
+                cpus.insert(cpu);
+                if cpus.len() > 1024 {
+                    return Err("At most 1024 CPUs.".to_owned());
+                }
+            }
+        } else {
+            cpus.insert(number(part)?);
+            if cpus.len() > 1024 {
+                return Err("At most 1024 CPUs.".to_owned());
+            }
         }
     }
-    cpus.sort_unstable();
-    cpus.dedup();
-    if cpus.len() > 1024 {
-        return Err("At most 1024 CPUs.".to_owned());
-    }
-    Ok(cpus)
+    Ok(cpus.into_iter().collect())
 }
 
 impl ThreadPlan {

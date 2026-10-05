@@ -30,7 +30,9 @@ pub enum Class {
 }
 
 impl Class {
-    fn index(self) -> usize {
+    pub const ALL: [Self; 3] = [Self::Scanner, Self::Webhook, Self::Admin];
+
+    pub(crate) fn index(self) -> usize {
         self as usize
     }
 }
@@ -122,7 +124,7 @@ impl Db {
     /// [`Db::over_shared`], with every job an await point, as it is with
     /// the worker: a test that drops a future part-way can stop it between
     /// two jobs, where a crash or a cancellation can stop the real thing.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fuzzing"))]
     pub fn over_shared_yielding(store: SharedStore) -> Self {
         Self {
             inner: Inner::Inline {
@@ -274,7 +276,7 @@ fn serve(
     woken: &std::sync::mpsc::Receiver<()>,
     faults: &mut Faults,
 ) {
-    let mut next = 0;
+    let mut dispatch = super::dispatch::Dispatch::default();
     loop {
         if faults.exit_loop {
             return;
@@ -282,8 +284,8 @@ fn serve(
         // Round-robin: the first non-empty queue after the last one served.
         let mut taken = None;
         let mut open = 0;
-        for offset in 0..receivers.len() {
-            let index = (next + offset) % receivers.len();
+        for class in dispatch.order() {
+            let index = class.index();
             match receivers[index].try_recv() {
                 Ok(job) => {
                     taken = Some((index, job));
@@ -302,7 +304,7 @@ fn serve(
             let _ = woken.recv_timeout(Duration::from_millis(50));
             continue;
         };
-        next = (index + 1) % receivers.len();
+        dispatch.served(Class::ALL[index]);
         if std::mem::take(&mut faults.panic_loop_once) {
             // The job runs first, as a real bug's panic might not let it;
             // the test checks the worker carries on serving.
@@ -607,3 +609,8 @@ mod tests {
         cleanup(&path);
     }
 }
+
+#[cfg(test)]
+#[path = "queue_properties.rs"]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod properties;

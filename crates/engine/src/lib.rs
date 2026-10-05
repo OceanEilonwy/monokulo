@@ -24,15 +24,21 @@ pub mod daemon;
 pub mod daemon_fallback;
 pub mod daemon_rpc;
 pub mod engine_settings;
+#[cfg(any(test, feature = "fuzzing"))]
+pub mod exploration;
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) mod exploration_rpc;
 pub mod http;
 pub mod key_custody;
 pub mod link;
 pub mod loops;
 pub mod network;
 pub mod node_events;
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzzing"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod node_test_support;
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) mod notification_exploration;
 pub mod pow;
 pub mod proof;
 #[cfg(test)]

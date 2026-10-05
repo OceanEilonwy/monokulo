@@ -130,8 +130,9 @@ proptest! {
             let backends=[Arc::new(GateCustody::default()),Arc::new(GateCustody::default())];
             let router=CustodyRouter::new(HashMap::from([("a".to_owned(),custody_arc(&backends[0])),("b".to_owned(),custody_arc(&backends[1]))]),"a");
             router.check_state().await.unwrap();let a=router.register_wallet_in("a",material(1)).await.unwrap();let b=router.register_wallet_in("b",material(2)).await.unwrap();let hs=[a,b];
-            backends[which].epoch.store(epoch,Ordering::Relaxed);router.check_state().await.unwrap();wait_empty(&backends[which]).await;
-            assert!(!router.handle_is_live(hs[which]));assert!(router.handle_is_live(hs[1-which]));assert_eq!(backends[1-which].inner.wallet_count(),1);
+            backends[which].epoch.store(epoch,Ordering::Relaxed);router.check_state().await.unwrap();
+            assert!(!router.handle_is_live(hs[which]), "assertion failed: BOUNDARY: stale-custody-epoch");
+            wait_empty(&backends[which]).await;assert!(router.handle_is_live(hs[1-which]));assert_eq!(backends[1-which].inner.wallet_count(),1);
             let new=router.register_wallet_in(if which==0 {"a"} else {"b"},material(3)).await.unwrap();router.check_state().await.unwrap();assert!(router.handle_is_live(new),"unchanged epoch invalidated a fresh registration");
             backends[1-which].epoch.store(u64::MAX,Ordering::Relaxed);assert_eq!(router.check_state().await.unwrap(),u64::MAX,"combined epochs must not overflow");
         });

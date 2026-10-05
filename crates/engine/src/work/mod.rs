@@ -11,6 +11,9 @@ mod blocks;
 pub(crate) mod chain;
 mod mempool;
 mod observe;
+pub(crate) mod reservations;
+pub mod retry;
+pub mod scheduler;
 mod settlement;
 mod tuning;
 mod upkeep;
@@ -193,34 +196,24 @@ fn no_answer(deadline: Duration) -> crate::daemon::DaemonError {
 /// other way round.
 pub(crate) struct Backoff<K> {
     /// By key: consecutive failures, retry-not-before, last failure.
-    failures: parking_lot::Mutex<HashMap<K, (u32, Instant, Instant)>>,
+    failures: parking_lot::Mutex<HashMap<K, retry::Retry>>,
+    started: Instant,
 }
 
 impl<K> Default for Backoff<K> {
     fn default() -> Self {
         Self {
             failures: parking_lot::Mutex::default(),
+            started: Instant::now(),
         }
     }
 }
 
 impl<K: Clone + Eq + std::hash::Hash> Backoff<K> {
-    const FREE_RETRIES: u32 = 2;
-    const MAX_DELAY: Duration = Duration::from_secs(60);
-    /// A key that hasn't failed for this long is forgotten: it is no longer
-    /// being tried (a store with nothing in scope, an order that settled).
-    const FORGET_AFTER: Duration = Duration::from_hours(1);
-
     pub(crate) fn failed(&self, key: &K) {
         let mut failures = self.failures.lock();
-        let count = failures.get(key).map_or(0, |(n, _, _)| *n) + 1;
-        let delay = if count <= Self::FREE_RETRIES {
-            Duration::ZERO
-        } else {
-            Duration::from_secs(1u64 << (count - Self::FREE_RETRIES).min(6)).min(Self::MAX_DELAY)
-        };
-        let now = Instant::now();
-        failures.insert(key.clone(), (count, now + delay, now));
+        let next = retry::Retry::failed(failures.get(key).copied(), self.started.elapsed());
+        failures.insert(key.clone(), next);
     }
 
     pub(crate) fn succeeded(&self, key: &K) {
@@ -231,13 +224,12 @@ impl<K: Clone + Eq + std::hash::Hash> Backoff<K> {
     /// succeeds (or stops failing for `FORGET_AFTER`), so repeated failures
     /// keep lengthening its delay.
     pub(crate) fn waiting(&self) -> Vec<K> {
-        let now = Instant::now();
+        let now = self.started.elapsed();
         let mut failures = self.failures.lock();
-        failures
-            .retain(|_, (_, _, last)| now.saturating_duration_since(*last) < Self::FORGET_AFTER);
+        failures.retain(|_, retry| !retry.forgotten(now));
         failures
             .iter()
-            .filter(|(_, (_, until, _))| *until > now)
+            .filter(|(_, retry)| retry.waiting(now))
             .map(|(key, _)| key.clone())
             .collect()
     }
@@ -246,7 +238,7 @@ impl<K: Clone + Eq + std::hash::Hash> Backoff<K> {
         self.failures
             .lock()
             .get(key)
-            .is_some_and(|(_, until, _)| *until > Instant::now())
+            .is_some_and(|retry| retry.waiting(self.started.elapsed()))
     }
 }
 
@@ -429,7 +421,6 @@ async fn run_round_at(
 ) -> RoundReport {
     let started = Instant::now();
     let mut laps = Laps::new(started);
-    let round_end = started + budget;
     // A round that will look at the pool asks for the tip and the pool
     // together: one request while the chain hasn't moved.
     let watching = mempool::watching(inputs, now).await;
@@ -503,56 +494,49 @@ async fn run_round_at(
         outcomes: PerTier::filled(TierOutcome::Backlogged),
         error: tip_error,
     };
-    let mut open = PerTier::filled(true);
-
-    for (pass, pass_end) in [(1, None), (2, Some(round_end))] {
-        for tier in Tier::ALL {
-            let until = pass_end.unwrap_or_else(|| {
-                (Instant::now() + state.tuning.share_of(tier, budget)).min(round_end)
-            });
-            while open[tier] {
-                if report.steps[tier] > 0 && Instant::now() >= until {
-                    break;
-                }
-                let progress = step(tier, &mut round, until).await;
-                report.steps[tier] += 1;
-                // From where the last span ended: the moment between two
-                // units is the later one's.
-                let (start_ms, ms) = laps.lap();
-                activity.record(Event::Unit {
-                    tier,
-                    pass,
-                    start_ms,
-                    ms,
-                    progress: UnitProgress::from(&progress),
-                });
-                match progress {
-                    Progress::Advanced => {}
-                    Progress::Idle => {
-                        open[tier] = false;
-                        report.outcomes[tier] = TierOutcome::Idle;
-                    }
-                    Progress::Blocked(reason) => {
-                        open[tier] = false;
-                        report.outcomes[tier] = TierOutcome::Blocked(reason);
-                        tracing::debug!(network = ?inputs.network, %tier, %reason, "tier waiting");
-                    }
-                    Progress::Failed(error) => {
-                        open[tier] = false;
-                        report.outcomes[tier] = TierOutcome::Failed;
-                        tracing::warn!(network = ?inputs.network, %tier, error = %error, "work unit failed (retried next round)");
-                        report.error.get_or_insert(error);
-                    }
-                }
-                if !open[tier] {
-                    activity.record(Event::TierEnded {
-                        tier,
-                        outcome: report.outcomes[tier],
-                    });
-                }
+    // The validated tuning is held by ScanState. Keep the policy independently
+    // callable, while the runner executes and records each requested effect.
+    let mut scheduler =
+        match scheduler::Scheduler::with_generation(&state.tuning, budget, round_number) {
+            Ok(scheduler) => scheduler,
+            Err(error) => {
+                report.error = Some(ScannerError::Internal(format!(
+                    "invalid scanner tuning: {error}"
+                )));
+                return report;
             }
+        };
+    while let Some(effect) = scheduler.request(started.elapsed()) {
+        let tier = effect.tier();
+        let progress = step(tier, &mut round, started + effect.until()).await;
+        let (start_ms, ms) = laps.lap();
+        activity.record(Event::Unit {
+            tier,
+            pass: effect.pass(),
+            start_ms,
+            ms,
+            progress: UnitProgress::from(&progress),
+        });
+        let outcome = match progress {
+            Progress::Advanced => None,
+            Progress::Idle => Some(TierOutcome::Idle),
+            Progress::Blocked(reason) => {
+                tracing::debug!(network = ?inputs.network, %tier, %reason, "tier waiting");
+                Some(TierOutcome::Blocked(reason))
+            }
+            Progress::Failed(error) => {
+                tracing::warn!(network = ?inputs.network, %tier, error = %error, "work unit failed (retried next round)");
+                report.error.get_or_insert(error);
+                Some(TierOutcome::Failed)
+            }
+        };
+        scheduler.complete(effect, outcome);
+        if let Some(outcome) = outcome {
+            activity.record(Event::TierEnded { tier, outcome });
         }
     }
+    report.steps = scheduler.steps();
+    report.outcomes = scheduler.outcomes();
     blocks::carry(&mut round).await;
     let (start_ms, ms) = laps.lap();
     activity.record(Event::Work {
@@ -623,3 +607,18 @@ impl From<&Progress> for UnitProgress {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests;
+
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) fn explore_mempool(data: &[u8]) {
+    mempool::explore(data);
+}
+
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) mod history;
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) mod history_fixture;
+
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) mod portfolio;
+#[cfg(any(test, feature = "fuzzing"))]
+mod portfolio_fixture;
