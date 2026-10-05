@@ -961,3 +961,22 @@ Run `PROPTEST_CASES=128 cargo test -p engine --lib
 work::tests::properties::concurrency` with default and `--features zmq` builds.
 These properties use explicit barriers, not sleeps to guess whether work started;
 they cover these controlled interleavings rather than every OS thread schedule.
+
+## Production-worker and repeated scanner crash recovery
+
+The scanner durability suite now runs all eight staging/publication/status/reorg
+before/after-commit checkpoints with the actual file-backed worker as well as the
+existing inline harness. Generated amounts are 1–9,999 piconero per output.
+A separate 1–5-process pipeline kills successive recovery workers on the SAME
+SQLite file: publication after commit, recompute before/after commit, then reorg
+completion before/after commit. Every intermediate reopen checks integrity,
+foreign keys, all three output identities and amounts, status/event atomicity,
+persisted recompute obligations and the reorg settlement freeze. Final recovery
+must drain both queues and retain exactly one paid event and the original IDs.
+The fixed sweep forces all eight checkpoints and the complete five-kill pipeline.
+
+These are process-death tests, not simulations of power loss or torn storage.
+Paused-clock worker tests explicitly hold virtual time until OS replies arrive;
+subprocess rendezvous uses a wall-clock deadline and wall-clock polling.
+Run `PROPTEST_CASES=64 cargo nextest run -p engine --lib --locked -E
+\'test(work::tests::properties::money::expansions::)\'` in both feature builds.

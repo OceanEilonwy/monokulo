@@ -175,7 +175,11 @@ impl CrashChild {
                     String::from_utf8_lossy(&output.stderr)
                 );
             }
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            // The deadline is wall time: virtual-clock tests may intentionally
+            // prevent automatic time jumps while an OS worker is outstanding.
+            tokio::task::spawn_blocking(|| std::thread::sleep(std::time::Duration::from_millis(2)))
+                .await
+                .unwrap();
         }
     }
     pub(crate) fn finish(&mut self) -> std::process::Output {
@@ -244,4 +248,20 @@ pub(crate) async fn wait_queued(
     })
     .await
     .unwrap();
+}
+
+/// Keep a paused clock from jumping past real OS-worker replies. Tests still
+/// advance it explicitly; the guard is aborted when the scenario ends.
+pub(crate) struct VirtualClockHold(tokio::task::JoinHandle<()>);
+impl Drop for VirtualClockHold {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+pub(crate) fn hold_virtual_clock() -> VirtualClockHold {
+    VirtualClockHold(tokio::spawn(async {
+        loop {
+            tokio::task::yield_now().await;
+        }
+    }))
 }
