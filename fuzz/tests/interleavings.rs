@@ -54,3 +54,69 @@ fn an_old_completion_cannot_close_a_new_outstanding_effect() {
         assert_eq!(policy.outcomes()[Tier::Blocks], TierOutcome::Idle);
     });
 }
+
+#[test]
+fn reservation_cancellation_and_cache_reset_never_admit_two_owners() {
+    use engine::exploration::Reservations;
+    // Each lock-held policy call is one actual production critical section.
+    // Loom explores ordering between those calls, not parking_lot internals.
+    loom::model(|| {
+        let tenant = engine::store::TenantId::new("tenant");
+        let mut policy = Reservations::default();
+        let lease = policy.claim("tx", &tenant, 1).unwrap();
+        let policy = Arc::new(Mutex::new(policy));
+        let owner = Arc::clone(&policy);
+        let cancellation = thread::spawn(move || owner.lock().unwrap().release(lease));
+        let reset = Arc::clone(&policy);
+        let eviction = thread::spawn(move || reset.lock().unwrap().forget_completed());
+        let contender = Arc::clone(&policy);
+        let other = tenant.clone();
+        let scanner = thread::spawn(move || {
+            let mut p = contender.lock().unwrap();
+            if let Some(lease) = p.claim("tx", &other, 2) {
+                assert_eq!(p.pending(), 1);
+                assert!(p.claim("tx", &other, 3).is_none());
+                p.complete(lease);
+            }
+        });
+        cancellation.join().unwrap();
+        eviction.join().unwrap();
+        scanner.join().unwrap();
+        let mut p = policy.lock().unwrap();
+        assert_eq!(p.pending(), 0);
+        if let Some(lease) = p.claim("tx", &tenant, 2) {
+            p.complete(lease);
+        }
+        assert_eq!(p.completed("tx", &tenant), Some(2));
+        assert!(p.claim("tx", &tenant, 2).is_none());
+    });
+}
+
+#[test]
+fn changed_window_after_old_completion_remains_due_in_every_event_order() {
+    use engine::exploration::Reservations;
+    loom::model(|| {
+        let tenant = engine::store::TenantId::new("tenant");
+        let mut policy = Reservations::default();
+        let old = policy.claim("tx", &tenant, 1).unwrap();
+        let policy = Arc::new(Mutex::new(policy));
+        let a = Arc::clone(&policy);
+        let completion = thread::spawn(move || a.lock().unwrap().complete(old));
+        let b = Arc::clone(&policy);
+        let other = tenant.clone();
+        let rescan = thread::spawn(move || {
+            let mut p = b.lock().unwrap();
+            if let Some(lease) = p.claim("tx", &other, 2) {
+                p.complete(lease);
+            }
+        });
+        completion.join().unwrap();
+        rescan.join().unwrap();
+        let mut p = policy.lock().unwrap();
+        if let Some(lease) = p.claim("tx", &tenant, 2) {
+            p.complete(lease);
+        }
+        assert_eq!(p.completed("tx", &tenant), Some(2));
+        assert_eq!(p.pending(), 0);
+    });
+}

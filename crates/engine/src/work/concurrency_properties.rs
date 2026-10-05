@@ -337,3 +337,280 @@ fn every_overlap_admission_order_and_abandoned_caller_recovers() {
         }
     });
 }
+
+/// Pause all three effects at actual worker admission, then replace volatile
+/// generation state. Accepted jobs survive lost callers; crypto begun before
+/// a custody replacement remains valid, and proof/configuration gate settlement.
+async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_custody: bool) {
+    use crate::key_custody::KeyCustody as _;
+    let path = TempFile::new();
+    let store = Store::open_file(&path.0).unwrap();
+    let custody = Arc::new(GateCustody::default());
+    let (tenant, mut handle, order) = fixture_tenant(&store, custody.as_ref(), i64::MAX).await;
+    store
+        .conn_for_test()
+        .execute(
+            "UPDATE orders SET xmr_amount_piconero=?1 WHERE id=?2",
+            rusqlite::params![FIXTURE_AMOUNT_PICONERO as i64, order],
+        )
+        .unwrap();
+    store
+        .create_webhook(
+            &tenant,
+            "https://merchant.example/hook",
+            "{}",
+            "secret",
+            1000,
+        )
+        .unwrap();
+    let db = Db::open(&path.0, &store).unwrap();
+    let daemon = FakeDaemonClient::new();
+    let hash2 = hex::encode([2; 32]);
+    let hash3 = hex::encode([3; 32]);
+    daemon.push_block(&hex::encode([1; 32]), vec![]);
+    daemon.push_block(&hash2, vec![]);
+    let state = ScanState::default();
+    let tenants = [(tenant.clone(), handle)];
+    let input = RoundInputs {
+        db: &db,
+        custody: custody.as_ref(),
+        daemon: &daemon,
+        tenants: &tenants,
+        network: monero::Network::Mainnet,
+        reorg_check_depth: 20,
+        grace_period_seconds: 100_000,
+        scan_chunk_memory_budget_mb: 16,
+    };
+    for _ in 0..2 {
+        run_round(&state, &input, Duration::ZERO)
+            .await
+            .into_result()
+            .unwrap();
+    }
+    daemon.push_block(&hash3, vec![fixture_tx()]);
+    custody.scan_mode.store(2, Ordering::SeqCst);
+    let mut block = Some(Box::pin(run_round(&state, &input, Duration::ZERO)));
+    at_scan(block.as_mut().unwrap().as_mut(), &custody).await;
+    if cancelled == 1 {
+        drop(block.take());
+    }
+    let mut release = hold_worker(&db).await;
+    let mut proof = Some(Box::pin(db.run(Class::Scanner, move |s| {
+        let network = monero::Network::Mainnet;
+        s.enable_proof(network, 1000)?;
+        if proof_mode == 1 {
+            return s.forget_anchor(network);
+        }
+        s.write_anchor(
+            network,
+            &crate::store::proof::NewAnchor {
+                agreed: 2,
+                nodes: 3,
+                seeds: vec![],
+                window: (2..=3)
+                    .map(|h| crate::pow::ProvenBlock {
+                        height: h,
+                        id: if proof_mode == 2 && h == 3 {
+                            [42; 32]
+                        } else {
+                            [h as u8; 32]
+                        },
+                        timestamp: 1000 + h,
+                        cumulative_difficulty: u128::from(h),
+                    })
+                    .collect(),
+            },
+            1000,
+        )
+    })));
+    let edit_tenant = tenant.clone();
+    let mut edit = Some(Box::pin(db.run(Class::Admin, move |s| {
+        s.update_tenant_config(
+            &edit_tenant,
+            &crate::store::TenantConfigPatch {
+                confirmations_required: Some(2),
+                order_expiry_seconds: None,
+            },
+        )
+    })));
+    custody.scan_mode.store(0, Ordering::SeqCst);
+    custody.scan_release.notify_waiters();
+    let permutations = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    let mut scanners = 0;
+    let mut admins = 0;
+    for operation in permutations[ordering] {
+        match operation {
+            0 => {
+                if let Some(f) = block.as_mut() {
+                    scanners += 1;
+                    at_queue(f.as_mut(), &db, Class::Scanner, scanners).await;
+                }
+            }
+            1 => {
+                scanners += 1;
+                at_queue(
+                    proof.as_mut().unwrap().as_mut(),
+                    &db,
+                    Class::Scanner,
+                    scanners,
+                )
+                .await;
+            }
+            _ => {
+                admins += 1;
+                at_queue(edit.as_mut().unwrap().as_mut(), &db, Class::Admin, admins).await;
+            }
+        }
+    }
+    if replace_custody {
+        custody.remove_wallet(handle).await.unwrap();
+        handle = crate::work::history_fixture::register_fixture_wallet(custody.as_ref()).await;
+    }
+    if cancelled >= 2 {
+        drop(block.take());
+    }
+    if cancelled == 3 {
+        drop(proof.take());
+        drop(edit.take());
+    }
+    release.release();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            async {
+                if let Some(f) = block {
+                    f.await.into_result().unwrap();
+                }
+            },
+            async {
+                if let Some(f) = proof {
+                    f.await.unwrap();
+                }
+            },
+            async {
+                if let Some(f) = edit {
+                    assert!(f.await.unwrap());
+                }
+            }
+        );
+        db.run(Class::Scanner, Store::count_tenants).await.unwrap();
+        db.run(Class::Admin, Store::count_tenants).await.unwrap();
+    })
+    .await
+    .unwrap();
+    // The old generation has no remaining callers or claim guards. Its worker
+    // effects have drained. New state must catch up with the replacement handle.
+    let new_tenants = [(tenant.clone(), handle)];
+    let recovery = ScanState::default();
+    let recovery_input = RoundInputs {
+        tenants: &new_tenants,
+        ..input
+    };
+    for _ in 0..8 {
+        run_round(&recovery, &recovery_input, Duration::ZERO)
+            .await
+            .into_result()
+            .unwrap();
+    }
+    let invoice = store.get_order(&tenant, &order).unwrap().unwrap();
+    assert_eq!(invoice.amount_received_piconero, FIXTURE_AMOUNT_PICONERO);
+    assert_eq!(
+        invoice.status,
+        OrderStatus::Confirming,
+        "proof/config races must not announce settlement"
+    );
+    let payments = store.get_all_payments(&order).unwrap();
+    assert_eq!(payments.len(), 1);
+    let identity = payments[0].id;
+    assert_eq!(payments[0].block_height, Some(3));
+    assert!(payments[0].voided_at.is_none());
+    assert!(store
+        .due_webhook_deliveries_for_test(i64::MAX, 100)
+        .unwrap()
+        .iter()
+        .all(|d| d.event_type != "order.paid"));
+    assert_eq!(
+        store
+            .proof_network(monero::Network::Mainnet)
+            .unwrap()
+            .unwrap()
+            .anchor
+            .is_none(),
+        proof_mode == 1
+    );
+    daemon.push_block(&hex::encode([4; 32]), vec![]);
+    db.run(Class::Scanner, |s| {
+        s.write_anchor(
+            monero::Network::Mainnet,
+            &crate::store::proof::NewAnchor {
+                agreed: 2,
+                nodes: 3,
+                seeds: vec![],
+                window: (2..=4)
+                    .map(|h| crate::pow::ProvenBlock {
+                        height: h,
+                        id: [h as u8; 32],
+                        timestamp: 1000 + h,
+                        cumulative_difficulty: u128::from(h),
+                    })
+                    .collect(),
+            },
+            1000,
+        )
+    })
+    .await
+    .unwrap();
+    for _ in 0..8 {
+        run_round(&recovery, &recovery_input, Duration::ZERO)
+            .await
+            .into_result()
+            .unwrap();
+    }
+    assert_eq!(
+        store.get_order(&tenant, &order).unwrap().unwrap().status,
+        OrderStatus::Paid
+    );
+    assert_eq!(store.get_all_payments(&order).unwrap()[0].id, identity);
+    assert!(store
+        .pending_payment_recomputes_page(monero::Network::Mainnet, "", 100)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store
+            .due_webhook_deliveries_for_test(i64::MAX, 100)
+            .unwrap()
+            .iter()
+            .filter(|d| d.event_type == "order.paid")
+            .count(),
+        1
+    );
+    let reopened = Store::open_file(&path.0).unwrap();
+    assert_eq!(reopened.get_all_payments(&order).unwrap()[0].id, identity);
+}
+proptest! {
+    #![proptest_config(config())]
+    #[test]
+    fn proof_config_and_generation_histories_preserve_settlement(ordering in 0usize..6,cancelled in 0u8..4,proof_mode in 0u8..3,replace_custody in any::<bool>()) {
+        runtime().block_on(proof_overlap(ordering,cancelled,proof_mode,replace_custody));
+    }
+}
+#[test]
+fn every_proof_config_shutdown_admission_schedule_recovers() {
+    runtime().block_on(async {
+        for ordering in 0..6 {
+            for cancelled in 0..4 {
+                for proof_mode in 0..3 {
+                    for replace in [false, true] {
+                        proof_overlap(ordering, cancelled, proof_mode, replace).await;
+                    }
+                }
+            }
+        }
+    });
+}

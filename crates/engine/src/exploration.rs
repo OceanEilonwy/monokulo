@@ -260,3 +260,6 @@ pub fn notifications(data: &[u8]) {
 pub fn portfolio(data: &[u8]) {
     crate::work::portfolio::explore(data);
 }
+
+/// The production pure scan-ownership policy for bounded model exploration.
+pub use crate::work::reservations::{Reservation, Reservations};

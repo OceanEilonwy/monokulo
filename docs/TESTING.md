@@ -1079,3 +1079,31 @@ Run `cargo test -p engine --lib mixed_wallet` and `cargo test -p engine --lib
 combined_portfolio`; append `--features zmq` for that build. The existing portfolio
 fuzzer and daily matrix automatically run this same expanded harness; reviewed
 `combined-worker-0`/`combined-worker-1` seeds force the combined interactions.
+
+## Proof/configuration/shutdown schedules and scan ownership
+
+The mempool executor now delegates admission/completion/release to the pure
+`Reservations` policy. Each admitted scan owns a non-cloneable lease; its existing
+RAII guard releases unfinished leases on cancellation/panic. Completed generations
+and live ownership remain separate from body-cache eviction. A completion carrying
+a different window generation cannot mark success or release the current owner.
+Existing independent property/fuzz ownership models run through this production
+adapter unchanged. Two added Loom models explore completion/rescan ordering and
+cancellation/cache-reset ordering using the production policy under a Loom mutex.
+This explores atomic policy-call order, not parking_lot internals or the whole
+Tokio/SQLite runtime; the existing real-thread/real-caller tests remain necessary.
+
+Actual file-backed worker schedules additionally compose a block scan, proof
+publication/anchor forgetting/mismatching proof, and tenant confirmation changes.
+All six admission orders × four cancellation boundaries × three proof states ×
+two custody replacement choices run in a fixed 144-case sweep, plus generated
+properties. Gates prove entry into custody and worker admission. Accepted effects
+must drain after callers abandon them, and a fresh scanner generation with the
+replacement custody handle must preserve one exact payment/stable ID. Confirmation
+and proof holds must produce no paid webhook; subsequent canonical proof catch-up
+must settle once, enqueue exactly one paid event, drain recomputes, and survive a
+DB reopen. This is controlled generation replacement, not an OS scheduling proof.
+
+Run the `concurrency` and `mempool` engine tests (both feature builds), and
+`cargo test --manifest-path fuzz/Cargo.toml --locked --test interleavings` (append
+`--features zmq`). Existing daily property and Loom jobs discover the expansions.

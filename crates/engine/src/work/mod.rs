@@ -11,6 +11,7 @@ mod blocks;
 pub(crate) mod chain;
 mod mempool;
 mod observe;
+pub(crate) mod reservations;
 pub mod retry;
 pub mod scheduler;
 mod settlement;

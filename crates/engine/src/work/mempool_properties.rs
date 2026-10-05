@@ -669,3 +669,26 @@ fn both_entry_points_cover_owner_success_and_cancellation() {
         }
     });
 }
+
+#[test]
+fn a_completion_for_another_window_cannot_publish_or_release_its_owner() {
+    let state = MempoolState::default();
+    let old = (
+        TenantId::new("tenant"),
+        WalletHandle::generate(),
+        ScanIndices::new([1]),
+    );
+    let newer = (old.0.clone(), old.1, ScanIndices::new([1, 2]));
+    let (mut owner, claimed) = state.claim("tx", &[&old]);
+    assert_eq!(claimed.len(), 1);
+    owner.complete(&old.0, newer.2.generation());
+    assert_eq!(state.inner.lock().in_flight.len(), 1);
+    assert!(state.inner.lock().scanned.is_empty());
+    assert!(state.claim("tx", &[&newer]).1.is_empty());
+    drop(owner);
+    let (mut retry, claimed) = state.claim("tx", &[&newer]);
+    assert_eq!(claimed.len(), 1);
+    retry.complete(&newer.0, newer.2.generation());
+    assert!(state.inner.lock().in_flight.is_empty());
+    assert!(state.claim("tx", &[&newer]).1.is_empty());
+}

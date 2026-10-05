@@ -143,11 +143,18 @@ impl Bodies {
 #[derive(Default)]
 struct Remembered {
     bodies: Bodies,
-    /// txid -> store -> the window generation it was scanned with.
-    scanned: HashMap<String, HashMap<crate::store::TenantId, u64>>,
-    // Independent of cache eviction: a live scan keeps its claim even when
-    // concurrent pool snapshots remove its transaction from remembered data.
-    in_flight: HashSet<(String, crate::store::TenantId)>,
+    ownership: super::reservations::Reservations,
+}
+impl std::ops::Deref for Remembered {
+    type Target = super::reservations::Reservations;
+    fn deref(&self) -> &Self::Target {
+        &self.ownership
+    }
+}
+impl std::ops::DerefMut for Remembered {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.ownership
+    }
 }
 
 impl MempoolState {
@@ -216,23 +223,18 @@ impl MempoolState {
         due: &[&'w TenantWindow],
     ) -> (ScanClaims<'s>, Vec<&'w TenantWindow>) {
         let mut remembered = self.inner.lock();
-        let mut pending = std::collections::BTreeSet::new();
+        let mut pending = std::collections::BTreeMap::new();
         let mut claimed = Vec::new();
         for tenant in due.iter().copied() {
             let (id, _, window) = tenant;
-            let done = remembered.scanned.get(txid).and_then(|done| done.get(id));
-            if done == Some(&window.generation()) {
-                continue;
-            }
-            if remembered.in_flight.insert((txid.to_owned(), id.clone())) {
-                pending.insert(id.clone());
+            if let Some(lease) = remembered.ownership.claim(txid, id, window.generation()) {
+                pending.insert(id.clone(), lease);
                 claimed.push(tenant);
             }
         }
         (
             ScanClaims {
                 state: self,
-                txid: txid.to_owned(),
                 pending,
             },
             claimed,
@@ -261,23 +263,18 @@ impl MempoolState {
 /// releases unfinished reservations; only an observed success marks work done.
 struct ScanClaims<'a> {
     state: &'a MempoolState,
-    txid: String,
-    pending: std::collections::BTreeSet<crate::store::TenantId>,
+    pending: std::collections::BTreeMap<crate::store::TenantId, super::reservations::Reservation>,
 }
 impl ScanClaims<'_> {
     fn complete(&mut self, tenant: &crate::store::TenantId, generation: u64) {
-        if !self.pending.remove(tenant) {
+        let Some(lease) = self.pending.remove(tenant) else {
+            return;
+        };
+        if lease.generation() != generation {
+            self.pending.insert(tenant.clone(), lease);
             return;
         }
-        let mut remembered = self.state.inner.lock();
-        remembered
-            .scanned
-            .entry(self.txid.clone())
-            .or_default()
-            .insert(tenant.clone(), generation);
-        remembered
-            .in_flight
-            .remove(&(self.txid.clone(), tenant.clone()));
+        self.state.inner.lock().ownership.complete(lease);
     }
 }
 impl Drop for ScanClaims<'_> {
@@ -286,10 +283,8 @@ impl Drop for ScanClaims<'_> {
             return;
         }
         let mut remembered = self.state.inner.lock();
-        for tenant in &self.pending {
-            remembered
-                .in_flight
-                .remove(&(self.txid.clone(), tenant.clone()));
+        for (_, lease) in std::mem::take(&mut self.pending) {
+            remembered.ownership.release(lease);
         }
     }
 }
