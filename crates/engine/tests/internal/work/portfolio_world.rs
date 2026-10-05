@@ -43,6 +43,7 @@ pub(super) struct World {
     pub(super) client: FallbackDaemonClient,
     nodes: [Arc<AdversarialNode>; 3],
     chain: RefCell<BTreeMap<u64, String>>,
+    proven: RefCell<BTreeMap<u64, String>>,
     known: RefCell<Vec<monero::Transaction>>,
     pruned: Cell<bool>,
     pub(super) now: Cell<i64>,
@@ -51,6 +52,8 @@ pub(super) struct World {
     pub(super) url: String,
     receiver: Arc<Receiver>,
     expected_events: RefCell<BTreeMap<String, String>>,
+    last_status: RefCell<BTreeMap<crate::store::OrderId, (i64, String)>>,
+    failed_deliveries: Cell<usize>,
     pub(super) hits: RefCell<BTreeMap<String, u64>>,
     _server: Server,
 }
@@ -96,6 +99,7 @@ impl World {
             client,
             nodes,
             chain: RefCell::new(BTreeMap::new()),
+            proven: RefCell::default(),
             known: RefCell::default(),
             pruned: Cell::new(false),
             now: Cell::new(crate::now_unix()),
@@ -104,6 +108,8 @@ impl World {
             url,
             receiver,
             expected_events: RefCell::default(),
+            last_status: RefCell::default(),
+            failed_deliveries: Cell::new(0),
             hits: RefCell::default(),
             _server: server,
         }
@@ -160,6 +166,9 @@ impl World {
         }
         self.nodes[2].fake.reorg_from(from, blocks);
     }
+    pub(super) fn remember(&self, txs: Vec<monero::Transaction>) {
+        *self.known.borrow_mut() = txs;
+    }
     pub(super) fn set_mempool(&self, txs: Vec<monero::Transaction>) {
         if self.known.borrow().is_empty() {
             self.known.borrow_mut().clone_from(&txs);
@@ -207,10 +216,16 @@ impl World {
             }
         }
     }
+    pub(super) fn proves(&self, height: u64) -> bool {
+        self.chain
+            .borrow()
+            .get(&height)
+            .is_some_and(|hash| self.proven.borrow().get(&height) == Some(hash))
+    }
     pub(super) async fn proof(&self, db: &Db, ceiling: u64, mismatch: bool) {
         self.ceiling.set(ceiling);
         self.mismatch.set(mismatch);
-        let window = self
+        let window: Vec<_> = self
             .chain
             .borrow()
             .iter()
@@ -226,8 +241,15 @@ impl World {
                 cumulative_difficulty: u128::from(*height),
             })
             .collect();
+        *self.proven.borrow_mut() = window
+            .iter()
+            .map(|b| (b.height, hex::encode(b.id)))
+            .collect();
         db.run(Class::Scanner, move |s| {
             s.enable_proof(NETWORK, 1000)?;
+            if window.is_empty() {
+                return s.forget_anchor(NETWORK);
+            }
             s.write_anchor(
                 NETWORK,
                 &crate::store::proof::NewAnchor {
@@ -331,6 +353,10 @@ impl World {
                 .sum::<usize>()
                 > cancellations
         );
+        for node in &self.nodes {
+            let counts = node.counts(Rpc::Tip);
+            assert!(counts.attempted >= counts.completed + counts.cancelled);
+        }
         tokio::time::resume();
         self.hit("rpc-timeout-cancelled");
         self.hit("engine-rpc-timeout-cancelled");
@@ -464,7 +490,7 @@ impl World {
         self.healthy();
     }
     pub(super) fn check_events(&self, store: &Store, invoices: &[Invoice]) {
-        let mut last_status = BTreeMap::new();
+        let mut last_status = self.last_status.borrow_mut();
         let mut events = store
             .due_webhook_deliveries_for_test(i64::MAX, 1000)
             .unwrap();
@@ -489,7 +515,12 @@ impl World {
                 assert_eq!(previous, d.payload_json);
             }
             if let Some(status) = v["status"].as_str() {
-                last_status.insert(d.order_id.clone(), status.to_owned());
+                let entry = last_status
+                    .entry(d.order_id.clone())
+                    .or_insert((d.delivery_id, status.to_owned()));
+                if d.delivery_id >= entry.0 {
+                    *entry = (d.delivery_id, status.to_owned());
+                }
             }
         }
         for invoice in invoices {
@@ -498,7 +529,7 @@ impl World {
                 .unwrap()
                 .unwrap()
                 .status;
-            if let Some(last) = last_status.get(&invoice.id) {
+            if let Some((_, last)) = last_status.get(&invoice.id) {
                 assert_eq!(last, current.as_str(), "status committed without its event");
             } else {
                 assert_eq!(
@@ -510,6 +541,15 @@ impl World {
         }
     }
     pub(super) async fn deliver(&self, db: &Db, store: &SharedStore, fail: bool) {
+        if store
+            .lock()
+            .due_webhook_deliveries_for_test(i64::MAX, 1000)
+            .unwrap()
+            .is_empty()
+        {
+            self.hit("delivery-empty");
+            return;
+        }
         self.receiver.failing.store(fail, Ordering::Relaxed);
         let client = crate::webhook_delivery::WebhookClient::build().unwrap();
         client.set_allow_private(true);
@@ -535,6 +575,7 @@ impl World {
                 self.receiver.bodies.lock().len() > before,
                 "delivery failure must reach HTTP"
             );
+            self.failed_deliveries.set(self.failed_deliveries.get() + 1);
             self.hit("http-503-reached");
         } else {
             assert!(
@@ -559,7 +600,9 @@ impl World {
                 self.expected_events.borrow().len(),
                 "missing HTTP events"
             );
-            assert!(bodies.len() > stable.len(), "failed event must be retried");
+            if self.failed_deliveries.get() > 0 {
+                assert!(bodies.len() > stable.len(), "failed event must be retried");
+            }
             self.hit("http-retry-stable-bytes-and-drained");
             for (id, expected) in self.expected_events.borrow().iter() {
                 assert_eq!(
