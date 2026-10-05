@@ -627,3 +627,8 @@ pub(crate) mod portfolio;
 #[cfg(any(test, feature = "fuzzing"))]
 #[path = "../../tests/verification/work/portfolio/fixtures.rs"]
 mod portfolio_fixture;
+
+#[cfg(any(test, feature = "fuzzing"))]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[path = "../../tests/verification/support/backend.rs"]
+pub(crate) mod history_backend;

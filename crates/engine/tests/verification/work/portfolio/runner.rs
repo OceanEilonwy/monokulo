@@ -11,43 +11,23 @@
         reason = "single-thread exploration borrows its independent ledger"
     )
 )]
+use super::history_backend as backend;
 use super::history_fixture::FlakyKeyCustody;
 use super::portfolio_fixture::{pair, transaction};
 use super::{fast_pass, run_round_at, RoundInputs, ScanState};
 use crate::daemon::fake::tx_id_hex;
-#[path = "backend.rs"]
-mod backend;
 #[path = "scenario.rs"]
 pub(crate) mod scenario;
 #[path = "effects.rs"]
 mod world;
 use crate::key_custody::{KeyCustody as _, WalletMaterial};
-use crate::status::OrderStatus;
-use crate::store::{Db, NewOrder, NewTenant, OrderId, TenantId};
+use crate::store::{Db, NewOrder, NewTenant, TenantId};
 use std::{collections::BTreeMap, time::Duration};
 use world::World;
+#[path = "model.rs"]
+mod model;
+use model::{Invoice, Ledger, Location, Oracle, Output};
 const NETWORK: monero::Network = monero::Network::Mainnet;
-#[derive(Clone, Copy)]
-enum Location {
-    Pool,
-    Gone,
-    Block(u64),
-}
-struct Output {
-    index: usize,
-    wallet: usize,
-    minor: u32,
-    amount: u64,
-}
-struct Invoice {
-    tenant: TenantId,
-    id: OrderId,
-    wallet: usize,
-    minor: u32,
-    goal: u64,
-    threshold: u64,
-    expires: i64,
-}
 struct Bytes<'a>(&'a [u8], usize);
 impl Bytes<'_> {
     fn next(&mut self) -> u8 {
@@ -57,6 +37,11 @@ impl Bytes<'_> {
     }
 }
 
+#[expect(
+    clippy::print_stderr,
+    clippy::use_debug,
+    reason = "failed semantic histories must print their decoded replay trace"
+)]
 pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -230,8 +215,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             ];
             let mut observed = vec![semantic.is_none(); count];
             let mut epoch = 0u64;
-            let mut identities = BTreeMap::new();
-            let mut statuses = BTreeMap::new();
+            let mut oracle = Oracle::default();
             // First observe all transactions: disappearance alone may never void
             // their outputs, so the independent ledger retains the same funds.
             daemon.remember(transactions.clone());
@@ -242,21 +226,17 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             });
             daemon.proof(backend.db(), 2, false).await;
             settle(
-                backend.db(),
-                &custody,
-                &daemon,
-                &tenants,
-                &state,
-                backend.store(),
-                &invoices,
-                &outputs,
-                &txids,
-                &locations,
-                &voided,
-                &observed,
+                &Effects::new(&backend, &custody, &daemon, &tenants, &state),
+                &Ledger {
+                    invoices: &invoices,
+                    outputs: &outputs,
+                    txids: &txids,
+                    locations: &locations,
+                    voided: &voided,
+                    observed: &observed,
+                },
                 2,
-                &mut identities,
-                &mut statuses,
+                &mut oracle,
             )
             .await;
             // Forced interactions are positive controls, including before any
@@ -265,7 +245,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                 .fault_episode(backend.db(), &custody, &tenants, &state, backend.store())
                 .await;
             state = ScanState::default();
-            if let Some(ref scenario) = semantic {
+            if let Some(scenario) = &semantic {
                 use scenario::Command;
                 let mut tip = 2;
                 for command in &scenario.commands {
@@ -378,21 +358,17 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                             .collect(),
                     );
                     settle(
-                        backend.db(),
-                        &custody,
-                        &daemon,
-                        &tenants,
-                        &state,
-                        backend.store(),
-                        &invoices,
-                        &outputs,
-                        &txids,
-                        &locations,
-                        &voided,
-                        &observed,
+                        &Effects::new(&backend, &custody, &daemon, &tenants, &state),
+                        &Ledger {
+                            invoices: &invoices,
+                            outputs: &outputs,
+                            txids: &txids,
+                            locations: &locations,
+                            voided: &voided,
+                            observed: &observed,
+                        },
                         tip,
-                        &mut identities,
-                        &mut statuses,
+                        &mut oracle,
                     )
                     .await;
                 }
@@ -506,21 +482,17 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                     state = ScanState::default();
                 }
                 settle(
-                    backend.db(),
-                    &custody,
-                    &daemon,
-                    &tenants,
-                    &state,
-                    backend.store(),
-                    &invoices,
-                    &outputs,
-                    &txids,
-                    &locations,
-                    &voided,
-                    &observed,
+                    &Effects::new(&backend, &custody, &daemon, &tenants, &state),
+                    &Ledger {
+                        invoices: &invoices,
+                        outputs: &outputs,
+                        txids: &txids,
+                        locations: &locations,
+                        voided: &voided,
+                        observed: &observed,
+                    },
                     2 + span,
-                    &mut identities,
-                    &mut statuses,
+                    &mut oracle,
                 )
                 .await;
                 if was_voided && action == 0 {
@@ -547,21 +519,17 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             state = ScanState::default();
             daemon.proof(backend.db(), 3, false).await;
             settle(
-                backend.db(),
-                &custody,
-                &daemon,
-                &tenants,
-                &state,
-                backend.store(),
-                &invoices,
-                &outputs,
-                &txids,
-                &locations,
-                &voided,
-                &observed,
+                &Effects::new(&backend, &custody, &daemon, &tenants, &state),
+                &Ledger {
+                    invoices: &invoices,
+                    outputs: &outputs,
+                    txids: &txids,
+                    locations: &locations,
+                    voided: &voided,
+                    observed: &observed,
+                },
                 3,
-                &mut identities,
-                &mut statuses,
+                &mut oracle,
             )
             .await;
             if restored > 0 {
@@ -610,81 +578,47 @@ fn inputs<'a>(
         scan_chunk_memory_budget_mb: 16,
     }
 }
-#[expect(
-    clippy::too_many_arguments,
-    reason = "independent ledger checks explicit scenario inputs"
-)]
-async fn settle(
-    db: &Db,
-    custody: &FlakyKeyCustody,
-    daemon: &World,
-    tenants: &[(TenantId, crate::key_custody::WalletHandle)],
-    state: &ScanState,
-    store: &crate::store::SharedStore,
-    invoices: &[Invoice],
-    outputs: &[Vec<Output>],
-    txids: &[String],
-    locations: &[Location],
-    voided: &[bool],
-    observed: &[bool],
-    tip: u64,
-    identities: &mut BTreeMap<(String, String, i64), i64>,
-    statuses: &mut BTreeMap<String, OrderStatus>,
-) {
+/// Borrow effects for one convergence check; never retained across a restart.
+struct Effects<'a> {
+    backend: &'a backend::Backend,
+    custody: &'a FlakyKeyCustody,
+    daemon: &'a World,
+    tenants: &'a [(TenantId, crate::key_custody::WalletHandle)],
+    state: &'a ScanState,
+}
+impl<'a> Effects<'a> {
+    fn new(
+        backend: &'a backend::Backend,
+        custody: &'a FlakyKeyCustody,
+        daemon: &'a World,
+        tenants: &'a [(TenantId, crate::key_custody::WalletHandle)],
+        state: &'a ScanState,
+    ) -> Self {
+        Self {
+            backend,
+            custody,
+            daemon,
+            tenants,
+            state,
+        }
+    }
+}
+async fn settle(effects: &Effects<'_>, ledger: &Ledger<'_>, tip: u64, oracle: &mut Oracle) {
+    let Effects {
+        backend,
+        custody,
+        daemon,
+        tenants,
+        state,
+    } = effects;
     daemon.advance().await;
-    let input = inputs(db, custody, daemon, tenants);
+    let input = inputs(backend.db(), custody, daemon, tenants);
     for _ in 0..32 {
         run_round_at(state, &input, Duration::ZERO, daemon.now.get())
             .await
             .into_result()
             .unwrap();
-        let s = store.lock();
-        if s.reorg_job(NETWORK).unwrap().is_none()
-            && tenants.iter().all(|(id, _)| {
-                s.get_tenant_by_id(id)
-                    .unwrap()
-                    .unwrap()
-                    .scanned_through_height
-                    == Some(tip)
-            })
-            && invoices.iter().all(|invoice| {
-                let rows = s.get_all_payments(&invoice.id).unwrap();
-                let expected = outputs
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(t, v)| {
-                        v.iter().filter_map(move |o| {
-                            (observed[t] && o.wallet == invoice.wallet && o.minor == invoice.minor)
-                                .then_some((
-                                    txids[t].clone(),
-                                    o.index as i64,
-                                    o.amount,
-                                    match locations[t] {
-                                        Location::Block(h) => Some(h as i64),
-                                        Location::Pool | Location::Gone => None,
-                                    },
-                                ))
-                        })
-                    })
-                    .collect::<std::collections::BTreeSet<_>>();
-                let actual = rows
-                    .iter()
-                    .map(|p| {
-                        (
-                            p.txid.clone(),
-                            p.output_index,
-                            p.amount_piconero,
-                            p.block_height,
-                        )
-                    })
-                    .collect::<std::collections::BTreeSet<_>>();
-                actual == expected
-                    && rows.iter().all(|p| {
-                        voided[txids.iter().position(|id| id == &p.txid).unwrap()]
-                            == p.voided_at.is_some()
-                    })
-            })
-        {
+        if ledger.ready(&backend.store().lock(), tenants, tip) {
             break;
         }
     }
@@ -694,122 +628,5 @@ async fn settle(
             .into_result()
             .unwrap();
     }
-    let s = store.lock();
-    assert!(s.reorg_job(NETWORK).unwrap().is_none());
-    for invoice in invoices {
-        let mut expected = BTreeMap::new();
-        let mut total = 0u64;
-        let mut eligible = 0u64;
-        let mut observed_eligible = 0u64;
-        let mut mined = false;
-        for (t, planned) in outputs.iter().enumerate() {
-            if !observed[t] {
-                continue;
-            }
-            for o in planned {
-                if o.wallet != invoice.wallet || o.minor != invoice.minor {
-                    continue;
-                }
-                let height = match locations[t] {
-                    Location::Block(h) => Some(h as i64),
-                    Location::Pool | Location::Gone => None,
-                };
-                expected.insert((txids[t].clone(), o.index as i64), (o.amount, height));
-                if voided[t] {
-                    continue;
-                }
-                total += o.amount;
-                let depth = height.map_or(0, |h| {
-                    let top = tip.min(daemon.ceiling.get());
-                    if !daemon.proves(h as u64) || h as u64 > top {
-                        0
-                    } else {
-                        top - h as u64 + 1
-                    }
-                });
-                if invoice.threshold == 0
-                    || height.is_some_and(|h| tip.saturating_sub(h as u64) + 1 >= invoice.threshold)
-                {
-                    observed_eligible += o.amount;
-                }
-                if depth >= invoice.threshold {
-                    eligible += o.amount;
-                }
-                mined |= height.is_some();
-            }
-        }
-        let rows = s.get_all_payments(&invoice.id).unwrap();
-        assert_eq!(rows.len(), expected.len());
-        for row in rows {
-            assert_eq!(
-                expected.get(&(row.txid.clone(), row.output_index)),
-                Some(&(row.amount_piconero, row.block_height)),
-                "BOUNDARY: independent-output-ledger"
-            );
-            assert_eq!(
-                row.voided_at.is_some(),
-                voided[txids.iter().position(|id| id == &row.txid).unwrap()],
-                "BOUNDARY: independent-void-ledger"
-            );
-            assert!(row.superseded_by.is_none());
-            let key = (invoice.id.as_str().to_owned(), row.txid, row.output_index);
-            if let Some(old) = identities.insert(key, row.id) {
-                assert_eq!(row.id, old);
-            }
-        }
-        let status = if total < invoice.goal {
-            if daemon.now.get() > invoice.expires {
-                daemon.hit("expiry-derived");
-                OrderStatus::Expired
-            } else if total == 0 {
-                OrderStatus::Pending
-            } else {
-                OrderStatus::Partial
-            }
-        } else if eligible >= invoice.goal
-            || (observed_eligible >= invoice.goal
-                && statuses
-                    .get(invoice.id.as_str())
-                    .is_some_and(|s| matches!(s, OrderStatus::Paid | OrderStatus::Overpaid)))
-        {
-            if total == invoice.goal {
-                OrderStatus::Paid
-            } else {
-                OrderStatus::Overpaid
-            }
-        } else if mined {
-            OrderStatus::Confirming
-        } else {
-            OrderStatus::Unconfirmed
-        };
-        statuses.insert(invoice.id.as_str().into(), status);
-        let actual = s.get_order(&invoice.tenant, &invoice.id).unwrap().unwrap();
-        assert_eq!(
-            actual.amount_received_piconero, total,
-            "BOUNDARY: independent-amount-ledger"
-        );
-        assert_eq!(actual.status, status, "BOUNDARY: independent-status; tip={tip} ceil={} mismatch={} required={} total={total} eligible={eligible} goal={} proof={:?} views={:?}", daemon.ceiling.get(), daemon.mismatch.get(), invoice.threshold, invoice.goal, s.proof_ceiling(NETWORK).unwrap(), s.proven_views(NETWORK, &invoice.id,tip,&std::collections::HashSet::default()).unwrap());
-        if observed_eligible >= invoice.goal && eligible < invoice.goal {
-            daemon.hit(if daemon.mismatch.get() {
-                "mismatching-proof-holds-settlement"
-            } else {
-                "missing-proof-holds-settlement"
-            });
-        }
-        if eligible >= invoice.goal {
-            daemon.hit("proven-settlement-released");
-        }
-        for (other, _) in tenants {
-            if other != &invoice.tenant {
-                assert!(s.get_order(other, &invoice.id).unwrap().is_none());
-            }
-        }
-    }
-    daemon.check_events(&s, invoices);
-    if !daemon.mismatch.get() && daemon.ceiling.get() >= tip {
-        assert!(s
-            .pending_payment_recomputes_page(NETWORK, "", 100)
-            .unwrap()
-            .is_empty());
-    }
+    ledger.assert(&backend.store().lock(), daemon, tenants, tip, oracle);
 }

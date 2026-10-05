@@ -1,15 +1,19 @@
 //! Owns the active observer and executor; a reopen replaces both.
+#![expect(
+    clippy::unwrap_used,
+    reason = "verification connection setup must fail loudly on malformed state"
+)]
 use crate::store::{db::Class, Db, SharedStore, Store, StoreError};
 use std::sync::Arc;
 
-pub(super) struct Backend {
+pub(crate) struct Backend {
     db: Option<Db>,
     store: Option<SharedStore>,
     path: String,
     worker: bool,
 }
 impl Backend {
-    pub(super) fn new(path: &str, store: SharedStore, worker: bool) -> Self {
+    pub(crate) fn new(path: &str, store: SharedStore, worker: bool) -> Self {
         let db = if worker {
             Db::open(path, &store.lock()).unwrap()
         } else {
@@ -22,13 +26,13 @@ impl Backend {
             worker,
         }
     }
-    pub(super) fn db(&self) -> &Db {
+    pub(crate) fn db(&self) -> &Db {
         self.db.as_ref().unwrap()
     }
-    pub(super) fn store(&self) -> &SharedStore {
+    pub(crate) fn store(&self) -> &SharedStore {
         self.store.as_ref().unwrap()
     }
-    pub(super) async fn reopen(&mut self) {
+    pub(crate) async fn reopen(&mut self) {
         // TEMP state proves operations use a new executor connection; observing
         // a second connection alone would not meet this positive control.
         self.db()
@@ -39,24 +43,40 @@ impl Backend {
             })
             .await
             .unwrap();
-        let before = snapshot(&self.store().lock());
-        let old = Arc::downgrade(self.store());
-        drop(self.db.take());
-        drop(self.store.take());
-        assert!(old.upgrade().is_none(), "BOUNDARY: active-store-replaced");
-        let store = Store::open_file(&self.path).unwrap().into_shared();
-        assert_eq!(
-            snapshot(&store.lock()),
-            before,
-            "BOUNDARY: reopen-durable-state"
-        );
-        let next = Self::new(&self.path, store, self.worker);
+        replace(&mut self.db, &mut self.store, &self.path, self.worker);
+        let next = self;
         let temporary: i64 = next.db().run(Class::Admin, |s| {
             s.conn_for_test().query_row("SELECT count(*) FROM sqlite_temp_master WHERE name='portfolio_connection_probe'", [], |r| r.get(0)).map_err(StoreError::from)
         }).await.unwrap();
         assert_eq!(temporary, 0, "BOUNDARY: executor-connection-replaced");
-        *self = next;
     }
+}
+
+/// Shared connection replacement; callers retain their independent domain
+/// oracle checks. Direct histories can use this without an async executor probe.
+pub(crate) fn replace(
+    db: &mut Option<Db>,
+    observer: &mut Option<SharedStore>,
+    path: &str,
+    worker: bool,
+) {
+    let before = snapshot(&observer.as_ref().unwrap().lock());
+    let old = Arc::downgrade(observer.as_ref().unwrap());
+    drop(db.take());
+    drop(observer.take());
+    assert!(old.upgrade().is_none(), "BOUNDARY: active-store-replaced");
+    let store = Store::open_file(path).unwrap().into_shared();
+    assert_eq!(
+        snapshot(&store.lock()),
+        before,
+        "BOUNDARY: reopen-durable-state"
+    );
+    *db = Some(if worker {
+        Db::open(path, &store.lock()).unwrap()
+    } else {
+        Db::over_shared(Arc::clone(&store))
+    });
+    *observer = Some(store);
 }
 
 /// Snapshot persisted tables, including money, work, proof and delivery state.

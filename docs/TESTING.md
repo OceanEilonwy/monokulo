@@ -1275,3 +1275,12 @@ Invoice goals, thresholds (0–3) and expiry are independently selected. Planned
 outputs enter the expected ledger only after observation; disappearance retains
 observed funds. The oracle tracks proof hashes independently across reorgs and
 accepted settlements across proof changes. Failures print decoded semantic traces.
+
+`work/portfolio/model.rs` owns the independent planned-output/status oracle and
+its durable identity/accepted-status memory. `runner.rs` converges real effects
+using a borrowed `Effects` context and a `Ledger` view, replacing the former
+15-argument function. Typed properties and the fuzz adapter call the same runner;
+there is no fuzz-only scanner or copied oracle. Both single-wallet and portfolio
+histories use `support/backend.rs` for connection replacement and persisted-table
+comparison, while retaining their separate domain expectations. Shared fixtures
+continue to supply real custody and temporary databases.
