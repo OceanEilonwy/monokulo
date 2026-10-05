@@ -105,6 +105,9 @@ tokio = { version = "1.53.1", features = ["rt", "macros", "test-util"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "hooks", "serialize"] }
 # Captures log events in tests that assert a failure was reported.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt"] }
+# Property tests run in-process under Cargo/nextest. The same strategies can
+# generate scanner event sequences; no subprocess fork/timeout machinery needed.
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 
 # Every opt-in lint is on for the engine: clippy's pedantic, nursery,
 # restriction and cargo groups and rustc's allow-by-default lints. Each one

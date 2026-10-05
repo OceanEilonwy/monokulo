@@ -311,6 +311,44 @@ impl Database {
     }
 }
 
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct SqlFaultTrace {
+    checks: std::sync::atomic::AtomicUsize,
+    pub(crate) denied: std::sync::atomic::AtomicUsize,
+    pub(crate) action: Mutex<Option<String>>,
+}
+#[cfg(test)]
+impl SqlFaultTrace {
+    pub(crate) fn load(&self, ordering: std::sync::atomic::Ordering) -> usize {
+        self.checks.load(ordering)
+    }
+    pub(crate) fn assert_outcome(&self, target: usize) {
+        use std::sync::atomic::Ordering;
+        let denied = self.denied.load(Ordering::Relaxed);
+        assert_eq!(denied, usize::from(self.load(Ordering::Relaxed) > target));
+        assert_eq!(self.action.lock().is_some(), denied == 1);
+    }
+}
+
+/// A child process rendezvous at a named durability boundary. Never included
+/// in production; normal tests do not set these environment variables.
+#[cfg(test)]
+#[expect(
+    clippy::infinite_loop,
+    reason = "child rendezvous waits for the parent to kill this process"
+)]
+pub(crate) fn crash_checkpoint(point: &str) {
+    if std::env::var("MONOKULO_PROPERTY_CRASH_POINT").as_deref() != Ok(point) {
+        return;
+    }
+    let path = std::env::var("MONOKULO_PROPERTY_CRASH_PATH").unwrap();
+    std::fs::write(format!("{path}.ready"), point).unwrap();
+    loop {
+        std::thread::park();
+    }
+}
+
 pub struct Store {
     conn: Connection,
     /// Fan-out of "this order's visible state just changed" hints - see
@@ -346,6 +384,8 @@ pub enum StoreError {
     Sqlite(#[from] rusqlite::Error),
     #[error("not found")]
     NotFound,
+    #[error("address allocation refused: {0}")]
+    AddressAllocation(String),
     #[error("database worker unavailable: {0}")]
     WorkerUnavailable(String),
 }
@@ -625,9 +665,12 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
             is_settlement(as_of_ceiling)
         }
     };
+    // Losing a conflict's confirmed winner invalidates an earlier settlement
+    // too: zero-confirmation policy cannot make unresolved copies spendable.
     let settlement_deferred = is_settlement(derived)
-        && !is_settlement(order.status)
-        && (facts.settlement_frozen || facts.conflicted || !settles_on_proven_blocks());
+        && (facts.conflicted
+            || (!is_settlement(order.status)
+                && (facts.settlement_frozen || !settles_on_proven_blocks())));
     let status = if expiry_held {
         order.status
     } else if settlement_deferred {
@@ -902,9 +945,9 @@ impl Store {
     /// checked, each time it runs. Returns the running count of checks, so a
     /// sweep knows when `n` was past the last one.
     #[cfg(test)]
-    pub(crate) fn fail_nth_access(&self, n: Option<usize>) -> Arc<std::sync::atomic::AtomicUsize> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let seen = Arc::new(AtomicUsize::new(0));
+    pub(crate) fn fail_nth_access(&self, n: Option<usize>) -> Arc<SqlFaultTrace> {
+        use std::sync::atomic::Ordering;
+        let seen = Arc::new(SqlFaultTrace::default());
         if let Some(n) = n {
             self.conn.set_prepared_statement_cache_capacity(0);
             self.conn.flush_prepared_statement_cache();
@@ -936,7 +979,9 @@ impl Store {
                                     pragma_value: _
                                 }
                         );
-                    if statement && counter.fetch_add(1, Ordering::Relaxed) == n {
+                    if statement && counter.checks.fetch_add(1, Ordering::Relaxed) == n {
+                        counter.denied.fetch_add(1, Ordering::Relaxed);
+                        *counter.action.lock() = Some(format!("{:?}", context.action));
                         rusqlite::hooks::Authorization::Deny
                     } else {
                         rusqlite::hooks::Authorization::Allow
@@ -1399,26 +1444,34 @@ impl Store {
     /// `create_order_claiming_minor_index`, which advances the counter and inserts
     /// the order together.
     pub fn allocate_minor_index(&self, tenant_id: &TenantId) -> Result<u32> {
-        let allocated: i64 = self.conn.query_row(
-            "UPDATE tenants SET next_minor_index = next_minor_index + 1
-             WHERE id = ?1
+        let allocated = self
+            .conn
+            .query_row(
+                "UPDATE tenants SET next_minor_index = next_minor_index + 1
+             WHERE id = ?1 AND next_minor_index > 0 AND next_minor_index < ?2
              RETURNING next_minor_index - 1",
-            params![tenant_id],
-            |row| row.get(0),
-        )?;
-        Ok(allocated as u32)
+                params![tenant_id, i64::from(u32::MAX)],
+                |row| row.get::<_, shared::sqlite::Unsigned<u32>>(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                StoreError::AddressAllocation(
+                    "tenant missing or subaddress indices exhausted".to_owned(),
+                )
+            })?;
+        Ok(allocated.0)
     }
 
     /// The index `allocate_minor_index` would hand out next, without claiming it.
     /// Only useful in combination with `create_order_claiming_minor_index` - see
     /// that method for why order creation can't simply allocate first.
     pub fn peek_next_minor_index(&self, tenant_id: &TenantId) -> Result<u32> {
-        let next: i64 = self.conn.query_row(
+        let next = self.conn.query_row(
             "SELECT next_minor_index FROM tenants WHERE id = ?1",
             params![tenant_id],
-            |row| row.get(0),
+            |row| row.get::<_, shared::sqlite::Unsigned<u32>>(0),
         )?;
-        Ok(next as u32)
+        Ok(next.0)
     }
 
     /// Claims `expected_index` for `tenant_id` and inserts `new` as one atomic unit,
@@ -1470,9 +1523,17 @@ impl Store {
                 ));
             }
         }
+        // The next index is also an exclusive u32 scan bound. Reserve MAX
+        // as the exhausted counter rather than committing MAX+1 and making
+        // the tenant unreadable. The supplied order must claim that same index.
+        if expected_index == 0 || expected_index == u32::MAX || new.minor_index != expected_index {
+            return Err(StoreError::AddressAllocation(
+                "subaddress index exhausted or inconsistent with the order".to_owned(),
+            ));
+        }
         let claimed = tx.execute(
             "UPDATE tenants SET next_minor_index = next_minor_index + 1
-             WHERE id = ?1 AND next_minor_index = ?2",
+             WHERE id = ?1 AND next_minor_index = ?2 AND disabled_at_utc IS NULL",
             params![new.tenant_id, expected_index],
         )?;
         if claimed == 0 {
@@ -1480,7 +1541,11 @@ impl Store {
         }
         let id = OrderId::new(new_id("order"));
         Self::insert_order(&tx, &id, new)?;
+        #[cfg(test)]
+        crash_checkpoint("orders.before_commit");
         tx.commit()?;
+        #[cfg(test)]
+        crash_checkpoint("orders.after_commit");
         Ok(Some(
             self.get_order_by_id(&id)?.ok_or(StoreError::NotFound)?,
         ))
@@ -1939,7 +2004,10 @@ impl Store {
                 order_id,
                 status_to_str(plan.status),
                 plan.confirmations as i64,
-                plan.amount_received as i64,
+                // Individual payments can fit SQLite while their total does
+                // not. Fail the write instead of wrapping money negative;
+                // transactional callers then roll the whole update back.
+                shared::sqlite::Unsigned(plan.amount_received),
                 now,
                 is_terminal(plan.status),
                 closed_at,
@@ -2379,11 +2447,19 @@ impl Store {
     /// `false` (not an error) if the webhook doesn't exist or belongs to a different
     /// tenant - the two are indistinguishable from the caller's perspective.
     pub fn delete_webhook(&self, tenant_id: &TenantId, webhook_id: &WebhookId) -> Result<bool> {
-        let changed = self.conn.execute(
-            "DELETE FROM webhooks WHERE id = ?1 AND tenant_id = ?2",
-            params![webhook_id, tenant_id],
-        )?;
-        Ok(changed > 0)
+        self.in_transaction(|_| {
+            // Scope the children too: another tenant must not cancel deliveries.
+            self.conn.execute(
+                "DELETE FROM webhook_deliveries WHERE webhook_id = ?1
+                 AND EXISTS (SELECT 1 FROM webhooks WHERE id = ?1 AND tenant_id = ?2)",
+                params![webhook_id, tenant_id],
+            )?;
+            let changed = self.conn.execute(
+                "DELETE FROM webhooks WHERE id = ?1 AND tenant_id = ?2",
+                params![webhook_id, tenant_id],
+            )?;
+            Ok(changed > 0)
+        })
     }
 
     pub fn enqueue_webhook_delivery(
@@ -2518,13 +2594,17 @@ impl Store {
         response_status: u16,
         at: i64,
     ) -> Result<()> {
+        #[cfg(test)]
+        crash_checkpoint("webhooks.delivered.before_commit");
         self.conn.execute(
             "UPDATE webhook_deliveries
-             SET attempt_count = attempt_count + 1, delivered_at_utc = ?2, last_attempted_at_utc = ?2,
-                 last_response_status = ?3
-             WHERE id = ?1",
+             SET attempt_count = MIN(attempt_count + 1, 4294967295), delivered_at_utc = ?2, last_attempted_at_utc = ?2,
+                 last_response_status = ?3, last_error = NULL, gave_up_at_utc = NULL
+             WHERE id = ?1 AND delivered_at_utc IS NULL",
             params![delivery_id, at, response_status as i64],
         )?;
+        #[cfg(test)]
+        crash_checkpoint("webhooks.delivered.after_commit");
         Ok(())
     }
 
@@ -2538,16 +2618,35 @@ impl Store {
         error: Option<&str>,
         at: i64,
     ) -> Result<()> {
+        #[cfg(test)]
+        crash_checkpoint("webhooks.give_up.before_commit");
         self.conn.execute(
             "UPDATE webhook_deliveries
-             SET attempt_count = attempt_count + 1,
+             SET attempt_count = MIN(attempt_count + 1, 4294967295),
                  gave_up_at_utc = ?2,
                  last_attempted_at_utc = ?2,
                  last_response_status = ?3,
                  last_error = ?4
-             WHERE id = ?1",
+             WHERE id = ?1 AND delivered_at_utc IS NULL AND gave_up_at_utc IS NULL",
             params![delivery_id, at, response_status.map(|s| s as i64), error],
         )?;
+        #[cfg(test)]
+        crash_checkpoint("webhooks.give_up.after_commit");
+        Ok(())
+    }
+
+    /// A lowered live retry budget may already be exhausted. Retire the row
+    /// without claiming an HTTP attempt occurred or erasing the last failure.
+    pub fn retire_exhausted_webhook_delivery(&self, delivery_id: i64, at: i64) -> Result<()> {
+        #[cfg(test)]
+        crash_checkpoint("webhooks.exhausted.before_commit");
+        self.conn.execute(
+            "UPDATE webhook_deliveries SET gave_up_at_utc = ?2
+             WHERE id = ?1 AND delivered_at_utc IS NULL AND gave_up_at_utc IS NULL",
+            params![delivery_id, at],
+        )?;
+        #[cfg(test)]
+        crash_checkpoint("webhooks.exhausted.after_commit");
         Ok(())
     }
 
@@ -2559,14 +2658,16 @@ impl Store {
         error: Option<&str>,
         at: i64,
     ) -> Result<()> {
+        #[cfg(test)]
+        crash_checkpoint("webhooks.retry.before_commit");
         self.conn.execute(
             "UPDATE webhook_deliveries
-             SET attempt_count = attempt_count + 1,
+             SET attempt_count = MIN(attempt_count + 1, 4294967295),
                  next_attempt_at_utc = ?2,
                  last_attempted_at_utc = ?3,
                  last_response_status = ?4,
                  last_error = ?5
-             WHERE id = ?1",
+             WHERE id = ?1 AND delivered_at_utc IS NULL AND gave_up_at_utc IS NULL",
             params![
                 delivery_id,
                 next_attempt_at,
@@ -2575,6 +2676,8 @@ impl Store {
                 error
             ],
         )?;
+        #[cfg(test)]
+        crash_checkpoint("webhooks.retry.after_commit");
         Ok(())
     }
 }

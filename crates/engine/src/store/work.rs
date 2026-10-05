@@ -68,11 +68,11 @@ pub struct ReorgCandidate {
     pub attempts: u32,
 }
 
-/// A rotation position the scheduler keeps across restarts, one row per
+/// A scheduler position kept across restarts, one row per
 /// network per position.
 ///
 /// Each is a type with its own value type, so a position can't be read
-/// as something it isn't. The set is closed: one type per rotation,
+/// as something it isn't. The set is closed: one type per scheduler role,
 /// never one per tenant.
 pub trait Position {
     const KEY: &'static str;
@@ -83,11 +83,48 @@ pub trait Position {
 pub mod position {
     use super::Position;
 
+    /// Last node height observed by settlement, even above the scanned chain.
+    pub struct SettlementTip;
+    impl Position for SettlementTip {
+        const KEY: &'static str = "settlement_tip";
+        type Value = u64;
+    }
+
+    /// The fork point covered by the remembered replacement branch.
+    pub struct ReorgBranchFork;
+    impl Position for ReorgBranchFork {
+        const KEY: &'static str = "reorg_branch_fork";
+        type Value = u64;
+    }
+
+    /// A fixed height on the replacement branch being reconciled. Extensions
+    /// don't change its hash, but another fork at or below it does.
+    pub struct ReorgBranchHeight;
+    impl Position for ReorgBranchHeight {
+        const KEY: &'static str = "reorg_branch_height";
+        type Value = u64;
+    }
+
+    /// The hash at `ReorgBranchHeight`, recorded atomically with it.
+    pub struct ReorgBranchHash;
+    impl Position for ReorgBranchHash {
+        const KEY: &'static str = "reorg_branch_hash";
+        type Value = String;
+    }
+
     /// The last catch-up group served (a tenant cursor height).
     pub struct CatchUpGroup;
     impl Position for CatchUpGroup {
         const KEY: &'static str = "catch_up_group";
         type Value = u64;
+    }
+
+    /// Last tenant offered a block page, including unsuccessful attempts.
+    /// A durable cyclic position prevents a failing first page hiding later tenants.
+    pub struct BlockTenantPage;
+    impl Position for BlockTenantPage {
+        const KEY: &'static str = "block_tenant_page";
+        type Value = String;
     }
 
     /// The last unconfirmed payment checked for having left the pool.
@@ -150,6 +187,35 @@ fn phase_from_row(phase: &str, after_height: u64, after_id: i64) -> rusqlite::Re
 }
 
 impl Store {
+    /// Confirmation schedules normally wake on increasing heights. A shorter
+    /// tip can invalidate their depth even if the fork is above every recorded
+    /// block, where hash-based reorg detection has nothing to compare. Keep
+    /// the height and its recompute obligations in one durable transaction.
+    pub fn observe_settlement_tip(&self, network: monero::Network, tip: u64) -> Result<()> {
+        self.in_transaction(|s| {
+            let previous = s.scheduler_position::<position::SettlementTip>(network)?;
+            if previous.is_none_or(|previous| tip < previous) {
+                // Also repair existing orders on first use of this position.
+                s.enqueue_mined_payment_recomputes(network)?;
+            }
+            if previous != Some(tip) {
+                s.set_scheduler_position::<position::SettlementTip>(network, &tip)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn enqueue_mined_payment_recomputes(&self, network: monero::Network) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO pending_payment_recomputes (order_id)
+             SELECT DISTINCT p.order_id FROM order_payments p
+             JOIN orders o ON o.id = p.order_id
+             JOIN tenants t ON t.id = o.tenant_id
+             WHERE t.network = ?1 AND p.block_height IS NOT NULL AND p.voided_at_utc IS NULL",
+            [shared::network::SqlNetwork(network)],
+        )?;
+        Ok(())
+    }
     /// Every row `sql` returns for `params`, each read by `read`. One place
     /// for a query's three ways to fail: the statement (a broken schema), its
     /// parameters (a value out of SQLite's range) and a row (a corrupted
@@ -201,6 +267,7 @@ impl Store {
             let max_id: i64 = s.conn.query_row("SELECT COALESCE(MAX(id), 0) FROM order_payments", [], |r| r.get(0))?;
             match s.reorg_job(network)? {
                 None => {
+                    s.clear_reorg_branch(network)?;
                     s.conn.execute(
                         "INSERT INTO reorg_jobs (network, fork_height, phase, candidate_max_id,
                              collect_after_height, collect_after_id, created_at_utc, updated_at_utc)
@@ -210,6 +277,7 @@ impl Store {
                     Ok(OpenedReorg::Created)
                 }
                 Some(job) if fork_height < job.fork_height => {
+                    s.clear_reorg_branch(network)?;
                     s.conn.execute(
                         "UPDATE reorg_jobs SET fork_height = ?2, phase = 'collect_confirmed', candidate_max_id = ?3,
                              collect_after_height = ?2, collect_after_id = 0, updated_at_utc = ?4
@@ -220,6 +288,73 @@ impl Store {
                 }
                 Some(_) => Ok(OpenedReorg::Covered),
             }
+        })
+    }
+
+    /// The replacement branch used by the latest reconciliation, retained until
+    /// rescanning reaches it. Older open jobs lack it and are safely recollected.
+    pub fn reorg_branch(&self, network: monero::Network) -> Result<Option<(u64, String)>> {
+        let height = self.scheduler_position::<position::ReorgBranchHeight>(network)?;
+        let hash = self.scheduler_position::<position::ReorgBranchHash>(network)?;
+        Ok(height.zip(hash))
+    }
+
+    /// Forget branch tracking once that range was rescanned (or genesis changed).
+    pub fn clear_reorg_branch(&self, network: monero::Network) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM scheduler_positions WHERE network = ?1 AND position IN (?2, ?3, ?4)",
+            params![
+                shared::network::SqlNetwork(network),
+                position::ReorgBranchHeight::KEY,
+                position::ReorgBranchHash::KEY,
+                position::ReorgBranchFork::KEY
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Extend the remembered branch without restarting collection. This keeps
+    /// new candidates reconciled at higher heights covered by the branch check.
+    pub fn extend_reorg_branch(
+        &self,
+        network: monero::Network,
+        height: u64,
+        hash: &str,
+    ) -> Result<()> {
+        self.in_transaction(|s| {
+            let job = s.reorg_job(network)?.ok_or(StoreError::NotFound)?;
+            s.set_scheduler_position::<position::ReorgBranchFork>(network, &job.fork_height)?;
+            s.set_scheduler_position::<position::ReorgBranchHeight>(network, &height)?;
+            s.set_scheduler_position::<position::ReorgBranchHash>(network, &hash.to_owned())
+        })
+    }
+
+    /// Revisit all candidates when the replacement branch changes, including
+    /// payments already processed on the previous branch. The branch identity,
+    /// collection restart and discarded retries commit together.
+    pub fn restart_reorg_for_branch(
+        &self,
+        network: monero::Network,
+        height: u64,
+        hash: &str,
+        now: i64,
+    ) -> Result<()> {
+        self.in_transaction(|s| {
+            let job = s.reorg_job(network)?.ok_or(StoreError::NotFound)?;
+            s.conn.execute(
+                "UPDATE reorg_jobs SET phase = 'collect_confirmed',
+                     candidate_max_id = MAX(candidate_max_id, (SELECT COALESCE(MAX(id), 0) FROM order_payments)),
+                     collect_after_height = fork_height, collect_after_id = 0, updated_at_utc = ?2
+                 WHERE network = ?1",
+                params![shared::network::SqlNetwork(network), now],
+            )?;
+            s.conn.execute("DELETE FROM reorg_work WHERE network = ?1", [shared::network::SqlNetwork(network)])?;
+            s.set_scheduler_position::<position::ReorgBranchHeight>(network, &height)?;
+            s.set_scheduler_position::<position::ReorgBranchHash>(network, &hash.to_owned())?;
+            s.set_scheduler_position::<position::ReorgBranchFork>(network, &job.fork_height)?;
+            // Keep the job's original fork and creation time: settlement stays
+            // frozen, and collection still covers every affected payment.
+            Ok(())
         })
     }
 
@@ -378,7 +513,7 @@ impl Store {
         fork_height: u64,
         ancestor: Option<(u64, &str)>,
     ) -> Result<()> {
-        self.in_transaction(|s| {
+        let result = self.in_transaction(|s| {
             let job = s.reorg_job(network)?.ok_or(StoreError::NotFound)?;
             let (remaining, _) = s.reorg_work_remaining(network)?;
             if job.fork_height != fork_height || job.phase != ReorgPhase::Process || remaining != 0 {
@@ -401,8 +536,24 @@ impl Store {
                 params![shared::network::SqlNetwork(network), Unsigned(fork_height)],
             )?;
             s.conn.execute("DELETE FROM reorg_jobs WHERE network = ?1", [shared::network::SqlNetwork(network)])?;
+            // A replacement branch can be shorter. Even payments whose
+            // height stayed unchanged (including those below the fork) then
+            // have fewer confirmations. Their next-height schedule only
+            // notices growing tips, so persist an explicit recompute.
+            s.enqueue_mined_payment_recomputes(network)?;
+            // Payments may have moved to replacement blocks not yet rescanned.
+            // Keep their branch identity until scanning covers it, so another
+            // fork in that gap cannot strand a height from the discarded branch.
+            if ancestor.is_none() { s.clear_reorg_branch(network)?; }
+            #[cfg(test)]
+            super::crash_checkpoint("reorg.before_commit");
             Ok(())
-        })
+        });
+        #[cfg(test)]
+        if result.is_ok() {
+            super::crash_checkpoint("reorg.after_commit");
+        }
+        result
     }
 
     /// Whether new settlements on `network` must wait: a reorg is being
@@ -711,7 +862,7 @@ impl Store {
 
     /// Up to `limit` enabled tenants on `network` whose cursor is `cursor`,
     /// leaving out `excluding` (tenants waiting out a retry delay), in id
-    /// order.
+    /// order, rotated after the last block page offered on this network.
     pub fn tenants_at_cursor(
         &self,
         network: monero::Network,
@@ -724,12 +875,43 @@ impl Store {
             "SELECT id FROM tenants
              WHERE network = ?1 AND disabled_at_utc IS NULL AND scanned_through_height = ?2
                AND id NOT IN (SELECT value FROM json_each(?3))
-             ORDER BY id LIMIT ?4",
+             ORDER BY (id <= ?5), id LIMIT ?4",
             params![
                 shared::network::SqlNetwork(network),
                 Unsigned(cursor),
                 excluding,
-                Unsigned(limit)
+                Unsigned(limit),
+                self.scheduler_position::<position::BlockTenantPage>(network)?
+                    .unwrap_or_default()
+            ],
+            |row| row.get::<_, TenantId>(0),
+        )
+    }
+
+    /// A catch-up page of tenants whose keys are registered. Filtering in SQL,
+    /// before LIMIT, prevents unregistered tenants from hiding later members.
+    pub fn registered_tenants_at_cursor(
+        &self,
+        network: monero::Network,
+        cursor: u64,
+        excluding: &[TenantId],
+        registered: &[TenantId],
+        limit: usize,
+    ) -> Result<Vec<TenantId>> {
+        self.rows(
+            "SELECT id FROM tenants
+             WHERE network = ?1 AND disabled_at_utc IS NULL AND scanned_through_height = ?2
+               AND id NOT IN (SELECT value FROM json_each(?3))
+               AND id IN (SELECT value FROM json_each(?4))
+             ORDER BY (id <= ?6), id LIMIT ?5",
+            params![
+                shared::network::SqlNetwork(network),
+                Unsigned(cursor),
+                json_array(excluding),
+                json_array(registered),
+                Unsigned(limit),
+                self.scheduler_position::<position::BlockTenantPage>(network)?
+                    .unwrap_or_default()
             ],
             |row| row.get::<_, TenantId>(0),
         )
@@ -1529,6 +1711,154 @@ mod tests {
             );
         }
         unreachable!()
+    }
+
+    /// A tip observation and its obligations commit together, including first
+    /// use on legacy state, and never enqueue another network's orders.
+    #[test]
+    fn tip_decreases_queue_recomputes_atomically_and_only_for_their_network() {
+        let store = Store::open_in_memory().unwrap();
+        let main = tenant(&store, "mainnet");
+        let stage = tenant(&store, "stagenet");
+        let main_order = order(&store, &main, 10_000);
+        let stage_order = order(&store, &stage, 10_000);
+        pay(&store, &main_order, "main", Some(3));
+        pay(&store, &stage_order, "stage", Some(3));
+        // First observation also repairs legacy databases with no position.
+        sweep(&store, |s| {
+            s.observe_settlement_tip(monero::Network::Mainnet, 20)
+        });
+        assert_eq!(
+            store
+                .pending_payment_recomputes_page(monero::Network::Mainnet, "", 10)
+                .unwrap(),
+            vec![OrderId::new(main_order.clone())]
+        );
+        store
+            .execute_raw_for_test("DELETE FROM pending_payment_recomputes")
+            .unwrap();
+        sweep(&store, |s| {
+            s.observe_settlement_tip(monero::Network::Mainnet, 21)
+        });
+        assert!(store
+            .pending_payment_recomputes_page(monero::Network::Mainnet, "", 10)
+            .unwrap()
+            .is_empty());
+        sweep(&store, |s| {
+            s.observe_settlement_tip(monero::Network::Mainnet, 6)
+        });
+        assert_eq!(
+            store
+                .pending_payment_recomputes_page(monero::Network::Mainnet, "", 10)
+                .unwrap(),
+            vec![OrderId::new(main_order)]
+        );
+        assert!(store
+            .pending_payment_recomputes_page(monero::Network::Stagenet, "", 10)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .scheduler_position::<position::SettlementTip>(monero::Network::Mainnet)
+                .unwrap(),
+            Some(6)
+        );
+    }
+
+    #[test]
+    fn branch_tracking_and_recollection_commit_whole_and_preserve_the_rescan_anchor() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant_id = tenant(&store, "mainnet");
+        let order_id = order(&store, &tenant_id, 10_000);
+        let first = pay(&store, &order_id, "first", Some(11));
+        let second = pay(&store, &order_id, "second", Some(12));
+        store
+            .set_scanned_block(monero::Network::Mainnet, 10, "a10")
+            .unwrap();
+        store
+            .open_reorg_job(monero::Network::Mainnet, 11, 200)
+            .unwrap();
+        sweep(&store, |s| {
+            s.restart_reorg_for_branch(monero::Network::Mainnet, 12, "b12", 200)
+        });
+        assert_eq!(
+            store.reorg_branch(monero::Network::Mainnet).unwrap(),
+            Some((12, "b12".to_owned()))
+        );
+        assert_eq!(store.reorg_branch(monero::Network::Stagenet).unwrap(), None);
+        while store
+            .collect_reorg_candidates(monero::Network::Mainnet, 10, 200)
+            .unwrap()
+            != ReorgPhase::Process
+        {}
+        store
+            .complete_reorg_candidate(monero::Network::Mainnet, first)
+            .unwrap();
+        sweep(&store, |s| {
+            s.extend_reorg_branch(monero::Network::Mainnet, 13, "b13")
+        });
+        assert_eq!(
+            store
+                .reorg_job(monero::Network::Mainnet)
+                .unwrap()
+                .unwrap()
+                .phase,
+            ReorgPhase::Process
+        );
+        assert_eq!(
+            store
+                .reorg_work_remaining(monero::Network::Mainnet)
+                .unwrap()
+                .0,
+            1
+        );
+        // Another branch, at the same fork point: the completed payment must
+        // be collected again, and retries on the discarded branch must clear.
+        store
+            .defer_reorg_candidate(monero::Network::Mainnet, second, 200)
+            .unwrap();
+        sweep(&store, |s| {
+            s.restart_reorg_for_branch(monero::Network::Mainnet, 13, "c13", 201)
+        });
+        assert_eq!(
+            store
+                .reorg_work_remaining(monero::Network::Mainnet)
+                .unwrap()
+                .0,
+            0
+        );
+        while store
+            .collect_reorg_candidates(monero::Network::Mainnet, 10, 201)
+            .unwrap()
+            != ReorgPhase::Process
+        {}
+        let candidates = store
+            .due_reorg_candidates(monero::Network::Mainnet, 201, 10)
+            .unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().all(|candidate| candidate.attempts == 0));
+        for candidate in candidates {
+            store
+                .complete_reorg_candidate(monero::Network::Mainnet, candidate.payment.id)
+                .unwrap();
+        }
+        sweep(&store, |s| {
+            s.finish_reorg(monero::Network::Mainnet, 11, Some((10, "a10")))
+        });
+        assert_eq!(
+            store
+                .get_scanned_block_hash(monero::Network::Mainnet, 13)
+                .unwrap(),
+            None,
+            "branch tracking must not claim an unscanned block was scanned"
+        );
+        assert_eq!(
+            store.reorg_branch(monero::Network::Mainnet).unwrap(),
+            Some((13, "c13".to_owned()))
+        );
+        sweep(&store, |s| s.clear_reorg_branch(monero::Network::Mainnet));
+        assert_eq!(store.reorg_branch(monero::Network::Mainnet).unwrap(), None);
+        assert!(!store.settlement_frozen(monero::Network::Mainnet).unwrap());
     }
 
     /// Every durable operation of the scheduler, failed statement by

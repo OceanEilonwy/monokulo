@@ -249,12 +249,12 @@ impl KeyCustody for CustodyRouter {
         // By name, so which backend's error is reported first doesn't vary.
         let mut backends: Vec<_> = self.backends().into_iter().collect();
         backends.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
-        let mut total = 0;
+        let mut total = 0u64;
         let mut first_error = None;
         for (name, custody) in backends {
             match custody.check_state().await {
                 Ok(epoch) => {
-                    total += epoch;
+                    total = total.saturating_add(epoch);
                     let previous = self.epochs.write().insert(name.clone(), epoch).unwrap_or(0);
                     if epoch > previous {
                         // Some handles may have been registered since the
@@ -775,3 +775,8 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[path = "router_properties.rs"]
+mod properties;

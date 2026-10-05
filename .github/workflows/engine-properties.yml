@@ -1,0 +1,59 @@
+name: Engine property exploration
+
+on:
+  schedule:
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: Generated cases per property (saved regressions run as well)
+        type: choice
+        options: ['128', '256', '512', '1024']
+        default: '512'
+      proof_cases:
+        description: Cases per real verifier property (CPU and memory intensive)
+        type: choice
+        options: ['16', '32', '64', '128']
+        default: '32'
+
+permissions:
+  contents: read
+
+jobs:
+  properties:
+    name: properties (features=${{ matrix.features || 'default' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ['', 'zmq']
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      PROPTEST_CASES: ${{ inputs.cases || '512' }}
+      ENGINE_PROOF_CASES: ${{ inputs.proof_cases || '32' }}
+      # A different reproducible seed for each daily/manual run.
+      PROPTEST_RNG_SEED: ${{ github.run_id }}
+      ENGINE_FEATURES: ${{ matrix.features }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Record replay settings
+        run: |
+          echo "Cases per property: $PROPTEST_CASES; proof cases: $ENGINE_PROOF_CASES; RNG seed: $PROPTEST_RNG_SEED; features: ${ENGINE_FEATURES:-default}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Explore engine properties
+        run: cargo nextest run -p engine -p key-custody --lib --locked --profile ci ${ENGINE_FEATURES:+--features "engine/$ENGINE_FEATURES"} -E 'test(::properties::)'
+      - name: Preserve counterexamples and test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: engine-properties-${{ matrix.features || 'default' }}-${{ github.run_id }}
+          path: |
+            crates/engine/proptest-regressions/
+            target/nextest/ci/junit.xml
+          if-no-files-found: ignore

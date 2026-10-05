@@ -416,10 +416,20 @@ pub async fn run_round(
     inputs: &RoundInputs<'_>,
     budget: Duration,
 ) -> RoundReport {
+    run_round_at(state, inputs, budget, crate::now_unix()).await
+}
+
+// Explicit Unix time lets generated histories advance persisted retry deadlines
+// together with Tokio's clock, without sleeping or changing process-global time.
+async fn run_round_at(
+    state: &ScanState,
+    inputs: &RoundInputs<'_>,
+    budget: Duration,
+    now: i64,
+) -> RoundReport {
     let started = Instant::now();
     let mut laps = Laps::new(started);
     let round_end = started + budget;
-    let now = crate::now_unix();
     // A round that will look at the pool asks for the tip and the pool
     // together: one request while the chain hasn't moved.
     let watching = mempool::watching(inputs, now).await;
