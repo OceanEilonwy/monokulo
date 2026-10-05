@@ -1,12 +1,13 @@
-//! One JSON file per wallet - keys, `monero-wallet-cli`-style metadata,
-//! and the wallet's own ledger of outputs and sends, all together (see
-//! [`WalletData`]). The file is the whole wallet: nothing about one wallet
-//! lives anywhere else, and no two wallets share a file.
+//! One SQLite database file per wallet - keys, `monero-wallet-cli`-style
+//! metadata, and the wallet's own ledger of outputs and sends, all
+//! together (see [`WalletData`], and [`crate::store`] for the schema). The
+//! file is the whole wallet: nothing about one wallet lives anywhere else,
+//! and no two wallets share a file.
 //!
 //! Every change is a read-modify-write under an exclusive lock on a
-//! sibling `<file>.lock` ([`WalletFile::lock`]), and every write is atomic
-//! (temp file, then rename), so parallel e2e runs sending from the same
-//! wallet can neither corrupt the file nor lose each other's updates.
+//! sibling `<file>.lock` ([`WalletFile::lock`]), and every write is one
+//! database transaction, so parallel e2e runs sending from the same wallet
+//! can neither corrupt the file nor lose each other's updates.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,11 +18,11 @@ use serde_json::Value;
 use crate::meta::WalletMeta;
 use crate::{network_name, parse_network, Network, WalletCredentials, WalletError};
 
-/// Bumped whenever [`WalletData`]'s on-disk shape changes incompatibly.
-pub const FORMAT_VERSION: u32 = 1;
+pub use crate::store::FORMAT_VERSION;
 
-/// Everything one wallet file holds. Its `Debug` leaves out the private
-/// keys and the mnemonic.
+/// Everything one wallet file holds, read whole into memory. Its `Debug`
+/// leaves out the private keys and the mnemonic. It still (de)serializes as
+/// JSON: the shape [`import_json`] reads.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct WalletData {
     pub version: u32,
@@ -84,7 +85,7 @@ pub struct OutputRecord {
     /// before it was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<u64>,
-    /// Hex-encoded `WalletOutput::serialize()`.
+    /// Hex-encoded `WalletOutput::serialize()` (a BLOB in the file).
     pub serialized_output_hex: String,
     /// Informational - the authoritative amount is inside the serialized
     /// output.
@@ -177,19 +178,7 @@ pub struct WalletFileLock {
 impl WalletFile {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, WalletError> {
         let path = path.as_ref();
-        let contents = std::fs::read_to_string(path).map_err(|e| {
-            WalletError::WalletFile(format!("failed to read {}: {e}", path.display()))
-        })?;
-        let data: WalletData = serde_json::from_str(&contents).map_err(|e| {
-            WalletError::WalletFile(format!("failed to parse {}: {e}", path.display()))
-        })?;
-        if data.version != FORMAT_VERSION {
-            return Err(WalletError::WalletFile(format!(
-                "{} is format version {}, this build reads {FORMAT_VERSION}",
-                path.display(),
-                data.version
-            )));
-        }
+        let data = crate::store::read(path)?;
         // Addresses are derived for the recorded network, so it has to be
         // one this wallet works on (never mainnet).
         if let Err(e) = data.network() {
@@ -230,7 +219,11 @@ impl WalletFile {
             path: path.to_path_buf(),
             data,
         };
-        file.save()?;
+        // A wallet that couldn't be written leaves no empty file behind.
+        if let Err(e) = file.save() {
+            let _ = std::fs::remove_file(path);
+            return Err(e);
+        }
         Ok(file)
     }
 
@@ -238,68 +231,16 @@ impl WalletFile {
         &self.path
     }
 
-    /// Atomically and durably replaces the file on disk with `self.data`.
-    /// Callers changing a file that already exists hold its [`Self::lock`].
+    /// Atomically and durably replaces what the file holds with
+    /// `self.data`: one transaction, synced before it commits, so a crash
+    /// just after a send can't lose the outputs it spent and let the next
+    /// send double-spend them. Callers changing a file that already exists
+    /// hold its [`Self::lock`].
     ///
     /// The file holds spend keys and a mnemonic, so it is readable by its
-    /// owner alone (0600 on unix). It is synced before it replaces the old
-    /// one, and the directory after: without that, a crash just after a
-    /// send could leave an empty or truncated file on disk, losing every
-    /// output and spent flag, and the next send would double-spend.
+    /// owner alone (0600 on unix).
     pub fn save(&self) -> Result<(), WalletError> {
-        use std::io::Write;
-        let tmp_path = self.path.with_extension("json.tmp");
-        let failed = |e: std::io::Error| {
-            WalletError::WalletFile(format!("failed to write {}: {e}", tmp_path.display()))
-        };
-        let body =
-            serde_json::to_string_pretty(&self.data).expect("WalletData always serializes") + "\n";
-        let written = (|| -> std::io::Result<()> {
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create(true).truncate(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options.open(&tmp_path)?;
-            // `mode` applies only to a file being created; one left over
-            // from an earlier run is tightened too.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-            }
-            file.write_all(body.as_bytes())?;
-            file.sync_all()
-        })();
-        if let Err(e) = written {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(failed(e));
-        }
-        std::fs::rename(&tmp_path, &self.path).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp_path);
-            WalletError::WalletFile(format!(
-                "failed to move {} into place over {}: {e}",
-                tmp_path.display(),
-                self.path.display()
-            ))
-        })?;
-        // The rename itself is durable once the directory is synced.
-        #[cfg(unix)]
-        if let Some(dir) = self.path.parent() {
-            let dir = if dir.as_os_str().is_empty() {
-                Path::new(".")
-            } else {
-                dir
-            };
-            std::fs::File::open(dir)
-                .and_then(|dir| dir.sync_all())
-                .map_err(|e| {
-                    WalletError::WalletFile(format!("failed to sync {}: {e}", dir.display()))
-                })?;
-        }
-        Ok(())
+        crate::store::write(&self.path, &self.data)
     }
 
     /// Takes the exclusive lock on `path`'s sibling `<path>.lock`, with
@@ -631,12 +572,37 @@ pub fn migrate_legacy(
     }
 
     for (name, data) in datas {
-        let path = out_dir.join(format!("{name}.json"));
+        let path = out_dir.join(format!("{name}.db"));
         let (outputs, pending) = (data.outputs.len(), data.pending.len());
         WalletFile::create(&path, data)?;
         report.written.push((name, path, outputs, pending));
     }
     Ok(report)
+}
+
+/// Converts a JSON wallet file - the format before wallet files were
+/// SQLite databases - into a new wallet file at `out`, which mustn't
+/// exist. The JSON file is left as it is.
+pub fn import_json(json: &Path, out: &Path) -> Result<WalletFile, WalletError> {
+    let contents = std::fs::read_to_string(json)
+        .map_err(|e| WalletError::WalletFile(format!("failed to read {}: {e}", json.display())))?;
+    let data: WalletData = serde_json::from_str(&contents)
+        .map_err(|e| WalletError::WalletFile(format!("failed to parse {}: {e}", json.display())))?;
+    if data.version != 1 {
+        return Err(WalletError::WalletFile(format!(
+            "{} is JSON format version {}, only version 1 can be imported",
+            json.display(),
+            data.version
+        )));
+    }
+    // Refused before anything is created.
+    data.network()
+        .map_err(|e| WalletError::WalletFile(format!("{}: {e}", json.display())))?;
+    let data = WalletData {
+        version: FORMAT_VERSION,
+        ..data
+    };
+    WalletFile::create(out, data)
 }
 
 #[cfg(test)]
@@ -671,7 +637,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("cli-wallet-perms-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("w.json");
+        let path = dir.join("w.db");
         let file = WalletFile {
             path: path.clone(),
             data: WalletData::new(

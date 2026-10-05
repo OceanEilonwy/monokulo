@@ -1,5 +1,5 @@
 //! `wallet-cli`: `monero-wallet-cli`'s commands over this crate's
-//! fast, no-scanning, one-JSON-file-per-wallet stagenet (or, with
+//! fast, no-scanning, one-SQLite-file-per-wallet stagenet (or, with
 //! `--testnet`, testnet) wallet.
 //!
 //! Open a wallet and get a prompt, as with the reference wallet:
@@ -24,7 +24,7 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use clap::{CommandFactory, Parser, Subcommand};
-use cli_wallet::file::{migrate_legacy, WalletData, WalletFile};
+use cli_wallet::file::{import_json, migrate_legacy, WalletData, WalletFile};
 use cli_wallet::{
     credentials_from_seed, credentials_from_spend_key_hex, generate_credentials, Network,
     WalletCtx, SEED_LANGUAGE_NAMES,
@@ -48,7 +48,7 @@ struct Cli {
     command: Option<TopCommand>,
 
     /// The wallet to open: a name in the wallet directory (`spender` is
-    /// `e2e/wallets/spender.json`) or a path to a wallet file.
+    /// `e2e/wallets/spender.db`) or a path to a wallet file.
     #[arg(long, visible_alias = "wallet", global = true, default_value = DEFAULT_WALLET)]
     wallet_file: String,
 
@@ -114,6 +114,15 @@ enum TopCommand {
     Wallet(Command),
     /// Print a shell completion script to stdout.
     Completions { shell: clap_complete::Shell },
+    /// Convert a JSON wallet file (the format before SQLite) into a new
+    /// wallet file: `<wallet>` is a name or path, by default the JSON
+    /// file's own path with `.db` in place of `.json`. The JSON file is
+    /// left alone.
+    #[command(name = "import_json")]
+    ImportJson {
+        json: PathBuf,
+        wallet: Option<String>,
+    },
     /// One-off: split the old shared e2e/stagenet-wallets.json +
     /// e2e/stagenet-known-outputs.json into one file per wallet.
     #[command(hide = true, name = "migrate_legacy")]
@@ -289,6 +298,26 @@ async fn run(mut cli: Cli) -> Result<(), CliError> {
             for output in &report.unowned_outputs {
                 println!("not owned by any wallet, dropped: {output}");
             }
+            return Ok(());
+        }
+        Some(TopCommand::ImportJson {
+            ref json,
+            ref wallet,
+        }) => {
+            let out = match wallet {
+                Some(wallet) => ctx.wallet_path(wallet),
+                None => json.with_extension("db"),
+            };
+            let file = import_json(json, &out)?;
+            println!(
+                "{}: {} wallet {} ({} outputs, {} pending, {} sent)",
+                out.display(),
+                file.data.network,
+                file.data.address,
+                file.data.outputs.len(),
+                file.data.pending.len(),
+                file.data.sent.len()
+            );
             return Ok(());
         }
         Some(TopCommand::Wallet(command)) => Some(command),

@@ -1,5 +1,5 @@
 # Real end-to-end test config: a moneropay server bootstrapped with the
-# merchant watch-only wallet persisted in e2e/wallets/merchant.json, scanning a
+# merchant watch-only wallet persisted in e2e/wallets/merchant.db, scanning a
 # real public stagenet node. See e2e/README.md for how this is used.
 
 [monero_node.stagenet]
