@@ -96,6 +96,17 @@ MUTATIONS = (
              "if epoch > previous {", "if false && epoch > previous {",
              "router::properties::backend_epoch_changes_invalidate_only_the_restarted_backend",
              expected_failure="BOUNDARY: stale-custody-epoch"),
+    Mutation("new-arrivals-starve-old-windows", "crates/engine/src/work/mempool.rs",
+             "rotation.update(pool_txids);",
+             "rotation.update(pool_txids); rotation.queue.make_contiguous().sort_by_key(|id| (!state.is_new(id), id.clone()));",
+             "work::mempool::properties::scale::expanded_windows_are_served_during_continuous_new_transaction_floods",
+             expected_failure="BOUNDARY: sustained-arrival-starvation"),
+    Mutation("share-transaction-tenant-cursor", "crates/engine/src/work/mempool.rs",
+             "async fn tenant_page(round: &Round<'_>, txid: &str) -> Result<Vec<TenantWindow>, ScannerError> {",
+             "async fn tenant_page(round: &Round<'_>, txid: &str) -> Result<Vec<TenantWindow>, ScannerError> { let shared = format!(\"global-{}\", txid.len()); let txid = shared.as_str();",
+             "work::mempool::properties::scale::transaction_cursors_cannot_be_shared_between_three_transactions",
+             expected_failure="BOUNDARY: transaction-tenant-fairness"),
+
 )
 
 

@@ -147,3 +147,17 @@ Not covered: the scripted node answers instantly apart from its link
 model, so monerod's own time to build an answer is only the time to first
 byte per block. A thousand tenants on one CPU are bound by scanning
 (about 5,000 tenant-blocks a second).
+
+
+### Thousands-of-tenant scale profile
+
+`cargo xtask stress scale` uses `xtask/stress/scenario_scale_v1.json` and writes
+`target/coverage/stress-scale/`. It measures 512, 1024 and 2048 tenants with four
+orders each and one 1024-order window, then runs the three recovery points at 256
+tenants. Hardware-specific latency and sustainable/overloaded classifications
+remain observational in this profile. Missing progress, fixture errors or a fault
+that never fires/recovers still fail. Linux RSS and peak RSS are recorded per tick
+and shown in the capacity report; they include fixture/allocator/database costs
+and are not a cache-byte limit. Scheduled/manual `engine-scale.yml` preserves the
+report. The independent scale correctness suite and exact-money expectations are
+documented in `docs/TESTING.md` and run by `scripts/engine-scale.sh` in both builds.

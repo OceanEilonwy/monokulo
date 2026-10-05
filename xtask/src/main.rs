@@ -20,7 +20,7 @@ fn root() -> PathBuf {
 }
 
 fn help() {
-    println!("Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|open>\n       cargo xtask stress <ci|full|open> [driver]\n       cargo xtask stress rounds\n       cargo xtask snp-id-key [--from-env]\n       cargo xtask snp-id-block ...\n\n\
+    println!("Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|open>\n       cargo xtask stress <ci|full|scale|open> [driver]\n       cargo xtask stress rounds\n       cargo xtask snp-id-key [--from-env]\n       cargo xtask snp-id-block ...\n\n\
         rust          Refresh nightly and cargo-llvm-cov; run workspace tests and collect Rust coverage\n\
         browser       Run deterministic Playwright tests and collect authored browser source coverage\n\
         woocommerce   Run default PHPUnit tests in wp-env and collect plugin coverage\n\
@@ -31,6 +31,7 @@ fn help() {
         open          Open target/coverage/index.html in the default browser\n\
         stress ci     One-CPU scanner capacity sweep and fault recovery (docs/engine_stress.md)\n\
         stress full   The same with larger tenant counts\n\
+        stress scale  Thousands of tenants; observational latency and capacity\n\
         stress open   Open target/coverage/stress/index.html\n\
         stress rounds Round length sweep: throughput, refetches and waits (docs/engine_stress.md)\n\
         snp-id-key    Make the engine image ID key: prints it (for the SNP_ID_KEY secret) and writes its\n\

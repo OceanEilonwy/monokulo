@@ -47,6 +47,24 @@ use tower::ServiceExt as _;
 const SCHEMA_VERSION: u64 = 3;
 const NETWORK: &str = "mainnet";
 
+/// Whole-process measurements, independent of cache accounting. Unsupported
+/// hosts report null rather than an invented zero or a universal memory limit.
+fn process_memory() -> serde_json::Value {
+    let status = std::fs::read_to_string("/proc/self/status").ok();
+    let bytes = |label: &str| {
+        let s = status.as_ref()?;
+        s.lines().find_map(|line| {
+            let rest = line.strip_prefix(label)?;
+            rest.split_whitespace()
+                .next()?
+                .parse::<u64>()
+                .ok()?
+                .checked_mul(1024)
+        })
+    };
+    json!({"resident_bytes":bytes("VmRSS:"),"peak_resident_bytes":bytes("VmHWM:")})
+}
+
 struct FixtureDaemon {
     height: AtomicU64,
     tx: Transaction,
@@ -666,7 +684,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
         points.push(json!({"tick":tick,"phase":phase,"duration_ms":elapsed_ms,"highwater":snapshot.highwater,
             "lagging_tenants":snapshot.lagging,"oldest_lag_blocks":snapshot.highwater.saturating_sub(snapshot.min_cursor),
             "min_tenant_cursor":snapshot.min_cursor,"progressed_tenants":snapshot.progressed,
-            "ok":outcome.is_ok(),"error":outcome.err()}));
+            "ok":outcome.is_ok(),"error":outcome.err(),"process_memory":process_memory()}));
     }
     heartbeat_stop.store(true, Ordering::Relaxed);
     let _ = heartbeat.await;

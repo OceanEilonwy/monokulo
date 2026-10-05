@@ -1021,7 +1021,7 @@ portfolio 60` and append `zmq` for fuzzing that configuration.
 
 ## Named mutation checks: testing the tests
 
-`scripts/engine-mutations.py` deliberately introduces fourteen defects, one at a time,
+`scripts/engine-mutations.py` deliberately introduces sixteen defects, one at a time,
 in a disposable detached worktree. The caller's engine sources are never edited.
 Each selected test must first pass on the healthy snapshot, then fail by an
 assertion bearing the defect’s specified `BOUNDARY:` marker on the mutant. All defects are checked in default and ZMQ builds:
@@ -1042,6 +1042,8 @@ assertion bearing the defect’s specified `BOUNDARY:` marker on the mutant. All
 | Retain an obsolete reorg staging checkpoint | Reopen/fork/network staging sweep |
 | Retain obsolete staged matches | Same sweep, independent staging-row assertion |
 | Keep custody handles live across backend epoch changes | Generated backend epoch isolation property |
+| Let new pool arrivals displace old-window rescans | Sustained-arrival payment regression |
+| Share the tenant-page cursor across transactions | Three-transaction scheduling regression |
 
 Compiler/linker errors, zero selected tests, unrelated panics, wall timeouts and
 failed rendezvous/virtual deadlines are invalid runs, never successful detections.
@@ -1182,3 +1184,62 @@ python3 -m json.tool target/engine-mutations/report.json
 ```
 
 Custody policies and their generated properties live in the extracted `key-custody` crate. The mutation runner selects that package for epoch checks; ZMQ build choices apply to engine tests.
+
+
+## Scale correctness and measurements
+
+`./scripts/engine-scale.sh default` and `./scripts/engine-scale.sh zmq` run the
+complete package, including the deliberately ignored large fixtures. The normal
+engine suite runs the smaller generated properties and fixed regressions. The
+large fixtures are separate to keep ordinary edit/test cycles short; they are
+required in `engine-scale.yml` on relevant pull requests, weekly, and manually.
+The runner uses one test process at a time, no retries, a fixed/replayable seed,
+and the CI process watchdog. `PROPTEST_CASES` and `PROPTEST_RNG_SEED` remain
+available for replay/shrinking. Logs, JUnit and replay settings are saved under
+`target/engine-scale/<default|zmq>/`; counterexamples keep the usual Proptest files.
+
+| Surface | Generated range / fixed scale points | Checked through production boundaries |
+|---|---|---|
+| Distinct merchants and catch-up groups | 1–64 tenants, four orders each, 1–8 groups, 2–8 custody outage rounds; fixed 257/513/1025/2049 tenants, 16 groups, eight custody outage rounds | Real distinct wallet material, recorded RingCT money, file-backed worker, one observed node outage and one reached SQL denial, prefix custody failures, scheduler/worker reopening, every cursor reaching the tip, exactly one correct credit and zero foreign credits, persisted final ledger |
+| Large pool and competing fast passes | 2–128 transactions; fixed 257/1025/4097/8193 | Reached custody failure, two live fast callers, exactly one successful scan per transaction/window, independently known payment amount/output/ID, no duplicate publication, accounted body bytes, release after pool departure |
+| Transaction × merchant scheduling | 2–65 tenants × 2–6 transactions; fixed 257×2, 513×3, 1025×5; named 96×3 regression | Previously completed transactions paying addresses allocated later; every pair must be revisited within a work-count bound. These tenants intentionally share the paying wallet to make every missing pair observable. The distinct-wallet family above checks isolation. |
+| Sustained new pool traffic | 320 new transactions per round for eight consecutive rounds | A previously scanned transaction paying a newly allocated address must be rediscovered while arrivals continue; the first address receives nothing |
+| Pure pool rotation | 1–257 initially queued IDs, 1–64 completed per turn, 1–32 new arrivals per turn; fuzz ticket histories up to 1024 operations over eight IDs | New admissions cannot extend an existing item's wait; ticket oracle checks admission order, partial progress, missing bodies/deferred IDs, departures and membership uniqueness |
+| Worker admission and dispatch | 1–8 waves; fixed 64 waves = 12,288 accepted jobs | All three queues filled to 64 each, abandoned accepted callers still commit exactly once, cancelled waiting callers never commit, exact per-class FIFO, one turn per three continuously ready jobs, complete drain |
+| Webhook backlogs | 1–16 healthy / 1–8 failing tenants, 1–4 orders each, 1–3 events per order; fixed 1025 healthy / 128 failing, four orders, three events = 13,836 deliveries | Real HTTP/SQLite, reached 503 responses, healthy tail progress, persisted retry deadlines and reopen, eventual failed-merchant recovery, per-order FIFO, stable retry bytes, valid signatures and unique protocol headers, at most 16 live deliveries |
+| Production cache limits | 20,065 attempted small bodies against the 20,000-body cap; serialized 8 MiB bodies against 128 MiB; 8193 block headers against a 1 MiB budget | Duplicate admission, integer overflow rejection, exact byte accounting, reclaim/refill, scanned-first eviction, preserved anchor, replacement, oversized pinned-anchor exception, branch-range removal and complete clear |
+
+The round safety net now uses stable FIFO transaction membership and a separate
+tenant bookmark for each transaction. New arrivals join behind existing work.
+Only attempted bodies and unavailable bodies move to the back; bodies left by a
+time deadline retain their position. Failed tenant scans remain due for later
+laps. A shared tenant bookmark can phase-lock the two rotations and leave some
+pairs unvisited, even when both counters keep advancing. The fast pass retains
+its bounded new-transaction optimization. The mempool fuzzer also runs the pure
+rotation against an independent monotonic-ticket oracle. Both named defects are
+checked by the mutation runner in default and ZMQ builds.
+
+No correctness assertion depends on a universal latency or throughput number.
+`cargo xtask stress scale` separately measures 512/1024/2048 tenants, four orders
+per tenant plus one 1024-order window, real SQLite readers/writers and status HTTP,
+and three 256-tenant recovery points (RPC failures, a held writer, and one custody
+slot). This versioned scenario is `xtask/stress/scenario_scale_v1.json`; existing
+CI/full workloads are unchanged. Hardware/affinity, revision, scenario checksum,
+commands, queue/query/HTTP/timer measurements, Linux process RSS/high-water RSS,
+and recovery observations are stored in `target/coverage/stress-scale/`, alongside
+an HTML report. Slow latency/capacity is reported rather than made a correctness
+failure in this profile; actual fixture errors, missing tenant/background progress
+or missing fault/recovery evidence still fail. Scheduled/manual scale CI uploads
+these measurements; pull requests run the correctness matrix.
+
+Cache limits account serialized bytes, not total process memory. IDs, windows,
+completed transaction/tenant generations, orders and active leases grow with
+current workload cardinality; this package checks accounted caps and reclamation,
+not a constant whole-engine RSS guarantee. RSS measurements include the process's
+allocator, SQLite, HTTP and test fixture, and unsupported hosts report null.
+The capacity fixture repeats a recorded transaction across synthetic blocks as a
+scanner workload; its throughput is not a consensus-valid-chain or financial
+oracle. The scale properties use separate expected ledgers. Nonce-varied foreign
+transactions and transparent scheduling payments are scanner fixtures, not newly
+signed Monero network transactions. High-cardinality fixtures are deliberately
+split to test each bound without requiring an 8193 × 2049 crypto cross product.
