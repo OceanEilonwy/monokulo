@@ -30,13 +30,7 @@ fn payments() -> impl Strategy<Value = Vec<PaymentView>> {
     proptest::collection::vec(payment(), 0..33)
 }
 
-fn total(payments: &[PaymentView]) -> u64 {
-    // A wider sum is independent of production's saturating fold. The vector
-    // bound keeps this safely within u128, including 32 maximal amounts.
-    let sum: u128 = payments.iter().map(|p| u128::from(p.amount_piconero)).sum();
-    u64::try_from(sum).unwrap_or(u64::MAX)
-}
-
+use super::exploration::{reference_status, total};
 fn scenario() -> impl Strategy<Value = (Vec<PaymentView>, StatusInputs)> {
     payments().prop_flat_map(|payments| {
         let received = total(&payments);
@@ -76,40 +70,9 @@ fn settled(status: OrderStatus) -> bool {
     matches!(status, OrderStatus::Paid | OrderStatus::Overpaid)
 }
 
-// An aggregate specification: settlement requires enough funds at the required
-// depth. This does not sort payments or construct production's covering prefix.
-fn reference_status(payments: &[PaymentView], inputs: StatusInputs) -> OrderStatus {
-    let received = total(payments);
-    if received < inputs.xmr_amount_piconero {
-        if inputs.now > inputs.expires_at {
-            OrderStatus::Expired
-        } else if received == 0 {
-            OrderStatus::Pending
-        } else {
-            OrderStatus::Partial
-        }
-    } else {
-        let eligible: Vec<_> = payments
-            .iter()
-            .copied()
-            .filter(|p| p.confirmations >= inputs.confirmations_required)
-            .collect();
-        if total(&eligible) >= inputs.xmr_amount_piconero {
-            if received > inputs.xmr_amount_piconero {
-                OrderStatus::Overpaid
-            } else {
-                OrderStatus::Paid
-            }
-        } else if payments.iter().any(|p| !p.is_zero_conf) {
-            // Mined payments sort before pool sightings, including at depth 0.
-            OrderStatus::Confirming
-        } else {
-            OrderStatus::Unconfirmed
-        }
-    }
-}
-
 proptest! {
+    #[test]
+    fn fuzz_histories_match_status_specification(data in proptest::collection::vec(any::<u8>(),0..4097)) { super::exploration::explore(&data); }
     #[test]
     fn agrees_with_aggregate_specification((payments, inputs) in scenario()) {
         prop_assert_eq!(derive_status(&payments, inputs), reference_status(&payments, inputs));
@@ -214,5 +177,17 @@ proptest! {
             derive_status(&payments, StatusInputs { now: expires_at + 1, ..inputs }),
             OrderStatus::Expired,
         );
+    }
+}
+
+#[test]
+fn reviewed_status_fuzz_seeds_replay() {
+    for data in [
+        include_bytes!("../../../../fuzz/seeds/status/expiry").as_slice(),
+        include_bytes!("../../../../fuzz/seeds/status/saturation").as_slice(),
+        include_bytes!("../../../../fuzz/seeds/status/mixed-evidence").as_slice(),
+        include_bytes!("../../../../fuzz/seeds/status/zero-depth").as_slice(),
+    ] {
+        super::exploration::explore(data);
     }
 }

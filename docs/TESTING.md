@@ -715,7 +715,7 @@ cargo nextest run -p engine -p shared --lib --locked --features zmq
 Coverage-guided fuzzing lives in the isolated `fuzz/` Cargo workspace. Its lockfile
 uses the application's locked versions for shared dependencies; `libfuzzer-sys`
 and Loom are additional test-only tools. `engine/fuzzing` exposes only exploration
-entry points and is absent from ordinary shipping builds. All five targets invoke
+entry points and is absent from ordinary shipping builds. All six targets invoke
 actual production policy or boundary code through the same oracles used in normal
 properties:
 
@@ -747,7 +747,7 @@ cargo test --manifest-path fuzz/Cargo.toml --locked --features zmq --test interl
 The fuzz runner copies reviewed `fuzz/seeds/` into ignored mutable corpora, supplies
 an explicit seed, limits inputs to 4 KiB and individual executions to ten seconds,
 and uses AddressSanitizer. The daily/manual `engine-fuzz.yml` workflow exercises
-all four targets under both feature configurations, caches evolving corpora and
+all six targets under both feature configurations, caches evolving corpora and
 uploads corpora and failure artifacts. Its separate Loom jobs explore completion
 ordering with the actual scheduler policy. Loom instruments the small harness's
 synchronization; **it does not instrument or exhaustively verify Tokio channels,
@@ -838,3 +838,18 @@ mutex also requires redesigning synchronous cancellation cleanup, which cannot
 await a lock in `Drop`.
 
 [Tokio’s mutex guidance](https://docs.rs/tokio/latest/tokio/sync/struct.Mutex.html#which-kind-of-mutex-should-you-use) likewise recommends a blocking mutex for ordinary shared data when the critical section does not span an await.
+
+
+## Status coverage-guided fuzzing
+
+`status` shares the independent aggregate specification with the existing status
+properties. Inputs are capped at 4 KiB, with full-width expected amounts, required
+confirmations and signed timestamps, and up to 128 payment records. Expected amounts
+remain positive; pool payments have zero confirmations. Assertions check the exact
+status, ordering independence, equivalent payment splitting and settlement under
+confirmation growth. Reviewed seeds force expiry, saturation, mixed evidence and
+zero-confirmation boundaries. Normal properties also generate byte histories.
+
+Run `ENGINE_FUZZ_SEED=149 scripts/engine-fuzz.sh status 60` (append `zmq` for that
+configuration), or `cargo test -p engine --lib status::properties`. Daily fuzz jobs
+include both configurations and preserve corpus/replay artifacts.

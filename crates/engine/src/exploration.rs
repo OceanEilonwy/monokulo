@@ -240,3 +240,8 @@ pub fn queue(data: &[u8]) {
 pub fn mempool(data: &[u8]) {
     crate::work::explore_mempool(data);
 }
+
+/// Check status derivation and metamorphic guarantees against aggregate evidence.
+pub fn status(data: &[u8]) {
+    crate::status::exploration::explore(data);
+}
