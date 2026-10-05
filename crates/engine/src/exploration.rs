@@ -245,3 +245,8 @@ pub fn mempool(data: &[u8]) {
 pub fn status(data: &[u8]) {
     crate::status::exploration::explore(data);
 }
+
+/// Run real scanner/database histories against an independent money model.
+pub fn history(data: &[u8]) {
+    crate::work::history::explore(data);
+}

@@ -611,3 +611,8 @@ mod tests;
 pub(crate) fn explore_mempool(data: &[u8]) {
     mempool::explore(data);
 }
+
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) mod history;
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) mod history_fixture;

@@ -6,42 +6,7 @@ use crate::daemon::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-/// Stable mask positions used by generated fault histories.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
-pub(crate) enum Rpc {
-    Tip,
-    Hash,
-    Blocks,
-    Headers,
-    Outline,
-    Pool,
-    Transactions,
-    Location,
-    Spent,
-    Difficulty,
-    Blob,
-}
-impl Rpc {
-    pub(crate) const ALL: [Self; 11] = [
-        Self::Tip,
-        Self::Hash,
-        Self::Blocks,
-        Self::Headers,
-        Self::Outline,
-        Self::Pool,
-        Self::Transactions,
-        Self::Location,
-        Self::Spent,
-        Self::Difficulty,
-        Self::Blob,
-    ];
-    pub(crate) const SCANNER_MASK: u16 = (1 << 9) - 1;
-    pub(crate) const ALL_MASK: u16 = (1 << Self::ALL.len()) - 1;
-    pub(crate) const fn bit(self) -> u16 {
-        1 << self as usize
-    }
-}
+pub(crate) use crate::exploration_rpc::Rpc;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CallCounts {

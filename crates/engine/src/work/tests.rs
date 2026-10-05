@@ -123,30 +123,7 @@ fn inputs<'a>(
     }
 }
 
-fn file_store() -> (Store, TempDb) {
-    let path = std::env::temp_dir().join(format!("scanner_rounds_{}.db", uuid::Uuid::new_v4()));
-    let path = path.to_string_lossy().into_owned();
-    (Store::open_file(&path).unwrap(), TempDb(path))
-}
-
-/// A database file (and its WAL and shared-memory files) removed when the
-/// test ends, passed or failed.
-struct TempDb(String);
-
-impl std::ops::Deref for TempDb {
-    type Target = str;
-    fn deref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Drop for TempDb {
-    fn drop(&mut self) {
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", self.0));
-        }
-    }
-}
+pub(crate) use super::history_fixture::{file_store, TempDb};
 
 /// The production database path: a worker thread with its own connection.
 fn worker(store: &SharedStore, path: &str) -> Db {

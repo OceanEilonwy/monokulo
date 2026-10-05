@@ -124,7 +124,7 @@ impl Db {
     /// [`Db::over_shared`], with every job an await point, as it is with
     /// the worker: a test that drops a future part-way can stop it between
     /// two jobs, where a crash or a cancellation can stop the real thing.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fuzzing"))]
     pub fn over_shared_yielding(store: SharedStore) -> Self {
         Self {
             inner: Inner::Inline {

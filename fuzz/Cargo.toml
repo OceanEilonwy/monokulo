@@ -62,3 +62,10 @@ path="fuzz_targets/status.rs"
 test=false
 doc=false
 bench=false
+
+[[bin]]
+name="history"
+path="fuzz_targets/history.rs"
+test=false
+doc=false
+bench=false

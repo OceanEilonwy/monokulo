@@ -26,6 +26,8 @@ pub mod daemon_rpc;
 pub mod engine_settings;
 #[cfg(any(test, feature = "fuzzing"))]
 pub mod exploration;
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) mod exploration_rpc;
 pub mod http;
 pub mod key_custody;
 pub mod link;

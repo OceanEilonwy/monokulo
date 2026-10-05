@@ -1546,7 +1546,6 @@ pub(crate) mod tests {
     use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
     use crate::key_custody::{Network, PlainKeyCustody, SubaddressIndex, WalletMaterial};
     use crate::store::{NewOrder, NewTenant};
-    use monero::consensus::encode::deserialize;
     use monero::{Address, PrivateKey, PublicKey};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -2015,29 +2014,6 @@ pub(crate) mod tests {
             dirty_orders: dirty_orders.into_iter().collect(),
             double_spent_orders: double_spent_orders.into_iter().collect(),
         })
-    }
-
-    pub(crate) fn fixture_tx() -> Transaction {
-        let raw_tx = hex::decode(include_str!("../tests/fixtures/subaddress_tx.hex")).unwrap();
-        deserialize(&raw_tx).unwrap()
-    }
-
-    fn fixture_view_key() -> [u8; 32] {
-        PrivateKey::from_slice(
-            &hex::decode("bcfdda53205318e1c14fa0ddca1a45df363bb427972981d0249d0f4652a7df07")
-                .unwrap(),
-        )
-        .unwrap()
-        .to_bytes()
-    }
-
-    fn fixture_spend_pubkey() -> [u8; 32] {
-        let secret_spend = PrivateKey::from_slice(
-            &hex::decode("e5f4301d32f3bdaef814a835a18aaaa24b13cc76cf01a832a7852faf9322e907")
-                .unwrap(),
-        )
-        .unwrap();
-        PublicKey::from_private_key(&secret_spend).to_bytes()
     }
 
     async fn setup() -> (Store, PlainKeyCustody, WalletHandle, String, String) {
@@ -9092,192 +9068,13 @@ pub(crate) mod tests {
     /// replaced, so no wallet's derivation matches its outputs, and a txid of
     /// its own. Gap blocks need real transactions in them: a tenant is only
     /// found to be failing when there is something to scan for it.
-    pub(crate) fn unrelated_tx(seed: u8) -> Transaction {
-        let mut tx = fixture_tx();
-        let mut key_bytes = [seed.wrapping_add(7); 32];
-        key_bytes[31] &= 0x0f;
-        let other = PublicKey::from_private_key(&PrivateKey::from_slice(&key_bytes).unwrap());
-        let extra = tx.prefix.extra.try_parse();
-        let replaced = monero::blockdata::transaction::ExtraField(
-            extra
-                .0
-                .into_iter()
-                .map(|field| match field {
-                    monero::blockdata::transaction::SubField::TxPublicKey(_) => {
-                        monero::blockdata::transaction::SubField::TxPublicKey(other)
-                    }
-                    monero::blockdata::transaction::SubField::AdditionalPublickKey(keys) => {
-                        monero::blockdata::transaction::SubField::AdditionalPublickKey(
-                            keys.iter().map(|_| other).collect(),
-                        )
-                    }
-                    field @ (monero::blockdata::transaction::SubField::Nonce(_)
-                    | monero::blockdata::transaction::SubField::Padding(_)
-                    | monero::blockdata::transaction::SubField::MergeMining(..)
-                    | monero::blockdata::transaction::SubField::MysteriousMinerGate(_)) => field,
-                })
-                .collect(),
-        );
-        tx.prefix.extra = replaced.into();
-        tx
-    }
-
     /// Wraps a `PlainKeyCustody` and fails `scan_tx_outputs` for any handle in
     /// `failing`, the way a key-custody backend that is down fails for the
     /// stores whose keys it holds, while other stores keep working.
-    #[derive(Default)]
-    pub(crate) struct FlakyKeyCustody {
-        inner: PlainKeyCustody,
-        failing: parking_lot::Mutex<HashSet<WalletHandle>>,
-        /// Scan calls made for each handle, failed or not.
-        pub(crate) attempts: parking_lot::Mutex<HashMap<WalletHandle, u32>>,
-        /// Run once, at the next scan call: for changing the world mid-scan.
-        on_next_scan: parking_lot::Mutex<Option<Box<dyn FnOnce() + Send>>>,
-    }
-
-    impl FlakyKeyCustody {
-        pub(crate) fn on_next_scan(&self, hook: impl FnOnce() + Send + 'static) {
-            *self.on_next_scan.lock() = Some(Box::new(hook));
-        }
-        pub(crate) fn fail(&self, handle: WalletHandle) {
-            self.failing.lock().insert(handle);
-        }
-        pub(crate) fn recover(&self, handle: WalletHandle) {
-            self.failing.lock().remove(&handle);
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl KeyCustody for FlakyKeyCustody {
-        async fn register_wallet(
-            &self,
-            material: WalletMaterial,
-        ) -> std::result::Result<WalletHandle, KeyCustodyError> {
-            self.inner.register_wallet(material).await
-        }
-        async fn remove_wallet(
-            &self,
-            handle: WalletHandle,
-        ) -> std::result::Result<(), KeyCustodyError> {
-            self.inner.remove_wallet(handle).await
-        }
-        async fn seal(
-            &self,
-            material: &WalletMaterial,
-        ) -> std::result::Result<Vec<u8>, KeyCustodyError> {
-            self.inner.seal(material).await
-        }
-        async fn unseal_and_register(
-            &self,
-            sealed: &[u8],
-        ) -> std::result::Result<WalletHandle, KeyCustodyError> {
-            self.inner.unseal_and_register(sealed).await
-        }
-        async fn derive_subaddress(
-            &self,
-            handle: WalletHandle,
-            index: SubaddressIndex,
-            network: Network,
-        ) -> std::result::Result<Address, KeyCustodyError> {
-            self.inner.derive_subaddress(handle, index, network).await
-        }
-        async fn scan_tx_outputs(
-            &self,
-            handle: WalletHandle,
-            tx: &ScanInput,
-            major_range: Range<u32>,
-            minor_range: Range<u32>,
-        ) -> std::result::Result<Vec<MatchedOutput>, KeyCustodyError> {
-            *self.attempts.lock().entry(handle).or_default() += 1;
-            let hook = self.on_next_scan.lock().take();
-            if let Some(hook) = hook {
-                hook();
-            }
-            if self.failing.lock().contains(&handle) {
-                return Err(KeyCustodyError::BackendUnavailable(
-                    "simulated backend outage".into(),
-                ));
-            }
-            self.inner
-                .scan_tx_outputs(handle, tx, major_range, minor_range)
-                .await
-        }
-    }
-
-    /// A tenant on the fixture wallet with one order at minor index 1, which
-    /// `fixture_tx` pays. Several of these can share one store: each gets its
-    /// own payment row from the same transaction.
-    pub(crate) async fn fixture_tenant(
-        store: &Store,
-        key_custody: &dyn KeyCustody,
-        expires_at: i64,
-    ) -> (crate::store::TenantId, WalletHandle, crate::store::OrderId) {
-        let handle = register_fixture_wallet(key_custody).await;
-        let (tenant, order) = fixture_tenant_rows(store, expires_at);
-        (tenant, handle, order)
-    }
-
-    /// [`fixture_tenant`] on a shared store, locked only for the
-    /// synchronous writes: the custody call is awaited first, with no lock
-    /// held.
-    pub(crate) async fn fixture_tenant_shared(
-        store: &crate::store::SharedStore,
-        key_custody: &dyn KeyCustody,
-        expires_at: i64,
-    ) -> (crate::store::TenantId, WalletHandle, crate::store::OrderId) {
-        let handle = register_fixture_wallet(key_custody).await;
-        let (tenant, order) = fixture_tenant_rows(&store.lock(), expires_at);
-        (tenant, handle, order)
-    }
-
-    pub(crate) async fn register_fixture_wallet(key_custody: &dyn KeyCustody) -> WalletHandle {
-        key_custody
-            .register_wallet(WalletMaterial::new(
-                fixture_view_key(),
-                fixture_spend_pubkey(),
-            ))
-            .await
-            .unwrap()
-    }
-
-    fn fixture_tenant_rows(
-        store: &Store,
-        expires_at: i64,
-    ) -> (crate::store::TenantId, crate::store::OrderId) {
-        let tenant = store
-            .create_tenant(
-                &NewTenant {
-                    key_custody_backend: "plain".into(),
-                    sealed_key_material: vec![],
-                    primary_address: "4fixture".into(),
-                    network: "mainnet".into(),
-                    confirmations_required: Some(10),
-                    order_expiry_seconds: None,
-                },
-                1000,
-            )
-            .unwrap();
-        let index = store.allocate_minor_index(&tenant.tenant.id).unwrap();
-        assert_eq!(index, 1);
-        let order = store
-            .create_order(&NewOrder {
-                idempotency_key: None,
-                confirmations_required_override: None,
-                tenant_id: tenant.tenant.id.clone(),
-                merchant_order_id: None,
-                minor_index: index,
-                address: "fixture".into(),
-                xmr_amount_piconero: 1,
-                description: None,
-                created_at: 1000,
-                expires_at,
-            })
-            .unwrap();
-        (
-            shared::ids::TenantId::new(tenant.tenant.id.into_string()),
-            shared::ids::OrderId::new(order.id.into_string()),
-        )
-    }
+    pub(crate) use crate::work::history_fixture::{
+        fixture_spend_pubkey, fixture_tenant, fixture_tenant_shared, fixture_tx, fixture_view_key,
+        register_fixture_wallet, unrelated_tx, FlakyKeyCustody,
+    };
 
     pub(crate) fn cursor_of(store: &crate::store::SharedStore, tenant_id: &str) -> Option<u64> {
         let tenant = store

@@ -715,11 +715,13 @@ cargo nextest run -p engine -p shared --lib --locked --features zmq
 Coverage-guided fuzzing lives in the isolated `fuzz/` Cargo workspace. Its lockfile
 uses the application's locked versions for shared dependencies; `libfuzzer-sys`
 and Loom are additional test-only tools. `engine/fuzzing` exposes only exploration
-entry points and is absent from ordinary shipping builds. All six targets invoke
+entry points and is absent from ordinary shipping builds. All seven targets invoke
 actual production policy or boundary code through the same oracles used in normal
 properties:
 
 - `scheduler`: time, progress outcomes and completion sequencing.
+- `status`: independent aggregate status oracle, full-width inputs and metamorphic checks.
+- `history`: real scanner, database and custody histories with independent money/recovery checks.
 - `queue`: bounded arrivals, closed classes, class selection and draining.
 - `mempool`: batched scan reservations, partial completions, cancellation, eviction, changed windows, failed-tenant filtering, snapshots and cache budgets.
 - `resources`: arbitrary numeric bit patterns in request sizing, retries and timeouts.
@@ -747,7 +749,7 @@ cargo test --manifest-path fuzz/Cargo.toml --locked --features zmq --test interl
 The fuzz runner copies reviewed `fuzz/seeds/` into ignored mutable corpora, supplies
 an explicit seed, limits inputs to 4 KiB and individual executions to ten seconds,
 and uses AddressSanitizer. The daily/manual `engine-fuzz.yml` workflow exercises
-all six targets under both feature configurations, caches evolving corpora and
+all seven targets under both feature configurations, caches evolving corpora and
 uploads corpora and failure artifacts. Its separate Loom jobs explore completion
 ordering with the actual scheduler policy. Loom instruments the small harness's
 synchronization; **it does not instrument or exhaustively verify Tokio channels,
@@ -853,3 +855,27 @@ zero-confirmation boundaries. Normal properties also generate byte histories.
 Run `ENGINE_FUZZ_SEED=149 scripts/engine-fuzz.sh status 60` (append `zmq` for that
 configuration), or `cargo test -p engine --lib status::properties`. Daily fuzz jobs
 include both configurations and preserve corpus/replay artifacts.
+
+
+## Full scanner-history fuzzing
+
+`history` shares `work::history::Harness` with the original scanner properties,
+including the independent canonical-chain/money oracle and real wallet transaction.
+Each input runs up to 32 four-byte commands: mining, pool changes, same/shorter/longer
+forks, spent evidence, daemon/custody outages, nine RPC failures plus malformed spent
+answers, SQL denial positions 0–255, rounds, fast passes, cancellation attempts,
+reopens and recovery checks. Each run forces initial money observation, a final
+fork/reopen/recovery and re-mining with stable payment IDs. Rounds retain the existing
+five-second virtual deadline; SQL fault traces verify the requested denial was
+actually reached when applicable. Inputs above 128 bytes have an ignored tail.
+
+This exercises real tier executors, file-backed SQLite and crypto, using the same
+inline DB mode as sequential properties. Cancellation attempts use yielding inline
+admission; real worker/custody cancellation rendezvous remain in the dedicated
+integration properties. It does not fuzz response decoding, PoW, arbitrary valid
+transactions, every thread ordering or power loss. Each execution cleans its own DB.
+
+Run `ENGINE_FUZZ_SEED=157 scripts/engine-fuzz.sh history 60` and append `zmq` for
+that configuration. `coverage_guided_histories_recover_with_real_scanner` generates
+the same byte commands as a normal property; reviewed histories replay as tests.
+Daily default/ZMQ fuzz jobs retain evolving corpora and failure artifacts.

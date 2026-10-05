@@ -80,8 +80,8 @@ clap = "4.6.7"
 zeromq = { version = "0.6.0", default-features = false, features = ["tokio-runtime", "tcp-transport", "ipc-transport"], optional = true }
 
 [features]
-# Pure exploration entry points; never enabled by the engine binary in production.
-fuzzing = []
+# Exploration entry points and fault/clock helpers; never enabled in production.
+fuzzing = ["tokio/test-util", "rusqlite/hooks"]
 # The in-thread database pools (`store::Database::inline`) for
 # `engine-test-support` and the e2e harness (`crates/e2e-harness`). Never in
 # production.
