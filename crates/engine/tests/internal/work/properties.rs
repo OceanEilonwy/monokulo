@@ -618,7 +618,7 @@ fn combined_portfolio_interactions_have_fixed_positive_controls() {
             "custody-error-reached",
             "sql-denial-reached",
             "all-node-outage-preserves-money-and-cursors",
-            "database-reopened-mid-history",
+            "connection-reopened-mid-history",
             "custody-handle-replaced",
             "unanimous-spent-void-checked",
             "disputed-spent-retains-funds",
@@ -628,11 +628,19 @@ fn combined_portfolio_interactions_have_fixed_positive_controls() {
             "proven-settlement-released",
             "http-503-reached",
             "http-retry-stable-bytes-and-drained",
-            "database-reopened-final-ledger",
+            "connection-reopened-final-ledger",
         ] {
             assert!(
                 hits.get(boundary).copied().unwrap_or_default() > 0,
                 "BOUNDARY: positive-control; {boundary} worker={worker}"
+            );
+        }
+        if worker == 1 {
+            assert!(
+                hits.get("worker-restarted-mid-history")
+                    .copied()
+                    .unwrap_or_default()
+                    > 0
             );
         }
         println!(

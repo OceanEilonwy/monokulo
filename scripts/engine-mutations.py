@@ -121,11 +121,11 @@ REQUIRED_HITS = {
     RECORDED_TEST: ("recorded-ringct-history", "recorded-pruned-history", "recorded-whole-history"),
     PORTFOLIO_TEST: (
         "rpc-timeout-cancelled", "custody-error-reached", "sql-denial-reached",
-        "all-node-outage-preserves-money-and-cursors", "database-reopened-mid-history",
+        "all-node-outage-preserves-money-and-cursors", "connection-reopened-mid-history",
         "custody-handle-replaced", "unanimous-spent-void-checked", "disputed-spent-retains-funds",
         "void-restored-to-canonical-block", "missing-proof-holds-settlement",
         "mismatching-proof-holds-settlement", "proven-settlement-released",
-        "http-503-reached", "http-retry-stable-bytes-and-drained", "database-reopened-final-ledger",
+        "http-503-reached", "http-retry-stable-bytes-and-drained", "connection-reopened-final-ledger",
     ),
     STAGING_TEST: ("reorg-staging-reopen-schedules", "reorg-staging-invalidated-at-or-above-fork",
                    "reorg-staging-preserved-below-fork-or-other-network"),

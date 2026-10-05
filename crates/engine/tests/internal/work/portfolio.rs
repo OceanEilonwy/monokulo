@@ -15,12 +15,14 @@ use super::history_fixture::FlakyKeyCustody;
 use super::portfolio_fixture::{pair, transaction};
 use super::{fast_pass, run_round_at, RoundInputs, ScanState};
 use crate::daemon::fake::tx_id_hex;
+#[path = "portfolio_backend.rs"]
+mod backend;
 #[path = "portfolio_world.rs"]
 mod world;
 use crate::key_custody::{KeyCustody as _, WalletMaterial};
 use crate::status::OrderStatus;
-use crate::store::{Db, NewOrder, NewTenant, OrderId, Store, TenantId};
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use crate::store::{Db, NewOrder, NewTenant, OrderId, TenantId};
+use std::{collections::BTreeMap, time::Duration};
 use world::World;
 const NETWORK: monero::Network = monero::Network::Mainnet;
 #[derive(Clone, Copy)]
@@ -197,12 +199,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                 });
             }
         }
-        let store = store.into_shared();
-        let mut db = if worker {
-            Db::open(&path, &store.lock()).unwrap()
-        } else {
-            Db::over_shared(Arc::clone(&store))
-        };
+        let mut backend = backend::Backend::new(&path, store.into_shared(), worker);
         let mut voided = vec![false; count];
         daemon.push_block(&world::hash(0, 1), vec![]);
         daemon.push_block(&world::hash(0, 2), vec![]);
@@ -213,14 +210,14 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
         // First observe all transactions: disappearance alone may never void
         // their outputs, so the independent ledger retains the same funds.
         daemon.set_mempool(transactions.clone());
-        daemon.proof(&db, 2, false).await;
+        daemon.proof(backend.db(), 2, false).await;
         settle(
-            &db,
+            backend.db(),
             &custody,
             &daemon,
             &tenants,
             &state,
-            &store,
+            backend.store(),
             &invoices,
             &outputs,
             &txids,
@@ -233,7 +230,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
         // Forced interactions are positive controls, including before any
         // generated commands: faults must be reached, then the ledger recovers.
         daemon
-            .fault_episode(&db, &custody, &tenants, &state, &store)
+            .fault_episode(backend.db(), &custody, &tenants, &state, backend.store())
             .await;
         state = ScanState::default();
         for step in 0..16 {
@@ -257,16 +254,14 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                 2 => locations[target] = Location::Gone,
                 3 => {
                     state = ScanState::default();
-                    let reopened = Store::open_file(&path).unwrap();
-                    daemon.hit("database-reopened-mid-history");
-                    db = if worker {
-                        Db::open(&path, &reopened).unwrap()
-                    } else {
-                        Db::over_shared(Arc::clone(&store))
-                    };
+                    backend.reopen().await;
+                    daemon.hit("connection-reopened-mid-history");
+                    if worker {
+                        daemon.hit("worker-restarted-mid-history");
+                    }
                 }
                 4 => {
-                    let input = inputs(&db, &custody, &daemon, &tenants);
+                    let input = inputs(backend.db(), &custody, &daemon, &tenants);
                     fast_pass(&state, &input).await.unwrap();
                     fast_pass(&state, &input).await.unwrap();
                 }
@@ -322,14 +317,14 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             // operator already accepted. Reorg depth remains independently checked.
             daemon
                 .proof(
-                    &db,
+                    backend.db(),
                     if step == 0 { 2 } else { 2 + span },
                     step == 1 || step == 2,
                 )
                 .await;
             if matches!(action, 9 | 10) {
                 daemon
-                    .fault_episode(&db, &custody, &tenants, &state, &store)
+                    .fault_episode(backend.db(), &custody, &tenants, &state, backend.store())
                     .await;
                 // Replace the backend handle while retaining durable identity.
                 let wallet = target % wallets;
@@ -347,12 +342,12 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                 state = ScanState::default();
             }
             settle(
-                &db,
+                backend.db(),
                 &custody,
                 &daemon,
                 &tenants,
                 &state,
-                &store,
+                backend.store(),
                 &invoices,
                 &outputs,
                 &txids,
@@ -383,14 +378,14 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
         let restored = voided.iter().filter(|v| **v).count();
         voided.fill(false);
         state = ScanState::default();
-        daemon.proof(&db, 3, false).await;
+        daemon.proof(backend.db(), 3, false).await;
         settle(
-            &db,
+            backend.db(),
             &custody,
             &daemon,
             &tenants,
             &state,
-            &store,
+            backend.store(),
             &invoices,
             &outputs,
             &txids,
@@ -403,9 +398,10 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
         if restored > 0 {
             daemon.hit("void-restored-to-canonical-block");
         }
-        daemon.deliver(&db, &store, true).await;
-        daemon.deliver(&db, &store, false).await;
-        let reopened = Store::open_file(&path).unwrap();
+        daemon.deliver(backend.db(), backend.store(), true).await;
+        daemon.deliver(backend.db(), backend.store(), false).await;
+        backend.reopen().await;
+        let reopened = backend.store().lock();
         for invoice in &invoices {
             assert_eq!(
                 reopened.get_all_payments(&invoice.id).unwrap().len(),
@@ -416,7 +412,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                     .count()
             );
         }
-        daemon.hit("database-reopened-final-ledger");
+        daemon.hit("connection-reopened-final-ledger");
         daemon.hits.into_inner()
     })
 }
