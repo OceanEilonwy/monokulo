@@ -1251,3 +1251,5 @@ oracle. The scale properties use separate expected ledgers. Nonce-varied foreign
 transactions and transparent scheduling payments are scanner fixtures, not newly
 signed Monero network transactions. High-cardinality fixtures are deliberately
 split to test each bound without requiring an 8193 × 2049 crypto cross product.
+
+Portfolio restart controls replace both the active observer and executor, compare every persisted table, and check that connection-local TEMP state disappears. `connection-reopened-*` means connection replacement; `worker-restarted-mid-history` additionally means a new worker executor. These controls do not claim a process crash; subprocess crash tests cover that boundary separately.
