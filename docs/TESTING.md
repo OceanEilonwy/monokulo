@@ -715,13 +715,14 @@ cargo nextest run -p engine -p shared --lib --locked --features zmq
 Coverage-guided fuzzing lives in the isolated `fuzz/` Cargo workspace. Its lockfile
 uses the application's locked versions for shared dependencies; `libfuzzer-sys`
 and Loom are additional test-only tools. `engine/fuzzing` exposes only exploration
-entry points and is absent from ordinary shipping builds. All seven targets invoke
+entry points and is absent from ordinary shipping builds. All eight targets invoke
 actual production policy or boundary code through the same oracles used in normal
 properties:
 
 - `scheduler`: time, progress outcomes and completion sequencing.
 - `status`: independent aggregate status oracle, full-width inputs and metamorphic checks.
 - `history`: real scanner, database and custody histories with independent money/recovery checks.
+- `notifications`: actual notification waits, coalescing, cancellation, network isolation and topic decoding.
 - `queue`: bounded arrivals, closed classes, class selection and draining.
 - `mempool`: batched scan reservations, partial completions, cancellation, eviction, changed windows, failed-tenant filtering, snapshots and cache budgets.
 - `resources`: arbitrary numeric bit patterns in request sizing, retries and timeouts.
@@ -749,7 +750,7 @@ cargo test --manifest-path fuzz/Cargo.toml --locked --features zmq --test interl
 The fuzz runner copies reviewed `fuzz/seeds/` into ignored mutable corpora, supplies
 an explicit seed, limits inputs to 4 KiB and individual executions to ten seconds,
 and uses AddressSanitizer. The daily/manual `engine-fuzz.yml` workflow exercises
-all seven targets under both feature configurations, caches evolving corpora and
+all eight targets under both feature configurations, caches evolving corpora and
 uploads corpora and failure artifacts. Its separate Loom jobs explore completion
 ordering with the actual scheduler policy. Loom instruments the small harness's
 synchronization; **it does not instrument or exhaustively verify Tokio channels,
@@ -879,3 +880,28 @@ Run `ENGINE_FUZZ_SEED=157 scripts/engine-fuzz.sh history 60` and append `zmq` fo
 that configuration. `coverage_guided_histories_recover_with_real_scanner` generates
 the same byte commands as a normal property; reviewed histories replay as tests.
 Daily default/ZMQ fuzz jobs retain evolving corpora and failure artifacts.
+
+
+## Notification and lifecycle exploration
+
+`notifications` checks real Tokio `NodeWakes` against an independent three-network,
+three-kind pending-permit model. Up to 128 commands generate bursts of 1–256 signals,
+wait intervals 0–255 ms, cancelled waits before the minimum gap or after registration,
+replacement wake state and arbitrary topics. Pool/chain/proof isolation, exact wake
+counters, polling deadlines and minimum-gap throttling are checked with virtual time.
+The topic decoder is shared with the production ZMQ subscriber in both feature builds.
+
+Normal properties also run the actual fast mempool loop with a real paying wallet
+under missing, wrong-network, burst and outage/recovery notifications, then positively
+join shutdown and prove stale signals cannot restart work. All four modes run in a
+fixed sweep. Under ZMQ, real TCP publishers disconnect/rebind, switch endpoints,
+duplicate endpoints, disable/reenable settings and send invalid/stale topics. Counters
+prove receipt and reconnect; the fixed lifecycle history complements generated 1–7
+configuration changes. Existing manager/supervisor histories cover loop replacement,
+panics, stop signals and configuration saves. Notifications never substitute for RPC
+money evidence. Transport histories use bounded real deadlines; they do not enumerate
+all OS/socket interleavings.
+
+Run `cargo test -p engine --lib node_events::` and add `--features zmq` for transport
+properties; `ENGINE_FUZZ_SEED=167 scripts/engine-fuzz.sh notifications 60` runs the
+shared wait oracle (append `zmq` for that build). Both daily matrices discover it.

@@ -250,3 +250,8 @@ pub fn status(data: &[u8]) {
 pub fn history(data: &[u8]) {
     crate::work::history::explore(data);
 }
+
+/// Check actual notification waits against pending permits and timing bounds.
+pub fn notifications(data: &[u8]) {
+    crate::notification_exploration::explore(data);
+}

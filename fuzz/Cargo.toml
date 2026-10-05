@@ -69,3 +69,10 @@ path="fuzz_targets/history.rs"
 test=false
 doc=false
 bench=false
+
+[[bin]]
+name="notifications"
+path="fuzz_targets/notifications.rs"
+test=false
+doc=false
+bench=false

@@ -37,6 +37,8 @@ pub mod node_events;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod node_test_support;
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) mod notification_exploration;
 pub mod pow;
 pub mod proof;
 #[cfg(test)]
