@@ -54,6 +54,19 @@ pub(crate) struct GateCustody {
     pub(crate) release: tokio::sync::Notify,
 }
 impl GateCustody {
+    async fn scan_gate(&self) -> Result<(), KeyCustodyError> {
+        self.scans.fetch_add(1, Ordering::SeqCst);
+        if self.scan_mode.load(Ordering::SeqCst) == 2 {
+            self.scan_entered.notify_one();
+            self.scan_release.notified().await;
+        }
+        if self.scan_mode.load(Ordering::SeqCst) == 1 {
+            return Err(KeyCustodyError::BackendUnavailable(
+                "injected scan failure".into(),
+            ));
+        }
+        Ok(())
+    }
     async fn registration_gate(&self) {
         self.registrations.fetch_add(1, Ordering::Relaxed);
         if self.registration_mode.load(Ordering::Relaxed) == 2 {
@@ -126,6 +139,7 @@ impl KeyCustody for GateCustody {
         major_range: std::ops::Range<u32>,
         minor_range: std::ops::Range<u32>,
     ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
+        self.scan_gate().await?;
         self.inner
             .scan_tx_outputs(handle, tx, major_range, minor_range)
             .await
@@ -136,16 +150,7 @@ impl KeyCustody for GateCustody {
         txs: &[ScanInput],
         indices: &ScanIndices,
     ) -> Result<Vec<TxMatches>, KeyCustodyError> {
-        self.scans.fetch_add(1, Ordering::SeqCst);
-        if self.scan_mode.load(Ordering::SeqCst) == 2 {
-            self.scan_entered.notify_one();
-            self.scan_release.notified().await;
-        }
-        if self.scan_mode.load(Ordering::SeqCst) == 1 {
-            return Err(KeyCustodyError::BackendUnavailable(
-                "injected scan failure".into(),
-            ));
-        }
+        self.scan_gate().await?;
         self.inner.scan_txs_for_indices(handle, txs, indices).await
     }
 }

@@ -943,3 +943,21 @@ Primitive token hashing remains tested in `shared`, outside this engine package.
 Run `PROPTEST_CASES=128 PROPTEST_RNG_SEED=181 cargo test -p engine --lib
 http::tests::properties::authorization` (append `--features zmq` before the filter).
 The existing daily default/ZMQ property filter includes all new families.
+
+## Combined production-worker concurrency histories
+
+`work::tests::properties::concurrency` holds an actual block scan, fast mempool
+pass and production-router payment lookup at positive custody rendezvous. All
+three then reach admitted writes on the file-backed database worker before it is
+released. Six admission permutations, four caller-abandonment choices, secret
+rotation/refund/configuration changes and a persisted reorg guard run with 1–4
+replays. A fixed sweep forces all six permutations and all four cancellation
+choices. Recovery recreates volatile scanner state, drains the actual tiers and
+checks exact amount, stable payment identity, mined location, no pending reorg or
+recompute work, and exactly one paid webhook. Reopening preserves the payment.
+The scan gate covers both batched engine scans and single HTTP lookup scans.
+
+Run `PROPTEST_CASES=128 cargo test -p engine --lib
+work::tests::properties::concurrency` with default and `--features zmq` builds.
+These properties use explicit barriers, not sleeps to guess whether work started;
+they cover these controlled interleavings rather than every OS thread schedule.
