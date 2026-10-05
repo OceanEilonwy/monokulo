@@ -29,25 +29,37 @@ jobs:
       matrix:
         features: ['', 'zmq']
     env:
+      RUSTUP_TOOLCHAIN: nightly-2026-10-02
       CARGO_TERM_COLOR: always
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       PROPTEST_CASES: ${{ inputs.cases || '512' }}
       ENGINE_PROOF_CASES: ${{ inputs.proof_cases || '32' }}
       # A different reproducible seed for each daily/manual run.
       PROPTEST_RNG_SEED: ${{ github.run_id }}
+      ENGINE_SEMANTIC_REPORT: ${{ github.workspace }}/target/engine-exploration/properties/semantics
       ENGINE_FEATURES: ${{ matrix.features }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-10-02
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
       - name: Record replay settings
         run: |
+          mkdir -p target/engine-exploration/properties
+          rustc -Vv > target/engine-exploration/properties/toolchain.txt
+          cargo -V >> target/engine-exploration/properties/toolchain.txt
+          cargo nextest --version >> target/engine-exploration/properties/toolchain.txt
+          git rev-parse HEAD >> target/engine-exploration/properties/toolchain.txt
           echo "Cases per property: $PROPTEST_CASES; proof cases: $ENGINE_PROOF_CASES; RNG seed: $PROPTEST_RNG_SEED; features: ${ENGINE_FEATURES:-default}" >> "$GITHUB_STEP_SUMMARY"
       - name: Explore engine properties
         run: cargo nextest run -p engine -p key-custody --lib --locked --profile ci ${ENGINE_FEATURES:+--features "engine/$ENGINE_FEATURES"} -E 'test(::properties::)'
+      - name: Summarize semantic observations
+        if: always()
+        run: python3 scripts/engine-exploration-report.py properties --output target/engine-exploration/properties
       - name: Preserve counterexamples and test report
         if: always()
         uses: actions/upload-artifact@v7
@@ -56,4 +68,5 @@ jobs:
           path: |
             crates/engine/proptest-regressions/
             target/nextest/ci/junit.xml
+            target/engine-exploration/
           if-no-files-found: ignore

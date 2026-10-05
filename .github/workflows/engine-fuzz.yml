@@ -25,14 +25,16 @@ jobs:
         target: [scheduler, resources, inputs, queue, mempool, status, history, notifications, portfolio]
         features: ['', 'zmq']
     env:
+      RUSTUP_TOOLCHAIN: nightly-2026-10-02
       ENGINE_FUZZ_SEED: ${{ github.run_id }}
-      FUZZ_SECONDS: ${{ inputs.seconds || '300' }}
+      FUZZ_SECONDS: ${{ inputs.seconds || '' }}
       FUZZ_TARGET: ${{ matrix.target }}
       FUZZ_FEATURES: ${{ matrix.features }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-10-02
           components: rust-src
       - uses: Swatinem/rust-cache@v2
         with:
@@ -40,7 +42,7 @@ jobs:
           key: fuzz-${{ matrix.features }}
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-fuzz
+          tool: cargo-fuzz@0.13.2
       - uses: actions/cache@v6
         with:
           path: fuzz/corpus
@@ -48,7 +50,7 @@ jobs:
           restore-keys: engine-fuzz-${{ matrix.target }}-${{ matrix.features }}-
       - name: Record replay settings
         run: |
-          echo "Target: $FUZZ_TARGET; features: ${FUZZ_FEATURES:-default}; seed: $ENGINE_FUZZ_SEED; budget: ${FUZZ_SECONDS}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "Target: $FUZZ_TARGET; features: ${FUZZ_FEATURES:-default}; seed: $ENGINE_FUZZ_SEED; budget: ${FUZZ_SECONDS:-target-default}s" >> "$GITHUB_STEP_SUMMARY"
       - name: Explore
         run: scripts/engine-fuzz.sh "$FUZZ_TARGET" "$FUZZ_SECONDS" "$FUZZ_FEATURES"
       - name: Preserve corpus, failures and seeds
@@ -60,9 +62,12 @@ jobs:
             fuzz/corpus/
             fuzz/artifacts/
             fuzz/seeds/
+            target/engine-exploration/
           if-no-files-found: ignore
 
   interleavings:
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-10-02
     name: bounded effect interleavings (${{ matrix.features || 'default' }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -72,8 +77,9 @@ jobs:
         features: ['', 'zmq']
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-10-02
           components: rust-src
       - uses: Swatinem/rust-cache@v2
         with:

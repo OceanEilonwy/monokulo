@@ -127,6 +127,18 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             let custody = FlakyKeyCustody::default();
             let daemon = World::new().await;
             daemon.body_variant(recorded && first & 64 != 0);
+            daemon.hit(if recorded {
+                "fixture:recorded-and-synthetic"
+            } else {
+                "fixture:scanner-valid-synthetic"
+            });
+            daemon.hit(&format!("setup:wallets-{wallets}"));
+            daemon.hit(&format!("setup:transactions-{count}"));
+            daemon.hit(if worker {
+                "backend:worker"
+            } else {
+                "backend:direct"
+            });
             let mut tenants = Vec::new();
             let mut invoices = Vec::new();
             for (wallet, pair) in pairs.iter().enumerate() {
@@ -554,7 +566,24 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
         })
     }));
     match result {
-        Ok(hits) => hits,
+        Ok(hits) => {
+            if let Some(base) = std::env::var_os("ENGINE_SEMANTIC_REPORT") {
+                use std::io::Write as _;
+                let path = format!(
+                    "{}.{}.jsonl",
+                    std::path::Path::new(&base).display(),
+                    std::process::id()
+                );
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .unwrap();
+                let line = format!("{}\n", serde_json::to_string(&hits).unwrap());
+                file.write_all(line.as_bytes()).unwrap();
+            }
+            hits
+        }
         Err(error) => {
             eprintln!("PORTFOLIO_TRACE {:?}", scenario::Scenario::decode(data));
             std::panic::resume_unwind(error)

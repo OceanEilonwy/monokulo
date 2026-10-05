@@ -761,7 +761,7 @@ cargo test --manifest-path fuzz/Cargo.toml --locked --features zmq --test interl
 ```
 
 The fuzz runner copies reviewed `fuzz/seeds/` into ignored mutable corpora, supplies
-an explicit seed, limits inputs to 4 KiB and individual executions to ten seconds,
+an explicit seed and per-target input/deadline settings,
 and uses AddressSanitizer. The daily/manual `engine-fuzz.yml` workflow exercises
 all nine targets under both feature configurations, caches evolving corpora and
 uploads corpora and failure artifacts. Its separate Loom jobs explore completion
@@ -1284,3 +1284,22 @@ there is no fuzz-only scanner or copied oracle. Both single-wallet and portfolio
 histories use `support/backend.rs` for connection replacement and persisted-table
 comparison, while retaining their separate domain expectations. Shared fixtures
 continue to supply real custody and temporary databases.
+
+
+Exploration workflows pin `nightly-2026-10-02` and cargo-fuzz `0.13.2`; ordinary
+project builds retain the repository's nightly policy. The fuzz runner writes
+`target/engine-exploration/fuzz/<target>/<features>/<seed>/`: `replay.json` records
+revision, dirty state, compiler/Cargo/fuzzer versions and limits; `calibration.json`
+records measured reviewed-seed costs; raw logs and `report.json` retain executions,
+rate, coverage/feature growth and unique corpus growth. Calibration failure is fatal.
+Semantic portfolio counts distinguish fixture category/backend and command families;
+raw successful-case observations remain available. Other targets report instrumentation
+and corpus metrics; absent semantic counts are not silently presented as coverage.
+Pure targets default to 300 seconds/10-second deadlines; queue and notification
+scenarios to 600/60; history to 900/60; portfolio to 900/120 with a 260-byte limit.
+These conservative deadlines are checked against measured seeds on every campaign;
+review seed costs and actual execution rates before increasing sustained budgets.
+Manual budgets override defaults. Exact tool-version artifacts allow replay using
+the recorded toolchain even when local builds use another nightly.
+
+A fuzz campaign that completes only seed initialization is rejected as insufficient exploration; `executions_after_initialization` makes this explicit. Increase its budget rather than treating replay-only work as a successful campaign.
