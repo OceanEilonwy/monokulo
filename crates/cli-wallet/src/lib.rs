@@ -1297,14 +1297,19 @@ mod tests {
     }
 
     /// One seed is one wallet on either network, with each network's own
-    /// addresses: `5` on stagenet, `9` on testnet.
+    /// addresses: `5` on stagenet, `9` or `A` on testnet (prefix 53 encodes
+    /// to either, depending on the keys).
     #[test]
     fn a_seed_restores_to_the_network_asked_for() {
         let stagenet = generate_credentials(Network::Stagenet, "English").unwrap();
         let phrase = stagenet.mnemonic.clone().unwrap();
         let testnet = credentials_from_seed(Network::Testnet, &phrase).unwrap();
         assert!(stagenet.address.starts_with('5'), "{}", stagenet.address);
-        assert!(testnet.address.starts_with('9'), "{}", testnet.address);
+        assert!(
+            testnet.address.starts_with(['9', 'A']),
+            "{}",
+            testnet.address
+        );
         assert_eq!(
             testnet.private_spend_key_hex,
             stagenet.private_spend_key_hex
