@@ -17,7 +17,7 @@ use super::history_fixture::{file_store, fixture_tenant, fixture_tx, FlakyKeyCus
 use crate::daemon::KeyImageStatus;
 use crate::key_custody::WalletHandle;
 use crate::status::OrderStatus;
-use crate::store::{Db, OrderId, SharedStore, Store, TenantId};
+use crate::store::{Db, OrderId, SharedStore, TenantId};
 use crate::work::{run_round_at, RoundInputs, RoundReport, ScanState, ScanTuning};
 use std::sync::Arc;
 use std::time::Duration;
@@ -273,12 +273,8 @@ impl Harness {
         let before = self.snapshot();
         let branch = self.store().lock().reorg_branch(NETWORK).unwrap();
         // Close every SQLite handle and discard scheduler caches/backoff.
-        self.db.take();
-        self.store.take();
+        super::history_backend::replace(&mut self.db, &mut self.store, &self.path, false);
         self.state = Self::state();
-        let store = Store::open_file(&self.path).unwrap().into_shared();
-        self.db = Some(Db::over_shared(Arc::clone(&store)));
-        self.store = Some(store);
         assert_eq!(self.snapshot(), before, "restart changed durable state");
         assert_eq!(
             self.store().lock().reorg_branch(NETWORK).unwrap(),

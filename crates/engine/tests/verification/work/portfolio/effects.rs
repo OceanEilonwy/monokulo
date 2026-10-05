@@ -517,7 +517,7 @@ impl World {
             if let Some(status) = v["status"].as_str() {
                 let entry = last_status
                     .entry(d.order_id.clone())
-                    .or_insert((d.delivery_id, status.to_owned()));
+                    .or_insert_with(|| (d.delivery_id, status.to_owned()));
                 if d.delivery_id >= entry.0 {
                     *entry = (d.delivery_id, status.to_owned());
                 }
