@@ -35,6 +35,8 @@ grouped by engine area. Production modules contain short `#[path]` registrations
 the tests retain their private access and existing module names. Cargo-fuzz drivers
 and seeds remain in the root `fuzz/` package. Saved regression files have explicitly
 pinned paths, so reorganizing the sources preserves replay and runner commands.
+The [engine verification guide](ENGINE_VERIFICATION.md) summarizes harness roles,
+review corrections, evidence and the limits of these checks.
 
 The engine uses [Proptest](https://proptest-rs.github.io/proptest/) as a dev-only
 dependency. The first suite, `status::properties`, checks status derivation against
@@ -85,7 +87,7 @@ so a concrete example protects the case when generators change. Do not ignore th
 regression directory. See [Proptest's persistence documentation](https://proptest-rs.github.io/proptest/proptest/failure-persistence.html).
 
 The scanner suite (`crates/engine/tests/verification/work/properties.rs`, registered under
-`work::tests::properties`) has forty-three generated properties. The first five cover:
+`work::tests::properties`) includes generated histories and focused properties. The original five history families cover:
 
 - Histories of up to 24 optional events: mining, pool arrival/removal, forks,
   double-spend evidence, daemon/custody outages, failures of individual daemon calls,
@@ -107,7 +109,7 @@ The scanner suite (`crates/engine/tests/verification/work/properties.rs`, regist
   tenants must reach the tip without duplicate payments, while the failed tenant
   stays put, then catches up after recovery and restart.
 
-Fifteen additional properties in `work/money_properties.rs` exercise money guarantees:
+Fifteen additional properties in `work/money/properties.rs` exercise money guarantees:
 
 | Generated scenario | Guarantee checked |
 |---|---|
@@ -127,7 +129,7 @@ Fifteen additional properties in `work/money_properties.rs` exercise money guara
 | Mainnet and stagenet tenants registered together | One network's rounds do not credit or advance another network's orders; each scheduler progresses independently |
 | Large blocks scanned in pages, fetch failures, interruptions, restarts and replacement blocks | Incomplete blocks do not publish staged payments; recovery or fork handling converges to the correct payment state |
 
-Seven further properties in `work/expansion_properties.rs` target storage and
+Seven further properties in `work/history/properties.rs` target storage and
 recovery boundaries. All ranges in this table are inclusive:
 
 | Property | Generated range / assertion |
@@ -166,7 +168,7 @@ crash or a filesystem failure. Candidate recovery uses a positive work budget:
 zero-budget rounds intentionally process one candidate and cannot drain 513
 candidates within the smaller scenarios' 120-round recovery bound.
 
-Sixteen properties in `work/node_properties.rs` now use the production
+Sixteen properties in `work/nodes/properties.rs` now use the production
 `FallbackDaemonClient` and a newly pinned client for each actual money round.
 Each node has its own chain, pool, per-RPC errors/hangs, response delays and
 adversarial answers. The tests use real SQLite and wallet output scanning.
@@ -1039,6 +1041,9 @@ assertion bearing the defect’s specified `BOUNDARY:` marker on the mutant. All
 | Intentional defect | Required detecting test |
 |---|---|
 | Never expire retry state | Production retry-map upkeep at expiry boundaries |
+| Change funding/confirmation/expiry/overpayment comparison at equality (four mutations) | Independent 720-case status decision grid |
+| Move retry expiry early/late, delay the second free attempt or change deadline equality (four mutations) | Production retry expiry and retry policy decision grids |
+| Bypass completed-window or in-flight ownership guards (two mutations) | Production reservation decision grid |
 | Double the persisted amount received | Mixed-wallet ledger seed replays |
 | Accept a scanned block despite a changed parent | Complete late-commit prerequisite sweep |
 | Read an order without checking its tenant | Named authorization/revocation history |

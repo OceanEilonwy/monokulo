@@ -11,7 +11,7 @@ nextest filters, crash subprocesses, mutation checks and coverage exclusions
 continue to work. The large scanner, work, HTTP and proof scenario modules live
 here too because the properties share their fixtures.
 
-- `work/portfolio/`: versioned scenarios, runner, effects, fixtures and backend controls.
+- `work/portfolio/`: versioned scenarios, runner, independent model, effects, fixtures and backend controls.
 - `work/history/`: single-wallet histories, daemon scripts, fixtures and expansions.
 - `work/scheduler/`, `work/blocks/`, `work/mempool/`: policy/model properties and scale checks.
 - `work/money/`, `work/nodes/`, `work/concurrency/`, `work/lifecycle/`: composed effect scenarios.
@@ -47,8 +47,9 @@ Run the same commands as before, from the repository root:
 cargo nextest run -p engine --lib --locked -E 'test(::properties::)'
 scripts/engine-scale.sh default
 scripts/engine-scale.sh zmq
-scripts/engine-fuzz.sh history 60
+scripts/engine-fuzz.sh history
 ```
 
-See [`docs/TESTING.md`](../../../../docs/TESTING.md) for the coverage map, scenario
+See the [engine verification guide](../../../../docs/ENGINE_VERIFICATION.md) for
+harness roles and assurance limits, and [`docs/TESTING.md`](../../../../docs/TESTING.md) for the coverage map, scenario
 ranges, regression replay instructions and mutation runner.
