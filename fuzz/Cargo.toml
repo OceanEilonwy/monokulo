@@ -48,3 +48,10 @@ path = "fuzz_targets/queue.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "mempool"
+path = "fuzz_targets/mempool.rs"
+test = false
+doc = false
+bench = false

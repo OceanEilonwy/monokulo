@@ -606,3 +606,8 @@ impl From<&Progress> for UnitProgress {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests;
+
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) fn explore_mempool(data: &[u8]) {
+    mempool::explore(data);
+}

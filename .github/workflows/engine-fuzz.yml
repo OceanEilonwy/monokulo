@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [scheduler, resources, inputs, queue]
+        target: [scheduler, resources, inputs, queue, mempool]
         features: ['', 'zmq']
     env:
       ENGINE_FUZZ_SEED: ${{ github.run_id }}

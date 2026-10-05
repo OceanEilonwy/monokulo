@@ -715,12 +715,13 @@ cargo nextest run -p engine -p shared --lib --locked --features zmq
 Coverage-guided fuzzing lives in the isolated `fuzz/` Cargo workspace. Its lockfile
 uses the application's locked versions for shared dependencies; `libfuzzer-sys`
 and Loom are additional test-only tools. `engine/fuzzing` exposes only exploration
-entry points and is absent from ordinary shipping builds. All four targets invoke
+entry points and is absent from ordinary shipping builds. All five targets invoke
 actual production policy or boundary code through the same oracles used in normal
 properties:
 
 - `scheduler`: time, progress outcomes and completion sequencing.
 - `queue`: bounded arrivals, closed classes, class selection and draining.
+- `mempool`: batched scan reservations, partial completions, cancellation, eviction, changed windows, failed-tenant filtering, snapshots and cache budgets.
 - `resources`: arbitrary numeric bit patterns in request sizing, retries and timeouts.
 - `inputs`: CPU lists, node settings, scalar settings, identifiers, headers, URLs and signature header rejection.
 
@@ -733,6 +734,7 @@ ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh scheduler 60
 ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh queue 60 zmq
 ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh resources 60
 ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh inputs 60
+ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh mempool 60 zmq
 
 # Replay a saved failing input directly; replace the artifact filename.
 cargo fuzz run --fuzz-dir fuzz inputs fuzz/artifacts/inputs/crash-HASH
@@ -782,12 +784,35 @@ on `forget` now happen outside the mempool mutex. Remaining critical sections
 include cache insertion, ID snapshot copying, pool pruning, and reservation
 bookkeeping; none awaits network, custody, or database work while locked.
 
-`work::mempool::properties` compares 1–255 ownership events against an independent
-model, with eight caller slots, four transaction IDs, four tenants and four scan
-windows. Fixed tests cover competing callers, custody failure, cancellation during
-custody and after real database admission, changed windows, cache eviction,
-unrelated work, and panic after partial batch completion. Existing two-thread
-fast/round/API money properties continue to exercise the complete production paths.
+`work::mempool::properties` includes the following surfaces. Cases default to 64;
+`PROPTEST_CASES` and `PROPTEST_RNG_SEED` control expansion and replay. The existing
+property jobs discover them automatically, and the daily fuzz matrix runs `mempool`
+with both default and ZMQ features.
+
+| Property/scenario | Generated range | Assertions |
+| --- | --- | --- |
+| Single-tenant ownership histories | 1–255 events; 8 callers, 4 transactions, 4 tenants, 4 windows | Cancellation, completion and eviction agree with independent ownership model. |
+| Batched ownership/cache histories (`mempool` fuzz oracle) | 0–4,096 bytes; up to 682 complete events; 8 caller slots, transactions and tenants; tenant masks 0–255; window indices 0–255; cache count cap 0–16, byte cap 0–65,535 | Exact admitted tenants, owner keys and completed generations; partial/repeated/foreign completions; owner replacement; duplicate batch inputs; eviction preserves live ownership; due filtering; sorted/limited snapshots; duplicate bodies and byte/count caps. Every step compares complete maps/sets with independent ordered models. Four reviewed histories also run as normal regression tests. |
+| Concurrent overlapping batches on real OS threads | 2–8 callers; 4 transactions; nonempty masks across 8 tenants; full-width `u32` window indices | Every requested transaction/tenant has exactly one live owner; unrelated work is admitted; guards release all claims. Positive barriers keep owners alive while the main thread inspects actual state. |
+| Full-width body-cache accounting | 1–127 insert/remove events; 16 transaction IDs; count cap 0–16; all `usize` sizes and byte budgets | Accepted entries and retained bytes match a `u128` reference sum; duplicate insertions, removal and overflow cannot corrupt accounting or exceed caps. Sizes are supplied accounting inputs; this does not fuzz transaction decoding. |
+| Real fast-pass/round contention | Either entry point wins; success or cancellation; 1–8 competing calls | Losers do not call custody; abandoned owner releases work; retry publishes payment once; repeated calls preserve payment identity. Uses actual production entry points, cryptographic fixture and file-backed SQLite worker. A fixed sweep also covers all four winner/cancellation combinations. |
+| Mixed tenant outcomes | Custody failure, payment write failure, recompute-obligation write failure, inline status write failure, or empty scan then expanded window; both tenant orders; 1–8 repeat calls | A successful tenant remains complete while the affected tenant alone rescans; failed transactions leave neither payment nor credited amount; repair preserves stable payment identities. A fixed sweep runs all 10 outcome/order combinations regardless of random draws. |
+| Held-owner boundary sweep | Success, custody error, custody timeout, cancellation during custody or after accepted DB admission, failed payment write, cache clearing/eviction during custody | Competitors do not scan; no cache mutex remains held during awaits; unsuccessful claims are retryable; accepted abandoned database writes remain safe to repeat. Timeout uses Tokio's paused clock after a positive custody rendezvous. |
+
+Fixed tests additionally cover changed windows, unrelated work and panic after
+partial batch completion. Existing two-thread fast/round/API money properties
+continue to cover restarts and reorgs. The byte fuzzer runs real synchronized cache
+and reservation code sequentially; it does not model weak-memory thread schedules,
+network calls or SQLite. Separate thread and integration properties exercise concurrent callers, custody
+boundaries and SQLite publication. These checks do not assert that accepted backend work stops when its
+caller is cancelled, or that window generations impose chronological ordering.
+
+```sh
+PROPTEST_CASES=256 PROPTEST_RNG_SEED=113 cargo test -p engine --lib --locked \
+  work::mempool::properties
+ENGINE_FUZZ_SEED=113 scripts/engine-fuzz.sh mempool 60
+ENGINE_FUZZ_SEED=113 scripts/engine-fuzz.sh mempool 60 zmq
+```
 
 A manual diagnostic compares identical cache operations behind `parking_lot` and
 Tokio mutexes on two Tokio worker threads, at 256 and 20,000 cache entries. It

@@ -235,3 +235,8 @@ pub fn queue(data: &[u8]) {
         "accepted jobs were lost, reordered, or executed twice"
     );
 }
+
+/// Exercise mempool ownership, eviction, scan windows and cache budgets.
+pub fn mempool(data: &[u8]) {
+    crate::work::explore_mempool(data);
+}

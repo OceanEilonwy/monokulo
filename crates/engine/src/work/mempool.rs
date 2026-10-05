@@ -864,3 +864,12 @@ mod properties;
 #[path = "mempool_lock_profile.rs"]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod lock_profile;
+
+#[cfg(any(test, feature = "fuzzing"))]
+#[path = "mempool_exploration.rs"]
+mod exploration;
+
+#[cfg(any(test, feature = "fuzzing"))]
+pub(super) fn explore(data: &[u8]) {
+    exploration::explore(data);
+}

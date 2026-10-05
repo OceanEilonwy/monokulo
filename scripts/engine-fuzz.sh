@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 target="${1:-scheduler}"
 seconds="${2:-60}"
 features="${3:-}"
-case "$target" in scheduler|resources|inputs|queue) ;; *) echo 'Target must be scheduler, resources, inputs, or queue.' >&2; exit 2 ;; esac
+case "$target" in scheduler|resources|inputs|queue|mempool) ;; *) echo 'Target must be scheduler, resources, inputs, queue, or mempool.' >&2; exit 2 ;; esac
 if [[ ! "$seconds" =~ ^[1-9][0-9]*$ ]]; then echo 'Seconds must be a positive integer.' >&2; exit 2; fi
 case "$features" in ''|zmq) ;; *) echo 'Features must be empty or zmq.' >&2; exit 2 ;; esac
 feature_args=()
