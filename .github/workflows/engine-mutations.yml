@@ -1,0 +1,49 @@
+name: Engine test-strength checks
+
+on:
+  schedule:
+    - cron: '0 17 * * 0'
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: Cases per selected generated property
+        type: choice
+        options: ['16', '32', '64']
+        default: '32'
+
+permissions:
+  contents: read
+
+jobs:
+  mutations:
+    name: named defects (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [default, zmq]
+    env:
+      ENGINE_MUTATION_FEATURES: ${{ matrix.features }}
+      ENGINE_MUTATION_CASES: ${{ inputs.cases || '32' }}
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target/engine-mutations/build
+          key: mutations-${{ matrix.features }}
+      - name: Check runner rejects invalid outcomes
+        run: python3 scripts/test_engine_mutations.py
+      - name: Prove named defects are detected
+        run: python3 scripts/engine-mutations.py --features "$ENGINE_MUTATION_FEATURES" --cases "$ENGINE_MUTATION_CASES"
+      - name: Preserve baseline and mutation evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: engine-mutations-${{ matrix.features }}-${{ github.run_id }}
+          path: |
+            target/engine-mutations/report.json
+            target/engine-mutations/*.log
+          if-no-files-found: ignore

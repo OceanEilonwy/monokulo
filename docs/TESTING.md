@@ -1012,3 +1012,41 @@ and failures use the existing runner/artifact workflow.
 Run `PROPTEST_CASES=64 cargo test -p engine --lib mixed_wallet`, adding
 `--features zmq` for that build. Run `ENGINE_FUZZ_SEED=229 scripts/engine-fuzz.sh
 portfolio 60` and append `zmq` for fuzzing that configuration.
+
+## Named mutation checks: testing the tests
+
+`scripts/engine-mutations.py` deliberately introduces six defects, one at a time,
+in a disposable detached worktree. The caller's engine sources are never edited.
+Each selected test must first pass on the healthy snapshot, then fail by an
+assertion on the mutant. All defects are checked in default and ZMQ builds:
+
+| Intentional defect | Required detecting test |
+|---|---|
+| Double the persisted amount received | Mixed-wallet ledger seed replays |
+| Accept a scanned block despite a changed parent | Complete late-commit prerequisite sweep |
+| Read an order without checking its tenant | Named authorization/revocation history |
+| Drop payment insert/update recompute obligations | Complete late-commit prerequisite sweep |
+| Commit paid status without its webhook | Combined real-worker concurrency sweep |
+| Accept another round's completion | Generated scheduler generation property |
+
+Compiler/linker errors, zero selected tests, unrelated panics, wall timeouts and
+failed rendezvous/virtual deadlines are invalid runs, never successful detections.
+A surviving mutant or any invalid result fails the command. Seven runner checks
+use real tiny Cargo test programs to verify those outcome classes, including
+process-group cleanup on POSIX timeout. The isolated worktree is removed even
+when a mutant fails; output contains the revision, tracked local patch hash,
+cases/seed, baseline results, exact mutations/commands and full failure logs.
+Tracked local edits and new engine modules are snapshotted for pre-commit checks.
+
+```sh
+python3 scripts/test_engine_mutations.py
+python3 scripts/engine-mutations.py --cases 32 --seed 241
+# Optional single configuration:
+python3 scripts/engine-mutations.py --features zmq --cases 64
+```
+
+JSON and logs live in ignored `target/engine-mutations/`, with compiled artifacts
+in its `build/` directory. A weekly/manual `engine-mutations.yml` job runs both
+configurations and retains JSON plus logs. These checks demonstrate detection of
+these six chosen defects; they are not a percentage score for every possible bug.
+The money, crash, concurrency, fuzz and authorization suites remain complementary.
