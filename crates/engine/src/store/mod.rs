@@ -1886,6 +1886,29 @@ impl Store {
     /// A bounded page for the routine vanished-mempool sweep. The rowid is a
     /// stable keyset cursor for the life of a payment row; callers wrap to zero
     /// at the end so transactions still absent from the pool are revisited.
+    /// `network`'s payments recorded at block `height` that the height
+    /// counts for: unvoided, or voided for another with their output key.
+    pub fn payments_at_height(
+        &self,
+        network: monero::Network,
+        height: u64,
+    ) -> Result<Vec<OrderPaymentRow>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT op.* FROM order_payments op
+             JOIN orders o ON o.id = op.order_id
+             JOIN tenants t ON t.id = o.tenant_id
+             WHERE op.block_height = ?2 AND t.network = ?1
+               AND (op.voided_at_utc IS NULL OR op.superseded_by IS NOT NULL)",
+        )?;
+        let rows = stmt
+            .query_map(
+                params![shared::network::SqlNetwork(network), sql_height(height)?],
+                Self::row_to_payment,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn unconfirmed_payments_page(
         &self,
         network: monero::Network,

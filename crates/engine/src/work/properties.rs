@@ -884,6 +884,46 @@ fn a_shorter_branch_reopens_a_settled_payment_below_the_fork() {
     });
 }
 
+#[test]
+fn a_fork_below_a_payment_mined_after_a_store_fault_clears_its_height() {
+    runtime().block_on(async {
+        let mut harness = Harness::new().await;
+        harness.pool(true);
+        harness.check().await;
+        harness.mine(1, true);
+        harness.check().await;
+        for event in [
+            Event::Reorg {
+                depth: 1,
+                destination: Destination::Gone,
+                offset: 0,
+            },
+            Event::Check,
+            Event::Mine {
+                count: 3,
+                payment: false,
+            },
+            Event::Mine {
+                count: 3,
+                payment: true,
+            },
+            Event::SqlFault(6),
+            Event::ResizeReorg {
+                depth: 2,
+                length: 5,
+                destination: Destination::Gone,
+                offset: 0,
+            },
+        ] {
+            harness.apply(&event).await;
+        }
+        harness.reorg(8, Destination::Gone, 0);
+        harness.tick().await;
+        harness.restart();
+        harness.check().await;
+    });
+}
+
 proptest! {
     #![proptest_config(config())]
 
