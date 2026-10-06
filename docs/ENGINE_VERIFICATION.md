@@ -116,7 +116,10 @@ python3 scripts/test_engine_exploration_report.py
 ```
 
 Exploration CI pins `nightly-2026-10-02` and cargo-fuzz `0.13.2`; ordinary repository
-builds retain the project's nightly policy. Use the versions recorded in a run's
+builds retain the project's nightly policy. The fuzz runner explicitly selects
+rustc's native host triple for build, calibration and execution: a musl-built
+cargo-fuzz installer otherwise defaults to musl, whose static libc is incompatible
+with AddressSanitizer. Use the versions recorded in a run's
 `replay.json` for reproduction. Run `cargo fuzz build --fuzz-dir fuzz` (and repeat
 with `--features zmq`) to build all nine AddressSanitizer targets. Their binaries
 can replay reviewed seeds with `-runs=0`; this is a replay check, not sustained
