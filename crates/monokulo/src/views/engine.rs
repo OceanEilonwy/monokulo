@@ -71,7 +71,7 @@ const ENGINE_STYLE: &str = r#"
 .engine-chip.hi { background: var(--tint-highlight); border-color: var(--accent); }
 .engine-timeline { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--space-md); align-items: start; }
 .engine-timeline .tl-track { position: relative; display: grid; gap: 3px; }
-.tl-modes { display: inline-flex; align-self: start; margin-top: 2px; height: 28px; border: 1px solid var(--btn-border); border-radius: var(--radius-sm); overflow: hidden; }
+.tl-modes { display: inline-flex; gap: .5rem; align-self: start; margin-top: 2px; height: 28px; border: 1px solid var(--btn-border); border-radius: var(--radius-sm); overflow: hidden; }
 .tl-modes label { position: relative; display: flex; align-items: center; padding: 0 12px; font-size: 0.8rem; font-weight: 700; cursor: pointer; color: var(--btn-ink); background: var(--btn-bg); }
 .tl-modes label + label { border-left: 1px solid var(--btn-border); }
 .tl-modes input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
@@ -285,16 +285,17 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
                 nav class="context-nav" aria-label="Breadcrumb" { a href="/status" { "Status" } }
                 h1 { "Engine" }
                 (help())
-                nav class="engine-tabs" aria-label="Network" {
-                    @for network in NETWORKS {
-                        @if page.networks.iter().any(|n| n == network) {
-                            a href=(format!("/status/engine?network={network}"))
-                                aria-current=[(*network == page.network).then_some("page")] { (network) }
-                        } @else {
-                            span class="off" aria-disabled="true"
-                                title=(format!("Not scanned: this engine has no Monero node for {network}. Add one in the admin settings.")) { (network) }
+                form class="engine-network" method="get" action="/status/engine" {
+                    label for="engine-network" { "Network" }
+                    select id="engine-network" name="network" {
+                        @for network in NETWORKS {
+                            option value=(network) selected[*network == page.network] disabled[!page.networks.iter().any(|n| n == network)] {
+                                (network)
+                                @if !page.networks.iter().any(|n| n == network) { " (no node configured)" }
+                            }
                         }
                     }
+                    button type="submit" class="network-go" { "Go" }
                 }
                 span class="engine-right" { (reload_button(&format!("/status/engine?network={}", page.network))) }
             }
@@ -334,10 +335,13 @@ fn timeline() -> Markup {
                 div class="tl-axis" id="tl-axis" {}
             }
             div class="tl-read" id="tl-read" { span id="tl-text" {} }
-            div class="tl-modes" id="tl-modes" role="radiogroup" aria-label="Playback" {
-                label { input type="radio" name="tl-mode" value="live" checked; span { "Live" } }
-                label title="Replay from the playback position" { input type="radio" name="tl-mode" value="replay" disabled; span { "Play" } }
-                label { input type="radio" name="tl-mode" value="paused"; span { "Pause" } }
+            div class="tl-modes" id="tl-modes" {
+                label for="tl-mode" { "Playback" }
+                select id="tl-mode" name="tl-mode" {
+                    option value="live" selected { "Live" }
+                    option value="replay" disabled { "Play" }
+                    option value="paused" { "Pause" }
+                }
             }
         }
     }

@@ -403,11 +403,11 @@ mod tests {
             "The node has a new block: 3,412,881.",
             "/static/engine-view.js",
             "id=\"tl\"",
-            "Reload",
+            "Refresh page",
             "data-network=\"stagenet\"",
             // The switcher: the network scanned is a link, the others say why not.
-            "href=\"/status/engine?network=stagenet\" aria-current=\"page\"",
-            "this engine has no Monero node for mainnet",
+            "<option value=\"stagenet\" selected>",
+            "mainnet (no node configured)",
         ] {
             assert!(html.contains(expected), "no {expected:?} in the page");
         }

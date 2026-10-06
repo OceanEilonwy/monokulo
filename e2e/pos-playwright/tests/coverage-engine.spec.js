@@ -19,7 +19,7 @@ test.afterAll(async () => { await stopCoverageFixture(fixture && fixture.process
 let mode;
 
 async function openAsAdmin(page, context) {
-  mode = (value) => page.locator(`#tl-modes input[value="${value}"]`);
+  mode = () => page.locator("#tl-mode");
   if (process.env.COVERAGE_INSTRUMENT === '1') await serveInstrumentedAssets(context);
   await context.addCookies([{ name: 'session', value: fixture.admin_session, url: fixture.base_url }]);
   await page.goto(`${fixture.base_url}/status/engine?network=mainnet`);
@@ -34,7 +34,7 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await page.setViewportSize({ width: 1600, height: 900 });
   await openAsAdmin(page, context);
   await expect(page.locator('#engine-timeline')).toBeVisible();
-  await expect(mode('live')).toBeChecked();
+  await expect(mode()).toHaveValue('live');
   await expect(page.locator('.engine-page a.reload')).toBeHidden();
   await expect(page.locator('#engine-summary')).toContainText('3,412,880');
   await expect(page.locator('#pills .pill.frontier')).toHaveText('Frontier, 41 stores');
@@ -65,14 +65,14 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   // The reorg, gone to from its event (live, it can begin and end within
   // one poll on a slow machine): its panel opens by itself while it is open.
   await events.locator('tr', { hasText: "The node's chain differs from block 3,412,881" }).click();
-  await expect(mode('paused')).toBeChecked();
+  await expect(mode()).toHaveValue('paused');
   await expect(page.locator('#d-reorg')).toHaveAttribute('open', '');
   await expect(page.locator('#d-reorg summary')).toContainText('Reorg from 3,412,881');
   await captureCoverageStage(page, 'engine-reorg', test.info(), shot);
 
   // A click on an event goes to it: paused, and the page as it was then.
   await events.locator('tr', { hasText: '1 payment found in it' }).click();
-  await expect(mode('paused')).toBeChecked();
+  await expect(mode()).toHaveValue('paused');
   await expect(page.locator('#engine-summary')).toContainText('3,412,881');
   await expect(page.locator('#pills .pill.catchup')).toHaveCount(1);
   await expect(events.locator('tr.now')).toContainText('1 payment found in it');
@@ -86,21 +86,21 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   // marker goes.
   await page.locator('#tl-win').focus();
   await page.keyboard.press('ArrowRight');
-  await expect(mode('paused')).toBeChecked();
+  await expect(mode()).toHaveValue('paused');
   await page.keyboard.press('End');
-  await expect(mode('live')).toBeChecked();
+  await expect(mode()).toHaveValue('live');
   await expect(marker).toHaveAttribute('aria-valuetext', /^Playback position: live/);
 
   // A press in the window goes to that moment; Play replays; Live goes back.
   const track = await page.locator('#tl').boundingBox();
   await page.mouse.click(track.x + track.width * 0.5, track.y + 16);
-  await expect(mode('paused')).toBeChecked();
+  await expect(mode()).toHaveValue('paused');
   await expect(marker).toBeVisible();
   await expect(page.locator('#tl-text')).toHaveText(/^\d+(s|m \d+s|m) behind live$/);
-  await mode('replay').check({ force: true });
-  await expect(page.locator('#tl-modes input:checked')).toHaveValue(/^(replay|live)$/);
-  await mode('live').check({ force: true });
-  await expect(mode('live')).toBeChecked();
+  await mode().selectOption('replay');
+  await expect(page.locator('#tl-mode')).toHaveValue(/^(replay|live)$/);
+  await mode().selectOption('live');
+  await expect(mode()).toHaveValue('live');
 
   // Before the engine's record starts (it started seconds ago, on a
   // 30-minute bar) the bar is hatched, and says so.
@@ -124,9 +124,9 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await page.mouse.down();
   await page.mouse.move(live.x - 30, live.y + live.height / 2, { steps: 4 });
   await page.mouse.up();
-  await expect(mode('paused')).toBeChecked();
-  await mode('live').check({ force: true });
-  await expect(mode('live')).toBeChecked();
+  await expect(mode()).toHaveValue('paused');
+  await mode().selectOption('live');
+  await expect(mode()).toHaveValue('live');
 
   // Dragging the window's right handle back ends it in the past: playback
   // pauses at its start. Dragging the middle moves it; dragging the marker
@@ -136,7 +136,7 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await page.mouse.down();
   await page.mouse.move(handle.x - track.width * 0.4, handle.y + handle.height / 2, { steps: 6 });
   await page.mouse.up();
-  await expect(mode('paused')).toBeChecked();
+  await expect(mode()).toHaveValue('paused');
   await expect(windowBox).toHaveAttribute('aria-valuetext', /ago to .* ago$/);
   const resized = await windowBox.getAttribute('style');
   const box = await windowBox.boundingBox();
@@ -156,11 +156,11 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await page.mouse.move(head.x + head.width / 2 - 40, head.y + head.height / 2, { steps: 5 });
   await page.mouse.up();
   await expect.poll(async () => Number(await marker.getAttribute('data-at'))).toBeLessThan(Number(at));
-  await expect(mode('paused')).toBeChecked();
+  await expect(mode()).toHaveValue('paused');
 
   // A click on a recent round shows it in the round card, paused; the chip
   // goes back to the live round. The lanes add up to the round.
-  await mode('live').check({ force: true });
+  await mode().selectOption('live');
   const firstRound = page.locator('#ribbon a.rbar').first();
   const number = await firstRound.getAttribute('data-round');
   await firstRound.click();
