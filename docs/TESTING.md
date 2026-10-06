@@ -27,6 +27,24 @@ implement it. Organized by component, in roughly the order a component would be 
   mitigation, and webhook signature verification each get dedicated adversarial tests,
   not incidental coverage from happy-path tests.
 
+### PR approval and platform checks
+
+Every PR update runs Linux tests, lint and the Linux coverage collectors. An
+approving review of the current head commit by a repository writer starts the
+macOS and Windows suites in `approved-platform-tests.yml`. Comments, change
+requests, self-reviews, dismissed approvals and reviews of older revisions do
+not start those suites. Both paths call `rust-tests.yml`, so their test commands,
+feature checks, timeouts and reports remain identical.
+
+The `main` branch requires one approval, dismisses stale approvals after a push,
+and requires `lint`, `coverage`, `tests / tests (ubuntu-latest)`,
+`approved platforms / tests (macos-latest)` and
+`approved platforms / tests (windows-latest)`. The approval workflow's caller
+has a separate name: skipping it cannot emit successful checks under the required
+platform names. New commits need new approval and platform results; cancelled,
+failed or missing platform checks block merging. Main, version tags and manual
+CI runs still test all three platforms before publishing.
+
 ### Generated engine tests
 
 Property tests, scale scenarios, fuzz oracles and shared fixtures are centralized

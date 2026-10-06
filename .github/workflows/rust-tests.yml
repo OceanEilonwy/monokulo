@@ -1,0 +1,98 @@
+name: Rust platform tests
+
+on:
+  workflow_call:
+    inputs:
+      platforms:
+        description: JSON array of GitHub-hosted runner labels
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+jobs:
+  tests:
+    name: tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.platforms) }}
+    # Only actual test jobs enter this group. An unrelated review cannot
+    # cancel platform tests; another eligible approval replaces an older run.
+    concurrency:
+      group: rust-tests-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.os }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_review' }}
+    runs-on: ${{ matrix.os }}
+    # Windows runners build the workspace about twice as slowly.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 30 }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: crates/monokulo/pos-ui/package-lock.json
+      - name: Install POS app dependencies
+        # monokulo's build script builds the POS app from them.
+        run: npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
+      # The latest nightly, as rust-toolchain.toml names it.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+          # monokulo's build script builds key custody's browser module.
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run tests
+        id: nextest
+        continue-on-error: true
+        # With the engine's `zmq` feature, as the Docker image is built.
+        run: cargo nextest run --workspace --locked --exclude xtask --profile ci --features engine/zmq
+      - name: Run tests of an engine built without ZMQ
+        id: nextest_no_zmq
+        continue-on-error: true
+        # Only what differs: a node setting naming a publisher is refused.
+        run: cargo nextest run -p engine --lib --locked -E 'test(/without_zmq/)'
+      - name: Run tests of an engine built without SEV-SNP
+        id: nextest_no_snp
+        continue-on-error: true
+        # Only what differs: enabling the snp backend is refused.
+        run: cargo nextest run -p engine --lib --locked -E 'test(/without_snp/)'
+      - name: Run doctests
+        id: doctest
+        continue-on-error: true
+        # nextest does not run doctests.
+        run: cargo test --workspace --locked --exclude xtask --doc
+      - name: Summarize
+        if: always()
+        shell: bash
+        env:
+          # The table's marks aren't in Windows' default code page.
+          PYTHONUTF8: '1'
+        run: |
+          # Windows runners name their Python `python`.
+          python=python3; if test "$RUNNER_OS" = Windows; then python=python; fi
+          "$python" scripts/test-summary.py 'Tests (${{ matrix.os }})' \
+            rust=target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY"
+          echo "Doctests: ${{ steps.doctest.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Engine without ZMQ: ${{ steps.nextest_no_zmq.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Engine without SEV-SNP: ${{ steps.nextest_no_snp.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail on test failure
+        if: always()
+        shell: bash
+        run: test '${{ steps.nextest.outcome }}' = success && test '${{ steps.nextest_no_zmq.outcome }}' = success && test '${{ steps.nextest_no_snp.outcome }}' = success && test '${{ steps.doctest.outcome }}' = success
+      - name: Preserve property test regressions
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proptest-regressions-${{ matrix.os }}-${{ github.sha }}
+          path: crates/*/proptest-regressions/
+          if-no-files-found: ignore
+
