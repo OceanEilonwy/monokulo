@@ -159,7 +159,7 @@ Format: **Decision**, **Alternatives**, **Why**.
 - **Why:** An older monokulo must link the CLI built with it.
 
 ### 17. The browser e2e spec covers plain, and snp where it can't run
-- **Decision:** `real-2-store-key-storage.spec.js` now creates a plain store and
+- **Decision:** `store-key-custody.spec.js` now creates a plain store and
   checks that turning `snp` on without SEV-SNP hardware is reported, that the forms say
   encrypted key entry isn't available, and that the plain store carries on.
 - **Why:** As you decided; snp itself is covered by Rust tests against a stand-in
@@ -377,7 +377,7 @@ end need a decision.
   update can roll the firmware back to that version and open the older wrap, if the
   version is at or above the floor of the release it boots. That is the same class as
   the database-restore limit on image rollback.
-- **Also:** the browser spec `real-2-store-key-storage` expected `snp` to be offered,
+- **Also:** the browser spec `store-key-custody` expected `snp` to be offered,
   with an "isn't available" note, while it can't start. Since #37 it isn't offered at
   all, so the spec now checks that plain stays the only choice. This was CI's only
   failure on `cc1f97e`.

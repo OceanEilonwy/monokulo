@@ -173,7 +173,7 @@ commits of its own (`admin settings: adapt to <what landed>`), and push
   `the_logging_tab_keeps_each_processs_secret_apart`, and
   `an_invalid_monokulo_value_in_a_mixed_tab_saves_neither_half` now also
   checks the refused save opens on Payments.
-- Phone width: `real-3`'s first test now opens every tab at 390px and
+- Phone width: `admin-settings-layout`'s first test now opens every tab at 390px and
   1280px and checks nothing scrolls sideways; 320px is added in step 7.
 - Playwright helpers and specs adapted (decision D12).
 
@@ -209,8 +209,8 @@ commits of its own (`admin settings: adapt to <what landed>`), and push
   `status_says_which_network_each_node_is_on`), a parsing test in
   `daemon_rpc.rs` (`get_info_says_which_network_a_node_is_on`), and in
   monokulo `a_status_parses_with_and_without_each_nodes_network`.
-  `real-4-crash.spec.js` (direct API save of the stagenet fake node) passes
-  unchanged. `real-3` needed one change (decision D15).
+  `engine-crash-recovery.spec.js` (direct API save of the stagenet fake node) passes
+  unchanged. `admin-settings-layout` needed one change (decision D15).
 
 ### Step 5
 
@@ -259,9 +259,9 @@ commits of its own (`admin settings: adapt to <what landed>`), and push
   `a_network_is_closed_until_it_has_nodes_or_stores`,
   `node_rows_are_named_in_order_with_their_buttons_and_a_blank_row_to_add_one`,
   `a_nodes_status_is_said_in_words`, `what_is_wrong_shows_where_it_is`.
-- Playwright: `real-helpers.js` gains `fakeNodeAddress`, `fillNodes`,
+- Playwright: `backend-helpers.js` gains `fakeNodeAddress`, `fillNodes`,
   `saveNodes`, `nodeAddressBoxes`; every spec that saved node JSON on the
-  page uses them (`real-4` still saves JSON through the API).
+  page uses them (`engine-crash-recovery` still saves JSON through the API).
 
 ### Step 6
 
@@ -276,21 +276,21 @@ commits of its own (`admin settings: adapt to <what landed>`), and push
   hides its row's self-signed field. All listeners are on the document,
   plus a pass on `fx:swapped`, so a swapped panel works.
 - Checked: `node --check` on each inline script; the Playwright suite
-  (the confirmation tests in `real-1` and `real-3`); step 7 adds tests for
+  (the confirmation tests in `node-settings` and `admin-settings-layout`); step 7 adds tests for
   "Add another" and the TLS toggle.
 
 ### Step 7
 
-- `e2e/browser/tests/real-helpers.js` (done in steps 3 and 5):
+- `e2e/browser/tests/backend-helpers.js` (done in steps 3 and 5):
   `saveEngineSettings` opens the tab holding the given fields and presses
   Save (several tabs in turn); `openSettingsTab`, `fillSettings`,
   `settingsTabOf`, `SETTINGS_TABS`; node helpers `fakeNodeAddress`,
-  `nodeAddressBoxes`, `fillNodes`, `saveNodes`. `real-4` still saves JSON
+  `nodeAddressBoxes`, `fillNodes`, `saveNodes`. `engine-crash-recovery` still saves JSON
   through the engine API.
-- `real-1`, `real-3`, `real-6` moved to the tabbed page (steps 3 and 5,
-  decision D12); `real-3` now checks every tab at 320px as well.
+- `node-settings`, `admin-settings-layout`, `settings-section-updates` moved to the tabbed page (steps 3 and 5,
+  decision D12); `admin-settings-layout` now checks every tab at 320px as well.
 - `e2e/browser/real-stack.js`: `startFakeNode(nettype)`.
-- New `tests/real-9-admin-settings.spec.js` (decision D21), each of the
+- New `tests/admin-settings-and-nodes.spec.js` (decision D21), each of the
   first three with and without JavaScript:
   tab switching through the tab bar and Back (with JavaScript also that
   the page wasn't reloaded); adding a node (with JavaScript through "Add

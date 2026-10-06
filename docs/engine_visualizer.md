@@ -383,7 +383,7 @@ everything from the oldest snapshot, flagged as a `gap`; the record's
   history against brute force (any moment, before and after trimming,
   replay frames); the relay and the page's routes against the real engine
   router; the status page's link.
-- Browser (`e2e/browser/tests/coverage-engine.spec.js`, in the
+- Browser (`e2e/browser/tests/live-view.spec.js`, in the
   browser coverage suite): a scripted story played into the fixture
   engine's record, followed live; the next block's count; the legend; a
   click on an event, the keys, replay; the wheel leaving the window alone,

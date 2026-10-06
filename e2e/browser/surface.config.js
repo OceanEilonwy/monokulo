@@ -3,7 +3,7 @@
 const { defineConfig } = require('@playwright/test');
 module.exports = defineConfig({
   testDir: './tests',
-  testMatch: 'surface.spec.js',
+  testMatch: 'client-challenge-protocol.spec.js',
   use: { browserName: 'chromium' },
   timeout: 15000,
   reporter: [['list']],

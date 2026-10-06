@@ -928,7 +928,7 @@ differs from it.
 - **Verify:**
   - Playwright on the `coverage_fixture` setup
     (`crates/monokulo/examples/coverage_fixture.rs`, which serves real
-    monokulo pages over an in-process engine; `surface.spec.js` only tests
+    monokulo pages over an in-process engine; `client-challenge-protocol.spec.js` only tests
     hand-written HTML, so it doesn't fit): open the admin settings page at phone and
     desktop sizes. Every field's description is visible, the node example
     expands, and there is no horizontal scroll. Add the page's states

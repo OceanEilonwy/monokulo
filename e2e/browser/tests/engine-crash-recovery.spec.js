@@ -14,7 +14,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
-const { useRealStack, fixture, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, VIEW_KEY, SPEND_PUBKEY } = require('./backend-helpers');
 
 useRealStack(test);
 

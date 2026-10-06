@@ -7,11 +7,21 @@ const { defineConfig } = require('@playwright/test');
 // the processes' logs and databases.
 module.exports = defineConfig({
   testDir: './tests',
-  testMatch: 'real-*.spec.js',
+  testMatch: [
+    'node-settings.spec.js',
+    'store-key-custody.spec.js',
+    'admin-settings-layout.spec.js',
+    'engine-crash-recovery.spec.js',
+    'log-search-and-tracing.spec.js',
+    'settings-section-updates.spec.js',
+    'pos-session-diagnostics.spec.js',
+    'site-themes.spec.js',
+    'admin-settings-and-nodes.spec.js',
+  ],
   timeout: 3 * 60 * 1000,
   expect: { timeout: 30 * 1000 },
   // A spec file's tests share its processes and run in order; files each
-  // have their own (tests/real-helpers.js useRealStack), so they run side
+  // have their own (tests/backend-helpers.js useRealStack), so they run side
   // by side. Most of a file's time is spent waiting on the engine and
   // monokulo, not the CPU, hence more workers than Playwright's default.
   fullyParallel: false,

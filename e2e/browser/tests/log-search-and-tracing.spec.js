@@ -7,7 +7,7 @@
 const { test, expect } = require('../coverage-test');
 const { serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
-const { useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./backend-helpers');
 
 useRealStack(test);
 

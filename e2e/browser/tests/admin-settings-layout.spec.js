@@ -7,7 +7,7 @@
 const { test, expect } = require('@playwright/test');
 const {
   useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, fillNodes, saveEngineSettings, openSettingsTab, SETTINGS_TABS, VIEW_KEY, SPEND_PUBKEY,
-} = require('./real-helpers');
+} = require('./backend-helpers');
 
 useRealStack(test);
 

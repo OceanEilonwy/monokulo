@@ -1,7 +1,7 @@
 # Browser assertion inventory before migration
 
 Task 2.1 of [the coverage breakdown](COVERAGE_WBS.md). Numbers follow source
-order in `e2e/browser/tests/surface.spec.js` at the start of this work.
+order in `e2e/browser/tests/client-challenge-protocol.spec.js` at the start of this work.
 “Real code” means code shipped by Monokulo that the assertion executes; a
 hand-built page in the test is not a product render. Planned replacements must
 pass before the corresponding old case is removed. The baseline below predates
@@ -69,14 +69,14 @@ was dirty at collection because the original POS work remained uncommitted.
 | Resize after load | Real POS remains within viewport after five size changes | Live harness; catches stale keypad measurement | Keep; move to controlled local engine when available |
 
 No test has been deleted in this inventory step. (Later, all three families
-moved to `coverage-fit.spec.js` against the controlled local engine and
+moved to `pos-responsive-layout.spec.js` against the controlled local engine and
 `pos-fit.spec.js` was removed; see `COVERAGE_MIGRATION_AUDIT.md`.)
 
 ## Checkout migration (task 2.3)
 
 The first migration removed former surface cases 1–6, 8–14, and 18 after
 their claims passed against production checkout markup and scripts in
-`coverage-checkout.spec.js`. The real checkout tests now cover QR upload,
+`checkout.spec.js`. The real checkout tests now cover QR upload,
 saved and empty refund states, delayed saving, server rejection and retry,
 network and camera errors, address copy and selection, SSE during an edit,
 no-JS manual entry and refresh, compact and tall layout, a paid terminal

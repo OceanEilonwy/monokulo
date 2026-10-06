@@ -83,7 +83,7 @@ masking because the wallet fixture data is public in this repository.
 
 - **Aim:** Know what every current UI test proves before replacing or deleting
   it.
-- **Done when:** Each of the 24 `surface.spec.js` tests, three `pos.spec.js`
+- **Done when:** Each of the 24 `client-challenge-protocol.spec.js` tests, three `pos-stagenet-payments.spec.js`
   tests, and the `pos-fit.spec.js` viewport families has an inventory row with
   its regression claim, real code exercised, mocked boundary, nearest Rust or
   stagenet overlap, and a keep/migrate/delete decision. Every delete decision

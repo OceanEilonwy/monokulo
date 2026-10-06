@@ -10,7 +10,7 @@ module.exports = defineConfig({
     'javascript-disabled.spec.js',
     'timezone-preferences.spec.js',
     'live-view-performance.spec.js',
-    'coverage-engine.spec.js',
+    'live-view.spec.js',
   ],
   workers: 1,
   use: {

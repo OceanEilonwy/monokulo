@@ -12,7 +12,7 @@ const { captureCoverageStage } = require('../coverage-screenshot');
 const { startFakeNode } = require('../real-stack');
 const {
   useRealStack, fixture, signInAsAdmin, transitionDone, openSettingsTab, saveNodes, nodeAddressBoxes, connectStore, fakeNodeAddress, SETTINGS_TABS,
-} = require('./real-helpers');
+} = require('./backend-helpers');
 
 useRealStack(test);
 

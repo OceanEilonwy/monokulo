@@ -482,7 +482,7 @@ and performance. Acted on:
   under the record's lock, never going back, so the record is in time order
   as well as sequence order (a stepped-back clock or two loops recording at
   once could disagree before).
-- **A real-binary crash test** (`real-4-crash`) failed in CI twice. It
+- **A real-binary crash test** (`engine-crash-recovery`) failed in CI twice. It
   predates this branch (main's engine fails the same way on a loaded
   machine): a store created before the engine's first round recorded the
   fake node's tip started a block behind, and the fake node can't serve

@@ -35,20 +35,20 @@ the committed source also passed all 38 instrumented tests; it measured
 the separate POS TSX edits still in the original working tree. CI's reviewed
 line floor uses this clean committed baseline.
 
-The former `surface.spec.js` claims map to final tests as follows:
+The former `client-challenge-protocol.spec.js` claims map to final tests as follows:
 
 | Former claims | Final test file and state |
 | --- | --- |
-| 1–4, 6, 8–14, 18 | `coverage-checkout.spec.js`: QR/save/retry/camera, SSE during edit, copy, no-JS, compact layout, and real client iframe |
-| 5 | `coverage-checkout.spec.js`: tall real checkout geometry |
-| 7 | `coverage-pos.spec.js`: real header and iframe geometry |
-| 15 | `coverage-pos.spec.js`: real dashboard health polling |
-| 16–17 | `coverage-pos.spec.js`: background/reload/reopen/cancel/search and API-driven badge variants |
-| 19–20 | `coverage-checkout.spec.js`: actual CSP and frame-only response |
-| 21–23 | `coverage-challenge.spec.js`: production challenge view and timed JS/no-JS continuation, including cross-site frame |
-| 24 | `surface.spec.js`: retained client challenge protocol case |
-| `pos-fit` Chromium family | `coverage-fit.spec.js`: 14 controlled sizes and five resizes, each checking keypad, filled, and payment states |
-| `pos-fit` WebKit family | `coverage-fit.spec.js`: the same 14 sizes on WebKit, skipped with its reason where WebKit can't launch. `pos-fit.spec.js` was removed: it still drove the pre-redesign POS markup (`#note-input`, `#charge-btn`), so its Chromium cases timed out against the live harness and its WebKit cases would have too |
+| 1–4, 6, 8–14, 18 | `checkout.spec.js`: QR/save/retry/camera, SSE during edit, copy, no-JS, compact layout, and real client iframe |
+| 5 | `checkout.spec.js`: tall real checkout geometry |
+| 7 | `pos-terminal.spec.js`: real header and iframe geometry |
+| 15 | `pos-terminal.spec.js`: real dashboard health polling |
+| 16–17 | `pos-terminal.spec.js`: background/reload/reopen/cancel/search and API-driven badge variants |
+| 19–20 | `checkout.spec.js`: actual CSP and frame-only response |
+| 21–23 | `connection-challenge.spec.js`: production challenge view and timed JS/no-JS continuation, including cross-site frame |
+| 24 | `client-challenge-protocol.spec.js`: retained client challenge protocol case |
+| `pos-fit` Chromium family | `pos-responsive-layout.spec.js`: 14 controlled sizes and five resizes, each checking keypad, filled, and payment states |
+| `pos-fit` WebKit family | `pos-responsive-layout.spec.js`: the same 14 sizes on WebKit, skipped with its reason where WebKit can't launch. `pos-fit.spec.js` was removed: it still drove the pre-redesign POS markup (`#note-input`, `#charge-btn`), so its Chromium cases timed out against the live harness and its WebKit cases would have too |
 
 Every named screenshot follows a state assertion. The default profile has
 no screenshot-only test. The two initial fixture smoke cases were deleted
@@ -64,7 +64,7 @@ failed when `refund:false` stopped changing the frame URL. Logs live under
 `target/coverage/mutation-{checkout,pos,embed}.log` for this local run.
 
 The paid stagenet profile is separate: `cargo xtask coverage stagenet` runs
-`pos.spec.js` with instrumented checkout/POS assets and writes
+`pos-stagenet-payments.spec.js` with instrumented checkout/POS assets and writes
 `target/coverage/stagenet/` plus `stagenet.json`. It is excluded from
 `coverage all` and CI because it broadcasts real stagenet transactions.
 That profile has not been run during this deterministic audit; its happy path
