@@ -345,6 +345,7 @@
   function drawRound(v) {
     const box = $("engine-round");
     if (!box) return;
+    const detailsOpen = box.querySelector(".round-breakdown")?.open || false;
     let html = "";
     const rawRound = pinned || v.round;
     // A fixed budget scale keeps fast completed rounds and the next running
@@ -371,6 +372,7 @@
         html += "</div>";
       }
       html += `<div></div><div class="ruler"><span class="ruler-label" style="left:${Math.min(99.5, pct(round.elapsed_ms, round.scale_ms))}%">${esc(round.elapsed)}</span></div><div></div></div>`;
+      html += `<details class="round-breakdown"${detailsOpen ? " open" : ""}><summary>Timing details · ${esc(round.title)} (snapshot)</summary>${round.lanes.flatMap(lane => lane.bars.map(bar => `<p><strong>${esc(bar.title)}</strong></p><ul>${(bar.details || []).map(detail => `<li>${esc(detail)}</li>`).join("")}</ul>`)).join("")}</details>`;
     } else {
       html += '<header><h2 id="h-round" title="Scanner round for this network since the engine started; resets on engine restart">Round</h2><span class="engine-hint">No round recorded yet.</span></header>';
     }

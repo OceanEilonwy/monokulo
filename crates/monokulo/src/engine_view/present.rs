@@ -130,6 +130,8 @@ pub struct Bar {
     /// say).
     pub work: bool,
     pub title: String,
+    /// Aggregated operations, available in the explicit timing details.
+    pub details: Vec<String>,
     /// Its time, written after it; `None` when the next segment of the
     /// lane is too close, which then carries this one's time too. The
     /// labels add up to the round.
@@ -147,34 +149,33 @@ const LABEL_GAP: f64 = 0.08;
 /// between them, those that took no time left out when the lane has one
 /// that took some, each labelled with its time.
 fn segments(round: &super::machine::Round, tier: Tier, scale_ms: u64) -> Vec<Bar> {
-    let mut merged: Vec<(Bar, Vec<String>)> = Vec::new();
+    type OperationTotals = std::collections::BTreeMap<&'static str, (u64, u64)>;
+    let mut merged: Vec<(Bar, OperationTotals)> = Vec::new();
     for unit in round.units.iter().filter(|unit| unit.tier == tier) {
-        let part = format!(
-            "{}: {}",
-            match unit.span {
-                Span::Work {
-                    what: Work::TipRequest,
-                } => "asking the node for its tip",
-                Span::Work {
-                    what: Work::CacheCarry,
-                } => "keeping fetched blocks for the next round",
-                Span::Unit {
-                    pass: 2,
-                    progress: _,
-                } => "a unit on time left over",
-                Span::Unit {
-                    pass: _,
-                    progress: _,
-                } => "a unit of work",
+        let operation = match unit.span {
+            Span::Work {
+                what: Work::TipRequest,
+            } => "Node tip requests",
+            Span::Work {
+                what: Work::CacheCarry,
+            } => "Fetched block cache updates",
+            Span::Unit { pass: 2, .. } => "Work using remaining budget",
+            Span::Unit { .. } => match tier {
+                Tier::Chain => "Chain checks",
+                Tier::Blocks => "Block scan work",
+                Tier::Mempool => "Mempool scan work",
+                Tier::Settlement => "Order settlement work",
+                Tier::Upkeep => "Housekeeping work",
             },
-            milliseconds(unit.ms)
-        );
+        };
         match merged.last_mut() {
             Some((bar, parts)) if bar.start_ms + bar.ms == unit.start_ms => {
                 bar.ms += unit.ms;
                 bar.leftover |= unit.leftover();
                 bar.work &= matches!(unit.span, Span::Work { what: _ });
-                parts.push(part);
+                let entry = parts.entry(operation).or_default();
+                entry.0 += 1;
+                entry.1 += unit.ms;
             }
             Some(_) | None => merged.push((
                 Bar {
@@ -183,10 +184,11 @@ fn segments(round: &super::machine::Round, tier: Tier, scale_ms: u64) -> Vec<Bar
                     leftover: unit.leftover(),
                     work: matches!(unit.span, Span::Work { what: _ }),
                     title: String::new(),
+                    details: Vec::new(),
                     label: None,
                     last: false,
                 },
-                vec![part],
+                std::collections::BTreeMap::from([(operation, (1, unit.ms))]),
             )),
         }
     }
@@ -204,11 +206,23 @@ fn segments(round: &super::machine::Round, tier: Tier, scale_ms: u64) -> Vec<Bar
         .into_iter()
         .zip(next_starts)
         .map(|((mut bar, parts), next_start)| {
-            let mut title = parts.join("; ");
-            if let Some(first) = title.get_mut(0..1) {
-                first.make_ascii_uppercase();
-            }
-            bar.title = title;
+            let count: u64 = parts.values().map(|(count, _)| count).sum();
+            bar.title = format!(
+                "{}: {} total · {} operation{}",
+                tier_name(tier),
+                milliseconds(bar.ms).replace("ms", " ms"),
+                count,
+                if count == 1 { "" } else { "s" }
+            );
+            bar.details = parts
+                .into_iter()
+                .map(|(operation, (count, ms))| {
+                    format!(
+                        "{operation}: {count}, {} total",
+                        milliseconds(ms).replace("ms", " ms")
+                    )
+                })
+                .collect();
             carried += bar.ms;
             if next_start.is_none_or(|next| next.saturating_sub(bar.start_ms + bar.ms) >= close) {
                 bar.label = Some(milliseconds(carried));

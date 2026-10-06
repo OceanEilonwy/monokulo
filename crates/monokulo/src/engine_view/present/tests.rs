@@ -341,7 +341,7 @@ fn a_round_s_parts_add_up_to_it() {
     );
     assert_eq!(
         round.lanes[0].bars[0].title,
-        "Asking the node for its tip: 403ms; a unit of work: 20ms"
+        "Chain: 423 ms total · 2 operations"
     );
     assert!(!round.lanes[0].bars[0].work, "not only the tip request");
     assert_eq!(
@@ -702,4 +702,30 @@ fn the_pool_panel_says_whether_the_engine_looks() {
         summary(vec![watched(true)]).summary,
         "4 scanned in the pool"
     );
+}
+
+#[test]
+fn many_short_round_operations_have_a_compact_tooltip_and_aggregated_details() {
+    let events = [
+        snapshot(10, 10, &[(10, 1)]),
+        Event::RoundStarted {
+            round: 1,
+            budget_ms: 10_000,
+            tip: Some(10),
+        },
+    ];
+    let units = (0..1000).map(|start_ms| Event::Unit {
+        tier: Tier::Blocks,
+        pass: 1,
+        start_ms,
+        ms: 1,
+        progress: UnitProgress::Idle,
+    });
+    let state = after(events.into_iter().chain(units));
+    let round = present(&state, &TUNING).round.unwrap();
+    let bar = &round.lanes[1].bars[0];
+    assert_eq!(bar.ms, 1000);
+    assert!(bar.title.len() < 100);
+    assert!(bar.title.contains("1000 operations"));
+    assert_eq!(bar.details, ["Block scan work: 1000, 1,000 ms total"]);
 }
