@@ -144,6 +144,10 @@ pub enum StoreSection {
 }
 
 impl StoreSection {
+    pub fn from_id(id: &str) -> Option<Self> {
+        [Self::BaseCurrency, Self::Confirmations, Self::FxProvider, Self::KeyStorage, Self::Domains, Self::Webhooks, Self::Diagnostics].into_iter().find(|section| section.id() == id)
+    }
+
     pub fn id(self) -> &'static str {
         match self {
             StoreSection::BaseCurrency => "base-currency",
@@ -190,6 +194,8 @@ fn section_error(store: &StoreSettingsData, section: StoreSection, in_place: boo
         @if in_place && store.active_section == Some(section) {
             @if let Some(error) = &store.settings_error {
                 div class="error" role="alert" data-fx-focus tabindex="-1" { (error) }
+            } @else {
+                p class="success settings-saved" role="status" data-settings-saved { "Settings saved." }
             }
         }
     }
@@ -562,6 +568,9 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
             @if let Some(store) = &data.store {
                 (super::store_breadcrumb(store.connection_id.as_str(), &store.display_name, false))
                 h1 { "Settings" }
+                @if store.active_section.is_some() && store.settings_error.is_none() {
+                    p class="success settings-saved" role="status" data-settings-saved { "Settings saved." }
+                }
 
                 @if let Some(error) = &store.settings_error {
                     div class="error" role="alert" {

@@ -913,17 +913,35 @@ async fn render_store_detail_page(
 /// `GET /dashboard/stores/{id}/settings` - base currency, confirmation
 /// thresholds (0-conf included), exchange rate provider, and webhooks, all
 /// split out from the store overview page onto their own settings page.
+#[derive(Default, Deserialize)]
+pub struct StoreSettingsQuery {
+    saved: Option<String>,
+}
+
 pub async fn store_settings(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<crate::db::ConnectionId>,
+    Query(query): Query<StoreSettingsQuery>,
 ) -> Response {
     let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    render_store_settings_page(&state, row, &user, None, None, None).await
+    render_store_settings_page(
+        &state,
+        row,
+        &user,
+        None,
+        None,
+        query
+            .saved
+            .as_deref()
+            .and_then(StoreSection::from_id)
+            .map(|section| (section, FxRequest(false))),
+    )
+    .await
 }
 
 /// Shared by every settings mutation below (base currency, confirmation
@@ -1133,7 +1151,10 @@ pub(super) async fn saved(
         };
         render_store_settings_page(state, row, user, None, None, Some((section, fx))).await
     } else {
-        redirect_302(redirect_to)
+        let (path, anchor) = redirect_to
+            .split_once('#')
+            .unwrap_or((redirect_to, section.id()));
+        redirect_302(&format!("{path}?saved={}#{anchor}", section.id()))
     }
 }
 
@@ -4342,7 +4363,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FOUND);
         assert_eq!(
             response.headers().get("location").unwrap(),
-            &format!("{settings_uri}#key-storage")
+            &format!("{settings_uri}?saved=key-storage#key-storage")
         );
         assert_eq!(
             engine_backend_of(&state, &public_key).await.as_deref(),
@@ -4512,7 +4533,7 @@ mod tests {
         );
         assert_eq!(
             response.headers().get("location").unwrap(),
-            &format!("/dashboard/stores/{connection_id}/settings"),
+            &format!("/dashboard/stores/{connection_id}/settings?saved=confirmation-thresholds#confirmation-thresholds"),
         );
 
         let settings_page = router
