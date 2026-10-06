@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Monokulo: Monero payments from your router</title>
-<meta name="description" content="Monokulo is a self-hosted Monero payment gateway that runs on an OpenWrt router like the GL.iNet Flint 2. Watch-only: it never holds a spend key.">
+<title>Monokulo: self-hosted Monero payments</title>
+<meta name="description" content="Monokulo is a self-hosted Monero payment gateway for Linux, macOS, Windows and OpenWrt routers like the GL.iNet Flint 2. Watch-only: it never holds a spend key.">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <!-- Colours come only from monokulo's own theme (crates/monokulo/src/views/theme.css,
      copied here at build time): light or dark follows the OS. -->
@@ -66,6 +66,8 @@ pre{margin:0;padding:var(--space-md) var(--space-lg);padding-right:84px;overflow
 .note.info{background:var(--tint-neutral);border-color:var(--line-strong)}
 .req{display:flex;flex-wrap:wrap;gap:var(--space-sm);margin-top:var(--space-xs)}
 .req span{padding:4px 12px;border-radius:999px;background:var(--surface-sunken);border:1px solid var(--line);font-size:14px;font-weight:700}
+.config-paths{width:100%;border-collapse:collapse;margin-top:var(--space-md);text-align:left}
+.config-paths th,.config-paths td{padding:var(--space-sm);border-bottom:1px solid var(--line);vertical-align:top}
 .files{margin:var(--space-sm) 0 0;padding-left:20px}
 .path{display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px;align-self:flex-start;padding:2px 10px;border-radius:var(--radius-sm);background:var(--surface-sunken);border:1px solid var(--line);font-weight:700;font-size:15px}
 .path.inline{display:inline;padding:1px 8px}
@@ -112,10 +114,10 @@ footer{max-width:1040px;margin:0 auto;padding:0 var(--space-lg) var(--space-xl);
   <section class="hero">
     <!-- logo:full --><svg class="mark logo-mark" width="96" height="96" viewBox="0 0 64 64" aria-hidden="true" focusable="false"><defs><clipPath id="monokulo-lens-full"><circle cx="30" cy="28" r="15.75"/></clipPath></defs><g clip-path="url(#monokulo-lens-full)"><circle cx="30" cy="28" r="15.75" fill="var(--logo-facet-mid)"/><path d="M30,23L34.33,25.5L34.33,30.5L30,33L25.67,30.5L25.67,25.5Z" fill="var(--logo-facet-deep)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M30,23L34.33,25.5L35.5,18.47Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M34.33,25.5L34.33,30.5L41,28Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M34.33,30.5L30,33L35.5,37.53Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M30,33L25.67,30.5L24.5,37.53Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M25.67,30.5L25.67,25.5L19,28Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M25.67,25.5L30,23L24.5,18.47Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M30,23L24.5,18.47L30,4Z" fill="var(--logo-facet-mid)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M30,23L30,4L35.5,18.47Z" fill="var(--logo-facet-mid)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M34.33,25.5L35.5,18.47L50.78,16Z" fill="var(--logo-facet-mid)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M34.33,25.5L50.78,16L41,28Z" fill="var(--logo-facet-mid)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M34.33,30.5L41,28L50.78,40Z" fill="var(--logo-facet-mid)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M34.33,30.5L50.78,40L35.5,37.53Z" fill="var(--logo-facet-mid)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M30,33L35.5,37.53L30,52Z" fill="var(--logo-facet-mid)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M30,33L30,52L24.5,37.53Z" fill="var(--logo-facet-mid)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M25.67,30.5L24.5,37.53L9.22,40Z" fill="var(--logo-facet-mid)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M25.67,30.5L9.22,40L19,28Z" fill="var(--logo-facet-mid)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M25.67,25.5L19,28L9.22,16Z" fill="var(--logo-facet-mid)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M25.67,25.5L9.22,16L24.5,18.47Z" fill="var(--logo-facet-mid)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M35.5,18.47L30,4L42,7.22Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M35.5,18.47L42,7.22L50.78,16Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M41,28L50.78,16L54,28Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M41,28L54,28L50.78,40Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M35.5,37.53L50.78,40L42,48.78Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M35.5,37.53L42,48.78L30,52Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M24.5,37.53L30,52L18,48.78Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M24.5,37.53L18,48.78L9.22,40Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M19,28L9.22,40L6,28Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M19,28L6,28L9.22,16Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M24.5,18.47L9.22,16L18,7.22Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/><path d="M24.5,18.47L18,7.22L30,4Z" fill="var(--logo-facet-warm)" stroke="currentColor" stroke-width="0.55" stroke-linejoin="round"/></g><circle cx="30" cy="28" r="18" fill="none" stroke="currentColor" stroke-width="4.5"/><circle cx="36.55" cy="48.16" r="1.9" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M36.55,50.16 C35.55,58.16 45.55,61.16 55.55,54.16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="0.1 3.4"/></svg>
     <div>
-      <h1>Accept Monero, from your own router</h1>
-      <p class="lead">Monokulo is a self-hosted Monero payment gateway. It runs on your OpenWrt router, watches the chain with each store’s view key, and tells the store when an order is paid. It never holds a spend key, so it can never move your coins.</p>
+      <h1>Accept Monero, on your own computer or router</h1>
+      <p class="lead">Monokulo is a self-hosted Monero payment gateway. It runs on Linux, macOS, Windows or your OpenWrt router, watches the chain with each store’s view key, and tells the store when an order is paid. It never holds a spend key, so it can never move your coins.</p>
       <div class="actions">
-        <a class="btn btn-primary" href="#install">Install on your Flint 2</a>
+        <a class="btn btn-primary" href="#install">Install Monokulo</a>
         <a class="btn" href="@REPO_URL@">Source on GitHub</a>
       </div>
     </div>
@@ -124,19 +126,143 @@ footer{max-width:1040px;margin:0 auto;padding:0 var(--space-lg) var(--space-xl);
   <section id="how">
     <div class="section-title">
       <h2>How it works</h2>
-      <p>One small program on the router, a page in LuCI, and a Monero node it can reach.</p>
+      <p>One program with the engine inside it, a browser dashboard, and a Monero node it can reach.</p>
     </div>
     <div class="grid">
       <div class="card"><h3>Watch-only</h3><p>Each store gives Monokulo its view key, never its spend key. Payments go straight to the store’s own wallet; Monokulo just sees them arrive.</p></div>
       <div class="card"><h3>Checkout that works anywhere</h3><p>A hosted checkout page and embed for static sites, a point-of-sale screen, and webhooks when an order is paid. The checkout works without JavaScript.</p></div>
       <div class="card"><h3>Fast detection</h3><p>Payments show up within about a second of reaching the network, and are confirmed as blocks arrive.</p></div>
       <div class="card"><h3>Easy on the router</h3><p>One static program and SQLite. The engine runs inside Monokulo on threads of its own, kept to two of the Flint 2’s four cores at low priority, so routing comes first. Checking each block’s proof of work (on by default for mainnet) takes about 256 MB of memory; turn it off on the admin page if you run your own node.</p></div>
-      <div class="card"><h3>Settings in LuCI</h3><p>Start, stop, port, listen address and the engine’s CPUs are under Services → Monokulo. Stores, nodes and everything else are on Monokulo’s own admin page.</p></div>
+      <div class="card"><h3>Settings in your browser</h3><p>Manage stores, nodes and payment settings on Monokulo’s admin page. On OpenWrt, LuCI also controls start, stop, port, listen address and the engine’s CPUs under Services → Monokulo.</p></div>
       <div class="card"><h3>Survives upgrades</h3><p>Its settings, keys and databases are kept across OpenWrt firmware upgrades.</p></div>
     </div>
   </section>
 
-  <section id="install" class="install">
+  <section id="install">
+    <div class="section-title">
+      <h2>Install Monokulo</h2>
+      <p>Choose your computer or router. Every download includes the payment engine.</p>
+    </div>
+    <div class="actions">
+      <a class="btn btn-primary" href="#desktop">Linux, macOS or Windows</a>
+      <a class="btn" href="#flint2">Flint 2 / OpenWrt</a>
+    </div>
+  </section>
+
+  <section id="desktop" class="install">
+    <div class="section-title">
+      <h2>Install on your desktop</h2>
+      <p>Download one executable, start it in a terminal, then finish setup in your browser.</p>
+    </div>
+    <div class="card">
+      <h3>Download and extract</h3>
+      <p>Open the <a href="@REPO_URL@/releases/latest">latest release</a> and download the <code>monokulo-…</code> ZIP for your computer. For the newest build from main, use the <a href="@REPO_URL@/releases/tag/latest-main">latest-main prerelease</a>. Extract the ZIP, then open a terminal in the extracted folder containing <code>monokulo</code> (or <code>monokulo.exe</code>).</p>
+      <p class="muted small" style="margin-top:var(--space-sm)">Each ZIP has a matching <code>.sha256</code> checksum on the release page. You don’t need Rust, Node.js or a separate engine download.</p>
+    </div>
+    <div class="card">
+      <div class="tabs" role="tablist" aria-label="Desktop operating system" hidden>
+        <button type="button" role="tab" id="tab-linux" aria-controls="panel-linux" aria-selected="true">Linux</button>
+        <button type="button" role="tab" id="tab-macos" aria-controls="panel-macos" aria-selected="false" tabindex="-1">macOS</button>
+        <button type="button" role="tab" id="tab-windows" aria-controls="panel-windows" aria-selected="false" tabindex="-1">Windows</button>
+      </div>
+      <div class="tabpanel" id="panel-linux" role="tabpanel" aria-labelledby="tab-linux">
+        <h3 class="nojs">Linux</h3>
+        <ol>
+          <li><span class="num">1</span><div>
+            <h3>Choose the Linux ZIP</h3>
+            <p>For Intel / AMD computers, choose the file ending in <code>x86_64-unknown-linux-gnu.zip</code>. For ARM64, choose <code>aarch64-unknown-linux-gnu.zip</code>. These builds need glibc 2.35 or newer (Ubuntu 22.04 or a comparable distribution).</p>
+          </div></li>
+          <li><span class="num">2</span><div>
+            <h3>Create your encryption key once</h3>
+            <p>In the extracted folder, generate a private key file with OpenSSL. Keep this file for every restart and update.</p>
+            <div class="cmd"><pre>umask 077
+openssl rand -hex 32 &gt; monokulo.key
+chmod +x monokulo</pre></div>
+          </div></li>
+          <li><span class="num">3</span><div>
+            <h3>Start Monokulo</h3>
+            <p>Run this each time you start it, from the folder containing your executable and key file.</p>
+            <div class="cmd"><pre>MONOKULO_ENCRYPTION_KEY="$(cat monokulo.key)" ./monokulo</pre></div>
+          </div></li>
+        </ol>
+      </div>
+      <div class="tabpanel" id="panel-macos" role="tabpanel" aria-labelledby="tab-macos">
+        <h3 class="nojs">macOS</h3>
+        <ol>
+          <li><span class="num">1</span><div>
+            <h3>Choose the macOS ZIP</h3>
+            <p>For Apple silicon (M-series), choose the file ending in <code>aarch64-apple-darwin.zip</code>. For an Intel Mac, choose <code>x86_64-apple-darwin.zip</code>. Double-click the ZIP to extract it, then open Terminal in its folder.</p>
+            <p class="muted small">The executable is unsigned. If macOS blocks it after download, clear its quarantine attribute once for the binary you downloaded from the release page:</p>
+            <div class="cmd"><pre>xattr -d com.apple.quarantine monokulo</pre></div>
+          </div></li>
+          <li><span class="num">2</span><div>
+            <h3>Create your encryption key once</h3>
+            <p>Generate a private key file. Keep this file for every restart and update.</p>
+            <div class="cmd"><pre>umask 077
+openssl rand -hex 32 &gt; monokulo.key
+chmod +x monokulo</pre></div>
+          </div></li>
+          <li><span class="num">3</span><div>
+            <h3>Start Monokulo</h3>
+            <p>Run this each time you start it, from the folder containing your executable and key file.</p>
+            <div class="cmd"><pre>MONOKULO_ENCRYPTION_KEY="$(cat monokulo.key)" ./monokulo</pre></div>
+          </div></li>
+        </ol>
+      </div>
+      <div class="tabpanel" id="panel-windows" role="tabpanel" aria-labelledby="tab-windows">
+        <h3 class="nojs">Windows</h3>
+        <ol>
+          <li><span class="num">1</span><div>
+            <h3>Choose the Windows ZIP</h3>
+            <p>Choose the file ending in <code>x86_64-pc-windows-msvc.zip</code> for an Intel / AMD 64-bit PC. Right-click the ZIP and choose <strong>Extract All…</strong>, then open PowerShell in the folder containing <code>monokulo.exe</code>.</p>
+            <p class="muted small">The executable is unsigned, so SmartScreen may show <strong>More info › Run anyway</strong>. It needs the Microsoft Visual C++ runtime; if Windows reports a missing <code>VCRUNTIME140.dll</code>, install the x64 Visual C++ Redistributable from Microsoft.</p>
+          </div></li>
+          <li><span class="num">2</span><div>
+            <h3>Create your encryption key once</h3>
+            <p>Run this in PowerShell to save a random 32-byte key as 64 hex characters. Keep the file private and reuse it for every restart and update.</p>
+            <div class="cmd"><pre>$keyBytes = New-Object byte[] 32
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($keyBytes)
+$rng.Dispose()
+([BitConverter]::ToString($keyBytes) -replace '-', '').ToLowerInvariant() | Set-Content -Encoding ascii monokulo.key</pre></div>
+          </div></li>
+          <li><span class="num">3</span><div>
+            <h3>Start Monokulo</h3>
+            <p>Run this each time you start it, from the folder containing your executable and key file.</p>
+            <div class="cmd"><pre>$env:MONOKULO_ENCRYPTION_KEY = (Get-Content -Raw .\monokulo.key).Trim()
+.\monokulo.exe</pre></div>
+          </div></li>
+        </ol>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Finish setup in your browser</h3>
+      <p>Leave the terminal running and open <a href="http://127.0.0.1:8081/" target="_blank" rel="noreferrer"><code>http://127.0.0.1:8081</code></a>. The first-run wizard creates your admin account. On the admin page, add a Monero node for the network you’ll accept payments on, then add a store with its wallet address and view key. You can use your own reachable node or a remote node over HTTPS.</p>
+      <p style="margin-top:var(--space-md)">Monokulo listens on this computer only by default. To serve customers over the internet, configure its listen address in Server settings, put it behind an HTTPS reverse proxy, and set the public URL customers will use. For a Tor onion service, see <a href="@REPO_URL@/blob/main/docs/TOR.md">the Tor guide</a>.</p>
+      <p style="margin-top:var(--space-md)">Press <strong>Ctrl+C</strong> to stop it. For automatic startup, run it under your system’s service manager with the same encryption key. For data paths, options and building from source, see <a href="@REPO_URL@/blob/main/README.md#from-release-binaries-or-source">the README</a>.</p>
+    </div>
+    <div class="card">
+      <h3>Where your config and data live</h3>
+      <p>Monokulo’s admin page saves settings in <code>monokulo.toml</code>. The default locations are:</p>
+      <table class="config-paths">
+        <thead><tr><th scope="col">System</th><th scope="col">Config file</th><th scope="col">Data folder</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Linux / macOS</th><td><code>~/.config/monokulo/monokulo.toml</code></td><td><code>~/.local/share/monokulo/</code></td></tr>
+          <tr><th scope="row">Windows</th><td><code>%APPDATA%\monokulo\monokulo.toml</code></td><td><code>%LOCALAPPDATA%\monokulo\</code></td></tr>
+        </tbody>
+      </table>
+      <p class="muted small" style="margin-top:var(--space-sm)">On Linux and macOS, <code>~</code> means your home folder. On Windows, paste <code>%APPDATA%\monokulo</code> into File Explorer’s address bar to find the config folder.</p>
+      <p style="margin-top:var(--space-md)">If set to absolute paths, <code>XDG_CONFIG_HOME</code> and <code>XDG_DATA_HOME</code> replace the base folders above. A Windows environment that sets <code>HOME</code> uses <code>$HOME/.config</code> and <code>$HOME/.local/share</code> before the Windows folders. If a default folder cannot be used, Monokulo falls back to its working directory.</p>
+      <p style="margin-top:var(--space-md)">To choose a config file explicitly, start with <code>--options /path/to/monokulo.toml</code>. Running <code>./monokulo --init</code> (PowerShell: <code>.\monokulo.exe --init</code>) writes a template with documented defaults and prints its location. The data folder contains <code>monokulo.db</code> and <code>engine.db</code>; <code>--database-path</code> overrides the main database path. Your encryption key stays in the separate <code>monokulo.key</code> file you created, rather than in the config.</p>
+    </div>
+    <div class="card">
+      <h3>Backups and updates</h3>
+      <p>Back up <code>monokulo.key</code>, your options file and both databases (<code>monokulo.db</code> and <code>engine.db</code>). Stop Monokulo before copying the databases. To update, stop it, extract the new ZIP, then start the new executable with your existing key and data.</p>
+      <p class="note" style="margin-top:var(--space-md)">Never generate a new key for an existing installation. Losing the key makes encrypted data unreadable. Keep it private: anyone with the key and database can read your stores’ details.</p>
+    </div>
+  </section>
+
+  <section id="flint2" class="install">
     <div class="section-title">
       <h2>Install on your Flint 2</h2>
       <p>About ten minutes. You can do it all from the router’s web interface.</p>
@@ -229,7 +355,8 @@ logread -e monokulo   # what it said</pre></div>
     </div>
 
     <div class="card">
-      <h3>Back up its secrets</h3>
+      <h3>Config, data and secrets on OpenWrt</h3>
+      <p style="margin-bottom:var(--space-md)">LuCI’s service settings live in <code>/etc/config/monokulo</code>. Monokulo’s admin settings are saved to <code>/srv/monokulo/monokulo.toml</code> by default, alongside <code>monokulo.db</code> and <code>engine.db</code>. Changing the data folder in LuCI moves the location used for the config and databases.</p>
       <p>On first start Monokulo makes an encryption key for its data, in <code>/etc/monokulo/secrets</code>. Firmware upgrades keep the file, but if it’s ever lost, Monokulo’s data can’t be read. Copy it somewhere safe from your computer:</p>
       <div class="cmd" style="margin-top:var(--space-sm)"><pre>scp root@192.168.1.1:/etc/monokulo/secrets monokulo-secrets</pre></div>
       <p class="note" style="margin-top:var(--space-md)">Keep that file private: with it and a copy of the data folder, anyone can read your stores’ details.</p>
@@ -290,9 +417,9 @@ rm -rf /srv/monokulo /etc/monokulo   # also delete all data and secrets</pre></d
 <script>
 document.documentElement.classList.add("js");
 
-// Install tabs: Web (LuCI) by default. Without JavaScript both show, one after the other.
-(function () {
-  var tabs = Array.prototype.slice.call(document.querySelectorAll("[role=tab]"));
+// Each install tablist works independently. Without JavaScript all panels show.
+document.querySelectorAll("[role=tablist]").forEach(function (list) {
+  var tabs = Array.prototype.slice.call(list.querySelectorAll("[role=tab]"));
   if (!tabs.length) return;
   function select(tab, focus) {
     tabs.forEach(function (t) {
@@ -308,11 +435,18 @@ document.documentElement.classList.add("js");
     t.addEventListener("keydown", function (e) {
       var d = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
       if (d) { e.preventDefault(); select(tabs[(i + d + tabs.length) % tabs.length], true); }
+      if (e.key === "Home" || e.key === "End") {
+        e.preventDefault(); select(tabs[e.key === "Home" ? 0 : tabs.length - 1], true);
+      }
     });
   });
-  document.querySelector(".tabs").hidden = false;
-  select(location.hash === "#ssh" ? tabs[1] : tabs[0]);
-})();
+  list.hidden = false;
+  var initial = tabs.filter(function (t) {
+    return location.hash === "#" + t.id.replace("tab-", "") ||
+      location.hash === "#" + t.getAttribute("aria-controls");
+  })[0];
+  select(initial || tabs[0]);
+});
 
 // Copy buttons on every command and key (comments after a command are left out).
 document.querySelectorAll(".cmd").forEach(function (box) {
