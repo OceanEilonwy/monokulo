@@ -996,6 +996,7 @@ async fn a_logged_in_user_submitting_valid_wallet_fields_gets_a_confirmation_pag
     .await;
 
     let response = router
+        .clone()
         .oneshot(connect_post_request(
             &cookie,
             &[
@@ -1012,16 +1013,32 @@ async fn a_logged_in_user_submitting_valid_wallet_fields_gets_a_confirmation_pag
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let html = body_text(response).await;
-
-    let public_key_start = html
-        .find("pk_")
-        .expect("expected a real pk_ value in the confirmation page");
-    let public_key: String = html[public_key_start..]
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '_')
-        .collect();
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let location = response.headers()["location"].to_str().unwrap();
+    assert!(location.ends_with("/setup"));
+    let page = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(location)
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let html = body_text(page).await;
+    assert!(html.contains("Save and continue"));
+    let public_key = {
+        let db = state.db.lock();
+        let user = db
+            .get_user_by_email("connect-form@example.com")
+            .unwrap()
+            .unwrap();
+        db.list_store_connections_for_user(&user.id).unwrap()[0]
+            .tenant_public_key
+            .clone()
+    };
     assert!(
         public_key.len() > 3,
         "expected a real pk_... value, got: {public_key}"

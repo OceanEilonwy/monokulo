@@ -251,32 +251,6 @@ async fn render_connect_form(
     views::connect::page(&chrome, &data).into_response()
 }
 
-async fn render_connect_success(
-    state: &AppState,
-    connection_id: &str,
-    public_key: &str,
-    user: &UserRow,
-) -> Response {
-    let chrome = super::page_chrome(state, Some(user), "/dashboard/connect").await;
-    let public_url = state.settings.public_url();
-    let data = views::connect::ConnectViewModel {
-        error: None,
-        public_key: Some(public_key.to_string()),
-        connection_id: Some(connection_id.to_string()),
-        public_url,
-        site_url: String::new(),
-        view_key_hex: String::new(),
-        spend_pubkey_hex: String::new(),
-        network_mainnet_selected: false,
-        network_stagenet_selected: false,
-        network_testnet_selected: false,
-        currency_options: Vec::new(),
-        custody_choices: vec![],
-        snp_entry: None,
-    };
-    views::connect::page(&chrome, &data).into_response()
-}
-
 /// `303`-free, deliberate `302 Found` redirect (axum's own `Redirect::to`
 /// issues `303 See Other` instead - see its doc comment - and the WBS spec
 /// for this task calls out `302` specifically). `pub(super)` since the
@@ -582,15 +556,10 @@ pub async fn connect_submit(
     };
 
     match connections::create_connection_for_user(&state, &user, fields).await {
-        Ok(outcome) => {
-            render_connect_success(
-                &state,
-                outcome.connection_id.as_str(),
-                &outcome.public_key,
-                &user,
-            )
-            .await
-        }
+        Ok(outcome) => redirect_302(&format!(
+            "/dashboard/stores/{}/setup",
+            outcome.connection_id
+        )),
         Err(CreateConnectionError::BadRequest(message)) => {
             render_connect_form(&state, Some(&message), Some(&form), &user).await
         }

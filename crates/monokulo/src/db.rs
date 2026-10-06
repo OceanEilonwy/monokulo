@@ -1402,6 +1402,22 @@ impl Db {
         Ok(())
     }
 
+    /// Saves the common setup fields together and invalidates thresholds only
+    /// when their currency changes. The caller holds the store policy lock.
+    pub fn update_store_setup(
+        &self,
+        _proof: crate::confirmation_thresholds::PolicyProof,
+        id: &ConnectionId,
+        currency: &str,
+        providers: &[String],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM confirmation_thresholds WHERE connection_id = ?1 AND EXISTS (SELECT 1 FROM store_connections WHERE id = ?1 AND base_currency != ?2)", params![id, currency])?;
+        tx.execute("UPDATE store_connections SET base_currency = ?2, fx_providers = ?3 WHERE id = ?1", params![id, currency, serde_json::to_string(providers).expect("strings serialize")])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Every verified-embed domain of `connection_id`, alphabetically.
     pub fn list_store_domains(&self, connection_id: &ConnectionId) -> Result<Vec<StoreDomainRow>> {
         let mut stmt = self
