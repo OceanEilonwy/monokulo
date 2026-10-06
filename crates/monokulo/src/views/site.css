@@ -687,3 +687,5 @@ a.order-id { display: inline-block; max-width: 11em; }
 .reload[hidden] { display: none; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .page-heading h1 { flex: 1; }
+
+.settings-saved { padding: .6rem .8rem; border: 1px solid var(--success); border-radius: var(--radius-sm); background: var(--tint-success); }
