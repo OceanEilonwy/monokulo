@@ -559,7 +559,7 @@ fn help() -> Markup {
                 }
 
                 h3 { "Round" }
-                p class="wide" { "Each round gives the five tiers a share of a 10s budget, in order; time left over goes round again. Every millisecond of a round belongs to one tier, so the times written after the segments add up to the round's: the round's opening (deciding whether to ask for the pool, then asking the node for its tip) counts to Chain, keeping fetched blocks for the next round to Blocks. A tier's work that ran back to back is one segment; hover over it for its parts." }
+                p class="wide" { "Each round gives the five tiers a share of a 10s budget, in order; time left over goes round again. Every millisecond of a round belongs to one tier, so the times written after the segments add up to the round's: the round's opening (deciding whether to ask for the pool, then asking the node for its tip) counts to Chain, keeping fetched blocks for the next round to Blocks. A tier's work that ran back to back is one segment; hover for its total duration and operation count, or open Timing details for the breakdown." }
                 dl {
                     dt { (tier("chain")) }
                     dd { b { "Chain" } " asks the node for its tip, then checks the recorded chain still matches the node's: it compares the newest recorded block's hash with the node's. When the engine is caught up, the tip's hash came with the tip and nothing more is asked; otherwise a blue " b { "hash check" } " flies from the node. If they differ, it reconciles the reorganisation: payments are re-examined and blocks rewound." }
@@ -640,6 +640,15 @@ fn round(view: &Presented, pinned: Option<&RoundView>, network: &str) -> Markup 
                         div {}
                         div class="ruler" { span class="ruler-label" style=(left_pct(round.elapsed_ms, round.scale_ms)) { (round.elapsed) } }
                         div {}
+                    }
+                    details class="round-breakdown" {
+                        summary { "Timing details · " (round.title) " (snapshot)" }
+                        @for lane in &round.lanes {
+                            @for bar in &lane.bars {
+                                p { strong { (bar.title) } }
+                                ul { @for detail in &bar.details { li { (detail) } } }
+                            }
+                        }
                     }
                 }
                 None => {
