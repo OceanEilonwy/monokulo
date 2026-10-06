@@ -582,6 +582,7 @@ fn help() -> Markup {
                     dd { b { "Idle" } ": nothing left to do. " b { "Backlogged" } ": out of time with work left, so the next round starts at once. " b { "Waiting" } ": held up by what it names. " b { "Failed" } ": an error, retried next round." }
                 }
 
+                p class="wide" { "Round numbers count scanner rounds for this network since the engine started. They reset to 1 when the engine restarts; refreshing this page or reconnecting the live stream does not reset them." }
                 h3 { "Last rounds" }
                 dl {
                     dt { span class="rbar" style="height:14px;width:8px" { i class="t-blocks" style="height:60%" {} i class="t-chain" style="height:40%" {} } }
@@ -624,7 +625,7 @@ fn round(view: &Presented, pinned: Option<&RoundView>, network: &str) -> Markup 
             @match pinned.or(view.round.as_ref()) {
                 Some(round) => {
                     header class="round-head" {
-                        h2 id="h-round" { (round.title) }
+                        h2 id="h-round" title="Scanner round for this network since the engine started; resets on engine restart" { (round.title) }
                         @if pinned.is_some() {
                             a class="engine-chip round-paused" id="round-resume" href=(live)
                                 title="Showing a past round: back to the live one" { "× Paused" }
@@ -641,7 +642,7 @@ fn round(view: &Presented, pinned: Option<&RoundView>, network: &str) -> Markup 
                     }
                 }
                 None => {
-                    header { h2 id="h-round" { "Round" } span class="engine-hint" { "No round recorded yet." } }
+                    header { h2 id="h-round" title="Scanner round for this network since the engine started; resets on engine restart" { "Round" } span class="engine-hint" { "No round recorded yet." } }
                 }
             }
             div class="ribbon-row" {
