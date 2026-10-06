@@ -116,7 +116,11 @@ pub async fn setup_submit(
                 Ok((_user, raw_token)) => {
                     let cookie = super::session_cookie(&headers, raw_token.expose().to_string());
                     let jar = CookieJar::new().add(cookie);
-                    (jar, redirect_302("/dashboard/admin/settings")).into_response()
+                    (
+                        jar,
+                        redirect_302("/dashboard/admin/settings?tab=nodes&welcome=true"),
+                    )
+                        .into_response()
                 }
                 // The account was just created with this exact password, so
                 // this is unreachable in practice - falling back to a plain
@@ -304,7 +308,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FOUND);
         assert_eq!(
             response.headers().get("location").unwrap(),
-            "/dashboard/admin/settings"
+            "/dashboard/admin/settings?tab=nodes&welcome=true"
         );
         let set_cookie = response
             .headers()
@@ -316,6 +320,21 @@ mod tests {
             set_cookie.starts_with("session="),
             "expected a real session cookie, got: {set_cookie}"
         );
+
+        let nodes = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/admin/settings?tab=nodes&welcome=true")
+                    .header("cookie", set_cookie.split(';').next().unwrap())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let nodes_html = body_text(nodes).await;
+        assert!(nodes_html.contains("Connect a Monero node below"));
+        assert!(nodes_html.contains("Monero nodes"));
 
         // The wizard's own gate on `/` must now be gone - setup is complete.
         let landing = router

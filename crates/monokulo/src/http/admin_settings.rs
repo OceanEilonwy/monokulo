@@ -516,6 +516,7 @@ async fn render(state: &AppState, admin_user: &UserRow, view: AdminSettingsViewM
 #[derive(Deserialize)]
 pub struct SettingsPageQuery {
     tab: Option<String>,
+    welcome: Option<bool>,
     /// The flash a save without JavaScript left for the page it redirected
     /// to ([`FLASHES`]).
     saved: Option<String>,
@@ -542,7 +543,10 @@ pub async fn page(
             view.saved_tab = (!flash.reloaded).then_some(flash.tab);
             view
         }
-        None => build_view_model(&state, &admin_user, tab, SaveResult::default()).await,
+        None => build_view_model(&state, &admin_user, tab, SaveResult {
+            success: query.welcome.filter(|v| *v).map(|_| "Your admin account is ready. Connect a Monero node below to start scanning payments. Save its address and check the connection status.".to_string()),
+            ..Default::default()
+        }).await,
     };
     if fx.0 {
         return axum::response::Html(views::admin::settings_fragment(&view, true).into_string())
