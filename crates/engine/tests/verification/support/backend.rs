@@ -37,8 +37,9 @@ impl Backend {
         // a second connection alone would not meet this positive control.
         self.db()
             .run(Class::Admin, |s| {
-                s.conn_for_test()
-                    .execute_batch("CREATE TEMP TABLE portfolio_connection_probe (id INTEGER)")?;
+                s.conn_for_test().execute_batch(
+                    "CREATE TEMP TABLE verification_connection_probe (id INTEGER)",
+                )?;
                 Ok::<_, StoreError>(())
             })
             .await
@@ -46,7 +47,7 @@ impl Backend {
         replace(&mut self.db, &mut self.store, &self.path, self.worker);
         let next = self;
         let temporary: i64 = next.db().run(Class::Admin, |s| {
-            s.conn_for_test().query_row("SELECT count(*) FROM sqlite_temp_master WHERE name='portfolio_connection_probe'", [], |r| r.get(0)).map_err(StoreError::from)
+            s.conn_for_test().query_row("SELECT count(*) FROM sqlite_temp_master WHERE name='verification_connection_probe'", [], |r| r.get(0)).map_err(StoreError::from)
         }).await.unwrap();
         assert_eq!(temporary, 0, "BOUNDARY: executor-connection-replaced");
     }

@@ -273,7 +273,7 @@ impl Harness {
         let before = self.snapshot();
         let branch = self.store().lock().reorg_branch(NETWORK).unwrap();
         // Close every SQLite handle and discard scheduler caches/backoff.
-        super::history_backend::replace(&mut self.db, &mut self.store, &self.path, false);
+        super::verification_backend::replace(&mut self.db, &mut self.store, &self.path, false);
         self.state = Self::state();
         assert_eq!(self.snapshot(), before, "restart changed durable state");
         assert_eq!(

@@ -29,24 +29,7 @@ pub(crate) fn persist(
     }
     config
 }
-pub(crate) struct TempFile(pub(crate) String);
-impl TempFile {
-    pub(crate) fn new() -> Self {
-        Self(
-            std::env::temp_dir()
-                .join(format!("engine-property-{}.db", uuid::Uuid::new_v4()))
-                .to_string_lossy()
-                .into_owned(),
-        )
-    }
-}
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        for suffix in ["", "-wal", "-shm", ".ready"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", self.0));
-        }
-    }
-}
+pub(crate) use crate::verification_temp_db::TempDb as TempFile;
 /// Modes: normal, unavailable, rendezvous. The rendezvous lets tests cancel
 /// precisely during address derivation instead of relying on timing guesses.
 #[derive(Default)]

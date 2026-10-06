@@ -1296,11 +1296,15 @@ continue to supply real custody and temporary databases.
 
 Exploration workflows pin `nightly-2026-10-02` and cargo-fuzz `0.13.2`; ordinary
 project builds retain the repository's nightly policy. The fuzz runner writes
-`target/engine-exploration/fuzz/<target>/<features>/<seed>/`: `replay.json` records
+`target/engine-exploration/fuzz/<target>/<features>/<seed>/<revision>-<run-id>/`: `replay.json` records
 revision, dirty state, compiler/Cargo/fuzzer versions and limits; `calibration.json`
 records measured reviewed-seed costs; raw logs and `report.json` retain executions,
 rate, coverage/feature growth and unique corpus growth. Calibration failure is fatal.
-Semantic portfolio counts distinguish fixture category/backend and command families;
+Every invocation has an independent directory. Build and calibration failures
+produce terminal reports; a remaining running report identifies interrupted work. Reviewed seeds are copied by content hash, so restored
+corpora always include their current contents.
+Semantic portfolio counts distinguish fixture category/backend, selected commands,
+applied transitions and skipped commands;
 raw successful-case observations remain available. Other targets report instrumentation
 and corpus metrics; absent semantic counts are not silently presented as coverage.
 Pure targets default to 300 seconds/10-second deadlines; queue and notification
@@ -1310,7 +1314,9 @@ review seed costs and actual execution rates before increasing sustained budgets
 Manual budgets override defaults. Exact tool-version artifacts allow replay using
 the recorded toolchain even when local builds use another nightly.
 
-A fuzz campaign that completes only seed initialization is rejected as insufficient exploration; `executions_after_initialization` makes this explicit. Increase its budget rather than treating replay-only work as a successful campaign.
+Successful campaigns require parsed initialization and completion records with a
+positive execution delta. Missing/malformed evidence is invalid; a campaign that
+completes only seed initialization is rejected as insufficient exploration; `executions_after_initialization` makes this explicit. Increase its budget rather than treating replay-only work as a successful campaign.
 
 
 Mutation checks include a systematic operator/guard grid around funding,

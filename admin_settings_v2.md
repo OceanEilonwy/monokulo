@@ -375,7 +375,7 @@ differs from it.
   - Unit test: `Registry::build()` succeeds with the engine's real
     sections, so no setting is orphaned.
   - `GET` and `POST /api/v1/admin/settings` tests in
-    `crates/engine/tests/internal/http/tests.rs` pass unchanged, apart from the new
+    `crates/engine/tests/verification/http/tests.rs` pass unchanged, apart from the new
     fields added in 4.2.
   - `grep -rn "settings::get" crates/engine/src` finds nothing outside
     the library.
@@ -459,7 +459,7 @@ differs from it.
   the scanner starts scanning it. Clearing a network stops scanning it and
   removes it from the status page's node list.
 - **Verify:**
-  - Integration test in `crates/engine/tests/internal/http/tests.rs`: build the app
+  - Integration test in `crates/engine/tests/verification/http/tests.rs`: build the app
     with no nodes, then `POST /api/v1/admin/settings` a stagenet node
     pointing at a local HTTP fake daemon (see the approach). Creating a stagenet tenant now
     succeeds, where before the save it was refused, and `GET /status`
@@ -811,7 +811,7 @@ differs from it.
   what the engine reports, so a newer engine's settings are described
   correctly without a monokulo change.
 - **Verify:**
-  - Test in `crates/engine/tests/internal/http/tests.rs`: `GET /api/v1/admin/settings`
+  - Test in `crates/engine/tests/verification/http/tests.rs`: `GET /api/v1/admin/settings`
     returns `description`, `kind` (with range or choices), `example`,
     `applies` and `pending_restart` for every scalar, and a description,
     example and `tenant_count` for each `monero_node` network.

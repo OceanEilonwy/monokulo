@@ -11,19 +11,19 @@
         reason = "single-thread exploration borrows its independent ledger"
     )
 )]
-use super::history_backend as backend;
 use super::history_fixture::FlakyKeyCustody;
 use super::portfolio_fixture::{pair, transaction};
+use super::verification_backend as backend;
 use super::{fast_pass, run_round_at, RoundInputs, ScanState};
 use crate::daemon::fake::tx_id_hex;
+#[path = "effects.rs"]
+mod effects;
 #[path = "scenario.rs"]
 pub(crate) mod scenario;
-#[path = "effects.rs"]
-mod world;
 use crate::key_custody::{KeyCustody as _, WalletMaterial};
 use crate::store::{Db, NewOrder, NewTenant, TenantId};
+use effects::{SqlFailure, World};
 use std::{collections::BTreeMap, time::Duration};
-use world::{SqlFailure, World};
 #[path = "model.rs"]
 mod model;
 use model::{Invoice, Ledger, Location, Oracle, Output};
@@ -214,8 +214,8 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             }
             let mut backend = backend::Backend::new(&path, store.into_shared(), worker);
             let mut voided = vec![false; count];
-            daemon.push_block(&world::hash(0, 1), vec![]);
-            daemon.push_block(&world::hash(0, 2), vec![]);
+            daemon.push_block(&effects::hash(0, 1), vec![]);
+            daemon.push_block(&effects::hash(0, 2), vec![]);
             let mut state = ScanState::default();
             let mut locations = vec![
                 if semantic.is_some() {
@@ -228,8 +228,8 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             let mut observed = vec![semantic.is_none(); count];
             let mut epoch = 0u64;
             let mut oracle = Oracle::default();
-            // First observe all transactions: disappearance alone may never void
-            // their outputs, so the independent ledger retains the same funds.
+            // Legacy histories observe all transactions before generated effects.
+            // Typed histories start empty; observations enter the ledger on arrival.
             daemon.remember(transactions.clone());
             daemon.set_mempool(if semantic.is_none() {
                 transactions.clone()
@@ -268,37 +268,58 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                 use scenario::Command;
                 let mut tip = 2;
                 for command in &scenario.commands {
-                    daemon.hit(&format!("command:{command:?}"));
+                    daemon.hit(&format!("selected-command:{}", command.family()));
+                    let mut applied = true;
                     match *command {
                         Command::Arrive(t) => {
                             let t = usize::from(t) % count;
+                            let before = (locations[t], observed[t], voided[t]);
                             if !matches!(locations[t], Location::Block(_)) {
                                 locations[t] = Location::Pool;
                                 observed[t] = true;
                                 voided[t] = false;
                                 daemon.clear_spent(&transactions[t]);
                             }
+                            applied = (locations[t], observed[t], voided[t]) != before;
+                            if applied {
+                                assert_eq!(
+                                    locations[t],
+                                    Location::Pool,
+                                    "arrival must put the transaction in the pool"
+                                );
+                                assert!(
+                                    observed[t] && !voided[t],
+                                    "arrival must mark observation and clear stale void evidence"
+                                );
+                            }
                         }
                         Command::Mine(t) => {
                             let t = usize::from(t) % count;
                             tip += 1;
                             if matches!(locations[t], Location::Block(_)) {
-                                daemon.push_block(&world::hash(epoch, tip), vec![]);
+                                applied = false;
+                                daemon.push_block(&effects::hash(epoch, tip), vec![]);
+                                daemon.hit("applied-transition:ExtendInsteadOfMine");
                             } else {
                                 locations[t] = Location::Block(tip);
                                 observed[t] = true;
                                 voided[t] = false;
                                 daemon.clear_spent(&transactions[t]);
                                 daemon.push_block(
-                                    &world::hash(epoch, tip),
+                                    &effects::hash(epoch, tip),
                                     vec![transactions[t].clone()],
+                                );
+                                assert_eq!(
+                                    locations[t],
+                                    Location::Block(tip),
+                                    "mining must attach the output to the new height"
                                 );
                             }
                         }
                         Command::Extend(n) => {
                             for _ in 0..=n % 4 {
                                 tip += 1;
-                                daemon.push_block(&world::hash(epoch, tip), vec![]);
+                                daemon.push_block(&effects::hash(epoch, tip), vec![]);
                             }
                         }
                         Command::Reorg(n) => {
@@ -309,14 +330,19 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                                     *location = Location::Gone;
                                 }
                             }
-                            let replacement = world::hash(epoch, from);
+                            let replacement = effects::hash(epoch, from);
                             daemon.reorg_from(from, vec![(replacement.as_str(), vec![])]);
                             tip = from;
                         }
                         Command::Drop(t) => {
                             let t = usize::from(t) % count;
-                            if matches!(locations[t], Location::Pool) {
+                            applied = matches!(locations[t], Location::Pool);
+                            if applied {
                                 locations[t] = Location::Gone;
+                                assert!(
+                                    observed[t],
+                                    "a departing pool transaction must have been observed"
+                                );
                             }
                         }
                         Command::Spent {
@@ -324,10 +350,16 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                             unanimous,
                         } => {
                             let t = usize::from(transaction) % count;
-                            if !matches!(locations[t], Location::Block(_)) {
+                            applied = !matches!(locations[t], Location::Block(_));
+                            if applied {
+                                let expected_void = voided[t] || (observed[t] && unanimous);
                                 locations[t] = Location::Gone;
                                 voided[t] |= observed[t] && unanimous;
                                 daemon.spent(&transactions[t], unanimous);
+                                assert_eq!(
+                                    voided[t], expected_void,
+                                    "spent evidence must follow observation and unanimity"
+                                );
                             }
                         }
                         Command::Proof { lag, mismatch } => {
@@ -372,6 +404,15 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                         }
                         Command::Round => {}
                     }
+                    daemon.hit(&format!(
+                        "{}:{}",
+                        if applied {
+                            "applied-transition"
+                        } else {
+                            "skipped-command"
+                        },
+                        command.family()
+                    ));
                     daemon.set_mempool(
                         transactions
                             .iter()
@@ -441,7 +482,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                 let blocks = (3..3 + span)
                     .map(|height| {
                         (
-                            world::hash(epoch, height),
+                            effects::hash(epoch, height),
                             transactions
                                 .iter()
                                 .zip(&locations)
@@ -543,7 +584,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             // all distinct outputs mined together, then cold state and stable IDs.
             daemon.set_mempool(vec![]);
             epoch += 1;
-            let hash = world::hash(epoch, 3);
+            let hash = effects::hash(epoch, 3);
             daemon.reorg_from(3, vec![(hash.as_str(), transactions)]);
             locations.fill(Location::Block(3));
             observed.fill(true);

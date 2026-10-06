@@ -859,3 +859,44 @@ fn typed_portfolio_selects_every_sql_operation_class_and_position() {
         }
     }
 }
+
+#[test]
+fn typed_portfolio_reports_selected_applied_and_skipped_commands_separately() {
+    use crate::work::portfolio::scenario::{Command, Scenario, SETUP_BYTES};
+    let scenario = Scenario {
+        setup: vec![0; SETUP_BYTES],
+        commands: vec![
+            Command::Arrive(0),
+            Command::Mine(0),
+            Command::Mine(0),
+            Command::Arrive(0),
+            Command::Drop(0),
+            Command::Spent {
+                transaction: 0,
+                unanimous: true,
+            },
+            Command::Arrive(1),
+            Command::Drop(1),
+        ],
+    };
+    let hits = crate::work::portfolio::explore(&scenario.encode());
+    for (name, expected) in [
+        ("selected-command:Arrive", 3),
+        ("applied-transition:Arrive", 2),
+        ("skipped-command:Arrive", 1),
+        ("selected-command:Mine", 2),
+        ("applied-transition:Mine", 1),
+        ("skipped-command:Mine", 1),
+        ("applied-transition:ExtendInsteadOfMine", 1),
+        ("selected-command:Drop", 2),
+        ("applied-transition:Drop", 1),
+        ("skipped-command:Drop", 1),
+        ("skipped-command:Spent", 1),
+    ] {
+        assert_eq!(
+            hits.get(name).copied().unwrap_or_default(),
+            expected,
+            "semantic counter {name}"
+        );
+    }
+}
