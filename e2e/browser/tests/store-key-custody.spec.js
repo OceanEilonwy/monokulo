@@ -6,7 +6,7 @@
 // stand-in security processor; here, turning snp on where it can't run is
 // reported, and plain stores carry on.
 const { test, expect } = require('@playwright/test');
-const { useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY } = require('./backend-helpers');
 
 useRealStack(test);
 
@@ -31,8 +31,7 @@ test('a store keeps its keys in the engine; snp turned on without SEV-SNP hardwa
   await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
   await page.locator('select[name="network"]').selectOption('stagenet');
   await page.getByRole('button', { name: 'Connect' }).click();
-  await expect(page.getByRole('heading', { name: 'Store connected' })).toBeVisible();
-  const storeId = (await page.getByRole('link', { name: /View store/ }).getAttribute('href')).split('/').pop();
+  const storeId = (await finishStoreSetup(page)).split('/').pop();
   await createOrder(page, base, storeId, '0.5');
 
   // snp turned on, on a machine that isn't an SEV-SNP guest: it is saved,

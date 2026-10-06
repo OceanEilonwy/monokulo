@@ -5,7 +5,7 @@
 // can then be connected, and the warnings for restart-only settings and
 // for clearing a network stores use work.
 const { test, expect } = require('@playwright/test');
-const { useRealStack, fixture, reloadUntil, saveEngineSettings, saveNodes, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, reloadUntil, saveEngineSettings, saveNodes, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY } = require('./backend-helpers');
 
 useRealStack(test);
 
@@ -34,8 +34,7 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
   await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
   await page.locator('select[name="network"]').selectOption('stagenet');
   await page.getByRole('button', { name: 'Connect' }).click();
-  await expect(page.getByRole('heading', { name: 'Store connected' })).toBeVisible();
-  const storeLink = await page.getByRole('link', { name: /View store/ }).getAttribute('href');
+  const storeLink = await finishStoreSetup(page);
   const storeId = storeLink.split('/').pop();
 
   // 5. A saved poll interval shows on the status page.

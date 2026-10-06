@@ -209,7 +209,7 @@ precede deletion of old browser tests.
     be checked.
   - `pos-fit.spec.js` removed (`4923d8f`/`9d1bb8e`): it still used the
     pre-redesign POS markup and timed out. Its WebKit family moved into
-    `coverage-fit.spec.js` (it skips, with the reason, where WebKit can't
+    `pos-responsive-layout.spec.js` (it skips, with the reason, where WebKit can't
     launch; here its system libraries are missing).
   - The paid suite's no-JS POS test is removed: the POS is explicitly
     JavaScript-only (owner's decision). The inventory and audit docs are
@@ -219,7 +219,7 @@ precede deletion of old browser tests.
       back across node, node2 and node3.monerodevs.org. node.monerodevs.org
       resets connections from one busy address.
     - All four Rust stagenet tests pass.
-    - The paid POS payment test (`pos.spec.js`) still fails waiting for
+    - The paid POS payment test (`pos-stagenet-payments.spec.js`) still fails waiting for
       `#payment-state` after a successful send. It is deferred until the POS
       redesign rework (owner's request of 26 Sep), which changes that flow.
     - `cargo xtask coverage stagenet` has not been run yet.
@@ -227,7 +227,7 @@ precede deletion of old browser tests.
 ## Resume next
 
 Check the GitHub coverage run on `27f56a3` or later. After the POS redesign
-rework, re-run the paid `pos.spec.js` and `cargo xtask coverage stagenet`. The paid stagenet profile remains an explicit separate
+rework, re-run the paid `pos-stagenet-payments.spec.js` and `cargo xtask coverage stagenet`. The paid stagenet profile remains an explicit separate
 run. The original
 surface test's search/badge changes remain user-owned and unstaged; stage only
 coverage-specific hunks for the collector commit.

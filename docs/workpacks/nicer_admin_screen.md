@@ -31,13 +31,13 @@ Your work will be reviewed step by step against this document. Commits that mix 
   - `crates/engine`: **the engine** (also called "scanner"). It is private; only monokulo talks to it.
   - `crates/engine-test-support`: test doubles, including the `fake-monerod` binary the Playwright suite runs against.
   - `crates/live-settings`: the shared, typed settings library both processes use.
-  - `e2e/browser`: the Playwright tests. The `real-*.spec.js` files run against the real binaries and cover the admin page.
+  - `e2e/browser`: the Playwright tests. The the specs selected by `real-binaries.config.js` files run against the real binaries and cover the admin page.
 - **Tests you must run and keep green before every commit:**
   - `cargo test --workspace`. At commit `1a6b27e` this gave 1162 passed, 0 failed, 22 ignored. Run it once before you start and record your own baseline in the progress notes.
   - `cargo clippy --workspace --all-targets`: add no new warnings in files you touch.
   - `node --check` on any JS file you edit.
   - When you touch HTML, CSS, JS or the admin page's behaviour, run the real-binaries Playwright suite from `e2e/browser`: `npx playwright test -c real-binaries.config.js`. See `e2e/browser/README.md` for setup. Use absolute paths or a subshell so your shell doesn't stay in another directory.
-  - Don't run the stagenet suites (`*_stagenet*.rs`, `pos.spec.js`, `coverage-stagenet.config.js`). They need real funds and nodes, but they must still compile.
+  - Don't run the stagenet suites (`*_stagenet*.rs`, `pos-stagenet-payments.spec.js`, `coverage-stagenet.config.js`). They need real funds and nodes, but they must still compile.
 - **Code style:**
   - Match the surrounding code's naming, idiom and comment density. This codebase uses long doc comments that explain *why*. Write new ones in that spirit, plainly and without filler.
   - Views are `maud`, in `crates/monokulo/src/views/*.rs`.
@@ -94,12 +94,12 @@ Re-check both lists against the code when you start; the registries are the sour
 
 ### Playwright coverage of this page
 
-- `real-1-settings.spec.js`: a node saved on a fresh instance applies straight away (fills `textarea[name="monero_node_stagenet"]`).
-- `real-3-admin-page.spec.js`: every visible `.setting-field` has help; the node example opens; nothing scrolls sideways at phone and desktop widths; the confirmation when clearing a network in use (reads `data-tenant-count` off the textarea); banners in both themes.
-- `real-6-sections.spec.js`: saving the engine half keeps unsaved edits in the monokulo half.
-- `real-helpers.js`: `saveEngineSettings(page, fields)` fills fields by `name` and clicks "Save engine settings". `fakeNodeJson()` gives the fake node as JSON. Most specs call these.
-- `real-8-theme.spec.js`: captures dashboard pages for the coverage gallery with `captureCoverageStage`, in both themes.
-- `real-4-crash.spec.js` posts `monero_node` straight to the engine API. That doesn't change.
+- `node-settings.spec.js`: a node saved on a fresh instance applies straight away (fills `textarea[name="monero_node_stagenet"]`).
+- `admin-settings-layout.spec.js`: every visible `.setting-field` has help; the node example opens; nothing scrolls sideways at phone and desktop widths; the confirmation when clearing a network in use (reads `data-tenant-count` off the textarea); banners in both themes.
+- `settings-section-updates.spec.js`: saving the engine half keeps unsaved edits in the monokulo half.
+- `backend-helpers.js`: `saveEngineSettings(page, fields)` fills fields by `name` and clicks "Save engine settings". `fakeNodeJson()` gives the fake node as JSON. Most specs call these.
+- `site-themes.spec.js`: captures dashboard pages for the coverage gallery with `captureCoverageStage`, in both themes.
+- `engine-crash-recovery.spec.js` posts `monero_node` straight to the engine API. That doesn't change.
 
 All of these need updating for tabs and the node form (step 7).
 
@@ -251,7 +251,7 @@ Each step lists what to do and its acceptance criteria.
   - duplicates are refused;
   - `/status` includes each node's network.
 - A monokulo test: `EngineStatusResponse` parses both with and without the new field.
-- The engine-side refusal also works through the API (`real-4-crash.spec.js`'s direct API path is unaffected for a correct node).
+- The engine-side refusal also works through the API (`engine-crash-recovery.spec.js`'s direct API path is unaffected for a correct node).
 
 ### Step 5: The node form
 
@@ -291,13 +291,13 @@ Keep them in the page's inline scripts, like `CUSTODY_BACKENDS_SCRIPT`, or in `f
 
 ### Step 7: Playwright
 
-- Update `real-helpers.js`:
+- Update `backend-helpers.js`:
   - `saveEngineSettings` becomes a helper that opens the tab holding the given fields and clicks "Save", or split it into a per-tab helper;
   - add helpers to set a network's nodes through the form (fill rows, save);
   - replace `fakeNodeJson()` uses on the page with them.
 
-  Keep direct API use (`real-4-crash.spec.js`) as it is.
-- Update `real-1-settings.spec.js`, `real-3-admin-page.spec.js` and `real-6-sections.spec.js` to the tabbed page. `real-6`'s "keeps edits in the other half" test becomes: with fixi, saving one tab doesn't disturb the tab bar's links or the banners area. Drop the part that no longer applies, and log it.
+  Keep direct API use (`engine-crash-recovery.spec.js`) as it is.
+- Update `node-settings.spec.js`, `admin-settings-layout.spec.js` and `settings-section-updates.spec.js` to the tabbed page. `settings-section-updates`'s "keeps edits in the other half" test becomes: with fixi, saving one tab doesn't disturb the tab bar's links or the banners area. Drop the part that no longer applies, and log it.
 - New tests, with JavaScript and with JavaScript disabled (`javaScriptEnabled: false`) where it says so:
   - Switching tabs by clicking the tab bar, both ways; Back returns to the previous tab.
   - Every tab: every visible `.setting-field` has help, and nothing scrolls sideways at 320px, 390px and 1280px.
@@ -305,7 +305,7 @@ Keep them in the page's inline scripts, like `CUSTODY_BACKENDS_SCRIPT`, or in `f
   - A wrong-network node: start a second `fake-monerod --nettype mainnet` (or make the existing fixture's nettype switchable) and check the refusal message shows and nothing changed.
   - With JS: Use TLS toggles the self-signed box; the confirmation before removing a network's last node while stores use it, and none when no store uses it.
   - The Nodes tab marker appears when stagenet's only node is offline (`/fake/offline`), and goes when it's back.
-- Gallery: in `real-8-theme.spec.js` (or a new spec following it), capture every tab in light and dark at phone and desktop sizes with `captureCoverageStage`, grouped under the admin settings page.
+- Gallery: in `site-themes.spec.js` (or a new spec following it), capture every tab in light and dark at phone and desktop sizes with `captureCoverageStage`, grouped under the admin settings page.
 
 **Acceptance:** `npx playwright test -c real-binaries.config.js` passes. Record the totals in the progress notes.
 

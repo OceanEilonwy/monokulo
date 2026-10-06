@@ -37,7 +37,7 @@ commits. Nothing is pushed.
 | 7.6 node failures | done | 130c432 | cooldown, 30s call budget, pinned node per tick, 64MB response cap |
 | 7.10 HTTP limits | done | 242ffba | constants for now; become live settings with part 1.2 |
 | 7.7 database failures | done | 719dc2e | transient store/custody errors are 503 |
-| 7.11 crash safety, SIGTERM | done | 3c9e77f, fedef4f | in-process crash injection, plus kill -9 of the real binary (real-4-crash.spec.js) |
+| 7.11 crash safety, SIGTERM | done | 3c9e77f, fedef4f | in-process crash injection, plus kill -9 of the real binary (engine-crash-recovery.spec.js) |
 | 7.2 scanning off the async runtime | done | 298b928 | blocking pool, one scan per core |
 | 7.3 window (D10), closed_at, index-set API, no table copy | done | 298b928 | socket backend uses the trait's default (covering range) until its wire protocol gains index sets |
 | 7.3 mempool memory | done | 02b0d0f | |
@@ -57,7 +57,7 @@ commits. Nothing is pushed.
 | 3.5 pin already-live settings | done | see git log | one test each for signup.mode, public_url, engine.admin_token |
 | 3.7 merchant alerts | done | d7e7883 | |
 | 2.2 unserved networks | done | d7e7883 | |
-| Part 4 admin page | done | 66f32ea, fedef4f | Playwright checks on the real binaries (real-3-admin-page.spec.js); gallery screenshots not added |
+| Part 4 admin page | done | 66f32ea, fedef4f | Playwright checks on the real binaries (admin-settings-layout.spec.js); gallery screenshots not added |
 | independent review of 8830c92 + 66f32ea + d7e7883 | all items applied or decided | 5b980b5, e990f7f, see git log | item 1 (--help touching the DB) fixed in part 5 main.rs rework |
 | Part 5 engine side (5.1 router, 5.2 live settings, 5.3 choose/switch API, 5.5 status) | done | 95f5991 | |
 | Part 5 monokulo side (5.4 backend choice, 5.6 Key storage section, 5.7 alerts) and bootstrap CLI flag | done, reviewed, fixes applied | see git log | review found 1 blocking bug (socket path change stranded socket stores), fixed with tests |
@@ -250,11 +250,11 @@ reported at the end.)
   reached by a real engine). It serves a fixed chain of empty blocks,
   answers get_blocks.bin with 404 (the engine copes), and can be taken
   offline and back with POST /fake/offline and /fake/online.
-- 6.3: `tests/real-1-settings.spec.js` passes in about 45s, and fails
+- 6.3: `tests/node-settings.spec.js` passes in about 45s, and fails
   against the engine from before 8830c92 at step 3 (status never shows
   the saved node), checked once with a worktree build via E2E_SCANNER_BIN.
 
-- 6.4: `tests/real-2-store-key-storage.spec.js` (real binaries plus a real
+- 6.4: `tests/store-key-custody.spec.js` (real binaries plus a real
   key-custody-server process) covers choosing a backend for a new store,
   moving it with its keys, orders before and after, the service going down
   and coming back (alert shown then gone, orders work again), and the
@@ -274,7 +274,7 @@ reported at the end.)
     permanently slowed scanning. It now asks the server something every
     version understands first, and only falls back if that's answered.
 
-- 7.11 real-process check: `tests/real-4-crash.spec.js` kills the engine
+- 7.11 real-process check: `tests/engine-crash-recovery.spec.js` kills the engine
   binary with SIGKILL six times at random moments while orders are being
   created and the loop ticks every 100ms, restarting it on the same
   database each time. Every order the engine confirmed is still there
@@ -282,7 +282,7 @@ reported at the end.)
   5 repeated runs. Payments under crashes stay covered by the in-process
   crash-injection test (the fake node can't make payments).
 - Part 4's Playwright checks run on the real binaries rather than the
-  coverage fixture (`tests/real-3-admin-page.spec.js`): the real pages and
+  coverage fixture (`tests/admin-settings-layout.spec.js`): the real pages and
   a real engine are a stronger test, and the fixture's in-process engine
   would need its own node setup. Covered: every field's description
   visible and the node example opening at phone and desktop widths with no
@@ -293,9 +293,9 @@ reported at the end.)
   states to the UI stages gallery (a screenshot reporter for the coverage
   suites), which would mean wiring the real-binaries suite into that
   reporter; left for later.
-- The real-binaries specs are numbered (`real-1-...` to `real-4-...`)
-  because they share one pair of processes and the first must see a fresh
-  instance for the pre-fix regression check to mean anything.
+- The real-binaries specs have behavior-based names. Each file starts its
+  own fresh pair of processes through `backend-helpers.js`, so file ordering
+  does not affect the fresh-instance regression check.
 
 - Final review (independent agent, abe3d84..HEAD): no blocking issues.
   Applied:

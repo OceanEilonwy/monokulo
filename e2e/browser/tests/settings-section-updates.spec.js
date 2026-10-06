@@ -5,7 +5,7 @@
 // one tab at a time (nicer_admin_screen.md): its panel is swapped, and the
 // tab bar and page-wide banners come back whole.
 const { test, expect } = require('@playwright/test');
-const { useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, openSettingsTab, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, openSettingsTab, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY } = require('./backend-helpers');
 
 useRealStack(test);
 
@@ -51,21 +51,25 @@ test('a store settings form that is refused shows why inside its own section', a
   await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
   await page.locator('select[name="network"]').selectOption('stagenet');
   await page.getByRole('button', { name: 'Connect' }).click();
-  await expect(page.getByRole('heading', { name: 'Store connected' })).toBeVisible();
+  await finishStoreSetup(page);
   await page.goto(base + '/dashboard');
   const store = await page.locator('tr', { hasText: 'sections.example.com' }).first().getByRole('link', { name: 'view →' }).getAttribute('href');
   await page.goto(base + store + '/settings');
 
   await page.evaluate(() => { window.__notReloaded = true; });
+  await page.locator('#webhooks').getByRole('button', { name: 'Edit webhooks' }).click();
   const url = page.locator('#webhooks input[name="url"]');
   await url.fill('https://hooks.example.com/monokulo');
   await page.getByRole('button', { name: 'Add webhook' }).click();
   await expect(page.locator('#webhooks').getByRole('heading', { name: 'Webhook created' })).toBeVisible();
 
+  await page.locator('#webhooks dialog').getByRole('button', { name: 'Close', exact: true }).click();
+  const webhookContents = await page.locator('#webhooks').innerHTML();
+  await page.locator('#confirmation-thresholds').getByRole('button', { name: 'Edit confirmation thresholds' }).click();
   await page.locator('input[name="confirmations_required"]').fill('abc');
   await page.locator('#confirmation-thresholds button[form="default-confirmations"]').click();
   await expect(page.locator('#confirmation-thresholds [role="alert"]')).toContainText('Enter a whole number');
-  // The webhook section, swapped earlier, is untouched by this one.
-  await expect(page.locator('#webhooks').getByRole('heading', { name: 'Webhook created' })).toBeVisible();
+  // The webhook section, including its dismissed secret, is untouched.
+  expect(await page.locator('#webhooks').innerHTML()).toBe(webhookContents);
   expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
 });

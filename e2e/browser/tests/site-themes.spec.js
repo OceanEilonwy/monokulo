@@ -9,7 +9,7 @@
 const { test, expect } = require('../coverage-test');
 const { serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
-const { useRealStack, fixture, signInAsAdmin, connectStore } = require('./real-helpers');
+const { useRealStack, fixture, signInAsAdmin, connectStore } = require('./backend-helpers');
 
 useRealStack(test);
 
@@ -91,8 +91,12 @@ test('the site, the POS and the hosted payment page share one theme, light and d
 
       // Buttons are neutral; the one creating action of a form is orange.
       await page.goto(base + store + '/settings');
-      expect(await background(page.getByRole('button', { name: 'Update' }).first())).toBe(expected.button);
+      await page.getByRole('button', { name: 'Edit base currency', exact: true }).click();
+      expect(await background(page.getByRole('button', { name: 'Update', exact: true }))).toBe(expected.button);
+      await page.keyboard.press('Escape');
+      await page.getByRole('button', { name: 'Edit webhooks', exact: true }).click();
       expect(await background(page.getByRole('button', { name: 'Add webhook' }))).toBe(ORANGE);
+      await page.keyboard.press('Escape');
       if (theme === 'light') await captureCoverageStage(page, 'site-store-settings', test.info(), { group: 'site' });
       expect(await fitsSmallPhone(page)).toBe(0);
 

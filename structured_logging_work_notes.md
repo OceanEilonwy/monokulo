@@ -48,7 +48,7 @@ because it builds on the `live-settings` crate from that work).
 | 6 connect | not converted | | its post leads to a different page ("Store connected"), like login and signup, so a swap buys nothing |
 | 7 OTLP export and docs | done | "OTLP export" | `telemetry::otlp`, settings `logging.otlp_endpoint`/`logging.otlp_headers` (secret) in both processes; `docs/LOGGING.md` |
 | 8 checkout embed | done | "checkout embed on fixi and ssexi" | `#checkout-stream` opens `/events?routed=true`: one ssexi JSON-routed message per changed `[data-live]` part, then `status`, then `done`; refund save through fixi on a `refund:save` trigger, JSON answer read in `fx:after`; noscript refresh and Auto Refresh toggle unchanged |
-| 9 tests | done | "trace from a caller" | converted handlers have fixi and full-page tests; `only_the_checkout_refreshes_by_itself`; redaction; filter language; real browser: `real-5-logs` (JS on and off, trace across services, a plugin-style `traceparent` followed to the engine), `real-6-sections` |
+| 9 tests | done | "trace from a caller" | converted handlers have fixi and full-page tests; `only_the_checkout_refreshes_by_itself`; redaction; filter language; real browser: `log-search-and-tracing` (JS on and off, trace across services, a plugin-style `traceparent` followed to the engine), `settings-section-updates` |
 
 ### Next
 
@@ -75,7 +75,7 @@ Five asks after the plan was built, each its own commit:
 | Client logs opt-in per store | done | migration 0025 `client_logging`, store settings "Diagnostics" section. Off: no `telemetry.js` on that store's pages or checkout (closes D8), `/telemetry/client` drops reports whose `page` is that store's, the POS records nothing, `/pay/{pk}/logs` answers `403` whatever the plugin says. Pages about no store always report |
 | POS session timeline | done | `pos-ui/src/timeline.ts`, `POST /dashboard/stores/{id}/pos/logs` (`http::pos_logs`), `/dashboard/admin/logs/pos/{session}` and `/pos?order=`; "POS session" link on POS orders' pages |
 | Logs rows closed until opened | done | properties load on first open (`/dashboard/admin/logs/row/{cursor}`), the old row 5 |
-| Playwright + screenshots | done | `real-5-logs` extended, `real-7-pos-timeline` new; gallery grouped by page with a device/orientation toggle; the real-binaries suite runs in `cargo xtask coverage browser` |
+| Playwright + screenshots | done | `log-search-and-tracing` extended, `pos-session-diagnostics` new; gallery grouped by page with a device/orientation toggle; the real-binaries suite runs in `cargo xtask coverage browser` |
 
 Decisions:
 
@@ -94,7 +94,7 @@ Decisions:
   without it every event was stored twice when the page hid mid-send.
 - **Headless Chrome can't hide or freeze a page** (a minimised window and a
   tab behind another stay visible; `Page.setWebLifecycleState` only freezes
-  hidden pages), so `real-7` sends `visibilitychange`, `freeze` and
+  hidden pages), so `pos-session-diagnostics` sends `visibilitychange`, `freeze` and
   `resume` itself. Offline is real (`context.setOffline`).
 - **A line's cursor is its URL.** `/row/{ts.id.service}` finds the line as
   the first one before `(ts, service, id + 1)`, which works for monokulo's
@@ -244,7 +244,7 @@ Decisions:
   with the newest cursor as the event id (ssexi sends it back as
   `Last-Event-ID` on reconnect). The page script pauses it, stops it when a
   new search starts, and keeps at most 1,000 rows.
-- **Real-browser tests**: `e2e/browser/tests/real-5-logs.spec.js`
+- **Real-browser tests**: `e2e/browser/tests/log-search-and-tracing.spec.js`
   (`npx playwright test -c real-binaries.config.js`). With JavaScript off,
   headless Chrome hit-tests `<html>` for a while after a form submission,
   so that test follows the Refresh link's `href` rather than clicking it.

@@ -113,7 +113,7 @@ screenshots on failure).
   including `send_payment_url`, the store's `connection_id`, the test account's
   email/password) is written to `.pos-e2e-fixture.json` (gitignored) for the test
   files to read.
-- `tests/pos.spec.js` drives the actual browser: real login through `/dashboard/login`,
+- `tests/pos-stagenet-payments.spec.js` drives the actual browser: real login through `/dashboard/login`,
   real clicks on the real keypad, reads the real order back off the real `POST
   .../pos/orders` response, then calls `e2e-harness`'s own `POST /send-payment`
   endpoint (`helpers.js::sendStagenetPayment`, a plain `fetch`) to sign and broadcast
@@ -158,7 +158,7 @@ product's own HTML, CSS, and JavaScript. No public node or wallet is involved.
 The example alone mounts `/__coverage/*` controls for ready, new/paid orders,
 restricted framing, and the production challenge view. Production routes
 never receive these controls. The controlled suite also covers 14 POS device
-orientations and five resizes. The old `surface.spec.js` is reduced to a
+orientations and five resizes. The old `client-challenge-protocol.spec.js` is reduced to a
 client challenge protocol check in committed source; the current working
 tree may contain a separate preexisting badge test that the coverage config
 excludes as a duplicate of the real POS badge case.
@@ -172,7 +172,7 @@ npx playwright test -c real-binaries.config.js
 ```
 
 Its global setup (`real-binaries-setup.js`) builds the binaries once. Each
-spec file (`tests/real-*.spec.js`) then starts its own real `scanner` and
+spec file selected by `real-binaries.config.js` then starts its own real `scanner` and
 `monokulo` - their real `main` and boot wiring - against empty databases in
 a temporary directory, plus `fake-monerod`
 (`crates/engine-test-support/src/bin/fake-monerod.rs`), a stand-in node
@@ -183,13 +183,13 @@ files run side by side on four workers (`E2E_WORKERS=1` runs one at a time).
 The fake node can't produce payments, so payment flows stay in the Rust
 integration tests. `KEEP_E2E_LOGS=1` keeps the processes' logs and
 databases; `E2E_ENGINE_BIN=<path>` runs another engine build, for
-checking a spec fails against the bug it guards (`real-1-settings.spec.js`
+checking a spec fails against the bug it guards (`node-settings.spec.js`
 fails against the engine from before 8830c92, at the status page step).
 
 `cargo xtask coverage browser` runs this suite too
 (`coverage-real-binaries.config.js`), after the fixture suite: its stages
 join the screenshot gallery, and specs that use `coverage-test.js`
-(`real-5-logs`, `real-7-pos-timeline`) are served the instrumented browser
+(`log-search-and-tracing.spec.js`, `pos-session-diagnostics.spec.js`) are served the instrumented browser
 assets and add to the browser coverage.
 
 ## Screenshot stages
@@ -203,3 +203,16 @@ from the spec's file name when left out). The POS session timeline is
 captured on desktop only. Each shot is saved to the gallery's `images/` as a
 lossless WebP, and the test gets only a text attachment naming the file, so
 the Playwright report doesn't keep a second copy.
+
+## Spec naming
+
+Spec names describe the behavior they verify, rather than an implementation stage
+or whether coverage is collected. Configuration files select the environment.
+The real-binary suite contains `node-settings`, `store-key-custody`,
+`admin-settings-layout`, `engine-crash-recovery`, `log-search-and-tracing`,
+`settings-section-updates`, `pos-session-diagnostics`, `site-themes`, and
+`admin-settings-and-nodes`. Each file receives its own fresh backend processes
+through `tests/backend-helpers.js`; numeric prefixes and execution order are not
+needed. Rendered-UI specs use names such as `checkout`, `refund-camera`,
+`merchant-client`, `pos-terminal`, `pos-responsive-layout`, and `live-view`.
+`pos-stagenet-payments` makes the live-network payment suite explicit.

@@ -9,7 +9,7 @@
 const { test, expect } = require('../coverage-test');
 const { serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
-const { useRealStack, fixture, signInAsAdmin, connectStore } = require('./real-helpers');
+const { useRealStack, fixture, signInAsAdmin, connectStore } = require('./backend-helpers');
 
 useRealStack(test);
 
@@ -63,6 +63,7 @@ test('a POS session reads as one timeline, from opting in to the last event', as
   await diagnostics.scrollIntoViewIfNeeded();
   await captureCoverageStage(page, 'store-diagnostics-off', test.info(), { group: 'store-settings', ...desktop });
   await page.evaluate(() => { window.__notReloaded = true; });
+  await diagnostics.getByRole('button', { name: 'Edit diagnostics', exact: true }).click();
   await diagnostics.getByRole('button', { name: 'Send diagnostic logs' }).click();
   await expect(diagnostics).toContainText('This store sends diagnostic logs.');
   expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
@@ -135,6 +136,7 @@ test('a POS session reads as one timeline, from opting in to the last event', as
 
   // Opted out: the POS records nothing and sends nothing.
   await page.goto(base + store + '/settings');
+  await page.locator('#diagnostics').getByRole('button', { name: 'Edit diagnostics', exact: true }).click();
   await page.locator('#diagnostics').getByRole('button', { name: 'Turn off' }).click();
   await expect(page.locator('#diagnostics')).toContainText('This store sends no diagnostic logs.');
   const sent = [];

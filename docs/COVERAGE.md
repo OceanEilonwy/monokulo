@@ -70,7 +70,7 @@ native reports use relative links; no local server is needed.
 
 The browser collector runs two suites: the deterministic browser tests
 against a fixture server, then the real-binaries tests
-(`real-*.spec.js`: the real engine and monokulo binaries with a fake
+(the specs selected by `real-binaries.config.js`: the real engine and monokulo binaries with a fake
 monerod), which add their stages to the same gallery, their own report
 (`browser/playwright-report-real`), and, in specs using `coverage-test.js`,
 their instrumented browser coverage. Both run on four workers: the fixture

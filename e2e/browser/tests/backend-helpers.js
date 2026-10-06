@@ -1,4 +1,4 @@
-// Shared by the tests/real-*.spec.js specs. Each spec file calls
+// Shared by the the specs selected by real-binaries.config.js specs. Each spec file calls
 // `useRealStack(test)` and gets processes of its own (real-stack.js): its
 // tests run one after another against them, so each copes with whatever
 // state the one before in the same file left, and files never see each
@@ -159,6 +159,14 @@ async function reloadUntil(page, url, check) {
     .toBe(true);
 }
 
+/** Completes the optional common settings form and returns the store path. */
+async function finishStoreSetup(page) {
+  await expect(page.getByRole('heading', { name: 'Store connected' })).toBeVisible();
+  await page.getByRole('button', { name: 'Skip for now', exact: true }).click();
+  await expect(page).toHaveURL(/\/dashboard\/stores\/[^/]+$/);
+  return new URL(page.url()).pathname;
+}
+
 /** Connects a stagenet store for `site` (giving stagenet the fake node
  * first) and returns its dashboard path, `/dashboard/stores/{id}`. */
 async function connectStore(page, site) {
@@ -171,7 +179,7 @@ async function connectStore(page, site) {
   await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
   await page.locator('select[name="network"]').selectOption('stagenet');
   await page.getByRole('button', { name: 'Connect' }).click();
-  await expect(page.getByRole('heading', { name: 'Store connected' })).toBeVisible();
+  await finishStoreSetup(page);
   await page.goto(base + '/dashboard');
   return page.locator('tr', { hasText: site }).first().getByRole('link', { name: 'view →' }).getAttribute('href');
 }
@@ -191,5 +199,5 @@ async function transitionDone(page) {
 module.exports = {
   useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, fillNodes, nodeAddressBoxes, saveEngineSettings,
   settingsTabOf, openSettingsTab, fillSettings,
-  SETTINGS_TABS, reloadUntil, connectStore, VIEW_KEY, SPEND_PUBKEY,
+  SETTINGS_TABS, reloadUntil, connectStore, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY,
 };

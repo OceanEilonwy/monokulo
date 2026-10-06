@@ -151,11 +151,11 @@ made.
 ## D12 (step 3): the Playwright helpers follow the tabs from step 3 on
 
 - **Decision:** step 3 already rewrites `saveEngineSettings` in
-  `real-helpers.js` to open the tab holding the given fields (several tabs
+  `backend-helpers.js` to open the tab holding the given fields (several tabs
   are saved in turn) and press "Save", adds `settingsTabOf`,
   `openSettingsTab`, `fillSettings` and `SETTINGS_TABS`, and moves
-  `real-1`, `real-3` and `real-6` onto the tabbed page, so the suite stays
-  green at every commit. `real-6`'s "keeps edits in the other half" part is
+  `node-settings`, `admin-settings-layout` and `settings-section-updates` onto the tabbed page, so the suite stays
+  green at every commit. `settings-section-updates`'s "keeps edits in the other half" part is
   dropped (there is no other half on the page any more) and replaced by the
   check the plan asks for: a fixi save leaves one tab bar with the same
   links and one banners area. The red/yellow banner test saves the
@@ -194,7 +194,7 @@ made.
 
 ## D15 (step 4): the Playwright spec that gave testnet the stagenet fake node
 
-- **Decision:** `real-3`'s "clearing a network stores use" test saved the
+- **Decision:** `admin-settings-layout`'s "clearing a network stores use" test saved the
   one fake node (which says it's on stagenet) as testnet's node too. That
   is now refused, correctly. The test gives testnet `127.0.0.1:9` instead,
   a node that doesn't answer, which is still saved (D2).
@@ -258,30 +258,30 @@ made.
 
 - **Decision:** at the step 5 commit the page has no textarea, so the old
   confirmation script (still reading textareas until step 6 rewrites it)
-  asks nothing. `real-1`'s clearing step and `real-3`'s "clearing a network
-  stores use asks first" fail there, and `real-3`'s four banner tests fail
+  asks nothing. `node-settings`'s clearing step and `admin-settings-layout`'s "clearing a network
+  stores use asks first" fail there, and `admin-settings-layout`'s four banner tests fail
   after it (they rely on the store that test makes). The step 5 commit
   already moves the specs to the node form (`saveNodes`, `fillNodes`,
-  `fakeNodeAddress` in `real-helpers.js`), so step 6's script makes them
+  `fakeNodeAddress` in `backend-helpers.js`), so step 6's script makes them
   pass again without further spec changes.
 - **Alternatives:** rewrite the confirmation in step 5 (a step 6 item; the
   plan says not to mix steps).
 - **Why:** keeping each commit to one step; the window is one commit wide
   and recorded here and in the progress notes.
 
-## D21 (step 7): the new browser tests live in their own spec, `real-9-admin-settings.spec.js`
+## D21 (step 7): the new browser tests live in their own spec, `admin-settings-and-nodes.spec.js`
 
 - **Decision:** the tab, node form, wrong-network, TLS, confirmation, marker
   and gallery tests are one new spec file (own stack, like every
-  `real-*.spec.js`). It starts three extra fake nodes (two saying testnet,
+  the specs selected by `real-binaries.config.js`). It starts three extra fake nodes (two saying testnet,
   one mainnet) with `startFakeNode` in `real-stack.js`, rather than making
   the stack's own node's network switchable. The gallery captures every
   tab at phone (390px) and desktop sizes in both themes under a new
   "Admin settings" group (`coverage-gallery-reporter.js`), which the
   coverage run now requires (`coverage-real-binaries.config.js`). The
-  320px, 390px and 1280px width checks for every tab are `real-3`'s first
+  320px, 390px and 1280px width checks for every tab are `admin-settings-layout`'s first
   test, now run at 320px too.
-- **Alternatives:** add these tests to `real-3` and `real-8`; a
+- **Alternatives:** add these tests to `admin-settings-layout` and `site-themes`; a
   `--nettype` switch at runtime on the stack's fake node.
 - **Why:** one file per feature keeps each spec's shared state small (these
   tests change testnet's and stagenet's nodes), and separate nodes keep the

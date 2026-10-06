@@ -6,7 +6,7 @@
 //
 // `buildBinaries` runs once, as the suite's global setup. Each spec file then
 // gets a stack of its own (`startStack`, through `useRealStack` in
-// tests/real-helpers.js), so every file starts from a fresh instance and
+// tests/backend-helpers.js), so every file starts from a fresh instance and
 // files can run side by side on several workers.
 
 const { spawn, execFileSync } = require('node:child_process');
@@ -121,7 +121,7 @@ async function startStack() {
   fs.writeFileSync(monokuloOptions, [
     '[server]',
     `bind = "127.0.0.1:${monokuloPort}"`,
-    // The engine is a process of its own here (real-4-crash kills it), so
+    // The engine is a process of its own here (engine-crash-recovery kills it), so
     // monokulo reaches it remotely, not inside itself.
     '[engine]',
     'mode = "remote"',

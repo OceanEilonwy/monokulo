@@ -21,9 +21,9 @@ The different coverage engines do not define a branch identically.
 | --- | --- | --- | --- |
 | Engine | `crates/engine`, `shared`, key custody crates | `cargo test --workspace` | `cargo-llvm-cov` |
 | Monokulo API | `crates/monokulo` Rust | `cargo test --workspace` | `cargo-llvm-cov` |
-| Payment embed UI | `static/checkout.js`, `challenge.js` | deterministic `surface.spec.js` browser suite | Istanbul instrumentation and Playwright |
-| POS UI | `pos-ui/src/*.tsx` | deterministic `surface.spec.js` browser suite | Istanbul instrumentation in a Vite transform, then Playwright |
-| Monokulo client library | `static/monokulo-client.js` | deterministic `surface.spec.js` browser suite | Istanbul instrumentation and Playwright |
+| Payment embed UI | `static/checkout.js`, `challenge.js` | deterministic `client-challenge-protocol.spec.js` browser suite | Istanbul instrumentation and Playwright |
+| POS UI | `pos-ui/src/*.tsx` | deterministic `client-challenge-protocol.spec.js` browser suite | Istanbul instrumentation in a Vite transform, then Playwright |
+| Monokulo client library | `static/monokulo-client.js` | deterministic `client-challenge-protocol.spec.js` browser suite | Istanbul instrumentation and Playwright |
 | WooCommerce plugin | `plugins/woocommerce/monokulo.php`, `includes/*.php` | PHPUnit in `wp-env` | Xdebug coverage |
 
 The `mock-woocommerce` Rust crate belongs in the Rust report as test support and
@@ -86,7 +86,7 @@ Instrument authored JS at the served source boundary and the POS TSX through a
 coverage-only Vite transform. Check compatibility with the repo's Vite 8 version
 before selecting a ready-made plugin; a small transform using
 `istanbul-lib-instrument` is the fallback. In a dedicated coverage build, collect
-Istanbul counters from every Playwright page and frame after each `surface.spec.js`
+Istanbul counters from every Playwright page and frame after each `client-challenge-protocol.spec.js`
 test, merge them across
 workers, and save LCOV plus HTML under `target/coverage/browser/`. Enable source
 maps so `pos-ui/src/main.tsx`
@@ -96,7 +96,7 @@ the instrumented equivalents in its fixtures. Add a small smoke assertion that
 each of the three browser source areas has nonzero executable lines **and** branches;
 otherwise an apparently successful browser run may have missed an entire asset.
 Do not count third-party `jsQR.js` or tests. Use the deterministic browser
-tier by default (`surface.spec.js` plus the real-rendered replacement tests
+tier by default (`client-challenge-protocol.spec.js` plus the real-rendered replacement tests
 described below). The real stagenet POS suite stays an explicit extended run
 because it spends funds and depends on a public node.
 
@@ -153,8 +153,8 @@ branch threshold.
 
 ### Browser test value audit
 
-Review the existing 24 `surface.spec.js` tests before adding gallery-only tests.
-The three real stagenet `pos.spec.js` tests cover login, a real order/checkout,
+Review the existing 24 `client-challenge-protocol.spec.js` tests before adding gallery-only tests.
+The three real stagenet `pos-stagenet-payments.spec.js` tests cover login, a real order/checkout,
 QR refund entry, 0-conf success, and a confirming order that is backgrounded and
 later finishes. They **do not** exercise most failure and unusual UI states.
 Moreover, they are intentionally excluded from default runs because they need
@@ -205,7 +205,7 @@ gallery and PNG links must work from the downloaded CI artifact without a server
 
 Capture a small, deliberate set of checkpoints in the deterministic browser
 tier. Add `tests/coverage-visual.spec.js` for the states that need real rendered
-checkout markup, and include it alongside `surface.spec.js` in a coverage-only
+checkout markup, and include it alongside `client-challenge-protocol.spec.js` in a coverage-only
 Playwright config. The visual tests should assert the same key state changes
 before capturing them. Move an existing assertion into that spec and delete its
 old hand-built-UI version in the same change; do not add screenshot-only or
@@ -237,7 +237,7 @@ screenshot. If a visual merchant demo is added later, capture it then. The
 JavaScript-enabled interstitial can solve too quickly for a stable screenshot;
 use the existing no-JS test for the visible challenge checkpoint.
 
-The real stagenet `pos.spec.js` suite can add optional checkpoints for order QR,
+The real stagenet `pos-stagenet-payments.spec.js` suite can add optional checkpoints for order QR,
 0-conf success, confirming, backgrounded, and finished states. It remains outside
 the default coverage run. Capture those screenshots without masking: the wallet
 data is public stagenet fixture data already in the repository. A failed test
