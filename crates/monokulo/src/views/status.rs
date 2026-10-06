@@ -313,8 +313,7 @@ pub fn page(chrome: &PageChrome, data: &StatusPageViewModel) -> Markup {
                 @if chrome.logged_in { a href="/dashboard" { "Dashboard" } }
                 @else { a href="/" { "Home" } }
             }
-            h1 { "Engine status" }
-            p { (super::reload_button("/status")) }
+            div class="page-heading" { h1 { "Engine status" } (super::reload_button("/status")) }
             (live_fragment(data))
             // Streams the part above while the page is open, with JavaScript.
             span hidden fx-action="/status/events" fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect {}

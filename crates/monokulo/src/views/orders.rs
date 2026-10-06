@@ -368,6 +368,7 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
             (super::store_breadcrumb(data.connection_id.as_str(), &data.display_name, true))
             @if let Some(order) = &data.order {
                 h1 class="order-title" {
+                    (super::reload_button(&chrome.current_path))
                     span { span class="order-title-label" { "Order · " } code class="order-title-id" { (super::order_id_short(order.order_id.as_str())) } }
                     a class="share-btn" id="share-payment-link" href=(order.payment_link) target="_blank" rel="noopener"
                        aria-label="Share payment link" title="Share payment link" {
@@ -383,7 +384,6 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
                 }
                 p class="hint" {
                     "Share the payment link (icon above) with whoever needs to pay this order. "
-                    (super::reload_button(&chrome.current_path))
                     " "
                     (super::logs_link(chrome, "order.id", order.order_id.as_str(), "Logs for this order"))
                     @if order.from_pos && chrome.is_admin {

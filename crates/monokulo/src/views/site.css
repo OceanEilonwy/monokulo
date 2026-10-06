@@ -680,3 +680,10 @@ a.order-id { display: inline-block; max-width: 11em; }
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
+
+/* A small manual refresh alongside page actions, also usable without JS. */
+.reload { display: inline-flex; align-items: center; justify-content: center; width: 2.25rem; height: 2.25rem; padding: .4rem; margin: 0; flex: none; }
+.reload svg { width: 1.1rem; height: 1.1rem; }
+.reload[hidden] { display: none; }
+.page-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.page-heading h1 { flex: 1; }
