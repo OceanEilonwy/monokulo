@@ -343,7 +343,7 @@
     const round = pinned || v.round;
     if (round) {
       const chip = pinned ? `<a class="engine-chip round-paused" id="round-resume" href="${live}" title="Showing a past round: back to the live one">× Paused</a>` : "";
-      html += `<header class="round-head"><h2 id="h-round">${esc(round.title)}</h2>${chip}<span class="engine-hint round-state">${esc(round.state)}</span></header><div class="lanes">`;
+      html += `<header class="round-head"><h2 id="h-round" title="Scanner round for this network since the engine started; resets on engine restart">${esc(round.title)}</h2>${chip}<span class="engine-hint round-state">${esc(round.state)}</span></header><div class="lanes">`;
       for (const lane of round.lanes) {
         html += `<div class="lane-label"><span class="tierchip t-${lane.tier}">${esc(lane.name)}</span><small>${esc(lane.share)}</small></div><div class="track t-${lane.tier}">`;
         if (lane.reserved) html += `<div class="share" style="left:${pct(lane.reserved[0], round.scale_ms)}%;width:${pct(lane.reserved[1], round.scale_ms)}%"></div>`;
@@ -361,7 +361,7 @@
       }
       html += `<div></div><div class="ruler"><span class="ruler-label" style="left:${Math.min(99.5, pct(round.elapsed_ms, round.scale_ms))}%">${esc(round.elapsed)}</span></div><div></div></div>`;
     } else {
-      html += '<header><h2 id="h-round">Round</h2><span class="engine-hint">No round recorded yet.</span></header>';
+      html += '<header><h2 id="h-round" title="Scanner round for this network since the engine started; resets on engine restart">Round</h2><span class="engine-hint">No round recorded yet.</span></header>';
     }
     html += '<div class="ribbon-row"><span class="engine-hint">Last rounds</span><div class="ribbon" id="ribbon" aria-label="Recent rounds">';
     for (const mark of pinned ? pinnedRibbon : v.ribbon) {
