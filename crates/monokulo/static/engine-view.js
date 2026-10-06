@@ -126,7 +126,11 @@
   }
 
   function play(frame, quietly) {
-    if (!quietly && !document.hidden && !reduced) {
+    const chain = frame.view.chain;
+    const catchingUp = chain.tip != null && chain.high_water != null && chain.tip - chain.high_water > 1000;
+    page.classList.toggle("catching-up", catchingUp);
+    if (catchingUp) clearTokens();
+    if (!quietly && !catchingUp && !document.hidden && !reduced) {
       const first = frame.effects.length ? frame.effects[0].at_ms : 0;
       // A catch-up can commit fifty blocks in one frame: a save or flash
       // on the same thing plays once, and at most MAX_EFFECTS play.
@@ -240,12 +244,14 @@
 
   function visibleBlocks(chain, cells) {
     if (chain.tip == null || chain.high_water == null) return [];
-    const right = Math.max(chain.tip, chain.high_water) + 1;
-    const lowest = Math.min(chain.lowest ?? chain.high_water, chain.high_water);
+    // Move the viewport in small blocks of five instead of rebuilding its
+    // anchors for every block arriving during initial node synchronisation.
+    const right = Math.ceil(Math.max(chain.tip, chain.high_water) / 5) * 5 + 1;
+    const lowest = Math.floor(Math.min(chain.lowest ?? chain.high_water, chain.high_water) / 5) * 5;
     const left = Math.max(0, Math.min(lowest - 1, right - cells + 1));
     const all = [];
     if (right - left < cells) { for (let h = left; h <= right; h++) all.push(h); return all; }
-    for (let h = lowest - 1; h <= lowest + 5; h++) all.push(h);
+    for (let h = Math.max(0, lowest - 1); h <= lowest + 5; h++) all.push(h);
     all.push(null);
     for (let h = right - (cells - 11); h <= right; h++) all.push(h);
     return all;
@@ -340,7 +346,12 @@
     const box = $("engine-round");
     if (!box) return;
     let html = "";
-    const round = pinned || v.round;
+    const rawRound = pinned || v.round;
+    // A fixed budget scale keeps fast completed rounds and the next running
+    // round from repeatedly zooming the lanes during catch-up.
+    const round = rawRound && !pinned && mode === "live"
+      ? { ...rawRound, scale_ms: Math.max(10000, Math.ceil(rawRound.scale_ms / 10000) * 10000) }
+      : rawRound;
     if (round) {
       const chip = pinned ? `<a class="engine-chip round-paused" id="round-resume" href="${live}" title="Showing a past round: back to the live one">× Paused</a>` : "";
       html += `<header class="round-head"><h2 id="h-round" title="Scanner round for this network since the engine started; resets on engine restart">${esc(round.title)}</h2>${chip}<span class="engine-hint round-state">${esc(round.state)}</span></header><div class="lanes">`;
