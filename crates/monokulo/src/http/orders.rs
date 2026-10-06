@@ -1205,6 +1205,11 @@ async fn render_create_order_page(
         .filter(|key| crate::engine_client::valid_idempotency_key(key))
         .map(str::to_string)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let default_currency = if order_currency_options.contains(&row.base_currency) {
+        row.base_currency.clone()
+    } else {
+        "XMR".to_string()
+    };
     let data = views::create_order::CreateOrderData {
         connection_id: row.id.clone(),
         display_name: display_name_for(&row.site_url),
@@ -1214,7 +1219,7 @@ async fn render_create_order_page(
         amount: submitted.map_or_else(|| "10.00".to_string(), |form| form.amount.clone()),
         currency: submitted
             .map(|form| form.currency.clone())
-            .unwrap_or_default(),
+            .unwrap_or(default_currency),
         merchant_order_id: submitted
             .map(|form| form.merchant_order_id.clone())
             .unwrap_or_default(),
@@ -3245,7 +3250,10 @@ mod tests {
         let html = get_with_bearer(&router, &orders_uri, &session).await;
         for code in ["XMR", "USD", "EUR", "GBP"] {
             assert!(
-                html.contains(&format!(r#"<option value="{code}">{code}</option>"#)),
+                html.contains(&format!(
+                    r#"<option value="{code}"{}>{code}</option>"#,
+                    if code == "XMR" { " selected" } else { "" }
+                )),
                 "{code} missing: {html}"
             );
         }
@@ -3263,7 +3271,7 @@ mod tests {
         let html = get_with_bearer(&router, &orders_uri, &session).await;
         assert!(
             html.contains(r#"<option value="EUR">EUR</option>"#)
-                && html.contains(r#"<option value="XMR">XMR</option>"#),
+                && html.contains(r#"<option value="XMR" selected>XMR</option>"#),
             "{html}"
         );
         assert!(
@@ -4592,7 +4600,7 @@ mod tests {
             "must not be readonly once a provider is enabled, got: {html}"
         );
         assert!(
-            html.contains(r#"<option value="XMR">XMR</option>"#),
+            html.contains(r#"<option value="XMR" selected>XMR</option>"#),
             "expected XMR always offered, got: {html}"
         );
         assert!(
