@@ -169,6 +169,7 @@ def main():
             'revision': command('git', 'rev-parse', 'HEAD'),
             'dirty': bool(command('git', 'status', '--porcelain')),
             'platform': platform.platform(), 'rustc': command('rustc', '-Vv'),
+            'fuzz_target_triple': next(line.split(': ', 1)[1] for line in command('rustc', '-vV').splitlines() if line.startswith('host: ')),
             'cargo': command('cargo', '-V'), 'cargo_fuzz': command('cargo', 'fuzz', '--version'),
             'toolchain': os.environ.get('RUSTUP_TOOLCHAIN') or command('rustup', 'show', 'active-toolchain'),
             'sanitizer_environment': {name: os.environ.get(name) for name in ['ASAN_OPTIONS', 'LSAN_OPTIONS', 'UBSAN_OPTIONS']},

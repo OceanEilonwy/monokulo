@@ -151,6 +151,10 @@ from pathlib import Path
 import sys
 args = sys.argv[1:]
 failure = os.environ.get('ENGINE_TEST_FAILURE')
+if args[:2] in [['fuzz', 'build'], ['fuzz', 'run']] and os.environ.get('ENGINE_TEST_MUSL_DEFAULT'):
+    if '--target' not in args or args[args.index('--target') + 1] != 'x86_64-unknown-linux-gnu':
+        print('sanitizer is incompatible with statically linked libc', file=sys.stderr)
+        sys.exit(42)
 if args[0] == 'metadata':
     sys.exit(17 if failure == 'metadata' else 0)
 if args[:2] == ['fuzz', 'build']:
@@ -196,6 +200,14 @@ else:
         other = next(p for p in self.reports() if p != original)
         self.assertEqual(json.loads(other.read_text())['stage'], 'build')
         self.assertEqual(json.loads(other.read_text())['status'], 'failed')
+
+    def test_prebuilt_musl_fuzzer_uses_rustc_host_for_build_and_run(self):
+        self.env['ENGINE_TEST_MUSL_DEFAULT'] = '1'
+        result = self.run_campaign()
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        data = json.loads(self.reports()[0].read_text())
+        self.assertEqual(data['status'], 'passed')
+        self.assertEqual(data['exploration']['executions_after_initialization'], 47)
 
     def test_metadata_calibration_and_exploration_failures_are_terminal(self):
         for stage, code in [('metadata', 17), ('calibration', 1), ('exploration', 41)]:

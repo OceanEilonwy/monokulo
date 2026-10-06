@@ -45,15 +45,18 @@ python3 scripts/engine-exploration-report.py begin --output "$output" --corpus "
 # Cargo-fuzz has no --locked build flag; reject lockfile drift before it builds.
 stage=metadata
 cargo metadata --manifest-path fuzz/Cargo.toml --locked --format-version 1 >/dev/null 2>"$output/metadata.log"
-stage=build
-cargo fuzz build --fuzz-dir fuzz "${feature_args[@]}" "$target" 2>&1 | tee "$output/build.log"
+# Prebuilt cargo-fuzz may be compiled for musl and inherit that as its default.
+# ASan needs the native Rust host target, which also owns the calibration binary.
 fuzz_host=$(rustc -vV | sed -n 's/^host: //p')
+if [[ -z "$fuzz_host" ]]; then echo 'rustc did not report its host target.' >&2; exit 1; fi
+stage=build
+cargo fuzz build --fuzz-dir fuzz --target "$fuzz_host" "${feature_args[@]}" "$target" 2>&1 | tee "$output/build.log"
 stage=calibration
 ENGINE_SEMANTIC_REPORT="$PWD/$output/calibration-semantics" python3 scripts/engine-exploration-report.py calibrate --output "$output"  \
   --binary "fuzz/target/$fuzz_host/release/$target" --seeds "fuzz/seeds/$target" --timeout "$deadline"
 stage=exploration
 set +e
-cargo fuzz run --fuzz-dir fuzz "${feature_args[@]}" "$target" -- \
+cargo fuzz run --fuzz-dir fuzz --target "$fuzz_host" "${feature_args[@]}" "$target" -- \
   -max_total_time="$seconds" -max_len="$max_len" -timeout="$deadline" -rss_limit_mb=4096 \
   -seed="$fuzz_seed" -print_final_stats=1 2>&1 | tee "$output/fuzzer.log"
 fuzz_exit=${PIPESTATUS[0]}
