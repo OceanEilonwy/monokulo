@@ -10,7 +10,7 @@
 
 use maud::{html, Markup};
 
-use super::{layout, PageChrome};
+use super::{layout_with_head, PageChrome};
 
 /// One row of the FX-provider settings dropdown.
 pub struct FxProviderOption {
@@ -145,7 +145,17 @@ pub enum StoreSection {
 
 impl StoreSection {
     pub fn from_id(id: &str) -> Option<Self> {
-        [Self::BaseCurrency, Self::Confirmations, Self::FxProvider, Self::KeyStorage, Self::Domains, Self::Webhooks, Self::Diagnostics].into_iter().find(|section| section.id() == id)
+        [
+            Self::BaseCurrency,
+            Self::Confirmations,
+            Self::FxProvider,
+            Self::KeyStorage,
+            Self::Domains,
+            Self::Webhooks,
+            Self::Diagnostics,
+        ]
+        .into_iter()
+        .find(|section| section.id() == id)
     }
 
     pub fn id(self) -> &'static str {
@@ -434,7 +444,7 @@ fn webhooks_section(store: &StoreSettingsData, in_place: bool, oob: bool) -> Mar
                 h2 { "Webhooks" }
                 (section_error(store, StoreSection::Webhooks, in_place))
                 @if let Some(secret) = &store.created_webhook_signing_secret {
-                    div class="box" {
+                    div class="box" data-webhook-secret {
                         h3 { "Webhook created" }
                         p {
                             "Its signing secret (verify the " code { "X-Monokulo-Signature" } " header with this - shown once, right now, and never again):"
@@ -564,7 +574,7 @@ pub fn section(store: &StoreSettingsData, which: StoreSection, oob: bool) -> Mar
 
 pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
     let body = html! {
-        div class="wrap" {
+        div class="wrap" data-store-settings data-active-section=(data.store.as_ref().and_then(|s| s.active_section).map(|s| s.id()).unwrap_or("")) {
             @if let Some(store) = &data.store {
                 (super::store_breadcrumb(store.connection_id.as_str(), &store.display_name, false))
                 h1 { "Settings" }
@@ -580,15 +590,15 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                         }
                     }
                 }
-                (base_currency_section(store, false, false))
-                (confirmations_section(store, false, false))
-                (fx_provider_section(store, false, false))
+                (section(store, StoreSection::BaseCurrency, false))
+                (section(store, StoreSection::Confirmations, false))
+                (section(store, StoreSection::FxProvider, false))
                 @if let Some(key_storage) = &store.key_storage {
-                    (key_storage_section(store, key_storage, false, false))
+                    (key_storage_section(store, key_storage, true, false))
                 }
-                (verified_domains(store, false, false))
-                (webhooks_section(store, false, false))
-                (diagnostics_section(store, false, false))
+                (section(store, StoreSection::Domains, false))
+                (section(store, StoreSection::Webhooks, false))
+                (section(store, StoreSection::Diagnostics, false))
             } @else {
                 h1 { "Store not found" }
                 p { "This store doesn't exist, or isn't connected to your account." }
@@ -599,7 +609,9 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
         Some(store) => format!("Settings - {} - Monokulo", store.display_name),
         None => "Store not found - Monokulo".to_string(),
     };
-    layout(chrome, &title, body)
+    let head =
+        html! { script { (maud::PreEscaped(include_str!("../../static/settings-dialogs.js"))) } };
+    layout_with_head(chrome, &title, head, body)
 }
 
 /// Adding, checking and removing the domains this store has proved it owns

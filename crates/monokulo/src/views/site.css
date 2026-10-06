@@ -689,3 +689,12 @@ a.order-id { display: inline-block; max-width: 11em; }
 .page-heading h1 { flex: 1; }
 
 .settings-saved { padding: .6rem .8rem; border: 1px solid var(--success); border-radius: var(--radius-sm); background: var(--tint-success); }
+
+[data-store-settings] > section { position: relative; padding: 1rem; margin: .8rem 0; border: 1px solid var(--line); border-radius: var(--radius-md); }
+[data-store-settings] > section > h2 { margin: 0 5rem .3rem 0; }
+.settings-edit { position: absolute; right: 1rem; top: 1rem; margin: 0; }
+.settings-summary { margin: .4rem 5rem .4rem 0; }
+.settings-dialog { width: min(46rem, calc(100vw - 2rem)); max-height: calc(100dvh - 3rem); box-sizing: border-box; padding: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--paper-raised); color: var(--ink); }
+.settings-dialog::backdrop { background: color-mix(in srgb, var(--ink) 45%, transparent); }
+.settings-dialog > h2 { margin-top: 0; }
+.store-setup { max-width: 32rem; }
