@@ -61,6 +61,10 @@ pub mod store;
 #[path = "../tests/verification/support/test_log.rs"]
 pub(crate) mod test_log;
 pub mod threads;
+#[cfg(any(test, feature = "fuzzing"))]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[path = "../tests/verification/support/temp_db.rs"]
+pub(crate) mod verification_temp_db;
 pub mod webhook_delivery;
 pub mod webhook_sign;
 pub mod work;

@@ -1,0 +1,24 @@
+name: Engine verification tooling
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/engine-exploration-report.py'
+      - 'scripts/engine-fuzz.sh'
+      - 'scripts/test_engine_exploration_report.py'
+      - '.github/workflows/engine-*.yml'
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  evidence-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check evidence validation and campaign lifecycle
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 scripts/test_engine_exploration_report.py

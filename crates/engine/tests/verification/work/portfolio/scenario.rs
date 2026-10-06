@@ -16,6 +16,33 @@ pub(crate) enum Command {
     Deliver(bool),
     Round,
 }
+impl Command {
+    pub(crate) const fn family(&self) -> &'static str {
+        match self {
+            Self::Arrive(_) => "Arrive",
+            Self::Mine(_) => "Mine",
+            Self::Extend(_) => "Extend",
+            Self::Reorg(_) => "Reorg",
+            Self::Drop(_) => "Drop",
+            Self::Spent {
+                transaction: _,
+                unanimous: _,
+            } => "Spent",
+            Self::Proof {
+                lag: _,
+                mismatch: _,
+            } => "Proof",
+            Self::Advance(_) => "Advance",
+            Self::Restart => "Restart",
+            Self::Fault {
+                writes: _,
+                position: _,
+            } => "Fault",
+            Self::Deliver(_) => "Deliver",
+            Self::Round => "Round",
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Scenario {
     pub(crate) setup: Vec<u8>,

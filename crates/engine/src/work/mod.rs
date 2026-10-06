@@ -631,4 +631,4 @@ mod portfolio_fixture;
 #[cfg(any(test, feature = "fuzzing"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[path = "../../tests/verification/support/backend.rs"]
-pub(crate) mod history_backend;
+pub(crate) mod verification_backend;

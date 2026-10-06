@@ -50,8 +50,9 @@ supports up to 32. Commands cover late arrival, mining, ordinary extension of
 of 0–7 blocks or mismatches, clock advances of 1–8 × 301 seconds, backend restart,
 SQL operation/position faults, notification delivery and rounds. Individual
 invoice goals, confirmation thresholds of 0–3 and expiry are generated separately.
-Legacy byte inputs remain replayable. Invalid domain operations, such as mining
-an already-mined transaction, are skipped rather than inventing impossible state.
+Legacy byte inputs remain replayable. Invalid arrivals, removals and spent evidence
+are counted as skipped. Mining an already-mined transaction creates an empty block
+instead: the report records skipped mining and the separate extension effect.
 
 Mutation evidence consists of 54 detected runs (27 defects × default/ZMQ), with
 healthy baselines passing and no surviving or invalid mutants. This is an
@@ -75,9 +76,16 @@ The final ZMQ smoke campaign recorded 173 successful cases and only ten new-inpu
 executions after initialization, again showing why sustained runs need the larger
 default budget. They are measurements of particular runs, not portable performance guarantees or
 source-line coverage percentages. Raw logs, corpus checksums, revision/dirty state,
-compiler/fuzzer versions, calibration and semantic JSONL are retained alongside
-`report.json`. Semantic counts distinguish recorded-plus-synthetic fixtures from
-synthetic-only fixtures. Counts on other targets remain unavailable rather than
+compiler/fuzzer versions, calibration and semantic JSONL are retained in a unique
+`<target>/<features>/<seed>/<revision>-<run-id>/` directory per invocation, alongside
+`report.json`. Early failures produce terminal reports; invalid or absent completion
+metrics fail validation. Reviewed corpus seeds are refreshed by content hash;
+calibration rejects missing or empty seed sets.
+Semantic counts distinguish recorded-plus-synthetic fixtures from
+synthetic-only fixtures, and selected commands from applied transitions and skipped
+commands. Applied counts identify accepted domain actions, not necessarily money
+changes: an idempotent proof update or a round still performs real engine effects.
+Counts on other targets remain unavailable rather than
 being invented from instrumentation counters.
 
 ## Running and reproducing checks
@@ -114,11 +122,15 @@ with `--features zmq`) to build all nine AddressSanitizer targets. Their binarie
 can replay reviewed seeds with `-runs=0`; this is a replay check, not sustained
 exploration. Scheduled/manual property and fuzz workflows upload regressions,
 logs and reports. PR CI runs ordinary tests and both scale configurations;
-mutation and sustained fuzz campaigns have separate workflows.
+mutation and sustained fuzz campaigns have separate workflows. Evidence-runner
+regressions run in a small PR workflow and once before scheduled/manual fuzz and
+property matrices. Shared temporary database ownership cleans SQLite sidecars and
+crash markers for both test and fuzz builds; legacy fixture aliases remain for
+existing test callers.
 
-The final engine inventories contain 861 tests in the default build and 867 in
+The final engine inventories contain 863 tests in the default build and 869 in
 the ZMQ build, including 21 explicitly ignored tests in each. The ordinary engine
-and key-custody run therefore executes 911 default / 917 ZMQ tests when SNP custody
+and key-custody run therefore executes 913 default / 919 ZMQ tests when SNP custody
 is enabled with ZMQ. These totals include examples and scenario tests as well as
 properties. Final local smoke validation used eight generated cases, four proof
 cases and RNG seed 431, in addition to persisted regressions and deterministic

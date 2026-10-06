@@ -15,7 +15,11 @@ permissions:
   contents: read
 
 jobs:
+  tooling:
+    uses: ./.github/workflows/engine-verification-tooling.yml
+
   fuzz:
+    needs: tooling
     name: fuzz ${{ matrix.target }} (${{ matrix.features || 'default' }})
     runs-on: ubuntu-latest
     timeout-minutes: 45

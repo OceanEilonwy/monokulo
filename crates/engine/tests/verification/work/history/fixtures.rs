@@ -170,29 +170,10 @@ fn fixture_tenant_rows(
     )
 }
 
+pub(crate) use crate::verification_temp_db::TempDb;
 pub(crate) fn file_store() -> (Store, TempDb) {
-    let path = std::env::temp_dir().join(format!("scanner_rounds_{}.db", uuid::Uuid::new_v4()));
-    let path = path.to_string_lossy().into_owned();
-    (Store::open_file(&path).unwrap(), TempDb(path))
-}
-
-/// A database file (and its WAL and shared-memory files) removed when the
-/// test ends, passed or failed.
-pub(crate) struct TempDb(pub(crate) String);
-
-impl std::ops::Deref for TempDb {
-    type Target = str;
-    fn deref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Drop for TempDb {
-    fn drop(&mut self) {
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", self.0));
-        }
-    }
+    let path = TempDb::new();
+    (Store::open_file(&path).unwrap(), path)
 }
 
 #[cfg(test)]

@@ -1,9 +1,9 @@
 //! Independent planned-output and status oracle, shared by both drivers.
-use super::{world::World, NETWORK};
+use super::{effects::World, NETWORK};
 use crate::status::OrderStatus;
 use crate::store::{OrderId, Store, TenantId};
 use std::collections::BTreeMap;
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Location {
     Pool,
     Gone,

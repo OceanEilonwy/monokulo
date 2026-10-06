@@ -509,4 +509,4 @@ status or allowing a replacement generation. Supervisor restart backoff remains
 interruptible even if the factory itself panics.
 
 See `docs/TESTING.md` for the generated histories, independent oracles, real effect
-checks, subprocess crash boundaries and optional fuzz/Loom runners.
+checks, subprocess crash boundaries and optional fuzz and serialized event-order runners.

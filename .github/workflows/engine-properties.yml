@@ -20,7 +20,11 @@ permissions:
   contents: read
 
 jobs:
+  tooling:
+    uses: ./.github/workflows/engine-verification-tooling.yml
+
   properties:
+    needs: tooling
     name: properties (features=${{ matrix.features || 'default' }})
     runs-on: ubuntu-latest
     timeout-minutes: 90

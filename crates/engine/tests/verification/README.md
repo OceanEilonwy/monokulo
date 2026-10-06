@@ -19,7 +19,8 @@ here too because the properties share their fixtures.
 - `http/`, `proof/`, `status/`: authorization, verifier histories and status derivation.
 - `notifications/`, `lifecycle/`, `resources/`, `inputs/`, `webhooks/`: their domain checks.
 - `daemon/`, `scanner/`: reusable daemon and scanner fixtures/scenarios.
-- `support/`: shared runtime/config, rendezvous, RPC and fuzz adapters.
+- `support/`: shared runtime/config, temporary database ownership, backend replacement,
+  rendezvous, RPC and fuzz adapters.
 
 Within domains, `properties.rs` generates cases, `scenario.rs` defines commands,
 `model.rs` derives independent expectations, `fixtures.rs` creates inputs,
