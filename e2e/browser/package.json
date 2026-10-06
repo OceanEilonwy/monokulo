@@ -4,7 +4,8 @@
   "version": "1.0.0",
   "description": "Playwright browser tests for Monokulo dashboards, live view, checkout and POS, using local fixtures, real binaries and opt-in stagenet suites.",
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test",
+    "test:dashboard": "playwright test --config dashboard.config.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0",

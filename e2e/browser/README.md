@@ -5,7 +5,7 @@ checkout, and POS. The configurations select separate environments and workloads
 
 | Configuration | Coverage | Environment |
 | --- | --- | --- |
-| `feedback.config.js` | Store setup, settings dialogs, order resubmission, JavaScript-disabled pages, time zone preferences, and live-view controls and performance | Local rendered-UI fixture |
+| `dashboard.config.js` | Store setup, settings dialogs, order resubmission, JavaScript-disabled pages, time zone preferences, and live-view controls and performance | Local rendered-UI fixture |
 | `surface.config.js` | Client challenge protocol | Local mocked server |
 | `coverage-browser.config.js` | Checkout, challenge, camera, client, POS, layout, and live view | Local rendered-UI fixture with coverage reporting |
 | `real-binaries.config.js` | Admin setup and settings, store keys, logs, themes, crash recovery, sections, and POS timeline | Real binaries and a local fake node |
@@ -19,7 +19,7 @@ npx playwright install chromium
 ```
 
 Run a selected suite with `npx playwright test -c <configuration>`. For example,
-`npx playwright test -c feedback.config.js` runs the dashboard and live-view
+`npx playwright test -c dashboard.config.js` runs the dashboard and live-view
 regressions without a public node or funds. `npm test` selects the stagenet POS
 configuration; it is an explicit real-payment run, not the local regression suite.
 
