@@ -79,8 +79,8 @@ struct ConnectRequest<'a> {
 /// only by [`ConnectTarget::parse`], so the redirect carrying the connect
 /// token can only go back to the site being connected - never to a
 /// `return_url` a crafted link pointed somewhere else.
-struct ConnectTarget {
-    return_to: Url,
+pub(super) struct ConnectTarget {
+    pub(super) return_to: Url,
 }
 
 impl ConnectTarget {
@@ -89,7 +89,7 @@ impl ConnectTarget {
     /// credentials of its own; it must name the same host as the shop's
     /// address, which may itself be plain http (WordPress can serve its admin
     /// pages over https while the shop is on http).
-    fn parse(site_url: &str, return_url: &str) -> Result<Self, &'static str> {
+    pub(super) fn parse(site_url: &str, return_url: &str) -> Result<Self, &'static str> {
         let site = Url::parse(site_url.trim())
             .ok()
             .filter(|site| matches!(site.scheme(), "http" | "https"))
@@ -470,7 +470,14 @@ async fn confirm_new_store(
         }
     };
 
-    mint_token_and_redirect(state, &outcome.connection_id, platform, form, user, target).await
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("return_url", target.return_to.as_str())
+        .append_pair("nonce", &form.nonce)
+        .finish();
+    redirect_302(&format!(
+        "/dashboard/stores/{}/setup?{query}",
+        outcome.connection_id
+    ))
 }
 
 /// `mode == "existing"`: no new tenant is provisioned at all - the plugin is
@@ -847,6 +854,55 @@ mod tests {
         set_cookie.split(';').next().unwrap().to_string()
     }
 
+    async fn complete_store_setup(
+        router: &Router,
+        cookie: &str,
+        response: axum::response::Response,
+    ) -> axum::response::Response {
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !location.starts_with("/dashboard/stores/") || !location.contains("/setup") {
+            return response;
+        }
+        let url = url::Url::parse(&format!("https://pay.example.test{location}")).unwrap();
+        let fields: std::collections::HashMap<String, String> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        let page = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(location)
+                    .header("cookie", cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let html = body_text(page).await;
+        assert!(
+            html.contains("Save and continue"),
+            "the connected store must offer common settings"
+        );
+        router
+            .clone()
+            .oneshot(form_request(
+                url.path(),
+                Some(cookie),
+                &[
+                    ("return_url", &fields["return_url"]),
+                    ("nonce", &fields["nonce"]),
+                    ("skip", "yes"),
+                ],
+            ))
+            .await
+            .unwrap()
+    }
+
     fn parse_query_params(url: &str) -> std::collections::HashMap<String, String> {
         let parsed = url::Url::parse(url).unwrap();
         parsed
@@ -918,6 +974,7 @@ mod tests {
             ))
             .await
             .unwrap();
+        let post_response = complete_store_setup(&router, &cookie, post_response).await;
         assert_eq!(
             post_response.status(),
             StatusCode::FOUND,
@@ -1027,6 +1084,7 @@ mod tests {
             ))
             .await
             .unwrap();
+        let post_response = complete_store_setup(&router, &cookie, post_response).await;
         assert_eq!(post_response.status(), StatusCode::FOUND);
         let location = post_response
             .headers()
@@ -1125,6 +1183,7 @@ mod tests {
             ))
             .await
             .unwrap();
+        let post_response = complete_store_setup(&router, &cookie, post_response).await;
         assert_eq!(post_response.status(), StatusCode::FOUND);
         let location = post_response
             .headers()
@@ -1222,6 +1281,7 @@ mod tests {
             ))
             .await
             .unwrap();
+        let post_response = complete_store_setup(&router, &cookie, post_response).await;
         assert_eq!(post_response.status(), StatusCode::FOUND);
         let location = post_response
             .headers()
@@ -1939,6 +1999,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(submit.status(), StatusCode::FOUND);
+        let submit = complete_store_setup(&router, &cookie, submit).await;
         let token =
             parse_query_params(submit.headers()["location"].to_str().unwrap())["token"].clone();
         state.save_setting("public_url", "").await;

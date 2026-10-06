@@ -69,6 +69,7 @@ mod pos_logs;
 mod signup;
 pub mod status_page;
 pub mod store_key;
+mod store_setup;
 mod telemetry_client;
 #[cfg(test)]
 mod test_support;
@@ -448,6 +449,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/dashboard/stores/{id}",
             axum::routing::get(orders::store_detail),
+        )
+        .route(
+            "/dashboard/stores/{id}/setup",
+            axum::routing::get(store_setup::page).post(store_setup::save),
         )
         .route(
             "/dashboard/stores/{id}/settings",

@@ -2315,6 +2315,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn common_store_setup_validates_then_saves_all_fields_and_can_be_skipped() {
+        let (mut state, _engine) = test_state_with_real_engine().await;
+        state.exchange_rate = std::sync::Arc::new(
+            crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(
+                "http://127.0.0.1:1",
+            ),
+        );
+        let router = build_router(state.clone());
+        let session = signed_up_and_logged_in_session_token(
+            &router,
+            "setup@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (id, _) = create_connection(&router, &session).await;
+        let path = format!("/dashboard/stores/{id}/setup");
+        let invalid = router
+            .clone()
+            .oneshot(form_post_request(
+                &path,
+                &session,
+                &[
+                    ("base_currency", "USD"),
+                    ("provider", "coingecko"),
+                    ("confirmations", "721"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert!(body_text(invalid)
+            .await
+            .contains("confirmations from 0 to 720"));
+        let store_id = crate::db::ConnectionId::new(id.clone());
+        let row = state
+            .db
+            .lock()
+            .get_store_connection_by_id(&store_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.base_currency, "XMR");
+        let saved = router
+            .clone()
+            .oneshot(form_post_request(
+                &path,
+                &session,
+                &[
+                    ("base_currency", "USD"),
+                    ("provider", "coingecko"),
+                    ("confirmations", "3"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(saved.status(), StatusCode::FOUND);
+        let row = state
+            .db
+            .lock()
+            .get_store_connection_by_id(&store_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.base_currency, "USD");
+        assert_eq!(row.fx_providers, ["coingecko"]);
+        let sk = super::decrypt_sk(&state.encryption_key, &row).unwrap();
+        assert_eq!(
+            state
+                .engine
+                .client
+                .get_tenant(&sk)
+                .await
+                .unwrap()
+                .confirmations_required,
+            3
+        );
+        let page = get_page(
+            &router,
+            &session,
+            &format!("/dashboard/stores/{id}/orders/new"),
+        )
+        .await;
+        // An unreachable provider must still leave XMR available. The
+        // browser fixture separately checks a supported AUD default.
+        assert!(page.contains(r#"id="currency" name="currency" value="XMR" readonly"#));
+        let skipped = router
+            .clone()
+            .oneshot(form_post_request(&path, &session, &[("skip", "yes")]))
+            .await
+            .unwrap();
+        assert_eq!(skipped.status(), StatusCode::FOUND);
+        let stranger = signed_up_and_logged_in_session_token(
+            &router,
+            "stranger-setup@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let refused = router
+            .oneshot(form_post_request(&path, &stranger, &[("skip", "yes")]))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn orders_list_shows_a_real_order_seeded_against_the_engines_public_api() {
         let (state, engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
@@ -4195,7 +4297,11 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert!(response.headers()["location"]
+            .to_str()
+            .unwrap()
+            .ends_with("/setup"));
         let public_key = {
             let db = state.db.lock();
             let user = db
