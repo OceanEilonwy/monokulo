@@ -703,3 +703,10 @@ a.order-id { display: inline-block; max-width: 11em; }
 .engine-network label, .tl-modes label { margin: 0; }
 .engine-network select, .tl-modes select { width: auto; margin: 0; padding: .25rem .5rem; }
 .tl-modes { border: 0 !important; overflow: visible !important; height: auto !important; align-items: center; }
+
+.timezone-setting { max-width: 32rem; padding: .75rem 1rem; }
+.timezone-current { display: flex; gap: .8rem; align-items: baseline; flex-wrap: wrap; }
+.timezone-edit { margin-top: .4rem; }
+.timezone-edit summary { cursor: pointer; font-size: .9rem; }
+.timezone-edit .setting-field { margin: .6rem 0 0; }
+.timezone-edit select { width: 100%; }

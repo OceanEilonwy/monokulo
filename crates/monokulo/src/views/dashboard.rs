@@ -138,8 +138,10 @@ fn timezone_setting(chrome: &PageChrome) -> Markup {
         "Automatic (this browser's zone, UTC until it's known)".to_string()
     };
     html! {
-        section class="box" id="timezone" {
-            h2 { "Time zone" }
+        section class="box timezone-setting" id="timezone" {
+            div class="timezone-current" { strong { "Time zone" } span class="muted" { (clock.name()) } }
+            details class="timezone-edit" {
+            summary { "Edit time zone" }
             form method="post" action="/dashboard/timezone" class="setting-field" {
                 label for="timezone-select" { "Show dates and times in" }
                 select id="timezone-select" name="timezone" {
@@ -149,6 +151,7 @@ fn timezone_setting(chrome: &PageChrome) -> Markup {
                     }
                 }
                 button type="submit" { "Save" }
+            }
             }
         }
     }
