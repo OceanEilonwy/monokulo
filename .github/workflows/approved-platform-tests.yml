@@ -1,0 +1,52 @@
+name: Approved platform tests
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  approval:
+    # Comments, requests for changes and approvals of old revisions never
+    # instantiate the reusable workflow's required platform check names.
+    if: github.event.review.state == 'approved' && github.event.review.commit_id == github.event.pull_request.head.sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.review.outputs.run }}
+    steps:
+      - name: Confirm a current approval from a repository writer
+        id: review
+        uses: actions/github-script@v8
+        with:
+          script: |
+            core.setOutput('run', 'false');
+            const { owner, repo } = context.repo;
+            const { pull_request: eventPr, review } = context.payload;
+            const { data: pr } = await github.rest.pulls.get({
+              owner, repo, pull_number: eventPr.number,
+            });
+            if (pr.state !== 'open' || pr.draft || pr.head.sha !== eventPr.head.sha ||
+                review.commit_id !== pr.head.sha ||
+                review.user.login === pr.user.login) return;
+            const { data: currentReview } = await github.rest.pulls.getReview({
+              owner, repo, pull_number: pr.number, review_id: review.id,
+            });
+            if (currentReview.state !== 'APPROVED' || currentReview.commit_id !== pr.head.sha) return;
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner, repo, username: review.user.login,
+            });
+            if (['admin', 'maintain', 'write'].includes(data.permission)) {
+              core.setOutput('run', 'true');
+            }
+
+  platforms:
+    name: approved platforms
+    needs: approval
+    if: needs.approval.outputs.run == 'true'
+    uses: ./.github/workflows/rust-tests.yml
+    with:
+      platforms: '["macos-latest","windows-latest"]'
