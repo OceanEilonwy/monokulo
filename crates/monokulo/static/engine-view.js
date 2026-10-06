@@ -15,7 +15,13 @@
 (() => {
   "use strict";
   const page = document.querySelector("main.engine-page[data-network]");
-  if (!page || !window.EventSource) return;
+  if (!page) return;
+  const networkSelect = document.getElementById("engine-network");
+  if (networkSelect) {
+    networkSelect.addEventListener("change", () => networkSelect.form.requestSubmit());
+    page.querySelector(".network-go").hidden = true;
+  }
+  if (!window.EventSource) return;
   const network = page.dataset.network;
   if (!network) return;
   const $ = (id) => document.getElementById(id);
@@ -198,10 +204,9 @@
     if (mode === "live" && next !== "live") frozenEnd = engineNow();
     if (next === "live") frozenEnd = null;
     mode = next;
-    for (const radio of document.querySelectorAll('#tl-modes input[name="tl-mode"]')) {
-      radio.checked = radio.value === mode;
-      if (radio.value === "replay") radio.disabled = mode === "live";
-    }
+    const select = $("tl-mode");
+    select.value = mode;
+    select.querySelector('[value="replay"]').disabled = mode === "live";
     tlDirty = true;
   }
 
@@ -846,14 +851,11 @@
       else return;
       e.preventDefault();
     });
-    for (const radio of document.querySelectorAll('#tl-modes input[name="tl-mode"]')) {
-      radio.addEventListener("change", () => {
-        if (!radio.checked) return;
-        if (radio.value === "live") goLive();
-        else if (radio.value === "replay") startReplay();
-        else setMode("paused");
-      });
-    }
+    $("tl-mode").addEventListener("change", (event) => {
+      if (event.target.value === "live") goLive();
+      else if (event.target.value === "replay") startReplay();
+      else setMode("paused");
+    });
     $("engine-events").addEventListener("click", (e) => {
       const row = e.target.closest("tr[data-at]");
       if (!row) return;
