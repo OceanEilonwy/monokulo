@@ -110,6 +110,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         29,
         include_str!("../migrations/0029_drop_store_connection_endpoint.sql"),
     ),
+    (
+        30,
+        include_str!("../migrations/0030_dashboard_order_requests.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -1402,6 +1406,20 @@ impl Db {
         Ok(())
     }
 
+    pub fn dashboard_order_request(&self, id: &ConnectionId, key: &str) -> Result<Option<OrderId>> {
+        Ok(self.conn.query_row("SELECT order_id FROM dashboard_order_requests WHERE connection_id = ?1 AND request_key = ?2", params![id, key], |row| row.get(0)).optional()?)
+    }
+
+    pub fn record_dashboard_order_request(
+        &self,
+        id: &ConnectionId,
+        key: &str,
+        order: &OrderId,
+    ) -> Result<()> {
+        self.conn.execute("INSERT INTO dashboard_order_requests (connection_id, request_key, order_id) VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING", params![id, key, order])?;
+        Ok(())
+    }
+
     /// Saves the common setup fields together and invalidates thresholds only
     /// when their currency changes. The caller holds the store policy lock.
     pub fn update_store_setup(
@@ -1413,7 +1431,14 @@ impl Db {
     ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute("DELETE FROM confirmation_thresholds WHERE connection_id = ?1 AND EXISTS (SELECT 1 FROM store_connections WHERE id = ?1 AND base_currency != ?2)", params![id, currency])?;
-        tx.execute("UPDATE store_connections SET base_currency = ?2, fx_providers = ?3 WHERE id = ?1", params![id, currency, serde_json::to_string(providers).expect("strings serialize")])?;
+        tx.execute(
+            "UPDATE store_connections SET base_currency = ?2, fx_providers = ?3 WHERE id = ?1",
+            params![
+                id,
+                currency,
+                serde_json::to_string(providers).expect("strings serialize")
+            ],
+        )?;
         tx.commit()?;
         Ok(())
     }

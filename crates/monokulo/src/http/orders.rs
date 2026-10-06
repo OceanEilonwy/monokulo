@@ -1272,6 +1272,36 @@ pub async fn create_order(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
+    // Bind the key to the merchant's input, rather than a changing FX quote.
+    // An unchanged retry returns its existing order before repricing it; a
+    // changed form restored by browser history is a different request.
+    use sha2::{Digest, Sha256};
+    let request_key =
+        crate::engine_client::valid_idempotency_key(form.request_key.trim()).then(|| {
+            let payload = serde_json::to_vec(&(
+                form.request_key.trim(),
+                form.amount.trim(),
+                form.currency.trim(),
+                form.merchant_order_id.trim(),
+            ))
+            .expect("strings serialize");
+            format!("dash:{}", hex::encode(Sha256::digest(payload)))
+        });
+    if let Some(key) = &request_key {
+        let (store_id, key) = (id.clone(), key.clone());
+        match state
+            .db
+            .read(move |db| db.dashboard_order_request(&store_id, &key))
+            .await
+        {
+            Ok(Some(order)) => {
+                return redirect_302(&format!("/dashboard/stores/{id}/orders/{order}"))
+            }
+            Ok(None) => {}
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    }
+
     let amount = form.amount.trim();
     let currency = form.currency.trim();
     if amount.is_empty() || currency.is_empty() {
@@ -1411,13 +1441,21 @@ pub async fn create_order(
             shared::xmr_amount::Piconero(xmr_amount_piconero),
             merchant_order_id,
             Some(resolution.confirmations_required),
-            Some(form.request_key.trim())
-                .filter(|key| crate::engine_client::valid_idempotency_key(key))
-                .map(|key| format!("dash:{key}")),
+            request_key.clone(),
         )
         .await
     {
         Ok(order) => {
+            if let Some(key) = request_key {
+                let (store_id, order_id) = (id.clone(), order.order_id.clone());
+                if let Err(error) = state
+                    .db
+                    .write(move |db| db.record_dashboard_order_request(&store_id, &key, &order_id))
+                    .await
+                {
+                    tracing::error!(%error, "could not record dashboard order retry");
+                }
+            }
             let (store_id, order_id, currency, amount, provider) = (
                 row.id.clone(),
                 order.order_id.clone(),
@@ -2317,6 +2355,69 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string()
+    }
+
+    #[tokio::test]
+    async fn dashboard_order_retries_reuse_the_order_and_changed_history_forms_create_another() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let session = signed_up_and_logged_in_session_token(
+            &router,
+            "history@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (id, _) = create_connection(&router, &session).await;
+        let path = format!("/dashboard/stores/{id}/orders/new");
+        let fields = [
+            ("amount", "1.00"),
+            ("currency", "XMR"),
+            ("request_key", "history-request"),
+        ];
+        let first = router
+            .clone()
+            .oneshot(form_post_request(&path, &session, &fields))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::FOUND);
+        let retry = router
+            .clone()
+            .oneshot(form_post_request(&path, &session, &fields))
+            .await
+            .unwrap();
+        assert_eq!(retry.status(), StatusCode::FOUND);
+        assert_eq!(retry.headers()["location"], first.headers()["location"]);
+        let changed = router
+            .clone()
+            .oneshot(form_post_request(
+                &path,
+                &session,
+                &[
+                    ("amount", "2.00"),
+                    ("currency", "XMR"),
+                    ("request_key", "history-request"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(changed.status(), StatusCode::FOUND);
+        assert_ne!(changed.headers()["location"], first.headers()["location"]);
+        let changed_retry = router
+            .oneshot(form_post_request(
+                &path,
+                &session,
+                &[
+                    ("amount", "2.00"),
+                    ("currency", "XMR"),
+                    ("request_key", "history-request"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            changed_retry.headers()["location"],
+            changed.headers()["location"]
+        );
     }
 
     #[tokio::test]
