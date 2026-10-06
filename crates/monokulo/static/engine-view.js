@@ -22,6 +22,7 @@
     page.querySelector(".network-go").hidden = true;
   }
   if (!window.EventSource) return;
+  if (!document.getElementById("tl")) return;
   const network = page.dataset.network;
   if (!network) return;
   const $ = (id) => document.getElementById(id);
@@ -39,6 +40,10 @@
   // up to this, so a burst plays one after another.
   const STAGGER_MS = 1000;
   const PULSE_MS = 1200; // a block or the node lighting up
+  const MAX_MARKS = 50000; // same bound as the engine activity record
+  const MAX_FRAMES = 40;
+  const DRAW_INTERVAL = 250;
+  const TIMELINE_INTERVAL = 100;
   const MAX_EFFECTS = 30; // played from one frame at most
   const TIERS = ["chain", "blocks", "mempool", "settlement", "upkeep"];
   const TIER_NAMES = { chain: "Chain", blocks: "Blocks", mempool: "Mempool", settlement: "Settlement", upkeep: "Upkeep" };
@@ -58,6 +63,38 @@
   let lastSeq = -1;
   let replayFetching = false;
   let source = null;
+  let animationFrame = null, refreshTimer = null, stopped = false;
+  let lastDraw = 0, lastTimelineDraw = 0;
+  const timers = new Set();
+  const pendingFetches = new Set();
+  function later(callback, delay) {
+    if (timers.size >= 120) return;
+    const timer = setTimeout(() => { timers.delete(timer); if (!stopped && !document.hidden) callback(); }, delay);
+    timers.add(timer);
+  }
+  function clearEffects() {
+    for (const timer of timers) clearTimeout(timer);
+    timers.clear();
+    clearTokens();
+  }
+  function showRefresh(show) { page.querySelectorAll(".reload").forEach(el => { el.hidden = !show; }); }
+  const htmlCache = new WeakMap();
+  function setHTML(element, html) {
+    if (element && htmlCache.get(element) !== html) { element.innerHTML = html; htmlCache.set(element, html); }
+  }
+  async function readFrame(url) {
+    const controller = new AbortController();
+    pendingFetches.add(controller);
+    try { return await fetch(url, { signal: controller.signal }); }
+    finally { pendingFetches.delete(controller); }
+  }
+  function pruneMarks() {
+    const keep = engineNow() - AXIS;
+    let remove = Math.max(0, marks.length - MAX_MARKS);
+    while (remove < marks.length && marks[remove].at_ms < keep) remove++;
+    if (remove) marks.splice(0, remove);
+    if (marks.length) oldest = Math.max(oldest ?? marks[0].at_ms, marks[0].at_ms);
+  }
   const engineNow = () => Date.now() + offset;
 
   // ---- the stream ----
@@ -68,7 +105,10 @@
       const start = JSON.parse(e.data);
       offset = start.engine_now_ms - Date.now();
       oldest = start.oldest_ms;
-      marks = start.marks;
+      marks = start.marks.slice(-MAX_MARKS);
+      pruneMarks();
+      clearEffects();
+      showRefresh(false);
       lastSeq = marks.length ? marks[marks.length - 1].seq : -1;
       queue = [];
       tlDirty = true;
@@ -91,14 +131,18 @@
         lastSeq = mark.seq;
       }
       // What the engine no longer keeps, the page lets go of too.
-      const keep = engineNow() - AXIS;
-      while (marks.length && marks[0].at_ms < keep) marks.shift();
+      pruneMarks();
       lastFrame = frame;
-      if (mode === "live") queue.push(frame);
+      if (mode === "live") {
+        queue.push(frame);
+        if (document.hidden) queue = queue.slice(-1);
+        else if (queue.length > MAX_FRAMES) queue.splice(0, queue.length - MAX_FRAMES);
+      }
       tlDirty = true;
     });
     source.addEventListener("restarted", () => connect());
-    source.addEventListener("unreachable", () => setReadout("The engine isn't answering; showing what was last seen"));
+    source.addEventListener("unreachable", () => { showRefresh(true); setReadout("The engine isn't answering; showing what was last seen"); });
+    source.addEventListener("error", () => showRefresh(true));
   }
 
   // ---- playback ----
@@ -106,14 +150,27 @@
   function frameLoop(tick = performance.now()) {
     const dt = Math.min(250, tick - lastTick);
     lastTick = tick;
+    if (stopped) return;
+    if (document.hidden) { animationFrame = requestAnimationFrame(frameLoop); return; }
     if (mode === "live") {
       head = Math.max(head, engineNow() - LAG);
-      while (queue.length && queue[0].at_ms <= head) play(queue.shift());
-      // Far behind (a hidden tab): skip to the newest.
-      if (queue.length > 40) { const last = queue.pop(); queue = []; play(last, true); }
+      if (tick - lastDraw >= DRAW_INTERVAL) {
+        let ready = 0;
+        while (ready < queue.length && queue[ready].at_ms <= head) ready++;
+        if (ready) {
+          const frame = queue[ready - 1];
+          queue.splice(0, ready);
+          play(frame, ready > 1);
+          lastDraw = tick;
+        }
+      }
     } else if (mode === "replay") {
       head += dt;
-      while (queue.length && queue[0].at_ms <= head) play(queue.shift());
+      if (tick - lastDraw >= DRAW_INTERVAL) {
+        let ready = 0;
+        while (ready < queue.length && queue[ready].at_ms <= head) ready++;
+        if (ready) { const frame = queue[ready - 1]; queue.splice(0, ready); play(frame, ready > 1); lastDraw = tick; }
+      }
       if (!queue.length && head >= replayTo) fetchReplay();
       // Replay plays the window: it pauses at the window's end, or goes
       // live when the window ends at now.
@@ -121,8 +178,8 @@
       if (win.end != null && head >= b) { head = b; setMode("paused"); }
       else if (head >= engineNow() - LAG) goLive();
     }
-    if (tlDirty || timelineMoved()) drawTimeline();
-    requestAnimationFrame(frameLoop);
+    if (tick - lastTimelineDraw >= TIMELINE_INTERVAL && (tlDirty || timelineMoved())) { drawTimeline(); lastTimelineDraw = tick; }
+    animationFrame = requestAnimationFrame(frameLoop);
   }
 
   function play(frame, quietly) {
@@ -146,7 +203,7 @@
       }
       for (const timed of effects) {
         const delay = Math.min(STAGGER_MS, Math.max(0, timed.at_ms - first) * 2);
-        setTimeout(() => animate(timed.effect), delay);
+        later(() => animate(timed.effect), delay);
       }
     }
     draw(frame.view);
@@ -169,7 +226,7 @@
       while (seekWanted !== null) {
         const wanted = seekWanted;
         seekWanted = null;
-        const response = await fetch(`/status/engine/at?network=${encodeURIComponent(network)}&ms=${Math.round(wanted)}`);
+        const response = await readFrame(`/status/engine/at?network=${encodeURIComponent(network)}&ms=${Math.round(wanted)}`);
         if (!response.ok) continue;
         const frame = await response.json();
         if (mode === "live") break;
@@ -187,7 +244,7 @@
     replayFetching = true;
     const from = Math.round(head), to = from + REPLAY_MS;
     try {
-      const response = await fetch(`/status/engine/replay?network=${encodeURIComponent(network)}&from=${from}&to=${to}`);
+      const response = await readFrame(`/status/engine/replay?network=${encodeURIComponent(network)}&from=${from}&to=${to}`);
       if (!response.ok) throw new Error(`replay: ${response.status}`);
       if (mode === "replay") {
         queue = (await response.json()).filter((f) => f.at_ms > head);
@@ -207,6 +264,7 @@
   function setMode(next) {
     if (mode === "live" && next !== "live") frozenEnd = engineNow();
     if (next === "live") frozenEnd = null;
+    if (mode !== next) clearEffects();
     mode = next;
     const select = $("tl-mode");
     select.value = mode;
@@ -218,6 +276,7 @@
   // rather than downloading the whole history again.
   let lastFrame = null;
   function goLive() {
+    clearEffects();
     setMode("live");
     setWindow(null, win.span);
     queue = [];
@@ -236,7 +295,7 @@
   function drawSummary(v) {
     const box = $("engine-summary");
     if (!box) return;
-    box.innerHTML = v.summary.map((f) => `<div><span class="k">${esc(f.label)}</span><span class="v">${esc(f.value)}</span><span class="s">${esc(f.note)}</span></div>`).join("");
+    setHTML(box, v.summary.map((f) => `<div><span class="k">${esc(f.label)}</span><span class="v">${esc(f.value)}</span><span class="s">${esc(f.note)}</span></div>`).join(""));
   }
 
   const cellEls = new Map();
@@ -385,7 +444,13 @@
       }
     }
     html += '</div><div class="legend"><span><i class="rgap" aria-hidden="true"></i>slept</span><span><i class="rgap woken" aria-hidden="true"></i>woken by a new block</span><span><i class="rpair" aria-hidden="true"><i></i><i></i></i>back to back: work was left</span></div></div>';
-    box.innerHTML = html;
+    const oldDetails = box.querySelector(".round-breakdown[open]");
+    const focusInDetails = oldDetails?.contains(document.activeElement);
+    setHTML(box, html);
+    if (oldDetails && !oldDetails.isConnected) {
+      box.querySelector(".round-breakdown")?.replaceWith(oldDetails);
+      if (focusInDetails) oldDetails.querySelector("summary")?.focus({ preventScroll: true });
+    }
   }
 
   function panel(id, p, extra) {
@@ -439,8 +504,8 @@
       if (mark.tier && !filters.has(mark.tier)) continue;
       rows.push(mark);
     }
-    body.innerHTML = rows.map((m, i) => `<tr class="${m.key ? "key" : ""}${i === 0 && mode !== "live" ? " now" : ""}" data-at="${m.at_ms}"><td class="num">${fmt(m.round)}</td><td>${m.tier ? `<span class="tierchip t-${m.tier}">${TIER_NAMES[m.tier]}</span>` : ""}</td><td>${esc(m.text)}</td></tr>`).join("") ||
-      '<tr><td colspan="3" class="engine-hint">Nothing recorded yet.</td></tr>';
+    setHTML(body, rows.map((m, i) => `<tr class="${m.key ? "key" : ""}${i === 0 && mode !== "live" ? " now" : ""}" data-at="${m.at_ms}"><td class="num">${fmt(m.round)}</td><td>${m.tier ? `<span class="tierchip t-${m.tier}">${TIER_NAMES[m.tier]}</span>` : ""}</td><td>${esc(m.text)}</td></tr>`).join("") ||
+      '<tr><td colspan="3" class="engine-hint">Nothing recorded yet.</td></tr>');
   }
 
   // ---- animations: effects, never state ----
@@ -486,7 +551,7 @@
     el.classList.remove(cls);
     void el.offsetWidth;
     el.classList.add(cls);
-    setTimeout(() => el.classList.remove(cls), PULSE_MS);
+    later(() => el.classList.remove(cls), PULSE_MS);
   }
   function clearTokens() {
     stage.querySelectorAll(".token, .ghostcell").forEach((el) => el.remove());
@@ -525,7 +590,7 @@
         if (at.kind === "cell") pulse(anchor(at), "flash");
         else if (at.kind === "pool") pulse($("beat"), "lit");
         else if (at.kind === "node") pulse(anchor(at), "spark");
-        else if (at.kind === "upkeep") $("upd").querySelectorAll("i").forEach((i, n) => setTimeout(() => pulse(i, "lit"), n * 80));
+        else if (at.kind === "upkeep") $("upd").querySelectorAll("i").forEach((i, n) => later(() => pulse(i, "lit"), n * 80));
         break;
       }
       case "probe": pulse(cellEls.get(String(effect.height)), "probe"); break;
@@ -574,7 +639,8 @@
   };
   const themeChanged = () => { cssCache.clear(); tlDirty = true; };
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", themeChanged);
-  new MutationObserver(themeChanged).observe(document.documentElement, { attributes: true });
+  const themeObserver = new MutationObserver(themeChanged);
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
   function axisEnd() {
     if (frozenEnd === null) return engineNow();
     frozenEnd = Math.max(frozenEnd, head);
@@ -770,7 +836,7 @@
       const bar = e.target.closest("a.rbar[data-round]");
       if (!bar) return;
       e.preventDefault();
-      const response = await fetch(`/status/engine/round?network=${encodeURIComponent(network)}&number=${bar.dataset.round}`);
+      const response = await readFrame(`/status/engine/round?network=${encodeURIComponent(network)}&number=${bar.dataset.round}`);
       if (!response.ok) return;
       pinned = await response.json();
       // The recent rounds hold still with it, as they were.
@@ -888,15 +954,36 @@
   if (!$("tl")) return; // the engine couldn't be read: nothing to follow
   $("engine-timeline").hidden = false;
   $("engine-filters").hidden = false;
-  document.querySelectorAll(".engine-page .reload").forEach((el) => { el.hidden = true; });
+  // Keep manual refresh available until the first successful history arrives;
   wireTimeline();
   wireRounds();
   const help = $("engine-help");
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && help.open) { help.open = false; help.querySelector("summary").focus(); } });
   document.addEventListener("pointerdown", (e) => { if (help.open && !help.contains(e.target)) help.open = false; });
   addEventListener("resize", () => { if (view) drawChain(view.chain); tlDirty = true; });
-  document.addEventListener("visibilitychange", () => { if (!document.hidden && mode === "live") queue = queue.slice(-1); });
-  setInterval(() => { if (mode !== "live") tlDirty = true; }, 1000);
-  connect();
-  requestAnimationFrame(frameLoop);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { clearEffects(); queue = queue.slice(-1); }
+    else { lastTick = performance.now(); tlDirty = true; if (mode === "live") queue = queue.slice(-1); }
+  });
+  function start() {
+    stopped = false;
+    lastTick = performance.now();
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
+    refreshTimer = setInterval(() => { if (!document.hidden && mode !== "live") tlDirty = true; }, 1000);
+    connect();
+    animationFrame = requestAnimationFrame(frameLoop);
+  }
+  window.addEventListener("pagehide", () => {
+    stopped = true;
+    source?.close();
+    cancelAnimationFrame(animationFrame);
+    clearInterval(refreshTimer);
+    clearEffects();
+    for (const controller of pendingFetches) controller.abort();
+    pendingFetches.clear();
+    themeObserver.disconnect();
+    queue = [];
+  });
+  window.addEventListener("pageshow", event => { if (event.persisted && stopped) start(); });
+  start();
 })();

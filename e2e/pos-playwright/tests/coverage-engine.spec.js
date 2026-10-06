@@ -153,6 +153,12 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await page.mouse.move(box.x + 2 + 60, box.y + box.height / 2, { steps: 4 });
   await page.mouse.up();
   await expect(windowBox).not.toHaveAttribute('style', resized);
+  // Start this drag at the newest retained moment: the earlier window
+  // drag may already have clamped the head to the oldest retained event.
+  await mode().selectOption('live');
+  await expect(marker).toHaveAttribute('aria-valuetext', /^Playback position: live/);
+  await mode().selectOption('paused');
+  await expect(marker).toHaveAttribute('aria-valuetext', /^Playback position: .* ago/);
   // The moment it shows, exactly (its tooltip's "ago" changes by itself).
   const at = await marker.getAttribute('data-at');
   // Dragged back 40px (about 50s on the 30-minute bar), it shows an
