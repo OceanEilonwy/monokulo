@@ -31,7 +31,7 @@ commits of its own (`admin settings: adapt to <what landed>`), and push
   `cargo test --workspace` 1245 passed, 0 failed, 24 ignored.
   Playwright real-binaries: 26 passed.
 - Building needs `npm ci` in `crates/monokulo/pos-ui` first (build.rs
-  builds the POS app) and `npm ci` in `e2e/pos-playwright` for Playwright.
+  builds the POS app) and `npm ci` in `e2e/browser` for Playwright.
 - Clippy baseline: 69 warnings workspace-wide, none new. Pre-existing ones
   in files this work touches: `monokulo/src/http/admin_settings.rs` 1
   (a test helper's doc comment), `scanner/src/daemon.rs` 1,
@@ -281,7 +281,7 @@ commits of its own (`admin settings: adapt to <what landed>`), and push
 
 ### Step 7
 
-- `e2e/pos-playwright/tests/real-helpers.js` (done in steps 3 and 5):
+- `e2e/browser/tests/real-helpers.js` (done in steps 3 and 5):
   `saveEngineSettings` opens the tab holding the given fields and presses
   Save (several tabs in turn); `openSettingsTab`, `fillSettings`,
   `settingsTabOf`, `SETTINGS_TABS`; node helpers `fakeNodeAddress`,
@@ -289,7 +289,7 @@ commits of its own (`admin settings: adapt to <what landed>`), and push
   through the engine API.
 - `real-1`, `real-3`, `real-6` moved to the tabbed page (steps 3 and 5,
   decision D12); `real-3` now checks every tab at 320px as well.
-- `e2e/pos-playwright/real-stack.js`: `startFakeNode(nettype)`.
+- `e2e/browser/real-stack.js`: `startFakeNode(nettype)`.
 - New `tests/real-9-admin-settings.spec.js` (decision D21), each of the
   first three with and without JavaScript:
   tab switching through the tab bar and Back (with JavaScript also that

@@ -243,7 +243,7 @@ reported at the end.)
   said "applies without a restart", so it was left as it is.
 
 - 6.0: the real-binaries harness is a separate Playwright config
-  (`e2e/pos-playwright/real-binaries.config.js`) so the stagenet and
+  (`e2e/browser/real-binaries.config.js`) so the stagenet and
   coverage suites are untouched. The fake node is a new small binary,
   `fake-monerod` in engine-test-support (the WBS's "fake daemon from 2.1"
   didn't exist as an HTTP server; the in-process FakeDaemonClient can't be

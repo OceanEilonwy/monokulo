@@ -12,7 +12,7 @@ actual scanning, detection, and status-update logic works against a real chain,
 not just a simulated one. This directory holds the fixtures every real e2e
 suite in the repo needs (this test, `e2e_dashboard_stagenet.rs`, both
 `mock-woocommerce` real-stagenet tests, and the POS screen's own
-`e2e/pos-playwright/` suite), plus a demo shop for manually eyeballing the same
+`e2e/browser/` suite), plus a demo shop for manually eyeballing the same
 flow through the actual embedded widget in a browser.
 
 **The only external dependency is the public stagenet node itself** - no

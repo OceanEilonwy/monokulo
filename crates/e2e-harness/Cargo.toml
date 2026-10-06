@@ -54,7 +54,7 @@ tower = { version = "0.5.3", features = ["util"], optional = true }
 hex = { version = "0.4.3", optional = true }
 
 # The real backend half of the POS screen's real stagenet and browser e2e
-# suite (`e2e/pos-playwright/`, driven by Playwright, not `cargo test`): a
+# suite (`e2e/browser/`, driven by Playwright, not `cargo test`): a
 # real engine, a real monokulo, account and store provisioning, and the
 # background scan loop, in one process (see src/main.rs). A `[[bin]]` rather
 # than an ignored test so Playwright can start, find and stop it at a

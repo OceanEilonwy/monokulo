@@ -1,14 +1,14 @@
 # Browser assertion inventory before migration
 
 Task 2.1 of [the coverage breakdown](COVERAGE_WBS.md). Numbers follow source
-order in `e2e/pos-playwright/tests/surface.spec.js` at the start of this work.
+order in `e2e/browser/tests/surface.spec.js` at the start of this work.
 “Real code” means code shipped by Monokulo that the assertion executes; a
 hand-built page in the test is not a product render. Planned replacements must
 pass before the corresponding old case is removed. The baseline below predates
 browser instrumentation; task 3.2 will add per-file and branch counts before
 any removal.
 
-Baseline on 2026-09-26: `cd e2e/pos-playwright && npx playwright test -c
+Baseline on 2026-09-26: `cd e2e/browser && npx playwright test -c
 surface.config.js` passed all 24 cases in 29.1 seconds. The three paid stagenet
 tests and `pos-fit`'s live-harness cases were not run; they are outside this
 offline baseline. The instrumented baseline from tasks 3.1–3.2 passed the 24

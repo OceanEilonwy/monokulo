@@ -244,7 +244,7 @@ Decisions:
   with the newest cursor as the event id (ssexi sends it back as
   `Last-Event-ID` on reconnect). The page script pauses it, stops it when a
   new search starts, and keeps at most 1,000 rows.
-- **Real-browser tests**: `e2e/pos-playwright/tests/real-5-logs.spec.js`
+- **Real-browser tests**: `e2e/browser/tests/real-5-logs.spec.js`
   (`npx playwright test -c real-binaries.config.js`). With JavaScript off,
   headless Chrome hit-tests `<html>` for a while after a form submission,
   so that test follows the Refresh link's `href` rather than clicking it.

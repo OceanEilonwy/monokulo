@@ -155,20 +155,20 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: |
-            e2e/pos-playwright/package-lock.json
+            e2e/browser/package-lock.json
             crates/monokulo/pos-ui/package-lock.json
       - name: Install browser and POS dependencies
         run: |
-          npm ci --prefix e2e/pos-playwright --no-audit --no-fund
+          npm ci --prefix e2e/browser --no-audit --no-fund
           npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
       - name: Cache Playwright's Chromium
         id: chromium
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/pos-playwright/package-lock.json') }}
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/browser/package-lock.json') }}
       - name: Install Chromium
-        working-directory: e2e/pos-playwright
+        working-directory: e2e/browser
         run: |
           if test '${{ steps.chromium.outputs.cache-hit }}' = true; then
             npx playwright install-deps chromium

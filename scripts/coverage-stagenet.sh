@@ -3,7 +3,7 @@ set -euo pipefail
 
 if ! command -v node >/dev/null 2>&1; then echo 'missing prerequisite: node' >&2; exit 2; fi
 if ! command -v cargo >/dev/null 2>&1; then echo 'missing prerequisite: cargo' >&2; exit 2; fi
-playwright=e2e/pos-playwright
+playwright=e2e/browser
 if ! test -f "$playwright/node_modules/@playwright/test/package.json"; then
   echo "missing prerequisite: $playwright/node_modules (run npm ci there)" >&2; exit 2
 fi

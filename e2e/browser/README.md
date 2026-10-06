@@ -1,4 +1,29 @@
-# POS terminal - real stagenet + real browser e2e
+# Browser tests
+
+Playwright tests for Monokulo's dashboard, store settings and orders, live view,
+checkout, and POS. The configurations select separate environments and workloads:
+
+| Configuration | Coverage | Environment |
+| --- | --- | --- |
+| `feedback.config.js` | Store setup, settings dialogs, order resubmission, JavaScript-disabled pages, time zone preferences, and live-view controls and performance | Local rendered-UI fixture |
+| `surface.config.js` | Client challenge protocol | Local mocked server |
+| `coverage-browser.config.js` | Checkout, challenge, camera, client, POS, layout, and live view | Local rendered-UI fixture with coverage reporting |
+| `real-binaries.config.js` | Admin setup and settings, store keys, logs, themes, crash recovery, sections, and POS timeline | Real binaries and a local fake node |
+| `playwright.config.js` | POS payments and confirmations | Public stagenet and funded test wallet |
+
+Install dependencies and Chromium from this directory:
+
+```sh
+npm ci
+npx playwright install chromium
+```
+
+Run a selected suite with `npx playwright test -c <configuration>`. For example,
+`npx playwright test -c feedback.config.js` runs the dashboard and live-view
+regressions without a public node or funds. `npm test` selects the stagenet POS
+configuration; it is an explicit real-payment run, not the local regression suite.
+
+## POS terminal with real stagenet payments
 
 Full end-to-end coverage for the POS screen (`crates/monokulo/src/views/pos.rs`,
 `crates/monokulo/src/http/pos.rs`): a real, network-bound `scanner` engine talking to
@@ -120,7 +145,7 @@ screenshots on failure).
   which `global-setup.js` forwards straight through to this process's own terminal
   output.
 
-# Deterministic rendered-UI fixture
+## Deterministic rendered-UI fixture
 
 Run `npx playwright test -c coverage-real.config.js` from this directory, or
 `cargo xtask coverage browser` from the repository root for instrumentation,
