@@ -7,7 +7,7 @@
 //! This is genuinely **no browser involved** - [`run_connect_flow`] *is* the
 //! synthetic browser, using a cookie-persisting `reqwest::Client` to walk
 //! the exact HTTP path a real browser would (see `monokulo/src/http/
-//! connect.rs`'s own module doc comment for the five steps this walks
+//! connect.rs`'s own module doc comment for the connection protocol this walks
 //! through), and a real, locally-bound axum server stands in for the
 //! plugin's own callback route - the actual "plugin-side" logic (verify the
 //! nonce, call `/finish` server-to-server) lives in that callback's handler,
@@ -401,8 +401,10 @@ fn encode_query_value(s: &str) -> String {
 /// 4. `POST /dashboard/login` with `next` set to the exact original
 ///    connect-start path - auto-followed all the way to the confirm form.
 /// 5. `POST /connect/woocommerce` with the confirm form's fields (the fixed
-///    test wallet material above) - auto-followed to this driver's own
-///    callback server, whose handler does the real "plugin-side" work (nonce
+///    test wallet material above) - auto-followed to the common store settings.
+/// 6. Skip the optional settings, keeping the submitted wallet defaults -
+///    auto-followed to this driver's own callback server, whose handler does
+///    the real "plugin-side" work (nonce
 ///    check, then a separate server-to-server `/finish` call) and reports
 ///    its outcome back here over a `tokio::sync::oneshot` channel.
 ///
@@ -549,7 +551,7 @@ async fn connect(
 }
 
 /// The actual HTTP walk (module doc comment / [`run_connect_flow`]'s own doc
-/// comment lay out the five steps) - factored out so [`run_connect_flow_with`]
+/// comment lay out the six steps) - factored out so [`run_connect_flow_with`]
 /// can unconditionally abort the callback server's background task
 /// afterward, on both success and failure.
 #[allow(clippy::too_many_arguments)]
@@ -612,9 +614,8 @@ async fn run_connect_flow_inner(
 
     // Step 5: confirm the wallet connection with `wallet`'s material (the fixed test
     // scalars by default - see `ConnectFlowWallet`'s own doc comment - or real wallet
-    // material for a caller using `run_connect_flow_with_wallet`) - auto-followed to
-    // this driver's own callback server, whose handler (`callback_handler`) does the
-    // rest and reports back over the oneshot channel awaited below.
+    // material for a caller using `run_connect_flow_with_wallet`) - auto-followed
+    // to the store's optional common settings form.
     let order_expiry_seconds_string = order_expiry_seconds.map(|s| s.to_string());
     let confirmations_required_string = wallet.confirmations_required.map(|v| v.to_string());
     let mut confirm_fields: Vec<(&str, &str)> = vec![
@@ -632,13 +633,32 @@ async fn run_connect_flow_inner(
     if let Some(s) = &confirmations_required_string {
         confirm_fields.push(("confirmations_required", s.as_str()));
     }
-    let confirm_response = client
+    let mut confirm_response = client
         .post(format!("{monokulo_base_url}/connect/{platform}"))
         .form(&confirm_fields)
         .send()
         .await?;
-    // A confirm monokulo accepts redirects to the callback (followed); one it
-    // refuses shows the form again, with why, and no callback ever comes.
+    // Step 6: act as the merchant choosing "Skip for now". Keep the wallet's
+    // submitted currency/confirmation defaults, and carry the callback and
+    // nonce through the form. The connect token is minted only afterward.
+    let setup_prefix = format!("{monokulo_base_url}/dashboard/stores/");
+    if confirm_response.url().as_str().starts_with(&setup_prefix)
+        && confirm_response.url().path().ends_with("/setup")
+    {
+        let setup_url = confirm_response.url().clone();
+        expect_ok(confirm_response, "store setup").await?;
+        confirm_response = client
+            .post(setup_url)
+            .form(&[
+                ("return_url", callback_url.as_str()),
+                ("nonce", nonce),
+                ("skip", "yes"),
+            ])
+            .send()
+            .await?;
+    }
+    // An accepted flow reaches the callback (followed); a refused form
+    // re-renders with its error and never calls the plugin.
     if !confirm_response.url().as_str().starts_with(&callback_url) {
         let status = confirm_response.status().as_u16();
         let body = confirm_response.text().await.unwrap_or_default();
@@ -1236,7 +1256,7 @@ mod tests {
         assert_eq!(
             confirm_response.status(),
             reqwest::StatusCode::FOUND,
-            "expected a redirect carrying the connect token"
+            "expected a redirect to the common store settings"
         );
         let location = confirm_response
             .headers()
@@ -1245,7 +1265,43 @@ mod tests {
             .to_str()
             .unwrap()
             .to_string();
-        let token = parse_query_params(&location)
+        let setup_url = url::Url::parse(&monokulo_base_url)
+            .unwrap()
+            .join(&location)
+            .unwrap();
+        assert!(setup_url.path().starts_with("/dashboard/stores/"));
+        assert!(setup_url.path().ends_with("/setup"));
+        assert!(
+            !parse_query_params(setup_url.as_str()).contains_key("token"),
+            "the connect token must not be minted before settings are completed"
+        );
+        let setup_page = client.get(setup_url.clone()).send().await.unwrap();
+        assert_eq!(setup_page.status(), reqwest::StatusCode::OK);
+        assert!(setup_page
+            .text()
+            .await
+            .unwrap()
+            .contains("Save and continue"));
+        let completed = client
+            .post(setup_url)
+            .form(&[
+                ("return_url", return_url),
+                ("nonce", correct_nonce.as_str()),
+                ("skip", "yes"),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(completed.status(), reqwest::StatusCode::FOUND);
+        let location = completed
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let params = parse_query_params(location);
+        assert_eq!(params.get("nonce"), Some(&correct_nonce));
+        let token = params
             .get("token")
             .expect("expected a token query param")
             .clone();
