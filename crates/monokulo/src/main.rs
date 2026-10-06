@@ -231,7 +231,23 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .unwrap_or_else(|e| stop(format!("failed to listen on {bind}: {e}")));
-    tracing::info!(server.address = %bind, "monokulo listening");
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|e| stop(format!("failed to read listening address: {e}")));
+    let host = if address.ip().is_unspecified() {
+        if address.is_ipv6() {
+            "[::1]".to_string()
+        } else {
+            "127.0.0.1".to_string()
+        }
+    } else if address.is_ipv6() {
+        format!("[{}]", address.ip())
+    } else {
+        address.ip().to_string()
+    };
+    let dashboard_url = format!("http://{host}:{}/", address.port());
+    eprintln!("Open Monokulo: {dashboard_url}");
+    tracing::info!(server.address = %address, server.url = %dashboard_url, "monokulo listening");
     // `with_connect_info` - without this, `http::abuse`'s client lookup
     // would never see a real peer address in production, and would fail
     // open for every request (the "no signal at all" case that should only
