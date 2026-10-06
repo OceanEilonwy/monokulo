@@ -304,6 +304,7 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
             }
             @if let Some(view) = &page.view {
                 (timeline())
+                p class="sync-motion-note engine-hint" role="status" { "Catching up: showing progress with reduced animation." }
                 (summary(view))
                 div class="engine-main" {
                     div class="engine-left" {

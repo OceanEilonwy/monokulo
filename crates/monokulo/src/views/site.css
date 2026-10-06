@@ -710,3 +710,11 @@ a.order-id { display: inline-block; max-width: 11em; }
 .timezone-edit summary { cursor: pointer; font-size: .9rem; }
 .timezone-edit .setting-field { margin: .6rem 0 0; }
 .timezone-edit select { width: 100%; }
+
+.sync-motion-note { display: none; }
+.catching-up .sync-motion-note { display: block; }
+.catching-up .cell, .catching-up .cell .fill, .catching-up .cell .pool,
+.catching-up .pill, .catching-up .bar, .catching-up .ruler-label { transition: none; }
+.engine-summary .v, .engine-summary .s, .lane-time, .round-state { font-variant-numeric: tabular-nums; }
+.engine-summary .v { min-height: 1.6em; }
+.engine-page .node .call { min-height: 1.3em; }
