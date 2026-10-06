@@ -447,7 +447,13 @@ pub fn logs_link(chrome: &PageChrome, field: &str, value: &str, text: &str) -> M
 /// snapshot, and a reader reloads when they want the latest. `class` is
 /// `reload` so the page's own script can hide it once it streams updates.
 pub fn reload_button(href: &str) -> Markup {
-    html! { a class="btn btn-secondary reload" href=(href) { "Reload" } }
+    html! {
+        a class="btn btn-secondary reload" href=(href) aria-label="Refresh page" title="Refresh page" {
+            svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" {
+                path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-2L20 8M4 16l2.3 3A7 7 0 0 0 17.9 17" {}
+            }
+        }
+    }
 }
 
 /// The engine's health as the status indicator shows it: green, yellow or
