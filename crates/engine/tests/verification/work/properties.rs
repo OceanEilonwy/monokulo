@@ -830,6 +830,77 @@ fn typed_portfolio_composes_arrival_extension_reorg_proof_expiry_and_faults() {
 }
 
 #[test]
+fn typed_portfolio_reorg_retains_pending_settlement_until_branch_is_proven() {
+    use crate::work::portfolio::scenario::{Command::*, Scenario};
+    for worker in 0..=1 {
+        let mut setup = [
+            178, 0, 0, 0, 0, 0, 0, 55, 0, 0, 0, 0, 53, 109, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 65, 255, 166, 129, 163, 17, 201, 107, 81, 212, 96,
+            125, 238, 212, 124, 154, 226, 47, 45, 136, 219, 88, 235, 99, 127, 43, 192, 205, 227,
+            100, 72, 241, 62, 66, 23, 225, 192, 162, 102, 252, 160, 56, 213, 114, 20, 223, 154,
+            157, 17, 233, 226, 28, 255, 218, 205, 1, 49, 207, 210, 53, 245, 185, 103, 32, 213, 189,
+            211, 2, 147, 251, 186, 66, 0, 65, 179, 45, 208, 134, 239, 13, 14, 89, 179, 211, 47,
+            127, 88, 237, 150, 67,
+        ]
+        .to_vec();
+        setup[3] = worker;
+        let scenario = Scenario {
+            setup,
+            commands: [
+                Round,
+                Spent {
+                    transaction: 108,
+                    unanimous: false,
+                },
+                Mine(0),
+                Mine(68),
+                Advance(4),
+                Proof {
+                    lag: 4,
+                    mismatch: true,
+                },
+                Spent {
+                    transaction: 56,
+                    unanimous: false,
+                },
+                Arrive(32),
+                Mine(86),
+                Deliver(true),
+                Spent {
+                    transaction: 48,
+                    unanimous: false,
+                },
+                Mine(130),
+                Proof {
+                    lag: 2,
+                    mismatch: false,
+                },
+                Reorg(3),
+                Mine(73),
+                Fault {
+                    writes: true,
+                    position: 0,
+                },
+            ]
+            .to_vec(),
+        };
+        let hits = crate::work::portfolio::explore(&scenario.encode());
+        assert!(
+            hits.get("unproven-payment-keeps-settlement-pending")
+                .copied()
+                .unwrap_or_default()
+                > 0
+        );
+        assert!(
+            hits.get("proven-settlement-released")
+                .copied()
+                .unwrap_or_default()
+                > 0
+        );
+    }
+}
+
+#[test]
 fn typed_portfolio_selects_every_sql_operation_class_and_position() {
     use crate::work::portfolio::scenario::{Command, Scenario, SETUP_BYTES};
     for writes in [false, true] {
