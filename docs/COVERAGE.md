@@ -33,10 +33,10 @@ remain if another component fails. An unavailable metric is labeled
   `COVERAGE_TOOLS_PREINSTALLED=1` to skip this). Tests run under nextest
   (`.config/nextest.toml`, profile `ci`), which runs the test binaries side
   by side.
-- Browser: Node 24, `npm ci --prefix e2e/pos-playwright`,
+- Browser: Node 24, `npm ci --prefix e2e/browser`,
   `npm ci --prefix crates/monokulo/pos-ui` (Cargo builds
   the POS app from it, see `crates/monokulo/build.rs`), and Chromium from
-  `cd e2e/pos-playwright && npx playwright install chromium`. The browser
+  `cd e2e/browser && npx playwright install chromium`. The browser
   fixture builds with Cargo `--offline`; fetch Rust dependencies before
   starting if the Cargo cache is empty.
 - WooCommerce: Docker, Composer, and wp-env. Run

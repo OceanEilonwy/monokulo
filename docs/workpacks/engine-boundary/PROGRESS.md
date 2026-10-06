@@ -51,7 +51,7 @@ After step 10 (final):
 
 Baseline (before step 1), at `e4d83da`:
 - `cargo test --workspace`: 854 passed, 0 failed, 18 ignored.
-- Playwright surface (`e2e/pos-playwright`, `npx playwright test -c surface.config.js`): recorded here as 19 when the pack was written, but `surface.spec.js` at `e4d83da` contains 18 tests and all 18 pass.
+- Playwright surface (`e2e/browser`, `npx playwright test -c surface.config.js`): recorded here as 19 when the pack was written, but `surface.spec.js` at `e4d83da` contains 18 tests and all 18 pass.
 - PHP suite: not run (needs the wp-env test container).
 
 ## Notes per step

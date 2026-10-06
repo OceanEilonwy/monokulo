@@ -117,7 +117,7 @@ The sketch is illustrative: its amounts, IDs, timestamps, and QR pixels are plac
 - Current POS page and inline behavior: [`crates/monokulo/src/views/pos.rs`](crates/monokulo/src/views/pos.rs).
 - Current authenticated POS APIs and 32-order stream bound: [`crates/monokulo/src/http/pos.rs`](crates/monokulo/src/http/pos.rs).
 - Shared checkout/refund controls: [`crates/monokulo/src/views/checkout.rs`](crates/monokulo/src/views/checkout.rs), [`crates/monokulo/static/checkout.js`](crates/monokulo/static/checkout.js).
-- Existing browser coverage: [`e2e/pos-playwright/tests/pos.spec.js`](e2e/pos-playwright/tests/pos.spec.js), [`e2e/pos-playwright/tests/surface.spec.js`](e2e/pos-playwright/tests/surface.spec.js).
+- Existing browser coverage: [`e2e/browser/tests/pos.spec.js`](e2e/browser/tests/pos.spec.js), [`e2e/browser/tests/surface.spec.js`](e2e/browser/tests/surface.spec.js).
 - Solid 2.0 RC APIs and build tooling: [official Solid 2.0 announcement](https://github.com/solidjs/solid/discussions/2995), [releases](https://github.com/solidjs/solid/releases), [preview documentation](https://v2.solidjs.com/).
 
 ## Decision: native payment card instead of the checkout iframe

@@ -245,7 +245,7 @@ also retains Playwright's diagnostic screenshot and trace in a separate
 **Failures** area.
 Diagnostic images do not replace the named checkpoints from passing tests.
 
-Add a small helper in `e2e/pos-playwright/` such as
+Add a small helper in `e2e/browser/` such as
 `captureCoverageStage(page, testInfo, stage, options)`. It should be a no-op in
 ordinary test runs and activate when the coverage harness sets
 `COVERAGE_SCREENSHOTS=1`. Call it **after** the locator assertions for each

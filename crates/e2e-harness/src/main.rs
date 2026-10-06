@@ -1,5 +1,5 @@
 //! Boots the *real* backend for the POS screen's browser-driven e2e suite
-//! (`e2e/pos-playwright/`) - a genuinely network-bound `scanner` engine
+//! (`e2e/browser/`) - a genuinely network-bound `scanner` engine
 //! talking to the real public stagenet node, a genuinely network-bound
 //! `monokulo` (so an external browser, driven by Playwright over Node, can
 //! actually reach it - unlike `tests/e2e_dashboard_stagenet.rs`, which only
@@ -19,7 +19,7 @@
 //! Prints exactly one JSON line to stdout once both servers are up and the
 //! account/store exist, then blocks forever (both servers, a background
 //! scan-tick loop, and the `/send-payment` endpoint keep running on their
-//! own spawned tasks) until killed - see `e2e/pos-playwright/README.md` for
+//! own spawned tasks) until killed - see `e2e/browser/README.md` for
 //! the full protocol Node's own side follows against that line.
 //!
 //! `#[cfg(feature = "e2e")]`-equivalent via `required-features` in
@@ -566,6 +566,6 @@ async fn main() {
 
     // Both servers and the scan loop keep running on their own spawned
     // tasks - this task just needs to never return, so the process stays
-    // alive until Node kills it (see `e2e/pos-playwright/README.md`).
+    // alive until Node kills it (see `e2e/browser/README.md`).
     std::future::pending::<()>().await;
 }

@@ -6,7 +6,7 @@ import solid from '@solidjs/vite-plugin';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(directory, '../../..');
-const requireFromTests = createRequire(path.join(root, 'e2e/pos-playwright/package.json'));
+const requireFromTests = createRequire(path.join(root, 'e2e/browser/package.json'));
 const { createInstrumenter } = requireFromTests('istanbul-lib-instrument');
 // The authored POS sources, each counted under its repository path.
 const sources = ['main.tsx', 'timeline.ts'];

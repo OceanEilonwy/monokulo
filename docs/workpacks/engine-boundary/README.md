@@ -30,9 +30,9 @@ Your work will be reviewed independently, step by step, against this document. C
   - `crates/engine-test-support` spawns a real engine for tests.
   - `crates/mock-woocommerce` contains e2e tests driving the WooCommerce connect flow.
   - `plugins/woocommerce` is the PHP WooCommerce gateway plugin.
-  - `e2e/pos-playwright` holds the Playwright tests. `surface.spec.js` is the fast mocked suite; `pos.spec.js` needs stagenet funds and must not be run.
+  - `e2e/browser` holds the Playwright tests. `surface.spec.js` is the fast mocked suite; `pos.spec.js` needs stagenet funds and must not be run.
 - **Shared worktree (added mid-way; applies from step 9 on).** A separate POS redesign (Solid 2.0 POS app; task list `pos_redesign.md`) is being worked on in this same worktree by another agent, which may be editing files while you work. Its snapshot is commit `a93b4ca`.
-  - **Don't modify POS-owned files:** `crates/monokulo/src/http/pos.rs`, `crates/monokulo/src/views/pos.rs`, `crates/monokulo/pos-ui/`, `crates/monokulo/static/pos-app.*`, `crates/monokulo/migrations/0022_pos_orders.sql`, `e2e/pos-playwright/helpers.js`, `e2e/pos-playwright/tests/pos.spec.js`, `pos_redesign.md`, `docs/pos-background-orders-sketches.*`.
+  - **Don't modify POS-owned files:** `crates/monokulo/src/http/pos.rs`, `crates/monokulo/src/views/pos.rs`, `crates/monokulo/pos-ui/`, `crates/monokulo/static/pos-app.*`, `crates/monokulo/migrations/0022_pos_orders.sql`, `e2e/browser/helpers.js`, `e2e/browser/tests/pos.spec.js`, `pos_redesign.md`, `docs/pos-background-orders-sketches.*`.
     - The one exception is a mechanical change to an `AppState` literal in `http/pos.rs`'s tests, kept to that hunk only.
     - Where step 9 needs POS behaviour (the POS is never challenged; the POS stream is keyed by the signed-in user), do it in the shared middleware and router, not in POS files. If a POS file change is truly unavoidable, keep it minimal and log it in `DECISIONS.md`.
   - **`surface.spec.js` is shared.** Add your own tests; don't change the POS ones.
@@ -42,7 +42,7 @@ Your work will be reviewed independently, step by step, against this document. C
 - **Tests you must run and keep green before every commit:**
   - `cargo test --workspace` (currently 854 passed, 0 failed, 18 ignored).
   - `cargo clippy --workspace --all-targets`: add no new warnings in files you touch. Pre-existing warnings elsewhere are fine.
-  - Playwright surface tests when you touch JS/HTML/CSS: `cd e2e/pos-playwright && npx playwright test -c surface.config.js`. Use absolute paths or a subshell; don't leave the shell in another directory.
+  - Playwright surface tests when you touch JS/HTML/CSS: `cd e2e/browser && npx playwright test -c surface.config.js`. Use absolute paths or a subshell; don't leave the shell in another directory.
   - `node --check` on any JS file you edit.
   - PHP: `plugins/woocommerce/vendor/bin/phpunit` needs the wp-env test container (`WP_TESTS_DIR`). Docker is installed. Try `npx @wordpress/env start` / `npx wp-env run tests-cli ...` from `plugins/woocommerce` if it's configured (look for `.wp-env.json`). If the PHP suite genuinely can't be run here, at minimum run `php -l` on every PHP file you change, update the unit tests to the new behaviour anyway, and say clearly in your report that the PHP suite was not run and why.
   - Stagenet e2e tests (`*_stagenet*.rs`, `pos.spec.js`): don't run them (they need real funds and nodes), but they must still compile.

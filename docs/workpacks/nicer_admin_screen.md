@@ -31,12 +31,12 @@ Your work will be reviewed step by step against this document. Commits that mix 
   - `crates/engine`: **the engine** (also called "scanner"). It is private; only monokulo talks to it.
   - `crates/engine-test-support`: test doubles, including the `fake-monerod` binary the Playwright suite runs against.
   - `crates/live-settings`: the shared, typed settings library both processes use.
-  - `e2e/pos-playwright`: the Playwright tests. The `real-*.spec.js` files run against the real binaries and cover the admin page.
+  - `e2e/browser`: the Playwright tests. The `real-*.spec.js` files run against the real binaries and cover the admin page.
 - **Tests you must run and keep green before every commit:**
   - `cargo test --workspace`. At commit `1a6b27e` this gave 1162 passed, 0 failed, 22 ignored. Run it once before you start and record your own baseline in the progress notes.
   - `cargo clippy --workspace --all-targets`: add no new warnings in files you touch.
   - `node --check` on any JS file you edit.
-  - When you touch HTML, CSS, JS or the admin page's behaviour, run the real-binaries Playwright suite from `e2e/pos-playwright`: `npx playwright test -c real-binaries.config.js`. See `e2e/pos-playwright/README.md` for setup. Use absolute paths or a subshell so your shell doesn't stay in another directory.
+  - When you touch HTML, CSS, JS or the admin page's behaviour, run the real-binaries Playwright suite from `e2e/browser`: `npx playwright test -c real-binaries.config.js`. See `e2e/browser/README.md` for setup. Use absolute paths or a subshell so your shell doesn't stay in another directory.
   - Don't run the stagenet suites (`*_stagenet*.rs`, `pos.spec.js`, `coverage-stagenet.config.js`). They need real funds and nodes, but they must still compile.
 - **Code style:**
   - Match the surrounding code's naming, idiom and comment density. This codebase uses long doc comments that explain *why*. Write new ones in that spirit, plainly and without filler.
