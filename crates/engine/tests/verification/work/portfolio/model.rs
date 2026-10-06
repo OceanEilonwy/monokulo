@@ -120,6 +120,7 @@ impl Ledger<'_> {
             statuses,
         } = oracle;
         assert!(s.reorg_job(NETWORK).unwrap().is_none());
+        let mut expected_pending = std::collections::BTreeSet::new();
         for invoice in *invoices {
             let mut expected = BTreeMap::new();
             let mut total = 0u64;
@@ -207,6 +208,16 @@ impl Ledger<'_> {
             } else {
                 OrderStatus::Unconfirmed
             };
+            // A proof height can still cover the tip after a reorg while its
+            // hashes belong to the discarded branch. Settlement obligations
+            // follow the independently proven payments, not that height alone.
+            if observed_eligible >= invoice.goal
+                && eligible < invoice.goal
+                && !matches!(status, OrderStatus::Paid | OrderStatus::Overpaid)
+            {
+                expected_pending.insert(invoice.id.as_str().to_owned());
+                daemon.hit("unproven-payment-keeps-settlement-pending");
+            }
             statuses.insert(invoice.id.as_str().into(), status);
             let actual = s.get_order(&invoice.tenant, &invoice.id).unwrap().unwrap();
             assert_eq!(
@@ -231,11 +242,15 @@ impl Ledger<'_> {
             }
         }
         daemon.check_events(s, invoices);
-        if !daemon.mismatch.get() && daemon.ceiling.get() >= tip {
-            assert!(s
-                .pending_payment_recomputes_page(NETWORK, "", 100)
-                .unwrap()
-                .is_empty());
-        }
+        let actual_pending = s
+            .pending_payment_recomputes_page(NETWORK, "", 100)
+            .unwrap()
+            .into_iter()
+            .map(|id| id.as_str().to_owned())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            actual_pending, expected_pending,
+            "BOUNDARY: independent-pending-settlement-ledger"
+        );
     }
 }
