@@ -247,13 +247,7 @@ impl SnpKeyCustody {
         config: SnpConfig,
         wraps: Arc<dyn WrapStore>,
     ) -> Result<Self, String> {
-        let receiver = ReceiverKey::generate();
-        let report_raw = guest
-            .report(&transport::report_data_for(&receiver.public_key()))
-            .map_err(|e| e.to_string())?;
-        let report = report::parse(&report_raw, config.product).map_err(|e| e.to_string())?;
-        transport::check_identity(config.product, &report, &config.trust)
-            .map_err(|e| format!("this engine is not a trusted SEV-SNP image: {e}"))?;
+        let (receiver, report_raw, report) = Self::attest(guest.as_ref(), &config)?;
         let backend = SnpKeyCustody {
             registry: PlainKeyCustody::default(),
             guest,
@@ -269,6 +263,31 @@ impl SnpKeyCustody {
         };
         *backend.master.write() = backend.recover_master()?;
         Ok(backend)
+    }
+
+    /// Whether [`SnpKeyCustody::start`] would get past attesting this engine
+    /// (its report, and that it is a trusted image), without starting it:
+    /// nothing is kept and nothing is stored, so a settings check can ask.
+    /// Recovering or making the master key, which `start` also does, can
+    /// still fail.
+    pub fn can_start(guest: &dyn GuestDevice, config: &SnpConfig) -> Result<(), String> {
+        Self::attest(guest, config).map(|_| ())
+    }
+
+    /// A fresh receiver key and this engine's report for it, checked to be
+    /// a trusted image's.
+    fn attest(
+        guest: &dyn GuestDevice,
+        config: &SnpConfig,
+    ) -> Result<(ReceiverKey, Vec<u8>, AttestationReport), String> {
+        let receiver = ReceiverKey::generate();
+        let report_raw = guest
+            .report(&transport::report_data_for(&receiver.public_key()))
+            .map_err(|e| e.to_string())?;
+        let report = report::parse(&report_raw, config.product).map_err(|e| e.to_string())?;
+        transport::check_identity(config.product, &report, &config.trust)
+            .map_err(|e| format!("this engine is not a trusted SEV-SNP image: {e}"))?;
+        Ok((receiver, report_raw, report))
     }
 
     /// The key this image's wrap of the master key, made at committed TCB

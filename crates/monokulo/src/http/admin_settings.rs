@@ -6,13 +6,14 @@
 //! session still gets `403` here, same as the nav only shows the "admin"
 //! link to the one instance-wide admin account (`is_admin`, `crate::db`).
 //!
-//! **Two owners, a save per card.** The page is split into tabs by job
-//! (`views::admin::SettingsTab`), and each tab into cards (groups of
-//! settings saved together, `views::admin::setting_placement`); a tab can
-//! hold both processes' settings. The tab's one Save (the save bar) posts
-//! the whole tab here, and [`save`] saves each card whose settings differ
-//! from the ones in effect on its own, so a value one card refuses doesn't
-//! stop the others, splitting each card by owner. Monokulo's own
+//! **Two owners, all of a tab or none of it.** The page is split into tabs
+//! by job (`views::admin::SettingsTab`), and each tab into cards
+//! (`views::admin::Group`); a tab can hold both processes' settings. The
+//! tab's one Save (the save bar) posts the whole tab here, and [`save`]
+//! has both processes check it first (monokulo's registry, the engine's
+//! `POST /api/v1/admin/settings/check`), which say what changed: anything
+//! refused and nothing is saved; otherwise the engine's part is saved, then
+//! monokulo's (`save_tab`). Monokulo's own
 //! settings (`crate::settings::ALL`) are saved through its registry, into
 //! its options file (or, for the runtime switches, its database). The
 //! scanner half is a live HTTP proxy - this
@@ -48,8 +49,8 @@ use crate::admin_nodes::{self, NodeForm};
 use crate::db::UserRow;
 use crate::views;
 use crate::views::admin::{
-    setting_placement, AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel,
-    GroupFailure, NodeRowView, NodeStatusView, Notice, OptionsFileView, SettingKindView,
+    AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel, Failure, Group,
+    NodeRowView, NodeStatusView, Notice, OptionsFileView, SaveOutcome, SettingKindView,
     SettingOwner, SettingSourceView, SettingsTab, Toast, ToastKind,
 };
 
@@ -333,21 +334,15 @@ struct SaveResult {
     /// Banners: what stays true after the save.
     notices: Vec<Notice>,
     toast: Option<Toast>,
-    /// The cards saved, and those refused, with why.
-    saved_groups: Vec<String>,
-    failed_groups: Vec<GroupFailure>,
-    /// What was sent for the refused cards, by form name, shown again to
-    /// fix.
+    /// What the save did, for the cards and the save bar.
+    outcome: Option<SaveOutcome>,
+    /// What was sent for a refused save, by form name, shown again to fix.
     posted: HashMap<String, String>,
-    /// The node rows as submitted for refused networks, shown again (with
-    /// what's wrong).
+    /// The node rows as submitted for refused or changed networks of a
+    /// refused save, shown again (with what's wrong).
     nodes: Option<NodeForm>,
-    /// A refusal's word on particular settings, by key.
+    /// A refusal's word on particular settings, by key, beside each.
     field_errors: Vec<(String, String)>,
-    /// Why a save was refused, when it names no setting.
-    save_error: Option<String>,
-    /// The engine's part of a save was saved and monokulo's refused.
-    partly_saved: bool,
 }
 
 /// A refused save's value for `field`, shown in place of the saved one,
@@ -367,13 +362,10 @@ async fn build_view_model(
     let SaveResult {
         notices,
         toast,
-        saved_groups,
-        failed_groups,
+        outcome,
         posted,
         nodes,
         field_errors,
-        save_error,
-        partly_saved,
     } = result;
     let clock = views::time::Clock::for_user(admin);
     let problem = |field: &mut AdminScalarFieldView| {
@@ -401,16 +393,11 @@ async fn build_view_model(
         })
         .into_iter()
         .collect();
-    let saved_at = (!saved_groups.is_empty()).then(|| clock.text(crate::now_unix()));
     let mut view = AdminSettingsViewModel {
         tab,
         notices,
         toast,
-        saved_groups,
-        saved_at,
-        failed_groups,
-        save_error,
-        partly_saved,
+        outcome,
         monokulo_fields,
         options_files,
         ..Default::default()
@@ -633,7 +620,7 @@ struct SubmittedTab {
     nodes: Option<NodeForm>,
     /// The networks whose rows have something to fix: refused before
     /// anything is asked.
-    bad_networks: Vec<String>,
+    bad_networks: Vec<monero::Network>,
 }
 
 fn split_tab(
@@ -667,13 +654,13 @@ fn split_tab(
     if form.keys().any(|name| admin_nodes::is_node_field(name)) {
         let nodes = NodeForm::from_form(form, &admin_nodes::NETWORKS);
         for (network, rows) in &nodes.networks {
-            let name = shared::network::network_str(*network);
             if rows.iter().any(|row| row.error.is_some()) {
-                tab.bad_networks.push(format!("network-{name}"));
+                tab.bad_networks.push(*network);
             } else {
-                tab.engine
-                    .monero_node
-                    .insert(name.to_string(), admin_nodes::rows_to_setting(rows));
+                tab.engine.monero_node.insert(
+                    shared::network::network_str(*network).to_string(),
+                    admin_nodes::rows_to_setting(rows),
+                );
             }
         }
         tab.nodes = Some(nodes);
@@ -681,19 +668,20 @@ fn split_tab(
     tab
 }
 
-/// Why one process refused its part of a save (or of its check): what to
-/// say, and the settings it names.
+/// Why one process refused its part of a save (or of its check): the
+/// settings it names, each with what's wrong in its own words, and what to
+/// say when it names none.
 #[derive(Debug)]
 struct Refusal {
+    fields: Vec<live_settings::FieldError>,
     message: String,
-    field_errors: Vec<(String, String)>,
 }
 
 impl Refusal {
     fn new(message: String) -> Refusal {
         Refusal {
+            fields: Vec::new(),
             message,
-            field_errors: Vec::new(),
         }
     }
 }
@@ -707,10 +695,7 @@ fn registry_refusal(error: live_settings::SaveError) -> Refusal {
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(" "),
-            field_errors: errors
-                .iter()
-                .map(|e| (e.key.clone(), e.to_string()))
-                .collect(),
+            fields: errors,
         },
         // The options file changed since it was read, or can't be written:
         // the admin reloads it, or fixes its permissions.
@@ -727,17 +712,28 @@ fn registry_refusal(error: live_settings::SaveError) -> Refusal {
     }
 }
 
+/// What a save leaves to say besides whether it saved, by where it's said.
+#[derive(Debug, Clone, PartialEq)]
+enum SaveNote {
+    /// Saved, and waits for a restart: the toast says so, in amber.
+    Restart(String),
+    /// Worth knowing (an environment variable still wins): in the toast.
+    Remark(String),
+    /// Still true after the save (a network stores use without a node): a
+    /// banner above the tabs.
+    Banner(String),
+}
+
 /// Checks monokulo's part of a tab as its save would save it
-/// (`live_settings::Registry::check`), saving nothing: the keys that would
-/// change, or why it would be refused. A setting the page shows locked is
-/// refused, as the save would refuse it; SEV-SNP key entry settings that
-/// would change are checked against the engine's too.
+/// (`live_settings::Registry::check`), saving nothing. A setting the page
+/// shows locked is refused, as the save would refuse it; SEV-SNP key entry
+/// settings that would change are checked against the engine's too.
 async fn check_monokulo(
     state: &AppState,
     form: &HashMap<String, String>,
-) -> Result<Vec<String>, Refusal> {
+) -> Result<live_settings::CheckReport, Refusal> {
     if form.is_empty() {
-        return Ok(Vec::new());
+        return Ok(live_settings::CheckReport::default());
     }
     let Some(registry) = state.settings.registry.as_ref() else {
         return Err(Refusal::new(
@@ -750,7 +746,10 @@ async fn check_monokulo(
         .find_map(|key| only_for_a_remote_engine(state, key))
     {
         return Err(Refusal {
-            field_errors: vec![(crate::settings::ENGINE_URL.key.to_string(), why.clone())],
+            fields: vec![live_settings::FieldError::new(
+                crate::settings::ENGINE_URL.key,
+                why.clone(),
+            )],
             message: why,
         });
     }
@@ -761,13 +760,13 @@ async fn check_monokulo(
     use live_settings::Section;
     let snp_changed = crate::settings::SnpEntryPolicy::keys()
         .iter()
-        .any(|setting| report.changed.contains(&setting.key()));
+        .any(|setting| report.would().changed.contains(&setting.key()));
     if snp_changed {
         if let Some(refused) = check_snp_entry_against_engine(state, registry, form).await {
             return Err(refused);
         }
     }
-    Ok(report.changed.iter().map(ToString::to_string).collect())
+    Ok(report)
 }
 
 /// Monokulo's part of a form as its registry takes it.
@@ -782,12 +781,12 @@ fn monokulo_changes(form: &HashMap<String, String>) -> live_settings::Changes {
 }
 
 /// Saves monokulo's part of a tab through its registry, after its check:
-/// the notices it leaves, or why it was refused (the options file changed
+/// what it leaves to say, or why it was refused (the options file changed
 /// on disk since the check, say).
 async fn commit_monokulo(
     state: &AppState,
     form: &HashMap<String, String>,
-) -> Result<Vec<Notice>, Refusal> {
+) -> Result<Vec<SaveNote>, Refusal> {
     let Some(registry) = state.settings.registry.as_ref() else {
         return Err(Refusal::new(
             "Settings can't be saved on this instance.".to_string(),
@@ -795,30 +794,30 @@ async fn commit_monokulo(
     };
     match registry.save(monokulo_changes(form)).await {
         Ok(report) => {
-            let mut notices = Vec::new();
+            let mut notes = Vec::new();
             for warning in &report.warnings {
                 // The only monokulo warning today: the engine didn't answer
-                // at the saved URL (decision D4). It's an error-level banner.
-                notices.push(Notice::Error(warning.message.clone()));
+                // at the saved URL (decision D4).
+                notes.push(SaveNote::Banner(warning.message.clone()));
             }
             if !report.env_overridden.is_empty() {
-                notices.push(Notice::Info(format!(
+                notes.push(SaveNote::Remark(format!(
                     "Saved, but these are set by an environment variable, which wins while it is set: {}.",
                     report.env_overridden.join(", ")
                 )));
             }
             if !report.restart_required.is_empty() {
-                notices.push(Notice::Warning(format!(
+                notes.push(SaveNote::Restart(format!(
                     "Saved. These take effect after monokulo restarts: {}.",
                     report.restart_required.join(", ")
                 )));
             }
-            Ok(notices)
+            Ok(notes)
         }
         // Stored, but applying them failed: retrying would fail the same way.
         Err(live_settings::SaveError::Install(message)) => {
             tracing::error!(error = %message, "monokulo settings were saved but applying them failed");
-            Ok(vec![Notice::Error(format!(
+            Ok(vec![SaveNote::Banner(format!(
                 "Saved, but applying the new values failed ({message}). Restart monokulo to apply them."
             ))])
         }
@@ -880,7 +879,10 @@ async fn check_snp_entry_against_engine(
                 message: format!(
                     "Nothing was saved: the SEV-SNP key entry settings are checked against the engine's before they're saved, and the engine isn't answering ({e})."
                 ),
-                field_errors: vec![(ID_KEY.key.to_owned(), format!("The engine isn't answering, so this can't be checked against its settings ({e})."))],
+                fields: vec![live_settings::FieldError::new(
+                    ID_KEY.key,
+                    format!("The engine isn't answering, so this can't be checked against its settings ({e})."),
+                )],
             })
         }
     };
@@ -893,9 +895,9 @@ async fn check_snp_entry_against_engine(
         .map(|(_, problem)| problem.as_str())
         .collect();
     Some(Refusal {
-        field_errors: problems
+        fields: problems
             .iter()
-            .map(|(key, problem)| ((*key).to_owned(), problem.clone()))
+            .map(|(key, problem)| live_settings::FieldError::new(*key, problem.clone()))
             .collect(),
         message: format!(
             "Nothing was saved: the SEV-SNP key entry settings must match the engine's. {}.",
@@ -948,18 +950,19 @@ struct RemoteSaveResponse {
     warnings: RemoteSaveWarnings,
 }
 
-/// The banners for an accepted engine save (tasks 3.6, 4.5, decisions D1,
-/// D2, D8): restart-only settings, networks stores use that no longer have
-/// a node, environment overrides and anything else the engine said.
-fn engine_save_notices(warnings: RemoteSaveWarnings, submitted_bind: Option<&str>) -> Vec<Notice> {
-    let mut notices = Vec::new();
+/// What an accepted engine save leaves to say (tasks 3.6, 4.5, decisions
+/// D1, D2, D8): networks stores use that no longer have a node (a banner),
+/// restart-only settings, environment overrides and anything else the
+/// engine said.
+fn engine_save_notes(warnings: RemoteSaveWarnings, submitted_bind: Option<&str>) -> Vec<SaveNote> {
+    let mut notes = Vec::new();
     for unserved in &warnings.unserved_networks {
         let stores = if unserved.tenants == 1 {
             "1 store uses".to_string()
         } else {
             format!("{} stores use", unserved.tenants)
         };
-        notices.push(Notice::Error(format!(
+        notes.push(SaveNote::Banner(format!(
             "{stores} the {} network, which no longer has any reachable nodes. Their payments won't be detected until a node is set.",
             unserved.network
         )));
@@ -976,34 +979,34 @@ fn engine_save_notices(warnings: RemoteSaveWarnings, submitted_bind: Option<&str
                 ));
             }
         }
-        notices.push(Notice::Warning(text));
+        notes.push(SaveNote::Restart(text));
     }
     for message in warnings.messages {
-        notices.push(Notice::Warning(message.message));
+        notes.push(SaveNote::Remark(message.message));
     }
     if !warnings.env_overridden.is_empty() {
-        notices.push(Notice::Info(format!(
+        notes.push(SaveNote::Remark(format!(
             "Saved, but these are set by an environment variable on the engine, which wins while it is set: {}.",
             warnings.env_overridden.join(", ")
         )));
     }
-    notices
+    notes
 }
 
 /// The engine's refusal of a save or a check: its own message, and the
 /// settings it names (its `fields`).
 fn engine_refusal(status: axum::http::StatusCode, body: String) -> Refusal {
     let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
-    let field_errors: Vec<(String, String)> = parsed
+    let fields: Vec<live_settings::FieldError> = parsed
         .as_ref()
         .and_then(|v| v["fields"].as_array())
         .map(|fields| {
             fields
                 .iter()
                 .filter_map(|f| {
-                    Some((
-                        f["key"].as_str()?.to_string(),
-                        f["message"].as_str()?.to_string(),
+                    Some(live_settings::FieldError::new(
+                        f["key"].as_str()?,
+                        f["message"].as_str()?,
                     ))
                 })
                 .collect()
@@ -1014,34 +1017,38 @@ fn engine_refusal(status: axum::http::StatusCode, body: String) -> Refusal {
         .and_then(|v| v["error"].as_str().map(str::to_string))
         .unwrap_or(body);
     Refusal {
+        fields,
         message: format!("The engine refused the change ({status}): {message}"),
-        field_errors,
     }
 }
 
-/// What the engine's check said a save would change.
+/// What the engine's check said a save would do.
 #[derive(Deserialize, Default)]
 struct RemoteCheckResponse {
     #[serde(default)]
     changed: Vec<String>,
+    #[serde(default)]
+    has_changes: bool,
 }
 
 /// Checks the engine's part of a tab through its
-/// `POST /api/v1/admin/settings/check`, saving nothing: the keys a save
-/// would change, or the engine's refusal, verbatim.
-async fn check_engine(state: &AppState, req: &RemoteUpdateRequest) -> Result<Vec<String>, Refusal> {
+/// `POST /api/v1/admin/settings/check`, saving nothing: what a save would
+/// change, or the engine's refusal, verbatim.
+async fn check_engine(
+    state: &AppState,
+    req: &RemoteUpdateRequest,
+) -> Result<RemoteCheckResponse, Refusal> {
     if req.is_empty() {
-        return Ok(Vec::new());
+        return Ok(RemoteCheckResponse::default());
     }
     match state.engine.client.check_settings(req).await {
-        Ok(response) if response.status().is_success() => response
-            .json::<RemoteCheckResponse>()
-            .map(|checked| checked.changed)
-            .map_err(|e| {
+        Ok(response) if response.status().is_success() => {
+            response.json::<RemoteCheckResponse>().map_err(|e| {
                 Refusal::new(format!(
                     "Nothing was saved: the engine's check could not be read ({e})."
                 ))
-            }),
+            })
+        }
         Ok(response) => {
             let status = response.status();
             Err(engine_refusal(status, response.text()))
@@ -1053,9 +1060,12 @@ async fn check_engine(state: &AppState, req: &RemoteUpdateRequest) -> Result<Vec
 }
 
 /// Saves the engine's part of a tab through its own
-/// `POST /api/v1/admin/settings`, after its check: the notices it leaves
+/// `POST /api/v1/admin/settings`, after its check: what it leaves to say
 /// (restarts, networks left without a node), or its refusal, verbatim.
-async fn commit_engine(state: &AppState, req: RemoteUpdateRequest) -> Result<Vec<Notice>, Refusal> {
+async fn commit_engine(
+    state: &AppState,
+    req: RemoteUpdateRequest,
+) -> Result<Vec<SaveNote>, Refusal> {
     match state.engine.client.save_settings(&req).await {
         Ok(response) if response.status().is_success() => {
             let saved: RemoteSaveResponse = match response.json() {
@@ -1065,7 +1075,7 @@ async fn commit_engine(state: &AppState, req: RemoteUpdateRequest) -> Result<Vec
                     // so, and don't trust the cached node status either.
                     tracing::warn!(error = %e, "the engine saved its settings but its reply could not be read");
                     super::status_page::invalidate_status_cache(&state.engine);
-                    return Ok(vec![Notice::Warning(
+                    return Ok(vec![SaveNote::Remark(
                         "Saved, but the engine's reply could not be read, so any restart it needs or node it lost isn't shown here.".to_string(),
                     )]);
                 }
@@ -1079,7 +1089,7 @@ async fn commit_engine(state: &AppState, req: RemoteUpdateRequest) -> Result<Vec
             {
                 super::status_page::invalidate_status_cache(&state.engine);
             }
-            Ok(engine_save_notices(
+            Ok(engine_save_notes(
                 saved.warnings,
                 req.scalars.get("server.bind").map(String::as_str),
             ))
@@ -1094,198 +1104,229 @@ async fn commit_engine(state: &AppState, req: RemoteUpdateRequest) -> Result<Vec
     }
 }
 
-/// What saving a tab did.
-#[derive(Default)]
-struct SaveReport {
-    /// The cards saved.
-    saved: Vec<String>,
-    /// The cards refused, and why.
-    failed: Vec<GroupFailure>,
-    /// Why the save was refused, when it names no setting (the engine
-    /// can't be reached, the options file changed on disk).
-    refusal: Option<String>,
-    /// The engine's part was saved and monokulo's then refused.
-    partly: bool,
-    /// What stays true after the save (a network without a node): banners.
-    notices: Vec<Notice>,
-    /// What the toast says about the save: a restart it waits for, an
-    /// environment variable that still wins.
-    remarks: Vec<String>,
-    /// Something saved waits for a restart.
-    restart: bool,
+/// What saving a tab did: its outcome, what it leaves to say, and what to
+/// show again when it was refused.
+struct TabSave {
+    outcome: SaveOutcome,
+    notes: Vec<SaveNote>,
     posted: HashMap<String, String>,
     nodes: Option<NodeForm>,
     field_errors: Vec<(String, String)>,
 }
 
-impl SaveReport {
-    fn refused(&self) -> bool {
-        !self.failed.is_empty() || self.refusal.is_some()
+/// One process's refusal, as failures on the cards holding the settings it
+/// names (one per card), or the save's own when it names none; and each
+/// named setting's own word on itself, to show beside it.
+fn failures_of(
+    owner: SettingOwner,
+    refusal: Refusal,
+    failures: &mut Vec<Failure>,
+    field_errors: &mut Vec<(String, String)>,
+) {
+    if refusal.fields.is_empty() {
+        failures.push(Failure {
+            group: None,
+            message: refusal.message,
+        });
+        return;
     }
-
-    /// Puts one process's refusal on the cards holding the settings it
-    /// names; one that names none is the save's.
-    fn refuse(&mut self, owner: SettingOwner, refusal: Refusal) {
-        let mut placed = false;
-        for (key, message) in &refusal.field_errors {
-            let group = setting_placement(key, owner).1;
-            // Named, so the card and the toast say which setting: monokulo's
-            // already are; a network's is its card.
-            let message = if message.starts_with(key.as_str()) || key.starts_with("monero_node.") {
-                message.clone()
-            } else {
-                format!("{key}: {message}")
-            };
-            let message = &message;
-            match self.failed.iter_mut().find(|f| f.group == group) {
-                Some(failure) => {
-                    failure.message.push(' ');
-                    failure.message.push_str(message);
-                }
-                None => self.failed.push(GroupFailure {
-                    group,
-                    message: message.clone(),
-                }),
+    for field in refusal.fields {
+        let group = Group::of(&field.key, owner);
+        // Named, so the card and the toast say which setting; a network's
+        // card is the network.
+        let said = match group {
+            Group::Network(_) => field.message.clone(),
+            _ => format!("{}: {}", field.key, field.message),
+        };
+        match failures.iter_mut().find(|f| f.group == Some(group)) {
+            Some(failure) => {
+                failure.message.push(' ');
+                failure.message.push_str(&said);
             }
-            placed = true;
+            None => failures.push(Failure {
+                group: Some(group),
+                message: said,
+            }),
         }
-        self.field_errors.extend(refusal.field_errors);
-        if !placed {
-            self.refusal = Some(refusal.message);
-        }
-    }
-
-    fn absorb(&mut self, notices: Vec<Notice>) {
-        for notice in notices {
-            match notice {
-                Notice::Warning(text) => {
-                    self.restart = true;
-                    self.remarks.push(text);
-                }
-                Notice::Info(text) | Notice::Success(text) => self.remarks.push(text),
-                error @ Notice::Error(_) => self.notices.push(error),
-            }
-        }
+        field_errors.push((field.key, field.message));
     }
 }
 
 /// The cards holding `keys`, in order, each once.
-fn groups_of(keys: &[String], owner: SettingOwner, into: &mut Vec<String>) {
+fn groups_of<'a>(keys: impl IntoIterator<Item = &'a str>, owner: SettingOwner) -> Vec<Group> {
+    let mut groups = Vec::new();
     for key in keys {
-        let group = setting_placement(key, owner).1;
-        if !into.contains(&group) {
-            into.push(group);
+        let group = Group::of(key, owner);
+        if !groups.contains(&group) {
+            groups.push(group);
         }
     }
+    groups
 }
 
-/// Saves a tab, all of it or nothing (admin_settings_v2.md, the save bar).
-/// The whole tab goes to both checks at once, monokulo's registry's and the
-/// engine's, which say what changed or why it would be refused; anything
-/// refused, by either, and nothing is saved, and every card a refusal names
-/// shows it. With every check passed, the engine's part is saved first, then
-/// monokulo's: the engine's is the likelier to fail now, and when it does
-/// nothing has been saved yet. Monokulo's can still be refused after its
-/// check passed (its options file changed on disk), which leaves the
-/// engine's saved and says so. Nothing changed, and nothing is sent to be
-/// saved.
-async fn save_tab(state: &AppState, form: &HashMap<String, String>) -> SaveReport {
+/// Saves a tab, all of it or nothing (the save bar). The whole tab goes to
+/// both checks at once, monokulo's registry's and the engine's, which say
+/// what changed or why it would be refused; anything refused, by either,
+/// and nothing is saved, and every card a refusal names shows it. With
+/// every check passed, the engine's part is saved first, then monokulo's:
+/// the engine's is the likelier to fail now, and when it does nothing has
+/// been saved yet. Monokulo's can still be refused after its check passed
+/// (its options file changed on disk), which leaves the engine's saved and
+/// says so. Nothing changed, and nothing is sent to be saved. `at` is when,
+/// in the admin's clock, for the cards saved.
+async fn save_tab(state: &AppState, form: &HashMap<String, String>, at: String) -> TabSave {
     let monokulo_fields = monokulo_fields(state);
     let engine = fetch_engine_settings(&state.engine.client).await.ok();
     let engine_fields = engine.as_ref().map(|e| e.fields.as_slice()).unwrap_or(&[]);
     let tab = split_tab(form, &monokulo_fields, engine_fields);
-    let mut report = SaveReport {
-        posted: tab.posted.clone(),
-        ..SaveReport::default()
-    };
-    for group in &tab.bad_networks {
-        report.failed.push(GroupFailure {
-            group: group.clone(),
+    let mut failures: Vec<Failure> = tab
+        .bad_networks
+        .iter()
+        .map(|network| Failure {
+            group: Some(Group::Network(*network)),
             message: "Some node addresses need fixing (marked below).".to_string(),
-        });
-    }
+        })
+        .collect();
+    let mut field_errors = Vec::new();
     let (monokulo_check, engine_check) = futures_util::future::join(
         check_monokulo(state, &tab.monokulo),
         check_engine(state, &tab.engine),
     )
     .await;
-    let mut changed = Vec::new();
     let monokulo_changed = match monokulo_check {
-        Ok(keys) => {
-            groups_of(&keys, SettingOwner::Monokulo, &mut changed);
-            !keys.is_empty()
-        }
+        Ok(report) => groups_of(
+            report.would().changed.iter().copied(),
+            SettingOwner::Monokulo,
+        ),
         Err(refusal) => {
-            report.refuse(SettingOwner::Monokulo, refusal);
-            false
+            failures_of(
+                SettingOwner::Monokulo,
+                refusal,
+                &mut failures,
+                &mut field_errors,
+            );
+            Vec::new()
         }
     };
     let engine_changed = match engine_check {
-        Ok(keys) => {
-            groups_of(&keys, SettingOwner::Engine, &mut changed);
-            !keys.is_empty()
-        }
+        Ok(checked) if checked.has_changes => groups_of(
+            checked.changed.iter().map(String::as_str),
+            SettingOwner::Engine,
+        ),
+        Ok(_) => Vec::new(),
         Err(refusal) => {
-            report.refuse(SettingOwner::Engine, refusal);
-            false
+            failures_of(
+                SettingOwner::Engine,
+                refusal,
+                &mut failures,
+                &mut field_errors,
+            );
+            Vec::new()
         }
     };
-    // The rows sent for every network refused or changed, to show again.
-    let shown_again = |report: &SaveReport, nodes: Option<NodeForm>, changed: &[String]| {
+    let changed: Vec<Group> = engine_changed
+        .iter()
+        .chain(&monokulo_changed)
+        .copied()
+        .fold(Vec::new(), |mut all, group| {
+            if !all.contains(&group) {
+                all.push(group);
+            }
+            all
+        });
+    // Refused: what was typed, and the rows sent for every network
+    // refused or changed, shown again to fix or discard.
+    let shown_again = |failures: &[Failure], nodes: Option<NodeForm>| {
         nodes.map(|nodes| NodeForm {
             networks: nodes
                 .networks
                 .into_iter()
                 .filter(|(network, _)| {
-                    let group = format!("network-{}", shared::network::network_str(*network));
-                    report.failed.iter().any(|f| f.group == group) || changed.contains(&group)
+                    let group = Group::Network(*network);
+                    changed.contains(&group) || failures.iter().any(|f| f.group == Some(group))
                 })
                 .collect(),
         })
     };
-    if report.refused() {
-        report.nodes = shown_again(&report, tab.nodes, &changed);
-        return report;
+    let refused = |failures: Vec<Failure>, posted, nodes, field_errors, notes| TabSave {
+        outcome: SaveOutcome::Refused { failures },
+        notes,
+        posted,
+        nodes,
+        field_errors,
+    };
+    if !failures.is_empty() {
+        let nodes = shown_again(&failures, tab.nodes);
+        return refused(failures, tab.posted, nodes, field_errors, Vec::new());
     }
-    let engine_groups: Vec<String> = changed
-        .iter()
-        .filter(|group| engine_group_of(group, &tab.engine))
-        .cloned()
-        .collect();
-    if engine_changed {
+    if changed.is_empty() {
+        return TabSave {
+            outcome: SaveOutcome::Unchanged,
+            notes: Vec::new(),
+            posted: HashMap::new(),
+            nodes: None,
+            field_errors,
+        };
+    }
+    let mut notes = Vec::new();
+    if !engine_changed.is_empty() {
         match commit_engine(state, tab.engine).await {
-            Ok(notices) => report.absorb(notices),
+            Ok(said) => notes.extend(said),
             Err(refusal) => {
-                report.refuse(SettingOwner::Engine, refusal);
-                report.nodes = shown_again(&report, tab.nodes, &changed);
-                return report;
+                failures_of(
+                    SettingOwner::Engine,
+                    refusal,
+                    &mut failures,
+                    &mut field_errors,
+                );
+                let nodes = shown_again(&failures, tab.nodes);
+                return refused(failures, tab.posted, nodes, field_errors, notes);
             }
         }
     }
-    if monokulo_changed {
+    if !monokulo_changed.is_empty() {
         match commit_monokulo(state, &tab.monokulo).await {
-            Ok(notices) => report.absorb(notices),
+            Ok(said) => notes.extend(said),
             Err(refusal) => {
-                report.partly = engine_changed;
-                report.saved = engine_groups;
-                report.refuse(SettingOwner::Monokulo, refusal);
-                return report;
+                failures_of(
+                    SettingOwner::Monokulo,
+                    refusal,
+                    &mut failures,
+                    &mut field_errors,
+                );
+                // Only monokulo's typed values are still unsaved.
+                let posted = tab
+                    .posted
+                    .into_iter()
+                    .filter(|(name, _)| tab.monokulo.contains_key(name))
+                    .collect();
+                if engine_changed.is_empty() {
+                    return refused(failures, posted, None, field_errors, notes);
+                }
+                return TabSave {
+                    outcome: SaveOutcome::PartlySaved {
+                        saved: engine_changed,
+                        at,
+                        failures,
+                    },
+                    notes,
+                    posted,
+                    nodes: None,
+                    field_errors,
+                };
             }
         }
     }
-    report.saved = changed;
-    report
-}
-
-/// Whether a card holds the engine's settings in `req`.
-fn engine_group_of(group: &str, req: &RemoteUpdateRequest) -> bool {
-    req.scalars
-        .keys()
-        .any(|k| setting_placement(k, SettingOwner::Engine).1 == group)
-        || req
-            .monero_node
-            .keys()
-            .any(|n| format!("network-{n}") == group)
+    TabSave {
+        outcome: SaveOutcome::Saved {
+            groups: changed,
+            at,
+        },
+        notes,
+        posted: HashMap::new(),
+        nodes: None,
+        field_errors,
+    }
 }
 
 /// `A`, `A and B`, `A, B and C`.
@@ -1299,77 +1340,86 @@ fn joined_names(names: &[String]) -> String {
 
 /// The toast after a save: saved, nothing saved and why, partly saved, or
 /// nothing to save.
-fn save_toast(report: &SaveReport) -> Toast {
-    let titles = |groups: &[String]| {
-        joined_names(
-            &groups
-                .iter()
-                .map(|g| views::admin::group_title(g))
-                .collect::<Vec<_>>(),
-        )
-    };
-    let first = report.failed.first();
-    let reason = first
-        .map(|f| f.message.clone())
-        .or_else(|| report.refusal.clone());
-    if let Some(reason) = reason {
-        let failed: Vec<String> = report.failed.iter().map(|f| f.group.clone()).collect();
-        let mut lines = vec![reason];
-        if report.partly {
-            lines.push(format!("{} saved; the rest wasn't.", titles(&report.saved)));
-        } else if failed.len() > 1 {
-            lines.push(format!("Also to fix: {}.", titles(&failed[1..])));
-        }
-        return Toast {
+fn save_toast(outcome: &SaveOutcome, notes: &[SaveNote]) -> Toast {
+    let titles =
+        |groups: &[Group]| joined_names(&groups.iter().map(|g| g.title()).collect::<Vec<_>>());
+    let remarks: Vec<String> = notes
+        .iter()
+        .filter_map(|note| match note {
+            SaveNote::Restart(text) | SaveNote::Remark(text) => Some(text.clone()),
+            SaveNote::Banner(_) => None,
+        })
+        .collect();
+    let restart = notes
+        .iter()
+        .any(|note| matches!(note, SaveNote::Restart(_)));
+    let refusal = |title: &str, failures: &[Failure], more: Option<String>| {
+        let first = failures.first();
+        let mut lines: Vec<String> = first.map(|f| f.message.clone()).into_iter().collect();
+        lines.extend(more);
+        Toast {
             kind: ToastKind::Error,
-            title: if report.partly {
-                "Changes partly saved".to_string()
-            } else {
-                "Nothing saved".to_string()
-            },
+            title: title.to_string(),
             lines,
-            show: first.map(|f| f.group.clone()),
-        };
-    }
-    if report.saved.is_empty() {
-        return Toast {
+            show: first.and_then(|f| f.group),
+        }
+    };
+    match outcome {
+        SaveOutcome::Unchanged => Toast {
             kind: ToastKind::Neutral,
             title: "Nothing to save".to_string(),
             lines: vec!["Nothing on this tab had changed.".to_string()],
             show: None,
-        };
-    }
-    Toast {
-        kind: if report.restart {
-            ToastKind::Warning
-        } else {
-            ToastKind::Success
         },
-        title: if report.restart {
-            "Changes saved".to_string()
-        } else {
-            "Changes saved and applied".to_string()
+        SaveOutcome::Saved { .. } => Toast {
+            kind: if restart {
+                ToastKind::Warning
+            } else {
+                ToastKind::Success
+            },
+            title: if restart {
+                "Changes saved".to_string()
+            } else {
+                "Changes saved and applied".to_string()
+            },
+            lines: remarks,
+            show: None,
         },
-        lines: report.remarks.clone(),
-        show: None,
+        SaveOutcome::Refused { failures } => {
+            let others: Vec<Group> = failures.iter().skip(1).filter_map(|f| f.group).collect();
+            let more = (!others.is_empty()).then(|| format!("Also to fix: {}.", titles(&others)));
+            refusal("Nothing saved", failures, more)
+        }
+        SaveOutcome::PartlySaved {
+            saved, failures, ..
+        } => refusal(
+            "Changes partly saved",
+            failures,
+            Some(format!("{} saved; the rest wasn't.", titles(saved))),
+        ),
     }
 }
 
-impl From<SaveReport> for SaveResult {
-    fn from(report: SaveReport) -> SaveResult {
+impl From<TabSave> for SaveResult {
+    fn from(save: TabSave) -> SaveResult {
         SaveResult {
-            toast: Some(save_toast(&report)),
-            notices: report.notices,
-            saved_groups: report.saved,
-            failed_groups: report.failed,
-            save_error: report.refusal,
-            partly_saved: report.partly,
-            posted: report.posted,
-            nodes: report.nodes,
-            field_errors: report.field_errors,
+            toast: Some(save_toast(&save.outcome, &save.notes)),
+            notices: save
+                .notes
+                .into_iter()
+                .filter_map(|note| match note {
+                    SaveNote::Banner(text) => Some(Notice::Error(text)),
+                    SaveNote::Restart(_) | SaveNote::Remark(_) => None,
+                })
+                .collect(),
+            outcome: Some(save.outcome),
+            posted: save.posted,
+            nodes: save.nodes,
+            field_errors: save.field_errors,
         }
     }
 }
+
 /// A save's result, kept for the page a save without JavaScript redirects
 /// to (post, redirect, get), shown once.
 struct Flash {
@@ -1415,12 +1465,12 @@ fn take_flash(token: &str) -> Option<Flash> {
         .filter(|f| f.created.elapsed() < FLASH_TTL)
 }
 
-/// `POST /dashboard/admin/settings` - saves one tab, card by card: any mix
-/// of monokulo's and the engine's settings (nicer_admin_screen.md step 2).
-/// Without JavaScript it redirects back to the tab (303), at the card that
-/// was refused or else the first one saved, with the result carried across
-/// in a flash. With fixi, the tab's panel comes back (`422` when a card was
-/// refused), with the banners, toast and tab bar out of band.
+/// `POST /dashboard/admin/settings` - saves one tab, all of it or none of
+/// it: any mix of monokulo's and the engine's settings (`save_tab`).
+/// Without JavaScript it redirects back to the tab (303), at the card a
+/// refusal is about or else the first one saved, with the result carried
+/// across in a flash. With fixi, the tab's panel comes back (`422` when the
+/// save was refused), with the banners, toast and tab bar out of band.
 pub async fn save(
     State(state): State<AppState>,
     AuthedAdmin(admin_user, _): AuthedAdmin,
@@ -1429,19 +1479,23 @@ pub async fn save(
 ) -> Response {
     let form = joined(pairs);
     let tab = SettingsTab::from_id(form.get("tab").map(String::as_str));
-    let result = SaveResult::from(save_tab(&state, &form).await);
-    let refused = !result.failed_groups.is_empty() || result.save_error.is_some();
+    let at = views::time::Clock::for_user(&admin_user).text(crate::now_unix());
+    let result = SaveResult::from(save_tab(&state, &form, at).await);
+    let (refused, card) = match &result.outcome {
+        Some(SaveOutcome::Refused { failures } | SaveOutcome::PartlySaved { failures, .. }) => {
+            (true, failures.iter().find_map(|f| f.group))
+        }
+        Some(SaveOutcome::Saved { groups, .. }) => (false, groups.first().copied()),
+        _ => (false, None),
+    };
     if !fx.0 {
-        let card = result
-            .failed_groups
-            .first()
-            .map(|f| f.group.clone())
-            .or_else(|| result.saved_groups.first().cloned());
         let token = put_flash(Flash {
             result,
             created: std::time::Instant::now(),
         });
-        let anchor = card.map(|card| format!("#card-{card}")).unwrap_or_default();
+        let anchor = card
+            .map(|card| format!("#{}", card.card_id()))
+            .unwrap_or_default();
         return super::dashboard::redirect_303(&format!("{}&saved={token}{anchor}", tab.href()));
     }
     let mut view = build_view_model(&state, &admin_user, tab, result).await;
@@ -1462,11 +1516,11 @@ pub struct ReloadForm {
 }
 
 /// What a reload changed, as the page says it.
-fn reload_notices(
+fn reload_notes(
     process: &str,
     changed: &[String],
     restart_required: &[String],
-) -> (String, Vec<Notice>) {
+) -> (String, Vec<SaveNote>) {
     let success = if changed.is_empty() {
         format!("Reloaded {process}'s options file: nothing in it changed.")
     } else {
@@ -1475,19 +1529,19 @@ fn reload_notices(
             changed.join(", ")
         )
     };
-    let mut notices = Vec::new();
+    let mut notes = Vec::new();
     if !restart_required.is_empty() {
-        notices.push(Notice::Warning(format!(
+        notes.push(SaveNote::Restart(format!(
             "These take effect after {process} restarts: {}.",
             restart_required.join(", ")
         )));
     }
-    (success, notices)
+    (success, notes)
 }
 
 /// Reads monokulo's options file again and applies it; `Err` is why
 /// nothing changed.
-async fn reload_monokulo(state: &AppState) -> Result<(String, Vec<Notice>), String> {
+async fn reload_monokulo(state: &AppState) -> Result<(String, Vec<SaveNote>), String> {
     let Some(registry) = state.settings.registry.as_ref() else {
         return Err("Settings can't be reloaded on this instance.".to_string());
     };
@@ -1499,14 +1553,14 @@ async fn reload_monokulo(state: &AppState) -> Result<(String, Vec<Notice>), Stri
                 .iter()
                 .map(ToString::to_string)
                 .collect();
-            let (success, mut notices) = reload_notices("monokulo", &changed, &restart);
-            notices.extend(
+            let (success, mut notes) = reload_notes("monokulo", &changed, &restart);
+            notes.extend(
                 report
                     .warnings
                     .iter()
-                    .map(|warning| Notice::Error(warning.message.clone())),
+                    .map(|warning| SaveNote::Banner(warning.message.clone())),
             );
-            Ok((success, notices))
+            Ok((success, notes))
         }
         Err(e) => Err(format!(
             "Nothing was reloaded: monokulo's options file has problems. {e}"
@@ -1516,7 +1570,7 @@ async fn reload_monokulo(state: &AppState) -> Result<(String, Vec<Notice>), Stri
 
 /// Asks the engine to read its options file again and apply it
 /// (`POST /api/v1/admin/settings/reload`); `Err` is why nothing changed.
-async fn reload_engine(state: &AppState) -> Result<(String, Vec<Notice>), String> {
+async fn reload_engine(state: &AppState) -> Result<(String, Vec<SaveNote>), String> {
     let response = state
         .engine
         .client
@@ -1542,19 +1596,19 @@ async fn reload_engine(state: &AppState) -> Result<(String, Vec<Notice>), String
     {
         super::status_page::invalidate_status_cache(&state.engine);
     }
-    let (success, mut notices) = reload_notices(
+    let (success, mut notes) = reload_notes(
         "the engine",
         &saved.changed,
         &saved.warnings.restart_required,
     );
-    notices.extend(
+    notes.extend(
         saved
             .warnings
             .messages
             .into_iter()
-            .map(|message| Notice::Warning(message.message)),
+            .map(|message| SaveNote::Remark(message.message)),
     );
-    Ok((success, notices))
+    Ok((success, notes))
 }
 
 /// `POST /dashboard/admin/settings/reload` - the Reload options file button:
@@ -1574,18 +1628,16 @@ pub async fn reload(
         _ => reload_monokulo(&state).await,
     };
     match result {
-        Ok((success, notices)) => {
+        Ok((success, notes)) => {
+            let restart = notes
+                .iter()
+                .any(|note| matches!(note, SaveNote::Restart(_)));
             let mut result = SaveResult::default();
             let mut lines = vec![success];
-            let mut restart = false;
-            for notice in notices {
-                match notice {
-                    Notice::Warning(text) => {
-                        restart = true;
-                        lines.push(text);
-                    }
-                    Notice::Info(text) | Notice::Success(text) => lines.push(text),
-                    error @ Notice::Error(_) => result.notices.push(error),
+            for note in notes {
+                match note {
+                    SaveNote::Restart(text) | SaveNote::Remark(text) => lines.push(text),
+                    SaveNote::Banner(text) => result.notices.push(Notice::Error(text)),
                 }
             }
             result.toast = Some(Toast {
@@ -3131,8 +3183,8 @@ mod tests {
         );
     }
 
-    /// A tab is sent whole, but only what differs from the settings in
-    /// effect is saved, card by card; sent again unchanged, nothing is.
+    /// A tab is sent whole, but only what the checks say differs from the
+    /// settings in effect is saved; sent again unchanged, nothing is.
     #[tokio::test]
     async fn a_save_saves_only_the_cards_whose_settings_changed() {
         let state = test_app_state_over_http("127.0.0.1:1".parse().unwrap()).await;
@@ -3248,6 +3300,67 @@ mod tests {
         }
     }
 
+    /// A saved value is shown as it's stored, not as it was typed: after a
+    /// save, nothing on the page reads as unsaved.
+    #[tokio::test]
+    async fn after_a_save_the_page_shows_what_was_stored() {
+        let state = test_app_state_over_http("127.0.0.1:1".parse().unwrap()).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let save = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "abuse"), ("abuse.soft_per_min", " 61 ")],
+        )
+        .await;
+        let html = follow(&router, &cookie, save).await;
+        assert!(is_saved(&html), "{html}");
+        assert!(
+            html.contains(r#"name="abuse.soft_per_min" value="61""#),
+            "{html}"
+        );
+        assert!(
+            !html.contains(r#"data-saved=""#),
+            "no value left unsaved: {html}"
+        );
+    }
+
+    /// The toast says a save waits for a restart only when one does; a
+    /// warning from preparing is said, in green.
+    #[test]
+    fn only_a_restart_makes_the_toast_amber() {
+        use crate::views::admin::{Group, SaveOutcome, ToastKind};
+        let saved = SaveOutcome::Saved {
+            groups: vec![Group::Orders],
+            at: "now".into(),
+        };
+        let toast = super::save_toast(
+            &saved,
+            &[super::SaveNote::Remark(
+                "The node is slow to answer.".into(),
+            )],
+        );
+        assert_eq!(toast.kind, ToastKind::Success);
+        assert_eq!(toast.title, "Changes saved and applied");
+        assert_eq!(toast.lines, ["The node is slow to answer."]);
+        let toast = super::save_toast(
+            &saved,
+            &[super::SaveNote::Restart("Restart the engine.".into())],
+        );
+        assert_eq!(
+            (toast.kind, toast.title.as_str()),
+            (ToastKind::Warning, "Changes saved")
+        );
+        let toast = super::save_toast(
+            &saved,
+            &[super::SaveNote::Banner("A network has no node.".into())],
+        );
+        assert!(
+            toast.lines.is_empty(),
+            "a banner is a banner, not a line: {toast:?}"
+        );
+    }
+
     /// The engine's part is saved first; when monokulo's is then refused
     /// (its options file changed on disk after its check passed), the
     /// engine's stays saved and the save says it was partly saved. The
@@ -3293,12 +3406,16 @@ mod tests {
             &[
                 ("tab", "payments"),
                 ("payment.confirmations_required", "5"),
+                // Sent, but the engine's check doesn't name it as changed:
+                // its card wasn't saved.
+                ("webhooks.max_attempts", "8"),
                 ("exchange_rate.cache_seconds", "45"),
             ],
         )
         .await;
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
         let html = unescaped(&follow(&router, &cookie, save).await);
+        assert!(!html.contains("Orders and Webhooks"), "{html}");
         let toast = toast_text(&html);
         assert!(
             toast.contains("Changes partly saved")
@@ -3853,10 +3970,10 @@ mod tests {
         engine: &engine_test_support::TestEngineHandle,
         tab: crate::views::admin::SettingsTab,
     ) -> Vec<(String, String)> {
-        use crate::views::admin::{setting_placement, SettingOwner};
+        use crate::views::admin::{Group, SettingOwner};
         let mut form = vec![("tab".to_string(), tab.id().to_string())];
         for view in state.settings.registry.as_ref().unwrap().describe() {
-            if setting_placement(view.key, SettingOwner::Monokulo).0 == tab
+            if Group::of(view.key, SettingOwner::Monokulo).tab() == tab
                 && view.locked.is_none()
                 && super::only_for_a_remote_engine(state, view.key).is_none()
             {
@@ -3865,7 +3982,7 @@ mod tests {
         }
         let engine_view = engine_settings(engine).await;
         for (key, view) in engine_view["scalars"].as_object().unwrap() {
-            if setting_placement(key, SettingOwner::Engine).0 == tab && view["locked"].is_null() {
+            if Group::of(key, SettingOwner::Engine).tab() == tab && view["locked"].is_null() {
                 let name = if super::is_monokulo_key(key) {
                     format!("engine:{key}")
                 } else {
@@ -4275,7 +4392,7 @@ mod tests {
             .insert("scan.poll_interval_secs".into(), "5".into());
         let notices = super::commit_engine(&state, req).await.unwrap();
         assert!(
-            matches!(notices.as_slice(), [super::Notice::Warning(text)] if text.contains("reply could not be read")),
+            matches!(notices.as_slice(), [super::SaveNote::Remark(text)] if text.contains("reply could not be read")),
             "{notices:?}"
         );
     }

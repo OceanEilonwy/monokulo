@@ -475,18 +475,15 @@ pub struct AdminNetworkFieldView {
     pub saved_count: usize,
 }
 
-/// A banner shown at the top of the page after a save (task 4.5).
+/// A banner at the top of the page: what stays true after a save, or the
+/// welcome after setup (task 4.5). What a save itself did is its toast.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Notice {
     /// Good news that stays on the page (the welcome after setup).
     Success(String),
-    /// Saved and applied, but something needs attention (a restart).
-    Warning(String),
     /// Saved, but something is now broken (stores without a node, an
     /// engine that doesn't answer).
     Error(String),
-    /// For information (an environment variable still wins).
-    Info(String),
 }
 
 /// Which process a setting belongs to: monokulo's own registry, or the
@@ -580,139 +577,250 @@ impl SettingsTab {
     /// The tab's cards that are always there, in order. The Monero nodes
     /// tab's networks come first, and each key custody backend's card after
     /// Backends, from what the engine reports ([`tab_groups`]).
-    fn fixed_groups(self) -> &'static [&'static str] {
+    fn fixed_groups(self) -> &'static [Group] {
+        use SettingOwner::{Engine, Monokulo};
         match self {
-            SettingsTab::General => &["signup", "public-address", "engine"],
-            SettingsTab::Nodes => &["nodes-all"],
-            SettingsTab::Payments => &["orders", "chain", "webhooks", "exchange-rates"],
-            SettingsTab::Custody => &["custody-backends", "custody-cli"],
-            SettingsTab::Abuse => &["abuse-limits", "abuse-challenge", "abuse-visitors"],
-            SettingsTab::Server => &["server-monokulo", "server-engine"],
-            SettingsTab::Logging => &["logging-monokulo", "logging-engine"],
-            SettingsTab::Other => &["other-monokulo", "other-engine"],
+            SettingsTab::General => &[Group::Signup, Group::PublicAddress, Group::EngineConnection],
+            SettingsTab::Nodes => &[Group::AllNodes],
+            SettingsTab::Payments => &[
+                Group::Orders,
+                Group::Chain,
+                Group::Webhooks,
+                Group::ExchangeRates,
+            ],
+            SettingsTab::Custody => &[Group::CustodyBackends, Group::CustodyCli],
+            SettingsTab::Abuse => &[
+                Group::AbuseLimits,
+                Group::AbuseChallenge,
+                Group::AbuseVisitors,
+            ],
+            SettingsTab::Server => &[Group::Server(Monokulo), Group::Server(Engine)],
+            SettingsTab::Logging => &[Group::Logging(Monokulo), Group::Logging(Engine)],
+            SettingsTab::Other => &[Group::Other(Monokulo), Group::Other(Engine)],
         }
     }
 }
 
-/// Whether `name` is a network the engine scans (`stagenet`).
-fn is_network(name: &str) -> bool {
-    crate::admin_nodes::NETWORKS
-        .iter()
-        .any(|network| shared::network::network_str(*network) == name)
+/// A key custody backend this page knows the settings of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CustodyBackend {
+    Plain,
+    Snp,
 }
 
-/// Where a setting shows on the admin page: its tab, and the card (group)
-/// it sits in, by the card's id. The one map both the page and the save
-/// use: a save saves each changed card on its own, so a setting can't be
-/// shown in one card and then saved with another.
-pub fn setting_placement(key: &str, owner: SettingOwner) -> (SettingsTab, String) {
-    use SettingsTab::{Abuse, Custody, General, Logging, Nodes, Other, Payments, Server};
-    let (prefix, rest) = key.split_once('.').unwrap_or((key, ""));
-    let fixed = |tab: SettingsTab, group: &str| (tab, group.to_string());
-    // `key_custody.<backend>_...`: a setting only that backend uses.
-    let backend = || format!("custody-{}", rest.split('_').next().unwrap_or(rest));
-    match owner {
-        SettingOwner::Monokulo => match prefix {
-            "signup" => fixed(General, "signup"),
-            "public_url" => fixed(General, "public-address"),
-            "engine" => fixed(General, "engine"),
-            "exchange_rate" => fixed(Payments, "exchange-rates"),
-            "abuse" if matches!(rest, "challenge_bits" | "under_attack") => {
-                fixed(Abuse, "abuse-challenge")
-            }
-            "abuse" if matches!(rest, "trusted_proxies" | "onion_listener") => {
-                fixed(Abuse, "abuse-visitors")
-            }
-            "abuse" | "rate_limit" => fixed(Abuse, "abuse-limits"),
-            "http_cache" | "database" | "server" | "crypto" => fixed(Server, "server-monokulo"),
-            "logging" => fixed(Logging, "logging-monokulo"),
-            "key_custody" if rest.starts_with("cli_") => fixed(Custody, "custody-cli"),
-            "key_custody" => (Custody, backend()),
-            _ => fixed(Other, "other-monokulo"),
-        },
-        SettingOwner::Engine => match prefix {
-            // Each network's nodes and its proof-of-work switch, in the
-            // network's own card.
-            "monero_node" | "proof_of_work" if is_network(rest) => {
-                (Nodes, format!("network-{rest}"))
-            }
-            "monero_node" | "proof_of_work" => fixed(Nodes, "nodes-all"),
-            // How much memory a scan may use is about the machine, not
-            // about payments.
-            "payment" if rest == "scan_chunk_memory_budget_mb" => fixed(Server, "server-engine"),
-            "payment" if matches!(rest, "mempool_poll_interval_ms" | "reorg_check_depth") => {
-                fixed(Payments, "chain")
-            }
-            "payment" => fixed(Payments, "orders"),
-            "webhooks" => fixed(Payments, "webhooks"),
-            "key_custody" if matches!(rest, "enabled_backends" | "default_backend") => {
-                fixed(Custody, "custody-backends")
-            }
-            "key_custody" => (Custody, backend()),
-            "server" | "database" => fixed(Server, "server-engine"),
-            "logging" => fixed(Logging, "logging-engine"),
-            _ => fixed(Other, "other-engine"),
-        },
-    }
-}
-
-/// A card's heading.
-pub fn group_title(group: &str) -> String {
-    let title = match group {
-        "signup" => "Sign-up",
-        "public-address" => "Public address",
-        "engine" => "Engine connection",
-        "nodes-all" => "Every node",
-        "orders" => "Orders",
-        "chain" => "Watching the chain",
-        "webhooks" => "Webhooks",
-        "exchange-rates" => "Exchange rates",
-        "custody-backends" => "Backends",
-        "custody-cli" => "key-custody-cli downloads",
-        "custody-snp" => "SEV-SNP",
-        "abuse-limits" => "Request limits",
-        "abuse-challenge" => "Challenge",
-        "abuse-visitors" => "Telling visitors apart",
-        "server-monokulo" | "logging-monokulo" | "other-monokulo" => "Monokulo",
-        "server-engine" | "logging-engine" | "other-engine" => "Engine",
-        _ => {
-            if let Some(network) = group.strip_prefix("network-") {
-                return capitalized(network);
-            }
-            if let Some(backend) = group.strip_prefix("custody-") {
-                return format!("Key custody: {backend}");
-            }
-            group
+impl CustodyBackend {
+    /// The backend a name the engine gives one (`snp`) is, if the page
+    /// knows it.
+    pub fn parse(name: &str) -> Option<CustodyBackend> {
+        match name {
+            "plain" => Some(CustodyBackend::Plain),
+            "snp" => Some(CustodyBackend::Snp),
+            _ => None,
         }
-    };
-    title.to_string()
-}
+    }
 
-/// What a card is for, under its heading, where its name doesn't say.
-fn group_hint(group: &str) -> Option<&'static str> {
-    match group {
-        "orders" => Some("Defaults for new stores. Each store's own settings win for its orders."),
-        "exchange-rates" => Some("Which providers stores may price fiat orders with. Each store still chooses whether to use one, and in what order."),
-        "abuse-limits" => Some("Requests a minute, per visitor, merchant or shop."),
-        _ => None,
+    pub fn name(self) -> &'static str {
+        match self {
+            CustodyBackend::Plain => "plain",
+            CustodyBackend::Snp => "snp",
+        }
     }
 }
 
-/// Whether a card holds only the engine's settings: while the engine can't
-/// be reached, it has nothing to show.
-fn engine_group(group: &str) -> bool {
-    group.starts_with("network-")
-        || matches!(
-            group,
-            "nodes-all"
-                | "orders"
-                | "chain"
-                | "webhooks"
-                | "custody-backends"
-                | "server-engine"
-                | "logging-engine"
-                | "other-engine"
+/// A card on the admin settings page: settings shown, saved and refused
+/// together. Where a setting goes is [`Group::of`]; its tab is
+/// [`Group::tab`]; its id in the page (`network-stagenet`, after `card-`
+/// for the card's element id) is its `Display`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    Signup,
+    PublicAddress,
+    EngineConnection,
+    /// A network's nodes and its proof-of-work switch.
+    Network(monero::Network),
+    /// Settings for every node at once.
+    AllNodes,
+    Orders,
+    Chain,
+    Webhooks,
+    ExchangeRates,
+    CustodyBackends,
+    /// A key custody backend's own settings, the engine's and this site's.
+    Custody(CustodyBackend),
+    CustodyCli,
+    AbuseLimits,
+    AbuseChallenge,
+    AbuseVisitors,
+    /// One process's server settings.
+    Server(SettingOwner),
+    /// One process's logging.
+    Logging(SettingOwner),
+    /// One process's settings this map doesn't place yet.
+    Other(SettingOwner),
+}
+
+impl Group {
+    /// The card a setting shows in. The one map both the page and the save
+    /// use, so a setting can't be shown in one card and then refused as
+    /// another's.
+    pub fn of(key: &str, owner: SettingOwner) -> Group {
+        let (prefix, rest) = key.split_once('.').unwrap_or((key, ""));
+        // `key_custody.<backend>_...`: a setting only that backend uses.
+        let backend = || {
+            CustodyBackend::parse(rest.split('_').next().unwrap_or(rest))
+                .map_or(Group::Other(owner), Group::Custody)
+        };
+        match owner {
+            SettingOwner::Monokulo => match prefix {
+                "signup" => Group::Signup,
+                "public_url" => Group::PublicAddress,
+                "engine" => Group::EngineConnection,
+                "exchange_rate" => Group::ExchangeRates,
+                "abuse" if matches!(rest, "challenge_bits" | "under_attack") => {
+                    Group::AbuseChallenge
+                }
+                "abuse" if matches!(rest, "trusted_proxies" | "onion_listener") => {
+                    Group::AbuseVisitors
+                }
+                "abuse" | "rate_limit" => Group::AbuseLimits,
+                "http_cache" | "database" | "server" | "crypto" => Group::Server(owner),
+                "logging" => Group::Logging(owner),
+                "key_custody" if rest.starts_with("cli_") => Group::CustodyCli,
+                "key_custody" => backend(),
+                _ => Group::Other(owner),
+            },
+            SettingOwner::Engine => match prefix {
+                // Each network's nodes and its proof-of-work switch, in the
+                // network's own card.
+                "monero_node" | "proof_of_work" => {
+                    shared::network::parse_network(rest).map_or(Group::AllNodes, Group::Network)
+                }
+                // How much memory a scan may use is about the machine, not
+                // about payments.
+                "payment" if rest == "scan_chunk_memory_budget_mb" => Group::Server(owner),
+                "payment" if matches!(rest, "mempool_poll_interval_ms" | "reorg_check_depth") => {
+                    Group::Chain
+                }
+                "payment" => Group::Orders,
+                "webhooks" => Group::Webhooks,
+                "key_custody" if matches!(rest, "enabled_backends" | "default_backend") => {
+                    Group::CustodyBackends
+                }
+                "key_custody" => backend(),
+                "server" | "database" => Group::Server(owner),
+                "logging" => Group::Logging(owner),
+                _ => Group::Other(owner),
+            },
+        }
+    }
+
+    /// The tab the card is on.
+    pub fn tab(self) -> SettingsTab {
+        match self {
+            Group::Signup | Group::PublicAddress | Group::EngineConnection => SettingsTab::General,
+            Group::Network(_) | Group::AllNodes => SettingsTab::Nodes,
+            Group::Orders | Group::Chain | Group::Webhooks | Group::ExchangeRates => {
+                SettingsTab::Payments
+            }
+            Group::CustodyBackends | Group::Custody(_) | Group::CustodyCli => SettingsTab::Custody,
+            Group::AbuseLimits | Group::AbuseChallenge | Group::AbuseVisitors => SettingsTab::Abuse,
+            Group::Server(_) => SettingsTab::Server,
+            Group::Logging(_) => SettingsTab::Logging,
+            Group::Other(_) => SettingsTab::Other,
+        }
+    }
+
+    /// The card's heading.
+    pub fn title(self) -> String {
+        let owner = |owner: SettingOwner| match owner {
+            SettingOwner::Monokulo => "Monokulo",
+            SettingOwner::Engine => "Engine",
+        };
+        match self {
+            Group::Signup => "Sign-up".into(),
+            Group::PublicAddress => "Public address".into(),
+            Group::EngineConnection => "Engine connection".into(),
+            Group::Network(network) => capitalized(shared::network::network_str(network)),
+            Group::AllNodes => "Every node".into(),
+            Group::Orders => "Orders".into(),
+            Group::Chain => "Watching the chain".into(),
+            Group::Webhooks => "Webhooks".into(),
+            Group::ExchangeRates => "Exchange rates".into(),
+            Group::CustodyBackends => "Backends".into(),
+            Group::Custody(CustodyBackend::Snp) => "SEV-SNP".into(),
+            Group::Custody(backend) => format!("Key custody: {}", backend.name()),
+            Group::CustodyCli => "key-custody-cli downloads".into(),
+            Group::AbuseLimits => "Request limits".into(),
+            Group::AbuseChallenge => "Challenge".into(),
+            Group::AbuseVisitors => "Telling visitors apart".into(),
+            Group::Server(o) | Group::Logging(o) | Group::Other(o) => owner(o).into(),
+        }
+    }
+
+    /// What the card is for, under its heading, where its name doesn't say.
+    fn hint(self) -> Option<&'static str> {
+        match self {
+            Group::Orders => Some("Defaults for new stores. Each store's own settings win for its orders."),
+            Group::ExchangeRates => Some("Which providers stores may price fiat orders with. Each store still chooses whether to use one, and in what order."),
+            Group::AbuseLimits => Some("Requests a minute, per visitor, merchant or shop."),
+            _ => None,
+        }
+    }
+
+    /// Whether the card holds only the engine's settings: while the engine
+    /// can't be reached, it has nothing to show.
+    fn engine_only(self) -> bool {
+        matches!(
+            self,
+            Group::Network(_)
+                | Group::AllNodes
+                | Group::Orders
+                | Group::Chain
+                | Group::Webhooks
+                | Group::CustodyBackends
+                | Group::Server(SettingOwner::Engine)
+                | Group::Logging(SettingOwner::Engine)
+                | Group::Other(SettingOwner::Engine)
         )
+    }
+
+    /// The card's element id, which the toast's and the save bar's Show
+    /// links go to (`#card-webhooks`), and a save without JavaScript comes
+    /// back to.
+    pub fn card_id(self) -> String {
+        format!("card-{self}")
+    }
+}
+
+impl std::fmt::Display for Group {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let owner = |owner: &SettingOwner| match owner {
+            SettingOwner::Monokulo => "monokulo",
+            SettingOwner::Engine => "engine",
+        };
+        match self {
+            Group::Signup => f.write_str("signup"),
+            Group::PublicAddress => f.write_str("public-address"),
+            Group::EngineConnection => f.write_str("engine"),
+            Group::Network(network) => {
+                write!(f, "network-{}", shared::network::network_str(*network))
+            }
+            Group::AllNodes => f.write_str("nodes-all"),
+            Group::Orders => f.write_str("orders"),
+            Group::Chain => f.write_str("chain"),
+            Group::Webhooks => f.write_str("webhooks"),
+            Group::ExchangeRates => f.write_str("exchange-rates"),
+            Group::CustodyBackends => f.write_str("custody-backends"),
+            Group::Custody(backend) => write!(f, "custody-{}", backend.name()),
+            Group::CustodyCli => f.write_str("custody-cli"),
+            Group::AbuseLimits => f.write_str("abuse-limits"),
+            Group::AbuseChallenge => f.write_str("abuse-challenge"),
+            Group::AbuseVisitors => f.write_str("abuse-visitors"),
+            Group::Server(o) => write!(f, "server-{}", owner(o)),
+            Group::Logging(o) => write!(f, "logging-{}", owner(o)),
+            Group::Other(o) => write!(f, "other-{}", owner(o)),
+        }
+    }
 }
 
 /// Settings shown in a set order inside their card; any other keeps the
@@ -766,8 +874,8 @@ pub struct Toast {
     pub kind: ToastKind,
     pub title: String,
     pub lines: Vec<String>,
-    /// The card to go to, by id: the one that wasn't saved.
-    pub show: Option<String>,
+    /// The card to go to: the one a refusal is about.
+    pub show: Option<Group>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -782,11 +890,53 @@ pub enum ToastKind {
     Neutral,
 }
 
-/// A card a save refused, and why.
+/// One thing a save refused, and why: on the card holding the setting it
+/// names, or the save's own when it names none (the engine couldn't be
+/// reached).
 #[derive(Debug, Clone, PartialEq)]
-pub struct GroupFailure {
-    pub group: String,
+pub struct Failure {
+    pub group: Option<Group>,
     pub message: String,
+}
+
+/// What the save a page answers did. A save is all of a tab or none of
+/// it; only when monokulo's part is refused after the engine's was saved is
+/// it partly saved.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SaveOutcome {
+    /// Nothing on the tab had changed, so nothing was saved.
+    Unchanged,
+    /// Every change was saved, at `at` (the admin's clock).
+    Saved { groups: Vec<Group>, at: String },
+    /// Nothing was saved, for these reasons (at least one).
+    Refused { failures: Vec<Failure> },
+    /// The engine's cards were saved and monokulo's refused.
+    PartlySaved {
+        saved: Vec<Group>,
+        at: String,
+        failures: Vec<Failure>,
+    },
+}
+
+impl SaveOutcome {
+    fn saved_at(&self, group: Group) -> Option<&str> {
+        match self {
+            SaveOutcome::Saved { groups, at }
+            | SaveOutcome::PartlySaved {
+                saved: groups, at, ..
+            } if groups.contains(&group) => Some(at),
+            _ => None,
+        }
+    }
+
+    fn failures(&self) -> &[Failure] {
+        match self {
+            SaveOutcome::Refused { failures } | SaveOutcome::PartlySaved { failures, .. } => {
+                failures
+            }
+            SaveOutcome::Unchanged | SaveOutcome::Saved { .. } => &[],
+        }
+    }
 }
 
 #[derive(Default)]
@@ -798,16 +948,8 @@ pub struct AdminSettingsViewModel {
     pub notices: Vec<Notice>,
     /// What the save or reload this page answers did, in a toast.
     pub toast: Option<Toast>,
-    /// The cards that save saved, and when (the admin's own clock).
-    pub saved_groups: Vec<String>,
-    pub saved_at: Option<String>,
-    /// The cards that save refused: shown with what was typed and why.
-    pub failed_groups: Vec<GroupFailure>,
-    /// Why that save was refused, when it names no setting (the engine
-    /// couldn't be reached).
-    pub save_error: Option<String>,
-    /// The engine's part of that save was saved, and monokulo's refused.
-    pub partly_saved: bool,
+    /// What the save this page answers did, for its cards and save bar.
+    pub outcome: Option<SaveOutcome>,
     /// The panel answers a save: the save bar's message takes focus.
     pub answers_save: bool,
     pub monokulo_fields: Vec<AdminScalarFieldView>,
@@ -827,8 +969,18 @@ pub struct AdminSettingsViewModel {
 }
 
 impl AdminSettingsViewModel {
-    fn failure(&self, group: &str) -> Option<&GroupFailure> {
-        self.failed_groups.iter().find(|f| f.group == group)
+    /// What the save refused on `group`'s card.
+    fn failure(&self, group: Group) -> Option<&Failure> {
+        self.outcome
+            .as_ref()?
+            .failures()
+            .iter()
+            .find(|f| f.group == Some(group))
+    }
+
+    /// When the save saved `group`'s card.
+    fn saved_at(&self, group: Group) -> Option<&str> {
+        self.outcome.as_ref()?.saved_at(group)
     }
 }
 
@@ -1022,8 +1174,6 @@ fn notices(items: &[Notice]) -> Markup {
             @match notice {
                 Notice::Success(text) => p class="success" role="status" { (text) },
                 Notice::Error(text) => p class="error" role="alert" { (text) },
-                Notice::Warning(text) => p class="warning" role="status" { (text) },
-                Notice::Info(text) => p class="notice" { (text) },
             }
         }
     }
@@ -1079,8 +1229,8 @@ pub fn toasts(data: &AdminSettingsViewModel, oob: bool) -> Markup {
                     div class="toast-text" {
                         strong { (toast.title) }
                         @for line in &toast.lines { span class="toast-line" { (line) } }
-                        @if let Some(group) = &toast.show {
-                            a class="toast-show" href=(format!("#card-{group}")) data-show-card=(group) { "Show" }
+                        @if let Some(group) = toast.show {
+                            a class="toast-show" href=(format!("#{}", group.card_id())) data-show-card=(group) { "Show" }
                         }
                     }
                     button type="button" class="toast-close js-only" aria-label="Dismiss" data-toast-close { "\u{00D7}" }
@@ -1154,25 +1304,26 @@ fn engine_unavailable(data: &AdminSettingsViewModel) -> Markup {
 /// tab's networks first and each key custody backend's after Backends,
 /// from what the engine reports (and any backend only this site's own
 /// settings name, while the engine can't say).
-fn tab_groups(data: &AdminSettingsViewModel, tab: SettingsTab) -> Vec<String> {
-    let mut groups: Vec<String> = Vec::new();
+fn tab_groups(data: &AdminSettingsViewModel, tab: SettingsTab) -> Vec<Group> {
+    let mut groups: Vec<Group> = Vec::new();
     if tab == SettingsTab::Nodes {
         groups.extend(
             data.engine_networks
                 .iter()
-                .map(|network| format!("network-{}", network.network)),
+                .filter_map(|network| shared::network::parse_network(&network.network).ok())
+                .map(Group::Network),
         );
     }
     for fixed in tab.fixed_groups() {
-        groups.push((*fixed).to_string());
-        if *fixed == "custody-backends" {
-            let mut backends: Vec<String> = custody_backends(&data.engine_fields)
+        groups.push(*fixed);
+        if *fixed == Group::CustodyBackends {
+            let mut backends: Vec<Group> = custody_backends(&data.engine_fields)
                 .into_iter()
-                .map(|(backend, _)| format!("custody-{backend}"))
+                .filter_map(|(backend, _)| CustodyBackend::parse(&backend).map(Group::Custody))
                 .collect();
             for field in &data.monokulo_fields {
-                let (on, group) = setting_placement(&field.key, SettingOwner::Monokulo);
-                if on == tab && group != "custody-cli" && !backends.contains(&group) {
+                let group = Group::of(&field.key, SettingOwner::Monokulo);
+                if matches!(group, Group::Custody(_)) && !backends.contains(&group) {
                     backends.push(group);
                 }
             }
@@ -1183,18 +1334,15 @@ fn tab_groups(data: &AdminSettingsViewModel, tab: SettingsTab) -> Vec<String> {
 }
 
 /// A card's settings, both owners', in the order they are shown.
-fn group_fields<'a>(
-    data: &'a AdminSettingsViewModel,
-    group: &str,
-) -> Vec<&'a AdminScalarFieldView> {
+fn group_fields(data: &AdminSettingsViewModel, group: Group) -> Vec<&AdminScalarFieldView> {
     let mut fields: Vec<&AdminScalarFieldView> = data
         .engine_fields
         .iter()
-        .filter(|f| setting_placement(&f.key, SettingOwner::Engine).1 == group)
+        .filter(|f| Group::of(&f.key, SettingOwner::Engine) == group)
         .chain(
             data.monokulo_fields
                 .iter()
-                .filter(|f| setting_placement(&f.key, SettingOwner::Monokulo).1 == group),
+                .filter(|f| Group::of(&f.key, SettingOwner::Monokulo) == group),
         )
         .collect();
     fields.sort_by_key(|f| field_rank(&f.key));
@@ -1205,11 +1353,11 @@ fn group_fields<'a>(
 fn tab_fields(data: &AdminSettingsViewModel, tab: SettingsTab) -> Vec<&AdminScalarFieldView> {
     data.engine_fields
         .iter()
-        .filter(|f| setting_placement(&f.key, SettingOwner::Engine).0 == tab)
+        .filter(|f| Group::of(&f.key, SettingOwner::Engine).tab() == tab)
         .chain(
             data.monokulo_fields
                 .iter()
-                .filter(|f| setting_placement(&f.key, SettingOwner::Monokulo).0 == tab),
+                .filter(|f| Group::of(&f.key, SettingOwner::Monokulo).tab() == tab),
         )
         .collect()
 }
@@ -1433,12 +1581,6 @@ fn active_node(network: &AdminNetworkFieldView) -> Option<super::scaling::Active
     })
 }
 
-/// The id of a card, which the toast's and the save bar's Show links go
-/// to (`#card-webhooks`), and a save without JavaScript comes back to.
-fn card_id(group: &str) -> String {
-    format!("card-{group}")
-}
-
 /// Who owns a card's settings, for the chip beside its heading.
 fn owner_label(fields: &[&AdminScalarFieldView], data: &AdminSettingsViewModel) -> &'static str {
     let engine = fields
@@ -1459,18 +1601,18 @@ fn owner_label(fields: &[&AdminScalarFieldView], data: &AdminSettingsViewModel) 
 /// JavaScript) its unsaved changes and a Discard button for them.
 fn card_header(
     data: &AdminSettingsViewModel,
-    group: &str,
+    group: Group,
     owner: &str,
     meta: Option<String>,
     fields: &[&AdminScalarFieldView],
     readonly: bool,
 ) -> Markup {
     let failed = data.failure(group).is_some();
-    let saved = data.saved_groups.iter().any(|g| g == group);
+    let saved_at = data.saved_at(group);
     let restart = fields.iter().any(|f| f.pending_restart);
     html! {
         header class="card-head" {
-            h3 id=(format!("{}-title", card_id(group))) { (group_title(group)) }
+            h3 id=(format!("{}-title", group.card_id())) { (group.title()) }
             span class="owner-chip" { (owner) }
             @if let Some(meta) = meta { span class="card-meta" { (meta) } }
             span class="card-state" data-card-state {
@@ -1484,10 +1626,8 @@ fn card_header(
             @if readonly {
                 span class="card-meta" { "Can't be changed here" }
             } @else {
-                @if saved && !failed {
-                    @if let Some(at) = &data.saved_at {
-                        span class="card-meta card-saved" data-card-saved { "Saved " (at) }
-                    }
+                @if let (Some(at), false) = (saved_at, failed) {
+                    span class="card-meta card-saved" data-card-saved { "Saved " (at) }
                 }
                 button type="button" class="card-discard js-only" data-card-discard hidden { "Discard" }
             }
@@ -1498,12 +1638,11 @@ fn card_header(
 /// A card's settings, with any subheadings, and this site's own key entry
 /// settings for a key custody backend under their own heading.
 fn card_fields(
-    group: &str,
+    group: Group,
     fields: &[&AdminScalarFieldView],
     data: &AdminSettingsViewModel,
 ) -> Markup {
-    let site_heading =
-        group.starts_with("custody-") && group != "custody-cli" && group != "custody-backends";
+    let site_heading = matches!(group, Group::Custody(_));
     let first_site = fields
         .iter()
         .position(|f| data.monokulo_fields.iter().any(|m| std::ptr::eq(m, *f)));
@@ -1525,7 +1664,7 @@ fn card_fields(
 /// One card of scalar settings. A key custody backend's card shows only
 /// while the backend is turned on (at once with JavaScript, after saving
 /// without).
-fn settings_card(data: &AdminSettingsViewModel, group: &str) -> Markup {
+fn settings_card(data: &AdminSettingsViewModel, group: Group) -> Markup {
     let fields = group_fields(data, group);
     if fields.is_empty() {
         return html! {};
@@ -1533,9 +1672,10 @@ fn settings_card(data: &AdminSettingsViewModel, group: &str) -> Markup {
     let readonly = fields
         .iter()
         .all(|f| f.locked.is_some() || f.kind == SettingKindView::Secret);
-    let backend = group
-        .strip_prefix("custody-")
-        .filter(|b| *b != "cli" && *b != "backends");
+    let backend = match group {
+        Group::Custody(backend) => Some(backend.name()),
+        _ => None,
+    };
     let hidden = backend.is_some_and(|backend| {
         custody_backends(&data.engine_fields)
             .iter()
@@ -1543,15 +1683,15 @@ fn settings_card(data: &AdminSettingsViewModel, group: &str) -> Markup {
     });
     let failure = data.failure(group);
     html! {
-        section id=(card_id(group)) class={ "settings-card" @if failure.is_some() { " is-failed" } }
+        section id=(group.card_id()) class={ "settings-card" @if failure.is_some() { " is-failed" } }
             data-card=(group) data-custody-backend=[backend] hidden[hidden]
-            aria-labelledby=(format!("{}-title", card_id(group))) {
+            aria-labelledby=(format!("{}-title", group.card_id())) {
             (card_header(data, group, owner_label(&fields, data), None, &fields, readonly))
             div class="card-body" {
                 @if let Some(failure) = failure {
                     p class="error" role="alert" { (failure.message) }
                 }
-                @if let Some(hint) = group_hint(group) { p class="hint" { (hint) } }
+                @if let Some(hint) = group.hint() { p class="hint" { (hint) } }
                 (card_fields(group, &fields, data))
             }
         }
@@ -1562,12 +1702,15 @@ fn settings_card(data: &AdminSettingsViewModel, group: &str) -> Markup {
 /// blank "Add a node" row (adding needs no JavaScript: fill it in and
 /// save), and its proof-of-work switch. A network with no nodes that no
 /// store uses starts closed, as "Add a node for <network>".
-fn network_card(data: &AdminSettingsViewModel, network: &AdminNetworkFieldView) -> Markup {
+fn network_card(
+    data: &AdminSettingsViewModel,
+    network: &AdminNetworkFieldView,
+    group: Group,
+) -> Markup {
     let n = &network.network;
-    let group = format!("network-{n}");
-    let fields = group_fields(data, &group);
+    let fields = group_fields(data, group);
     let count = network.rows.len();
-    let failure = data.failure(&group);
+    let failure = data.failure(group);
     let used_by = if network.tenant_count == 1 {
         "Used by 1 store".to_string()
     } else if network.tenant_count == 0 {
@@ -1599,10 +1742,10 @@ fn network_card(data: &AdminSettingsViewModel, network: &AdminNetworkFieldView) 
     let open =
         count > 0 || network.tenant_count > 0 || network.error.is_some() || failure.is_some();
     html! {
-        section id=(card_id(&group)) class={ "settings-card node-network" @if failure.is_some() || network.error.is_some() { " is-failed" } }
+        section id=(group.card_id()) class={ "settings-card node-network" @if failure.is_some() || network.error.is_some() { " is-failed" } }
             data-card=(group) data-network=(n) data-tenant-count=(network.tenant_count) data-saved-count=(network.saved_count)
-            aria-labelledby=(format!("{}-title", card_id(&group))) {
-            (card_header(data, &group, "Engine", Some(used_by), &fields, false))
+            aria-labelledby=(format!("{}-title", group.card_id())) {
+            (card_header(data, group, "Engine", Some(used_by), &fields, false))
             div class="card-body" {
                 @if open {
                     @if let Some(scaling) = &network.scaling {
@@ -1625,13 +1768,20 @@ fn network_card(data: &AdminSettingsViewModel, network: &AdminNetworkFieldView) 
 fn tab_cards(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
     let groups = tab_groups(data, tab);
     let engine_down = !engine_available(data);
-    let first_engine = groups.iter().position(|group| engine_group(group));
+    let first_engine = groups.iter().position(|group| group.engine_only());
+    let network_of = |group: Group| match group {
+        Group::Network(n) => data
+            .engine_networks
+            .iter()
+            .find(|network| network.network == shared::network::network_str(n)),
+        _ => None,
+    };
     html! {
-        @for (i, group) in groups.iter().enumerate() {
-            @if engine_down && engine_group(group) {
+        @for (i, group) in groups.iter().copied().enumerate() {
+            @if engine_down && group.engine_only() {
                 @if first_engine == Some(i) { (engine_unavailable(data)) }
-            } @else if let Some(network) = group.strip_prefix("network-").and_then(|n| data.engine_networks.iter().find(|network| network.network == n)) {
-                (network_card(data, network))
+            } @else if let Some(network) = network_of(group) {
+                (network_card(data, network, group))
             } @else {
                 (settings_card(data, group))
             }
@@ -1644,18 +1794,17 @@ fn tab_cards(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
 /// names the cards changed; without, it's always there. After a save that
 /// refused a card it's red, says why, and links to the card.
 fn save_bar(data: &AdminSettingsViewModel) -> Markup {
-    let failure = data.failed_groups.first();
-    let reason = failure
-        .map(|f| f.message.as_str())
-        .or(data.save_error.as_deref());
+    let outcome = data.outcome.as_ref();
+    let failure = outcome.and_then(|outcome| outcome.failures().first());
+    let partly = matches!(outcome, Some(SaveOutcome::PartlySaved { .. }));
     html! {
-        div id="save-bar" class={ "save-bar" @if reason.is_some() { " is-failed" } } role="region" aria-label="Save changes" data-save-bar {
+        div id="save-bar" class={ "save-bar" @if failure.is_some() { " is-failed" } } role="region" aria-label="Save changes" data-save-bar {
           div class="wrap save-bar-inner" {
             p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus[data.answers_save] {
-                @if let Some(reason) = reason {
-                    strong { @if data.partly_saved { "Changes partly saved." } @else { "Nothing saved." } } " " (reason)
-                    @if let Some(failure) = failure {
-                        " " a href=(format!("#{}", card_id(&failure.group))) data-show-card=(failure.group) { "Show" }
+                @if let Some(failure) = failure {
+                    strong { @if partly { "Changes partly saved." } @else { "Nothing saved." } } " " (failure.message)
+                    @if let Some(group) = failure.group {
+                        " " a href=(format!("#{}", group.card_id())) data-show-card=(group) { "Show" }
                     }
                 } @else {
                     "Saving writes the changes on this tab to the options file and applies them."
@@ -1923,17 +2072,16 @@ mod tests {
     #[test]
     fn every_setting_known_today_has_a_named_tab() {
         for (key, owner, tab, group) in PLACEMENTS {
+            let placed = Group::of(key, *owner);
             assert_eq!(
-                setting_placement(key, *owner),
-                (*tab, (*group).to_string()),
+                (placed.tab(), placed.to_string().as_str()),
+                (*tab, *group),
                 "{key} ({owner:?})"
             );
             assert_ne!(*tab, SettingsTab::Other, "{key}");
             // The card is one the tab actually shows.
             assert!(
-                tab_groups(&full_view(*tab), *tab)
-                    .iter()
-                    .any(|g| g == group),
+                tab_groups(&full_view(*tab), *tab).contains(&placed),
                 "{key} is placed in a card {tab:?} doesn't have"
             );
         }
@@ -1970,17 +2118,20 @@ mod tests {
 
     #[test]
     fn a_setting_the_map_does_not_know_goes_to_other() {
+        for (key, owner) in [
+            ("telemetry.sample_rate", SettingOwner::Engine),
+            ("brand_new", SettingOwner::Engine),
+            ("brand.new", SettingOwner::Monokulo),
+            // A key custody backend this page doesn't know.
+            ("key_custody.tpm_device", SettingOwner::Engine),
+        ] {
+            let group = Group::of(key, owner);
+            assert_eq!(group, Group::Other(owner), "{key}");
+            assert_eq!(group.tab(), SettingsTab::Other);
+        }
         assert_eq!(
-            setting_placement("telemetry.sample_rate", SettingOwner::Engine),
-            (SettingsTab::Other, "other-engine".to_string())
-        );
-        assert_eq!(
-            setting_placement("brand_new", SettingOwner::Engine),
-            (SettingsTab::Other, "other-engine".to_string())
-        );
-        assert_eq!(
-            setting_placement("brand.new", SettingOwner::Monokulo),
-            (SettingsTab::Other, "other-monokulo".to_string())
+            Group::Other(SettingOwner::Engine).to_string(),
+            "other-engine"
         );
     }
 
@@ -2364,22 +2515,19 @@ mod tests {
     #[test]
     fn banners_are_above_the_tab_bar_on_every_tab() {
         for tab in SettingsTab::ALL {
-            let data =
-                AdminSettingsViewModel {
-                    notices: vec![Notice::Error("Something was refused.".into()), Notice::Warning(
-                    "Saved. These settings take effect after the engine restarts: server.bind."
-                        .into(),
-                )],
-                    ..full_view(tab)
-                };
+            let data = AdminSettingsViewModel {
+                notices: vec![
+                    Notice::Error("Something is broken.".into()),
+                    Notice::Success("Welcome.".into()),
+                ],
+                ..full_view(tab)
+            };
             let html = page(&data);
-            let banner = html.find("Something was refused.").expect(&html);
-            let notice = html
-                .find("take effect after the engine restarts")
-                .expect(&html);
+            let banner = html.find("Something is broken.").expect(&html);
+            let welcome = html.find("Welcome.").expect(&html);
             let bar = html.find(r#"<nav id="settings-tabs""#).expect(&html);
             let panel = html.find(r#"<section id="settings-panel""#).expect(&html);
-            assert!(banner < bar && notice < bar && bar < panel, "{tab:?}");
+            assert!(banner < bar && welcome < bar && bar < panel, "{tab:?}");
         }
     }
 
@@ -2452,7 +2600,7 @@ mod tests {
             let data = unreachable(tab);
             let message = "Could not reach the configured engine: connection refused";
             let html = page(&data);
-            let engine_part = tab_groups(&data, tab).iter().any(|g| engine_group(g));
+            let engine_part = tab_groups(&data, tab).iter().any(|g| g.engine_only());
             assert_eq!(
                 html.matches(message).count(),
                 usize::from(engine_part),
@@ -2972,9 +3120,11 @@ mod tests {
     fn notices_render_with_their_level_and_restart_only_fields_say_so() {
         let data = AdminSettingsViewModel {
             notices: vec![
-                Notice::Error("2 stores use the stagenet network, which no longer has any reachable nodes.".into()),
-                Notice::Warning("Saved. These settings take effect after the engine restarts: server.worker_threads.".into()),
-                Notice::Info("Saved, but set by an environment variable.".into()),
+                Notice::Error(
+                    "2 stores use the stagenet network, which no longer has any reachable nodes."
+                        .into(),
+                ),
+                Notice::Success("Your admin account is ready.".into()),
             ],
             tab: SettingsTab::Server,
             engine_reachable: true,
@@ -2991,8 +3141,7 @@ mod tests {
         };
         let html = admin_settings_page(&chrome(), &data).into_string();
         assert!(html.contains(r#"<p class="error" role="alert">2 stores use the stagenet network"#));
-        assert!(html.contains(r#"<p class="warning" role="status">Saved. These settings take effect after the engine restarts"#));
-        assert!(html.contains(r#"<p class="notice">Saved, but set by an environment variable."#));
+        assert!(html.contains(r#"<p class="success" role="status">Your admin account is ready."#));
         assert!(html.contains("Applies after a restart."));
         assert!(html.contains("restart needed"));
     }
@@ -3117,13 +3266,16 @@ mod tests {
         attempts.value = "100".into();
         attempts.saved_value = Some("8".into());
         attempts.problem = Some("must be from 1 to 64".into());
-        data.failed_groups = vec![GroupFailure {
-            group: "webhooks".into(),
+        let failures = vec![Failure {
+            group: Some(Group::Webhooks),
             message: "The engine refused the change: webhooks.max_attempts must be from 1 to 64."
                 .into(),
         }];
-        data.saved_groups = vec!["exchange-rates".into()];
-        data.saved_at = Some("8 Oct, 14:22".into());
+        data.outcome = Some(SaveOutcome::PartlySaved {
+            saved: vec![Group::ExchangeRates],
+            at: "8 Oct, 14:22".into(),
+            failures: failures.clone(),
+        });
         data.answers_save = true;
         let html = page(&data);
 
@@ -3157,27 +3309,32 @@ mod tests {
             html.contains(r#"<div id="save-bar" class="save-bar is-failed""#),
             "{html}"
         );
-        assert!(html.contains(r##"<p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus><strong>Nothing saved.</strong> The engine refused the change: webhooks.max_attempts must be from 1 to 64. <a href="#card-webhooks" data-show-card="webhooks">Show</a></p>"##), "{html}");
-        // The engine's part saved, monokulo's not: it says so.
-        data.partly_saved = true;
-        assert!(page(&data).contains("<strong>Changes partly saved.</strong>"));
+        assert!(html.contains(r##"<p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus><strong>Changes partly saved.</strong> The engine refused the change: webhooks.max_attempts must be from 1 to 64. <a href="#card-webhooks" data-show-card="webhooks">Show</a></p>"##), "{html}");
+        // Nothing saved: no card says it was.
+        data.outcome = Some(SaveOutcome::Refused { failures });
+        let html = page(&data);
+        assert!(html.contains("<strong>Nothing saved.</strong>"), "{html}");
+        assert!(!html.contains("Saved 8 Oct"), "{html}");
         // A refusal that names no setting: the bar says it, with no card to show.
-        data.failed_groups.clear();
-        data.partly_saved = false;
-        data.save_error = Some("Could not reach the configured engine: connection refused".into());
+        data.outcome = Some(SaveOutcome::Refused {
+            failures: vec![Failure {
+                group: None,
+                message: "Could not reach the configured engine: connection refused".into(),
+            }],
+        });
         let html = page(&data);
         assert!(html.contains(r#"data-fx-focus><strong>Nothing saved.</strong> Could not reach the configured engine: connection refused</p>"#), "{html}");
     }
 
     #[test]
     fn a_toast_says_how_a_save_went() {
-        let toast = |kind, show: Option<&str>| {
+        let toast = |kind, show: Option<Group>| {
             let data = AdminSettingsViewModel {
                 toast: Some(Toast {
                     kind,
                     title: "Webhooks saved and applied".into(),
                     lines: vec!["One more thing.".into()],
-                    show: show.map(str::to_string),
+                    show,
                 }),
                 ..full_view(SettingsTab::Payments)
             };
@@ -3194,7 +3351,7 @@ mod tests {
             .contains(r#"class="toast toast-warning" role="status""#));
         assert!(toast(ToastKind::Neutral, None)
             .contains(r#"class="toast toast-neutral" role="status""#));
-        let error = toast(ToastKind::Error, Some("webhooks"));
+        let error = toast(ToastKind::Error, Some(Group::Webhooks));
         assert!(
             error.contains(r#"class="toast toast-error" role="alert""#),
             "{error}"

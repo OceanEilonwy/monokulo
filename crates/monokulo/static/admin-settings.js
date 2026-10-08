@@ -22,6 +22,9 @@
   var leavingTo = null;
   var goAfterSave = null;
   var submitting = false;
+  // The page is being loaded again (Discard on a card a save refused): no
+  // "leave the page?" question, and no other navigation after it.
+  var reloading = false;
   // Something was changed since the panel came: until then, a save's
   // refusal is what the bar says.
   var touched = false;
@@ -108,7 +111,8 @@
   function renumber(list) {
     var network = list.getAttribute("data-node-rows");
     var rows = list.querySelectorAll("[data-node-row]");
-    var names = new RegExp("node_" + network + "_\\d+_"), ids = new RegExp("node-" + network + "-\\d+-");
+    // Global: aria-describedby can name several ids (the help and an error).
+    var names = new RegExp("node_" + network + "_\\d+_", "g"), ids = new RegExp("node-" + network + "-\\d+-", "g");
     var place = 0;
     Array.prototype.forEach.call(rows, function (row, i) {
       row.setAttribute("data-node-row", String(i));
@@ -140,11 +144,23 @@
     });
   }
 
+  // A backend's card shows only while it's ticked; hidden, its controls
+  // are disabled too, so what's in them isn't sent (or saved) unseen.
   function showCustodyBackends(root) {
     each(root, "input[type=checkbox]", function (box) {
       if (box.name !== "key_custody.enabled_backends") return;
       var card = document.querySelector('[data-custody-backend="' + box.value + '"]');
-      if (card) card.hidden = !box.checked;
+      if (!card) return;
+      card.hidden = !box.checked;
+      each(card, "input, select, textarea", function (el) {
+        if (card.hidden && !el.disabled) {
+          el.disabled = true;
+          el.setAttribute("data-hidden-off", "");
+        } else if (!card.hidden && el.hasAttribute("data-hidden-off")) {
+          el.disabled = false;
+          el.removeAttribute("data-hidden-off");
+        }
+      });
     });
   }
 
@@ -236,6 +252,7 @@
       // are only on the server.
       if (card.classList.contains("is-failed") || !listsAtLoad[card.id]) {
         var tab = document.getElementById("settings-panel");
+        reloading = true;
         location.href = "/dashboard/admin/settings?tab=" + (tab ? tab.getAttribute("data-tab") : "nodes");
         return;
       }
@@ -434,7 +451,10 @@
       var href = leavingTo;
       var choice = leave.getAttribute("data-leave");
       leaveDone();
-      if (choice === "discard") { discardAll(); go(href); }
+      if (choice === "discard") {
+        discardAll();
+        if (!reloading) go(href);
+      }
       if (choice === "save") {
         goAfterSave = href;
         var save = bar() && bar().querySelector("[data-save]");
@@ -503,7 +523,7 @@
   }, true);
 
   window.addEventListener("beforeunload", function (event) {
-    if (!submitting && update() > 0) {
+    if (!submitting && !reloading && update() > 0) {
       event.preventDefault();
       event.returnValue = "";
     }
@@ -533,9 +553,23 @@
       goAfterSave = null;
       // After fixi's glue has put the new tab bar in: a link it replaces
       // mid-request would never say its request finished.
-      if (!document.querySelector("[data-card].is-failed")) setTimeout(function () { go(href); }, 0);
+      var refused = document.querySelector("[data-card].is-failed, #save-bar.is-failed");
+      if (!refused) setTimeout(function () { go(href); }, 0);
     }
   }
+
+  // A save that comes back without a panel to swap in (a dropped
+  // connection, or any failure but 422, which fixi's glue doesn't swap):
+  // the page guards its unsaved changes again, and doesn't go anywhere.
+  // fixi says "finally" before it swaps, so a save that will swap is left to
+  // `settle`.
+  document.addEventListener("fx:finally", function (event) {
+    if (!event.target.closest || !event.target.closest("#settings-form")) return;
+    var response = event.detail && event.detail.cfg && event.detail.cfg.response;
+    if (response && (response.ok || response.status === 422)) return;
+    submitting = false;
+    goAfterSave = null;
+  });
 
   document.addEventListener("fx:swapped", settle);
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", settle);

@@ -2,9 +2,9 @@
 // Settings pages save one section at a time with fixi (structured_logging.md
 // parts 6 and 9): the page isn't reloaded, the scroll position survives,
 // and the saved section shows how it went. The admin settings page saves
-// a tab's changed cards together, each card on its own: its panel is
-// swapped, the tab bar and page-wide banners come back whole, a toast says
-// how it went, and a card it refused stays red with what was typed.
+// a tab all or nothing: its panel is swapped, the tab bar and page-wide
+// banners come back whole, a toast says how it went, and a card a save
+// refused stays red with what was typed.
 const { test, expect } = require('@playwright/test');
 const { useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, openSettingsTab, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY, expectSaved } = require('./backend-helpers');
 
@@ -118,6 +118,19 @@ test('leaving a tab with unsaved changes asks first, and Save and go saves then 
   await expect(page.locator('#settings-toasts .toast-success')).toContainText('Changes saved and applied');
   await openSettingsTab(page, 'abuse');
   await expect(page.locator('input[name="abuse.stream_cap"]')).toHaveValue('17');
+
+  // Save and go with a value the save refuses: it stays, and says why.
+  await openSettingsTab(page, 'server');
+  await page.locator('input[name="server.cpus"]').fill('abc');
+  await page.locator('#settings-tabs a', { hasText: 'Logging' }).click();
+  await bar.getByRole('button', { name: 'Save and go' }).click();
+  await expect(bar).toHaveClass(/is-failed/);
+  await expect(bar).toContainText('Nothing saved.');
+  await page.waitForTimeout(500);
+  await expect(page.locator('#settings-panel h2')).toHaveText('Server');
+  await expect(page.locator('input[name="server.cpus"]')).toHaveValue('abc');
+  await page.locator('#card-server-engine').getByRole('button', { name: 'Discard' }).click();
+  await openSettingsTab(page, 'abuse');
 
   // Discard and go: nothing saved.
   await page.locator('input[name="abuse.stream_cap"]').fill('18');
