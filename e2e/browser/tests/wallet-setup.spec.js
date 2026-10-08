@@ -160,7 +160,7 @@ test('stores pick a wallet, and a wallet lists its stores and is renamed on its 
   await captureCoverageStage(page, 'wallets-list', test.info(), { group: GROUP });
   await page.getByRole('link', { name: WALLET_NAME }).click();
   await expect(page.getByRole('link', { name: 'wallet-shop.example.com' }).first()).toBeVisible();
-  await expect(page.getByText('still use this wallet')).toBeVisible();
+  await expect(page.getByText(/still uses? this wallet/)).toBeVisible();
   await page.locator('form.rename-form input[name="name"]').fill('Dev stagenet till');
   await page.getByRole('button', { name: 'Rename' }).click();
   await expect(page.getByRole('heading', { name: 'Dev stagenet till' })).toBeVisible();
@@ -227,4 +227,35 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await page.locator('#wallet').getByRole('option', { name: new RegExp(WALLET_NAME) }).click();
   await page.locator('#wallet').getByRole('button', { name: `Change to ${WALLET_NAME}` }).click();
   await expect(page.locator('#wallet')).toContainText(`Payments go to ${WALLET_NAME}`);
+
+  // Cafe till is used by nothing now: retired, its keys deleted, said at
+  // the top of its page; then brought back with its keys.
+  await page.goto(base + '/dashboard/wallets');
+  await page.getByRole('link', { name: 'Cafe till' }).click();
+  const retire = page.locator('.danger-zone');
+  await expect(retire.getByRole('heading', { name: 'Retire wallet' })).toBeVisible();
+  await retire.locator('input[name="confirm"]').fill('Cafe till');
+  await retire.getByRole('button', { name: 'Retire wallet' }).click();
+  const banner = page.locator('.keys-gone-banner');
+  await expect(banner).toContainText('Retired. Its keys are deleted.');
+  await expect(banner).toContainText("private view key and public spend key");
+  await expect(page.locator('dl.facts')).toContainText('Keys');
+  await captureCoverageStage(page, 'wallets-retired', test.info(), { group: GROUP });
+  await page.goto(base + '/dashboard/wallets');
+  await expect(page.getByText('Retired wallets (1)')).toBeVisible();
+  await page.goto(base + store + '/settings');
+  await page.locator('#wallet').getByRole('combobox', { name: 'Wallet' }).click();
+  await expect(page.locator('#wallet').getByRole('option', { name: /Cafe till/ })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await page.locator('#wallet details.wallet-history summary').click();
+  await expect(page.locator('#wallet tbody tr', { hasText: 'Cafe till' }).locator('.tag')).toHaveText('Retired');
+
+  await page.goto(base + '/dashboard/wallets');
+  await page.locator('.retired-wallets summary').click();
+  await page.getByRole('link', { name: 'Cafe till' }).click();
+  await page.locator('input[name="view_key_hex"]').fill('0707070707070707070707070707070707070707070707070707070707070707');
+  await page.locator('input[name="spend_pubkey_hex"]').fill('8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90');
+  await page.getByRole('button', { name: 'Bring back Cafe till' }).click();
+  await expect(page.getByText('Cafe till is back.')).toBeVisible();
+  await expect(page.locator('.keys-gone-banner')).toHaveCount(0);
 });

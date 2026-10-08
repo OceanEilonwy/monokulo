@@ -461,23 +461,139 @@ async fn create_wallet_to_completion(
     }))
 }
 
-/// `DELETE /api/v1/admin/wallets/{id}`: no new store can use the wallet.
-/// `409` while a store still takes payments into it.
-pub(super) async fn delete_wallet(
+#[derive(Serialize)]
+pub(super) struct WalletStatusView {
+    wallet_id: String,
+    primary_address: String,
+    network: String,
+    key_custody_backend: String,
+    /// When it was retired; its keys were deleted then.
+    retired_at: Option<i64>,
+    /// Enabled stores taking payments into it.
+    stores: u64,
+    /// Orders on it that can still be paid.
+    payable_orders: u64,
+    /// The latest an order on it could still be paid, as far as the
+    /// engine can tell.
+    payable_until: Option<i64>,
+}
+
+/// `GET /api/v1/admin/wallets/{id}`: the wallet, and what its retirement
+/// would wait for.
+pub(super) async fn get_wallet(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<StatusCode, ApiError> {
-    let grace = state
+) -> Result<Json<WalletStatusView>, ApiError> {
+    let grace = grace_period(&state);
+    let (wallet, in_use) = state
+        .db
+        .read(move |s| {
+            let wallet = s
+                .get_wallet(&id)?
+                .ok_or(crate::store::StoreError::NotFound)?;
+            let in_use = s.wallet_in_use(&id, now_unix(), grace)?;
+            Ok((wallet, in_use))
+        })
+        .await?;
+    Ok(Json(WalletStatusView {
+        wallet_id: wallet.id,
+        primary_address: wallet.primary_address,
+        network: wallet.network,
+        key_custody_backend: wallet.key_custody_backend,
+        retired_at: wallet.deleted_at,
+        stores: in_use.stores,
+        payable_orders: in_use.payable_orders,
+        payable_until: in_use.payable_until,
+    }))
+}
+
+fn grace_period(state: &AppState) -> i64 {
+    state
         .settings
         .scan
         .load()
-        .expired_order_grace_period_seconds;
-    let watchers = state
+        .expired_order_grace_period_seconds
+}
+
+#[derive(Serialize)]
+pub(super) struct RetiredView {
+    retired_at: i64,
+}
+
+/// `POST /api/v1/admin/wallets/{id}/retire`: no store can use the wallet
+/// again, and its keys are deleted, from the database and from key
+/// custody. `409` while a store uses it or an order on it can still be
+/// paid; `404` for an unknown or already retired one.
+pub(super) async fn retire_wallet(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<RetiredView>, ApiError> {
+    let grace = grace_period(&state);
+    let now = now_unix();
+    let holders = state
         .db
-        .write(move |s| s.delete_wallet(&id, now_unix(), grace))
+        .write(move |s| s.retire_wallet(&id, now, grace))
         .await?;
-    forget_handles(&state.custody, watchers, "deleting a wallet").await;
-    Ok(StatusCode::NO_CONTENT)
+    forget_handles(&state.custody, holders, "retiring a wallet").await;
+    Ok(Json(RetiredView { retired_at: now }))
+}
+
+#[derive(Deserialize)]
+pub(super) struct RestoreWalletRequest {
+    #[serde(flatten)]
+    keys: KeysIn,
+    key_custody_backend: Option<String>,
+}
+
+/// `POST /api/v1/admin/wallets/{id}/restore`: a retired wallet back, with
+/// its keys entered again. They must be this wallet's: checked by the
+/// address they make, compared by keys. `400` for other keys.
+pub(super) async fn restore_wallet(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RestoreWalletRequest>,
+) -> Result<Json<WalletView>, ApiError> {
+    let lookup = id.clone();
+    let wallet = state
+        .db
+        .read(move |s| s.get_wallet(&lookup))
+        .await?
+        .filter(|w| w.deleted_at.is_some())
+        .ok_or(ApiError::NotFound)?;
+    let network = parse_network(&wallet.network).map_err(|e| ApiError::Internal(e.to_string()))?;
+    let backend = chosen_backend(&state, req.key_custody_backend.as_deref())?;
+    let registered = register_keys(&state, &backend, &req.keys, Action::Create, None).await?;
+    let same = match &registered.material {
+        Some(material) => is_same_wallet(material, &wallet.primary_address, network),
+        None => {
+            derives_primary_address(&state, registered.handle, &wallet.primary_address, network)
+                .await
+        }
+    };
+    remove_wallet_logged(
+        state.custody.backends.as_ref(),
+        registered.handle,
+        None,
+        "bringing back a wallet, done with its check",
+    )
+    .await;
+    if !matches!(same, Ok(true)) {
+        same?;
+        return Err(ApiError::BadRequest(
+            "These keys belong to a different wallet.".to_owned(),
+        ));
+    }
+    let sealed = registered.sealed;
+    let wallet = state
+        .db
+        .write(move |s| s.restore_wallet(&id, &backend, &sealed))
+        .await?;
+    Ok(Json(WalletView {
+        wallet_id: wallet.id,
+        primary_address: wallet.primary_address,
+        network: wallet.network,
+        key_custody_backend: wallet.key_custody_backend,
+    }))
 }
 
 /// Upper bound on a tenant-chosen order lifetime. Well past anything useful (30

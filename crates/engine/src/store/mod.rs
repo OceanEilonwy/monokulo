@@ -420,6 +420,15 @@ type Result<T> = std::result::Result<T, StoreError>;
 // Row types
 // ---------------------------------------------------------------------------
 
+/// What a wallet's retirement waits for (`Store::wallet_in_use`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalletInUse {
+    pub stores: u64,
+    pub payable_orders: u64,
+    /// Unix seconds.
+    pub payable_until: Option<i64>,
+}
+
 /// What changing a store's wallet did (`Store::change_tenant_wallet`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalletChange {
@@ -479,6 +488,7 @@ pub struct Wallet {
     pub network: String,
     pub next_minor_index: u32,
     pub created_at: i64,
+    /// When it was retired (`Store::retire_wallet`): its keys are gone.
     pub deleted_at: Option<i64>,
 }
 
@@ -1270,15 +1280,55 @@ impl Store {
             .optional()?)
     }
 
-    /// Marks a wallet deleted, so no new store can use it. Refused while an
-    /// enabled store still takes payments into it, or while an order on it
-    /// could still be paid: open, or closed less than the grace period ago
-    /// (a store that changed to another wallet leaves such orders behind).
-    /// Its row stays: the counter must never be handed out again, and
-    /// disabled stores still point at it. The scan rows that watched it are
-    /// turned off; their ids are returned, for the caller to drop their
-    /// keys from key custody.
-    pub fn delete_wallet(
+    /// What retiring a wallet waits for: enabled stores on it, and orders on
+    /// it that can still be paid (open, or closed less than the grace period
+    /// ago), with the latest time one of those could still be paid, as far
+    /// as the engine can tell (an open order's deadline, a closed one's
+    /// close, each plus the grace period).
+    pub fn wallet_in_use(
+        &self,
+        id: &str,
+        now: i64,
+        grace_period_seconds: i64,
+    ) -> Result<WalletInUse> {
+        let stores: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM tenants
+             WHERE wallet_id = ?1 AND disabled_at_utc IS NULL AND watches_for IS NULL",
+            params![id],
+            |row| row.get(0),
+        )?;
+        let (orders, until): (i64, Option<i64>) = self.conn.query_row(
+            &format!(
+                "SELECT COUNT(*), MAX(until) FROM (
+                    SELECT o.expires_at_utc + :grace AS until FROM orders o
+                     WHERE o.wallet_id = :wallet AND {OPEN_ORDERS}
+                    UNION ALL
+                    SELECT o.closed_at_utc + :grace FROM orders o
+                     WHERE o.wallet_id = :wallet AND o.closed_at_utc >= :since_minus_grace)"
+            ),
+            rusqlite::named_params! {
+                ":wallet": id,
+                ":grace": grace_period_seconds,
+                ":since_minus_grace": now - grace_period_seconds,
+            },
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(WalletInUse {
+            stores: stores as u64,
+            payable_orders: orders as u64,
+            payable_until: until,
+        })
+    }
+
+    /// Retires a wallet: no store can use it again, and its keys are
+    /// deleted from every row that held a copy (the wallet's, its disabled
+    /// stores', and the scan rows that watched it, which are turned off).
+    /// Refused while an enabled store uses it or an order on it can still
+    /// be paid. The row stays, keys gone: the counter must never be handed
+    /// out again, and the wallet can be brought back with its keys
+    /// (`restore_wallet`). Returns the tenant rows whose live handles the
+    /// caller drops from key custody.
+    pub fn retire_wallet(
         &self,
         id: &str,
         now: i64,
@@ -1288,44 +1338,32 @@ impl Store {
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        let in_use: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM tenants
-             WHERE wallet_id = ?1 AND disabled_at_utc IS NULL AND watches_for IS NULL",
-            params![id],
-            |row| row.get(0),
-        )?;
-        if in_use > 0 {
+        let use_ = self.wallet_in_use(id, now, grace_period_seconds)?;
+        if use_.stores > 0 {
             return Err(StoreError::InUse(format!(
-                "{in_use} store(s) still take payments into this wallet"
+                "{} store(s) still take payments into this wallet",
+                use_.stores
             )));
         }
-        let waiting: i64 = tx.query_row(
-            &format!(
-                "SELECT (SELECT COUNT(*) FROM orders o WHERE o.wallet_id = :wallet AND {OPEN_ORDERS})
-                      + (SELECT COUNT(*) FROM orders o WHERE o.wallet_id = :wallet AND o.closed_at_utc >= :since_minus_grace)"
-            ),
-            rusqlite::named_params! {
-                ":wallet": id,
-                ":since_minus_grace": now - grace_period_seconds,
-            },
-            |row| row.get(0),
-        )?;
-        if waiting > 0 {
+        if use_.payable_orders > 0 {
             return Err(StoreError::InUse(format!(
-                "{waiting} order(s) on this wallet can still be paid into it"
+                "{} order(s) on this wallet can still be paid into it",
+                use_.payable_orders
             )));
         }
         let changed = tx.execute(
-            "UPDATE wallets SET deleted_at_utc = ?2 WHERE id = ?1 AND deleted_at_utc IS NULL",
+            "UPDATE wallets SET deleted_at_utc = ?2, sealed_key_material = X''
+             WHERE id = ?1 AND deleted_at_utc IS NULL",
             params![id, now],
         )?;
         if changed == 0 {
             return Err(StoreError::NotFound);
         }
-        let watchers = {
+        let holders = {
             let mut stmt = tx.prepare(
-                "UPDATE tenants SET disabled_at_utc = ?2
-                 WHERE wallet_id = ?1 AND watches_for IS NOT NULL AND disabled_at_utc IS NULL
+                "UPDATE tenants SET sealed_key_material = X'',
+                    disabled_at_utc = COALESCE(disabled_at_utc, ?2)
+                 WHERE wallet_id = ?1
                  RETURNING id",
             )?;
             let rows = stmt
@@ -1334,7 +1372,21 @@ impl Store {
             rows
         };
         tx.commit()?;
-        Ok(watchers)
+        Ok(holders)
+    }
+
+    /// Brings a retired wallet back with its keys, sealed again
+    /// (`retire_wallet`). The caller has checked they are this wallet's.
+    pub fn restore_wallet(&self, id: &str, backend: &str, sealed: &[u8]) -> Result<Wallet> {
+        let changed = self.conn.execute(
+            "UPDATE wallets SET deleted_at_utc = NULL, key_custody_backend = ?2, sealed_key_material = ?3
+             WHERE id = ?1 AND deleted_at_utc IS NOT NULL",
+            params![id, backend, sealed],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NotFound);
+        }
+        self.get_wallet(id)?.ok_or(StoreError::NotFound)
     }
 
     /// Changes the wallet a store takes payments into. New orders take

@@ -614,16 +614,57 @@ impl EngineClient {
             .parsed()
     }
 
-    /// `DELETE /api/v1/admin/wallets/{id}` — no new store can use it. The
-    /// engine refuses (`409`) while a store still takes payments into it.
-    pub async fn delete_wallet(&self, id: &EngineWalletId) -> Result<(), EngineClientError> {
-        self.send(Call::new(
-            Method::DELETE,
-            format!("/api/v1/admin/wallets/{}", id.as_str()),
-        ))
+    /// `GET /api/v1/admin/wallets/{id}` — the wallet, and what its
+    /// retirement would wait for.
+    pub async fn wallet_status(
+        &self,
+        id: &EngineWalletId,
+    ) -> Result<WalletStatus, EngineClientError> {
+        self.send(Call::get(format!("/api/v1/admin/wallets/{}", id.as_str())))
+            .await?
+            .parsed()
+    }
+
+    /// `POST /api/v1/admin/wallets/{id}/retire` — no store can use it again
+    /// and its keys are deleted. The engine refuses (`409`) while a store
+    /// uses it or an order on it can still be paid. When, as unix seconds.
+    pub async fn retire_wallet(&self, id: &EngineWalletId) -> Result<i64, EngineClientError> {
+        #[derive(Deserialize)]
+        struct Retired {
+            retired_at: i64,
+        }
+        self.send(Call::post(format!(
+            "/api/v1/admin/wallets/{}/retire",
+            id.as_str()
+        )))
         .await?
-        .checked()
-        .map(drop)
+        .parsed::<Retired>()
+        .map(|r| r.retired_at)
+    }
+
+    /// `POST /api/v1/admin/wallets/{id}/restore` — a retired wallet back,
+    /// with its keys. The engine refuses (`400`) another wallet's.
+    pub async fn restore_wallet(
+        &self,
+        id: &EngineWalletId,
+        keys: &StoreKeys,
+        key_custody_backend: Option<&str>,
+    ) -> Result<EngineWallet, EngineClientError> {
+        #[derive(Serialize)]
+        struct Restore<'a> {
+            #[serde(flatten)]
+            keys: &'a StoreKeys,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            key_custody_backend: Option<&'a str>,
+        }
+        self.send(
+            Call::post(format!("/api/v1/admin/wallets/{}/restore", id.as_str())).json(&Restore {
+                keys,
+                key_custody_backend,
+            }),
+        )
+        .await?
+        .parsed()
     }
 
     /// `POST /api/v1/admin/key-custody/bundle` — a bundle to encrypt a new
@@ -1116,6 +1157,15 @@ pub struct CreateWalletRequest {
     /// The engine's default when `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_custody_backend: Option<String>,
+}
+
+/// Mirrors the engine's `WalletStatusView`.
+#[derive(Debug, Deserialize)]
+pub struct WalletStatus {
+    pub retired_at: Option<i64>,
+    pub stores: u64,
+    pub payable_orders: u64,
+    pub payable_until: Option<i64>,
 }
 
 /// Mirrors the engine's `WalletView`.
@@ -2067,13 +2117,13 @@ mod contract_tests {
             on_wallet_view.primary_address == wallet.primary_address
         ));
         lines.push(format!(
-            "deleting a wallet in use: {}",
-            outcome(&client.delete_wallet(&wallet.wallet_id).await)
+            "retiring a wallet in use: {}",
+            outcome(&client.retire_wallet(&wallet.wallet_id).await)
         ));
         client.delete_tenant(&on_wallet.secret_token).await.unwrap();
         lines.push(format!(
-            "deleting it once unused: {}",
-            outcome(&client.delete_wallet(&wallet.wallet_id).await)
+            "retiring it once unused: {}",
+            outcome(&client.retire_wallet(&wallet.wallet_id).await)
         ));
         let tenant = client.get_tenant(&sk).await.unwrap();
         lines.push(format!(
@@ -2300,8 +2350,8 @@ mod contract_tests {
         let expected_lines = [
             "tenant true on mainnet, ",
             "store on wallet: true, same address true",
-            "deleting a wallet in use: 409 Conflict",
-            "deleting it once unused: ok",
+            "retiring a wallet in use: 409 Conflict: 1 store(s) still take payments into this wallet",
+            "retiring it once unused: ok",
             "confirmations now 3",
             "the same idempotency key gives the same order: true",
             "listed 1, page 1, by ids 1",

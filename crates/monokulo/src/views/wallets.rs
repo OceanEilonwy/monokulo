@@ -632,8 +632,32 @@ pub struct WalletListItem {
     pub stores: u64,
 }
 
+pub struct RetiredListItem {
+    pub id: String,
+    pub name: String,
+    /// When, in the viewer's time zone.
+    pub retired: String,
+}
+
+/// A key, crossed out: a wallet whose keys Monokulo deleted.
+pub fn key_gone_icon(size: u32) -> Markup {
+    html! {
+        svg class="key-gone" viewBox="0 0 24 24" width=(size) height=(size) aria-hidden="true" focusable="false"
+            fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" {
+            circle cx="7.5" cy="15.5" r="4.5" {}
+            path d="M10.7 12.3 20 3" {}
+            path d="M16 7l3 3" {}
+            path d="M3 3l18 18" {}
+        }
+    }
+}
+
 /// `GET /dashboard/wallets`: read-only; a wallet's page changes it.
-pub fn list_page(chrome: &PageChrome, wallets: &[WalletListItem]) -> Markup {
+pub fn list_page(
+    chrome: &PageChrome,
+    wallets: &[WalletListItem],
+    retired: &[RetiredListItem],
+) -> Markup {
     let body = html! {
         div class="wrap" {
             h1 { "Wallets" }
@@ -657,7 +681,26 @@ pub fn list_page(chrome: &PageChrome, wallets: &[WalletListItem]) -> Markup {
                         }
                     }
                 }
-                p class="hint" { "Open a wallet to rename it, see its history or delete it." }
+                p class="hint" { "Open a wallet to rename it, see its history or retire it." }
+            }
+            @if !retired.is_empty() {
+                details class="retired-wallets" {
+                    summary { strong { "Retired wallets (" (retired.len()) ")" } span class="hint" { " · keys deleted, kept for their history" } }
+                    div class="table-scroll" {
+                        table {
+                            thead { tr { th { "Name" } th { "Retired" } th { "Keys" } } }
+                            tbody {
+                                @for w in retired {
+                                    tr {
+                                        td { a href=(format!("/dashboard/wallets/{}", w.id)) { (w.name) } }
+                                        td { (w.retired) }
+                                        td { span class="keys-deleted" { (key_gone_icon(16)) " Deleted" } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             p { a class="btn btn-primary" href="/dashboard/wallets/setup" { "+ add a wallet" } }
         }
@@ -681,7 +724,30 @@ pub struct WalletEvent {
     pub what: Markup,
 }
 
+/// Whether a wallet can be retired (`http::wallets::retire_state`).
+pub enum RetireState {
+    Ready,
+    /// Stores (of any account) take payments into it.
+    Stores(u64),
+    /// Orders on it can still be paid, until about then.
+    Orders {
+        count: u64,
+        until: Option<String>,
+    },
+    /// The engine couldn't say.
+    Unknown,
+    Retired,
+}
+
+/// Bringing a retired wallet back: its keys, as when it was brought in.
+pub struct RestoreForm {
+    pub custody_choices: Vec<super::connect::CustodyChoice>,
+    pub snp_entry: Option<super::key_entry::SnpKeyEntry>,
+}
+
 pub struct DetailViewModel {
+    pub retire: RetireState,
+    pub restore: Option<RestoreForm>,
     pub wallet: crate::db::WalletRow,
     pub stores: Vec<WalletStore>,
     /// Stores that took payments into it before changing to another wallet.
@@ -702,6 +768,19 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
             p class="hint" { (origin_label(w)) " · " (w.network) }
             @if let Some(notice) = &data.notice { p class="success" role="status" { (notice) } }
             @if let Some(error) = &data.error { p class="error" role="alert" { (error) } }
+            @if let Some(at) = w.retired_at {
+                div class="keys-gone-banner" role="status" {
+                    (key_gone_icon(28))
+                    div {
+                        p class="keys-gone-title" { "Retired. Its keys are deleted." }
+                        p {
+                            "On " (chrome.clock.time(at)) " Monokulo deleted " (w.name) "'s private view key and public spend key "
+                            "from key storage. It no longer sees payments into this wallet, and no store can use it."
+                        }
+                        p class="hint" { "The money is still yours, in your wallet app." }
+                    }
+                }
+            }
             div class="wallet-layout" {
                 div class="main" {
                     section class="box" {
@@ -714,6 +793,9 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
                             dt { "Address" } dd { code { (w.primary_address) } }
                             dt { "Network" } dd { (w.network) }
                             dt { "Kind" } dd { (origin_label(w)) }
+                            @if let Some(at) = w.retired_at {
+                                dt { "Keys" } dd { "Deleted " (chrome.clock.time(at)) }
+                            }
                         }
                     }
                     section class="box" {
@@ -753,20 +835,10 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
                             }
                         }
                     }
-                    section class="danger-zone" {
-                        h2 { "Delete wallet" }
-                        p { "Monokulo stops watching " (w.name) " and forgets its keys. The money in it stays yours, in your wallet app." }
-                        @if in_use {
-                            p class="field-error" id="delete-why" {
-                                (data.stores.len()) " store(s) still use this wallet. Change their wallet, or delete them, first."
-                            }
-                            button type="button" disabled aria-describedby="delete-why" { "Delete wallet" }
-                        } @else {
-                            form method="post" action=(format!("/dashboard/wallets/{}/delete", w.id)) {
-                                label { "Type " strong { (w.name) } " to confirm" input type="text" name="confirm" autocomplete="off" required; }
-                                button type="submit" class="btn-danger" { "Delete wallet" }
-                            }
-                        }
+                    @if let Some(restore) = &data.restore {
+                        (restore_section(w, restore))
+                    } @else {
+                        (retire_section(w, &data.retire))
                     }
                 }
             }
@@ -775,8 +847,78 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
     layout(chrome, &format!("{} - Wallets - Monokulo", w.name), body)
 }
 
-/// The wallet picker on store forms: preselected only when there's exactly
-/// one wallet, otherwise "Choose a wallet…" and required.
+/// "Retire wallet": offered only once no store uses the wallet and no
+/// order on it can still be paid; otherwise it says what it waits for.
+fn retire_section(w: &crate::db::WalletRow, state: &RetireState) -> Markup {
+    let why = match state {
+        RetireState::Ready | RetireState::Retired => None,
+        RetireState::Stores(n) => Some(if *n == 1 {
+            "1 store still uses this wallet. Change its wallet first.".to_owned()
+        } else {
+            format!("{n} stores still use this wallet. Change their wallet first.")
+        }),
+        RetireState::Orders { count, until } => Some(format!(
+            "{} on it can still be paid{}. Retire it after then.",
+            if *count == 1 {
+                "1 order".to_owned()
+            } else {
+                format!("{count} orders")
+            },
+            until
+                .as_ref()
+                .map(|u| format!(", until about {u}"))
+                .unwrap_or_default()
+        )),
+        RetireState::Unknown => Some(
+            "Monokulo can't check whether it's still in use right now. Try again in a minute."
+                .to_owned(),
+        ),
+    };
+    html! {
+        section class="danger-zone" {
+            h2 { "Retire wallet" }
+            p {
+                "Retiring takes " (w.name) " out of every wallet list and deletes its keys from Monokulo: its private view key "
+                "and public spend key. Monokulo will no longer see payments into it. Its name and history stay, and the money "
+                "stays yours, in your wallet app."
+            }
+            @if let Some(why) = why {
+                p class="field-error" id="retire-why" { (why) }
+                button type="button" disabled aria-describedby="retire-why" { "Retire wallet" }
+            } @else {
+                form method="post" action=(format!("/dashboard/wallets/{}/retire", w.id)) {
+                    label { "Type " strong { (w.name) } " to confirm" input type="text" name="confirm" autocomplete="off" required; }
+                    button type="submit" class="btn-danger" { "Retire wallet" }
+                }
+            }
+        }
+    }
+}
+
+/// "Bring it back": a retired wallet's keys, entered again.
+fn restore_section(w: &crate::db::WalletRow, restore: &RestoreForm) -> Markup {
+    html! {
+        section class="box" {
+            h2 { "Bring it back" }
+            p { "Enter the keys again to watch " (w.name) " and offer it to stores. They must be this wallet's: Monokulo checks them against its address." }
+            form method="post" action=(format!("/dashboard/wallets/{}/restore", w.id)) {
+                (super::key_entry::key_fields(
+                    "",
+                    "",
+                    restore.snp_entry.as_ref(),
+                    html! { "Lets Monokulo see payments arriving. It cannot spend." },
+                    html! { "The " em { "public" } " half of your spend key." },
+                ))
+                (super::connect::custody_select(&restore.custody_choices))
+                @if let Some(entry) = &restore.snp_entry {
+                    (super::key_entry::snp_section(entry, (!restore.custody_choices.is_empty()).then_some("key_custody_backend")))
+                }
+                button type="submit" { "Bring back " (w.name) }
+            }
+        }
+    }
+}
+
 pub fn wallet_select(wallets: &[crate::db::WalletSummary], selected: Option<&str>) -> Markup {
     let only = (wallets.len() == 1).then(|| wallets[0].wallet.id.as_str());
     let selected = selected.or(only);

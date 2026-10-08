@@ -178,6 +178,7 @@ pub struct WalletPeriodView {
     pub wallet_id: Option<String>,
     /// `None` once the wallet was deleted.
     pub wallet_name: Option<String>,
+    pub wallet_retired: bool,
     pub from: i64,
     pub until: Option<i64>,
     pub orders: u64,
@@ -398,7 +399,10 @@ fn wallet_section(store: &StoreSettingsData, in_place: bool, oob: bool) -> Marku
                             tr class=[period.until.is_none().then_some("current")] aria-current=[period.until.is_none().then_some("true")] {
                                 td {
                                     @match (&period.wallet_id, &period.wallet_name) {
-                                        (Some(id), Some(name)) => a href=(format!("/dashboard/wallets/{id}")) { (name) },
+                                        (Some(id), Some(name)) => {
+                                            a href=(format!("/dashboard/wallets/{id}")) { (name) }
+                                            @if period.wallet_retired { " " span class="tag tag-unknown" { "Retired" } }
+                                        },
                                         _ => span class="muted" { "A deleted wallet" },
                                     }
                                 }

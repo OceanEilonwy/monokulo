@@ -346,6 +346,7 @@ mod tests {
                 origin: WalletOrigin::Imported,
                 backup: None,
                 created_at: 0,
+                retired_at: None,
             },
             store_count: 0,
         }

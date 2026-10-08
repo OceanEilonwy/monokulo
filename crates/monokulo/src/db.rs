@@ -119,6 +119,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         32,
         include_str!("../migrations/0032_store_wallet_periods.sql"),
     ),
+    (33, include_str!("../migrations/0033_retired_wallets.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -662,6 +663,8 @@ pub struct WalletRow {
     /// (`crate::wallets::Backup`).
     pub backup: Option<String>,
     pub created_at: i64,
+    /// When it was retired: its keys deleted, offered nowhere.
+    pub retired_at: Option<i64>,
 }
 
 pub struct NewWalletRow<'a> {
@@ -686,8 +689,9 @@ pub struct WalletEventRow {
     pub at: i64,
     /// `created`, `imported`, `renamed` (detail: the old name),
     /// `store_connected`, `store_changed_to` (a store changed to this
-    /// wallet) or `store_changed_away` (a store changed to another one);
-    /// the store ones' detail is the store's id.
+    /// wallet) or `store_changed_away` (a store changed to another one),
+    /// the store ones' detail being the store's id; `retired` (its keys
+    /// deleted) or `restored` (brought back with them).
     pub kind: String,
     pub detail: String,
 }
@@ -700,6 +704,7 @@ pub struct StoreWalletPeriod {
     /// `None` once the wallet was deleted.
     pub wallet_id: Option<WalletId>,
     pub wallet_name: Option<String>,
+    pub wallet_retired: bool,
     pub from: i64,
     /// `None` for the store's current wallet.
     pub until: Option<i64>,
@@ -713,13 +718,6 @@ pub enum ChangeStoreWallet {
     Changed,
     /// The store already takes payments into that wallet.
     Unchanged,
-}
-
-pub enum DeleteWallet {
-    Deleted,
-    NotFound,
-    /// Stores still take payments into it.
-    InUse(u64),
 }
 
 /// A row from `order_currency_metadata` (`docs/fx_refactor.md` Phase 1.2) -
@@ -1260,14 +1258,18 @@ impl Db {
             origin: WalletOrigin::parse(&row.get::<_, String>("origin")?),
             backup: row.get("backup")?,
             created_at: row.get("created_at_utc")?,
+            retired_at: row.get("retired_at_utc")?,
         })
     }
 
-    /// `user_id`'s wallets, oldest first, each with how many stores use it.
+    /// `user_id`'s wallets in use, oldest first, each with how many stores
+    /// use it: what pickers offer. Retired ones are left out
+    /// ([`Self::list_retired_wallets`]).
     pub fn list_wallets(&self, user_id: &UserId) -> Result<Vec<WalletSummary>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT w.*, (SELECT COUNT(*) FROM store_connections s WHERE s.wallet_id = w.id) AS stores
-             FROM wallets w WHERE w.user_id = ?1 ORDER BY w.created_at_utc, w.name",
+             FROM wallets w WHERE w.user_id = ?1 AND w.retired_at_utc IS NULL
+             ORDER BY w.created_at_utc, w.name",
         )?;
         let rows = stmt
             .query_map(params![user_id], |row| {
@@ -1349,32 +1351,74 @@ impl Db {
         Ok(true)
     }
 
-    /// Deletes one of `user_id`'s wallets that no store uses, with its
-    /// history.
-    pub fn delete_wallet(&self, user_id: &UserId, id: &WalletId) -> Result<DeleteWallet> {
+    /// `user_id`'s retired wallets, most recently retired first.
+    pub fn list_retired_wallets(&self, user_id: &UserId) -> Result<Vec<WalletRow>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT * FROM wallets WHERE user_id = ?1 AND retired_at_utc IS NOT NULL
+             ORDER BY retired_at_utc DESC",
+        )?;
+        let rows = stmt
+            .query_map(params![user_id], Self::row_to_wallet)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Every name `user_id`'s wallets have, retired ones too: a new wallet
+    /// can't take one (`wallets_user_name`).
+    pub fn wallet_names(&self, user_id: &UserId) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT name FROM wallets WHERE user_id = ?1")?;
+        let rows = stmt
+            .query_map(params![user_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Records that one of `user_id`'s wallets was retired at `at` (the
+    /// engine deleted its keys then). `false` if it isn't theirs, is
+    /// already retired, or a store still uses it.
+    pub fn retire_wallet(&self, user_id: &UserId, id: &WalletId, at: i64) -> Result<bool> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        let exists: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM wallets WHERE id = ?1 AND user_id = ?2)",
-            params![id, user_id],
-            |row| row.get(0),
+        let changed = tx.execute(
+            "UPDATE wallets SET retired_at_utc = ?3
+             WHERE id = ?1 AND user_id = ?2 AND retired_at_utc IS NULL
+               AND NOT EXISTS (SELECT 1 FROM store_connections s WHERE s.wallet_id = ?1)",
+            params![id, user_id, at],
         )?;
-        if !exists {
-            return Ok(DeleteWallet::NotFound);
+        if changed > 0 {
+            tx.execute(
+                "INSERT INTO wallet_events (wallet_id, at_utc, kind) VALUES (?1, ?2, 'retired')",
+                params![id, at],
+            )?;
         }
-        let stores: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM store_connections WHERE wallet_id = ?1",
-            params![id],
-            |row| row.get(0),
-        )?;
-        if stores > 0 {
-            return Ok(DeleteWallet::InUse(stores as u64));
-        }
-        tx.execute("DELETE FROM wallets WHERE id = ?1", params![id])?;
         tx.commit()?;
-        Ok(DeleteWallet::Deleted)
+        Ok(changed > 0)
+    }
+
+    /// Brings back one of `user_id`'s retired wallets (the engine has its
+    /// keys again).
+    pub fn restore_wallet(&self, user_id: &UserId, id: &WalletId, now: i64) -> Result<bool> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let changed = tx.execute(
+            "UPDATE wallets SET retired_at_utc = NULL
+             WHERE id = ?1 AND user_id = ?2 AND retired_at_utc IS NOT NULL",
+            params![id, user_id],
+        )?;
+        if changed > 0 {
+            tx.execute(
+                "INSERT INTO wallet_events (wallet_id, at_utc, kind) VALUES (?1, ?2, 'restored')",
+                params![id, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed > 0)
     }
 
     /// A wallet's history, newest first.
@@ -1494,7 +1538,7 @@ impl Db {
         params: impl rusqlite::Params,
     ) -> Result<Vec<StoreWalletPeriod>> {
         let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT p.connection_id, p.wallet_id, w.name, p.from_utc, p.until_utc,
+            "SELECT p.connection_id, p.wallet_id, w.name, w.retired_at_utc IS NOT NULL, p.from_utc, p.until_utc,
                 (SELECT COUNT(*) FROM order_currency_metadata m
                  WHERE m.connection_id = p.connection_id AND m.created_at_utc >= p.from_utc
                    AND (p.until_utc IS NULL OR m.created_at_utc < p.until_utc)) AS orders
@@ -1508,9 +1552,10 @@ impl Db {
                     connection_id: row.get(0)?,
                     wallet_id: row.get(1)?,
                     wallet_name: row.get(2)?,
-                    from: row.get(3)?,
-                    until: row.get(4)?,
-                    orders: row.get::<_, i64>(5)? as u64,
+                    wallet_retired: row.get(3)?,
+                    from: row.get(4)?,
+                    until: row.get(5)?,
+                    orders: row.get::<_, i64>(6)? as u64,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

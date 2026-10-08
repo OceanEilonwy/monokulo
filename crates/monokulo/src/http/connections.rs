@@ -167,6 +167,7 @@ pub(super) async fn create_connection_for_user(
                 .read(move |db| db.get_wallet(&user_id, &wallet_id))
                 .await
                 .map_err(|_| CreateConnectionError::Internal)?
+                .filter(|w| w.retired_at.is_none())
                 .ok_or_else(|| {
                     CreateConnectionError::BadRequest("Choose one of your wallets.".to_owned())
                 })?

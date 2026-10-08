@@ -97,7 +97,7 @@ pub(crate) async fn add_wallet(
     let give_back = |why: &'static str| {
         let engine_wallet = engine_wallet.clone();
         async move {
-            if let Err(e) = state.engine.client.delete_wallet(&engine_wallet).await {
+            if let Err(e) = state.engine.client.retire_wallet(&engine_wallet).await {
                 tracing::error!(error = %e, wallet = %engine_wallet, why, "an engine wallet nothing records could not be removed");
             }
         }
@@ -138,11 +138,7 @@ pub(crate) async fn add_wallet(
             let name = match name {
                 Some(name) => name,
                 None => {
-                    let taken: Vec<String> = db
-                        .list_wallets(&user_id)?
-                        .into_iter()
-                        .map(|w| w.wallet.name)
-                        .collect();
+                    let taken = db.wallet_names(&user_id)?;
                     crate::wallets::friendly_name(&taken)
                 }
             };
@@ -225,11 +221,7 @@ pub(crate) async fn adopt_unlinked_stores(state: &AppState, user: &UserRow) {
                 )? {
                     Some(wallet) => wallet.id,
                     None => {
-                        let taken: Vec<String> = db
-                            .list_wallets(&user_id)?
-                            .into_iter()
-                            .map(|w| w.wallet.name)
-                            .collect();
+                        let taken = db.wallet_names(&user_id)?;
                         let id = WalletId::new(format!("w_{}", uuid::Uuid::new_v4().simple()));
                         db.create_wallet(&NewWalletRow {
                             id: &id,

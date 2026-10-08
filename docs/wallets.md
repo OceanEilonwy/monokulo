@@ -67,17 +67,15 @@ Each: what was decided, what else was possible, and why.
    account has yet. Names are unique per account (ignoring case) so a picker
    is never ambiguous. The same keys can't be added twice to one account: the
    form says which wallet already has them.
-7. **Deleting a wallet** needs its name typed. It is refused while a store
-   uses it, or while an order on it can still be paid (a store that changed
-   wallet leaves its orders behind). The engine forgets it first, then
-   monokulo.
+7. **Wallets are retired, not deleted** (see "Retiring a wallet" below).
 8. **A wallet's history** is its own events plus payments to its stores,
    read live from the engine (not copied into monokulo). Its events are:
    - made;
    - brought in;
    - renamed;
    - store connected;
-   - a store changed to it, or changed to another wallet.
+   - a store changed to it, or changed to another wallet;
+   - retired (its keys deleted), or brought back.
 
    The payments listed are those for orders a store made while it used the
    wallet. The wallet page lists the stores on it now and, under "Before",
@@ -234,5 +232,48 @@ confirms.
     at those blocks itself. The mempool records with the time its scan
     began, for the same check.
 36. **The txid lookup tries every row**: the store, then each wallet it left.
-37. **Deleting a store turns its scan rows off too.** Deleting a wallet
-    turns off the scan rows on it and drops their keys from key custody.
+37. **Deleting a store turns its scan rows off too.** Retiring a wallet
+    turns off the scan rows on it and deletes their keys.
+
+## Retiring a wallet
+
+What deleting a wallet was for is making Monokulo forget its keys. Retiring
+does that and keeps everything else. A retired wallet:
+
+- is offered nowhere: not in wallet dropdowns, not to a new store;
+- has its keys deleted, the private view key and public spend key, from the
+  engine's database and from key storage;
+- keeps its name, address, page and history. Stores that used it still
+  name it in their wallet history, with a Retired chip.
+
+The wallets page folds retired ones under "Retired wallets (N)".
+
+38. **Retire, never delete.** There is no delete. A wallet nobody ever used
+    is retired like any other.
+39. **Only a wallet not in use can be retired.** That means no store uses
+    it and no order on it can still be paid (open, or closed less than the
+    grace period ago). Until then the Retire button is off and says why,
+    including roughly until when orders can be paid. There is no waiting
+    "retiring" state and no "delete the keys now".
+40. **The page says the keys are deleted (design A).** A banner under the
+    title reads "Retired. Its keys are deleted." It says when, what was
+    deleted, that Monokulo no longer sees payments into it and that no store
+    can use it. A "Keys: Deleted (time)" row and a history entry say the
+    same. It doesn't mention backups: whether old copies exist elsewhere
+    depends on the key storage backend.
+41. **In the engine**: `POST /api/v1/admin/wallets/{id}/retire` does all of
+    this in one transaction:
+    - it marks the wallet (`deleted_at_utc`);
+    - it empties the sealed keys on the wallet row and on every tenant row
+      on it (disabled stores, scan rows);
+    - it turns those rows off.
+
+    Their live handles leave key custody. The row stays, so its address
+    counter is never reused. `GET /api/v1/admin/wallets/{id}` says what a
+    retirement would wait for.
+42. **Bringing one back** takes its keys again, on its page.
+    `POST /api/v1/admin/wallets/{id}/restore` checks that they make the
+    wallet's address, and refuses another wallet's. Adding the same keys
+    through "Bring your own wallet" points to the retired wallet instead.
+43. **Names stay taken** by retired wallets: a picker never shows two
+    alike, and bringing one back can't clash.

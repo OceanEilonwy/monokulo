@@ -4362,22 +4362,46 @@ async fn a_store_made_with_keys_gets_its_own_wallet_another_store_can_join() {
     );
 }
 
+fn retire_request(wallet_id: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/admin/wallets/{wallet_id}/retire"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+async fn wallet_status(router: &Router, wallet_id: &str) -> serde_json::Value {
+    let req = Request::builder()
+        .uri(format!("/api/v1/admin/wallets/{wallet_id}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await
+}
+
+/// Retiring: refused while a store uses the wallet; then its keys are
+/// deleted from every row that held them, no store can be made on it, and
+/// it comes back only with its own keys.
 #[tokio::test]
-async fn a_wallet_is_only_deleted_once_no_store_uses_it_and_then_takes_no_new_store() {
-    let router = test_router();
+async fn a_retired_wallet_has_its_keys_deleted_everywhere_and_comes_back_only_with_them() {
+    let state = AppState::for_tests();
+    let store = Arc::clone(state.db.shared_store_for_test());
+    let router = build_router(state, 1_000_000);
     let wallet = create_wallet(&router, 42).await;
     let wallet_id = wallet["wallet_id"].as_str().unwrap();
     let tenant = create_tenant_on(&router, wallet_id).await;
+    let status = wallet_status(&router, wallet_id).await;
+    assert_eq!(status["stores"], 1);
+    assert_eq!(status["retired_at"], serde_json::Value::Null);
 
-    let delete_wallet = || {
-        Request::builder()
-            .method("DELETE")
-            .uri(format!("/api/v1/admin/wallets/{wallet_id}"))
-            .body(Body::empty())
-            .unwrap()
-    };
-    let response = router.clone().oneshot(delete_wallet()).await.unwrap();
+    let response = router
+        .clone()
+        .oneshot(retire_request(wallet_id))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert!(body_json(response).await.to_string().contains("store"));
 
     let req = Request::builder()
         .method("DELETE")
@@ -4389,19 +4413,92 @@ async fn a_wallet_is_only_deleted_once_no_store_uses_it_and_then_takes_no_new_st
         router.clone().oneshot(req).await.unwrap().status(),
         StatusCode::NO_CONTENT
     );
-    let response = router.clone().oneshot(delete_wallet()).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    let response = router.clone().oneshot(delete_wallet()).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let response = router
+        .clone()
+        .oneshot(retire_request(wallet_id))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let retired_at = body_json(response).await["retired_at"].as_i64().unwrap();
+    assert_eq!(
+        wallet_status(&router, wallet_id).await["retired_at"],
+        retired_at
+    );
+    assert_eq!(
+        router
+            .clone()
+            .oneshot(retire_request(wallet_id))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
 
+    // No copy of the keys is left: not the wallet's, not the deleted store's.
+    {
+        let s = store.lock();
+        assert!(s
+            .get_wallet(wallet_id)
+            .unwrap()
+            .unwrap()
+            .sealed_key_material
+            .is_empty());
+        let holders: Vec<Vec<u8>> = s
+            .conn_for_test()
+            .prepare("SELECT sealed_key_material FROM tenants WHERE wallet_id = ?1")
+            .unwrap()
+            .query_map([wallet_id], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(holders.len(), 1);
+        assert!(holders.iter().all(Vec::is_empty), "{holders:?}");
+    }
     let req = json_request(
         "POST",
         "/api/v1/admin/tenants",
         None,
         &serde_json::json!({ "wallet_id": wallet_id }),
     );
-    let response = router.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        router.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let restore = |seed: u8| {
+        json_request(
+            "POST",
+            &format!("/api/v1/admin/wallets/{wallet_id}/restore"),
+            None,
+            &serde_json::json!({
+                "view_key_hex": valid_view_key_hex(seed),
+                "spend_pubkey_hex": valid_spend_pubkey_hex(seed.wrapping_add(1)),
+            }),
+        )
+    };
+    let response = router.clone().oneshot(restore(7)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "another wallet's keys"
+    );
+    let response = router.clone().oneshot(restore(42)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(response).await["primary_address"],
+        wallet["primary_address"]
+    );
+    assert_eq!(
+        wallet_status(&router, wallet_id).await["retired_at"],
+        serde_json::Value::Null
+    );
+    let again = create_tenant_on(&router, wallet_id).await;
+    assert!(!order_address(&router, &again).await.is_empty());
+    assert_eq!(
+        router.clone().oneshot(restore(42)).await.unwrap().status(),
+        StatusCode::NOT_FOUND,
+        "only a retired wallet is brought back"
+    );
 }
 
 #[tokio::test]
@@ -4671,7 +4768,7 @@ async fn a_wallet_change_is_refused_to_the_same_wallet_an_unknown_one_or_another
 /// The wallet a store left can't be deleted while an order on it can still
 /// be paid; once none can, it can, and the keys watching it go.
 #[tokio::test]
-async fn a_wallet_left_with_open_orders_is_only_deleted_once_they_closed() {
+async fn a_wallet_left_with_open_orders_is_only_retired_once_they_closed() {
     let state = AppState::for_tests();
     let store = Arc::clone(state.db.shared_store_for_test());
     let handles = Arc::clone(&state.custody.wallet_handles);
@@ -4693,16 +4790,16 @@ async fn a_wallet_left_with_open_orders_is_only_deleted_once_they_closed() {
     .unwrap()
     .remove(0);
 
-    let delete = || {
-        Request::builder()
-            .method("DELETE")
-            .uri(format!("/api/v1/admin/wallets/{old_wallet}"))
-            .body(Body::empty())
-            .unwrap()
-    };
+    let delete = || retire_request(&old_wallet);
     let response = router.clone().oneshot(delete()).await.unwrap();
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert!(body_json(response).await.to_string().contains("order"));
+    let status = wallet_status(&router, &old_wallet).await;
+    assert_eq!(
+        (status["stores"].as_u64(), status["payable_orders"].as_u64()),
+        (Some(0), Some(1))
+    );
+    assert!(status["payable_until"].as_i64().is_some());
 
     // Closed long ago: past the grace period, nothing can pay it now.
     store
@@ -4714,7 +4811,7 @@ async fn a_wallet_left_with_open_orders_is_only_deleted_once_they_closed() {
         .unwrap();
     assert_eq!(
         router.clone().oneshot(delete()).await.unwrap().status(),
-        StatusCode::NO_CONTENT
+        StatusCode::OK
     );
     assert!({
         let id = tenant_row(&store, &tenant).id;

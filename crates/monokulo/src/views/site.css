@@ -885,3 +885,13 @@ mk-select[compact] .mk-popup { white-space: nowrap; }
 .wallet-history table { margin-top: var(--space-sm); }
 .wallet-history .num { text-align: right; }
 .wallet-history tr.current td { background: var(--tint-highlight); font-weight: 600; }
+
+/* A retired wallet (`views::wallets::detail_page`): its keys are deleted,
+   said at the top of its page. */
+.key-gone { flex: none; color: var(--ink); }
+.keys-gone-banner { display: flex; gap: var(--space-lg); align-items: flex-start; margin: 0 0 var(--space-xl); padding: var(--space-lg) var(--space-xl); border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--tint-neutral); }
+.keys-gone-banner p { margin: 0 0 var(--space-xs); }
+.keys-gone-title { font-weight: 800; font-size: 1.15em; }
+.keys-deleted { display: inline-flex; gap: var(--space-xs); align-items: center; }
+.retired-wallets { margin: var(--space-lg) 0; }
+.retired-wallets summary { cursor: pointer; }

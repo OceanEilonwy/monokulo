@@ -189,7 +189,15 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
     let unauthenticated_router = Router::new()
         .route("/api/v1/admin/tenants", post(admin::create_tenant))
         .route("/api/v1/admin/wallets", post(admin::create_wallet))
-        .route("/api/v1/admin/wallets/{id}", delete(admin::delete_wallet))
+        .route("/api/v1/admin/wallets/{id}", get(admin::get_wallet))
+        .route(
+            "/api/v1/admin/wallets/{id}/retire",
+            post(admin::retire_wallet),
+        )
+        .route(
+            "/api/v1/admin/wallets/{id}/restore",
+            post(admin::restore_wallet),
+        )
         .route(
             "/api/v1/admin/key-custody/bundle",
             post(admin::create_key_bundle),

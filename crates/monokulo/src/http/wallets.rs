@@ -11,7 +11,7 @@ use axum::Form;
 use maud::html;
 use serde::Deserialize;
 
-use crate::db::{DeleteWallet, UserRow, WalletId, WalletOrigin, WalletRow};
+use crate::db::{UserRow, WalletId, WalletOrigin, WalletRow};
 use crate::views;
 use crate::views::wallets::{
     CreateViewModel, DetailViewModel, ImportViewModel, ReadyViewModel, WalletEvent, WalletListItem,
@@ -62,10 +62,23 @@ async fn wallet_names(state: &AppState, user: &UserRow) -> Vec<String> {
     let user_id = user.id.clone();
     state
         .db
-        .read(move |db| db.list_wallets(&user_id))
+        .read(move |db| db.wallet_names(&user_id))
         .await
-        .map(|wallets| wallets.into_iter().map(|w| w.wallet.name).collect())
         .unwrap_or_default()
+}
+
+fn already_added(existing: &WalletRow) -> String {
+    if existing.retired_at.is_some() {
+        format!(
+            "You retired this wallet, \u{201c}{}\u{201d}. Bring it back on its page to use it again.",
+            existing.name
+        )
+    } else {
+        format!(
+            "You've already added this wallet, as \u{201c}{}\u{201d}.",
+            existing.name
+        )
+    }
 }
 
 /// The name a wallet will get: the one typed, else the one the form
@@ -222,10 +235,7 @@ pub async fn import_submit(
     match added {
         Ok(wallet) => redirect_303(&ready_path(&wallet, next.as_deref(), false)),
         Err(AddWalletError::AlreadyAdded(existing)) => {
-            let message = format!(
-                "You've already added this wallet, as \u{201c}{}\u{201d}.",
-                existing.name
-            );
+            let message = already_added(&existing);
             render_import(
                 &state,
                 &user,
@@ -409,10 +419,7 @@ pub async fn create_submit(
         Err(error) => {
             let message = match error {
                 AddWalletError::Invalid(message) => message,
-                AddWalletError::AlreadyAdded(existing) => format!(
-                    "You've already added this wallet, as \u{201c}{}\u{201d}.",
-                    existing.name
-                ),
+                AddWalletError::AlreadyAdded(existing) => already_added(&existing),
                 AddWalletError::Internal => "The wallet couldn't be added right now.".to_owned(),
             };
             // The phrase backed up on that page is not registered anywhere,
@@ -500,8 +507,17 @@ pub async fn ready(
 pub async fn index(State(state): State<AppState>, AuthedUser(user, _): AuthedUser) -> Response {
     adopt_unlinked_stores(&state, &user).await;
     let user_id = user.id.clone();
-    let wallets = match state.db.read(move |db| db.list_wallets(&user_id)).await {
-        Ok(wallets) => wallets,
+    let (wallets, retired) = match state
+        .db
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                db.list_wallets(&user_id)?,
+                db.list_retired_wallets(&user_id)?,
+            ))
+        })
+        .await
+    {
+        Ok(lists) => lists,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let items: Vec<WalletListItem> = wallets
@@ -519,13 +535,26 @@ pub async fn index(State(state): State<AppState>, AuthedUser(user, _): AuthedUse
         })
         .collect();
     let chrome = super::page_chrome(&state, Some(&user), "/dashboard/wallets").await;
-    views::wallets::list_page(&chrome, &items).into_response()
+    let retired: Vec<views::wallets::RetiredListItem> = retired
+        .into_iter()
+        .map(|w| views::wallets::RetiredListItem {
+            id: w.id.to_string(),
+            retired: w
+                .retired_at
+                .map(|at| chrome.clock.text(at))
+                .unwrap_or_default(),
+            name: w.name,
+        })
+        .collect();
+    views::wallets::list_page(&chrome, &items, &retired).into_response()
 }
 
 #[derive(Deserialize, Default)]
 pub struct DetailQuery {
     #[serde(default)]
     renamed: Option<String>,
+    #[serde(default)]
+    restored: Option<String>,
 }
 
 async fn render_detail(
@@ -583,6 +612,8 @@ async fn render_detail(
                     Some((id, name)) => html! { "Store " a href=(format!("/dashboard/stores/{id}")) { (name) } " changed to this wallet" },
                     None => html! { "A store changed to this wallet" },
                 },
+                "retired" => html! { "Retired: its keys were deleted from key storage" },
+                "restored" => html! { "Brought back with its keys" },
                 "store_changed_away" => match store_name(&event.detail) {
                     Some((id, name)) => html! { "Store " a href=(format!("/dashboard/stores/{id}")) { (name) } " changed to another wallet" },
                     None => html! { "A store changed to another wallet" },
@@ -629,7 +660,14 @@ async fn render_detail(
     history.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
     history.truncate(30);
 
+    let retire = retire_state(state, &wallet, &chrome.clock).await;
+    let restore = match wallet.retired_at {
+        Some(_) => Some(restore_form(state, user).await),
+        None => None,
+    };
     let data = DetailViewModel {
+        retire,
+        restore,
         name_field: name_field.unwrap_or_else(|| wallet.name.clone()),
         stores: stores
             .iter()
@@ -678,7 +716,11 @@ pub async fn detail(
     let Some(wallet) = load_wallet(&state, &user, &id).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let notice = query.renamed.map(|_| "Renamed.".to_owned());
+    let notice = match (query.renamed, query.restored) {
+        (Some(_), _) => Some("Renamed.".to_owned()),
+        (None, Some(_)) => Some(format!("{} is back. Stores can use it again.", wallet.name)),
+        (None, None) => None,
+    };
     render_detail(&state, &user, wallet, None, notice, None).await
 }
 
@@ -739,86 +781,185 @@ pub async fn rename(
     }
 }
 
+/// Whether the wallet can be retired now, and if not why: the engine knows
+/// its stores (of any account) and its orders.
+async fn retire_state(
+    state: &AppState,
+    wallet: &WalletRow,
+    clock: &views::time::Clock,
+) -> views::wallets::RetireState {
+    use views::wallets::RetireState;
+    if wallet.retired_at.is_some() {
+        return RetireState::Retired;
+    }
+    match state
+        .engine
+        .client
+        .wallet_status(&wallet.engine_wallet_id)
+        .await
+    {
+        Ok(status) if status.stores > 0 => RetireState::Stores(status.stores),
+        Ok(status) if status.payable_orders > 0 => RetireState::Orders {
+            count: status.payable_orders,
+            until: status.payable_until.map(|at| clock.text(at)),
+        },
+        Ok(_) => RetireState::Ready,
+        Err(e) => {
+            tracing::warn!(error = %e, wallet = %wallet.id, "could not ask the engine whether a wallet is in use");
+            RetireState::Unknown
+        }
+    }
+}
+
+/// The key fields for bringing a retired wallet back, as on "Bring your
+/// own wallet".
+async fn restore_form(state: &AppState, user: &UserRow) -> views::wallets::RestoreForm {
+    let custody_choices = super::status_page::custody_choice_views(state, None);
+    let snp_entry = super::key_entry::prepare(
+        state,
+        &user.id,
+        super::key_entry::Purpose::Create,
+        &super::key_entry::offered_backends(state, &custody_choices),
+    )
+    .await;
+    views::wallets::RestoreForm {
+        custody_choices,
+        snp_entry,
+    }
+}
+
 #[derive(Deserialize)]
-pub struct DeleteForm {
+pub struct RetireForm {
     #[serde(default)]
     confirm: String,
 }
 
-/// `POST /dashboard/wallets/{id}/delete`: refused while a store uses the
-/// wallet, and unless its name was typed to confirm.
-pub async fn delete(
+/// `POST /dashboard/wallets/{id}/retire`: the wallet is offered nowhere
+/// again and its keys are deleted (docs/wallets.md, "Retiring a wallet").
+/// Refused unless its name was typed, while a store uses it, or while an
+/// order on it can still be paid.
+pub async fn retire(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<String>,
-    Form(form): Form<DeleteForm>,
+    Form(form): Form<RetireForm>,
 ) -> Response {
     let Some(wallet) = load_wallet(&state, &user, &id).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    if wallet.retired_at.is_some() {
+        return redirect_303(&format!("/dashboard/wallets/{}", wallet.id));
+    }
     if form.confirm.trim() != wallet.name {
-        let message = format!("Type \u{201c}{}\u{201d} exactly to delete it.", wallet.name);
+        let message = format!("Type \u{201c}{}\u{201d} exactly to retire it.", wallet.name);
         return render_detail(&state, &user, wallet, Some(message), None, None).await;
     }
-    // The engine first: it refuses while a store of any account uses the
-    // keys, and a wallet it forgot can't be used again by mistake.
-    match state
+    // The engine first: it deletes the keys, and refuses while a store of
+    // any account uses them or an order on them can still be paid.
+    let retired_at = match state
         .engine
         .client
-        .delete_wallet(&wallet.engine_wallet_id)
+        .retire_wallet(&wallet.engine_wallet_id)
         .await
     {
-        Ok(()) => {}
-        Err(crate::engine_client::EngineClientError::EngineError { status, .. })
-            if status == StatusCode::NOT_FOUND => {}
+        Ok(at) => at,
         Err(crate::engine_client::EngineClientError::EngineError { status, message })
             if status == StatusCode::CONFLICT =>
         {
-            return render_detail(
-                &state,
-                &user,
-                wallet,
-                Some(format!("It's still in use: {message}.")),
-                None,
-                None,
-            )
-            .await;
+            let message = format!("It can't be retired yet: {message}.");
+            return render_detail(&state, &user, wallet, Some(message), None, None).await;
         }
         Err(e) => {
-            tracing::error!(error = %e, wallet = %wallet.id, "the engine could not delete a wallet");
-            return render_detail(
-                &state,
-                &user,
-                wallet,
-                Some("The wallet couldn't be deleted right now. Try again in a minute.".to_owned()),
-                None,
-                None,
-            )
-            .await;
+            tracing::error!(error = %e, wallet = %wallet.id, "the engine could not retire a wallet");
+            let message =
+                "The wallet couldn't be retired right now. Nothing changed; try again in a minute."
+                    .to_owned();
+            return render_detail(&state, &user, wallet, Some(message), None, None).await;
+        }
+    };
+    let (user_id, wallet_id) = (user.id.clone(), wallet.id.clone());
+    if let Err(e) = state
+        .db
+        .write(move |db| db.retire_wallet(&user_id, &wallet_id, retired_at))
+        .await
+    {
+        tracing::error!(error = %e, wallet = %wallet.id, "the engine retired a wallet but it couldn't be recorded");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    redirect_303(&format!("/dashboard/wallets/{}", wallet.id))
+}
+
+#[derive(Deserialize)]
+pub struct RestoreForm {
+    #[serde(default)]
+    view_key_hex: String,
+    #[serde(default)]
+    spend_pubkey_hex: String,
+    #[serde(default)]
+    encrypted_keys: Option<String>,
+    #[serde(default)]
+    key_custody_backend: Option<String>,
+}
+
+/// `POST /dashboard/wallets/{id}/restore`: a retired wallet back, with its
+/// keys entered again; the engine checks they are this wallet's.
+pub async fn restore(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+    Form(form): Form<RestoreForm>,
+) -> Response {
+    let Some(wallet) = load_wallet(&state, &user, &id).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if wallet.retired_at.is_none() {
+        return redirect_303(&format!("/dashboard/wallets/{}", wallet.id));
+    }
+    let backend = form
+        .key_custody_backend
+        .as_deref()
+        .filter(|b| !b.is_empty());
+    let keys = match super::key_entry::store_keys(
+        &state,
+        backend,
+        &form.view_key_hex,
+        &form.spend_pubkey_hex,
+        form.encrypted_keys.as_deref(),
+    ) {
+        Ok((_, keys)) => keys,
+        Err(message) => {
+            return render_detail(&state, &user, wallet, Some(message), None, None).await
+        }
+    };
+    match state
+        .engine
+        .client
+        .restore_wallet(&wallet.engine_wallet_id, &keys, backend)
+        .await
+    {
+        Ok(_) => {}
+        Err(crate::engine_client::EngineClientError::EngineError { status, message })
+            if status == StatusCode::BAD_REQUEST =>
+        {
+            return render_detail(&state, &user, wallet, Some(message), None, None).await;
+        }
+        Err(e) => {
+            tracing::error!(error = %e, wallet = %wallet.id, "the engine could not bring a wallet back");
+            let message =
+                "The wallet couldn't be brought back right now. Try again in a minute.".to_owned();
+            return render_detail(&state, &user, wallet, Some(message), None, None).await;
         }
     }
     let (user_id, wallet_id) = (user.id.clone(), wallet.id.clone());
-    match state
+    if let Err(e) = state
         .db
-        .write(move |db| db.delete_wallet(&user_id, &wallet_id))
+        .write(move |db| db.restore_wallet(&user_id, &wallet_id, crate::now_unix()))
         .await
     {
-        Ok(DeleteWallet::Deleted | DeleteWallet::NotFound) => redirect_303("/dashboard/wallets"),
-        Ok(DeleteWallet::InUse(n)) => {
-            render_detail(
-                &state,
-                &user,
-                wallet,
-                Some(format!(
-                    "{n} store(s) still use this wallet. Delete or move them first."
-                )),
-                None,
-                None,
-            )
-            .await
-        }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        tracing::error!(error = %e, wallet = %wallet.id, "the engine brought a wallet back but it couldn't be recorded");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
+    redirect_303(&format!("/dashboard/wallets/{}?restored=1", wallet.id))
 }
 
 // -- The page's script, its module and the wallet app icons -----------------
@@ -1221,8 +1362,8 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains("store(s) still use this wallet"),
-            "it can't be deleted yet: {html}"
+            html.contains("2 stores still use this wallet"),
+            "it can't be retired yet: {html}"
         );
     }
 
@@ -1296,14 +1437,14 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains("btn-danger"),
-            "no store uses it, so delete is offered: {html}"
+            html.contains("btn-danger") && html.contains("Retire wallet"),
+            "no store uses it, so retiring is offered: {html}"
         );
 
         let wrong = router
             .clone()
             .oneshot(post(
-                &format!("{page}/delete"),
+                &format!("{page}/retire"),
                 Some(&cookie),
                 &[("confirm", "nope")],
             ))
@@ -1312,22 +1453,96 @@ mod tests {
         assert_eq!(wrong.status(), StatusCode::OK);
         assert_eq!(wallets_of(&state, "detail@example.com").len(), 1);
 
-        let deleted = router
+        let retired = router
             .clone()
             .oneshot(post(
-                &format!("{page}/delete"),
+                &format!("{page}/retire"),
                 Some(&cookie),
                 &[("confirm", "New name")],
             ))
             .await
             .unwrap();
-        assert_eq!(deleted.status(), StatusCode::SEE_OTHER);
-        assert!(wallets_of(&state, "detail@example.com").is_empty());
-        // The engine forgot it too: the same keys can be brought in again.
-        assert_eq!(
-            bring_in(&router, &cookie, "Back again").await.status(),
-            StatusCode::SEE_OTHER
+        assert_eq!(retired.status(), StatusCode::SEE_OTHER);
+        assert!(
+            wallets_of(&state, "detail@example.com").is_empty(),
+            "offered nowhere"
         );
+        let html = body_text(get(&router, &page, &cookie).await).await;
+        assert!(html.contains("Retired. Its keys are deleted."), "{html}");
+        assert!(
+            html.contains("private view key and public spend key"),
+            "{html}"
+        );
+        assert!(
+            html.contains("Retired: its keys were deleted from key storage"),
+            "{html}"
+        );
+        assert!(html.contains("Bring it back"), "{html}");
+        assert!(!html.contains("Retire wallet"), "{html}");
+        let list = body_text(get(&router, "/dashboard/wallets", &cookie).await).await;
+        assert!(list.contains("Retired wallets (1)"), "{list}");
+        // Its keys again: it's this one, retired, to be brought back.
+        let again = body_text(bring_in(&router, &cookie, "Back again").await).await;
+        assert!(again.contains("You retired this wallet"), "{again}");
+
+        let restored = router
+            .clone()
+            .oneshot(post(
+                &format!("{page}/restore"),
+                Some(&cookie),
+                &[
+                    ("view_key_hex", TEST_VIEW_KEY_HEX),
+                    ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(restored.status(), StatusCode::SEE_OTHER);
+        let html = body_text(get(&router, &location(&restored), &cookie).await).await;
+        assert!(html.contains("New name is back"), "{html}");
+        assert!(html.contains("Brought back with its keys"), "{html}");
+        assert_eq!(wallets_of(&state, "detail@example.com").len(), 1);
+    }
+
+    /// Another wallet's keys don't bring a retired one back.
+    #[tokio::test]
+    async fn a_retired_wallet_comes_back_only_with_its_own_keys() {
+        let (state, _engine) = real_engine_state().await;
+        let router = build_router(state.clone());
+        let (cookie, _) = sign_up(&router, "restore@example.com", None).await;
+        bring_in(&router, &cookie, "Till").await;
+        let id = wallets_of(&state, "restore@example.com")[0]
+            .wallet
+            .id
+            .to_string();
+        let page = format!("/dashboard/wallets/{id}");
+        let retired = router
+            .clone()
+            .oneshot(post(
+                &format!("{page}/retire"),
+                Some(&cookie),
+                &[("confirm", "Till")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(retired.status(), StatusCode::SEE_OTHER);
+        let other = made_in_the_browser(40);
+        let refused = router
+            .clone()
+            .oneshot(post(
+                &format!("{page}/restore"),
+                Some(&cookie),
+                &[
+                    ("view_key_hex", &other.view_key_hex),
+                    ("spend_pubkey_hex", &other.spend_pubkey_hex),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::OK);
+        let html = body_text(refused).await;
+        assert!(html.contains("belong to a different wallet"), "{html}");
+        assert!(wallets_of(&state, "restore@example.com").is_empty());
     }
 
     #[tokio::test]
@@ -1346,16 +1561,16 @@ mod tests {
             get(&router, &page, &other).await.status(),
             StatusCode::NOT_FOUND
         );
-        let delete = router
+        let retire = router
             .clone()
             .oneshot(post(
-                &format!("{page}/delete"),
+                &format!("{page}/retire"),
                 Some(&other),
                 &[("confirm", "Mine")],
             ))
             .await
             .unwrap();
-        assert_eq!(delete.status(), StatusCode::NOT_FOUND);
+        assert_eq!(retire.status(), StatusCode::NOT_FOUND);
         assert_eq!(wallets_of(&state, "owner@example.com").len(), 1);
     }
 
@@ -1680,7 +1895,7 @@ mod tests {
         let refused = router
             .clone()
             .oneshot(post(
-                &format!("/dashboard/wallets/{}/delete", copper.id),
+                &format!("/dashboard/wallets/{}/retire", copper.id),
                 Some(&cookie),
                 &[("confirm", "Copper Heron")],
             ))
@@ -1688,6 +1903,11 @@ mod tests {
             .unwrap();
         let html = body_text(refused).await;
         assert!(html.contains("can still be paid into it"), "{html}");
+        // The page says so before anyone tries: Retire is off.
+        assert!(
+            html.contains("1 order on it can still be paid, until about"),
+            "{html}"
+        );
         assert!(wallets_of(&state, email)
             .iter()
             .any(|w| w.wallet.id == copper.id));

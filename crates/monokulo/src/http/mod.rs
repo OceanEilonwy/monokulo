@@ -470,8 +470,12 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(wallets::rename),
         )
         .route(
-            "/dashboard/wallets/{id}/delete",
-            axum::routing::post(wallets::delete),
+            "/dashboard/wallets/{id}/retire",
+            axum::routing::post(wallets::retire),
+        )
+        .route(
+            "/dashboard/wallets/{id}/restore",
+            axum::routing::post(wallets::restore),
         )
         .route(
             "/dashboard/stores/new/woocommerce",

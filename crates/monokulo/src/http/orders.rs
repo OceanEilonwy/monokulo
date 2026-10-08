@@ -1064,6 +1064,7 @@ async fn store_wallet_view(
             .map(|p| views::store_settings::WalletPeriodView {
                 wallet_id: p.wallet_id.map(|id| id.to_string()),
                 wallet_name: p.wallet_name,
+                wallet_retired: p.wallet_retired,
                 from: p.from,
                 until: p.until,
                 orders: p.orders,
@@ -1890,7 +1891,8 @@ pub async fn change_store_wallet(
         .read(move |db| db.get_wallet(&user_id, &wallet_id))
         .await
         .ok()
-        .flatten();
+        .flatten()
+        .filter(|w| w.retired_at.is_none());
     let Some(chosen) = chosen else {
         return refuse("Choose one of your wallets.".to_owned(), row).await;
     };
