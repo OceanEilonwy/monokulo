@@ -1351,7 +1351,7 @@ fn node_row(
             }
             div class="node-row-body" {
                 div class="setting-field" {
-                    label class="setting-label" for=(id("address")) { "Address" }
+                    div class="setting-label-row" { label class="setting-label" for=(id("address")) { "Address" } }
                     span class="field-help" id=(id("address-help")) {
                         "The node's host and port, like " code { (example) } ". "
                         code { "http://" } " or " code { "https://" } " in front is fine (" code { "https://" } " also ticks Use TLS); "
@@ -1364,19 +1364,19 @@ fn node_row(
                     }
                 }
                 div class="setting-field node-tls" {
-                    label class="setting-label" for=(id("ssl")) { "Use TLS" }
+                    div class="setting-label-row" { label class="setting-label" for=(id("ssl")) { "Use TLS" } }
                     span class="field-help" id=(id("ssl-help")) { "Connect with TLS (https). Off by default; most nodes on port 18081 or 18089 don't use it." }
                     input type="checkbox" name=(name("ssl")) id=(id("ssl")) value="on" checked[row.row.ssl] aria-describedby=(id("ssl-help")) data-node-tls;
                 }
                 div class="setting-field node-self-signed" data-node-self-signed {
-                    label class="setting-label" for=(id("self_signed")) { "Accept a self-signed certificate" }
+                    div class="setting-label-row" { label class="setting-label" for=(id("self_signed")) { "Accept a self-signed certificate" } }
                     span class="field-help" id=(id("self_signed-help")) {
                         "Many community nodes use a self-signed TLS certificate; tick this to accept one. Only used with TLS."
                     }
                     input type="checkbox" name=(name("self_signed")) id=(id("self_signed")) value="on" checked[row.row.self_signed] aria-describedby=(id("self_signed-help"));
                 }
                 div class="setting-field node-zmq" {
-                    label class="setting-label" for=(id("zmq_pub")) { "Announcements (ZMQ)" }
+                    div class="setting-label-row" { label class="setting-label" for=(id("zmq_pub")) { "Announcements (ZMQ)" } }
                     span class="field-help" id=(id("zmq_pub-help")) {
                         "Optional, for your own node: the address it was started with as " code { "--zmq-pub" } ", like "
                         code { "tcp://127.0.0.1:18083" } ". Payments are then seen the moment the node sees them, instead of at the next check. "
@@ -2601,7 +2601,7 @@ mod tests {
             ]
         );
         // Each field: its name, then what it's for, then the control.
-        assert!(block.contains(r#"<label class="setting-label" for="node-stagenet-0-address">Address</label><span class="field-help" id="node-stagenet-0-address-help">The node's host and port, like <code>node.example.com:18089</code>."#), "{block}");
+        assert!(block.contains(r#"<div class="setting-label-row"><label class="setting-label" for="node-stagenet-0-address">Address</label></div><span class="field-help" id="node-stagenet-0-address-help">The node's host and port, like <code>node.example.com:18089</code>."#), "{block}");
         // Enter in an address box saves, rather than pressing a row's button.
         let form = &html[html.find("<form ").unwrap()..];
         assert!(form.find(r#"<button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true">Save</button>"#).unwrap() < form.find(r#"name="node_action""#).unwrap());
