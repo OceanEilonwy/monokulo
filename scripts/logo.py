@@ -217,7 +217,7 @@ export const LOADING_MARK = '{svg}';
 """
 
 
-def web_page(text):
+def web_page(text, markers=2, name="web/index.html"):
     marks = {
         "small": drawing("small", INLINE, "monokulo-lens-small"),
         "full": drawing("full", INLINE, "monokulo-lens-full"),
@@ -227,7 +227,7 @@ def web_page(text):
         return f"{m.group(1)}{marks[m.group(2)]}{m.group(3)}"
 
     new, count = re.subn(r"(<!-- logo:(small|full) -->.*?<svg[^>]*>).*?(</svg>)", swap, text, flags=re.S)
-    assert count == 2, f"web/index.html: expected 2 logo markers, found {count}"
+    assert count == markers, f"{name}: expected {markers} logo markers, found {count}"
     return new
 
 
@@ -240,6 +240,7 @@ OUTPUTS = {
     "crates/monokulo/src/views/logo_art.rs": lambda _: rust_module(),
     "crates/monokulo/pos-ui/src/logo.ts": lambda _: ts_module(),
     "web/index.html": web_page,
+    "web/quality/index.html": lambda text: web_page(text, 1, "web/quality/index.html"),
 }
 
 if __name__ == "__main__":

@@ -1,0 +1,95 @@
+# The GitHub Pages site, deployed from one place:
+#   /           the landing page and the signed apk repository, as the
+#               OpenWrt workflow last built them on main (its site artifact)
+#   /quality/   the quality report: tests, coverage, property tests, fuzzing,
+#               load and screenshots (scripts/quality-site.py), from the newest
+#               runs on main of CI, the nightly engine property and fuzz
+#               explorations, and the weekly engine scale measurements
+#
+# Runs whenever one of those finishes on main, when the report itself changes
+# there, and by hand (Actions > Pages > Run workflow), so the site always
+# carries the newest of each. Pages serves a single deployment, which is why
+# the OpenWrt workflow no longer deploys: this workflow republishes its site
+# beside the report.
+#
+# If the OpenWrt site artifact has expired (90 days without a run on main),
+# the build stops rather than take the package repository offline: run the
+# OpenWrt package workflow on main, which brings this one round again.
+
+name: Pages
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+      - OpenWrt package
+      - Engine property exploration
+      - Engine fuzz exploration
+      - Engine scale correctness
+    types: [completed]
+    branches: [main]
+  # A change to the report itself publishes it with the data already there.
+  push:
+    branches: [main]
+    paths:
+      - 'web/quality/**'
+      - 'scripts/quality-site.py'
+      - 'scripts/pages-inputs.py'
+      - 'crates/monokulo/src/views/theme.css'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+# One deployment at a time; a newer trigger waits rather than cancelling one
+# already publishing.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Pull-request runs of those workflows never trigger this (branches: main),
+    # but a run on main that was cancelled changes nothing worth publishing.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - name: Install Pillow for the screenshot gallery
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq python3-pil
+      - name: Check the report generator
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 scripts/test_quality_site.py
+      - name: Download the newest artifacts on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/pages-inputs.py inputs
+      - name: Build the quality report beside the landing page
+        run: |
+          args=(--out inputs/site/quality --sources inputs/sources.json --repo-url "https://github.com/$GITHUB_REPOSITORY")
+          for source in coverage properties fuzz scale; do
+            if test -d "inputs/$source"; then args+=("--$source" "inputs/$source"); fi
+          done
+          python3 scripts/quality-site.py "${args[@]}"
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: inputs/site/
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

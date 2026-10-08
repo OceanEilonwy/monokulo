@@ -87,6 +87,30 @@ with the `tests` jobs, then the `coverage` job joins their outputs with
 skipped tests (`scripts/test-summary.py`, from the JUnit reports) with the
 failures listed; the `coverage` job's also has the coverage table.
 
+## On GitHub Pages
+
+Main's results don't need downloading:
+<https://oceaneilonwy.github.io/monokulo/quality/> shows every test, the
+coverage of each crate and file (linked to its annotated source), the
+nightly property and fuzz runs, the stress points and the screenshot
+gallery. `.github/workflows/pages.yml` rebuilds it whenever CI, the engine
+property, fuzz or scale workflows, or the OpenWrt package finish on main:
+`scripts/pages-inputs.py` downloads the newest artifact of each and
+`scripts/quality-site.py` turns them into the page, its `data.json` and
+`badge.json` (the README's coverage badge). Only the ZMQ build of the
+property and fuzz runs is shown.
+
+To see a local run the same way, after `cargo xtask coverage all`:
+
+```sh
+python3 scripts/quality-site.py --coverage target/coverage --out target/quality
+python3 -m http.server --directory target/quality 8000   # then open http://127.0.0.1:8000
+```
+
+The page reads `data.json`, so it needs a web server rather than a file
+opened from disk. The screenshot gallery needs Pillow
+(`apt install python3-pil`).
+
 Rust metrics include production source in Cargo workspace crates, with a
 separate `mock-woocommerce` row. Browser metrics include checked-in
 `checkout.js`, `challenge.js`, `monokulo-client.js`, and POS `main.tsx` and

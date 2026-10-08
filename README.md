@@ -14,6 +14,7 @@
 
 <p align="center">
   <a href="https://github.com/OceanEilonwy/monokulo/actions/workflows/ci.yml"><img src="https://github.com/OceanEilonwy/monokulo/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://oceaneilonwy.github.io/monokulo/quality/#coverage"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Foceaneilonwy.github.io%2Fmonokulo%2Fquality%2Fbadge.json" alt="Coverage"></a>
   <a href="https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main"><img src="https://img.shields.io/badge/download-latest--main-e05d00" alt="Download latest-main"></a>
   <a href="https://oceaneilonwy.github.io/monokulo/"><img src="https://img.shields.io/badge/docs-GitHub%20Pages-0969da" alt="Docs"></a>
 </p>
@@ -22,7 +23,7 @@
   <a href="https://oceaneilonwy.github.io/monokulo/#install"><b>Install</b></a> ·
   <a href="https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main"><b>Downloads</b></a> ·
   <a href="https://oceaneilonwy.github.io/monokulo/"><b>Docs</b></a> ·
-  <a href="docs/ENGINE_VERIFICATION.md"><b>How it's tested</b></a> ·
+  <a href="https://oceaneilonwy.github.io/monokulo/quality/"><b>How it's tested</b></a> ·
   <a href="plugins/woocommerce"><b>WooCommerce</b></a> ·
   <a href="CONTRIBUTING.md"><b>Contribute</b></a>
 </p>
@@ -35,7 +36,7 @@
 - **One small program.** One executable and SQLite. Runs on Linux, macOS, Windows, Docker or a GL.iNet Flint 2 router.
 - **Many stores, one install.** Each store has its own wallet, view key and webhooks.
 - **Checks the chain itself.** Verifies every block's proof of work, so a node can't make up confirmations.
-- **Tested in depth.** Property tests against an independent ledger model, fuzzing and mutation testing run alongside the unit, browser and stagenet tests. See [how the engine is verified](docs/ENGINE_VERIFICATION.md).
+- **Tested in depth.** Property tests against an independent ledger model, fuzzing and mutation testing run alongside the unit, browser and stagenet tests. See [how it's tested](https://oceaneilonwy.github.io/monokulo/quality/): every test, coverage, the property and fuzz runs, and screenshots of every screen.
 
 ## Get started
 
