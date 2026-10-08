@@ -4179,6 +4179,40 @@ async fn a_check_answers_as_a_save_would_and_saves_nothing() {
     assert_eq!(again["changed"], serde_json::json!([]));
 }
 
+/// A key custody backend that's turned on but can't run (it failed to
+/// start) says so on the setting that turned it on.
+#[tokio::test]
+async fn a_backend_that_cannot_run_is_a_problem_on_the_setting_that_enables_it() {
+    use crate::key_custody::{CustodyRouter, KeyCustody, PlainKeyCustody, Unstarted};
+    let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+    let snp: Arc<dyn KeyCustody> = Arc::new(Unstarted(
+        "the snp backend can't start: no security processor".into(),
+    ));
+    let backends = HashMap::from([("plain".to_owned(), plain), ("snp".to_owned(), snp)]);
+    // An engine with settings, as `settings_router`'s.
+    let (base, _daemon) = test_app_state_with_real_daemon().await;
+    let state = AppState {
+        custody: crate::http::Custody {
+            backends: Arc::new(CustodyRouter::new(backends, "plain")),
+            ..base.custody.clone()
+        },
+        ..base
+    };
+    let router = build_router(state, 1_000_000);
+    let response = router.oneshot(settings_request("GET", None)).await.unwrap();
+    let body = body_json(response).await;
+    let problem = body["scalars"]["key_custody.enabled_backends"]["problem"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        problem.contains(
+            "The snp backend can't run: the snp backend can't start: no security processor."
+        ),
+        "{body}"
+    );
+}
+
 /// Only a node that answers with a network it isn't being saved for is
 /// refused: one that doesn't answer may just be down (D2), and one that
 /// doesn't say, or is a regtest node, might be right.

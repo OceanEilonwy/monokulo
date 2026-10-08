@@ -284,6 +284,7 @@ async fn fetch_engine_settings(
                     label,
                     status: None,
                     saved_index: Some(at),
+                    saved: None,
                 })
                 .collect();
             AdminNetworkFieldView {
@@ -320,10 +321,11 @@ fn with_time_limits(fields: &mut [AdminScalarFieldView], clock: &views::time::Cl
         .iter_mut()
         .filter(|f| f.key == "logging.dev_mode_until")
     {
-        let until = field.value.trim().parse().unwrap_or(0);
+        let label = |value: &str| clock.text(value.trim().parse().unwrap_or(0));
         field.kind = SettingKindView::TimeLimit {
             now,
-            until_label: clock.text(until),
+            until_label: label(&field.value),
+            saved_until_label: field.saved_value.as_deref().map(label),
         };
     }
 }
@@ -341,8 +343,45 @@ struct SaveResult {
     /// The node rows as submitted for refused or changed networks of a
     /// refused save, shown again (with what's wrong).
     nodes: Option<NodeForm>,
-    /// A refusal's word on particular settings, by key, beside each.
+    /// A refusal's word on particular settings, by form name (an engine
+    /// setting monokulo also has is `engine:<key>`), beside each.
     field_errors: Vec<(String, String)>,
+}
+
+/// A refused save's node rows, as sent, each matched to the saved node at
+/// its address (each saved node once): so the page's script counts only
+/// what was changed, added, taken out or moved, and Discard knows what was
+/// saved.
+fn rows_shown_again(sent: &[admin_nodes::NodeRow], saved: &[NodeRowView]) -> Vec<NodeRowView> {
+    let label = |address: &str| admin_nodes::parse_address(address).map(|a| a.label()).ok();
+    let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
+    let mut taken = vec![false; saved.len()];
+    sent.iter()
+        .map(|row| {
+            let at = label(&row.address).and_then(|wanted| {
+                saved.iter().enumerate().position(|(i, s)| {
+                    !taken[i] && label(&s.row.address).is_some_and(|l| same(&l, &wanted))
+                })
+            });
+            if let Some(at) = at {
+                taken[at] = true;
+            }
+            let matched = at.map(|at| &saved[at]);
+            NodeRowView {
+                label: label(&row.address).unwrap_or_default(),
+                row: row.clone(),
+                status: matched.and_then(|m| m.status.clone()),
+                saved_index: matched.and(at),
+                saved: matched
+                    .map(|m| &m.row)
+                    .filter(|saved| {
+                        (&saved.address, saved.ssl, saved.self_signed, &saved.zmq_pub)
+                            != (&row.address, row.ssl, row.self_signed, &row.zmq_pub)
+                    })
+                    .cloned(),
+            }
+        })
+        .collect()
 }
 
 /// A refused save's value for `field`, shown in place of the saved one,
@@ -368,18 +407,22 @@ async fn build_view_model(
         field_errors,
     } = result;
     let clock = views::time::Clock::for_user(admin);
+    // By form name: monokulo and the engine both have `logging.level`.
     let problem = |field: &mut AdminScalarFieldView| {
-        if let Some((_, message)) = field_errors.iter().find(|(key, _)| *key == field.key) {
+        if let Some((_, message)) = field_errors
+            .iter()
+            .find(|(name, _)| name == field.form_name())
+        {
             field.problem = Some(message.clone());
         }
     };
     let mut monokulo_fields = monokulo_fields(state);
-    with_time_limits(&mut monokulo_fields, &clock);
     // A refused save's word on a setting, beside it, and what was typed.
     for field in &mut monokulo_fields {
         problem(field);
         show_posted(field, &posted);
     }
+    with_time_limits(&mut monokulo_fields, &clock);
     let options_files = state
         .settings
         .registry
@@ -405,11 +448,11 @@ async fn build_view_model(
     match fetch_engine_settings(&state.engine.client).await {
         Ok(engine) => {
             let mut fields = engine.fields;
-            with_time_limits(&mut fields, &clock);
             for field in &mut fields {
                 problem(field);
                 show_posted(field, &posted);
             }
+            with_time_limits(&mut fields, &clock);
             view.engine_reachable = true;
             view.engine_fields = fields;
             view.engine_networks = engine.networks;
@@ -434,17 +477,7 @@ async fn build_view_model(
                 .ok()
                 .and_then(|n| nodes.rows(n));
             if let Some(rows) = rows {
-                network.rows = rows
-                    .iter()
-                    .map(|row| NodeRowView {
-                        label: admin_nodes::parse_address(&row.address)
-                            .map(|a| a.label())
-                            .unwrap_or_default(),
-                        row: row.clone(),
-                        status: None,
-                        saved_index: None,
-                    })
-                    .collect();
+                network.rows = rows_shown_again(rows, &network.rows);
             }
         }
     }
@@ -731,6 +764,7 @@ enum SaveNote {
 async fn check_monokulo(
     state: &AppState,
     form: &HashMap<String, String>,
+    engine_backends: Option<&str>,
 ) -> Result<live_settings::CheckReport, Refusal> {
     if form.is_empty() {
         return Ok(live_settings::CheckReport::default());
@@ -758,16 +792,20 @@ async fn check_monokulo(
         .await
         .map_err(registry_refusal)?;
     use live_settings::Section;
-    let snp_changed = crate::settings::SnpEntryPolicy::keys()
+    let site_changed = crate::settings::SnpEntryPolicy::keys()
         .iter()
         .any(|setting| report.would().changed.contains(&setting.key()));
-    if snp_changed {
-        if let Some(refused) = check_snp_entry_against_engine(state, registry, form).await {
-            return Err(refused);
-        }
+    if let Some(refused) =
+        check_snp_entry_against_engine(state, registry, form, engine_backends, site_changed).await
+    {
+        return Err(refused);
     }
     Ok(report)
 }
+
+/// The engine's setting that turns its key custody backends on: the same
+/// save's value is what this site's SEV-SNP key entry is checked against.
+const ENGINE_ENABLED_BACKENDS: &str = "key_custody.enabled_backends";
 
 /// Monokulo's part of a form as its registry takes it.
 fn monokulo_changes(form: &HashMap<String, String>) -> live_settings::Changes {
@@ -835,17 +873,18 @@ async fn check_snp_entry_against_engine(
     state: &AppState,
     registry: &live_settings::Registry,
     form: &HashMap<String, String>,
+    engine_backends: Option<&str>,
+    site_changed: bool,
 ) -> Option<Refusal> {
     use crate::settings::{
         SnpEntryPolicy, KEY_CUSTODY_SNP_ENTRY_ID_KEY as ID_KEY,
         KEY_CUSTODY_SNP_ENTRY_MIN_GUEST_SVN as MIN_SVN, KEY_CUSTODY_SNP_ENTRY_MIN_TCB as MIN_TCB,
         KEY_CUSTODY_SNP_ENTRY_REQUIRED as REQUIRED,
     };
-    use live_settings::Section;
-    if !SnpEntryPolicy::keys()
-        .iter()
-        .any(|setting| form.contains_key(setting.key()))
-    {
+    // Checked when this site's own policy changes, as before; the engine's
+    // backends a save changes on their own are the status page's to alert
+    // about, not a reason to refuse it.
+    if !site_changed {
         return None;
     }
     let saved: HashMap<&str, String> = registry
@@ -886,7 +925,15 @@ async fn check_snp_entry_against_engine(
             })
         }
     };
-    let problems = super::status_page::snp_policy_problems(&proposed, &status);
+    // The engine's backends as the same save would leave them: turning snp
+    // on (or off) and setting this site's policy to match go in one save.
+    let has_snp = super::status_page::engine_has_snp(&status);
+    let will_have_snp = engine_backends.map_or(has_snp, |backends| {
+        backends
+            .split(',')
+            .any(|b| super::key_entry::takes_keys_encrypted(b.trim()))
+    });
+    let problems = super::status_page::snp_policy_problems_for(&proposed, &status, will_have_snp);
     if problems.is_empty() {
         return None;
     }
@@ -928,6 +975,16 @@ struct RemoteSaveWarnings {
     messages: Vec<RemoteMessage>,
     #[serde(default)]
     unserved_networks: Vec<RemoteUnserved>,
+    /// Key custody backends the save turned on that can't run (one that
+    /// failed to start when the save was installed).
+    #[serde(default)]
+    unavailable_backends: Vec<RemoteUnavailable>,
+}
+
+#[derive(Deserialize)]
+struct RemoteUnavailable {
+    backend: String,
+    error: String,
 }
 
 #[derive(Deserialize)]
@@ -965,6 +1022,13 @@ fn engine_save_notes(warnings: RemoteSaveWarnings, submitted_bind: Option<&str>)
         notes.push(SaveNote::Banner(format!(
             "{stores} the {} network, which no longer has any reachable nodes. Their payments won't be detected until a node is set.",
             unserved.network
+        )));
+    }
+    for unavailable in &warnings.unavailable_backends {
+        notes.push(SaveNote::Banner(format!(
+            "The {} key custody backend can't run: {}. Stores on it aren't scanned until it can.",
+            unavailable.backend,
+            unavailable.error.trim_end_matches('.')
         )));
     }
     if !warnings.restart_required.is_empty() {
@@ -1022,13 +1086,12 @@ fn engine_refusal(status: axum::http::StatusCode, body: String) -> Refusal {
     }
 }
 
-/// What the engine's check said a save would do.
+/// What the engine's check said a save would change: its keys, none when
+/// nothing would.
 #[derive(Deserialize, Default)]
 struct RemoteCheckResponse {
     #[serde(default)]
     changed: Vec<String>,
-    #[serde(default)]
-    has_changes: bool,
 }
 
 /// Checks the engine's part of a tab through its
@@ -1148,7 +1211,13 @@ fn failures_of(
                 message: said,
             }),
         }
-        field_errors.push((field.key, field.message));
+        let name = match owner {
+            SettingOwner::Engine if is_monokulo_key(&field.key) => {
+                format!("engine:{}", field.key)
+            }
+            _ => field.key,
+        };
+        field_errors.push((name, field.message));
     }
 }
 
@@ -1189,7 +1258,14 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>, at: String) 
         .collect();
     let mut field_errors = Vec::new();
     let (monokulo_check, engine_check) = futures_util::future::join(
-        check_monokulo(state, &tab.monokulo),
+        check_monokulo(
+            state,
+            &tab.monokulo,
+            tab.engine
+                .scalars
+                .get(ENGINE_ENABLED_BACKENDS)
+                .map(String::as_str),
+        ),
         check_engine(state, &tab.engine),
     )
     .await;
@@ -1209,11 +1285,10 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>, at: String) 
         }
     };
     let engine_changed = match engine_check {
-        Ok(checked) if checked.has_changes => groups_of(
+        Ok(checked) => groups_of(
             checked.changed.iter().map(String::as_str),
             SettingOwner::Engine,
         ),
-        Ok(_) => Vec::new(),
         Err(refusal) => {
             failures_of(
                 SettingOwner::Engine,
@@ -1234,20 +1309,6 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>, at: String) 
             }
             all
         });
-    // Refused: what was typed, and the rows sent for every network
-    // refused or changed, shown again to fix or discard.
-    let shown_again = |failures: &[Failure], nodes: Option<NodeForm>| {
-        nodes.map(|nodes| NodeForm {
-            networks: nodes
-                .networks
-                .into_iter()
-                .filter(|(network, _)| {
-                    let group = Group::Network(*network);
-                    changed.contains(&group) || failures.iter().any(|f| f.group == Some(group))
-                })
-                .collect(),
-        })
-    };
     let refused = |failures: Vec<Failure>, posted, nodes, field_errors, notes| TabSave {
         outcome: SaveOutcome::Refused { failures },
         notes,
@@ -1256,7 +1317,7 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>, at: String) 
         field_errors,
     };
     if !failures.is_empty() {
-        let nodes = shown_again(&failures, tab.nodes);
+        let nodes = tab.nodes;
         return refused(failures, tab.posted, nodes, field_errors, Vec::new());
     }
     if changed.is_empty() {
@@ -1279,7 +1340,7 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>, at: String) 
                     &mut failures,
                     &mut field_errors,
                 );
-                let nodes = shown_again(&failures, tab.nodes);
+                let nodes = tab.nodes;
                 return refused(failures, tab.posted, nodes, field_errors, notes);
             }
         }
@@ -1500,7 +1561,10 @@ pub async fn save(
     }
     let mut view = build_view_model(&state, &admin_user, tab, result).await;
     view.answers_save = true;
-    let fragment = views::admin::settings_fragment(&view, false);
+    // Focus lands where the save says what it did: the first card saved,
+    // the save bar's refusal, or, when nothing had changed, the heading.
+    let unchanged = matches!(view.outcome, Some(SaveOutcome::Unchanged));
+    let fragment = views::admin::settings_fragment(&view, unchanged);
     if refused {
         super::fx::invalid(fragment)
     } else {
@@ -2912,14 +2976,8 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(
-                r#"<p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus>"#
-            ),
-            "the save bar's message gets focus: {html}"
-        );
-        assert!(
-            html.contains(r#"<span class="card-meta card-saved" data-card-saved>Saved "#),
-            "the card says it was saved: {html}"
+            html.contains(r#"<span class="card-meta card-saved" data-card-saved tabindex="-1" data-fx-focus>Saved "#),
+            "the card says it was saved, and gets focus: {html}"
         );
 
         let refused = router
@@ -4675,6 +4733,102 @@ mod tests {
         );
         assert!(toast_text(&html).contains(&message), "{html}");
         assert!(saved_nodes(&engine, "testnet").await.is_empty());
+    }
+
+    /// A refused save keeps every network's rows as sent, not only the
+    /// refused one's: another network's valid change is still there to save
+    /// or discard, and its unchanged rows read as saved.
+    #[tokio::test]
+    async fn a_refused_save_keeps_every_networks_rows_as_sent() {
+        let engine = spawn_engine().await;
+        let state = test_app_state_in_process(&engine).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let (a, b) = (
+            spawn_node_on("stagenet").await,
+            spawn_node_on("stagenet").await,
+        );
+        let mainnet = spawn_node_on("mainnet").await;
+        let saved = post_nodes(
+            &router,
+            &cookie,
+            &nodes_form("stagenet", &[], &a.to_string(), None),
+        )
+        .await;
+        assert!(is_saved(&follow(&router, &cookie, saved).await));
+
+        // Stagenet gains a node (fine); testnet gets one on mainnet (refused).
+        let mut form = nodes_form("stagenet", &[&a.to_string()], &b.to_string(), None);
+        form.extend(
+            nodes_form("testnet", &[], &mainnet.to_string(), None)
+                .into_iter()
+                .filter(|(name, _)| name != "tab"),
+        );
+        let refused = post_nodes(&router, &cookie, &form).await;
+        let html = unescaped(&follow(&router, &cookie, refused).await);
+        assert!(toast_text(&html).contains("Nothing saved"), "{html}");
+        let stagenet = &html[html.find(r#"id="card-network-stagenet""#).expect(&html)..];
+        let stagenet = &stagenet[..stagenet.find("</section>").unwrap()];
+        assert!(
+            stagenet.contains(&format!(r#"value="{b}""#)),
+            "the new node is still there: {stagenet}"
+        );
+        // The saved node matched as saved: first, unchanged.
+        assert!(
+            stagenet.contains(r#"data-node-row="0" data-node-saved="0">"#),
+            "{stagenet}"
+        );
+        assert_eq!(saved_nodes(&engine, "stagenet").await, [a.to_string()]);
+    }
+
+    /// The engine's refusal of a setting monokulo has too (`logging.level`)
+    /// shows beside the engine's, not monokulo's.
+    #[tokio::test]
+    async fn an_engine_refusal_shows_beside_the_engines_setting_not_monokulos_namesake_over_http() {
+        // A remote engine: inside monokulo the engine's logging settings
+        // are monokulo's.
+        let engine = spawn_remote_engine().await;
+        let state = test_app_state_over_http(engine.addr).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let refused = post_settings(
+            &router,
+            &cookie,
+            &[
+                ("tab", "logging"),
+                ("engine:logging.level", "info,engine=loud"),
+            ],
+        )
+        .await;
+        let html = unescaped(&follow(&router, &cookie, refused).await);
+        let card = |id: &str| {
+            let at = html.find(&format!(r#"id="card-{id}""#)).expect(&html);
+            let rest = &html[at..];
+            rest[..rest.find("</section>").unwrap()].to_string()
+        };
+        assert!(
+            card("logging-engine").contains(r#"class="setting-problem""#),
+            "{html}"
+        );
+        assert!(
+            !card("logging-monokulo").contains(r#"class="setting-problem""#),
+            "{html}"
+        );
+    }
+
+    /// A key custody backend a save turned on that can't run is a banner.
+    #[test]
+    fn a_backend_that_cannot_run_after_a_save_is_a_banner() {
+        let warnings: super::RemoteSaveWarnings = serde_json::from_value(serde_json::json!({
+            "unavailable_backends": [{ "backend": "snp", "error": "this engine is not a trusted SEV-SNP image." }],
+        }))
+        .unwrap();
+        assert_eq!(
+            super::engine_save_notes(warnings, None),
+            [super::SaveNote::Banner(
+                "The snp key custody backend can't run: this engine is not a trusted SEV-SNP image. Stores on it aren't scanned until it can.".into()
+            )]
+        );
     }
 
     /// Clearing a network stores use is saved (D2), and the page after it

@@ -108,6 +108,7 @@ fn is_node_key(key: &str) -> Option<&'static str> {
 pub async fn get_settings(
     State(db): State<Database>,
     State(settings): State<Arc<EngineSettings>>,
+    State(custody): State<super::Custody>,
 ) -> Result<Json<SettingsView>, ApiError> {
     let Some(registry) = settings.registry.as_ref() else {
         return Err(ApiError::Unavailable(
@@ -178,6 +179,26 @@ pub async fn get_settings(
                 pending_restart: view.pending_restart,
                 problem: view.problem.map(|p| p.message),
             },
+        );
+    }
+    // A backend that's turned on but can't run (it failed to start) says
+    // so on the setting that turned it on.
+    let cannot_run = backends_that_cannot_run(&custody).await;
+    if let (false, Some(view)) = (
+        cannot_run.is_empty(),
+        scalars.get_mut(crate::engine_settings::KEY_CUSTODY_ENABLED_BACKENDS.key),
+    ) {
+        let said: Vec<String> = cannot_run
+            .iter()
+            .map(UnavailableBackend::sentence)
+            .collect();
+        view.problem = Some(
+            view.problem
+                .take()
+                .into_iter()
+                .chain(said)
+                .collect::<Vec<_>>()
+                .join(" "),
         );
     }
     // The budget's help says what this machine allows, for the networks
@@ -305,6 +326,40 @@ fn refused(errors: &[live_settings::FieldError]) -> axum::response::Response {
         .into_response()
 }
 
+/// A key custody backend that's turned on but can't run: it failed to
+/// start, or doesn't answer.
+#[derive(Serialize)]
+pub struct UnavailableBackend {
+    backend: String,
+    error: String,
+}
+
+impl UnavailableBackend {
+    fn sentence(&self) -> String {
+        format!(
+            "The {} backend can't run: {}.",
+            self.backend,
+            self.error.trim_end_matches('.')
+        )
+    }
+}
+
+/// The enabled key custody backends that can't run, each asked directly.
+async fn backends_that_cannot_run(custody: &super::Custody) -> Vec<UnavailableBackend> {
+    custody
+        .backends
+        .backend_health()
+        .await
+        .into_iter()
+        .filter_map(|(backend, error)| {
+            Some(UnavailableBackend {
+                backend,
+                error: error?,
+            })
+        })
+        .collect()
+}
+
 /// A network that stores use but that has no node configured after a save
 /// (decision D2): the save is accepted and the admin is told.
 #[derive(Serialize)]
@@ -405,14 +460,17 @@ fn report_json(report: &live_settings::SaveReport) -> serde_json::Value {
     })
 }
 
-/// A save's answer: what changed, its warnings, and the networks stores
-/// use that it left without a node that answers.
+/// A save's answer: what changed, its warnings, the networks stores use
+/// that it left without a node that answers, and the key custody backends
+/// it turned on that can't run.
 fn saved(
     report: &live_settings::SaveReport,
     unserved: &[UnservedNetwork],
+    unavailable: &[UnavailableBackend],
 ) -> axum::response::Response {
     let mut body = report_json(report);
     body["warnings"]["unserved_networks"] = json!(unserved);
+    body["warnings"]["unavailable_backends"] = json!(unavailable);
     (StatusCode::OK, Json(body)).into_response()
 }
 
@@ -430,6 +488,7 @@ pub async fn update_settings(
     State(db): State<Database>,
     State(networks): State<Networks>,
     State(settings): State<Arc<EngineSettings>>,
+    State(custody): State<super::Custody>,
     Json(req): Json<UpdateSettingsRequest>,
 ) -> axum::response::Response {
     let registry = match registry_of(&settings) {
@@ -483,7 +542,18 @@ pub async fn update_settings(
                 }
             }
             unserved.sort_by(|a, b| a.network.cmp(&b.network));
-            saved(&report, &unserved)
+            // A backend this save turned on is started when the save is
+            // installed, after it was checked: one that then failed says so.
+            let custody_changed = report
+                .changed
+                .iter()
+                .any(|key| key.starts_with("key_custody."));
+            let unavailable = if custody_changed {
+                backends_that_cannot_run(&custody).await
+            } else {
+                Vec::new()
+            };
+            saved(&report, &unserved, &unavailable)
         }
         Err(e) => save_refused(e),
     }
