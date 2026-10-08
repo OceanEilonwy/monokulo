@@ -21,8 +21,12 @@ path = "junit.xml"
 [profile.default]
 slow-timeout = { period = "120s", terminate-after = 10 }
 
+# Proof-of-work tests hash real blocks with RandomX, each process holding up
+# to two 256 MiB light-mode caches (pow::hasher::MAX_KEYS) on a thread that
+# competes with their real 30ms RPC timeouts. Four at a time keeps that to
+# about 2 GiB and leaves CPU for the rest of the run.
 [test-groups.proof-workers]
-max-threads = 2
+max-threads = 4
 
 [[profile.default.overrides]]
 filter = 'test(/^proof::/) | test(real_verifier_and_scanner)'

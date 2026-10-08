@@ -253,6 +253,16 @@ impl Follower {
         })
     }
 
+    /// This follower hashing on `hasher`, as though it had started that
+    /// thread itself (until checking is turned off): tests' followers share
+    /// the thread that built their chains, whose `RandomX` keys are then
+    /// built already, rather than each building them again.
+    #[cfg(test)]
+    pub(crate) fn with_hasher(mut self, hasher: Hasher) -> Self {
+        self.hasher = Some(hasher);
+        self
+    }
+
     /// For `/status`: `None` while checking is off.
     pub fn status(&self) -> Option<ProofStatus> {
         self.status.clone()

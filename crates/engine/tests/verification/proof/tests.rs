@@ -43,10 +43,25 @@ pub(crate) fn tuning() -> ProofTuning {
 
 /// A test chain's window, then 12 mined blocks: an anchor is taken at
 /// TOP + 2. Its last block an hour ago, so a hundred more fit before now.
+/// Mined once per process (12 real `RandomX` proofs); each caller gets its
+/// own copy to extend.
 pub(crate) fn base_chain() -> TestChain {
-    let mut chain = TestChain::anchored_at(builder(), TOP, TEST_NOW as u64 - 3600);
-    chain.mine_empty(12);
-    chain
+    static CHAIN: OnceLock<TestChain> = OnceLock::new();
+    CHAIN
+        .get_or_init(|| {
+            let mut chain = TestChain::anchored_at(builder(), TOP, TEST_NOW as u64 - 3600);
+            chain.mine_empty(12);
+            chain
+        })
+        .clone()
+}
+
+/// A follower with `tuning`, hashing on the thread that built the test
+/// chains ([`Follower::with_hasher`]).
+pub(crate) fn follower(network: monero::Network, tuning: ProofTuning) -> Follower {
+    Follower::new(network, tuning)
+        .unwrap()
+        .with_hasher(builder())
 }
 
 struct World {
@@ -87,7 +102,7 @@ impl World {
             store,
             nodes,
             client,
-            follower: Follower::new(NET, tuning).unwrap(),
+            follower: follower(NET, tuning),
         }
     }
 
@@ -435,7 +450,7 @@ async fn a_restart_resumes_from_the_proven_chain_without_anchoring_again() {
         .unwrap();
     chain.mine_empty(3);
     chain.install(&world.nodes[0], TOP + 13);
-    world.follower = Follower::new(NET, tuning()).unwrap();
+    world.follower = follower(NET, tuning());
     world.round_at(TEST_NOW + 100).await;
     let after = world
         .store
@@ -770,14 +785,13 @@ async fn a_block_below_the_difficulty_floor_is_caught() {
     chain.mine_empty(1);
     chain.install(&world.nodes[0], TOP + 13);
     // The engine restarts with a floor above the test chain's difficulty.
-    world.follower = Follower::new(
+    world.follower = follower(
         NET,
         ProofTuning {
             min_difficulty_mainnet: 1_000,
             ..tuning()
         },
-    )
-    .unwrap();
+    );
     world.round().await;
     assert_eq!(world.verdict(0), NodeVerdict::Caught);
     assert!(world.status().nodes[0]

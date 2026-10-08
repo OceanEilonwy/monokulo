@@ -72,7 +72,7 @@ proptest! {
                 tokio::time::timeout(Duration::from_secs(30), world.round()).await.unwrap();
                 let tip = world.proven_tip();
                 assert_eq!(tip, chain.get(tip.height).unwrap().proven(), "a forged branch advanced verified state");
-                if restart { world.follower = Follower::new(NET, rules.clone()).unwrap(); }
+                if restart { world.follower = follower(NET, rules.clone()); }
             }
             // Force all-down and all-hanging phases in every case, not just
             // when random node states happen to produce them.
@@ -111,7 +111,7 @@ proptest! {
             assert!(world.store.lock().proven_tip(NET).unwrap().is_none());
             assert!(world.store.lock().proof_ceiling(NET).unwrap().is_some_and(|ceiling| ceiling == 0));
             for node in &nodes { *node.behavior.lock() = Behavior::default(); }
-            world.follower = Follower::new(NET,rules).unwrap();
+            world.follower = follower(NET, rules);
             world.round().await;
             assert_eq!(world.proven_tip(),chain.tip().proven());
         });
@@ -154,7 +154,7 @@ async fn anchor_rpc_history(count: usize, operation: Rpc, hanging: bool, restart
     );
     *nodes[0].behavior.lock() = Behavior::default();
     if restart {
-        world.follower = Follower::new(NET, rules).unwrap();
+        world.follower = follower(NET, rules);
     }
     world.round().await;
     assert_eq!(world.verdict(0), NodeVerdict::OnChain);
@@ -185,7 +185,7 @@ proptest! {
             let nodes = replace_nodes(&mut world,&chain);
             let liar = liar % count;
             nodes[liar].behavior.lock().blob = Some(if wrong_id { chain.tip().blob.clone() } else { vec![0] });
-            if restart { world.follower = Follower::new(NET,rules).unwrap(); }
+            if restart { world.follower = follower(NET, rules); }
             world.round().await;
             assert_eq!(world.proven_tip(),chain.tip().proven());
             assert!(nodes[liar].counts(Rpc::Blob).completed > 0,"malformed sample was never requested");
