@@ -60,3 +60,13 @@ opt-level = 3
 # hash and mine real blocks.
 [profile.dev.package.randomx-rs]
 opt-level = 3
+# TLS setup: every HTTP client a test builds loads and parses the platform's
+# root certificates.
+[profile.dev.package.rustls-webpki]
+opt-level = 3
+[profile.dev.package.rustls-pki-types]
+opt-level = 3
+[profile.dev.package.rustls-native-certs]
+opt-level = 3
+[profile.dev.package.untrusted]
+opt-level = 3
