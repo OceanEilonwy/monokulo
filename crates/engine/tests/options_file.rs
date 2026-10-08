@@ -9,10 +9,10 @@
 #![expect(
     clippy::tests_outside_test_module,
     clippy::unwrap_used,
+    clippy::expect_used,
     reason = "an integration test crate is all test code"
 )]
 
-use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -76,19 +76,50 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// Waits for the server to listen on `port`, or for it to exit.
-fn listening(child: &mut Child, port: u16) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while Instant::now() < deadline {
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return true;
-        }
-        if child.try_wait().unwrap().is_some() {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
+/// Starts the process `start` builds for a free port, and waits until it says
+/// it's listening on that port: its own "engine listening" log line, not just
+/// something answering there, which another test's process may have taken
+/// between the port being chosen and this one binding it. A port taken
+/// first (the bind fails, the address in use) is chosen again. Returns the
+/// running process, its port and its log.
+fn start_listening(
+    dir: &Path,
+    name: &str,
+    said: &str,
+    start: impl Fn(u16) -> Command,
+) -> (Child, u16, String) {
+    (0..5)
+        .find_map(|attempt| {
+            let port = free_port();
+            let log = dir.join(format!("{name}-{attempt}.log"));
+            let mut child = start(port)
+                .stdout(Stdio::null())
+                .stderr(std::fs::File::create(&log).unwrap())
+                .spawn()
+                .unwrap();
+            let address = format!("127.0.0.1:{port}");
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                let text = std::fs::read_to_string(&log).unwrap_or_default();
+                if text
+                    .lines()
+                    .any(|line| line.contains(said) && line.contains(&address))
+                {
+                    return Some((child, port, text));
+                }
+                let exited = child.try_wait().unwrap().is_some();
+                if exited || Instant::now() > deadline {
+                    stop(child);
+                    let taken = ["already in use", "AddrInUse", "os error 10048"]
+                        .iter()
+                        .any(|sign| text.contains(sign));
+                    assert!(taken, "{name} didn't start listening on {address}: {text}");
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        })
+        .expect("every port tried was taken first")
 }
 
 fn stop(mut child: Child) {
@@ -226,66 +257,59 @@ fn the_engine_does_not_start_on_a_file_it_cannot_use() {
 fn the_engine_starts_without_a_file_and_follows_one_and_its_options() {
     let dir = TempDir::new("start");
     let data = dir.0.join("data");
-    let port = free_port();
     let missing = dir.0.join("nowhere").join("engine.toml");
-    let mut child = engine(&dir.0)
-        .env("ENGINE_TOKEN", TOKEN)
-        .env("XDG_DATA_HOME", &data)
-        .arg("--options")
-        .arg(&missing)
-        .arg("--server-bind")
-        .arg(format!("127.0.0.1:{port}"))
-        .stdout(Stdio::null())
-        .stderr(std::fs::File::create(dir.0.join("start.log")).unwrap())
-        .spawn()
-        .unwrap();
-    let up = listening(&mut child, port);
+    let (child, _, _) = start_listening(&dir.0, "start", "engine listening", |port| {
+        let mut command = engine(&dir.0);
+        command
+            .env("ENGINE_TOKEN", TOKEN)
+            .env("XDG_DATA_HOME", &data)
+            .arg("--options")
+            .arg(&missing)
+            .arg("--server-bind")
+            .arg(format!("127.0.0.1:{port}"));
+        command
+    });
     stop(child);
-    assert!(
-        up,
-        "the engine started with no options file: {}",
-        std::fs::read_to_string(dir.0.join("start.log")).unwrap_or_default()
-    );
     assert!(data.join("monokulo").join("engine.db").exists());
     assert!(!missing.exists(), "nothing is written until a save");
 
     let path = dir.0.join("engine.toml");
-    let file_port = free_port();
-    let option_port = free_port();
     // The path as a TOML literal string: a Windows path's backslashes
     // aren't escapes.
-    std::fs::write(
-        &path,
-        format!(
-            "[server]\nbind = \"127.0.0.1:{file_port}\"\n[database]\npath = '{}'\n",
-            dir.0.join("mine.db").display()
-        ),
-    )
-    .unwrap();
-    let mut child = engine(&dir.0)
-        .env("ENGINE_TOKEN", TOKEN)
-        .arg("--options")
-        .arg(&path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+    let write_file = |port: u16| {
+        std::fs::write(
+            &path,
+            format!(
+                "[server]\nbind = \"127.0.0.1:{port}\"\n[database]\npath = '{}'\n",
+                dir.0.join("mine.db").display()
+            ),
+        )
         .unwrap();
-    let up = listening(&mut child, file_port);
+    };
+    // It listens where its file says.
+    let (child, file_port, _) = start_listening(&dir.0, "file", "engine listening", |port| {
+        write_file(port);
+        let mut command = engine(&dir.0);
+        command
+            .env("ENGINE_TOKEN", TOKEN)
+            .arg("--options")
+            .arg(&path);
+        command
+    });
     stop(child);
-    assert!(up, "the engine listened where its file says");
     assert!(dir.0.join("mine.db").exists());
 
-    let mut child = engine(&dir.0)
-        .env("ENGINE_TOKEN", TOKEN)
-        .arg("--options")
-        .arg(&path)
-        .arg("--server-bind")
-        .arg(format!("127.0.0.1:{option_port}"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let up = listening(&mut child, option_port);
+    // The option wins over the file.
+    write_file(file_port);
+    let (child, _, _) = start_listening(&dir.0, "option", "engine listening", |port| {
+        let mut command = engine(&dir.0);
+        command
+            .env("ENGINE_TOKEN", TOKEN)
+            .arg("--options")
+            .arg(&path)
+            .arg("--server-bind")
+            .arg(format!("127.0.0.1:{port}"));
+        command
+    });
     stop(child);
-    assert!(up, "the option wins over the file");
 }
