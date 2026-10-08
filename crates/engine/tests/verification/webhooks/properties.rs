@@ -102,6 +102,17 @@ struct Row {
     last: Option<i64>,
     error: Option<String>,
 }
+/// One client for every world in a test process: building one loads the
+/// platform's TLS roots twice, about 0.1s and most of a case's time. A
+/// connection pooled in an earlier case is dead (its runtime has gone),
+/// so the pool drops it rather than reuse it; and each world sets
+/// `allow_private` again.
+fn shared_client() -> WebhookClient {
+    static CLIENT: std::sync::OnceLock<WebhookClient> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| WebhookClient::build().unwrap())
+        .clone()
+}
 struct World {
     path: TempFile,
     store: SharedStore,
@@ -119,7 +130,7 @@ impl World {
         };
         // A distinct observation connection also makes worker commits visible to the oracle.
         let store = Store::open_file(&path.0).unwrap().into_shared();
-        let client = WebhookClient::build().unwrap();
+        let client = shared_client();
         client.set_allow_private(true);
         Self {
             path,
