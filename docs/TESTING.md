@@ -766,11 +766,11 @@ optional `zmq` feature selection. The budget excludes compilation.
 
 ```sh
 cargo install cargo-fuzz --locked
-ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh scheduler 60
-ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh queue 60 zmq
-ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh resources 60
-ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh inputs 60
-ENGINE_FUZZ_SEED=47 scripts/engine-fuzz.sh mempool 60 zmq
+ENGINE_FUZZ_SEED=47 cargo xtask fuzz scheduler 60
+ENGINE_FUZZ_SEED=47 cargo xtask fuzz queue 60 zmq
+ENGINE_FUZZ_SEED=47 cargo xtask fuzz resources 60
+ENGINE_FUZZ_SEED=47 cargo xtask fuzz inputs 60
+ENGINE_FUZZ_SEED=47 cargo xtask fuzz mempool 60 zmq
 
 # Replay a saved failing input directly; replace the artifact filename.
 cargo fuzz run --fuzz-dir fuzz inputs fuzz/artifacts/inputs/crash-HASH
@@ -849,8 +849,8 @@ caller is cancelled, or that window generations impose chronological ordering.
 ```sh
 PROPTEST_CASES=256 PROPTEST_RNG_SEED=113 cargo test -p engine --lib --locked \
   work::mempool::properties
-ENGINE_FUZZ_SEED=113 scripts/engine-fuzz.sh mempool 60
-ENGINE_FUZZ_SEED=113 scripts/engine-fuzz.sh mempool 60 zmq
+ENGINE_FUZZ_SEED=113 cargo xtask fuzz mempool 60
+ENGINE_FUZZ_SEED=113 cargo xtask fuzz mempool 60 zmq
 ```
 
 A manual diagnostic compares identical cache operations behind `parking_lot` and
@@ -889,7 +889,7 @@ status, ordering independence, equivalent payment splitting and settlement under
 confirmation growth. Reviewed seeds force expiry, saturation, mixed evidence and
 zero-confirmation boundaries. Normal properties also generate byte histories.
 
-Run `ENGINE_FUZZ_SEED=149 scripts/engine-fuzz.sh status 60` (append `zmq` for that
+Run `ENGINE_FUZZ_SEED=149 cargo xtask fuzz status 60` (append `zmq` for that
 configuration), or `cargo test -p engine --lib status::properties`. Daily fuzz jobs
 include both configurations and preserve corpus/replay artifacts.
 
@@ -912,7 +912,7 @@ admission; real worker/custody cancellation rendezvous remain in the dedicated
 integration properties. It does not fuzz response decoding, PoW, arbitrary valid
 transactions, every thread ordering or power loss. Each execution cleans its own DB.
 
-Run `ENGINE_FUZZ_SEED=157 scripts/engine-fuzz.sh history 60` and append `zmq` for
+Run `ENGINE_FUZZ_SEED=157 cargo xtask fuzz history 60` and append `zmq` for
 that configuration. `coverage_guided_histories_recover_with_real_scanner` generates
 the same byte commands as a normal property; reviewed histories replay as tests.
 Daily default/ZMQ fuzz jobs retain evolving corpora and failure artifacts.
@@ -939,7 +939,7 @@ money evidence. Transport histories use bounded real deadlines; they do not enum
 all OS/socket interleavings.
 
 Run `cargo test -p engine --lib node_events::` and add `--features zmq` for transport
-properties; `ENGINE_FUZZ_SEED=167 scripts/engine-fuzz.sh notifications 60` runs the
+properties; `ENGINE_FUZZ_SEED=167 cargo xtask fuzz notifications 60` runs the
 shared wait oracle (append `zmq` for that build). Both daily matrices discover it.
 
 
@@ -1046,12 +1046,12 @@ partial payments. `portfolio` is the ninth default/ZMQ daily fuzz target; its co
 and failures use the existing runner/artifact workflow.
 
 Run `PROPTEST_CASES=64 cargo test -p engine --lib mixed_wallet`, adding
-`--features zmq` for that build. Run `ENGINE_FUZZ_SEED=229 scripts/engine-fuzz.sh
+`--features zmq` for that build. Run `ENGINE_FUZZ_SEED=229 cargo xtask fuzz
 portfolio 900` and append `zmq` for fuzzing that configuration.
 
 ## Named mutation checks: testing the tests
 
-`scripts/engine-mutations.py` deliberately introduces 27 defects, one at a time,
+`cargo xtask mutations` deliberately introduces 27 defects, one at a time,
 in a disposable detached worktree. The caller's engine sources are never edited.
 Each selected test must first pass on the healthy snapshot, then fail by an
 assertion bearing the defect’s specified `BOUNDARY:` marker on the mutant. All defects are checked in default and ZMQ builds:
@@ -1089,10 +1089,10 @@ cases/seed, baseline results, exact mutations/commands and full failure logs.
 Tracked local edits and new engine modules are snapshotted for pre-commit checks.
 
 ```sh
-python3 scripts/test_engine_mutations.py
-python3 scripts/engine-mutations.py --cases 32 --seed 241
+cargo test -p xtask mutations
+cargo xtask mutations --cases 32 --seed 241
 # Optional single configuration:
-python3 scripts/engine-mutations.py --features zmq --cases 64
+cargo xtask mutations --features zmq --cases 64
 ```
 
 JSON and logs live in ignored `target/engine-mutations/`, with compiled artifacts
@@ -1211,10 +1211,10 @@ snapshot hash; the weekly/manual workflow uploads the report and logs separately
 for default and ZMQ.
 
 ```sh
-python3 scripts/test_engine_mutations.py
-python3 scripts/engine-mutations.py --features both --cases 32 --seed 241
+cargo test -p xtask mutations
+cargo xtask mutations --features both --cases 32 --seed 241
 # Human-readable evidence, including per-suite boundary observations:
-python3 -m json.tool target/engine-mutations/report.json
+jq . target/engine-mutations/report.json
 ```
 
 Custody policies and their generated properties live in the extracted `key-custody` crate. The mutation runner selects that package for epoch checks; ZMQ build choices apply to engine tests.

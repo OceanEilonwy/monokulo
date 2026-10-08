@@ -84,7 +84,7 @@ with processes of its own.
 with the `tests` jobs, then the `coverage` job joins their outputs with
 `cargo xtask coverage report` and uploads the combined artifact
 (`coverage-<sha>`). Each job's summary has a table of passed, failed and
-skipped tests (`scripts/test-summary.py`, from the JUnit reports) with the
+skipped tests (`cargo xtask test-summary`, from the JUnit reports) with the
 failures listed; the `coverage` job's also has the coverage table.
 
 ## On GitHub Pages
@@ -120,7 +120,7 @@ crate are excluded from product denominators. PHP metrics include only
 from PHPUnit's native Xdebug coverage object, not Clover line totals.
 
 The first complete local report and conservative line floors are recorded in
-`docs/coverage-line-baseline.json`. `scripts/validate-coverage.py` checks the
+`docs/coverage-line-baseline.json`. `cargo xtask coverage validate` checks the
 manifest schema, required source areas, branch denominators, report links,
 screenshot paths, and line floors during `coverage all`. When any recorded
 tool version differs from the baseline, it reports the drift and treats the

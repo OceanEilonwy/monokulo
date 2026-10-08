@@ -35,9 +35,9 @@ jobs:
           workspaces: . -> target/engine-mutations/build
           key: mutations-${{ matrix.features }}
       - name: Check runner rejects invalid outcomes
-        run: python3 scripts/test_engine_mutations.py
+        run: cargo test -p xtask mutations
       - name: Prove intended defect assertions and required boundary observations
-        run: python3 scripts/engine-mutations.py --features "$ENGINE_MUTATION_FEATURES" --cases "$ENGINE_MUTATION_CASES"
+        run: cargo xtask mutations --features "$ENGINE_MUTATION_FEATURES" --cases "$ENGINE_MUTATION_CASES"
       - name: Preserve baseline, mutation and boundary evidence
         if: always()
         uses: actions/upload-artifact@v7

@@ -15,6 +15,12 @@ snp-attest = { path = "../crates/snp-attest", default-features = false }
 # quality-site: the screenshot gallery's thumbnails, and the JUnit reports.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 roxmltree = "0.21"
+# Reading fuzzer, test and mutation logs.
+regex = "1"
+
+[target.'cfg(unix)'.dependencies]
+# Stopping a timed-out mutation run's whole process group.
+libc = "0.2"
 
 [lints]
 workspace = true

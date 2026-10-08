@@ -292,7 +292,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 
 		// The Monokulo mark beside the payment method at checkout: the square
 		// version, shipped with the plugin so the shopper's browser loads it
-		// from the store, not from monokulo. Written by `scripts/logo.py`.
+		// from the store, not from monokulo. Written by `cargo xtask logo`.
 		$this->icon = plugins_url( 'assets/monokulo-icon.svg', dirname( __DIR__ ) . '/monokulo.php' );
 
 		// This gateway never renders its own fields inline at WooCommerce's

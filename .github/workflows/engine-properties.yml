@@ -63,7 +63,7 @@ jobs:
         run: cargo nextest run -p engine -p key-custody --lib --locked --profile ci ${ENGINE_FEATURES:+--features "engine/$ENGINE_FEATURES"} -E 'test(::properties::)'
       - name: Summarize semantic observations
         if: always()
-        run: python3 scripts/engine-exploration-report.py properties --output target/engine-exploration/properties
+        run: cargo xtask properties-report target/engine-exploration/properties
       - name: Preserve counterexamples and test report
         if: always()
         uses: actions/upload-artifact@v7

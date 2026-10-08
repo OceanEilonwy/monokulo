@@ -1,7 +1,12 @@
+mod exploration;
+mod logo;
+mod mutations;
 mod quality;
 mod rounds;
 mod snp;
 mod stress;
+mod summary;
+mod validate;
 
 use serde_json::{json, Value};
 use std::{
@@ -21,7 +26,7 @@ fn root() -> PathBuf {
 }
 
 fn help() {
-    println!("Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|open>\n       cargo xtask stress <ci|full|scale|open> [driver]\n       cargo xtask stress rounds\n       cargo xtask snp-id-key [--from-env]\n       cargo xtask snp-id-block ...\n       cargo xtask quality-site --out DIR [...]\n       cargo xtask pages-inputs DIR\n       cargo xtask serve DIR [PORT]\n\n\
+    println!("Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|summary|validate|open>\n       cargo xtask stress <ci|full|scale|open> [driver]\n       cargo xtask stress rounds\n       cargo xtask snp-id-key [--from-env]\n       cargo xtask snp-id-block ...\n       cargo xtask logo\n       cargo xtask fuzz TARGET [SECONDS] [zmq]\n       cargo xtask properties-report DIR\n       cargo xtask mutations [...]\n       cargo xtask test-summary TITLE LABEL=JUNIT...\n       cargo xtask quality-site --out DIR [...]\n       cargo xtask pages-inputs DIR\n       cargo xtask serve DIR [PORT]\n\n\
         rust          Refresh nightly and cargo-llvm-cov; run workspace tests and collect Rust coverage\n\
         browser       Run deterministic Playwright tests and collect authored browser source coverage\n\
         woocommerce   Run default PHPUnit tests in wp-env and collect plugin coverage\n\
@@ -29,6 +34,8 @@ fn help() {
         all           Run rust, browser and woocommerce side by side; preserve successful reports if another fails\n\
         report        Combine rust, browser and woocommerce outputs already in target/coverage (as CI's\n\
                       separate jobs leave them) into one index; validate it once all three passed\n\
+        summary       Print the coverage components as a GitHub job-summary table (Markdown)\n\
+        validate      Check target/coverage: manifests, report links, screenshots, sources, line floors\n\
         open          Open target/coverage/index.html in the default browser\n\
         stress ci     One-CPU scanner capacity sweep and fault recovery (docs/engine_stress.md)\n\
         stress full   The same with larger tenant counts\n\
@@ -40,7 +47,13 @@ fn help() {
         snp-id-block --measurement HEX --guest-svn N --out DIR [--family-id HEX] [--image-id HEX] [--policy HEX]\n\
                       Sign an engine image's ID block with SNP_ID_KEY (deploy/sev-snp/README.md)\n\
         [driver]      The scanner entry point to measure (default: the production one)\n\
+        test-summary TITLE LABEL=JUNIT...\n\
+                      Print JUnit reports (nextest, Playwright, PHPUnit) as a GitHub job-summary table with\n\
+                      their failures; a missing report is a row that says so\n\
         --help        Show this help");
+    println!("        logo          Draw the Monokulo mark and write every copy of it (xtask/src/logo.rs)");
+    println!("{}", exploration::HELP);
+    println!("{}", mutations::HELP);
     println!("{}", quality::HELP);
 }
 
@@ -615,6 +628,11 @@ fn coverage(command: &str) -> io::Result<bool> {
         "stagenet" => &["stagenet"],
         "all" => &ALL,
         "report" => return report(&output),
+        "summary" => {
+            print!("{}", summary::coverage_summary(&output)?);
+            return Ok(true);
+        }
+        "validate" => return validate(),
         _ => {
             help();
             return Ok(false);
@@ -700,12 +718,16 @@ fn report(output: &Path) -> io::Result<bool> {
 }
 
 fn validate() -> io::Result<bool> {
-    let validation = Command::new("python3")
-        .arg(root().join("scripts/validate-coverage.py"))
-        .current_dir(root())
-        .status()
-        .map_err(|e| io::Error::other(format!("missing prerequisite: python3 ({e})")))?;
-    Ok(validation.success())
+    match validate::validate(&root(), &root().join("target/coverage")) {
+        Ok(()) => {
+            println!("coverage artifact validation passed");
+            Ok(true)
+        }
+        Err(problem) => {
+            eprintln!("coverage artifact validation failed: {problem}");
+            Ok(false)
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -728,6 +750,22 @@ fn main() -> ExitCode {
         ["snp-id-key"] => snp::id_key(&root(), false).map_err(io::Error::other),
         ["snp-id-key", "--from-env"] => snp::id_key(&root(), true).map_err(io::Error::other),
         ["snp-id-block", rest @ ..] => snp::id_block(rest).map_err(io::Error::other),
+        ["fuzz", rest @ ..] => {
+            // The campaign's own exit code: the fuzzer's, or the failed step's.
+            match exploration::fuzz(&root(), rest, &exploration::Tools::default()) {
+                Ok(code) => return ExitCode::from(code.clamp(0, 255) as u8),
+                Err(e) => Err(e),
+            }
+        }
+        ["mutations", rest @ ..] => mutations::mutations(&root(), rest),
+        ["logo"] => logo::write(&root()),
+        ["properties-report", dir] => {
+            exploration::properties_report(&root(), Path::new(dir), &exploration::Tools::default())
+        }
+        ["test-summary", title, suites @ ..] if !suites.is_empty() => {
+            print!("{}", summary::test_summary(title, suites));
+            Ok(true)
+        }
         ["quality-site", rest @ ..] => quality::site(&root(), rest),
         ["pages-inputs", rest @ ..] => quality::pages_inputs(rest),
         ["serve", rest @ ..] => quality::serve(rest),

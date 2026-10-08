@@ -3,9 +3,7 @@ name: Engine verification tooling
 on:
   pull_request:
     paths:
-      - 'scripts/engine-exploration-report.py'
-      - 'scripts/engine-fuzz.sh'
-      - 'scripts/test_engine_exploration_report.py'
+      - 'xtask/src/exploration.rs'
       - '.github/workflows/engine-*.yml'
   workflow_call:
 
@@ -15,10 +13,11 @@ permissions:
 jobs:
   evidence-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      # The latest nightly, as rust-toolchain.toml names it, for xtask.
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
       - name: Check evidence validation and campaign lifecycle
-        env:
-          PYTHONDONTWRITEBYTECODE: '1'
-        run: python3 scripts/test_engine_exploration_report.py
+        run: cargo test -p xtask --locked exploration

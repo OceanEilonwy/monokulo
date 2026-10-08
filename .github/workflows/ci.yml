@@ -126,7 +126,7 @@ jobs:
       - name: Summarize
         if: always()
         run: |
-          python3 scripts/test-summary.py 'Rust coverage tests' \
+          cargo xtask test-summary 'Rust coverage tests' \
             rust=target/coverage/rust/junit.xml >> "$GITHUB_STEP_SUMMARY"
       - name: Upload Rust coverage
         if: always()
@@ -193,7 +193,7 @@ jobs:
       - name: Summarize
         if: always()
         run: |
-          python3 scripts/test-summary.py 'Browser coverage tests' \
+          cargo xtask test-summary 'Browser coverage tests' \
             fixture=target/coverage/browser/junit-fixture.xml \
             real-binaries=target/coverage/browser/junit-real-binaries.xml >> "$GITHUB_STEP_SUMMARY"
       - name: Upload browser coverage
@@ -244,7 +244,7 @@ jobs:
       - name: Summarize
         if: always()
         run: |
-          python3 scripts/test-summary.py 'WooCommerce coverage tests' \
+          cargo xtask test-summary 'WooCommerce coverage tests' \
             woocommerce=target/coverage/woocommerce/junit.xml >> "$GITHUB_STEP_SUMMARY"
       - name: Upload WooCommerce coverage
         if: always()
@@ -311,8 +311,8 @@ jobs:
       - name: Summarize
         if: always()
         run: |
-          python3 scripts/coverage-job-summary.py >> "$GITHUB_STEP_SUMMARY"
-          python3 scripts/test-summary.py 'Coverage tests' \
+          cargo xtask coverage summary >> "$GITHUB_STEP_SUMMARY"
+          cargo xtask test-summary 'Coverage tests' \
             rust=target/coverage/rust/junit.xml \
             browser-fixture=target/coverage/browser/junit-fixture.xml \
             browser-real-binaries=target/coverage/browser/junit-real-binaries.xml \
