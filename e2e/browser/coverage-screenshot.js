@@ -91,7 +91,7 @@ async function save(testInfo, name, { group, stage, shape, theme }, body) {
     .digest('hex').slice(0, 16);
   const filename = `${group}-${stage}-${shape}${theme === 'light' ? '' : `-${theme}`}-r${testInfo.retry}-${id}.webp`;
   fs.mkdirSync(images, { recursive: true });
-  await sharp(body).webp({ lossless: true, effort: 6 }).toFile(path.join(images, filename));
+  await sharp(body).webp({ lossless: true, effort: 4 }).toFile(path.join(images, filename));
   await testInfo.attach(name, { body: `images/${filename}`, contentType: 'text/plain' });
 }
 

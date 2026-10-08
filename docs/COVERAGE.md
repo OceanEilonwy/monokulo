@@ -73,8 +73,8 @@ The browser collector runs two suites as projects of one Playwright run
 fixture server, and the real-binaries tests (the specs selected by
 `real-binaries.config.js`: the real engine and monokulo binaries with a fake
 monerod). They share one report, one gallery and, in specs using
-`coverage-test.js`, the instrumented browser coverage, and four workers
-(`E2E_WORKERS` sets another number): the fixture tests spread test by test,
+`coverage-test.js`, the instrumented browser coverage, and workers (half
+the machine's threads, from four to eight; `E2E_WORKERS` sets another number): the fixture tests spread test by test,
 the real-binaries tests file by file, each spec file with processes of its own.
 
 ## In CI

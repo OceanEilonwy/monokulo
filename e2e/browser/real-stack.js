@@ -67,13 +67,21 @@ function cleanEnv() {
   return Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ENGINE_') && !key.startsWith('MONOKULO_')));
 }
 
+// Every binary the browser suites run, in one cargo command: the real
+// stack's three and the coverage fixture server. Cargo unifies features
+// across the packages a command names, so building them with different
+// commands compiles engine and monokulo twice; with this one, the fixture's
+// own rebuild check (coverage-fixture.js) finds nothing to do.
+const BUILD_ARGS = [
+  'build', '--locked',
+  '-p', 'engine', '--bin', 'monokulo-engine',
+  '-p', 'monokulo', '--bin', 'monokulo', '--example', 'coverage_fixture',
+  '-p', 'engine-test-support', '--bin', 'fake-monerod',
+];
+
 function buildBinaries() {
-  console.log('[real-binaries] building monokulo-engine, monokulo and fake-monerod...');
-  execFileSync(
-    'cargo',
-    ['build', '-p', 'engine', '--bin', 'monokulo-engine', '-p', 'monokulo', '--bin', 'monokulo', '-p', 'engine-test-support', '--bin', 'fake-monerod'],
-    { cwd: REPO_ROOT, stdio: 'inherit' },
-  );
+  console.log('[real-binaries] building monokulo-engine, monokulo, the coverage fixture and fake-monerod...');
+  execFileSync('cargo', BUILD_ARGS, { cwd: REPO_ROOT, stdio: 'inherit' });
 }
 
 /** Starts the three processes; resolves to `{ fixture, stop }`. */
@@ -179,4 +187,4 @@ async function startFakeNode(nettype) {
   return { address, stop };
 }
 
-module.exports = { buildBinaries, startStack, startFakeNode };
+module.exports = { BUILD_ARGS, buildBinaries, startStack, startFakeNode };
