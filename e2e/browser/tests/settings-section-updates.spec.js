@@ -96,6 +96,9 @@ test('leaving a tab with unsaved changes asks first, and Save and go saves then 
   const bar = page.locator('#save-bar');
   await expect(bar).toContainText('Abuse protection has unsaved changes. Save or discard them before going to Server.');
   await expect(page.locator('#settings-panel h2')).toHaveText('Abuse protection');
+  // Only the three choices: the bar's own Save and Discard step aside.
+  await expect(bar.getByRole('button', { name: 'Save', exact: true })).toBeHidden();
+  await expect(bar.getByRole('link', { name: 'Discard changes' })).toBeHidden();
 
   await bar.getByRole('button', { name: 'Stay here' }).click();
   await expect(bar).toContainText('1 unsaved change in Request limits');

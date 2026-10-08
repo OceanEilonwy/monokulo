@@ -156,6 +156,7 @@ fieldset.setting-field > legend { padding: 0; }
 .save-bar-message { flex: 1 1 16rem; min-width: 0; margin: 0; }
 .save-bar-message:focus { outline: none; }
 .save-bar-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+.save-bar-actions[hidden] { display: none; }
 .save-bar-actions button, .save-bar-actions .btn { margin: 0; }
 html.js .save-bar:not(.is-dirty):not(.is-failed):not(.is-leaving) { display: none; }
 @media (prefers-reduced-motion: no-preference) {
