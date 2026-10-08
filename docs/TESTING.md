@@ -95,9 +95,11 @@ PROPTEST_CASES=128 PROPTEST_RNG_SEED=42 cargo test -p engine --lib --locked work
 
 Normal runs use fresh randomness. For a failure, Proptest shrinks the input and
 prints the counterexample; it also saves a replay seed under
-`crates/engine/proptest-regressions/` (`status/properties.txt`, `work/properties.txt`, `work/money_properties.txt`, `work/expansion_properties.txt`,
-`work/node_properties.txt` and `proof/node_properties.txt`). Subsequent
-runs replay persisted seeds before new cases. CI uploads these directories on
+`crates/engine/proptest-regressions/`, one file per property under its
+module's directory (for example `work/properties/<test>.txt`,
+`work/money_properties/<test>.txt` or `proof/node_properties/<test>.txt`).
+Subsequent runs of that property replay its seeds before new cases; other
+properties don't, since another test's seed is only one more random case. CI uploads these directories on
 test/coverage failure. Download the artifact and restore the directory under the
 corresponding crate, then rerun the failing test. Keep regression files in Git after
 a fix, and add a named example for a discovered bug: seeds depend on the strategy,
@@ -683,7 +685,7 @@ daily default/ZMQ exploration job select these tests automatically.
 Fixed regressions also protect success/error cleanup, late-outcome immunity,
 reserved stored headers, a warmed `localhost` connection after policy tightening,
 and full-width counters/timestamps. Replay seeds are committed in
-`crates/engine/proptest-regressions/webhook_properties.txt`.
+`crates/engine/proptest-regressions/webhook_properties/`, one file per property.
 
 These tests enforce **at-least-once**, so an interrupted acknowledgement or an
 overlapping worker may deliver a duplicate. The durable attempt count tracks

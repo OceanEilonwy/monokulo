@@ -15,7 +15,7 @@ certify that the engine is bug-free.
 | `verification/work/portfolio/runner.rs` and `effects.rs` | Drive actual engine rounds, controlled daemon/custody/SQL failures, notifications and recovery |
 | `verification/work/portfolio/model.rs` | Expected recipients, amounts, canonical evidence, durable identities and accepted statuses, derived independently of scanner results |
 | `verification/support/` | Shared backend replacement, configuration, RPC controls, rendezvous and fuzz adapters |
-| `crates/engine/proptest-regressions/` | Saved cases at explicitly pinned historical paths; moving a module does not move its replay file |
+| `crates/engine/proptest-regressions/` | Saved cases, one file per property under its module's explicitly pinned directory; moving a module does not move its replay files |
 | `fuzz/fuzz_targets/`, `fuzz/seeds/` | Nine thin fuzz drivers and reviewed seed inputs; drivers reuse the property harness and oracle |
 | `fuzz/corpus/`, `fuzz/artifacts/`, `target/engine-exploration/` | Ignored mutable corpus, failures and measured reports |
 
