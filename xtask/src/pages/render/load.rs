@@ -41,7 +41,7 @@ fn rows(run: &Stress) -> Vec<Row> {
         .points
         .iter()
         .filter_map(|p| {
-            let stores = p.tenants()?;
+            let stores = p.tenants().filter(|n| *n > 0)?;
             let last = p.ticks().last()?;
             Some(Row {
                 stores,
@@ -277,7 +277,7 @@ fn faults(run: &Stress) -> Option<Markup> {
                     p { (card.what) }
                     div.strip role="img" aria-label="Time per block" {
                         @for t in ticks {
-                            i.f[t.phase == Phase::Measured] style={ "height:" (format!("{:.1}", (100.0 * float(t.ms) / float(tallest)).max(4.0))) "%" } title={ (int(t.ms)) " ms" } {}
+                            i class=[(t.phase == Phase::Measured).then_some("f")] style={ "height:" (format!("{:.1}", (100.0 * float(t.ms) / float(tallest)).max(4.0))) "%" } title={ (int(t.ms)) " ms" } {}
                         }
                     }
                     div.cap { span { "fault: " (ms(during)) " ms" } span { "after: " (average(&after).map_or_else(|| NONE.to_string(), ms)) " ms" } }

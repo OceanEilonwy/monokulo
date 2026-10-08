@@ -40,7 +40,7 @@ const BADGE_BANDS: [(f64, &str); 3] = [(90.0, "brightgreen"), (80.0, "green"), (
 const BADGE_BELOW_BANDS: &str = "orange";
 const BADGE_UNKNOWN: &str = "lightgrey";
 /// What a build writes into `--out`, and so what a rebuild replaces there.
-const OUTPUTS: [&str; 12] = [
+const OUTPUTS: [&str; 11] = [
     "index.html",
     "tests.html",
     "coverage.html",
@@ -49,7 +49,6 @@ const OUTPUTS: [&str; 12] = [
     "load.html",
     "screens.html",
     "badge.json",
-    ".nojekyll",
     "assets",
     "gallery",
     "reports",
@@ -250,7 +249,6 @@ pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
         .map_or_else(Coverage::default, |c| c.shipping);
     write_json(&out.join("badge.json"), &badge(shipping))?;
     copy_assets(root, out)?;
-    fs::write(out.join(".nojekyll"), "").map_err(|e| at(out, e))?;
     let have: Vec<&str> = [
         ("coverage", report.coverage.is_some()),
         ("properties", report.properties.is_some()),

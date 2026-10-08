@@ -98,12 +98,16 @@ if (tbox) {
     press(chips, chip);
     filter();
   };
-  chips.forEach(b => b.addEventListener('click', () => pickArea(b.dataset.area)));
+  chips.forEach(b => b.addEventListener('click', () => {
+    if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+    pickArea(b.dataset.area);
+  }));
   $('#expand-all').addEventListener('click', () => $$('details', tbox).forEach(d => { d.open = true; }));
   $('#collapse-all').addEventListener('click', () => $$('details', tbox).forEach(d => { d.open = false; }));
   // The front page's areas link here as #area-<id>.
   const fromHash = () => { const m = /^#area-([a-z]+)$/.exec(location.hash); if (m) pickArea(m[1]); };
   window.addEventListener('hashchange', fromHash);
+  areas.forEach(a => { a.open = false; });
   fromHash();
 }
 
@@ -184,7 +188,8 @@ if (gallery) {
   idle(() => cards.slice(0, 4).forEach(({screen}) => warm(screen, 0, [theme()])));
 
   const dialog = $('#viewer');
-  const view = {card: null, shape: 0, theme: 'both'};
+  // `focus` names the control a redraw came from, so it keeps the focus (and the arrow keys keep working).
+  const view = {card: null, shape: 0, theme: 'both', focus: null};
   const visibleCards = () => cards.filter(c => !c.card.hidden && !c.section.hidden).map(c => c.card);
 
   function openViewer(card) {
@@ -216,8 +221,9 @@ if (gallery) {
     const wanted = view.theme === 'both' ? ['light', 'dark'] : [view.theme];
     // A shape taken in one theme only shows that one.
     const shown = wanted.filter(t => shape[t]).length ? wanted.filter(t => shape[t]) : themesOf(shape);
-    const button = (label, attrs, onClick) => { const b = h('button', {type: 'button', class: 'btn', ...attrs}, label); b.addEventListener('click', onClick); return b; };
-    const toggle = (label, pressed, onClick) => { const b = h('button', {type: 'button', 'aria-pressed': String(pressed)}, label); b.addEventListener('click', onClick); return b; };
+    const clicked = (b, onClick) => { b.addEventListener('click', () => { view.focus = b.id; onClick(); }); return b; };
+    const button = (label, attrs, onClick) => clicked(h('button', {type: 'button', class: 'btn', ...attrs}, label), onClick);
+    const toggle = (id, label, pressed, onClick) => clicked(h('button', {type: 'button', id, 'aria-pressed': String(pressed)}, label), onClick);
     const go = j => { if (list[j]) openViewer(list[j]); };
     const full = shape[shown[0]]?.full;
     dialog.replaceChildren(h('div', {class: 'vbox'},
@@ -226,12 +232,12 @@ if (gallery) {
         h('div', {class: 'grp'},
           button('←', {id: 'v-prev', 'aria-label': 'Previous screen', disabled: i <= 0}, () => go(i - 1)),
           button('→', {id: 'v-next', 'aria-label': 'Next screen', disabled: i >= list.length - 1}, () => go(i + 1)),
-          button('Close', {}, () => dialog.close()))),
+          button('Close', {id: 'v-close'}, () => dialog.close()))),
       h('div', {class: 'vtools'},
         h('div', {class: 'seg', role: 'group', 'aria-label': 'Shape'},
-          s.shapes.map((sh, j) => toggle(sh.label, j === view.shape, () => { view.shape = j; drawViewer(); }))),
+          s.shapes.map((sh, j) => toggle(`v-shape-${j}`, sh.label, j === view.shape, () => { view.shape = j; drawViewer(); }))),
         h('div', {class: 'seg', role: 'group', 'aria-label': 'Theme'},
-          [['light', 'Light'], ['dark', 'Dark'], ['both', 'Side by side']].map(([t, label]) => toggle(label, view.theme === t, () => { view.theme = t; drawViewer(); })))),
+          [['light', 'Light'], ['dark', 'Dark'], ['both', 'Side by side']].map(([t, label]) => toggle(`v-theme-${t}`, label, view.theme === t, () => { view.theme = t; drawViewer(); })))),
       h('div', {class: 'vimg'}, shown.map(t => figure(s, shape, t))),
       h('div', {class: 'vfoot'},
         h('span', {}, s.passed ? h('span', {class: 'dot'}) : null, s.passed ? ' Passed' : (s.status || 'No result'), ` · ${i + 1} of ${list.length} · ← → to move, Esc to close`),
@@ -239,6 +245,12 @@ if (gallery) {
           s.report ? h('a', {href: s.report, target: '_blank', rel: 'noopener'}, 'Open in the Playwright report') : null,
           s.report && full ? ' · ' : null,
           full ? h('a', {href: full, target: '_blank', rel: 'noopener'}, 'Full-size image') : null))));
+    if (view.focus) {
+      // A control that's now disabled (← on the first screen) hands the focus to Close.
+      const target = $('#' + view.focus, dialog);
+      (target && !target.disabled ? target : $('#v-close', dialog)).focus();
+      view.focus = null;
+    }
     // then warm what's likely next: the screens either side, and this screen's other shapes
     idle(() => {
       for (const n of [list[i + 1], list[i - 1]]) {

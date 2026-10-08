@@ -257,7 +257,7 @@ pub(super) fn properties(report: &Report) -> Markup {
                             @for t in tests {
                                 li {
                                     (mark(t.status))
-                                    span { (sentence(t.name.rsplit("::").next().unwrap_or(&t.name))) }
+                                    span { (sentence(t.name.rsplit("::").next().unwrap_or_default())) }
                                     span.tim { (duration(t.secs)) }
                                 }
                             }
@@ -283,6 +283,27 @@ fn describe(target: &str) -> &'static str {
         "inputs" => "Feeds junk text to the CPU-list setting and checks the result is sorted, has no repeats, and reads back the same",
         _ => "",
     }
+}
+
+/// A target's executions last night, if it ran.
+fn executions_of(targets: &[FuzzTarget], name: &str) -> Option<u64> {
+    targets.iter().find(|t| t.target == name)?.executions
+}
+
+/// `about 148 million`, `724`: a count in words for a sentence.
+fn about(n: u64) -> String {
+    const MILLION: u64 = 1_000_000;
+    if n >= MILLION {
+        format!("about {} million", (n + MILLION / 2) / MILLION)
+    } else {
+        int(n)
+    }
+}
+
+/// New code edges: `+35`, or `−3` when a run found fewer than it started with.
+fn growth(g: i64) -> String {
+    let sign = if g < 0 { '−' } else { '+' };
+    format!("{sign}{}", int(g.unsigned_abs()))
 }
 
 /// `724`, `150 M`.
@@ -330,7 +351,7 @@ pub(super) fn fuzzing(report: &Report) -> Markup {
                         td.r { (maybe_int(t.new_inputs)) }
                         td.r {
                             (maybe_int(t.edges))
-                            @if let Some(g) = t.edge_growth { " " span.muted { "+" (int(g.unsigned_abs())) } }
+                            @if let Some(g) = t.edge_growth { " " span.muted { (growth(g)) } }
                         }
                     }
                 }
@@ -339,7 +360,10 @@ pub(super) fn fuzzing(report: &Report) -> Markup {
         div.callout {
             b { "Why so few portfolio runs?" }
             span {
-                "Resources runs about 150 million times a night, portfolio about 700. Each portfolio input builds a whole multi-wallet chain and runs the real scanner over it, a bit like playing a full game rather than pressing one button. "
+                @if let (Some(fast), Some(slow)) = (executions_of(targets, "resources"), executions_of(targets, "portfolio")) {
+                    "Resources ran " (about(fast)) " times last night, portfolio " (about(slow)) ". "
+                }
+                "Each portfolio input builds a whole multi-wallet chain and runs the real scanner over it, a bit like playing a full game rather than pressing one button. "
                 b { "Code edges" } " counts the different paths through the code the fuzzer has found; the + is how many were new last night."
             }
         }

@@ -135,7 +135,7 @@ fn area_tree(area: Area, cases: &[&Case], proptest_cases: Option<&str>) -> Marku
         groups.entry(case.group.as_str()).or_default().push(case);
     }
     html! {
-        details.area-tree id={ "area-" (area.id()) } data-area=(area.id()) {
+        details.area-tree id={ "area-" (area.id()) } data-area=(area.id()) open {
             summary {
                 span.cols {
                     span.nm { (area.name()) " " span.muted.small data-groups { (plural(groups.len(), "group", "groups")) } }

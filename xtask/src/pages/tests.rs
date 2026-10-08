@@ -619,6 +619,12 @@ fn manifest_paths_cannot_reach_outside_the_artifact() {
     f.build(&["--coverage", &f.path("coverage")]);
     assert!(!f.scratch.join("site/outside.html").exists());
     assert!(!f.files("reports").iter().any(|p| p.contains("outside")));
+    // Nor does any page link it.
+    for name in page_names(&f.out()) {
+        let page = f.page(&name);
+        assert!(!page.contains("reports/.."), "{name}");
+        assert!(!page.contains("outside.html"), "{name}");
+    }
 
     shots[0]["image"] = "../../outside.html".into();
     put_json(&manifest, &shots);
@@ -632,4 +638,31 @@ fn manifest_paths_cannot_reach_outside_the_artifact() {
         error.to_string().contains("outside the screenshots folder"),
         "{error}"
     );
+}
+
+#[test]
+fn a_shape_taken_in_one_theme_is_shown_once_and_named_for_that_theme() {
+    let f = Fixture::new();
+    f.build(&["--coverage", &f.path("coverage")]);
+    let page = f.page("screens.html");
+    // The fixture's shots are all light: no dark picture stands in for one.
+    assert!(!page.contains("class=\"dark\""), "{page}");
+    assert!(!page.contains(", dark\""), "{page}");
+    assert!(page.contains("class=\"light\""));
+}
+
+#[test]
+fn a_shot_without_a_result_keeps_an_earlier_failure() {
+    let f = Fixture::new();
+    let manifest = f.scratch.join("coverage/screenshots/manifest.json");
+    let mut shots: Value = read_json(&manifest).unwrap();
+    shots[0]["status"] = "failed".into();
+    shots[1].as_object_mut().unwrap().remove("status");
+    put_json(&manifest, &shots);
+    let out = f.out();
+    fs::create_dir_all(&out).unwrap();
+    let (gallery, _) = inputs::gallery(&f.scratch.join("coverage"), &out)
+        .unwrap()
+        .unwrap();
+    assert_eq!(gallery.screens[0].status.as_deref(), Some("failed"));
 }

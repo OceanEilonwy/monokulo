@@ -145,7 +145,7 @@ fn crate_row(c: &Crate) -> Markup {
                     @for f in &files {
                         tr {
                             td {
-                                a href=(f.report) title="Annotated source" { (f.path) }
+                                @if let Some(href) = &f.report { a href=(href) title="Annotated source" { (f.path) } } @else { (f.path) }
                                 @if f.path.contains("/bin/") && f.coverage.lines.covered == 0 { " " span.lowtag { "tool binary" } }
                             }
                             td { (bar(f.coverage.lines)) }

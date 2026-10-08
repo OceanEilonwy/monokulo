@@ -42,8 +42,14 @@ const NOT_REPORTS: [&str; 4] = ["corpus", "artifacts", "semantics", "calibration
 pub(super) struct Linked(BTreeSet<String>);
 
 impl Linked {
-    fn add(&mut self, rel: &str) {
-        self.0.insert(rel.to_string());
+    /// Adds an artifact file the pages link, and returns the link to its
+    /// copy from the site; nothing when the path climbs out of the artifact,
+    /// so no page links outside `reports/`.
+    fn link(&mut self, rel: &str) -> Option<String> {
+        let clean = normalise(Path::new(rel))?;
+        let href = format!("reports/{clean}");
+        self.0.insert(clean);
+        Some(href)
     }
 
     pub(super) fn extend(&mut self, other: Linked) {
@@ -135,7 +141,8 @@ fn junit(path: &Path) -> io::Result<Vec<Test>> {
 pub(super) struct FileRow {
     pub(super) path: String,
     pub(super) coverage: Coverage,
-    pub(super) report: String,
+    /// Nothing when the artifact named a page outside itself.
+    pub(super) report: Option<String>,
 }
 
 pub(super) struct Crate {
@@ -277,16 +284,13 @@ pub(super) fn coverage(src: &Path) -> io::Result<(CoverageRun, Linked)> {
             let files = c
                 .files
                 .into_iter()
-                .map(|f| {
-                    linked.add(&f.report);
-                    FileRow {
-                        path: f.path,
-                        coverage: Coverage {
-                            lines: f.lines,
-                            branches: f.branches,
-                        },
-                        report: format!("reports/{}", f.report),
-                    }
+                .map(|f| FileRow {
+                    report: linked.link(&f.report),
+                    path: f.path,
+                    coverage: Coverage {
+                        lines: f.lines,
+                        branches: f.branches,
+                    },
                 })
                 .collect();
             crates.push(Crate {
@@ -310,8 +314,7 @@ pub(super) fn coverage(src: &Path) -> io::Result<(CoverageRun, Linked)> {
     ] {
         let index = format!("{name}/index.html");
         if src.join(&index).is_file() {
-            *report = Some(format!("reports/{index}"));
-            linked.add(&index);
+            *report = linked.link(&index);
         }
     }
     let mut shipping = Coverage::default();
@@ -933,16 +936,17 @@ pub(super) fn gallery(src: &Path, out: &Path) -> io::Result<Option<(Gallery, Lin
     let mut jobs: Vec<Conversion> = Vec::new();
     for shot in &shots {
         let i = *index.entry((&shot.group, &shot.stage)).or_insert_with(|| {
-            let report = shot.report.as_deref().and_then(|r| r.strip_prefix("../"));
-            if let Some(report) = report {
-                linked.add(report);
-            }
+            // The manifest names the report from the screenshots folder.
+            let report = shot
+                .report
+                .as_deref()
+                .and_then(|r| linked.link(&format!("screenshots/{r}")));
             screens.push(Screen {
                 group: shot.group.clone(),
                 stage: shot.stage.clone(),
                 test: shot.test.clone(),
                 status: shot.status.clone(),
-                report: report.map(|r| format!("reports/{r}")),
+                report,
                 images: BTreeMap::new(),
                 count: 0,
             });
@@ -950,7 +954,7 @@ pub(super) fn gallery(src: &Path, out: &Path) -> io::Result<Option<(Gallery, Lin
         });
         let screen = &mut screens[i];
         screen.count += 1;
-        if shot.status.as_deref() != Some("passed") {
+        if shot.status.as_deref().is_some_and(|s| s != "passed") {
             screen.status.clone_from(&shot.status);
         }
         if !seen.insert((i, shot.shape, shot.theme)) {

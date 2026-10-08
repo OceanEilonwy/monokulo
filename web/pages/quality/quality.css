@@ -115,7 +115,6 @@ section.view{display:flex;flex-direction:column;gap:var(--space-xl)}
 .tree summary .cols{flex:1;min-width:0}
 .tree summary .nm{font-weight:700;min-width:0;overflow-wrap:anywhere}
 .tree .cnt{font-weight:800;font-variant-numeric:tabular-nums}
-.tree .cnt small{font-weight:600;color:var(--muted);font-size:12px}
 .tree .tim{font:12px var(--font-mono);color:var(--muted);white-space:nowrap}
 .tree .mods{padding:0 var(--space-lg) var(--space-md) 38px;display:flex;flex-direction:column}
 .tree .mods details{border:0;border-top:1px dashed var(--line)}
@@ -128,6 +127,7 @@ section.view{display:flex;flex-direction:column;gap:var(--space-xl)}
 .tlist li:last-child{border-bottom:0}
 .st{font-weight:800;color:var(--success)}
 .st.skipped{color:var(--warning)}
+.st.failed{color:var(--error)}
 .tlist .tim{text-align:right}
 .tlist .label+.tag{margin-left:6px}
 .raw{display:block;font:11px var(--font-mono);color:var(--muted);overflow-wrap:anywhere}
@@ -197,7 +197,6 @@ td.r,th.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .chart .axis{stroke:var(--line)}
 .chart .grid{stroke:var(--line);stroke-dasharray:2 4}
 .chart .barfill{fill:var(--accent)}
-.chart .budget{fill:var(--surface-sunken)}
 .strip{display:flex;align-items:flex-end;gap:3px;height:56px}
 .strip i{flex:1;min-width:6px;background:var(--line-strong);border-radius:2px 2px 0 0}
 .strip i.f{background:var(--accent)}
@@ -226,9 +225,9 @@ td.r,th.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 /* Which picture a card shows: the device's frame, in the theme picked (auto follows the reader's scheme). */
 .gallery[data-device="main"] .frame.phone,.gallery[data-device="phone"] .gcard[data-phone] .frame.main{display:none}
 .gallery[data-device="main"] .nophone{display:none}
-.gallery[data-theme="light"] .frame img.dark,.gallery[data-theme="dark"] .frame img.light,.gallery[data-theme="auto"] .frame img.dark{display:none}
-@media (prefers-color-scheme:dark){.gallery[data-theme="auto"] .frame img.dark{display:block}.gallery[data-theme="auto"] .frame img.light{display:none}}
-.gallery[data-theme="both"] .frame{display:grid;grid-template-columns:1fr 1fr}
+.gallery[data-theme="light"] .frame img.dark:not(:only-child),.gallery[data-theme="dark"] .frame img.light:not(:only-child),.gallery[data-theme="auto"] .frame img.dark:not(:only-child){display:none}
+@media (prefers-color-scheme:dark){.gallery[data-theme="auto"] .frame img.dark{display:block}.gallery[data-theme="auto"] .frame img.light:not(:only-child){display:none}}
+.gallery[data-theme="both"] .frame{display:grid;grid-auto-flow:column;grid-auto-columns:1fr}
 .gcard img{display:block;width:100%;height:100%;object-fit:cover;object-position:top;max-width:100%}
 .gcard:hover .frame{border-color:var(--line-strong)}
 .gcard .nm{font-size:13.5px;font-weight:700}

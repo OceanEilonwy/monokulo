@@ -89,7 +89,7 @@ impl Tab {
     /// The count its tab shows, if any.
     fn count(self, report: &Report) -> Option<usize> {
         match self {
-            Tab::Tests => Some(report.per_change().count()),
+            Tab::Tests => Some(report.cases.len()),
             Tab::Properties => report.properties.as_ref().map(|p| p.tests.len()),
             Tab::Fuzzing => Some(report.fuzz.len()),
             Tab::Screens => report.gallery.as_ref().map(|g| g.total),
@@ -115,7 +115,7 @@ pub(super) fn write(report: &Report, out: &Path) -> io::Result<Vec<Tab>> {
         .into_iter()
         .filter(|t| t.has_data(report))
         .collect();
-    if tabs == [Tab::Overview] && report.cases.is_empty() {
+    if tabs == [Tab::Overview] {
         tabs.clear();
     }
     let shell = Shell {
@@ -298,7 +298,7 @@ fn figures(report: &Report) -> Markup {
         (coverage_figure("Checkout and POS", browser, "browser"))
         (coverage_figure("WooCommerce", woocommerce, "PHP"))
         (figure("Properties nightly", &nightly.map_or_else(|| NONE.to_string(), format::count),
-            &if report.fuzz.is_empty() { "no fuzz run yet".to_string() } else { format!("plus {} fuzz targets", report.fuzz.len()) }, None))
+            &if report.fuzz.is_empty() { "no fuzz run yet".to_string() } else { format!("plus {}", format::plural(report.fuzz.len(), "fuzz target", "fuzz targets")) }, None))
     }
 }
 

@@ -84,8 +84,14 @@ fn viewer_data(screens: &[&Screen]) -> String {
         .replace('<', "\\u003c")
 }
 
+/// The thumbnail of a shape in one theme, or nothing when it wasn't taken in
+/// that theme: the stylesheet shows a lone picture in every theme mode.
 fn picture(screen: &Screen, shape: Shape, theme: Theme) -> Markup {
-    let Some(image) = screen.image(shape, theme) else {
+    let Some(image) = screen
+        .images
+        .get(&shape)
+        .and_then(|themes| themes.get(&theme))
+    else {
         return html! {};
     };
     let alt = format!(
@@ -124,7 +130,7 @@ fn card(index: usize, screen: &Screen) -> Markup {
             @if phone { (frame(screen, Shape::MobilePortrait, "phone")) }
             span.nm { (stage_name(screen)) }
             span.meta {
-                @if screen.passed() { span.dot aria-label="passed" {} } @else { span.lowtag { (screen.status.as_deref().unwrap_or("no result")) } }
+                @if screen.passed() { span.dot role="img" aria-label="passed" {} } @else { span.lowtag { (screen.status.as_deref().unwrap_or("no result")) } }
                 (plural(screen.images.len(), "shape", "shapes")) " · " (plural(screen.count, "image", "images"))
                 @if !phone { span.nophone { " · no phone shot" } }
             }

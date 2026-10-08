@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://github.com/OceanEilonwy/monokulo/actions/workflows/ci.yml"><img src="https://github.com/OceanEilonwy/monokulo/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://oceaneilonwy.github.io/monokulo/quality/#coverage"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Foceaneilonwy.github.io%2Fmonokulo%2Fquality%2Fbadge.json" alt="Coverage"></a>
+  <a href="https://oceaneilonwy.github.io/monokulo/quality/coverage.html"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Foceaneilonwy.github.io%2Fmonokulo%2Fquality%2Fbadge.json" alt="Coverage"></a>
   <a href="https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main"><img src="https://img.shields.io/badge/download-latest--main-e05d00" alt="Download latest-main"></a>
   <a href="https://oceaneilonwy.github.io/monokulo/"><img src="https://img.shields.io/badge/docs-GitHub%20Pages-0969da" alt="Docs"></a>
 </p>
