@@ -571,86 +571,89 @@ fn reviewed_engine_history_seeds_replay() {
 #[path = "concurrency/properties.rs"]
 mod concurrency;
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn mixed_wallet_transaction_histories_match_independent_ledger(data in prop::collection::vec(any::<u8>(),0..193)) {
-        crate::work::portfolio::explore(&data);
-    }
-}
 #[test]
-fn reviewed_mixed_wallet_histories_replay() {
-    for data in [
-        include_bytes!("../../../../../fuzz/seeds/portfolio/mixed-forks").as_slice(),
-        include_bytes!("../../../../../fuzz/seeds/portfolio/worker-restarts").as_slice(),
-        include_bytes!("../../../../../fuzz/seeds/portfolio/partial-payments").as_slice(),
-    ] {
-        crate::work::portfolio::explore(data);
+fn reviewed_portfolio_seeds_are_the_encoded_reviewed_scenarios() {
+    // REGENERATE_PORTFOLIO_SEEDS=1 rewrites the directory from the scenarios.
+    let dir = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fuzz/seeds/portfolio"
+    ));
+    let seeds = crate::work::portfolio::scenario::reviewed::seeds();
+    if std::env::var_os("REGENERATE_PORTFOLIO_SEEDS").is_some() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            std::fs::remove_file(entry.unwrap().path()).unwrap();
+        }
+        for (name, scenario) in &seeds {
+            std::fs::write(dir.join(name), scenario.encode()).unwrap();
+        }
+    }
+    let mut files = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    files.sort();
+    let mut names = seeds
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(files, names, "regenerate with REGENERATE_PORTFOLIO_SEEDS=1");
+    for (name, scenario) in seeds {
+        assert_eq!(
+            std::fs::read(dir.join(&name)).unwrap(),
+            scenario.encode(),
+            "{name}: regenerate with REGENERATE_PORTFOLIO_SEEDS=1"
+        );
     }
 }
 
 #[test]
 fn combined_portfolio_interactions_have_fixed_positive_controls() {
-    // Two wallets/two txs, one additional output each, all thresholds one.
-    // This forces disagreement, corroborated void, proof lag/mismatch,
-    // custody replacement, SQL recovery, restart and eventual restoration.
+    use crate::work::portfolio::scenario::reviewed::combined;
     for worker in 0..=1 {
-        let mut data = vec![0; 20];
-        data[3] = worker;
-        data[16..20].fill(1);
-        for event in [
-            [0, 0, 0],
-            [0, 1, 1],
-            [7, 0, 0],
-            [6, 0, 0],
-            [8, 0, 0],
-            [11, 0, 0],
-            [9, 1, 0],
-            [10, 1, 0],
-            [3, 0, 0],
-            [0, 0, 2],
-        ] {
-            data.extend(event);
-        }
-        let hits = crate::work::portfolio::explore(&data);
-        for boundary in [
-            "rpc-timeout-cancelled",
-            "custody-error-reached",
-            "component-custody-error-reached",
-            "engine-custody-error-reached",
-            "engine-rpc-timeout-cancelled",
-            "engine-fault-payment-recovered",
-            "sql-denial-reached",
-            "all-node-outage-preserves-money-and-cursors",
-            "connection-reopened-mid-history",
-            "custody-handle-replaced",
-            "unanimous-spent-void-checked",
-            "disputed-spent-retains-funds",
-            "void-restored-to-canonical-block",
-            "missing-proof-holds-settlement",
-            "mismatching-proof-holds-settlement",
-            "proven-settlement-released",
-            "http-503-reached",
-            "http-retry-stable-bytes-and-drained",
-            "connection-reopened-final-ledger",
-        ] {
-            assert!(
-                hits.get(boundary).copied().unwrap_or_default() > 0,
-                "BOUNDARY: positive-control; {boundary} worker={worker}"
+        for goal in 0..=1 {
+            let hits = crate::work::portfolio::explore(&combined(worker, goal).encode());
+            for boundary in [
+                "rpc-timeout-cancelled",
+                "custody-error-reached",
+                "component-custody-error-reached",
+                "engine-custody-error-reached",
+                "engine-rpc-timeout-cancelled",
+                "engine-fault-payment-recovered",
+                "sql-denial-reached",
+                "all-node-outage-preserves-money-and-cursors",
+                "connection-reopened-mid-history",
+                "custody-handle-replaced",
+                "unanimous-spent-void-checked",
+                "disputed-spent-retains-funds",
+                "void-restored-to-canonical-block",
+                "missing-proof-holds-settlement",
+                "mismatching-proof-holds-settlement",
+                "proven-settlement-released",
+                "applied-transition:Rebuild",
+                "applied-transition:FastPass",
+                "http-503-reached",
+                "http-retry-stable-bytes-and-drained",
+                "connection-reopened-final-ledger",
+            ] {
+                assert!(
+                    hits.get(boundary).copied().unwrap_or_default() > 0,
+                    "BOUNDARY: positive-control; {boundary} worker={worker} goal={goal}"
+                );
+            }
+            if worker == 1 {
+                assert!(
+                    hits.get("worker-restarted-mid-history")
+                        .copied()
+                        .unwrap_or_default()
+                        > 0
+                );
+            }
+            println!(
+                "ENGINE_BOUNDARY_HITS {}",
+                serde_json::to_string(&hits).unwrap()
             );
         }
-        if worker == 1 {
-            assert!(
-                hits.get("worker-restarted-mid-history")
-                    .copied()
-                    .unwrap_or_default()
-                    > 0
-            );
-        }
-        println!(
-            "ENGINE_BOUNDARY_HITS {}",
-            serde_json::to_string(&hits).unwrap()
-        );
     }
 }
 
@@ -716,31 +719,28 @@ fn recorded_ringct_shapes_and_recipient_expectations_are_frozen() {
 
 #[test]
 fn every_recorded_ringct_variant_runs_complete_money_histories() {
+    use crate::work::portfolio::scenario::reviewed::recorded;
     let mut hits = std::collections::BTreeMap::<String, u64>::new();
     for worker in 0..=1 {
         for pruned in [false, true] {
             for foreign in 0..3 {
                 for goal in 0..3 {
-                    let mut data = vec![0; 16];
-                    data[0] = if pruned { 193 } else { 129 };
-                    data[2] = goal;
-                    data[3] = worker;
-                    data[11] = foreign;
-                    data[12..16].fill(1 + goal);
-                    for event in [
-                        [0, 0, 0],
-                        [0, 1, 1],
-                        [0, 2, 2],
-                        [7, 0, 0],
-                        [6, 0, 0],
-                        [3, 0, 0],
-                        [9, 1, 0],
-                        [1, 0, 0],
-                        [0, 0, 1],
+                    let reached = crate::work::portfolio::explore(
+                        &recorded(worker, pruned, foreign, goal).encode(),
+                    );
+                    for boundary in [
+                        "fixture:recorded-and-synthetic",
+                        "custody-handle-replaced",
+                        "unanimous-spent-void-checked",
+                        "disputed-spent-retains-funds",
+                        "void-restored-to-canonical-block",
+                        "connection-reopened-final-ledger",
                     ] {
-                        data.extend(event);
+                        assert!(
+                            reached.get(boundary).copied().unwrap_or_default() > 0,
+                            "BOUNDARY: recorded-history; {boundary} worker={worker} pruned={pruned} foreign={foreign} goal={goal}"
+                        );
                     }
-                    crate::work::portfolio::explore(&data);
                     for boundary in [
                         "recorded-ringct-history",
                         if pruned {
@@ -774,14 +774,14 @@ fn persisted_config(config: Config) -> Config {
 proptest! {
     #![proptest_config(persisted_config(config()))]
     #[test]
-    fn typed_portfolio_histories_shrink_semantic_commands(scenario in crate::work::portfolio::scenario::strategy()) {
+    fn portfolio_histories_match_independent_ledger(scenario in crate::work::portfolio::scenario::strategy()) {
         let bytes = scenario.encode();
-        prop_assert_eq!(crate::work::portfolio::scenario::Scenario::decode(&bytes), Some(scenario));
+        prop_assert_eq!(crate::work::portfolio::scenario::Scenario::decode(&bytes), scenario);
         crate::work::portfolio::explore(&bytes);
     }
 }
 #[test]
-fn typed_portfolio_composes_arrival_extension_reorg_proof_expiry_and_faults() {
+fn portfolio_composes_arrival_extension_reorg_proof_expiry_and_faults() {
     use crate::work::portfolio::scenario::{Command::*, Scenario, SETUP_BYTES};
     for worker in 0..=1 {
         let mut setup = vec![0; SETUP_BYTES];
@@ -830,7 +830,7 @@ fn typed_portfolio_composes_arrival_extension_reorg_proof_expiry_and_faults() {
 }
 
 #[test]
-fn typed_portfolio_reorg_retains_pending_settlement_until_branch_is_proven() {
+fn portfolio_reorg_retains_pending_settlement_until_branch_is_proven() {
     use crate::work::portfolio::scenario::{Command::*, Scenario};
     for worker in 0..=1 {
         let mut setup = [
@@ -901,7 +901,7 @@ fn typed_portfolio_reorg_retains_pending_settlement_until_branch_is_proven() {
 }
 
 #[test]
-fn typed_portfolio_selects_every_sql_operation_class_and_position() {
+fn portfolio_selects_every_sql_operation_class_and_position() {
     use crate::work::portfolio::scenario::{Command, Scenario, SETUP_BYTES};
     for writes in [false, true] {
         for position in 0..4 {
@@ -932,7 +932,7 @@ fn typed_portfolio_selects_every_sql_operation_class_and_position() {
 }
 
 #[test]
-fn typed_portfolio_reports_selected_applied_and_skipped_commands_separately() {
+fn portfolio_reports_selected_applied_and_skipped_commands_separately() {
     use crate::work::portfolio::scenario::{Command, Scenario, SETUP_BYTES};
     let scenario = Scenario {
         setup: vec![0; SETUP_BYTES],

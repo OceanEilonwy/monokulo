@@ -38,19 +38,20 @@ not constitute a second independent review or safety certification.
 | Direct restart retained the original active store | Replace both observer and executor through one shared backend helper | Previous observer released, TEMP state absent, every persisted table equal, subsequent operations use replacement |
 | Fault counters were satisfied by isolated component calls | Dedicated outstanding payment, separate component/engine controls, actual round cancellation and post-component custody delta | No credit on failed custody; actual SQL denials; exactly one expected payment after recovery |
 | SQL failure always struck access zero | Typed selection of all accesses versus writes and positions 0–3 | Fixed sweep exercises all eight choices through both direct and worker backends; records denied operation names |
-| Byte coupling obscured histories and shrinking | Independently generated setup plus typed command vectors and semantic failure traces | Codec round-trip, composed transition histories, and legacy seed/regression replay |
+| Byte coupling obscured histories and shrinking | Independently generated setup plus typed command vectors and semantic failure traces | Codec round-trip, composed transition histories, and reviewed seeds checked against their scenarios |
 | Verification code distracted from production | Domain grouping with shared roles and stable module identities | Before/after inventory comparison; unchanged private access and runner filters |
 | Harness duplication and many-argument effects | Shared backend controls and borrowed effects context; separate independent portfolio model | Both property and fuzz entry points execute the same runner and oracle |
 | Floating tooling and unmeasured budgets | Pin exploration toolchain/fuzzer, record versions, calibrate seeds and report actual growth | Reporter tests; campaigns fail if only corpus initialization executes |
 | Selected mutations and serialized Loom implied broader assurance | Add deterministic critical decision grids and explicit exhaustive policy-call permutations | 27 selected mutants in both configurations; unrelated panics/timeouts/build errors are invalid results |
 
-Typed portfolio properties generate 0–16 commands; the versioned `MKP\x01` codec
-supports up to 32. Commands cover late arrival, mining, ordinary extension of
-1–4 blocks, reorgs of up to four heights, disappearance, spent votes, proof lag
-of 0–7 blocks or mismatches, clock advances of 1–8 × 301 seconds, backend restart,
-SQL operation/position faults, notification delivery and rounds. Individual
-invoice goals, confirmation thresholds of 0–3 and expiry are generated separately.
-Legacy byte inputs remain replayable. Invalid arrivals, removals and spent evidence
+Typed portfolio properties generate 0–16 commands; the codec supports up to 32
+and decodes any bytes. Commands cover late arrival, mining, ordinary extension of
+1–4 blocks, reorgs of up to four heights, branch rebuilds that keep or move mined
+transactions, disappearance, spent votes, proof lag of 0–7 blocks or mismatches,
+clock advances of 1–8 × 301 seconds, backend restart, fast passes, custody
+replacement, SQL operation/position faults, notification delivery and rounds.
+Individual invoice goals, confirmation thresholds of 0–3, expiry and a pool-first
+start are generated separately. Invalid arrivals, removals and spent evidence
 are counted as skipped. Mining an already-mined transaction creates an empty block
 instead: the report records skipped mining and the separate extension effect.
 
