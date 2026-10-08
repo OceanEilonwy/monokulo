@@ -768,10 +768,11 @@ async fn a_check_reports_what_a_save_would_do_and_stores_installs_and_publishes_
 
     let report = h.registry.check(changes.clone()).await.unwrap();
     assert!(report.has_changes());
-    assert_eq!(report.changed, ["scan.depth", "node.a", "server.workers"]);
-    assert_eq!(report.restart_required, ["server.workers"]);
+    let would = report.would();
+    assert_eq!(would.changed, ["scan.depth", "node.a", "server.workers"]);
+    assert_eq!(would.restart_required, ["server.workers"]);
     assert_eq!(
-        report.warnings,
+        would.warnings,
         [Warning::for_key("node.a", "node_a prepared")],
         "node A was prepared, as a save would"
     );
@@ -789,7 +790,7 @@ async fn a_check_reports_what_a_save_would_do_and_stores_installs_and_publishes_
     assert!(!view(&h.registry.describe(), "server.workers").pending_restart);
 
     // The save of the same changes reports the same.
-    assert_eq!(h.registry.save(changes).await.unwrap(), report);
+    assert_eq!(&h.registry.save(changes).await.unwrap(), report.would());
 }
 
 #[tokio::test]

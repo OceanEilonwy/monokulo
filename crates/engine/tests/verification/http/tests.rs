@@ -4148,7 +4148,6 @@ async fn a_check_answers_as_a_save_would_and_saves_nothing() {
     });
     let (status, body) = try_check(&router, request.clone()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["checked"], true);
     assert_eq!(body["has_changes"], true);
     assert_eq!(
         body["changed"],
@@ -4178,63 +4177,6 @@ async fn a_check_answers_as_a_save_would_and_saves_nothing() {
     assert_eq!(status, StatusCode::OK, "{again}");
     assert_eq!(again["has_changes"], false, "{again}");
     assert_eq!(again["changed"], serde_json::json!([]));
-}
-
-/// A check says which networks stores use would be left without a node
-/// that answers, as the save would after the fact, before anything changes.
-#[tokio::test]
-async fn a_check_says_a_network_stores_use_would_be_left_without_a_node() {
-    let (router, daemons, _) = engine_that_applies_node_settings().await;
-    let node = spawn_node_on(Some("stagenet")).await;
-    save_settings(
-        &router,
-        serde_json::json!({ "monero_node": { "stagenet": node_json(node, &[]) } }),
-    )
-    .await;
-    let created = router
-        .clone()
-        .oneshot(stagenet_tenant_request(7))
-        .await
-        .unwrap();
-    assert_eq!(created.status(), StatusCode::OK);
-
-    let unserved = serde_json::json!([{ "network": "stagenet", "tenants": 1 }]);
-    // Cleared.
-    let (status, body) = try_check(
-        &router,
-        serde_json::json!({ "monero_node": { "stagenet": null } }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["warnings"]["unserved_networks"], unserved, "{body}");
-    assert!(daemons.is_configured(Network::Stagenet), "nothing changed");
-    // Moved to a node that doesn't answer.
-    let nothing = std::net::SocketAddr::from(([127, 0, 0, 1], closed_port()));
-    let (status, body) = try_check(
-        &router,
-        serde_json::json!({ "monero_node": { "stagenet": node_json(nothing, &[]) } }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["warnings"]["unserved_networks"], unserved, "{body}");
-    // Moved to one that answers: fine.
-    let other = spawn_node_on(Some("stagenet")).await;
-    let (status, body) = try_check(
-        &router,
-        serde_json::json!({ "monero_node": { "stagenet": node_json(other, &[]) } }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(
-        body["warnings"]["unserved_networks"],
-        serde_json::json!([]),
-        "{body}"
-    );
-    assert_eq!(
-        saved_node(&router, "stagenet").await["port"],
-        node.port(),
-        "still the saved node"
-    );
 }
 
 /// Only a node that answers with a network it isn't being saved for is
