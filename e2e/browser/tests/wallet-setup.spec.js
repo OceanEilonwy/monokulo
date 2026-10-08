@@ -52,9 +52,16 @@ test('a new wallet is made in the browser, saved, checked with three of its word
 
   // Saving it in a wallet app: the QR code shows only when asked.
   const cake = page.locator('[data-app-panel="cake"]');
+  // One app at a time, and one of Show and Hide.
+  await expect(page.locator('[data-app-panel="stack"]')).toBeHidden();
+  await expect(page.locator('[data-method-panel="paper"]')).toBeHidden();
+  await expect(page.getByRole('heading', { name: 'Check your backup' })).toBeHidden();
+  await expect(cake.getByRole('button', { name: 'Hide QR code' })).toBeHidden();
   await expect(cake.locator('[data-qr] svg')).toHaveCount(0);
   await cake.getByRole('button', { name: 'Show QR code' }).click();
   await expect(cake.locator('[data-qr] svg')).toBeVisible();
+  await expect(cake.getByRole('button', { name: 'Show QR code' })).toBeHidden();
+  await expect(cake.locator('[data-qr-cover]')).toBeHidden();
   await captureCoverageStage(page, 'wallets-backup-app', test.info(), { group: GROUP });
   await page.getByRole('tab', { name: 'Stack Wallet' }).click();
   await expect(cake.locator('[data-qr] svg')).toHaveCount(0, { timeout: 1000 });

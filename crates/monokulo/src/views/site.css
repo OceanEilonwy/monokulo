@@ -721,6 +721,9 @@ a.order-id { display: inline-block; max-width: 11em; }
 
 /* Wallets (docs/wallets.md): setup steps, the wallet choice, the new
    wallet's backup and check, and a wallet's page. */
+/* The new wallet page shows one screen, app and button at a time by the
+   hidden attribute; a display set below must not bring them back. */
+[data-wallet-setup] [hidden], .wallet-choice [hidden] { display: none !important; }
 .setup-steps { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; list-style: none; padding: 0; margin: var(--space-lg) 0 0; font-size: .88em; font-weight: 700; color: var(--muted); }
 .setup-steps li { display: flex; align-items: center; gap: .4rem; }
 .setup-steps .n { display: inline-flex; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem; border-radius: 50%; border: 1px solid var(--line-strong); background: var(--paper-raised); font-size: .8rem; }
@@ -787,6 +790,8 @@ a.order-id { display: inline-block; max-width: 11em; }
 .btn-danger:hover { border-color: var(--ink); }
 .danger-zone { border: 2px solid var(--error); border-radius: var(--radius-md); padding: var(--space-xl); background: var(--paper-raised); margin: 1.2rem 0; }
 .danger-zone h2 { color: var(--error); margin-top: 0; border-bottom-color: var(--line); }
+.wallet-layout .box > h2:first-child, .wallet-layout .danger-zone > h2:first-child { margin-top: 0; }
+.danger-zone button[disabled] { opacity: .45; cursor: not-allowed; }
 .wallet-layout { display: flex; flex-wrap: wrap; gap: var(--space-xl); align-items: flex-start; }
 .wallet-layout > .main { flex: 999 1 28rem; min-width: 0; }
 .wallet-layout > aside { flex: 1 1 17rem; }

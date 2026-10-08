@@ -195,8 +195,7 @@
         coverQrs();
         show(to);
       }
-    } else if (target.matches('[data-finish]')) finishCheck();
-    else if (target.matches('[data-skip-confirm]')) submit('skipped');
+    } else if (target.matches('[data-skip-confirm]')) submit('skipped');
   });
   backedUp.addEventListener('change', () => {
     next.disabled = !backedUp.checked;
@@ -253,6 +252,11 @@
       : "That doesn't match. A wrong word in your backup means you can't open this wallet later.";
     return right;
   };
+
+  $('[data-check-form]').addEventListener('submit', (event) => {
+    event.preventDefault();
+    finishCheck();
+  });
 
   for (const [i, label] of $$('[data-word-check]').entries()) {
     $('input', label).addEventListener('change', () => checkOne(label, i));

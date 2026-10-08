@@ -435,7 +435,7 @@ pub fn create_page(chrome: &PageChrome, data: &CreateViewModel) -> Markup {
                         strong { "Get your paper copy." }
                         p { "Read each word asked for below from it." }
                     }
-                    div class="box" {
+                    form class="box" data-check-form novalidate {
                         p { "Type these three words. This page no longer shows them, so it checks what you saved." }
                         @for i in 0..3 {
                             label class="word-check" data-word-check=(i) {
@@ -448,7 +448,7 @@ pub fn create_page(chrome: &PageChrome, data: &CreateViewModel) -> Markup {
                         div class="form-actions" {
                             button type="button" data-go="backup" { (back_arrow()) " Back to my backup" }
                             span class="spacer" {}
-                            button type="button" class="btn-primary" data-finish { "Check and add wallet" }
+                            button type="submit" class="btn-primary" { "Check and add wallet" }
                         }
                     }
                 }
