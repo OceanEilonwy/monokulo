@@ -369,7 +369,7 @@ pub struct UnservedNetwork {
 }
 
 /// Why a settings request is refused before the registry sees it.
-enum GateRefusal {
+enum Refusal {
     /// The engine has no settings registry.
     NoRegistry,
     /// Settings it may not take: on an engine inside monokulo, the ones
@@ -380,7 +380,7 @@ enum GateRefusal {
     UnknownNetwork(String),
 }
 
-impl IntoResponse for GateRefusal {
+impl IntoResponse for Refusal {
     fn into_response(self) -> axum::response::Response {
         match self {
             Self::NoRegistry => (
@@ -399,17 +399,17 @@ impl IntoResponse for GateRefusal {
 }
 
 /// The registry, when the engine has one.
-fn registry_of(settings: &EngineSettings) -> Result<&live_settings::Registry, GateRefusal> {
-    settings.registry.as_ref().ok_or(GateRefusal::NoRegistry)
+fn registry_of(settings: &EngineSettings) -> Result<&live_settings::Registry, Refusal> {
+    settings.registry.as_ref().ok_or(Refusal::NoRegistry)
 }
 
 /// A settings request as the registry takes it, once what can't be saved
-/// at all is refused. The one gate a save and a check both go through, so
-/// a check refuses exactly what a save would.
+/// at all is refused. A save and a check both start here, so a check
+/// refuses exactly what a save would.
 async fn changes_from(
     settings: &EngineSettings,
     req: UpdateSettingsRequest,
-) -> Result<live_settings::Changes, GateRefusal> {
+) -> Result<live_settings::Changes, Refusal> {
     if settings.embedded {
         let standalone: Vec<live_settings::FieldError> = req
             .scalars
@@ -423,7 +423,7 @@ async fn changes_from(
             })
             .collect();
         if !standalone.is_empty() {
-            return Err(GateRefusal::Fields(standalone));
+            return Err(Refusal::Fields(standalone));
         }
     }
     let mut changes: live_settings::Changes =
@@ -431,11 +431,11 @@ async fn changes_from(
     let current_nodes = settings.nodes.load();
     let cannot_work = nodes_that_cannot_work(&req.monero_node, &current_nodes).await;
     if !cannot_work.is_empty() {
-        return Err(GateRefusal::Fields(cannot_work));
+        return Err(Refusal::Fields(cannot_work));
     }
     for (network, node) in req.monero_node {
         let Some((_, setting)) = NETWORKS.iter().find(|(n, _)| *n == network) else {
-            return Err(GateRefusal::UnknownNetwork(network));
+            return Err(Refusal::UnknownNetwork(network));
         };
         let raw = match node {
             Some(value) if !value.is_null() => Some(value.to_string()),
@@ -562,7 +562,7 @@ pub async fn update_settings(
 /// `POST /api/v1/admin/settings/check`: checks a settings request exactly
 /// as `POST /api/v1/admin/settings` would save it, and saves nothing.
 ///
-/// It goes through the save's own gate and `live_settings::Registry::check`.
+/// It goes through the save's own `changes_from` and `live_settings::Registry::check`.
 /// What a save would refuse is refused the same way: `400` with the same
 /// `fields`. Otherwise `200` with what a save would report: the keys that
 /// would change, `has_changes` (false when none would), what would wait for
