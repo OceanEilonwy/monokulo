@@ -18,11 +18,12 @@ use crate::value::SettingKind;
 /// to delete the stored value so the setting goes back to its default.
 pub type Changes = Vec<(String, Option<String>)>;
 
-/// What an accepted save did.
+/// What an accepted save did, or what a check found a save would do.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SaveReport {
-    /// Keys whose stored value changed. A submitted value equal to the one
-    /// already stored is not a change.
+    /// Keys whose stored value changed (would change, for a check). A
+    /// submitted value equal to the one already stored is not a change, and
+    /// neither is a setting's default for a key with nothing stored.
     pub changed: Vec<&'static str>,
     /// Restart-only keys whose effective value now differs from the one
     /// the process started with.
@@ -34,7 +35,46 @@ pub struct SaveReport {
     pub env_overridden: Vec<&'static str>,
 }
 
-/// Why a save was refused. Nothing was stored or applied.
+/// What [`Registry::check`] found: what a save of the same changes would
+/// do. Its own type, so a check's report can't be taken for a save's.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct CheckReport(SaveReport);
+
+impl CheckReport {
+    /// Whether anything submitted differs from what's stored: a save of
+    /// these changes would change something.
+    pub fn has_changes(&self) -> bool {
+        !self.0.changed.is_empty()
+    }
+
+    /// What the save would report.
+    pub fn would(&self) -> &SaveReport {
+        &self.0
+    }
+}
+
+/// How a run of the save pipeline ends once everything changed has been
+/// staged and prepared.
+enum Commit {
+    /// Store these writes, then install and publish.
+    Save(Vec<(&'static str, Option<String>)>),
+    /// Install and publish what was read from the store.
+    Reload,
+    /// Drop what was prepared: nothing stored, installed or published.
+    Check,
+}
+
+/// A save's or a check's changes, parsed and compared with what's stored,
+/// under the save lock.
+struct Plan {
+    lock: tokio::sync::OwnedMutexGuard<bool>,
+    new: HashMap<String, String>,
+    changed: Vec<&'static dyn AnySetting>,
+    writes: Vec<(&'static str, Option<String>)>,
+}
+
+/// Why a save (or a check) was refused. Nothing was stored or applied.
 #[derive(Debug, thiserror::Error)]
 pub enum SaveError {
     #[error("there is no setting called {0:?}")]
@@ -576,6 +616,33 @@ impl Registry {
     /// Once step 4 has succeeded, step 5 runs to the end even if the
     /// caller stops waiting.
     pub async fn save(&self, changes: Changes) -> Result<SaveReport, SaveError> {
+        let plan = self.plan(changes).await?;
+        self.apply(plan.lock, plan.new, plan.changed, Commit::Save(plan.writes))
+            .await
+    }
+
+    /// Checks `changes` as [`Registry::save`] would save them, and saves
+    /// nothing: steps 1 to 3 (parse, cross-field rules, prepare), then
+    /// everything prepared is dropped. It refuses what a save would refuse,
+    /// with the same errors, and otherwise reports what a save would do:
+    /// which keys would change ([`CheckReport::has_changes`]), which would
+    /// wait for a restart, which the environment would still override, and
+    /// the warnings from preparing. It takes the same lock as a save, so it
+    /// never sees one half done.
+    ///
+    /// Preparing does real work and undoes it: a new listener is bound,
+    /// then closed, so a port that's taken is refused here as it would be
+    /// by the save.
+    pub async fn check(&self, changes: Changes) -> Result<CheckReport, SaveError> {
+        let plan = self.plan(changes).await?;
+        self.apply(plan.lock, plan.new, plan.changed, Commit::Check)
+            .await
+            .map(CheckReport)
+    }
+
+    /// Step 1 of a save or a check: `changes` parsed and compared with
+    /// what's stored, under the save lock.
+    async fn plan(&self, changes: Changes) -> Result<Plan, SaveError> {
         let inner = &self.inner;
         let lock = Arc::clone(&inner.save_lock).lock_owned().await;
         if !*lock {
@@ -640,7 +707,12 @@ impl Registry {
             writes.push((key, value));
             changed.push(setting);
         }
-        self.apply(lock, new, changed, Some(writes)).await
+        Ok(Plan {
+            lock,
+            new,
+            changed,
+            writes,
+        })
     }
 
     /// Reads the options file (and the database) again and applies what
@@ -674,7 +746,7 @@ impl Registry {
             .copied()
             .filter(|setting| old.get(setting.key()) != new.get(setting.key()))
             .collect();
-        self.apply(lock, new, changed, None).await
+        self.apply(lock, new, changed, Commit::Reload).await
     }
 
     /// Where the options file is and whether it can be written, when the
@@ -683,20 +755,24 @@ impl Registry {
         self.inner.store.file_info()
     }
 
-    /// The rest of a save or a reload, under its lock: rebuilds the sections
-    /// that read a changed key, prepares the live ones, writes `writes` (a
-    /// save's; a reload has none), then installs and reports.
+    /// The rest of a save, a check or a reload, under its lock: rebuilds the
+    /// sections that read a changed key and prepares the live ones; then
+    /// `commit` says how it ends (a check drops what was prepared; a save
+    /// writes its changes first; both a save and a reload install), and
+    /// what it did, or would do, is reported.
     async fn apply(
         &self,
         lock: tokio::sync::OwnedMutexGuard<bool>,
         new: HashMap<String, String>,
         changed: Vec<&'static dyn AnySetting>,
-        writes: Option<Vec<(&'static str, Option<String>)>>,
+        commit: Commit,
     ) -> Result<SaveReport, SaveError> {
         let inner = &self.inner;
         let mut errors = Vec::new();
         if changed.is_empty() {
-            *inner.stored.write() = new;
+            if !matches!(commit, Commit::Check) {
+                *inner.stored.write() = new;
+            }
             return Ok(SaveReport::default());
         }
 
@@ -734,9 +810,13 @@ impl Registry {
             return Err(SaveError::Invalid(errors));
         }
 
-        // 4. Persist (a save only: a reload read them from the store).
-        if let Some(writes) = writes {
-            inner.store.write_all(writes).await?;
+        // 4. Persist (a save only: a reload read them from the store). A
+        // check ends here instead: `staging`, dropped on return, drops
+        // everything staged and prepared (closing a listener it bound).
+        match commit {
+            Commit::Check => return Ok(self.report(&snapshot, changed, warnings)),
+            Commit::Save(writes) => inner.store.write_all(writes).await?,
+            Commit::Reload => {}
         }
         *inner.stored.write() = snapshot.stored().clone();
         {
@@ -761,6 +841,20 @@ impl Registry {
         .map_err(|e| SaveError::Install(e.to_string()))?;
 
         // 6. Report.
+        Ok(self.report(&snapshot, changed, warnings))
+    }
+
+    /// What a save of `changed`, leaving `snapshot` stored, did (or would
+    /// do): its changed keys, the ones the environment still overrides,
+    /// and the restart-only ones whose value would differ from the one the
+    /// process started with.
+    fn report(
+        &self,
+        snapshot: &Snapshot,
+        changed: Vec<&'static dyn AnySetting>,
+        warnings: Vec<Warning>,
+    ) -> SaveReport {
+        let inner = &self.inner;
         let env = snapshot.env();
         let mut report = SaveReport {
             warnings,
@@ -784,7 +878,7 @@ impl Registry {
                 }
             }
         }
-        Ok(report)
+        report
     }
 
     /// Every declared setting, in declaration order, as the admin page

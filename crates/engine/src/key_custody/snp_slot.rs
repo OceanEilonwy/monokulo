@@ -91,6 +91,18 @@ impl SnpSlot {
         self.started.lock().clone()
     }
 
+    /// Whether the backend has started or could start, without starting it
+    /// (`SnpKeyCustody::can_start`): what a settings check, and a save's
+    /// prepare step, ask. Starting it makes and stores its master key, so
+    /// only an install starts it ([`SnpSlot::start`]).
+    pub fn check(&self) -> Result<(), String> {
+        if self.started.lock().is_some() {
+            return Ok(());
+        }
+        let config = self.config.as_ref().map_err(Clone::clone)?;
+        SnpKeyCustody::can_start(self.guest.as_ref(), config)
+    }
+
     /// The backend, starting it if this is the first time. A start that
     /// fails is tried again next time.
     pub fn start(&self) -> Result<Arc<SnpKeyCustody>, String> {

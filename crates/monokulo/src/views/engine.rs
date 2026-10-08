@@ -229,7 +229,7 @@ details.mini.alert { border-color: var(--error); }
 .engine-events table { width: 100%; font-size: 0.75rem; }
 .engine-events td { padding: 2px 8px; }
 .engine-events tr.key td:last-child { font-weight: 700; }
-.engine-events tr.now { box-shadow: inset 3px 0 0 var(--accent); }
+.engine-events tr.now td { background: var(--tint-highlight); }
 .engine-events tbody tr { cursor: pointer; }
 .engine-filters { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
 .engine-filters label { display: inline-flex; gap: 3px; align-items: center; font-size: 0.7rem; }

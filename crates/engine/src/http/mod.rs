@@ -285,6 +285,10 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
             post(instance_admin::reload_settings),
         )
         .route(
+            "/api/v1/admin/settings/check",
+            post(instance_admin::check_settings),
+        )
+        .route(
             "/api/v1/admin/proof/{network}/anchor",
             delete(instance_admin::forget_anchor),
         )

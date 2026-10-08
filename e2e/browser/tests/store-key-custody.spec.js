@@ -6,7 +6,7 @@
 // stand-in security processor; here, turning snp on where it can't run is
 // reported, and plain stores carry on.
 const { test, expect } = require('@playwright/test');
-const { createStore, useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY } = require('./backend-helpers');
+const { createStore, useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY, expectSaved } = require('./backend-helpers');
 
 useRealStack(test);
 
@@ -21,7 +21,7 @@ test('a store keeps its keys in the engine; snp turned on without SEV-SNP hardwa
   const { monokulo_url: base } = fixture();
   await signInAsAdmin(page);
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
-  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await expectSaved(page);
 
   // One backend: no choice is offered, and the keys go in as they are.
   // A wallet's keys are given when it's added (Bring your own wallet).
@@ -38,7 +38,9 @@ test('a store keeps its keys in the engine; snp turned on without SEV-SNP hardwa
     'key_custody.enabled_backends': 'plain,snp',
     'key_custody.default_backend': 'plain',
   });
-  await expect(page.getByText(/snp backend can.t start/)).toBeVisible();
+  // Said in the toast, and as a banner that stays: the backend can't run.
+  await expect(page.locator('#settings-toasts').getByText(/snp backend can.t start/)).toBeVisible();
+  await expect(page.locator('#settings-banners').getByText(/snp key custody backend can.t run/)).toBeVisible();
   await page.goto(base + '/dashboard/wallets/import');
   await expect(page.locator('input[name="view_key_hex"]')).toBeVisible();
   await expect(page.locator('select[name="key_custody_backend"]')).toHaveCount(0);
@@ -48,5 +50,5 @@ test('a store keeps its keys in the engine; snp turned on without SEV-SNP hardwa
   expect(await page.content()).not.toContain(VIEW_KEY);
 
   await saveEngineSettings(page, { 'key_custody.enabled_backends': 'plain', 'key_custody.default_backend': 'plain' });
-  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await expectSaved(page);
 });

@@ -755,6 +755,108 @@ async fn a_successful_save_installs_and_readers_see_the_new_value() {
 }
 
 #[tokio::test]
+async fn a_check_reports_what_a_save_would_do_and_stores_installs_and_publishes_nothing() {
+    let store = TestStore::with(&[]);
+    let h = booted(&store, no_env()).await;
+    let scan_changed = h.scan.subscribe();
+    let node_changed = h.node_a.subscribe();
+    let changes = vec![
+        change("scan.depth", " 50 "),
+        change("node.a", "https://new-a.example/"),
+        change("server.workers", "8"),
+    ];
+
+    let report = h.registry.check(changes.clone()).await.unwrap();
+    assert!(report.has_changes());
+    let would = report.would();
+    assert_eq!(would.changed, ["scan.depth", "node.a", "server.workers"]);
+    assert_eq!(would.restart_required, ["server.workers"]);
+    assert_eq!(
+        would.warnings,
+        [Warning::for_key("node.a", "node_a prepared")],
+        "node A was prepared, as a save would"
+    );
+
+    // Nothing stored, installed or published, and what was prepared was
+    // dropped.
+    assert_eq!(store.writes(), 0);
+    assert_eq!(store.get("scan.depth"), None);
+    assert_eq!(h.scan.load().depth, 20);
+    assert_eq!(h.node_a.load().url, url("http://a.example"));
+    assert!(!scan_changed.has_changed().unwrap());
+    assert!(!node_changed.has_changed().unwrap());
+    assert_eq!((h.a.prepared(), h.a.installed()), (2, 1));
+    assert_eq!(h.a.dropped(), h.a.prepared());
+    assert!(!view(&h.registry.describe(), "server.workers").pending_restart);
+
+    // The save of the same changes reports the same.
+    assert_eq!(&h.registry.save(changes).await.unwrap(), report.would());
+}
+
+#[tokio::test]
+async fn a_check_refuses_what_a_save_would_with_the_same_errors() {
+    let store = TestStore::with(&[]);
+    let mut b = Probe::<NodeB>::new();
+    b.fail = |c| c.url.as_str().contains("unreachable");
+    let h = booted_with(&store, no_env(), Probe::new(), b).await;
+    for changes in [
+        // A bad value.
+        vec![change("scan.depth", "50"), change("scan.poll_ms", "soon")],
+        // A rule across settings.
+        vec![change("limits.soft", "500")],
+        // A reloadable that can't prepare it.
+        vec![
+            change("node.a", "http://new-a.example"),
+            change("node.b", "http://unreachable.example"),
+        ],
+        // A key submitted twice.
+        vec![change("scan.depth", "50"), change("scan.depth", "60")],
+    ] {
+        let checked = h.registry.check(changes.clone()).await.unwrap_err();
+        let saved = h.registry.save(changes).await.unwrap_err();
+        assert_eq!(invalid_keys(&checked), invalid_keys(&saved));
+        assert_eq!(checked.to_string(), saved.to_string());
+    }
+    let err = h
+        .registry
+        .check(vec![change("scan.nope", "1")])
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SaveError::UnknownKey(_)), "{err:?}");
+    assert_eq!(store.writes(), 0);
+    assert_eq!(
+        h.a.dropped(),
+        h.a.prepared(),
+        "everything prepared was dropped"
+    );
+}
+
+#[tokio::test]
+async fn a_check_of_the_values_in_effect_has_no_changes_and_prepares_nothing() {
+    let store = TestStore::with(&[("scan.depth", "50")]);
+    let h = booted(&store, no_env()).await;
+    let prepared = h.a.prepared();
+    // The stored value, and a default for a key with nothing stored.
+    let report = h
+        .registry
+        .check(vec![
+            change("scan.depth", "50"),
+            change("scan.poll_ms", "1000"),
+        ])
+        .await
+        .unwrap();
+    assert!(!report.has_changes(), "{report:?}");
+    assert_eq!(report, CheckReport::default());
+    assert_eq!(h.a.prepared(), prepared);
+    // A value that isn't valid is still refused, changed or not.
+    assert!(h
+        .registry
+        .check(vec![change("scan.poll_ms", "soon")])
+        .await
+        .is_err());
+}
+
+#[tokio::test]
 async fn deleting_a_stored_value_goes_back_to_the_default() {
     let store = TestStore::with(&[("scan.depth", "50")]);
     let h = booted(&store, no_env()).await;

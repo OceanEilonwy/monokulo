@@ -7,7 +7,7 @@
 const { test, expect } = require('../coverage-test');
 const { serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
-const { createStore, useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./backend-helpers');
+const { createStore, useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY, expectSaved } = require('./backend-helpers');
 
 useRealStack(test);
 
@@ -225,7 +225,7 @@ test("a caller's traceparent (as the WooCommerce plugin sends it) is followed th
   const base = fixture().monokulo_url;
   await signInAsAdmin(page);
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
-  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await expectSaved(page);
   await createStore(page, 'traced.example.com');
   await expect(page.getByRole('heading', { name: 'Store connected' })).toBeVisible();
   await page.goto(base + '/dashboard');

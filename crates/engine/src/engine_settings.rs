@@ -858,6 +858,10 @@ impl CustodyReloadable {
 pub struct PreparedCustody {
     backends: HashMap<String, Arc<dyn crate::key_custody::KeyCustody>>,
     default: String,
+    /// The snp backend could start and hasn't yet: started on install, not
+    /// here, since starting it makes and stores its master key, and a check
+    /// (or a save refused after preparing) must leave nothing behind.
+    start_snp: bool,
 }
 
 #[live_settings::async_trait]
@@ -873,6 +877,7 @@ impl live_settings::Reloadable for CustodyReloadable {
         let current = self.router.backends();
         let mut backends: HashMap<String, Arc<dyn crate::key_custody::KeyCustody>> = HashMap::new();
         let mut warnings = Vec::new();
+        let mut start_snp = false;
         for backend in &new.enabled {
             let name = backend.as_str().to_owned();
             let custody: Arc<dyn crate::key_custody::KeyCustody> = match backend {
@@ -882,14 +887,18 @@ impl live_settings::Reloadable for CustodyReloadable {
                 },
                 CustodyBackend::Snp => match self.snp.as_ref().map_or_else(
                     || Err(crate::key_custody::SNP_NOT_BUILT.to_owned()),
-                    |slot| slot.start(),
+                    |slot| slot.check().map(|()| slot.backend()),
                 ) {
-                    Ok(snp) => snp,
+                    Ok(Some(started)) => started,
+                    Ok(None) => {
+                        start_snp = true;
+                        continue;
+                    }
                     Err(e) => {
                         warnings.push(live_settings::Warning::for_key(
                             KEY_CUSTODY_ENABLED_BACKENDS.key,
                             format!(
-                                "Saved, but the snp backend can't start: {e}. Stores on it aren't scanned until it can (its settings apply at a restart)."
+                                "The snp backend can't start: {e}. Stores on it aren't scanned until it can (its settings apply at a restart)."
                             ),
                         ));
                         Arc::new(crate::key_custody::Unstarted(format!(
@@ -903,12 +912,29 @@ impl live_settings::Reloadable for CustodyReloadable {
         let prepared = PreparedCustody {
             backends,
             default: new.default.as_str().to_owned(),
+            start_snp,
         };
         Ok((prepared, warnings))
     }
 
     async fn install(&self, prepared: Self::Prepared) {
-        let PreparedCustody { backends, default } = prepared;
+        let PreparedCustody {
+            mut backends,
+            default,
+            start_snp,
+        } = prepared;
+        if let (true, Some(slot)) = (start_snp, self.snp.as_ref()) {
+            let snp: Arc<dyn crate::key_custody::KeyCustody> = match slot.start() {
+                Ok(snp) => snp,
+                Err(e) => {
+                    tracing::error!(error = %e, "the snp backend could start when checked, but starting it failed");
+                    Arc::new(crate::key_custody::Unstarted(format!(
+                        "the snp backend can't start: {e}"
+                    )))
+                }
+            };
+            backends.insert(CustodyBackend::Snp.as_str().to_owned(), snp);
+        }
         let dropped = self.router.replace(backends, &default);
         crate::key_custody::router::free_handles(dropped);
     }
@@ -1423,18 +1449,24 @@ mod tests {
 
     /// A slot whose backend runs on a stand-in security processor.
     #[cfg(feature = "snp")]
+    fn test_slot_config() -> crate::key_custody::snp::SnpConfig {
+        use snp_attest::guest::TestIdentity;
+        crate::key_custody::snp::SnpConfig {
+            product: snp_attest::report::Product::Genoa,
+            trust: crate::key_custody::transport::TrustPolicy {
+                id_key_digest: TestIdentity::default().id_key_digest,
+                min_guest_svn: 0,
+                min_tcb: crate::key_custody::transport::TcbFloor::default(),
+            },
+        }
+    }
+
+    #[cfg(feature = "snp")]
     fn test_slot() -> Arc<crate::key_custody::SnpSlot> {
         use snp_attest::guest::{TestGuest, TestIdentity};
         let store = crate::store::Store::open_in_memory().unwrap().into_shared();
         Arc::new(crate::key_custody::SnpSlot::new(
-            Ok(crate::key_custody::snp::SnpConfig {
-                product: snp_attest::report::Product::Genoa,
-                trust: crate::key_custody::transport::TrustPolicy {
-                    id_key_digest: TestIdentity::default().id_key_digest,
-                    min_guest_svn: 0,
-                    min_tcb: crate::key_custody::transport::TcbFloor::default(),
-                },
-            }),
+            Ok(test_slot_config()),
             Arc::new(TestGuest::new([1; 32], TestIdentity::default())),
             Arc::new(crate::key_custody::StoreWraps(store)),
         ))
@@ -1450,6 +1482,49 @@ mod tests {
         let (prepared, warnings) = reloadable.prepare(new, old).await.unwrap();
         reloadable.install(prepared).await;
         warnings.len()
+    }
+
+    /// Preparing the snp backend (as a settings check does, or a save
+    /// refused after preparing) only checks it could start: nothing is
+    /// started and no master key is made or stored until it's installed.
+    #[cfg(feature = "snp")]
+    #[tokio::test]
+    async fn preparing_the_snp_backend_starts_nothing_and_stores_no_key() {
+        use crate::key_custody::CustodyRouter;
+        use live_settings::Reloadable as _;
+        use snp_attest::guest::{TestGuest, TestIdentity};
+        let store = crate::store::Store::open_in_memory().unwrap().into_shared();
+        let slot = Arc::new(crate::key_custody::SnpSlot::new(
+            Ok(test_slot_config()),
+            Arc::new(TestGuest::new([1; 32], TestIdentity::default())),
+            Arc::new(crate::key_custody::StoreWraps(Arc::clone(&store))),
+        ));
+        let reloadable =
+            CustodyReloadable::new(Arc::new(CustodyRouter::plain()), Some(Arc::clone(&slot)));
+        let both = CustodyConfig {
+            enabled: vec![CustodyBackend::Plain, CustodyBackend::Snp],
+            default: CustodyBackend::Plain,
+        };
+        let (prepared, warnings) = reloadable
+            .prepare(&both, &defaults_of::<CustodyConfig>())
+            .await
+            .unwrap();
+        assert!(warnings.is_empty(), "it could start: {warnings:?}");
+        drop(prepared);
+        assert!(slot.backend().is_none(), "not started");
+        assert!(
+            store.lock().snp_master_keys().unwrap().is_empty(),
+            "no key stored"
+        );
+
+        // Installed, it starts, and its master key is stored.
+        let (prepared, _) = reloadable
+            .prepare(&both, &defaults_of::<CustodyConfig>())
+            .await
+            .unwrap();
+        reloadable.install(prepared).await;
+        assert!(slot.backend().is_some());
+        assert_eq!(store.lock().snp_master_keys().unwrap().len(), 1);
     }
 
     /// The snp backend starts the first time it is enabled and is the same

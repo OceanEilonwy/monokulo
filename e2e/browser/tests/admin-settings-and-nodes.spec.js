@@ -11,7 +11,7 @@ const { serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
 const { startFakeNode } = require('../real-stack');
 const {
-  useRealStack, fixture, signInAsAdmin, transitionDone, openSettingsTab, saveNodes, nodeAddressBoxes, connectStore, fakeNodeAddress, SETTINGS_TABS,
+  useRealStack, fixture, signInAsAdmin, transitionDone, openSettingsTab, saveNodes, nodeAddressBoxes, connectStore, fakeNodeAddress, SETTINGS_TABS, expectSaved, openNodes, pressSave,
 } = require('./backend-helpers');
 
 useRealStack(test);
@@ -33,7 +33,6 @@ test.afterAll(async () => {
 
 const tabLink = (page, label) => page.locator('#settings-tabs a', { hasText: label });
 const panelHeading = (page) => page.locator('#settings-panel h2');
-const saveButton = (page) => page.locator('#settings-panel').getByRole('button', { name: 'Save', exact: true });
 
 /** The addresses in a network's rows, blank "Add a node" row included. */
 const rowAddresses = (page, network) => nodeAddressBoxes(page, network).evaluateAll((boxes) => boxes.map((box) => box.value));
@@ -86,11 +85,12 @@ for (const javaScript of [true, false]) {
     try {
       if (javaScript) await signInAsAdmin(page);
       await saveNodes(page, { testnet: [a] });
-      await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+      await expectSaved(page);
 
       // Adding: with JavaScript through "Add another", without through the
       // blank row the page always has.
       await openSettingsTab(page, 'nodes');
+      await openNodes(page, 'testnet');
       if (javaScript) {
         await page.locator('[data-node-add-another="testnet"]').click();
         const added = nodeAddressBoxes(page, 'testnet').last();
@@ -101,23 +101,42 @@ for (const javaScript of [true, false]) {
         await nodeAddressBoxes(page, 'testnet').last().fill(b);
       }
       await transitionDone(page);
-      await saveButton(page).click();
-      await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+      await pressSave(page);
+      await expectSaved(page);
       await page.reload();
       expect(await rowAddresses(page, 'testnet')).toEqual([a, b, '']);
 
-      // Up to primary: one press, saved at once.
+      // Up to primary. With JavaScript, dragged by its handle (a change,
+      // saved with the bar, counted once); without, one press saves it.
       await transitionDone(page);
-      await page.locator('#settings-panel button[name="node_action"][value="up:testnet:1"]').click();
-      await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+      if (javaScript) {
+        await openNodes(page, 'testnet');
+        await expect(page.locator('#settings-panel button[name="node_action"][value="up:testnet:1"]')).toBeHidden();
+        const testnet = page.locator('#card-network-testnet');
+        await testnet.locator('[data-node-row="1"] [data-node-handle]').dragTo(testnet.locator('[data-node-row="0"] > summary'), { targetPosition: { x: 200, y: 2 } });
+        await expect(testnet.locator('[data-node-place]').first()).toHaveText('Primary');
+        await expect(testnet.locator('.node-row-address').first()).toHaveText(b);
+        await expect(page.locator('#save-bar')).toContainText('1 unsaved change in Testnet');
+        await expect(testnet.locator('[data-node-mark]').first()).toHaveText('moved');
+        await pressSave(page);
+      } else {
+        await openNodes(page, 'testnet');
+        await page.locator('#settings-panel button[name="node_action"][value="up:testnet:1"]').click();
+      }
+      await expectSaved(page);
       await page.reload();
       expect(await rowAddresses(page, 'testnet')).toEqual([b, a, '']);
-      await expect(page.locator('[data-network="testnet"] legend').first()).toHaveText('Primary');
+      await expect(page.locator('#card-network-testnet [data-node-place]').first()).toHaveText('Primary');
 
-      // Removed.
+      // Removed: with JavaScript the row goes, saved with the bar.
       await transitionDone(page);
+      await openNodes(page, 'testnet');
       await page.locator('#settings-panel button[name="node_action"][value="remove:testnet:1"]').click();
-      await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+      if (javaScript) {
+        await expect(page.locator('#save-bar')).toContainText('1 unsaved change in Testnet');
+        await pressSave(page);
+      }
+      await expectSaved(page);
       await page.reload();
       expect(await rowAddresses(page, 'testnet')).toEqual([b, '']);
 
@@ -125,11 +144,13 @@ for (const javaScript of [true, false]) {
       let asked = false;
       page.once('dialog', async (dialog) => { asked = true; await dialog.accept(); });
       await transitionDone(page);
+      await openNodes(page, 'testnet');
       await page.locator('#settings-panel button[name="node_action"][value="remove:testnet:0"]').click();
-      await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+      if (javaScript) await pressSave(page);
+      await expectSaved(page);
       expect(asked).toBe(false);
       await page.reload();
-      await expect(page.locator('details[data-network="testnet"] > summary')).toHaveText('Add a node for testnet');
+      await expect(page.locator('#card-network-testnet details.node-network-closed > summary')).toHaveText('Add a node for testnet');
     } finally {
       if (context) await context.close();
     }
@@ -140,19 +161,22 @@ for (const javaScript of [true, false]) {
     try {
       if (javaScript) await signInAsAdmin(page);
       await saveNodes(page, { testnet: [testnetA.address] });
-      await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+      await expectSaved(page);
 
       await saveNodes(page, { testnet: [testnetA.address, mainnetNode.address] });
       const message = `${mainnetNode.address} is on mainnet, not testnet.`;
       await expect(page.locator('[data-network="testnet"] p.error')).toHaveText(message);
-      await expect(page.locator('#settings-banners')).toContainText(message);
+      await expect(page.locator('#settings-toasts .toast-error')).toContainText(message);
+      await expect(page.locator('#card-network-testnet')).toHaveClass(/is-failed/);
       // What was typed is still there to fix.
       expect(await rowAddresses(page, 'testnet')).toEqual([testnetA.address, mainnetNode.address, '']);
 
+      // Leaving with what was typed asks first, with JavaScript.
+      if (javaScript) page.once('dialog', (dialog) => dialog.accept());
       await openSettingsTab(page, 'nodes');
       expect(await rowAddresses(page, 'testnet')).toEqual([testnetA.address, '']);
       await saveNodes(page, { testnet: [] });
-      await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+      await expectSaved(page);
     } finally {
       if (context) await context.close();
     }
@@ -162,7 +186,7 @@ for (const javaScript of [true, false]) {
 test('Use TLS shows and hides its row\'s self-signed box', async ({ page }) => {
   await signInAsAdmin(page);
   await openSettingsTab(page, 'nodes');
-  await page.locator('details[data-network="mainnet"] > summary').click();
+  await openNodes(page, 'mainnet');
   const row = page.locator('[data-network="mainnet"] [data-node-add]').last();
   const selfSigned = row.locator('[data-node-self-signed]');
   await expect(selfSigned).toBeHidden();
@@ -173,7 +197,7 @@ test('Use TLS shows and hides its row\'s self-signed box', async ({ page }) => {
   await expect(selfSigned).toBeHidden();
 });
 
-test('removing the last node of a network stores use asks first', async ({ page }) => {
+test('saving without the last node of a network stores use asks first', async ({ page }) => {
   await signInAsAdmin(page);
   await connectStore(page, 'nodes.example.com');
   await openSettingsTab(page, 'nodes');
@@ -182,13 +206,21 @@ test('removing the last node of a network stores use asks first', async ({ page 
   page.on('request', (request) => {
     if (request.method() === 'POST' && request.url().endsWith('/dashboard/admin/settings')) posts += 1;
   });
+  // Remove takes the row out; the question comes with Save.
+  await openNodes(page, 'stagenet');
+  await page.locator('#settings-panel button[name="node_action"][value="remove:stagenet:0"]').click();
+  expect(posts).toBe(0);
+  expect(await rowAddresses(page, 'stagenet')).toEqual(['']);
   let asked = '';
   page.once('dialog', async (dialog) => { asked = dialog.message(); await dialog.dismiss(); });
-  await page.locator('#settings-panel button[name="node_action"][value="remove:stagenet:0"]').click();
+  await pressSave(page);
   expect(asked).toMatch(/stores? uses? the stagenet network/);
   await page.waitForTimeout(500);
   expect(posts).toBe(0);
+  // Still unsaved; Discard brings the node back.
+  await page.locator('#card-network-stagenet').getByRole('button', { name: 'Discard' }).click();
   expect(await rowAddresses(page, 'stagenet')).toEqual([fakeNodeAddress(), '']);
+  await expect(page.locator('#save-bar')).toBeHidden();
 });
 
 test('the Monero nodes tab is marked while the only node of a network stores use is down', async ({ page }) => {
@@ -223,7 +255,7 @@ test('every tab, for the gallery', async ({ page }) => {
   await signInAsAdmin(page);
   // Stagenet with a node, so the Monero nodes tab shows a row and its status.
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
-  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await expectSaved(page);
   for (const tab of SETTINGS_TABS) {
     await openSettingsTab(page, tab);
     if (tab === 'nodes') {

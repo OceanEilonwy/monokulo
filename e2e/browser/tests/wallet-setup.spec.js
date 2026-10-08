@@ -9,7 +9,7 @@
 const { test, expect } = require('../coverage-test');
 const { captureCoverageStage } = require('../coverage-screenshot');
 const {
-  useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, addWallet, createStore, finishStoreSetup, WALLET_NAME,
+  useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, addWallet, createStore, finishStoreSetup, WALLET_NAME, expectSaved,
 } = require('./backend-helpers');
 
 useRealStack(test);
@@ -38,7 +38,7 @@ test('a new wallet is made in the browser, saved, checked with three of its word
   const { monokulo_url: base } = fixture();
   await signInAsAdmin(page);
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
-  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await expectSaved(page);
 
   await page.goto(base + '/dashboard/wallets/setup');
   // With JavaScript, creating one is offered.
@@ -145,7 +145,7 @@ test('stores pick a wallet, and a wallet lists its stores and is renamed on its 
   const { monokulo_url: base } = fixture();
   await signInAsAdmin(page);
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
-  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await expectSaved(page);
   await addWallet(page);
 
   // Several wallets: the store form picks none for you.
@@ -175,7 +175,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   const { monokulo_url: base } = fixture();
   await signInAsAdmin(page);
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
-  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await expectSaved(page);
   await createStore(page, 'changing-shop.example.com');
   const store = await finishStoreSetup(page);
   // A second stagenet wallet, with keys of its own.

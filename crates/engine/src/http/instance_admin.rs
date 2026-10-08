@@ -15,7 +15,7 @@
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::{IntoResponse as _, Json};
+use axum::response::{IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
@@ -108,6 +108,7 @@ fn is_node_key(key: &str) -> Option<&'static str> {
 pub async fn get_settings(
     State(db): State<Database>,
     State(settings): State<Arc<EngineSettings>>,
+    State(custody): State<super::Custody>,
 ) -> Result<Json<SettingsView>, ApiError> {
     let Some(registry) = settings.registry.as_ref() else {
         return Err(ApiError::Unavailable(
@@ -178,6 +179,26 @@ pub async fn get_settings(
                 pending_restart: view.pending_restart,
                 problem: view.problem.map(|p| p.message),
             },
+        );
+    }
+    // A backend that's turned on but can't run (it failed to start) says
+    // so on the setting that turned it on.
+    let cannot_run = backends_that_cannot_run(&custody).await;
+    if let (false, Some(view)) = (
+        cannot_run.is_empty(),
+        scalars.get_mut(crate::engine_settings::KEY_CUSTODY_ENABLED_BACKENDS.key),
+    ) {
+        let said: Vec<String> = cannot_run
+            .iter()
+            .map(UnavailableBackend::sentence)
+            .collect();
+        view.problem = Some(
+            view.problem
+                .take()
+                .into_iter()
+                .chain(said)
+                .collect::<Vec<_>>()
+                .join(" "),
         );
     }
     // The budget's help says what this machine allows, for the networks
@@ -305,12 +326,152 @@ fn refused(errors: &[live_settings::FieldError]) -> axum::response::Response {
         .into_response()
 }
 
+/// A key custody backend that's turned on but can't run: it failed to
+/// start, or doesn't answer.
+#[derive(Serialize)]
+pub struct UnavailableBackend {
+    backend: String,
+    error: String,
+}
+
+impl UnavailableBackend {
+    fn sentence(&self) -> String {
+        format!(
+            "The {} backend can't run: {}.",
+            self.backend,
+            self.error.trim_end_matches('.')
+        )
+    }
+}
+
+/// The enabled key custody backends that can't run, each asked directly.
+async fn backends_that_cannot_run(custody: &super::Custody) -> Vec<UnavailableBackend> {
+    custody
+        .backends
+        .backend_health()
+        .await
+        .into_iter()
+        .filter_map(|(backend, error)| {
+            Some(UnavailableBackend {
+                backend,
+                error: error?,
+            })
+        })
+        .collect()
+}
+
 /// A network that stores use but that has no node configured after a save
 /// (decision D2): the save is accepted and the admin is told.
 #[derive(Serialize)]
 pub struct UnservedNetwork {
     network: String,
     tenants: u64,
+}
+
+/// Why a settings request is refused before the registry sees it.
+enum Refusal {
+    /// The engine has no settings registry.
+    NoRegistry,
+    /// Settings it may not take: on an engine inside monokulo, the ones
+    /// only a standalone engine uses; nodes that can never work where
+    /// they're being saved (T9).
+    Fields(Vec<live_settings::FieldError>),
+    /// A network the engine doesn't scan.
+    UnknownNetwork(String),
+}
+
+impl IntoResponse for Refusal {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            Self::NoRegistry => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "settings are not available on this engine" })),
+            )
+                .into_response(),
+            Self::Fields(errors) => refused(&errors),
+            Self::UnknownNetwork(network) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("unknown network {network:?}") })),
+            )
+                .into_response(),
+        }
+    }
+}
+
+/// The registry, when the engine has one.
+fn registry_of(settings: &EngineSettings) -> Result<&live_settings::Registry, Refusal> {
+    settings.registry.as_ref().ok_or(Refusal::NoRegistry)
+}
+
+/// A settings request as the registry takes it, once what can't be saved
+/// at all is refused. A save and a check both start here, so a check
+/// refuses exactly what a save would.
+async fn changes_from(
+    settings: &EngineSettings,
+    req: UpdateSettingsRequest,
+) -> Result<live_settings::Changes, Refusal> {
+    if settings.embedded {
+        let standalone: Vec<live_settings::FieldError> = req
+            .scalars
+            .keys()
+            .filter(|key| crate::engine_settings::standalone_only(key))
+            .map(|key| {
+                live_settings::FieldError::new(
+                    key.clone(),
+                    "Only the engine running on its own uses this, not the engine inside monokulo.",
+                )
+            })
+            .collect();
+        if !standalone.is_empty() {
+            return Err(Refusal::Fields(standalone));
+        }
+    }
+    let mut changes: live_settings::Changes =
+        req.scalars.into_iter().map(|(k, v)| (k, Some(v))).collect();
+    let current_nodes = settings.nodes.load();
+    let cannot_work = nodes_that_cannot_work(&req.monero_node, &current_nodes).await;
+    if !cannot_work.is_empty() {
+        return Err(Refusal::Fields(cannot_work));
+    }
+    for (network, node) in req.monero_node {
+        let Some((_, setting)) = NETWORKS.iter().find(|(n, _)| *n == network) else {
+            return Err(Refusal::UnknownNetwork(network));
+        };
+        let raw = match node {
+            Some(value) if !value.is_null() => Some(value.to_string()),
+            _ => None,
+        };
+        changes.push((setting.key.to_owned(), raw));
+    }
+    Ok(changes)
+}
+
+/// What a save, or a check, says changed (or would), and its warnings,
+/// in the shape both answer with.
+fn report_json(report: &live_settings::SaveReport) -> serde_json::Value {
+    json!({
+        "ok": true,
+        "changed": report.changed,
+        "warnings": {
+            "restart_required": report.restart_required,
+            "env_overridden": report.env_overridden,
+            "messages": report.warnings.iter().map(|w| json!({ "key": w.key, "message": w.message })).collect::<Vec<_>>(),
+        },
+    })
+}
+
+/// A save's answer: what changed, its warnings, the networks stores use
+/// that it left without a node that answers, and the key custody backends
+/// it turned on that can't run.
+fn saved(
+    report: &live_settings::SaveReport,
+    unserved: &[UnservedNetwork],
+    unavailable: &[UnavailableBackend],
+) -> axum::response::Response {
+    let mut body = report_json(report);
+    body["warnings"]["unserved_networks"] = json!(unserved);
+    body["warnings"]["unavailable_backends"] = json!(unavailable);
+    (StatusCode::OK, Json(body)).into_response()
 }
 
 /// `POST /api/v1/admin/settings`: saves any subset of settings through the
@@ -327,55 +488,17 @@ pub async fn update_settings(
     State(db): State<Database>,
     State(networks): State<Networks>,
     State(settings): State<Arc<EngineSettings>>,
+    State(custody): State<super::Custody>,
     Json(req): Json<UpdateSettingsRequest>,
 ) -> axum::response::Response {
-    let Some(registry) = settings.registry.as_ref() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "settings are not available on this engine" })),
-        )
-            .into_response();
+    let registry = match registry_of(&settings) {
+        Ok(registry) => registry,
+        Err(refusal) => return refusal.into_response(),
     };
-    if settings.embedded {
-        let standalone: Vec<live_settings::FieldError> = req
-            .scalars
-            .keys()
-            .filter(|key| crate::engine_settings::standalone_only(key))
-            .map(|key| {
-                live_settings::FieldError::new(
-                    key.clone(),
-                    "Only the engine running on its own uses this, not the engine inside monokulo.",
-                )
-            })
-            .collect();
-        if !standalone.is_empty() {
-            return refused(&standalone);
-        }
-    }
-    let mut changes: live_settings::Changes =
-        req.scalars.into_iter().map(|(k, v)| (k, Some(v))).collect();
-    // A node that can never work where it's being saved is refused before
-    // anything is stored (T9).
-    let current_nodes = settings.nodes.load();
-    let cannot_work = nodes_that_cannot_work(&req.monero_node, &current_nodes).await;
-    if !cannot_work.is_empty() {
-        return refused(&cannot_work);
-    }
-    for (network, node) in req.monero_node {
-        let Some((_, setting)) = NETWORKS.iter().find(|(n, _)| *n == network) else {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("unknown network {network:?}") })),
-            )
-                .into_response();
-        };
-        let raw = match node {
-            Some(value) if !value.is_null() => Some(value.to_string()),
-            _ => None,
-        };
-        changes.push((setting.key.to_owned(), raw));
-    }
-
+    let changes = match changes_from(&settings, req).await {
+        Ok(changes) => changes,
+        Err(refusal) => return refusal.into_response(),
+    };
     match registry.save(changes).await {
         Ok(report) => {
             // Networks stores use that have no node now, or whose just-saved
@@ -419,20 +542,50 @@ pub async fn update_settings(
                 }
             }
             unserved.sort_by(|a, b| a.network.cmp(&b.network));
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "ok": true,
-                    "changed": report.changed,
-                    "warnings": {
-                        "restart_required": report.restart_required,
-                        "env_overridden": report.env_overridden,
-                        "messages": report.warnings.iter().map(|w| json!({ "key": w.key, "message": w.message })).collect::<Vec<_>>(),
-                        "unserved_networks": unserved,
-                    },
-                })),
-            )
-                .into_response()
+            // A backend this save turned on is started when the save is
+            // installed, after it was checked: one that then failed says so.
+            let custody_changed = report
+                .changed
+                .iter()
+                .any(|key| key.starts_with("key_custody."));
+            let unavailable = if custody_changed {
+                backends_that_cannot_run(&custody).await
+            } else {
+                Vec::new()
+            };
+            saved(&report, &unserved, &unavailable)
+        }
+        Err(e) => save_refused(e),
+    }
+}
+
+/// `POST /api/v1/admin/settings/check`: checks a settings request exactly
+/// as `POST /api/v1/admin/settings` would save it, and saves nothing.
+///
+/// It goes through the save's own `changes_from` and `live_settings::Registry::check`.
+/// What a save would refuse is refused the same way: `400` with the same
+/// `fields`. Otherwise `200` with what a save would report: the keys that
+/// would change, `has_changes` (false when none would), what would wait for
+/// a restart, what the environment would still override, and the warnings
+/// from preparing. Nodes whose settings change are asked which network
+/// they're on, as a save asks them.
+pub async fn check_settings(
+    State(settings): State<Arc<EngineSettings>>,
+    Json(req): Json<UpdateSettingsRequest>,
+) -> axum::response::Response {
+    let registry = match registry_of(&settings) {
+        Ok(registry) => registry,
+        Err(refusal) => return refusal.into_response(),
+    };
+    let changes = match changes_from(&settings, req).await {
+        Ok(changes) => changes,
+        Err(refusal) => return refusal.into_response(),
+    };
+    match registry.check(changes).await {
+        Ok(report) => {
+            let mut body = report_json(report.would());
+            body["has_changes"] = json!(report.has_changes());
+            (StatusCode::OK, Json(body)).into_response()
         }
         Err(e) => save_refused(e),
     }

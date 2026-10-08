@@ -3,10 +3,11 @@
 // and 4.7), served by the real binaries rather than the coverage fixture:
 // descriptions and examples at phone and desktop widths, the confirmation
 // before clearing a network stores use, and banners in the error colour in
-// both themes.
+// both themes (a save's own result is a toast; a banner says what stays
+// true after it).
 const { test, expect } = require('@playwright/test');
 const {
-  createStore, useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, fillNodes, saveEngineSettings, openSettingsTab, SETTINGS_TABS, VIEW_KEY, SPEND_PUBKEY,
+  createStore, useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, fillNodes, saveEngineSettings, openSettingsTab, SETTINGS_TABS, VIEW_KEY, SPEND_PUBKEY, expectSaved, openNodes, pressSave,
 } = require('./backend-helpers');
 
 useRealStack(test);
@@ -33,10 +34,10 @@ for (const [name, size] of Object.entries(SIZES)) {
         await expect(field.locator('.field-help').first()).toBeVisible();
       }
       if (tab === 'nodes') {
-        // A network with no nodes and no stores starts closed; opened, its
-        // address help carries an example address for that network.
-        const closed = page.locator('details[data-network="stagenet"] > summary');
-        if (await closed.count()) await closed.click();
+        // A network with no nodes and no stores starts closed, and so does
+        // each node row; opened, its address help carries an example
+        // address for that network.
+        await openNodes(page, 'stagenet');
         await expect(page.locator('[data-network="stagenet"] .field-help code').first()).toBeVisible();
       }
       const sideways = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
@@ -52,7 +53,7 @@ test('clearing a network stores use asks first; one no store uses does not', asy
   // Testnet gets a node no store uses. The fake node says it's on
   // stagenet, so testnet gets one that doesn't answer, which is saved.
   await saveNodes(page, { stagenet: [fakeNodeAddress()], testnet: ['127.0.0.1:9'] });
-  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await expectSaved(page);
 
   await openSettingsTab(page, 'nodes');
   const stagenet = page.locator('.node-network[data-network="stagenet"]');
@@ -74,14 +75,14 @@ test('clearing a network stores use asks first; one no store uses does not', asy
   await fillNodes(page, { stagenet: [] });
   let asked = '';
   page.once('dialog', async (dialog) => { asked = dialog.message(); await dialog.dismiss(); });
-  await page.locator('#settings-panel').getByRole('button', { name: 'Save', exact: true }).click();
+  await pressSave(page);
   expect(asked).toContain(expected);
   await page.waitForTimeout(500);
   expect(posts).toBe(0);
 
   // Accepted: sent, and the red banner says what happened.
   page.once('dialog', (dialog) => dialog.accept());
-  await page.locator('#settings-panel').getByRole('button', { name: 'Save', exact: true }).click();
+  await pressSave(page);
   await expect(page.getByText(/the stagenet network, which no longer has any reachable nodes/)).toBeVisible();
   expect(posts).toBe(1);
 
@@ -89,13 +90,13 @@ test('clearing a network stores use asks first; one no store uses does not', asy
   let testnetAsked = false;
   page.once('dialog', async (dialog) => { testnetAsked = true; await dialog.accept(); });
   await fillNodes(page, { testnet: [] });
-  await page.locator('#settings-panel').getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await pressSave(page);
+  await expectSaved(page);
   expect(testnetAsked).toBe(false);
   expect(posts).toBe(2);
 
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
-  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await expectSaved(page);
 });
 
 for (const scheme of ['light', 'dark']) {
@@ -112,7 +113,7 @@ for (const scheme of ['light', 'dark']) {
       // The restart-only setting first, then the node: the banners after
       // the second save are the node's; the restart shows on its field.
       await saveEngineSettings(page, { 'server.worker_threads': String((threads % 8) + 1) });
-      await expect(page.locator('p.warning').first()).toBeVisible();
+      await expect(page.locator('#settings-toasts .toast-warning')).toBeVisible();
       await saveNodes(page, { stagenet: [] });
       const red = page.locator('p.error[role="alert"]').first();
       await expect(red).toBeVisible();
@@ -130,7 +131,7 @@ for (const scheme of ['light', 'dark']) {
       const sideways = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       expect(sideways).toBeLessThanOrEqual(0);
       await saveNodes(page, { stagenet: [fakeNodeAddress()] });
-      await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+      await expectSaved(page);
     });
   }
 }
@@ -143,8 +144,8 @@ test('an on/off setting is a switch: on and off both save', async ({ page }) => 
   await expect(control).toBeVisible();
   await expect(page.getByRole('switch', { name: /under attack/i })).toHaveCount(1);
   const save = async () => {
-    await page.locator('#settings-panel').getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(page.locator('#settings-panel .save-status')).toBeVisible();
+    await pressSave(page);
+    await expectSaved(page);
     await openSettingsTab(page, 'abuse');
   };
 

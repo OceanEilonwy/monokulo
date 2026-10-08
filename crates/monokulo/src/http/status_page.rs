@@ -218,11 +218,25 @@ pub fn snp_policy_problems(
     policy: &crate::settings::SnpEntryPolicy,
     status: &EngineStatusResponse,
 ) -> Vec<(&'static str, String)> {
-    use crate::settings::{KEY_CUSTODY_SNP_ENTRY_ID_KEY, KEY_CUSTODY_SNP_ENTRY_REQUIRED};
-    let snp_enabled = status
+    snp_policy_problems_for(policy, status, engine_has_snp(status))
+}
+
+/// Whether the engine has its SEV-SNP backend enabled, by its `/status`.
+pub fn engine_has_snp(status: &EngineStatusResponse) -> bool {
+    status
         .key_custody
         .iter()
-        .any(|b| super::key_entry::takes_keys_encrypted(&b.backend));
+        .any(|b| super::key_entry::takes_keys_encrypted(&b.backend))
+}
+
+/// [`snp_policy_problems`] as if the engine's SEV-SNP backend were
+/// `snp_enabled`: what a save turning it on or off would leave.
+pub fn snp_policy_problems_for(
+    policy: &crate::settings::SnpEntryPolicy,
+    status: &EngineStatusResponse,
+    snp_enabled: bool,
+) -> Vec<(&'static str, String)> {
+    use crate::settings::{KEY_CUSTODY_SNP_ENTRY_ID_KEY, KEY_CUSTODY_SNP_ENTRY_REQUIRED};
     if policy.required && !snp_enabled {
         return vec![(
             KEY_CUSTODY_SNP_ENTRY_REQUIRED.key,
@@ -1564,5 +1578,34 @@ mod tests {
             let body = body_json(response).await;
             assert_eq!(body["healthy"], false);
         }
+    }
+
+    /// This site's policy is checked against the engine as the same save
+    /// would leave it: turning the engine's snp backend on in that save
+    /// counts.
+    #[test]
+    fn the_snp_policy_is_checked_against_the_backends_the_save_leaves() {
+        let status = EngineStatusResponse {
+            key_custody: Vec::new(),
+            key_custody_snp_trust: None,
+            ..status_with_slow(None)
+        };
+        let id_key = "ab".repeat(48);
+        let required =
+            crate::settings::SnpEntryPolicy::from_values(Some(&id_key), 0, None, true).unwrap();
+        // Required, and the engine has no snp backend (now, or after).
+        assert_eq!(
+            snp_policy_problems_for(&required, &status, false)[0].0,
+            crate::settings::KEY_CUSTODY_SNP_ENTRY_REQUIRED.key
+        );
+        assert!(!engine_has_snp(&status));
+        // With the save turning it on, it's about the trust settings instead.
+        let problems = snp_policy_problems_for(&required, &status, true);
+        assert!(
+            problems
+                .iter()
+                .all(|(key, _)| *key != crate::settings::KEY_CUSTODY_SNP_ENTRY_REQUIRED.key),
+            "{problems:?}"
+        );
     }
 }

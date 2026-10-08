@@ -202,6 +202,7 @@ fn routes(p: &Principal) -> Vec<Route> {
         ("GET", "/api/v1/admin/settings"),
         ("POST", "/api/v1/admin/settings"),
         ("POST", "/api/v1/admin/settings/reload"),
+        ("POST", "/api/v1/admin/settings/check"),
         ("DELETE", "/api/v1/admin/proof/mainnet/anchor"),
         ("GET", "/api/v1/admin/logs"),
         ("GET", "/api/v1/admin/logs/trace/unknown"),

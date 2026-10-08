@@ -41,6 +41,14 @@ impl SnpSlot {
         match self.0 {}
     }
 
+    pub fn backend(&self) -> Option<Arc<dyn KeyCustody>> {
+        match self.0 {}
+    }
+
+    pub fn check(&self) -> Result<(), String> {
+        match self.0 {}
+    }
+
     pub fn start(&self) -> Result<Arc<dyn KeyCustody>, String> {
         match self.0 {}
     }

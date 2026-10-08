@@ -127,11 +127,20 @@ impl Render for Choice {
 /// An on/off setting: a checkbox drawn as a switch, sent as `true` when on.
 /// An unticked checkbox sends nothing, so a hidden `switches` field names
 /// it, and the form handler reads its absence as `false`.
-pub fn switch(name: &str, id: &str, on: bool, described_by: Option<&str>) -> Markup {
+/// `saved`, when a refused save shows another value: what is saved, for
+/// the admin page's script to tell the switch is still unsaved.
+pub fn switch(
+    name: &str,
+    id: &str,
+    on: bool,
+    described_by: Option<&str>,
+    saved: Option<bool>,
+) -> Markup {
+    let saved = saved.map(|on| if on { "on" } else { "off" });
     html! {
         input type="hidden" name="switches" value=(name);
         label class="switch" {
-            input type="checkbox" role="switch" name=(name) value="true" id=(id) checked[on] aria-describedby=[described_by];
+            input type="checkbox" role="switch" name=(name) value="true" id=(id) checked[on] aria-describedby=[described_by] data-saved=[saved];
             span class="switch-track" aria-hidden="true" {}
             span class="switch-on" aria-hidden="true" { "On" }
             span class="switch-off" aria-hidden="true" { "Off" }
@@ -238,7 +247,8 @@ mod tests {
 
     #[test]
     fn a_switch_is_named_so_off_is_sent_too() {
-        let html = switch("payment.accept_unconfirmed", "setting-x", false, None).into_string();
+        let html =
+            switch("payment.accept_unconfirmed", "setting-x", false, None, None).into_string();
         assert!(
             html.contains(
                 r#"<input type="hidden" name="switches" value="payment.accept_unconfirmed">"#
@@ -252,7 +262,7 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains("checked"), "{html}");
-        assert!(switch("x", "x", true, None)
+        assert!(switch("x", "x", true, None, None)
             .into_string()
             .contains("checked"));
     }

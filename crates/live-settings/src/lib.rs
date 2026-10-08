@@ -49,8 +49,8 @@ pub use options::{
     render_init, render_init_nested, write_init, FileInfo, LayeredStore, OptionsFile,
 };
 pub use registry::{
-    read_sync, read_sync_with_env, BootError, BootReport, BuildError, Changes, Registry,
-    RegistryBuilder, SaveError, SaveReport, SettingView,
+    read_sync, read_sync_with_env, BootError, BootReport, BuildError, Changes, CheckReport,
+    Registry, RegistryBuilder, SaveError, SaveReport, SettingView,
 };
 pub use section::{BootPolicy, FieldError, Live, Reloadable, Section, Warning};
 pub use setting::{
