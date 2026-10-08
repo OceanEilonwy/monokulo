@@ -121,44 +121,6 @@ proptest! {
     }
 
     #[test]
-    fn reorg_collection_and_processing_cross_full_queue_pages_without_losing_outputs(
-        count in queue_size(), mined in any::<bool>(), interrupt in 1usize..25,
-        fault in 0usize..200,
-    ) {
-        runtime().block_on(async {
-            let mut h = Harness::new().await;
-            configure(&h, count as u64, Some(0), i64::MAX);
-            let tx = payment_tx_outputs(72, &vec![(1, 1); count]);
-            let orders = vec![h.order.clone()];
-            if mined { append(&mut h, vec![tx.clone()]); }
-            else { append(&mut h, vec![]); h.daemon.set_mempool(vec![tx.clone()]); }
-            converge(&mut h, &orders, Duration::from_millis(10), GRACE, |s, h| {
-                outputs_match(s, h, count, 1, mined.then_some(3))
-            }).await;
-            let ids = payment_identities(&h, &orders);
-            let hash = h.model.hash();
-            h.daemon.reorg_from(3, vec![(&hash, vec![])]);
-            h.model.blocks.truncate(2);
-            h.model.blocks.push((hash, false));
-            h.daemon.set_mempool(vec![tx.clone()]);
-            for i in 0..interrupt {
-                round(&mut h, &orders, Duration::ZERO, GRACE, (i == 1).then_some(fault)).await;
-            }
-            h.restart();
-            converge(&mut h, &orders, Duration::from_millis(10), GRACE, |s, h| {
-                outputs_match(s, h, count, 1, None)
-            }).await;
-            assert_eq!(payment_identities(&h, &orders), ids);
-            h.daemon.set_mempool(vec![]);
-            append(&mut h, vec![tx]);
-            converge(&mut h, &orders, Duration::from_millis(10), GRACE, |s, h| {
-                outputs_match(s, h, count, 1, Some(4))
-            }).await;
-            assert_eq!(payment_identities(&h, &orders), ids);
-        });
-    }
-
-    #[test]
     fn settlement_queue_wraparound_recomputes_every_order_once(
         count in prop_oneof![Just(63usize), Just(64usize), Just(65usize), Just(127usize), Just(128usize), Just(129usize)],
         threshold in 1u64..5, restart in any::<bool>(),
@@ -227,6 +189,97 @@ proptest! {
             }
         });
     }
+}
+
+/// Half the usual cases for each side of a property split in two, so the
+/// pair runs as many cases as one property did, on two cores at once.
+fn half_config() -> proptest::test_runner::Config {
+    let mut c = config();
+    c.cases = (c.cases / 2).max(1);
+    c
+}
+
+// A payment of `count` outputs is seen (mined, or in the pool), its block is
+// reorganised away, and collection is interrupted and faulted part way
+// through reprocessing; after a restart every output is still counted once,
+// with the payment identities it had, and again once it is mined.
+async fn reorg_collection_crosses_full_queue_pages(
+    count: usize,
+    mined: bool,
+    interrupt: usize,
+    fault: usize,
+) {
+    let mut h = Harness::new().await;
+    configure(&h, count as u64, Some(0), i64::MAX);
+    let tx = payment_tx_outputs(72, &vec![(1, 1); count]);
+    let orders = vec![h.order.clone()];
+    if mined {
+        append(&mut h, vec![tx.clone()]);
+    } else {
+        append(&mut h, vec![]);
+        h.daemon.set_mempool(vec![tx.clone()]);
+    }
+    converge(&mut h, &orders, Duration::from_millis(10), GRACE, |s, h| {
+        outputs_match(s, h, count, 1, mined.then_some(3))
+    })
+    .await;
+    let ids = payment_identities(&h, &orders);
+    let hash = h.model.hash();
+    h.daemon.reorg_from(3, vec![(&hash, vec![])]);
+    h.model.blocks.truncate(2);
+    h.model.blocks.push((hash, false));
+    h.daemon.set_mempool(vec![tx.clone()]);
+    for i in 0..interrupt {
+        round(
+            &mut h,
+            &orders,
+            Duration::ZERO,
+            GRACE,
+            (i == 1).then_some(fault),
+        )
+        .await;
+    }
+    h.restart();
+    converge(&mut h, &orders, Duration::from_millis(10), GRACE, |s, h| {
+        outputs_match(s, h, count, 1, None)
+    })
+    .await;
+    assert_eq!(payment_identities(&h, &orders), ids);
+    h.daemon.set_mempool(vec![]);
+    append(&mut h, vec![tx]);
+    converge(&mut h, &orders, Duration::from_millis(10), GRACE, |s, h| {
+        outputs_match(s, h, count, 1, Some(4))
+    })
+    .await;
+    assert_eq!(payment_identities(&h, &orders), ids);
+}
+
+// The slowest property, split by where the payment was first seen so its
+// two halves run side by side.
+proptest! {
+    #![proptest_config(persisted_config(half_config()))]
+
+    #[test]
+    fn reorg_collection_of_mined_outputs_crosses_full_queue_pages_without_losing_outputs(
+        count in queue_size(), interrupt in 1usize..25, fault in 0usize..200,
+    ) {
+        runtime().block_on(reorg_collection_crosses_full_queue_pages(count, true, interrupt, fault));
+    }
+
+    #[test]
+    fn reorg_collection_of_pool_outputs_crosses_full_queue_pages_without_losing_outputs(
+        count in queue_size(), interrupt in 1usize..25, fault in 0usize..200,
+    ) {
+        runtime().block_on(reorg_collection_crosses_full_queue_pages(count, false, interrupt, fault));
+    }
+}
+
+/// The case the property once shrank to (its seed no longer reproduces it
+/// since the split changed the inputs): a 255-output pool payment, faulted
+/// in the first reprocessing round.
+#[test]
+fn reorg_collection_of_a_255_output_pool_payment_faulted_at_once() {
+    runtime().block_on(reorg_collection_crosses_full_queue_pages(255, false, 1, 0));
 }
 
 const CRASH_PATH: &str = "MONOKULO_PROPERTY_CRASH_PATH";

@@ -43,55 +43,106 @@ fn replace_nodes(world: &mut World, chain: &TestChain) -> Vec<Arc<AdversarialNod
     nodes
 }
 
+// The slowest proof property, split by whether the follower restarts
+// between phases, so its two halves run side by side; together they run as
+// many cases as the one property did.
 proptest! {
-    #![proptest_config(persisted_config(config()))]
+    #![proptest_config(persisted_config(half_config()))]
     #[test]
     fn verifier_histories_never_prove_forged_branches_and_recover_from_total_outage(
         count in 2usize..6,
         phases in proptest::collection::vec(proptest::array::uniform5(0u8..4), 1..7),
-        restart in any::<bool>(),
     ) {
-        runtime().block_on(async {
-            let mut chain = base_chain();
-            let mut rules = tuning(); rules.call_timeout = Duration::from_millis(30);
-            let mut world = World::with_tuning(count, &chain, rules.clone());
-            let nodes = replace_nodes(&mut world, &chain);
-            world.round().await;
-            let anchor = world.proven_tip();
-            let mut forged = chain.clone(); forged.forge(vec![]); forged.mine_empty(3);
-            for phase in phases {
-                chain.mine_empty(1);
-                for (i,node) in nodes.iter().enumerate() {
-                    *node.behavior.lock() = Behavior {
-                        failures: if phase[i] == 1 { Rpc::ALL_MASK } else { 0 },
-                        hangs: if phase[i] == 2 { Rpc::ALL_MASK } else { 0 }, ..Behavior::default()
-                    };
-                    if phase[i] == 3 { forged.install(&node.fake, anchor.height + 1); }
-                    else { chain.install(&node.fake, anchor.height + 1); }
-                }
-                tokio::time::timeout(Duration::from_secs(30), world.round()).await.unwrap();
-                let tip = world.proven_tip();
-                assert_eq!(tip, chain.get(tip.height).unwrap().proven(), "a forged branch advanced verified state");
-                if restart { world.follower = follower(NET, rules.clone()); }
-            }
-            // Force all-down and all-hanging phases in every case, not just
-            // when random node states happen to produce them.
-            for hanging in [false,true] {
-                let before = world.proven_tip();
-                for node in &nodes { *node.behavior.lock() = Behavior {
-                    failures: if hanging { 0 } else { Rpc::ALL_MASK }, hangs: if hanging { Rpc::ALL_MASK } else { 0 }, ..Behavior::default()
-                }; }
-                tokio::time::timeout(Duration::from_secs(30), world.round()).await.unwrap();
-                assert_eq!(world.proven_tip(), before);
-            }
-            for node in &nodes { *node.behavior.lock() = Behavior::default(); chain.install(&node.fake, anchor.height+1); }
-            for _ in 0..4 { world.round().await; }
-            assert_eq!(world.proven_tip(), chain.tip().proven());
-            assert!(world.status().nodes.iter().all(|n| n.verdict == NodeVerdict::OnChain));
-            assert!((0..count).all(|i| !world.client.is_excluded(i)));
-        });
+        runtime().block_on(verifier_history(count, phases, false));
     }
 
+    #[test]
+    fn verifier_histories_with_restarts_never_prove_forged_branches_and_recover_from_total_outage(
+        count in 2usize..6,
+        phases in proptest::collection::vec(proptest::array::uniform5(0u8..4), 1..7),
+    ) {
+        runtime().block_on(verifier_history(count, phases, true));
+    }
+}
+
+fn half_config() -> proptest::test_runner::Config {
+    let mut c = config();
+    c.cases = (c.cases / 2).max(1);
+    c
+}
+
+async fn verifier_history(count: usize, phases: Vec<[u8; 5]>, restart: bool) {
+    let mut chain = base_chain();
+    let mut rules = tuning();
+    rules.call_timeout = Duration::from_millis(30);
+    let mut world = World::with_tuning(count, &chain, rules.clone());
+    let nodes = replace_nodes(&mut world, &chain);
+    world.round().await;
+    let anchor = world.proven_tip();
+    let mut forged = chain.clone();
+    forged.forge(vec![]);
+    forged.mine_empty(3);
+    for phase in phases {
+        chain.mine_empty(1);
+        for (i, node) in nodes.iter().enumerate() {
+            *node.behavior.lock() = Behavior {
+                failures: if phase[i] == 1 { Rpc::ALL_MASK } else { 0 },
+                hangs: if phase[i] == 2 { Rpc::ALL_MASK } else { 0 },
+                ..Behavior::default()
+            };
+            if phase[i] == 3 {
+                forged.install(&node.fake, anchor.height + 1);
+            } else {
+                chain.install(&node.fake, anchor.height + 1);
+            }
+        }
+        tokio::time::timeout(Duration::from_secs(30), world.round())
+            .await
+            .unwrap();
+        let tip = world.proven_tip();
+        assert_eq!(
+            tip,
+            chain.get(tip.height).unwrap().proven(),
+            "a forged branch advanced verified state"
+        );
+        if restart {
+            world.follower = follower(NET, rules.clone());
+        }
+    }
+    // Force all-down and all-hanging phases in every case, not just
+    // when random node states happen to produce them.
+    for hanging in [false, true] {
+        let before = world.proven_tip();
+        for node in &nodes {
+            *node.behavior.lock() = Behavior {
+                failures: if hanging { 0 } else { Rpc::ALL_MASK },
+                hangs: if hanging { Rpc::ALL_MASK } else { 0 },
+                ..Behavior::default()
+            };
+        }
+        tokio::time::timeout(Duration::from_secs(30), world.round())
+            .await
+            .unwrap();
+        assert_eq!(world.proven_tip(), before);
+    }
+    for node in &nodes {
+        *node.behavior.lock() = Behavior::default();
+        chain.install(&node.fake, anchor.height + 1);
+    }
+    for _ in 0..4 {
+        world.round().await;
+    }
+    assert_eq!(world.proven_tip(), chain.tip().proven());
+    assert!(world
+        .status()
+        .nodes
+        .iter()
+        .all(|n| n.verdict == NodeVerdict::OnChain));
+    assert!((0..count).all(|i| !world.client.is_excluded(i)));
+}
+
+proptest! {
+    #![proptest_config(persisted_config(config()))]
     #[test]
     fn anchoring_requires_a_configured_majority_even_when_only_one_node_answers(
         count in 2usize..6, responsive in any::<usize>(), hanging in any::<bool>(),

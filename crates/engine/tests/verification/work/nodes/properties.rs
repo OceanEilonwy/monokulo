@@ -954,88 +954,209 @@ async fn integration_converge(
     );
 }
 
+// The slowest property, split by whether the primary node serves a forged
+// branch, so its two halves run side by side; together they run as many
+// cases as the one property did.
 proptest! {
-    #![proptest_config(persisted_config(integration_config()))]
+    #![proptest_config(persisted_config(half_integration_config()))]
     #[test]
     fn real_verifier_and_scanner_reconcile_verified_payments_across_forks_and_restarts(
         count in 3usize..6, amount in 1u64..1000, required in 1u64..4,
-        restart in any::<bool>(), fault in 0usize..50, forged_primary in any::<bool>(),
+        restart in any::<bool>(), fault in 0usize..50,
     ) {
-        // Proof workers perform real CPU work: virtual-time auto advancement
-        // would turn a CPU scheduling delay into a spurious transport timeout.
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        rt.block_on(async {
-            // Only harness bootstrap needs its existing virtual-time setup.
-            tokio::time::pause();
-            let mut w = World::new(count,amount,required).await;
-            tokio::time::resume();
-            w.h.now = crate::proof::tests::TEST_NOW;
-            let base = crate::proof::tests::base_chain();
-            let mut chain = base.clone();
-            let rules = crate::proof::tests::tuning();
-            let mut follower = crate::proof::tests::follower(NETWORK, rules.clone());
-            {
-                let s = w.h.store().lock();
-                s.forget_scanned_blocks_at_or_above(NETWORK,0).unwrap();
-                s.set_scanned_block(NETWORK,base.tip().height,&base.tip().id_hex()).unwrap();
-                s.conn_for_test().execute("UPDATE tenants SET scanned_through_height = ?1",[base.tip().height as i64]).unwrap();
-            }
-            let tx = payment_tx(154,1,amount);
-            chain.mine(vec![tx.clone()]); chain.mine_empty((required-1) as usize);
-            for node in &w.nodes { chain.install(&node.fake,0); }
-            integration_converge(&mut w,&mut follower,&chain,OrderStatus::Paid).await;
-            let ids = payment_identities(&w.h,std::slice::from_ref(&w.h.order));
-            assert_eq!(ids.len(),1,"initial verified payment was never credited");
-            let before_calls = w.nodes.iter().map(|n| n.counts(Rpc::Blob).completed).sum::<usize>();
-            // Force a heavier valid branch which removes the paid transaction.
-            let mut replacement = base.clone(); replacement.mine_empty(required as usize + 2);
-            let mut forged = base.clone(); forged.forge(vec![tx.clone()]); forged.mine_empty(required as usize + 4);
-            for (i,node) in w.nodes.iter().enumerate() {
-                if forged_primary && i == 0 { forged.install(&node.fake,base.tip().height+1); }
-                else { replacement.install(&node.fake,base.tip().height+1); }
-            }
-            integration_round(&mut w,&mut follower,Some(0)).await;
-            assert_eq!(w.h.store().lock().proven_tip(NETWORK).unwrap().unwrap(),replacement.tip().proven());
-            assert!(w.nodes.iter().map(|n| n.counts(Rpc::Blob).completed).sum::<usize>() > before_calls,"branch validation never ran");
-            if forged_primary { assert!(w.client.is_excluded(0)); assert_ne!(w.client.pin().node().unwrap().0,0); }
-            integration_round(&mut w,&mut follower,None).await;
-            {
-                let s = w.h.store().lock();
-                assert!(s.reorg_job(NETWORK).unwrap().is_some() || s.reorg_branch(NETWORK).unwrap().is_some(),
-                    "the replacement branch never reached durable reconciliation");
-            }
-            integration_round(&mut w,&mut follower,Some(fault)).await;
-            if restart { w.h.restart(); follower = crate::proof::tests::follower(NETWORK, rules.clone()); }
-            integration_converge(&mut w,&mut follower,&replacement,OrderStatus::Unconfirmed).await;
-            assert_eq!(payment_identities(&w.h,std::slice::from_ref(&w.h.order)),ids);
-            // Returning to the pool is insufficient for positive-confirmation settlement.
-            for node in &w.nodes { node.fake.set_mempool(vec![tx.clone()]); }
-            integration_round(&mut w,&mut follower,None).await;
-            assert!(!settled(w.h.store().lock().get_order(&w.h.tenants[0].0,&w.h.order).unwrap().unwrap().status));
-            replacement.mine(vec![tx]); replacement.mine_empty((required-1) as usize + count);
-            let mut paced = rules.clone(); paced.blocks_per_round = 1;
-            follower = crate::proof::tests::follower(NETWORK, paced);
-            for node in &w.nodes { replacement.install(&node.fake,base.tip().height+1); node.fake.set_mempool(vec![]); }
-            follower.round(w.h.db.as_ref().unwrap(),&w.client,true,w.h.now).await;
-            let partial = w.h.store().lock().proven_tip(NETWORK).unwrap().unwrap();
-            assert!(partial.height < replacement.tip().height, "paced verifier did not stop at intermediate progress");
-            for _ in 0..required as usize + count + 10 { integration_scan(&w,None).await; }
-            {
-                let s = w.h.store().lock();
-                let o = s.get_order(&w.h.tenants[0].0,&w.h.order).unwrap().unwrap();
-                assert_eq!(settled(o.status), partial.height >= base.tip().height+required+3 && partial.height-(base.tip().height+required+3)+1 >= required);
-            }
-            if restart { w.h.restart(); }
-            integration_converge(&mut w,&mut follower,&replacement,OrderStatus::Paid).await;
-            assert_eq!(payment_identities(&w.h,std::slice::from_ref(&w.h.order)),ids);
-            let before = money_fingerprint(&w.h,std::slice::from_ref(&w.h.order));
-            integration_round(&mut w,&mut follower,None).await;
-            assert_eq!(money_fingerprint(&w.h,std::slice::from_ref(&w.h.order)),before);
-            let s = w.h.store().lock();
-            assert_eq!(s.get_all_payments(&w.h.order).unwrap()[0].block_height,Some((base.tip().height+required+3) as i64));
-            assert_eq!(s.due_webhook_deliveries_for_test(i64::MAX,1000).unwrap().iter().filter(|e|e.event_type == "order.paid").count(),2);
-        });
+        reconcile_across_forks_and_restarts(count, amount, required, restart, fault, false);
     }
+
+    #[test]
+    fn real_verifier_and_scanner_reconcile_verified_payments_across_forks_and_restarts_with_a_forged_primary(
+        count in 3usize..6, amount in 1u64..1000, required in 1u64..4,
+        restart in any::<bool>(), fault in 0usize..50,
+    ) {
+        reconcile_across_forks_and_restarts(count, amount, required, restart, fault, true);
+    }
+}
+
+fn half_integration_config() -> proptest::test_runner::Config {
+    let mut c = integration_config();
+    c.cases = (c.cases / 2).max(1);
+    c
+}
+
+fn reconcile_across_forks_and_restarts(
+    count: usize,
+    amount: u64,
+    required: u64,
+    restart: bool,
+    fault: usize,
+    forged_primary: bool,
+) {
+    // Proof workers perform real CPU work: virtual-time auto advancement
+    // would turn a CPU scheduling delay into a spurious transport timeout.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        // Only harness bootstrap needs its existing virtual-time setup.
+        tokio::time::pause();
+        let mut w = World::new(count, amount, required).await;
+        tokio::time::resume();
+        w.h.now = crate::proof::tests::TEST_NOW;
+        let base = crate::proof::tests::base_chain();
+        let mut chain = base.clone();
+        let rules = crate::proof::tests::tuning();
+        let mut follower = crate::proof::tests::follower(NETWORK, rules.clone());
+        {
+            let s = w.h.store().lock();
+            s.forget_scanned_blocks_at_or_above(NETWORK, 0).unwrap();
+            s.set_scanned_block(NETWORK, base.tip().height, &base.tip().id_hex())
+                .unwrap();
+            s.conn_for_test()
+                .execute(
+                    "UPDATE tenants SET scanned_through_height = ?1",
+                    [base.tip().height as i64],
+                )
+                .unwrap();
+        }
+        let tx = payment_tx(154, 1, amount);
+        chain.mine(vec![tx.clone()]);
+        chain.mine_empty((required - 1) as usize);
+        for node in &w.nodes {
+            chain.install(&node.fake, 0);
+        }
+        integration_converge(&mut w, &mut follower, &chain, OrderStatus::Paid).await;
+        let ids = payment_identities(&w.h, std::slice::from_ref(&w.h.order));
+        assert_eq!(ids.len(), 1, "initial verified payment was never credited");
+        let before_calls = w
+            .nodes
+            .iter()
+            .map(|n| n.counts(Rpc::Blob).completed)
+            .sum::<usize>();
+        // Force a heavier valid branch which removes the paid transaction.
+        let mut replacement = base.clone();
+        replacement.mine_empty(required as usize + 2);
+        let mut forged = base.clone();
+        forged.forge(vec![tx.clone()]);
+        forged.mine_empty(required as usize + 4);
+        for (i, node) in w.nodes.iter().enumerate() {
+            if forged_primary && i == 0 {
+                forged.install(&node.fake, base.tip().height + 1);
+            } else {
+                replacement.install(&node.fake, base.tip().height + 1);
+            }
+        }
+        integration_round(&mut w, &mut follower, Some(0)).await;
+        assert_eq!(
+            w.h.store().lock().proven_tip(NETWORK).unwrap().unwrap(),
+            replacement.tip().proven()
+        );
+        assert!(
+            w.nodes
+                .iter()
+                .map(|n| n.counts(Rpc::Blob).completed)
+                .sum::<usize>()
+                > before_calls,
+            "branch validation never ran"
+        );
+        if forged_primary {
+            assert!(w.client.is_excluded(0));
+            assert_ne!(w.client.pin().node().unwrap().0, 0);
+        }
+        integration_round(&mut w, &mut follower, None).await;
+        {
+            let s = w.h.store().lock();
+            assert!(
+                s.reorg_job(NETWORK).unwrap().is_some()
+                    || s.reorg_branch(NETWORK).unwrap().is_some(),
+                "the replacement branch never reached durable reconciliation"
+            );
+        }
+        integration_round(&mut w, &mut follower, Some(fault)).await;
+        if restart {
+            w.h.restart();
+            follower = crate::proof::tests::follower(NETWORK, rules.clone());
+        }
+        integration_converge(
+            &mut w,
+            &mut follower,
+            &replacement,
+            OrderStatus::Unconfirmed,
+        )
+        .await;
+        assert_eq!(
+            payment_identities(&w.h, std::slice::from_ref(&w.h.order)),
+            ids
+        );
+        // Returning to the pool is insufficient for positive-confirmation settlement.
+        for node in &w.nodes {
+            node.fake.set_mempool(vec![tx.clone()]);
+        }
+        integration_round(&mut w, &mut follower, None).await;
+        assert!(!settled(
+            w.h.store()
+                .lock()
+                .get_order(&w.h.tenants[0].0, &w.h.order)
+                .unwrap()
+                .unwrap()
+                .status
+        ));
+        replacement.mine(vec![tx]);
+        replacement.mine_empty((required - 1) as usize + count);
+        let mut paced = rules.clone();
+        paced.blocks_per_round = 1;
+        follower = crate::proof::tests::follower(NETWORK, paced);
+        for node in &w.nodes {
+            replacement.install(&node.fake, base.tip().height + 1);
+            node.fake.set_mempool(vec![]);
+        }
+        follower
+            .round(w.h.db.as_ref().unwrap(), &w.client, true, w.h.now)
+            .await;
+        let partial = w.h.store().lock().proven_tip(NETWORK).unwrap().unwrap();
+        assert!(
+            partial.height < replacement.tip().height,
+            "paced verifier did not stop at intermediate progress"
+        );
+        for _ in 0..required as usize + count + 10 {
+            integration_scan(&w, None).await;
+        }
+        {
+            let s = w.h.store().lock();
+            let o = s.get_order(&w.h.tenants[0].0, &w.h.order).unwrap().unwrap();
+            assert_eq!(
+                settled(o.status),
+                partial.height >= base.tip().height + required + 3
+                    && partial.height - (base.tip().height + required + 3) + 1 >= required
+            );
+        }
+        if restart {
+            w.h.restart();
+        }
+        integration_converge(&mut w, &mut follower, &replacement, OrderStatus::Paid).await;
+        assert_eq!(
+            payment_identities(&w.h, std::slice::from_ref(&w.h.order)),
+            ids
+        );
+        let before = money_fingerprint(&w.h, std::slice::from_ref(&w.h.order));
+        integration_round(&mut w, &mut follower, None).await;
+        assert_eq!(
+            money_fingerprint(&w.h, std::slice::from_ref(&w.h.order)),
+            before
+        );
+        let s = w.h.store().lock();
+        assert_eq!(
+            s.get_all_payments(&w.h.order).unwrap()[0].block_height,
+            Some((base.tip().height + required + 3) as i64)
+        );
+        assert_eq!(
+            s.due_webhook_deliveries_for_test(i64::MAX, 1000)
+                .unwrap()
+                .iter()
+                .filter(|e| e.event_type == "order.paid")
+                .count(),
+            2
+        );
+    });
 }
 
 fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_runner::Config {

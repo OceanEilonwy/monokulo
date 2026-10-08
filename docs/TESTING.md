@@ -272,7 +272,7 @@ proof and integration families. Each job has a 90-minute limit.
 
 Both default and CI nextest profiles kill an ordinary test process after ten
 120-second slow periods (20 minutes), and a proof process after twelve 300-second
-periods (60 minutes). The `proof-workers` group admits at most eight proof test
+periods (60 minutes). The `proof-workers` group admits at most sixteen proof test
 processes, including the integration property, to limit CPU/memory contention
 (each holds up to two 256 MiB RandomX caches).
 These are outer watchdogs for synchronous hangs; scenario-level deadlines remain
