@@ -6,7 +6,10 @@
 //! zero-test runs are INVALID, not detections. The JSON report and every
 //! command's log are kept under the output folder.
 
+use crate::exploration::Build;
+use crate::support::{at, wait_with_deadline, write_json, Exit, OnTimeout};
 use regex::Regex;
+use serde::Serialize;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -20,7 +23,7 @@ use std::{
 
 /// One named defect: `before` replaced by `after` in `path` must make `test`
 /// fail with `expected_failure` in its assertion.
-pub(crate) struct Mutation {
+struct Mutation {
     name: &'static str,
     path: &'static str,
     before: &'static str,
@@ -67,7 +70,7 @@ const RETRY_GRID: &str =
 const RESERVATION_GRID: &str =
     "work::mempool::properties::reservation_decision_grid_checks_completed_busy_and_changed_windows";
 
-pub(crate) const MUTATIONS: &[Mutation] = &[
+const MUTATIONS: &[Mutation] = &[
     m("never-forget-retries", "crates/engine/src/work/retry.rs",
       "now.saturating_sub(self.last_failure) >= Self::FORGET_AFTER",
       "false && now.saturating_sub(self.last_failure) >= Self::FORGET_AFTER", RETRY_EXPIRY, "BOUNDARY: retry-expiry"),
@@ -227,40 +230,42 @@ pub(crate) const HELP: &str = "\
 
 /// The `ENGINE_BOUNDARY_HITS {json}` lines a test printed, added up, and what
 /// was wrong with any malformed ones.
-pub(crate) fn boundary_hits(text: &str) -> (BTreeMap<String, u64>, Vec<String>) {
+fn boundary_hits(text: &str) -> (BTreeMap<String, u64>, Vec<String>) {
     let (mut hits, mut errors) = (BTreeMap::new(), Vec::new());
     for line in text.lines() {
         let Some(json) = line.strip_prefix("ENGINE_BOUNDARY_HITS ") else {
             continue;
         };
-        let parsed: Result<Map<String, Value>, String> = match serde_json::from_str::<Value>(json) {
-            Ok(Value::Object(map))
-                if !map.is_empty()
-                    && map
-                        .iter()
-                        .all(|(k, v)| !k.is_empty() && v.as_u64().is_some_and(|n| n > 0)) =>
-            {
-                Ok(map)
+        let counts: Option<BTreeMap<String, u64>> = match serde_json::from_str::<Value>(json) {
+            Ok(Value::Object(map)) if !map.is_empty() => map
+                .into_iter()
+                .map(|(k, v)| match v.as_u64() {
+                    Some(n) if !k.is_empty() && n > 0 => Some((k, n)),
+                    _ => None,
+                })
+                .collect(),
+            Ok(_) => None,
+            Err(e) => {
+                errors.push(e.to_string());
+                continue;
             }
-            Ok(_) => {
-                Err("expected a nonempty map of boundary names to positive integer counts".into())
-            }
-            Err(e) => Err(e.to_string()),
         };
-        match parsed {
-            Ok(map) => {
+        match counts {
+            Some(map) => {
                 for (k, v) in map {
-                    *hits.entry(k).or_insert(0) += v.as_u64().unwrap();
+                    *hits.entry(k).or_insert(0) += v;
                 }
             }
-            Err(e) => errors.push(e),
+            None => errors.push(
+                "expected a nonempty map of boundary names to positive integer counts".into(),
+            ),
         }
     }
     (hits, errors)
 }
 
 /// The command that runs one named test of the package it lives in.
-pub(crate) fn test_command(test: &str, feature: &str) -> Vec<String> {
+fn test_command(test: &str, build: Build) -> Vec<String> {
     let package = if test.starts_with("router::properties::") {
         "key-custody"
     } else {
@@ -269,8 +274,8 @@ pub(crate) fn test_command(test: &str, feature: &str) -> Vec<String> {
     let mut command: Vec<String> = ["cargo", "test", "-p", package, "--lib", "--locked"]
         .map(String::from)
         .to_vec();
-    if feature == "zmq" && package == "engine" {
-        command.extend(["--features".into(), "zmq".into()]);
+    if build == Build::Zmq && package == "engine" {
+        command.extend(["--features".into(), build.features().into()]);
     }
     command.extend([
         test.into(),
@@ -287,29 +292,46 @@ static PANIC: LazyLock<Regex> =
 
 /// Where and how every test command of a run goes: its checkout, the
 /// variables it adds and removes, and how long one command may take.
-pub(crate) struct Context<'a> {
-    pub(crate) cwd: &'a Path,
-    pub(crate) env: &'a BTreeMap<String, String>,
-    pub(crate) removed: &'a [String],
-    pub(crate) timeout: u64,
+struct Context<'a> {
+    cwd: &'a Path,
+    env: &'a BTreeMap<String, String>,
+    removed: &'a [String],
+    timeout: u64,
 }
 
-/// Runs `command`, logged to `log`, and judges what it showed: a healthy
-/// pass, the intended assertion failing, or neither.
-pub(crate) fn run(
+/// What one test run showed: a healthy pass, the intended assertion
+/// failing, or neither.
+#[derive(Serialize, Clone)]
+struct Verdict {
+    command: Vec<String>,
+    /// `None` when the watchdog stopped it.
+    exit_code: Option<Exit>,
+    ran_one_test: bool,
+    passed: bool,
+    detected: bool,
+    expected_failure: Option<String>,
+    expected_assertion_seen: bool,
+    boundary_hits: BTreeMap<String, u64>,
+    boundary_hit_errors: Vec<String>,
+    missing_boundary_hits: Vec<String>,
+    log: String,
+}
+
+/// Runs `command`, logged to `log`, and judges what it showed.
+fn run(
     command: &[String],
     context: &Context,
     log: &Path,
     expected_failure: Option<&str>,
     required: &[&str],
-) -> io::Result<Value> {
+) -> io::Result<Verdict> {
     let Context {
         cwd,
         env,
         removed,
         timeout,
     } = *context;
-    let mut file = fs::File::create(log)?;
+    let mut file = fs::File::create(log).map_err(|e| at(log, e))?;
     io::Write::write_all(
         &mut file,
         format!("{}\n", serde_json::to_string(command)?).as_bytes(),
@@ -333,8 +355,12 @@ pub(crate) fn run(
         process.process_group(0);
     }
     let mut child = process.spawn()?;
-    let pid = child.id();
-    let code = wait(&mut child, Duration::from_secs(timeout), pid);
+    let exit_code = wait_with_deadline(
+        &mut child,
+        Duration::from_secs(timeout),
+        OnTimeout::KillGroup,
+    )?
+    .map(Exit::of);
     let text = String::from_utf8_lossy(&fs::read(log)?).into_owned();
     // A compiler or linker failure cannot produce this one-test result.
     // Require the named test's assertion failure rather than treating any
@@ -348,59 +374,49 @@ pub(crate) fn run(
             let head = block
                 .split("note:")
                 .next()
-                .unwrap()
+                .unwrap_or("")
                 .split("test result:")
                 .next()
-                .unwrap();
+                .unwrap_or("");
             head.contains(expected)
                 && (block.contains("assertion") || block.contains("Test failed:"))
         })
     });
     let (hits, hit_errors) = boundary_hits(&text);
-    let missing: Vec<&str> = required
+    let missing: Vec<String> = required
         .iter()
-        .copied()
-        .filter(|n| hits.get(*n).copied().unwrap_or(0) == 0)
+        .filter(|n| hits.get(**n).copied().unwrap_or(0) == 0)
+        .map(|n| (*n).to_string())
         .collect();
-    let passed = code == Some(0)
+    let passed = exit_code == Some(Exit::SUCCESS)
         && ran
         && text.contains("test result: ok. 1 passed; 0 failed")
         && hit_errors.is_empty()
         && missing.is_empty();
-    let detected = code == Some(101)
+    let detected = exit_code == Some(TEST_FAILED)
         && ran
         && text.contains("test result: FAILED. 0 passed; 1 failed")
         && assertion
         && intended
         && !text.contains("Elapsed(())")
         && !text.contains("never reached");
-    Ok(json!({
-        "command": command, "exit_code": code, "ran_one_test": ran, "passed": passed, "detected": detected,
-        "expected_failure": expected_failure, "expected_assertion_seen": intended, "boundary_hits": hits,
-        "boundary_hit_errors": hit_errors, "missing_boundary_hits": missing, "log": log.display().to_string(),
-    }))
+    Ok(Verdict {
+        command: command.to_vec(),
+        exit_code,
+        ran_one_test: ran,
+        passed,
+        detected,
+        expected_failure: expected_failure.map(str::to_string),
+        expected_assertion_seen: intended,
+        boundary_hits: hits,
+        boundary_hit_errors: hit_errors,
+        missing_boundary_hits: missing,
+        log: log.display().to_string(),
+    })
 }
 
-/// Waits until `limit`, then stops the child's whole process group.
-fn wait(child: &mut std::process::Child, limit: Duration, _pid: u32) -> Option<i32> {
-    let deadline = std::time::Instant::now() + limit;
-    loop {
-        if let Ok(Some(status)) = child.try_wait() {
-            return Some(status.code().unwrap_or(-1));
-        }
-        if std::time::Instant::now() >= deadline {
-            #[cfg(unix)]
-            // SAFETY: kill(2) on our own child's process group, which we made.
-            unsafe {
-                libc::kill(-(_pid as i32), libc::SIGKILL);
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
+/// The test harness's code for a test that failed.
+const TEST_FAILED: Exit = Exit::new(101);
 
 fn git(root: &Path, args: &[&str]) -> io::Result<Vec<u8>> {
     let output = Command::new("git").args(args).current_dir(root).output()?;
@@ -414,14 +430,8 @@ fn git(root: &Path, args: &[&str]) -> io::Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-fn persist(output: &Path, report: &Value) -> io::Result<()> {
-    let pending = output.join("report.json.tmp");
-    fs::write(&pending, serde_json::to_string_pretty(report)? + "\n")?;
-    fs::rename(pending, output.join("report.json"))
-}
-
 struct Options {
-    features: Vec<&'static str>,
+    builds: Vec<Build>,
     cases: u64,
     seed: u64,
     timeout: u64,
@@ -431,14 +441,15 @@ struct Options {
 
 fn parse(args: &[&str]) -> io::Result<Options> {
     let mut o = Options {
-        features: vec!["default", "zmq"],
+        builds: vec![Build::Default, Build::Zmq],
         cases: 32,
         seed: 241,
         timeout: 900,
         output: PathBuf::from("target/engine-mutations"),
         only: Vec::new(),
     };
-    let bad = |what: &str| io::Error::other(format!("mutations: {what}"));
+    let bad =
+        |what: &str| io::Error::new(io::ErrorKind::InvalidInput, format!("mutations: {what}"));
     let positive = |v: &str| {
         v.parse::<u64>()
             .ok()
@@ -452,10 +463,10 @@ fn parse(args: &[&str]) -> io::Result<Options> {
             .ok_or_else(|| bad(&format!("{flag} needs a value")))?;
         match *flag {
             "--features" => {
-                o.features = match value {
-                    "both" => vec!["default", "zmq"],
-                    "default" => vec!["default"],
-                    "zmq" => vec!["zmq"],
+                o.builds = match value {
+                    "both" => vec![Build::Default, Build::Zmq],
+                    "default" => vec![Build::Default],
+                    "zmq" => vec![Build::Zmq],
                     _ => return Err(bad("--features is both, default or zmq")),
                 }
             }
@@ -463,7 +474,7 @@ fn parse(args: &[&str]) -> io::Result<Options> {
             "--seed" => {
                 o.seed = value
                     .parse()
-                    .map_err(|_| bad("--seed must be an unsigned 64-bit value"))?
+                    .map_err(|_| bad("--seed must be an unsigned 64-bit value"))?;
             }
             "--timeout" => o.timeout = positive(value)?,
             "--output" => o.output = PathBuf::from(value),
@@ -479,24 +490,18 @@ fn parse(args: &[&str]) -> io::Result<Options> {
     Ok(o)
 }
 
-/// Runs the catalogue (or `--only` some of it) against the checkout at `root`.
-pub(crate) fn mutations(root: &Path, args: &[&str]) -> io::Result<bool> {
-    let o = parse(args)?;
-    let selected: Vec<&Mutation> = MUTATIONS
-        .iter()
-        .filter(|m| o.only.is_empty() || o.only.iter().any(|n| n == m.name))
-        .collect();
-    let output = if o.output.is_absolute() {
-        o.output.clone()
-    } else {
-        root.join(&o.output)
-    };
-    fs::create_dir_all(&output)?;
+/// The caller's source as it is now: the commit, the tracked changes on top
+/// of it, and the new engine modules (the only untracked build inputs copied).
+struct Snapshot {
+    revision: String,
+    patch: Vec<u8>,
+    untracked: Vec<String>,
+}
+
+fn snapshot(root: &Path) -> io::Result<Snapshot> {
     let revision = String::from_utf8_lossy(&git(root, &["rev-parse", "HEAD"])?)
         .trim()
         .to_string();
-    // Snapshot tracked changes too, so this can check code before its commit.
-    // New engine modules are the only untracked build inputs copied.
     let patch = git(root, &["diff", "--binary", "HEAD"])?;
     let untracked = git(
         root,
@@ -508,16 +513,296 @@ pub(crate) fn mutations(root: &Path, args: &[&str]) -> io::Result<bool> {
             "crates/engine",
         ],
     )?;
-    let untracked: Vec<String> = untracked
+    let untracked = untracked
         .split(|b| *b == 0)
         .filter(|p| !p.is_empty())
         .map(|p| String::from_utf8_lossy(p).into_owned())
         .collect();
+    Ok(Snapshot {
+        revision,
+        patch,
+        untracked,
+    })
+}
+
+/// A detached worktree of the snapshot in a scratch folder of its own, both
+/// removed when dropped, so neither outlives a run that failed.
+struct Worktree {
+    root: PathBuf,
+    scratch: PathBuf,
+    tree: PathBuf,
+    removed: bool,
+}
+
+impl Worktree {
+    fn new(root: &Path, source: &Snapshot) -> io::Result<Self> {
+        let scratch = env::temp_dir().join(format!("engine-mutations-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&scratch);
+        fs::create_dir_all(&scratch).map_err(|e| at(&scratch, e))?;
+        let worktree = Worktree {
+            root: root.to_path_buf(),
+            tree: scratch.join("source"),
+            scratch,
+            removed: false,
+        };
+        git(
+            root,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                &worktree.tree.display().to_string(),
+                &source.revision,
+            ],
+        )?;
+        if !source.patch.is_empty() {
+            let mut apply = Command::new("git")
+                .args(["apply", "--binary", "-"])
+                .current_dir(&worktree.tree)
+                .stdin(Stdio::piped())
+                .spawn()?;
+            if let Some(stdin) = apply.stdin.as_mut() {
+                io::Write::write_all(stdin, &source.patch)?;
+            }
+            drop(apply.stdin.take());
+            if !apply.wait()?.success() {
+                return Err(io::Error::other("git apply failed"));
+            }
+        }
+        for relative in &source.untracked {
+            let from = root.join(relative);
+            if from.is_file() {
+                let to = worktree.tree.join(relative);
+                if let Some(parent) = to.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(&from, &to).map_err(|e| at(&from, e))?;
+            }
+        }
+        Ok(worktree)
+    }
+
+    fn remove_tree(&self) -> io::Result<()> {
+        git(
+            &self.root,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                &self.tree.display().to_string(),
+            ],
+        )
+        .map(|_| ())
+    }
+
+    /// Removes the worktree now, so a failure to do so is reported.
+    fn remove(mut self) -> io::Result<()> {
+        self.remove_tree()?;
+        self.removed = true;
+        Ok(())
+    }
+}
+
+impl Drop for Worktree {
+    fn drop(&mut self) {
+        if !self.removed {
+            let _ = self.remove_tree();
+        }
+        let _ = fs::remove_dir_all(&self.scratch);
+    }
+}
+
+/// One test's healthy run under one build.
+struct Baseline {
+    build: Build,
+    test: &'static str,
+    verdict: Verdict,
+}
+
+impl Baseline {
+    fn to_json(&self) -> Value {
+        let mut entry = json!({"features": self.build, "test": self.test});
+        extend(&mut entry, &self.verdict);
+        entry
+    }
+}
+
+fn extend(entry: &mut Value, verdict: &Verdict) {
+    if let (Some(fields), Ok(Value::Object(from))) =
+        (entry.as_object_mut(), serde_json::to_value(verdict))
+    {
+        fields.extend(from);
+    }
+}
+
+/// Every healthy baseline, checked first: no mutant may inherit failure
+/// from an earlier one or pass for a broken baseline.
+fn baselines(
+    o: &Options,
+    selected: &[&Mutation],
+    context: &Context,
+    output: &Path,
+) -> io::Result<Vec<Baseline>> {
+    let mut tests: Vec<&'static str> = Vec::new();
+    let required: Vec<&'static str> = if o.only.is_empty() {
+        REQUIRED_HITS.iter().map(|(t, _)| *t).collect()
+    } else {
+        Vec::new()
+    };
+    for test in selected.iter().map(|m| m.test).chain(required) {
+        if !tests.contains(&test) {
+            tests.push(test);
+        }
+    }
+    let mut found = Vec::new();
+    for &build in &o.builds {
+        for &test in &tests {
+            let log = output.join(format!("baseline-{build}-{}.log", found.len()));
+            let verdict = run(
+                &test_command(test, build),
+                context,
+                &log,
+                None,
+                required_hits(test),
+            )?;
+            println!(
+                "BASELINE {build} {test}: {}",
+                if verdict.passed { "PASS" } else { "INVALID" }
+            );
+            found.push(Baseline {
+                build,
+                test,
+                verdict,
+            });
+        }
+    }
+    Ok(found)
+}
+
+/// What a mutant's run proved.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum Outcome {
+    /// The named test failed with the intended assertion.
+    Detected,
+    /// The named test still passed.
+    Survived,
+    /// The test's baseline did not pass, so the mutant proves nothing.
+    InvalidBaseline,
+    /// The source no longer has the text the mutation replaces.
+    InvalidPatch,
+    /// Neither a pass nor the intended failure: a compile error, hang or panic.
+    InvalidRun,
+}
+
+impl Outcome {
+    fn name(self) -> &'static str {
+        match self {
+            Outcome::Detected => "detected",
+            Outcome::Survived => "survived",
+            Outcome::InvalidBaseline => "invalid-baseline",
+            Outcome::InvalidPatch => "invalid-patch",
+            Outcome::InvalidRun => "invalid-run",
+        }
+    }
+}
+
+/// Runs one mutant: the source changed, the named test run, the source
+/// restored whatever happened.
+fn mutant(
+    mutation: &Mutation,
+    build: Build,
+    context: &Context,
+    output: &Path,
+    baseline_ok: bool,
+) -> io::Result<(Outcome, Option<Verdict>)> {
+    if !baseline_ok {
+        return Ok((Outcome::InvalidBaseline, None));
+    }
+    let path = context.cwd.join(mutation.path);
+    let original = fs::read_to_string(&path).map_err(|e| at(&path, e))?;
+    if original.matches(mutation.before).count() != mutation.occurrences {
+        return Ok((Outcome::InvalidPatch, None));
+    }
+    fs::write(&path, original.replace(mutation.before, mutation.after))?;
+    let log = output.join(format!("{}-{build}.log", mutation.name));
+    let verdict = run(
+        &test_command(mutation.test, build),
+        context,
+        &log,
+        Some(mutation.expected_failure),
+        &[],
+    );
+    fs::write(&path, &original)?;
+    let verdict = verdict?;
+    let outcome = if verdict.detected {
+        Outcome::Detected
+    } else if verdict.passed {
+        Outcome::Survived
+    } else {
+        Outcome::InvalidRun
+    };
+    Ok((outcome, Some(verdict)))
+}
+
+/// Every selected mutant under every build, each added to the report as it
+/// finishes; whether all were detected.
+fn mutants(
+    o: &Options,
+    selected: &[&Mutation],
+    context: &Context,
+    output: &Path,
+    baselines: &[Baseline],
+    report: &mut Value,
+) -> io::Result<bool> {
+    let mut all_detected = true;
+    for &build in &o.builds {
+        for mutation in selected {
+            let baseline_ok = baselines
+                .iter()
+                .any(|b| b.build == build && b.test == mutation.test && b.verdict.passed);
+            let (outcome, verdict) = mutant(mutation, build, context, output, baseline_ok)?;
+            let mut entry = json!({"name": mutation.name, "features": build, "test": mutation.test, "source": mutation.path,
+                "before": mutation.before, "after": mutation.after, "expected_failure": mutation.expected_failure});
+            if let Some(verdict) = &verdict {
+                extend(&mut entry, verdict);
+            }
+            entry["outcome"] = json!(outcome);
+            all_detected &= outcome == Outcome::Detected;
+            if let Some(results) = report["results"].as_array_mut() {
+                results.push(entry);
+            }
+            write_json(&output.join("report.json"), report)?;
+            println!(
+                "{} {build} {}",
+                outcome.name().to_uppercase(),
+                mutation.name
+            );
+        }
+    }
+    Ok(all_detected)
+}
+
+/// Runs the catalogue (or `--only` some of it) against the checkout at `root`.
+pub(crate) fn mutations(root: &Path, args: &[&str]) -> io::Result<Exit> {
+    let o = parse(args)?;
+    let selected: Vec<&Mutation> = MUTATIONS
+        .iter()
+        .filter(|m| o.only.is_empty() || o.only.iter().any(|n| n == m.name))
+        .collect();
+    let output = if o.output.is_absolute() {
+        o.output.clone()
+    } else {
+        root.join(&o.output)
+    };
+    fs::create_dir_all(&output)?;
+    let source = snapshot(root)?;
     let mut report = json!({
-        "schema_version": 2, "status": "running", "revision": revision, "tracked_patch_sha256": hex::encode(Sha256::digest(&patch)),
+        "schema_version": 2, "status": "running", "revision": source.revision, "tracked_patch_sha256": hex::encode(Sha256::digest(&source.patch)),
         "cases": o.cases, "seed": o.seed, "selected_mutations": selected.iter().map(|m| m.name).collect::<Vec<_>>(), "results": [],
     });
-    persist(&output, &report)?;
+    let report_path = output.join("report.json");
+    write_json(&report_path, &report)?;
     let env: BTreeMap<String, String> = [
         ("PROPTEST_CASES", o.cases.to_string()),
         ("PROPTEST_RNG_SEED", o.seed.to_string()),
@@ -537,186 +822,54 @@ pub(crate) fn mutations(root: &Path, args: &[&str]) -> io::Result<bool> {
             k.starts_with("MONOKULO_PROPERTY_CRASH_") || k.starts_with("MONOKULO_SCANNER_CRASH_")
         })
         .collect();
-    let scratch = env::temp_dir().join(format!("engine-mutations-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&scratch);
-    fs::create_dir_all(&scratch)?;
-    let tree = scratch.join("source");
-    git(
-        root,
-        &[
-            "worktree",
-            "add",
-            "--detach",
-            &tree.display().to_string(),
-            &revision,
-        ],
-    )?;
-    let mut failed = false;
-    let mut baselines: Vec<(String, String, Value)> = Vec::new();
+    let worktree = Worktree::new(root, &source)?;
     let context = Context {
-        cwd: &tree,
+        cwd: &worktree.tree,
         env: &env,
         removed: &removed,
         timeout: o.timeout,
     };
-    let result = (|| -> io::Result<()> {
-        if !patch.is_empty() {
-            let mut apply = Command::new("git")
-                .args(["apply", "--binary", "-"])
-                .current_dir(&tree)
-                .stdin(Stdio::piped())
-                .spawn()?;
-            io::Write::write_all(apply.stdin.as_mut().unwrap(), &patch)?;
-            drop(apply.stdin.take());
-            if !apply.wait()?.success() {
-                return Err(io::Error::other("git apply failed"));
-            }
-        }
-        for relative in &untracked {
-            let source = root.join(relative);
-            if source.is_file() {
-                let destination = tree.join(relative);
-                fs::create_dir_all(destination.parent().unwrap())?;
-                fs::copy(&source, destination)?;
-            }
-        }
-        // Check every healthy baseline first: no mutant may inherit failure
-        // from an earlier one or pass for a broken baseline.
-        let mut tests: Vec<&str> = Vec::new();
-        for test in selected.iter().map(|m| m.test).chain(if o.only.is_empty() {
-            REQUIRED_HITS.iter().map(|(t, _)| *t).collect()
-        } else {
-            vec![]
-        }) {
-            if !tests.contains(&test) {
-                tests.push(test);
-            }
-        }
-        for feature in &o.features {
-            for test in &tests {
-                let log = output.join(format!("baseline-{feature}-{}.log", baselines.len()));
-                let r = run(
-                    &test_command(test, feature),
-                    &context,
-                    &log,
-                    None,
-                    required_hits(test),
-                )?;
-                println!(
-                    "BASELINE {feature} {test}: {}",
-                    if r["passed"] == true {
-                        "PASS"
-                    } else {
-                        "INVALID"
-                    }
-                );
-                failed |= r["passed"] != true;
-                baselines.push((feature.to_string(), test.to_string(), r));
-            }
-        }
-        report["baselines"] = baselines
-            .iter()
-            .map(|(f, t, r)| {
-                let mut entry = json!({"features": f, "test": t});
-                entry
-                    .as_object_mut()
-                    .unwrap()
-                    .extend(r.as_object().unwrap().clone());
-                entry
-            })
-            .collect();
-        for feature in &o.features {
-            for mutation in &selected {
-                let mut entry = json!({"name": mutation.name, "features": feature, "test": mutation.test, "source": mutation.path,
-                    "before": mutation.before, "after": mutation.after, "expected_failure": mutation.expected_failure});
-                let path = tree.join(mutation.path);
-                let original = fs::read_to_string(&path)?;
-                let baseline_ok = baselines
-                    .iter()
-                    .any(|(f, t, r)| f == feature && t == mutation.test && r["passed"] == true);
-                let outcome = if !baseline_ok {
-                    "invalid-baseline"
-                } else if original.matches(mutation.before).count() != mutation.occurrences {
-                    "invalid-patch"
-                } else {
-                    fs::write(&path, original.replace(mutation.before, mutation.after))?;
-                    let log = output.join(format!("{}-{feature}.log", mutation.name));
-                    let r = run(
-                        &test_command(mutation.test, feature),
-                        &context,
-                        &log,
-                        Some(mutation.expected_failure),
-                        &[],
-                    );
-                    fs::write(&path, &original)?;
-                    let r = r?;
-                    entry
-                        .as_object_mut()
-                        .unwrap()
-                        .extend(r.as_object().unwrap().clone());
-                    if r["detected"] == true {
-                        "detected"
-                    } else if r["passed"] == true {
-                        "survived"
-                    } else {
-                        "invalid-run"
-                    }
-                };
-                entry["outcome"] = outcome.into();
-                failed |= outcome != "detected";
-                report["results"].as_array_mut().unwrap().push(entry);
-                persist(&output, &report)?;
-                println!("{} {feature} {}", outcome.to_uppercase(), mutation.name);
-            }
-        }
-        Ok(())
-    })();
-    let removed_tree = git(
-        root,
-        &["worktree", "remove", "--force", &tree.display().to_string()],
-    );
-    let _ = fs::remove_dir_all(&scratch);
-    result?;
-    removed_tree?;
+    let baselines = baselines(&o, &selected, &context, &output)?;
+    let baselines_ok = baselines.iter().all(|b| b.verdict.passed);
+    report["baselines"] = baselines.iter().map(Baseline::to_json).collect();
+    let detected_all = mutants(&o, &selected, &context, &output, &baselines, &mut report)?;
+    worktree.remove()?;
     report["boundary_observations"] = o
-        .features
+        .builds
         .iter()
-        .map(|feature| {
+        .map(|build| {
             let observed: Map<String, Value> = baselines
                 .iter()
-                .filter(|(f, t, _)| f == feature && REQUIRED_HITS.iter().any(|(r, _)| r == t))
-                .map(|(_, t, r)| (t.clone(), r["boundary_hits"].clone()))
+                .filter(|b| b.build == *build && REQUIRED_HITS.iter().any(|(r, _)| *r == b.test))
+                .map(|b| (b.test.to_string(), json!(b.verdict.boundary_hits)))
                 .collect();
-            (feature.to_string(), Value::Object(observed))
+            (build.name().to_string(), Value::Object(observed))
         })
         .collect::<Map<_, _>>()
         .into();
-    report["status"] = if failed { "failed" } else { "passed" }.into();
-    let detected = report["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|r| r["outcome"] == "detected")
-        .count();
-    report["summary"] =
-        json!({"detected": detected, "expected": o.features.len() * selected.len()});
-    persist(&output, &report)?;
-    println!("Report: {}", output.join("report.json").display());
-    Ok(!failed)
+    let passed = baselines_ok && detected_all;
+    report["status"] = if passed { "passed" } else { "failed" }.into();
+    let detected = report["results"].as_array().map_or(0, |results| {
+        results
+            .iter()
+            .filter(|r| r["outcome"] == Outcome::Detected.name())
+            .count()
+    });
+    report["summary"] = json!({"detected": detected, "expected": o.builds.len() * selected.len()});
+    write_json(&report_path, &report)?;
+    println!("Report: {}", report_path.display());
+    Ok(Exit::passed(passed))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::support::Scratch;
 
     /// Runs a one-file Cargo crate's tests through `run`, as a mutant's would be.
     fn exercise(source: &str, timeout: u64, expected: Option<&str>, required: &[&str]) -> Value {
-        let id = hex::encode(Sha256::digest(source.as_bytes()))[..12].to_string();
-        let root = env::temp_dir().join(format!(
-            "mutation-runner-outcome-{id}-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
+        let scratch = Scratch::new("mutation-runner-outcome");
+        let root = scratch.path();
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("Cargo.toml"), "[package]\nname=\"outcome_fixture\"\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n").unwrap();
         fs::write(root.join("src/lib.rs"), source).unwrap();
@@ -735,12 +888,12 @@ mod tests {
             .map(String::from)
             .to_vec();
         let context = Context {
-            cwd: &root,
+            cwd: root,
             env: &env,
             removed: &[],
             timeout,
         };
-        let mut result = run(
+        let verdict = run(
             &command,
             &context,
             &root.join("result.log"),
@@ -748,6 +901,7 @@ mod tests {
             required,
         )
         .unwrap();
+        let mut result = serde_json::to_value(verdict).unwrap();
         #[cfg(unix)]
         if let Ok(pid) = fs::read_to_string(root.join("child.pid")) {
             let pid: i32 = pid.trim().parse().unwrap();
@@ -771,20 +925,19 @@ mod tests {
             result["child_still_running"] = alive.into();
             result["fixture_pid"] = pid.into();
         }
-        let _ = fs::remove_dir_all(&root);
         result
     }
 
     #[test]
     fn a_custody_mutation_selects_the_extracted_package() {
-        let command = test_command("router::properties::epoch", "zmq");
+        let command = test_command("router::properties::epoch", Build::Zmq);
         assert!(command.contains(&"key-custody".to_string()));
         assert!(!command.contains(&"--features".to_string()));
     }
 
     #[test]
     fn engine_mutations_select_the_requested_features() {
-        let command = test_command("work::test", "zmq");
+        let command = test_command("work::test", Build::Zmq);
         assert!(command.contains(&"engine".to_string()));
         let at = command.iter().position(|c| c == "--features").unwrap();
         assert_eq!(command[at + 1], "zmq");
@@ -793,7 +946,7 @@ mod tests {
     #[test]
     fn every_defect_names_a_distinct_boundary_and_a_real_source_change() {
         let mut names: Vec<&str> = MUTATIONS.iter().map(|m| m.name).collect();
-        names.sort();
+        names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), MUTATIONS.len());
         for m in MUTATIONS {
@@ -902,7 +1055,7 @@ mod tests {
             hits,
             BTreeMap::from([("money".to_string(), 5), ("retry".to_string(), 1)])
         );
-        assert!(errors.is_empty());
+        assert_eq!(errors, Vec::<String>::new());
         for malformed in [
             "no JSON",
             "[]",
@@ -927,7 +1080,7 @@ mod tests {
             &[],
         );
         assert_eq!(r["passed"], false, "{r}");
-        assert!(!r["boundary_hit_errors"].as_array().unwrap().is_empty());
+        assert_ne!(r["boundary_hit_errors"].as_array().unwrap().len(), 0);
     }
 
     #[test]

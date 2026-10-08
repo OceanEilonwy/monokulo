@@ -306,20 +306,25 @@ fetch('data.json')
 
 function main(raw) {
 // ---------- helpers ----------
+// Everything in data.json came out of CI artifacts, so every value that reaches the page goes through esc (text and attributes alike).
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
-const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const fmt = n => n == null ? '–' : Number(n).toLocaleString('en-US');
-const pct = (a, b) => b ? (100 * a / b) : null;
-const pctS = (a, b, d = 1) => b ? pct(a, b).toFixed(d) + '%' : '–';
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const num = n => typeof n === 'number' && Number.isFinite(n) ? n : null;
+const fmt = n => num(n) == null ? '–' : n.toLocaleString('en-US');
+const pct = (a, b) => num(b) ? (100 * (num(a) || 0) / b) : null;
+const pctS = (a, b, d = 1) => { const p = pct(a, b); return p == null ? '–' : p.toFixed(d) + '%'; };
 const meter = (p, cls = '') => `<div class="meter ${cls}" role="img" aria-label="${p == null ? 'not measured' : p.toFixed(1) + ' percent'}"><i style="width:${p == null ? 0 : Math.max(1, p)}%"></i></div>`;
-const date = iso => new Date(iso).toLocaleDateString('en-GB', {day: 'numeric', month: 'short', year: 'numeric'});
-const dur = s => s >= 3600 ? (s / 3600).toFixed(1) + ' h' : s >= 60 ? Math.round(s / 60) + ' min' : s >= 1 ? s.toFixed(1) + ' s' : Math.round(s * 1000) + ' ms';
+const date = iso => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? 'an unknown date' : d.toLocaleDateString('en-GB', {day: 'numeric', month: 'short', year: 'numeric'}); };
+const dur = s => num(s) == null ? '–' : s >= 3600 ? (s / 3600).toFixed(1) + ' h' : s >= 60 ? Math.round(s / 60) + ' min' : s >= 1 ? s.toFixed(1) + ' s' : Math.round(s * 1000) + ' ms';
 const human = name => { const s = name.replace(/^test_/, '').replace(/_/g, ' ').trim(); return s.charAt(0).toUpperCase() + s.slice(1); };
 const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 const label = t => t.plain ? cap(t.leaf) : human(t.leaf);
-const RUN_URL = id => `${raw.repo}/actions/runs/${id}`;
+const RUN_URL = id => esc(`${raw.repo}/actions/runs/${id}`);
 const unavailable = (title, why) => `<div class="vhead"><div><h2>${title}</h2></div></div><p class="card unavail">${why}</p>`;
+// Line or branch counts: {covered, total}, or nothing when that component left no manifest.
+const counts = c => c && num(c.total) != null ? c : null;
+const covText = c => counts(c) ? pctS(c.covered, c.total) : '–';
 
 // ---------- data ----------
 const cov = raw.coverage || {};
@@ -337,6 +342,7 @@ const DATA = {
 };
 const GALLERY = raw.gallery || {stages: [], total: 0};
 const PROPS = DATA.properties || {tests: [], observations: {}, settings: {}, cases: 0};
+PROPS.tests = PROPS.tests || []; PROPS.observations = PROPS.observations || {}; PROPS.settings = PROPS.settings || {};
 function expander(tr, render) {
   const toggle = () => {
     const open = tr.getAttribute('aria-expanded') === 'true';
@@ -348,21 +354,23 @@ function expander(tr, render) {
 }
 
 // ---------- normalise tests ----------
-const TOOLS = new Set(['cli-wallet', 'e2e-harness', 'engine-test-support', 'mock-woocommerce']);
+// Crates that only exist to test the others, as the build marked them.
+const TOOLS = new Set(DATA.crates.filter(c => c.tool).map(c => c.name));
 const tests = [];
-for (const [cls, name, t, st] of DATA.tests.rust) {
-  const crate = cls.split('::')[0];
-  const parts = name.split('::'); const leaf = parts.pop();
-  const mod = parts.filter(p => p !== 'tests').join('::') || (cls.includes('::') ? cls.split('::').slice(1).join('::') : 'tests');
-  tests.push({suite: 'Rust', crate, mod: crate + '::' + mod, leaf, raw: name, t, st});
+const result = t => ({t: num(t.secs) || 0, st: ['passed', 'failed', 'skipped'].includes(t.status) ? t.status : 'failed'});
+for (const t of DATA.tests.rust) {
+  const crate = t.class.split('::')[0];
+  const parts = t.name.split('::'); const leaf = parts.pop();
+  const mod = parts.filter(p => p !== 'tests').join('::') || (t.class.includes('::') ? t.class.split('::').slice(1).join('::') : 'tests');
+  tests.push({suite: 'Rust', crate, mod: crate + '::' + mod, leaf, raw: t.name, ...result(t)});
 }
-for (const [spec, name, t, st, kind] of DATA.tests.browser)
-  tests.push({suite: 'Browser', crate: 'browser', mod: spec.replace(/\.spec\.js$/, '') + (kind === 'real binaries' ? ' (real binaries)' : ''), leaf: name, raw: spec, t, st, plain: true});
-for (const [cls, name, t, st] of DATA.tests.woocommerce)
-  tests.push({suite: 'WooCommerce', crate: 'woocommerce', mod: cls, leaf: name, raw: cls + '::' + name, t, st});
-for (const [cls, name, t, st] of PROPS.tests) {
-  const parts = name.split('::'); const leaf = parts.pop();
-  tests.push({suite: 'Property', crate: cls, mod: cls + '::' + parts.filter(p => p !== 'tests').join('::'), leaf, raw: name, t, st, nightly: true});
+for (const t of DATA.tests.browser)
+  tests.push({suite: 'Browser', crate: 'browser', mod: t.class.replace(/\.spec\.js$/, '') + (t.kind === 'real binaries' ? ' (real binaries)' : ''), leaf: t.name, raw: t.class, ...result(t), plain: true});
+for (const t of DATA.tests.woocommerce)
+  tests.push({suite: 'WooCommerce', crate: 'woocommerce', mod: t.class, leaf: t.name, raw: t.class + '::' + t.name, ...result(t)});
+for (const t of PROPS.tests) {
+  const parts = t.name.split('::'); const leaf = parts.pop();
+  tests.push({suite: 'Property', crate: t.class, mod: t.class + '::' + parts.filter(p => p !== 'tests').join('::'), leaf, raw: t.name, ...result(t), nightly: true});
 }
 const AREAS = [
   {id: 'payments', name: 'Payment detection', desc: 'Scanning blocks and the mempool, confirmations, reorgs, proof of work and the order statuses customers see.',
@@ -391,9 +399,8 @@ const AREAS = [
 const OTHER = {id: 'other', name: 'Everything else', desc: 'Shared types, HTTP plumbing and helpers.'};
 for (const t of tests) t.area = (AREAS.find(a => a.m(t)) || OTHER).id;
 const ALL_AREAS = [...AREAS, OTHER];
-const areaName = id => ALL_AREAS.find(a => a.id === id).name;
 
-const ship = cov.shipping || [0, 0, 0, 0];
+const ship = cov.shipping || {};
 const counted = tests.filter(t => t.suite !== 'Property');
 const passed = counted.filter(t => t.st === 'passed').length;
 const skipped = counted.filter(t => t.st === 'skipped').length;
@@ -404,7 +411,7 @@ const SRC = DATA.sources;
 const allPassed = !failed && Object.values(cov.components || {}).every(st => st === 'passed') && (DATA.fuzz || []).every(f => f.status === 'passed');
 $('#runline').innerHTML = [
   allPassed ? '<span class="pill ok">All checks passed</span>' : '<span class="pill">Some checks failed</span>',
-  SRC.coverage?.run_id ? `<span class="muted">Tests and coverage from <a href="${RUN_URL(SRC.coverage.run_id)}"><code>${(SRC.coverage.sha || cov.revision || '').slice(0, 7)}</code></a> on ${date(SRC.coverage.date)}</span>` : '',
+  SRC.coverage?.run_id ? `<span class="muted">Tests and coverage from <a href="${RUN_URL(SRC.coverage.run_id)}"><code>${esc(String(SRC.coverage.sha || cov.revision || '').slice(0, 7))}</code></a> on ${date(SRC.coverage.date)}</span>` : '',
   SRC.properties?.date ? `<span class="muted">Nightly properties ${date(SRC.properties.date)}</span>` : '',
   SRC.fuzz?.date ? `<span class="muted">Fuzzing ${date(SRC.fuzz.date)}</span>` : '',
 ].filter(Boolean).join('<span class="muted">·</span>');
@@ -412,14 +419,14 @@ if (counted.length) $('#lead-count').textContent = `more than ${fmt(Math.floor(c
 const C = DATA.coverage;
 $('#figs').innerHTML = [
   ['Tests', fmt(counted.length), `${fmt(passed)} passed · ${skipped} skipped`, null],
-  ['Engine and server', pctS(ship[0], ship[1]), `of ${fmt(ship[1])} Rust lines`, pct(ship[0], ship[1])],
-  ['Checkout and POS', pctS(C.browser?.[0], C.browser?.[1]), `of ${fmt(C.browser?.[1])} browser lines`, C.browser ? pct(C.browser[0], C.browser[1]) : null],
-  ['WooCommerce', pctS(C.woocommerce?.[0], C.woocommerce?.[1]), `of ${fmt(C.woocommerce?.[1])} PHP lines`, C.woocommerce ? pct(C.woocommerce[0], C.woocommerce[1]) : null],
+  ['Engine and server', covText(ship.lines), `of ${fmt(ship.lines?.total)} Rust lines`, pct(ship.lines?.covered, ship.lines?.total)],
+  ['Checkout and POS', covText(C.browser?.lines), `of ${fmt(C.browser?.lines?.total)} browser lines`, pct(C.browser?.lines?.covered, C.browser?.lines?.total)],
+  ['WooCommerce', covText(C.woocommerce?.lines), `of ${fmt(C.woocommerce?.lines?.total)} PHP lines`, pct(C.woocommerce?.lines?.covered, C.woocommerce?.lines?.total)],
   ['Properties nightly', DATA.properties ? fmt(PROPS.tests.length) : '–', DATA.fuzz ? `plus ${DATA.fuzz.length} fuzz targets` : 'no run yet', null],
 ].map(([k, v, s, p]) => `<div class="fig"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s}</span>${p == null ? '' : meter(p, 'ok')}</div>`).join('');
 
 // ---------- tabs ----------
-const TABS = [['overview', 'What’s tested', null, tests.length], ['tests', 'All tests', counted.length, tests.length], ['coverage', 'Coverage', null, DATA.crates.length || C.browser || C.woocommerce],
+const TABS = [['overview', 'What’s tested', null, tests.length], ['tests', 'All tests', counted.length, tests.length], ['coverage', 'Coverage', null, DATA.crates.length || counts(C.rust?.lines) || counts(C.browser?.lines) || counts(C.woocommerce?.lines)],
   ['properties', 'Property tests', PROPS.tests.length, DATA.properties], ['fuzzing', 'Fuzzing', DATA.fuzz?.length, DATA.fuzz], ['stress', 'Load', null, DATA.stress],
   ['screens', 'Screens', GALLERY.total, GALLERY.total]].filter(t => t[3]);
 if (!TABS.length) { $('#figs').hidden = true; $('#view').innerHTML = '<p class="unavail">No test results have been published yet.</p>'; return; }
@@ -479,7 +486,7 @@ function filtered() {
   return tests.filter(t => (state.suite === 'all' || t.suite === state.suite) && (!state.area || t.area === state.area) &&
     (!q || t.leaf.toLowerCase().includes(q) || t.leaf.toLowerCase().includes(qq) || t.mod.toLowerCase().includes(qq)));
 }
-const testLabel = t => esc(label(t)) + (t.nightly && PROPS.settings.PROPTEST_CASES ? ` <span class="tag">${PROPS.settings.PROPTEST_CASES} cases</span>` : '');
+const testLabel = t => esc(label(t)) + (t.nightly && PROPS.settings.PROPTEST_CASES ? ` <span class="tag">${esc(PROPS.settings.PROPTEST_CASES)} cases</span>` : '');
 const mark = t => `<span class="st ${t.st}" aria-label="${t.st}">${t.st === 'passed' ? '✓' : t.st === 'skipped' ? '–' : '✕'}</span>`;
 function drawTests() {
   const rows = filtered();
@@ -513,35 +520,36 @@ function drawTests() {
 }
 // ---------- coverage ----------
 RENDER.coverage = () => {
-  const covRow = (a, b) => `<div class="covcell">${meter(pct(a, b), pct(a, b) >= 85 ? 'ok' : '')}<b>${pctS(a, b)}</b></div>`;
-  const crates = [...DATA.crates].filter(c => c.cov[1]).sort((a, b) => a.tool - b.tool || b.cov[1] - a.cov[1]);
-  const row = c => `<tr class="click" data-crate="${c.name}" aria-expanded="false" tabindex="0"><td><b>${c.name}</b> <span class="muted small">${c.files.length} files</span></td>
-    <td>${covRow(c.cov[0], c.cov[1])}</td><td class="r">${fmt(c.cov[0])} / ${fmt(c.cov[1])}</td><td class="r">${pctS(c.cov[2], c.cov[3])}</td></tr>`;
+  const covRow = c => `<div class="covcell">${meter(pct(c?.covered, c?.total), pct(c?.covered, c?.total) >= 85 ? 'ok' : '')}<b>${covText(c)}</b></div>`;
+  const ratio = c => counts(c) ? `${fmt(c.covered)} / ${fmt(c.total)}` : '–';
+  const crates = DATA.crates.filter(c => counts(c.lines)?.total).sort((a, b) => a.tool - b.tool || b.lines.total - a.lines.total);
+  const row = c => `<tr class="click" data-crate="${esc(c.name)}" aria-expanded="false" tabindex="0"><td><b>${esc(c.name)}</b> <span class="muted small">${(c.files || []).length} files</span></td>
+    <td>${covRow(c.lines)}</td><td class="r">${ratio(c.lines)}</td><td class="r">${covText(c.branches)}</td></tr>`;
+  const total = (title, c) => counts(c?.lines) ? `<div><dt>${title}</dt><dd>${covText(c.lines)} <small>${covText(c.branches)} branches</small></dd></div>` : '';
+  const report = (name, title, note, c) => counts(c?.lines) ? `<tr><td><b>${DATA.reports[name] ? `<a href="${esc(DATA.reports[name])}">${title}</a>` : title}</b> <span class="muted small">${note}</span></td><td>${covRow(c.lines)}</td><td class="r">${ratio(c.lines)}</td><td class="r">${covText(c.branches)}</td></tr>` : '';
+  const others = report('browser', 'Browser', 'checkout, embed, POS', C.browser) + report('woocommerce', 'WooCommerce', 'plugin', C.woocommerce);
+  const tools = [DATA.tools.rust, DATA.tools.browser, DATA.tools.woocommerce].filter(Boolean).map(esc).join(', ').replace(/, ([^,]*)$/, ' and $1');
   $('#view').innerHTML = `
     <div class="vhead"><div><h2>Coverage</h2><p>While the tests run, a tool watches which lines of code actually get used. Code that no test ever runs is where bugs can hide. Higher is better, but 100% isn’t the goal: some code, like the stress-test tools, never ships. A <b>branch</b> is each way an <code>if</code> can go. Open a crate (a package of Rust code) to see its files, lowest first.</p></div></div>
     <dl class="kv">
-      <div><dt>Rust, shipping crates</dt><dd>${pctS(ship[0], ship[1])} <small>${pctS(ship[2], ship[3])} branches</small></dd></div>
-      <div><dt>Rust, whole workspace</dt><dd>${pctS(C.rust[0], C.rust[1])} <small>${pctS(C.rust[2], C.rust[3])} branches</small></dd></div>
-      <div><dt>Browser</dt><dd>${pctS(C.browser[0], C.browser[1])} <small>${pctS(C.browser[2], C.browser[3])} branches</small></dd></div>
-      <div><dt>WooCommerce</dt><dd>${pctS(C.woocommerce[0], C.woocommerce[1])} <small>${pctS(C.woocommerce[2], C.woocommerce[3])} branches</small></dd></div>
+      ${total('Rust, shipping crates', ship)}${total('Rust, whole workspace', C.rust)}${total('Browser', C.browser)}${total('WooCommerce', C.woocommerce)}
     </dl>
     <div class="card"><div class="tbl"><table>
       <thead><tr><th>Crate</th><th>Lines</th><th class="r">Covered / total</th><th class="r">Branches</th></tr></thead>
       <tbody>${crates.filter(c => !c.tool).map(row).join('')}
-      <tr class="grp"><td colspan="4">Test tools</td></tr>${crates.filter(c => c.tool).map(row).join('')}
-      <tr class="grp"><td colspan="4">Other reports</td></tr>
-      <tr><td><b>${DATA.reports.browser ? `<a href="${DATA.reports.browser}">Browser</a>` : 'Browser'}</b> <span class="muted small">checkout, embed, POS</span></td><td>${covRow(C.browser[0], C.browser[1])}</td><td class="r">${fmt(C.browser[0])} / ${fmt(C.browser[1])}</td><td class="r">${pctS(C.browser[2], C.browser[3])}</td></tr>
-      <tr><td><b>${DATA.reports.woocommerce ? `<a href="${DATA.reports.woocommerce}">WooCommerce</a>` : 'WooCommerce'}</b> <span class="muted small">plugin</span></td><td>${covRow(C.woocommerce[0], C.woocommerce[1])}</td><td class="r">${fmt(C.woocommerce[0])} / ${fmt(C.woocommerce[1])}</td><td class="r">${pctS(C.woocommerce[2], C.woocommerce[3])}</td></tr>
+      ${crates.some(c => c.tool) ? `<tr class="grp"><td colspan="4">Test tools</td></tr>${crates.filter(c => c.tool).map(row).join('')}` : ''}
+      ${others ? `<tr class="grp"><td colspan="4">Other reports</td></tr>${others}` : ''}
+      ${crates.length || others ? '' : '<tr><td colspan="4" class="muted">No coverage figures in this run.</td></tr>'}
       </tbody></table></div></div>
-    <p class="muted small">Measured with ${[DATA.tools.rust, DATA.tools.browser, DATA.tools.woocommerce].filter(Boolean).map(esc).join(', ').replace(/, ([^,]*)$/, ' and $1')}. Files that can’t be instrumented are listed under their crate rather than counted as 0%.</p>`;
+    ${tools ? `<p class="muted small">Measured with ${tools}. Files that can’t be instrumented are listed under their crate rather than counted as 0%.</p>` : ''}`;
   $$('tr[data-crate]', $('#view')).forEach(tr => expander(tr, () => {
-    const c = DATA.crates.find(x => x.name === tr.dataset.crate);
-    const files = [...c.files].sort((a, b) => (pct(a[1], a[2]) ?? 101) - (pct(b[1], b[2]) ?? 101));
+    const c = crates.find(x => x.name === tr.dataset.crate);
+    const files = [...(c.files || [])].sort((a, b) => (pct(a.lines?.covered, a.lines?.total) ?? 101) - (pct(b.lines?.covered, b.lines?.total) ?? 101));
     return `<tr class="sub"><td colspan="4"><div class="files"><div class="tbl"><table>
       <thead><tr><th>File</th><th>Lines</th><th class="r">Covered</th><th class="r">Branches</th></tr></thead>
-      <tbody>${files.map(f => `<tr><td><a href="${f[5]}" title="Annotated source">${esc(f[0])}</a>${/\/bin\//.test(f[0]) && f[1] === 0 ? ' <span class="lowtag">tool binary</span>' : ''}</td>
-        <td>${covRow(f[1], f[2])}</td><td class="r">${fmt(f[1])} / ${fmt(f[2])}</td><td class="r">${f[4] ? fmt(f[3]) + ' / ' + fmt(f[4]) : '–'}</td></tr>`).join('')}
-      ${c.unmeasured.map(u => `<tr><td>${esc(u.replace(/^crates\/[^/]+\//, ''))}</td><td colspan="3" class="muted">not instrumented</td></tr>`).join('')}
+      <tbody>${files.map(f => `<tr><td><a href="${esc(f.report)}" title="Annotated source">${esc(f.path)}</a>${/\/bin\//.test(f.path) && f.lines?.covered === 0 ? ' <span class="lowtag">tool binary</span>' : ''}</td>
+        <td>${covRow(f.lines)}</td><td class="r">${ratio(f.lines)}</td><td class="r">${counts(f.branches)?.total ? ratio(f.branches) : '–'}</td></tr>`).join('')}
+      ${(c.unmeasured || []).map(u => `<tr><td>${esc(u.replace(/^crates\/[^/]+\//, ''))}</td><td colspan="3" class="muted">not instrumented</td></tr>`).join('')}
       </tbody></table></div></div></td></tr>`;
   }));
 };
@@ -567,61 +575,67 @@ const OBS = [
     ['setup:transactions-2', '2 transactions'], ['setup:transactions-3', '3 transactions'], ['setup:transactions-4', '4 transactions'],
     ['backend:direct', 'Direct scanning'], ['backend:worker', 'Worker scanning'], ['fixture:recorded-and-synthetic', 'Recorded mainnet + synthetic transactions'], ['fixture:scanner-valid-synthetic', 'Synthetic transactions only']]},
 ];
-const per = (n, cases) => cases ? (n / cases >= 10 ? Math.round(n / cases) : (n / cases).toFixed(n / cases >= 1 ? 1 : 2)) + '×' : '';
+// An observation's count: a non-negative number, else nothing.
+const count = (obs, k) => Math.max(0, num(obs?.[k]) || 0);
+const per = (n, cases) => num(cases) ? (n / cases >= 10 ? Math.round(n / cases) : (n / cases).toFixed(n / cases >= 1 ? 1 : 2)) + '×' : '';
 function obsTable(g, obs, cases) {
-  const rows = g.rows.filter(([k]) => obs[k]);
+  const rows = g.rows.filter(([k]) => count(obs, k));
   if (!rows.length) return '';
-  const max = Math.max(...rows.map(([k]) => obs[k]));
+  const max = Math.max(...rows.map(([k]) => count(obs, k)));
   return `<div><h3>${g.title}</h3><p class="why">${g.why}</p>
     <div class="obshead"><span>Situation</span><span>Relative</span><span>Times</span><span title="Times per history">#/H</span></div>
-    ${rows.map(([k, label]) => `<div class="obsrow"><span>${label}</span>${meter(100 * obs[k] / max)}<span class="r n">${fmt(obs[k])}</span><span class="r">${per(obs[k], cases)}</span></div>`).join('')}</div>`;
+    ${rows.map(([k, label]) => `<div class="obsrow"><span>${label}</span>${meter(100 * count(obs, k) / max)}<span class="r n">${fmt(count(obs, k))}</span><span class="r">${per(count(obs, k), cases)}</span></div>`).join('')}</div>`;
 }
 function cmdTable(obs, cases) {
-  const rows = CMDS.map(([c, label]) => ({label, sel: obs['selected-command:' + c] || 0, app: obs['applied-transition:' + c] || 0, skip: obs['skipped-command:' + c] || 0})).filter(r => r.sel || r.app);
+  const rows = CMDS.map(([c, label]) => ({label, sel: count(obs, 'selected-command:' + c), app: count(obs, 'applied-transition:' + c), skip: count(obs, 'skipped-command:' + c)})).filter(r => r.sel || r.app);
   if (!rows.length) return '';
   const max = Math.max(...rows.map(r => Math.max(r.sel, r.app)));
+  const extended = count(obs, 'applied-transition:ExtendInsteadOfMine');
   return `<div><h3>Chain events generated</h3><p class="why">Each history is a random list of these steps. Sometimes a step can’t happen (there’s no waiting payment to drop, say), so it’s skipped. At the end the model works out what every wallet should have, and the engine has to match.</p>
     <div class="legend"><span>Applied</span><span class="sk">Picked but skipped</span></div>
     <div class="obshead"><span>Step</span><span>Picked</span><span>Applied</span><span>Skipped</span></div>
     ${rows.map(r => `<div class="obsrow"><span>${r.label}</span><div class="meter" role="img" aria-label="${r.app} applied, ${r.skip} skipped"><i style="width:${100 * r.app / max}%"></i><i class="skip" style="width:${100 * r.skip / max}%"></i></div><span class="r n">${fmt(r.app)}</span><span class="r">${r.skip ? fmt(r.skip) : '–'}</span></div>`).join('')}
-    ${obs['applied-transition:ExtendInsteadOfMine'] ? `<p class="why" style="margin-top:8px">${fmt(obs['applied-transition:ExtendInsteadOfMine'])} skipped “mine” steps had nothing to mine and extended the chain with an empty block instead.</p>` : ''}</div>`;
+    ${extended ? `<p class="why" style="margin-top:8px">${fmt(extended)} skipped “mine” steps had nothing to mine and extended the chain with an empty block instead.</p>` : ''}</div>`;
 }
+// A property test's group: its module path without the test module itself.
+const propGroup = name => { const p = name.split('::'); p.pop(); return p.filter(x => x !== 'tests').join('::'); };
 RENDER.properties = () => {
   if (!DATA.properties) { $('#view').innerHTML = unavailable('Property tests', 'No nightly property run has been published yet.'); return; }
   const P = PROPS, O = P.observations;
-  const mods = {}; P.tests.forEach(([cls, name, t]) => { const p = name.split('::'); p.pop(); const m = p.filter(x => x !== 'tests').join('::'); (mods[m] = mods[m] || {n: 0, t: 0}); mods[m].n++; mods[m].t += t; });
-  const total = P.tests.reduce((s, r) => s + r[2], 0);
+  const mods = {}; P.tests.forEach(t => { const m = propGroup(t.name); (mods[m] = mods[m] || {n: 0, t: 0}); mods[m].n++; mods[m].t += num(t.secs) || 0; });
+  const total = P.tests.reduce((s, t) => s + (num(t.secs) || 0), 0);
   const ex = 'sql-denial-reached';
+  const cases = num(P.cases);
   $('#view').innerHTML = `
     <div class="vhead"><div><h2>Property tests</h2><p>A normal test checks one example written by hand: pay 1 XMR, expect the order to be paid. A property test checks a rule instead: however the payments, reorgs and crashes happen, every wallet ends up with exactly what it was sent. The computer invents hundreds of random histories, runs the real engine through each one, and compares the result with a separate, much simpler model that works out the right answer on its own. If they ever disagree, the history is shrunk to the smallest version that still fails and saved, so every future run checks it again.</p></div>
       ${SRC.properties?.run_id ? `<a class="pill" href="${RUN_URL(SRC.properties.run_id)}">Run of ${date(SRC.properties.date)}</a>` : ''}</div>
     <dl class="kv">
-      <div><dt>Properties</dt><dd>${P.tests.length} <small>${P.tests.some(t => t[3] === 'failed') ? 'some failed' : 'passed'}</small></dd></div>
-      <div><dt>Cases per property</dt><dd>${P.settings.PROPTEST_CASES}</dd></div>
-      <div><dt>Histories modelled</dt><dd>${fmt(P.cases)}</dd></div>
+      <div><dt>Properties</dt><dd>${P.tests.length} <small>${P.tests.some(t => t.status === 'failed') ? 'some failed' : 'passed'}</small></dd></div>
+      <div><dt>Cases per property</dt><dd>${P.settings.PROPTEST_CASES ? esc(P.settings.PROPTEST_CASES) : '–'}</dd></div>
+      <div><dt>Histories modelled</dt><dd>${fmt(cases)}</dd></div>
       <div><dt>CPU time</dt><dd>${dur(total)}</dd></div>
     </dl>
-    <div class="card pad read">
+    ${count(O, ex) && cases ? `<div class="card pad read">
       <div>
         <h3>Reading the bars below</h3>
-        <p>While a history plays out, the engine keeps a tally of every situation it lands in, like a refused database write or the chain reorganising. <b>Times</b> is the tally across all ${fmt(P.cases)} histories from last night. One history can hit the same situation many times, so a tally can be bigger than ${fmt(P.cases)}. <b>#/H</b> is the average per history.</p>
+        <p>While a history plays out, the engine keeps a tally of every situation it lands in, like a refused database write or the chain reorganising. <b>Times</b> is the tally across all ${fmt(cases)} histories from last night. One history can hit the same situation many times, so a tally can be bigger than ${fmt(cases)}. <b>#/H</b> is the average per history.</p>
         <p>The bars only compare rows in the same box. What matters is that no row is zero. A zero would mean the random histories had stopped reaching that situation, and the rule would still pass without really being tested.</p>
       </div>
       <div class="example">
         <div class="obshead"><span>Situation</span><span>Relative</span><span>Times</span><span title="Times per history">#/H</span></div>
-        <div class="obsrow"><span>Database write refused</span>${meter(100)}<span class="r n">${fmt(O[ex])}</span><span class="r">${per(O[ex], P.cases)}</span></div>
-        <div class="ann"><b>Times</b><span>the harness refused a database write ${fmt(O[ex])} times in total</span><b>#/H</b><span>times per history: about ${per(O[ex], P.cases).replace('×', '')} refusals in each history</span><b>Relative</b><span>the most frequent fault, so its bar is full</span><b>Passed</b><span>after every refusal the engine reported the problem and every balance stayed right</span></div>
+        <div class="obsrow"><span>Database write refused</span>${meter(100)}<span class="r n">${fmt(count(O, ex))}</span><span class="r">${per(count(O, ex), cases)}</span></div>
+        <div class="ann"><b>Times</b><span>the harness refused a database write ${fmt(count(O, ex))} times in total</span><b>#/H</b><span>times per history: about ${per(count(O, ex), cases).replace('×', '')} refusals in each history</span><b>Relative</b><span>the most frequent fault, so its bar is full</span><b>Passed</b><span>after every refusal the engine reported the problem and every balance stayed right</span></div>
       </div>
-    </div>
+    </div>` : ''}
     <div class="two">
-      <div class="card pad obs">${cmdTable(O, P.cases)}${obsTable(OBS[2], O, P.cases)}</div>
-      <div class="card pad obs">${obsTable(OBS[0], O, P.cases)}${obsTable(OBS[1], O, P.cases)}</div>
+      <div class="card pad obs">${cmdTable(O, cases)}${obsTable(OBS[2], O, cases)}</div>
+      <div class="card pad obs">${obsTable(OBS[0], O, cases)}${obsTable(OBS[1], O, cases)}</div>
     </div>
     <div class="card"><div class="tbl"><table><thead><tr><th>Group</th><th class="r">Properties</th><th class="r">Time</th></tr></thead>
       <tbody>${Object.entries(mods).sort((a, b) => b[1].t - a[1].t).map(([m, v]) => `<tr class="click" data-pmod="${esc(m)}" aria-expanded="false" tabindex="0"><td class="mono">${esc(m)}</td><td class="r">${v.n}</td><td class="r">${dur(v.t)}</td></tr>`).join('')}</tbody></table></div></div>`;
   $$('tr[data-pmod]', $('#view')).forEach(tr => expander(tr, () => {
-    const list = P.tests.filter(([, name]) => { const p = name.split('::'); p.pop(); return p.filter(x => x !== 'tests').join('::') === tr.dataset.pmod; });
-    return `<tr class="sub"><td colspan="3"><div class="files"><ul class="tlist">${list.sort((a, b) => b[2] - a[2]).map(([, name, t]) => `<li><span class="st">✓</span><span>${esc(human(name.split('::').pop()))}</span><span class="tim">${dur(t)}</span></li>`).join('')}</ul></div></td></tr>`;
+    const list = P.tests.filter(t => propGroup(t.name) === tr.dataset.pmod);
+    return `<tr class="sub"><td colspan="3"><div class="files"><ul class="tlist">${list.sort((a, b) => (num(b.secs) || 0) - (num(a.secs) || 0)).map(t => `<li><span class="st ${esc(t.status)}">${t.status === 'passed' ? '✓' : t.status === 'skipped' ? '–' : '✕'}</span><span>${esc(human(t.name.split('::').pop()))}</span><span class="tim">${dur(t.secs)}</span></li>`).join('')}</ul></div></td></tr>`;
   }));
 };
 
@@ -639,8 +653,8 @@ const FUZZ_DESC = {
 };
 RENDER.fuzzing = () => {
   if (!DATA.fuzz) { $('#view').innerHTML = unavailable('Fuzzing', 'No nightly fuzzing run has been published yet.'); return; }
-  const F = [...DATA.fuzz].sort((a, b) => (b.edges || 0) - (a.edges || 0));
-  const sum = k => F.reduce((s, f) => s + (f[k] || 0), 0);
+  const F = [...DATA.fuzz].sort((a, b) => (num(b.edges) || 0) - (num(a.edges) || 0));
+  const sum = k => F.reduce((s, f) => s + (num(f[k]) || 0), 0);
   const execs = sum('execs');
   $('#view').innerHTML = `
     <div class="vhead"><div><h2>Fuzzing</h2><p>A fuzzer throws strange inputs at the code, keeps the ones that reach code it hasn’t seen before, and mutates those to go further. It isn’t only looking for crashes. Every target is wrapped in checks: the two big ones, portfolio and history, play a whole run of payments through the real engine and compare every balance with the money model, and the smaller ones each check one specific rule. If any check fails, the fuzzer counts it as a crash and saves the input that caused it.</p></div>
@@ -653,25 +667,28 @@ RENDER.fuzzing = () => {
     </dl>
     <div class="card"><div class="tbl"><table>
       <thead><tr><th>Target</th><th class="r">Time</th><th class="r">Executions</th><th class="r">Corpus</th><th class="r">New</th><th class="r">Code edges</th></tr></thead>
-      <tbody>${F.map(f => `<tr class="${f.cases ? 'click' : ''}" ${f.cases ? `data-fz="${f.target}" aria-expanded="false" tabindex="0"` : ''}>
-          <td><b>${f.target}</b><span class="muted" style="display:block;font-size:12.5px">${FUZZ_DESC[f.target] || ''}</span></td>
+      <tbody>${F.map(f => `<tr class="${f.cases ? 'click' : ''}" ${f.cases ? `data-fz="${esc(f.target)}" aria-expanded="false" tabindex="0"` : ''}>
+          <td><b>${esc(f.target)}</b><span class="muted" style="display:block;font-size:12.5px">${FUZZ_DESC[f.target] || ''}</span>${f.status === 'passed' ? '' : ` <span class="lowtag">${esc(f.status || 'no verdict')}</span>`}</td>
           <td class="r">${dur(f.seconds)}</td><td class="r">${fmt(f.execs)}</td><td class="r">${fmt(f.corpus)}</td><td class="r">${fmt(f.new_inputs)}</td>
           <td class="r">${fmt(f.edges)} <span class="muted">+${fmt(f.edge_growth)}</span></td></tr>`).join('')}
       </tbody></table></div></div>
     <div class="callout"><b>Why so few portfolio runs?</b><span>Resources runs about 150 million times a night, portfolio about 700. Each portfolio input builds a whole multi-wallet chain and runs the real scanner over it, a bit like playing a full game rather than pressing one button. Open its row to see which situations last night’s inputs reached. <b>Code edges</b> counts the different paths through the code the fuzzer has found; the + is how many were new last night.</span></div></div>`;
   $$('tr[data-fz]', $('#view')).forEach(tr => expander(tr, () => {
     const f = F.find(x => x.target === tr.dataset.fz);
-    return `<tr class="sub"><td colspan="6"><div class="files obs">${cmdTable(f.observations, f.cases)}${OBS.map(g => obsTable(g, f.observations, f.cases)).join('')}</div></td></tr>`;
+    return `<tr class="sub"><td colspan="6"><div class="files obs">${cmdTable(f.observations, num(f.cases))}${OBS.map(g => obsTable(g, f.observations, num(f.cases))).join('')}</div></td></tr>`;
   }));
 };
 
 // ---------- load ----------
 const avg = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0;
-const measuredMs = p => p.ticks.filter(t => t[0] === 'measured').map(t => t[1]);
+// Each stress point's scan rounds: {phase, ms, lagging, lag}, as the build recorded them.
+const ticksOf = p => (p.ticks || []).map(t => ({phase: t.phase, ms: num(t.ms) || 0, lagging: num(t.lagging) || 0}));
+const measuredMs = ticks => ticks.filter(t => t.phase === 'measured').map(t => t.ms);
 const ordinal = n => ({2: 'second', 3: 'third', 4: 'fourth', 5: 'fifth'})[n] || `${n}th`;
+const ms = n => num(n) == null ? '?' : fmt(n);
 function loadRows(run) {
-  return run.points.filter(p => p.ticks.length).sort((a, b) => a.tenants - b.tenants)
-    .map(p => ({n: p.tenants, ms: avg(measuredMs(p)), peak: p.peak_mb, http: (p.http_max_us || 0) / 1000, lag: p.ticks.at(-1)[2], status: p.status}));
+  return (run.points || []).map(p => ({p, ticks: ticksOf(p)})).filter(({p, ticks}) => ticks.length && num(p.tenants)).sort((a, b) => a.p.tenants - b.p.tenants)
+    .map(({p, ticks}) => ({n: p.tenants, ms: avg(measuredMs(ticks)), peak: num(p.peak_mb), http: (num(p.http_max_us) || 0) / 1000, lag: ticks.at(-1).lagging, status: p.status}));
 }
 function loadChart(rows) {
   // time per block against store count, drawn to scale
@@ -679,7 +696,7 @@ function loadChart(rows) {
   const top = Math.max(...rows.map(t => t.n));
   const step = [8, 16, 32, 64, 128, 256, 512, 1024].find(s => top / s <= 5) || 2048;
   const xmax = Math.ceil(top * 1.08 / step) * step;
-  const yraw = Math.max(...rows.map(t => t.ms)) * 1.25;
+  const yraw = Math.max(1, Math.max(...rows.map(t => t.ms)) * 1.25);
   const ystep = [10, 20, 40, 50, 100, 200, 250, 500, 1000, 2000, 5000].find(s => yraw / s <= 5) || 10000;
   const ymax = Math.ceil(yraw / ystep) * ystep;
   const x = n => L + (W - L - R) * n / xmax, y = v => T + (H - T - B) * (1 - v / ymax);
@@ -700,11 +717,13 @@ function loadRun(run, title) {
   const last = rows.at(-1), first = rows[0];
   const perStore = rows.length > 1 ? (last.ms - first.ms) / (last.n - first.n) : null;
   const passed = rows.every(r => r.status === 'sustainable');
-  const ticks = run.points[0]?.measured_ticks;
+  const ticks = num(run.points[0]?.measured_ticks);
+  const budget = num(run.budget_ms);
+  const share = v => budget ? (100 * v / budget).toFixed(1) + '%' : '–';
   return `${title ? `<div class="vhead"><div><h2 style="font-size:18px">${title}</h2></div></div>` : ''}
     <dl class="kv">
       <div><dt>${fmt(last.n)} stores, one block</dt><dd>${fmt(Math.round(last.ms))} ms</dd></div>
-      <div><dt>Share of the ${run.budget_ms / 1000} s budget</dt><dd>${(100 * last.ms / run.budget_ms).toFixed(1)}%</dd></div>
+      <div><dt>Share of the ${budget ? budget / 1000 + ' s' : ''} budget</dt><dd>${share(last.ms)}</dd></div>
       <div><dt>Each extra store</dt><dd>${perStore == null ? '–' : '+' + perStore.toFixed(1) + ' ms'}</dd></div>
       <div><dt>Peak memory</dt><dd>${last.peak == null ? '–' : last.peak + ' MB'}</dd></div>
     </dl>
@@ -712,60 +731,69 @@ function loadRun(run, title) {
       <div class="card chart"><h3 style="font-size:15px;margin-bottom:4px">Time to scan one block for every store</h3><p class="muted small" style="margin-bottom:12px">Average of ${ticks || 'the'} measured blocks after warm-up.${perStore == null ? '' : ` The cost grows by about ${perStore.toFixed(1)} ms per store on top of a fixed ${Math.max(0, Math.round(first.ms - perStore * first.n))} ms.`}</p>${loadChart(rows)}</div>
       <div class="card"><div class="tbl"><table>
         <thead><tr><th>Stores</th><th class="r">Per block</th><th class="r">Of budget</th><th class="r">Slowest reply</th><th class="r">Behind</th></tr></thead>
-        <tbody>${rows.map(t => `<tr><td><b>${fmt(t.n)}</b></td><td class="r">${fmt(Math.round(t.ms))} ms</td><td class="r">${(100 * t.ms / run.budget_ms).toFixed(1)}%</td><td class="r">${t.http.toFixed(1)} ms</td><td class="r">${t.lag}</td></tr>`).join('')}</tbody></table></div>
-        <p class="muted small" style="padding:12px 16px">Pass conditions: no store more than ${run.max_lag_blocks} blocks behind, status replies under ${run.max_http_ms} ms. ${passed ? `All ${rows.length === 2 ? 'both' : rows.length} passed.` : 'Not every point kept up; see the full report.'}</p></div>
+        <tbody>${rows.map(t => `<tr><td><b>${fmt(t.n)}</b></td><td class="r">${fmt(Math.round(t.ms))} ms</td><td class="r">${share(t.ms)}</td><td class="r">${t.http.toFixed(1)} ms</td><td class="r">${t.lag}</td></tr>`).join('')}</tbody></table></div>
+        <p class="muted small" style="padding:12px 16px">Pass conditions: no store more than ${ms(run.max_lag_blocks)} blocks behind, status replies under ${ms(run.max_http_ms)} ms. ${passed ? `All ${rows.length === 2 ? 'both' : rows.length} passed.` : 'Not every point kept up; see the full report.'}</p></div>
     </div>`;
 }
 function faultCards(run) {
+  const lockMs = p => num(run.fault_lock_ms) || num(p.lock_ms) || 0;
   const describe = {
-    'fault-rpc': p => ({title: 'Node errors', what: `Every node request slowed by ${p.rpc_delay_ms} ms, and every ${ordinal(p.rpc_fail_every)} request failed until block ${p.rpc_fail_until_height}.`,
+    'fault-rpc': p => ({title: 'Node errors', what: `Every node request slowed by ${ms(p.rpc_delay_ms)} ms, and every ${ordinal(num(p.rpc_fail_every) || 0)} request failed until block ${ms(p.rpc_fail_until_height)}.`,
       stat: [['Requests failed', `${fmt(p.rpc_failures)} of ${fmt(p.rpc_calls)}`]]}),
-    'fault-sqlite-lock': p => ({title: 'Database locked', what: `Another writer held the database lock for ${(run.fault_lock_ms || p.lock_ms) / 1000} s during each of the first ${p.measured_ticks} blocks.`,
-      stat: [['Lock held', `${(run.fault_lock_ms || p.lock_ms) / 1000} s × ${p.measured_ticks} blocks`]]}),
-    'fault-custody': p => ({title: 'Key custody slow', what: `Key custody limited to ${p.custody_slots} scan${p.custody_slots === 1 ? '' : 's'} at a time, each taking an extra ${p.custody_delay_ms} ms.`,
-      stat: [['Custody scans', fmt(p.custody_scans)], ['Longest wait', Math.round((p.custody_max_wait_us || 0) / 1000) + ' ms']]}),
+    'fault-sqlite-lock': p => ({title: 'Database locked', what: `Another writer held the database lock for ${lockMs(p) / 1000} s during each of the first ${ms(p.measured_ticks)} blocks.`,
+      stat: [['Lock held', `${lockMs(p) / 1000} s × ${ms(p.measured_ticks)} blocks`]]}),
+    'fault-custody': p => ({title: 'Key custody slow', what: `Key custody limited to ${ms(p.custody_slots)} scan${p.custody_slots === 1 ? '' : 's'} at a time, each taking an extra ${ms(p.custody_delay_ms)} ms.`,
+      stat: [['Custody scans', fmt(p.custody_scans)], ['Longest wait', Math.round((num(p.custody_max_wait_us) || 0) / 1000) + ' ms']]}),
   };
-  const faults = run.faults.filter(p => describe[p.name] && p.ticks.length);
+  const faults = (run.faults || []).map(p => ({p, ticks: ticksOf(p)})).filter(({p, ticks}) => describe[p.name] && ticks.length);
   if (!faults.length) return '';
-  const f0 = faults[0];
-  const behind = faults.every(p => Math.max(...p.ticks.map(t => t[2])) === 0);
-  return `<div class="vhead"><div><h2 style="font-size:18px">Recovering from faults</h2><p>Each run breaks one thing on purpose for ${f0.measured_ticks} blocks, then gives the engine ${f0.drain_ticks} blocks to recover. Each bar is how long one block took; orange bars are the broken ones. ${behind ? `In all ${faults.length === 3 ? 'three' : faults.length}, no store fell behind.` : 'Some stores fell behind; the drain blocks show whether they caught up.'}</p></div></div>
-    <div class="faults">${faults.map(p => { const f = describe[p.name](p); const mx = Math.max(...p.ticks.map(t => t[1]));
+  const f0 = faults[0].p;
+  const behind = faults.every(({ticks}) => Math.max(...ticks.map(t => t.lagging)) === 0);
+  return `<div class="vhead"><div><h2 style="font-size:18px">Recovering from faults</h2><p>Each run breaks one thing on purpose for ${ms(f0.measured_ticks)} blocks, then gives the engine ${ms(f0.drain_ticks)} blocks to recover. Each bar is how long one block took; orange bars are the broken ones. ${behind ? `In all ${faults.length === 3 ? 'three' : faults.length}, no store fell behind.` : 'Some stores fell behind; the drain blocks show whether they caught up.'}</p></div></div>
+    <div class="faults">${faults.map(({p, ticks}) => { const f = describe[p.name](p); const mx = Math.max(1, ...ticks.map(t => t.ms));
       return `<div class="card fault"><h3>${f.title}</h3><p>${f.what}</p>
-        <div class="strip" role="img" aria-label="Time per block">${p.ticks.map(t => `<i class="${t[0] === 'measured' ? 'f' : ''}" style="height:${Math.max(4, 100 * t[1] / mx)}%" title="${t[1]} ms"></i>`).join('')}</div>
-        <div class="cap"><span>fault: ${fmt(Math.max(...measuredMs(p)))} ms</span><span>after: ${fmt(Math.round(avg(p.ticks.filter(t => t[0] !== 'measured').map(t => t[1]))))} ms</span></div>
-        <dl><dt>Stores</dt><dd>${fmt(p.tenants)}</dd>${f.stat.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}<dt>Stores behind</dt><dd>${Math.max(...p.ticks.map(t => t[2]))}</dd></dl></div>`; }).join('')}</div>`;
+        <div class="strip" role="img" aria-label="Time per block">${ticks.map(t => `<i class="${t.phase === 'measured' ? 'f' : ''}" style="height:${Math.max(4, 100 * t.ms / mx)}%" title="${t.ms} ms"></i>`).join('')}</div>
+        <div class="cap"><span>fault: ${fmt(Math.max(0, ...measuredMs(ticks)))} ms</span><span>after: ${fmt(Math.round(avg(ticks.filter(t => t.phase !== 'measured').map(t => t.ms))))} ms</span></div>
+        <dl><dt>Stores</dt><dd>${fmt(p.tenants)}</dd>${f.stat.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}<dt>Stores behind</dt><dd>${Math.max(...ticks.map(t => t.lagging))}</dd></dl></div>`; }).join('')}</div>`;
 }
 RENDER.stress = () => {
   const S = DATA.stress, W = DATA.scale;
   if (!S) { $('#view').innerHTML = unavailable('Load', 'No stress run was found in the latest coverage artifact.'); return; }
   const hw = S.hardware || {};
+  const budget = num(S.budget_ms);
   $('#view').innerHTML = `
-    <div class="vhead"><div><h2>Load</h2><p>Could Monokulo keep up on a small computer? This test pins it to a single CPU core, gives it lots of stores at once, and keeps other work competing with it: reading the database, answering status requests, saving settings. A new block arrives every ${S.budget_ms / 1000} seconds, and every store’s payments have to be checked before the next one lands.</p></div>
+    <div class="vhead"><div><h2>Load</h2><p>Could Monokulo keep up on a small computer? This test pins it to a single CPU core, gives it lots of stores at once, and keeps other work competing with it: reading the database, answering status requests, saving settings. A new block arrives every ${budget ? budget / 1000 + ' seconds' : 'few seconds'}, and every store’s payments have to be checked before the next one lands.</p></div>
       ${DATA.sources.coverage?.run_id ? `<a class="pill" href="${RUN_URL(DATA.sources.coverage.run_id)}">Run of ${date(DATA.sources.coverage.date)}</a>` : ''}</div>
-    ${loadRun(S)}
+    ${loadRun(S) || '<p class="card unavail">The stress run recorded no measured points.</p>'}
     ${faultCards(S)}
     ${W ? `${loadRun(W, 'Weekly scale run')}${faultCards(W)}
       <p class="muted small">Weekly scale run${DATA.sources.scale?.run_id ? ` of <a href="${RUN_URL(DATA.sources.scale.run_id)}">${date(DATA.sources.scale.date)}</a>` : ''}: the same test with far more stores, so the time per block shows how far one core can go.</p>`
       : `<div class="next"><h3>These are quick checks, not the limit</h3><p>They take seconds, so they can run on every change. A bigger weekly run tries far more stores on one core, and runs the faults with more stores too. Its results show up here once it has run on main.</p></div>`}
-    <p class="muted small">Runner: ${esc(hw.cpu_model || 'unknown')}, pinned to one of ${hw.effective_cores || '?'} cores, SQLite ${esc(hw.sqlite_version || '?')}. Absolute times vary between runners; the pass condition is that every store keeps up.${DATA.reports.stress ? ` <a href="${DATA.reports.stress}">Full stress report</a>.` : ''}</p>`;
+    <p class="muted small">Runner: ${esc(hw.cpu_model || 'unknown')}, pinned to one of ${esc(hw.effective_cores ?? '?')} cores, SQLite ${esc(hw.sqlite_version || '?')}. Absolute times vary between runners; the pass condition is that every store keeps up.${DATA.reports.stress ? ` <a href="${esc(DATA.reports.stress)}">Full stress report</a>.` : ''}</p>`;
 };
 
 // ---------- screens gallery ----------
+// Each screen is one stage of one test group; stage names repeat across groups, so a screen is addressed by its index in GALLERY.stages.
 const GROUPS = {checkout: 'Checkout', 'hosted-payment': 'Hosted payment page', pos: 'Point of sale', 'pos-timeline': 'POS timeline', site: 'Dashboard', 'admin-settings': 'Admin settings',
   'store-settings': 'Store settings', logs: 'Logs', challenge: 'Connection challenge', engine: 'Engine status'};
+const groupName = k => GROUPS[k] || esc(k);
+for (const [i, s] of GALLERY.stages.entries()) { s.i = i; s.images = s.images || {}; s.shapes = (s.shapes || []).filter(sh => s.images[sh]); }
+const SCREENS = GALLERY.stages.filter(s => s.shapes.length);
 const stageName = s => { let n = s.stage.startsWith(s.group + '-') ? s.stage.slice(s.group.length + 1) : s.stage; n = n.replace(/-/g, ' '); return n.charAt(0).toUpperCase() + n.slice(1); };
 const mainShape = s => s.shapes[0];
+// A screen's image of a shape and theme, falling back to light, or nothing.
+const imageOf = (s, shape, theme) => s.images[shape]?.[theme] || s.images[shape]?.light || null;
 RENDER.screens = () => {
-  if (!GALLERY.total) { $('#view').innerHTML = unavailable('Screens', 'No screenshots were found in the latest coverage artifact.'); return; }
+  if (!SCREENS.length) { $('#view').innerHTML = unavailable('Screens', 'No screenshots were found in the latest coverage artifact.'); return; }
   const g = state.g;
-  const groups = [...new Set(GALLERY.stages.map(s => s.group))].sort((a, b) => GALLERY.stages.filter(s => s.group === b).length - GALLERY.stages.filter(s => s.group === a).length);
+  const perGroup = {}; for (const s of SCREENS) perGroup[s.group] = (perGroup[s.group] || 0) + 1;
+  const groups = Object.keys(perGroup).sort((a, b) => perGroup[b] - perGroup[a]);
   $('#view').innerHTML = `
-    <div class="vhead"><div><h2>Screens</h2><p>The browser tests take a picture of ${GALLERY.stages.length} screens, in light and dark mode and at up to ${Math.max(...GALLERY.stages.map(s => s.shapes.length))} sizes from phone to desktop: ${fmt(GALLERY.total)} pictures a run. If a change accidentally breaks a layout, it shows up here. Open a screen to compare its sizes and themes.</p></div></div>
+    <div class="vhead"><div><h2>Screens</h2><p>The browser tests take a picture of ${SCREENS.length} screens, in light and dark mode and at up to ${Math.max(...SCREENS.map(s => s.shapes.length))} sizes from phone to desktop: ${fmt(GALLERY.total)} pictures a run. If a change accidentally breaks a layout, it shows up here. Open a screen to compare its sizes and themes.</p></div></div>
     <div class="filters"><label class="search"><input id="gq" type="search" placeholder="Search screens, e.g. paid, keypad, settings" value="${esc(g.q)}" aria-label="Search screens"></label>
       <div class="seg" role="group" aria-label="Device"><button data-gshape="main" aria-pressed="${g.shape === 'main'}">Desktop</button><button data-gshape="mobile-portrait" aria-pressed="${g.shape === 'mobile-portrait'}">Phone</button></div>
       <div class="seg" role="group" aria-label="Theme"><button data-gtheme="light" aria-pressed="${g.theme === 'light'}">Light</button><button data-gtheme="dark" aria-pressed="${g.theme === 'dark'}">Dark</button><button data-gtheme="both" aria-pressed="${g.theme === 'both'}">Both</button></div></div>
-    <div class="filters"><button class="chip" data-gg="all" aria-pressed="${g.group === 'all'}">All screens</button>${groups.map(k => `<button class="chip" data-gg="${k}" aria-pressed="${g.group === k}">${GROUPS[k] || k} <span class="muted">${GALLERY.stages.filter(s => s.group === k).length}</span></button>`).join('')}</div>
+    <div class="filters"><button class="chip" data-gg="all" aria-pressed="${g.group === 'all'}">All screens</button>${groups.map(k => `<button class="chip" data-gg="${esc(k)}" aria-pressed="${g.group === k}">${groupName(k)} <span class="muted">${perGroup[k]}</span></button>`).join('')}</div>
     <div id="gbody" style="display:flex;flex-direction:column;gap:32px"></div>`;
   $('#gq').addEventListener('input', e => { g.q = e.target.value; drawGallery(); });
   $$('[data-gshape]').forEach(b => b.addEventListener('click', () => { g.shape = b.dataset.gshape; $$('[data-gshape]').forEach(x => x.setAttribute('aria-pressed', String(x === b))); drawGallery(); }));
@@ -775,9 +803,9 @@ RENDER.screens = () => {
 };
 function visibleStages() {
   const g = state.g, q = g.q.trim().toLowerCase();
-  return GALLERY.stages.filter(s => (g.group === 'all' || s.group === g.group) && (!q || (s.stage + ' ' + s.test + ' ' + (GROUPS[s.group] || '')).toLowerCase().includes(q)));
+  return SCREENS.filter(s => (g.group === 'all' || s.group === g.group) && (!q || (s.stage + ' ' + (s.test || '') + ' ' + (GROUPS[s.group] || '')).toLowerCase().includes(q)));
 }
-function img(s, shape, theme) { const i = s.images[shape]?.[theme] || s.images[shape]?.light; return i ? `<img loading="lazy" src="${i.src}" width="${i.w}" height="${i.h}" alt="${esc(stageName(s))}, ${shape}, ${theme}">` : ''; }
+function img(s, shape, theme) { const i = imageOf(s, shape, theme); return i ? `<img loading="lazy" src="${esc(i.src)}" width="${esc(i.w)}" height="${esc(i.h)}" alt="${esc(stageName(s))}, ${esc(shape)}, ${theme}">` : ''; }
 function drawGallery() {
   const g = state.g, list = visibleStages();
   const phone = g.shape === 'mobile-portrait';
@@ -786,19 +814,19 @@ function drawGallery() {
   const groups = [...new Set(list.map(s => s.group))];
   body.innerHTML = groups.map(k => {
     const items = list.filter(s => s.group === k);
-    return `<div class="gsec"><h3>${GROUPS[k] || k} <span>${items.length} ${items.length === 1 ? 'screen' : 'screens'}</span></h3><div class="ggrid ${phone ? 'phone' : ''}">${items.map(s => {
-      const shape = phone && s.images['mobile-portrait'] ? 'mobile-portrait' : mainShape(s);
+    return `<div class="gsec"><h3>${groupName(k)} <span>${items.length} ${items.length === 1 ? 'screen' : 'screens'}</span></h3><div class="ggrid ${phone ? 'phone' : ''}">${items.map(s => {
+      const shape = cardShape(s);
       const frame = g.theme === 'both' ? `<span class="frame pair">${img(s, shape, 'light')}${img(s, shape, 'dark')}</span>` : `<span class="frame">${img(s, shape, g.theme)}</span>`;
-      return `<button class="gcard" data-stage="${s.stage}">${frame}<span class="nm">${esc(stageName(s))}</span><span class="meta"><span class="dot" aria-label="passed"></span>${s.shapes.length} ${s.shapes.length === 1 ? 'shape' : 'shapes'} · ${s.count} images${phone && shape !== 'mobile-portrait' ? ' · no phone shot' : ''}</span></button>`;
+      return `<button class="gcard" data-stage="${s.i}">${frame}<span class="nm">${esc(stageName(s))}</span><span class="meta"><span class="dot" aria-label="passed"></span>${s.shapes.length} ${s.shapes.length === 1 ? 'shape' : 'shapes'} · ${fmt(s.count)} images${phone && shape !== 'mobile-portrait' ? ' · no phone shot' : ''}</span></button>`;
     }).join('')}</div></div>`;
   }).join('');
   $$('[data-stage]', body).forEach(b => {
-    const s = GALLERY.stages.find(x => x.stage === b.dataset.stage);
+    const s = GALLERY.stages[Number(b.dataset.stage)];
     const warm = () => prefetchStage(s, cardShape(s));
     b.addEventListener('pointerenter', warm);
     b.addEventListener('focus', warm);
     b.addEventListener('touchstart', warm, {passive: true});
-    b.addEventListener('click', () => openViewer(b.dataset.stage));
+    b.addEventListener('click', () => openViewer(s));
   });
   // the first few cards are the likeliest clicks: fetch them while the browser is idle
   idle(() => list.slice(0, 4).forEach(s => prefetchStage(s, cardShape(s), state.g.theme === 'dark' ? ['dark'] : ['light'])));
@@ -816,39 +844,39 @@ function prefetch(url) {
   }
   return FETCHED.get(url);
 }
-const fullOf = (s, shape, theme) => (s.images[shape]?.[theme] || s.images[shape]?.light)?.full;
+const fullOf = (s, shape, theme) => imageOf(s, shape, theme)?.full;
 const prefetchStage = (s, shape, themes = ['light', 'dark']) => themes.forEach(t => prefetch(fullOf(s, shape, t)));
 const cardShape = s => state.g.shape === 'mobile-portrait' && s.images['mobile-portrait'] ? 'mobile-portrait' : mainShape(s);
 const idle = fn => (window.requestIdleCallback || (f => setTimeout(f, 300)))(fn);
 const SHAPE_NAME = {desktop: 'Desktop', element: 'Element', 'as-is': 'As rendered', 'tablet-landscape': 'Tablet landscape', 'tablet-portrait': 'Tablet portrait', 'mobile-landscape': 'Phone landscape', 'mobile-portrait': 'Phone portrait', 'small-portrait': 'Small phone'};
+const shapeName = sh => SHAPE_NAME[sh] || esc(sh);
 const dlg = $('#viewer');
 const vstate = {stage: null, shape: null, theme: 'both'};
-function openViewer(stage) {
-  const s = GALLERY.stages.find(x => x.stage === stage);
-  Object.assign(vstate, {stage, shape: state.g.shape === 'mobile-portrait' && s.images['mobile-portrait'] ? 'mobile-portrait' : mainShape(s)});
+function openViewer(s) {
+  Object.assign(vstate, {stage: s, shape: cardShape(s)});
   drawViewer();
   if (!dlg.open) dlg.showModal();
 }
 function drawViewer() {
-  const list = visibleStages(), s = GALLERY.stages.find(x => x.stage === vstate.stage), i = list.indexOf(s);
-  const have = Object.keys(s.images);
-  const themes = vstate.theme === 'both' ? ['light', 'dark'] : [vstate.theme];
+  const list = visibleStages(), s = vstate.stage, i = list.indexOf(s);
+  const themes = (vstate.theme === 'both' ? ['light', 'dark'] : [vstate.theme]).filter(t => imageOf(s, vstate.shape, t));
+  const first = themes[0] || 'light';
   dlg.innerHTML = `<div class="vbox">
-    <div class="vtop"><div><h3 id="v-title">${GROUPS[s.group] || s.group}: ${esc(stageName(s))}</h3><p>Test: “${esc(s.test)}”</p></div>
+    <div class="vtop"><div><h3 id="v-title">${groupName(s.group)}: ${esc(stageName(s))}</h3>${s.test ? `<p>Test: “${esc(s.test)}”</p>` : ''}</div>
       <div class="grp" style="display:flex;gap:8px"><button class="btn" id="v-prev" ${i <= 0 ? 'disabled' : ''} aria-label="Previous screen">←</button><button class="btn" id="v-next" ${i >= list.length - 1 ? 'disabled' : ''} aria-label="Next screen">→</button><button class="btn" id="v-close">Close</button></div></div>
     <div class="vtools">
-      <div class="seg" role="group" aria-label="Shape">${s.shapes.map(sh => `<button data-vshape="${sh}" aria-pressed="${vstate.shape === sh}" ${have.includes(sh) ? '' : 'disabled title="Full size on Pages"'} style="${have.includes(sh) ? '' : 'opacity:.45;cursor:default'}">${SHAPE_NAME[sh] || sh}</button>`).join('')}</div>
+      <div class="seg" role="group" aria-label="Shape">${s.shapes.map(sh => `<button data-vshape="${esc(sh)}" aria-pressed="${vstate.shape === sh}">${shapeName(sh)}</button>`).join('')}</div>
       <div class="seg" role="group" aria-label="Theme"><button data-vtheme="light" aria-pressed="${vstate.theme === 'light'}">Light</button><button data-vtheme="dark" aria-pressed="${vstate.theme === 'dark'}">Dark</button><button data-vtheme="both" aria-pressed="${vstate.theme === 'both'}">Side by side</button></div>
     </div>
-    <div class="vimg">${themes.map(t => { const im = s.images[vstate.shape]?.[t] || s.images[vstate.shape]?.light; const ready = READY.has(im.full);
-      return `<figure><img class="${ready ? '' : 'pending'}" data-full="${im.full}" src="${ready ? im.full : im.src}" width="${im.fw}" height="${im.fh}" alt="${esc(stageName(s))}, ${SHAPE_NAME[vstate.shape] || vstate.shape}, ${t}">
-        <figcaption>${SHAPE_NAME[vstate.shape] || vstate.shape} · ${t} · ${im.fw}×${im.fh}${ready ? '' : ' <span class="ld">· loading full size</span>'}</figcaption></figure>`; }).join('')}</div>
-    <div class="vfoot"><span>${s.status === 'passed' ? '<span class="dot"></span> Passed' : esc(s.status || '')} · ${i + 1} of ${list.length} · ← → to move, Esc to close</span><span>${s.report ? `<a href="${s.report}" target="_blank" rel="noopener">Open in the Playwright report</a> · ` : ''}<a href="${fullOf(s, vstate.shape, themes[0])}" target="_blank" rel="noopener">Full-size image</a></span></div>
+    <div class="vimg">${themes.length ? themes.map(t => { const im = imageOf(s, vstate.shape, t); const ready = READY.has(im.full);
+      return `<figure><img class="${ready ? '' : 'pending'}" data-full="${esc(im.full)}" src="${esc(ready ? im.full : im.src)}" width="${esc(im.fw)}" height="${esc(im.fh)}" alt="${esc(stageName(s))}, ${shapeName(vstate.shape)}, ${t}">
+        <figcaption>${shapeName(vstate.shape)} · ${t} · ${esc(im.fw)}×${esc(im.fh)}${ready ? '' : ' <span class="ld">· loading full size</span>'}</figcaption></figure>`; }).join('') : `<p class="empty">No ${vstate.theme} image of this shape.</p>`}</div>
+    <div class="vfoot"><span>${s.status === 'passed' ? '<span class="dot"></span> Passed' : esc(s.status || '')} · ${i + 1} of ${list.length} · ← → to move, Esc to close</span><span>${s.report ? `<a href="${esc(s.report)}" target="_blank" rel="noopener">Open in the Playwright report</a> · ` : ''}${fullOf(s, vstate.shape, first) ? `<a href="${esc(fullOf(s, vstate.shape, first))}" target="_blank" rel="noopener">Full-size image</a>` : ''}</span></div>
   </div>`;
   $('#v-close').onclick = () => dlg.close();
-  $('#v-prev').onclick = () => { if (i > 0) openViewer(list[i - 1].stage); };
-  $('#v-next').onclick = () => { if (i < list.length - 1) openViewer(list[i + 1].stage); };
-  $$('[data-vshape]', dlg).forEach(b => b.onclick = () => { if (!b.disabled) { vstate.shape = b.dataset.vshape; drawViewer(); } });
+  $('#v-prev').onclick = () => { if (i > 0) openViewer(list[i - 1]); };
+  $('#v-next').onclick = () => { if (i < list.length - 1) openViewer(list[i + 1]); };
+  $$('[data-vshape]', dlg).forEach(b => b.onclick = () => { vstate.shape = b.dataset.vshape; drawViewer(); });
   $$('[data-vtheme]', dlg).forEach(b => b.onclick = () => { vstate.theme = b.dataset.vtheme; drawViewer(); });
   // swap each placeholder for its full image as soon as it has loaded
   $$('img[data-full]', dlg).forEach(el => {
@@ -859,10 +887,10 @@ function drawViewer() {
       el.parentElement.querySelector('.ld')?.remove();
     });
   });
-  // then warm what's likely next: the screens either side, and this screen's other shape
+  // then warm what's likely next: the screens either side, and this screen's other shapes
   idle(() => {
     [list[i + 1], list[i - 1]].filter(Boolean).forEach(n => prefetchStage(n, n.images[vstate.shape] ? vstate.shape : mainShape(n), themes));
-    have.filter(sh => sh !== vstate.shape).forEach(sh => prefetchStage(s, sh, themes));
+    s.shapes.filter(sh => sh !== vstate.shape).forEach(sh => prefetchStage(s, sh, themes));
   });
 }
 dlg.addEventListener('keydown', e => { if (e.key === 'ArrowLeft') $('#v-prev')?.click(); if (e.key === 'ArrowRight') $('#v-next')?.click(); });
@@ -871,7 +899,7 @@ dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
 let start = 'overview';
 try { start = localStorage.getItem('quality-tab') || start; } catch (e) {}
 if (/^#[a-z]+$/.test(location.hash) && RENDER[location.hash.slice(1)]) start = location.hash.slice(1);
-go(RENDER[start] ? start : TABS[0][0]);
+go(TABS.some(t => t[0] === start) ? start : TABS[0][0]);
 }
 </script>
 </body>

@@ -7,7 +7,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{escape_html, root};
+use crate::support::{escape_html, root, write_json};
+
+pub(crate) const HELP: &str = "\
+        stress ci     One-CPU scanner capacity sweep and fault recovery (docs/engine_stress.md)\n\
+        stress full   The same with larger tenant counts\n\
+        stress scale  Thousands of tenants; observational latency and capacity\n\
+        stress open   Open target/coverage/stress/index.html\n\
+        [driver]      The scanner entry point to measure (default: the production one)";
 
 /// The engine the report measures when no driver is named.
 pub const DEFAULT_DRIVER: &str = "scheduler";
@@ -110,12 +117,6 @@ pub(crate) fn profile(database_dir: &Path) -> Value {
         "storage":storage,"rustc":command("rustc", &["--version"]),
         "revision":revision,"source_dirty":dirty
     })
-}
-
-pub(crate) fn atomic_json(path: &Path, value: &Value) -> io::Result<()> {
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(value)?)?;
-    fs::rename(temporary, path)
 }
 
 fn svg(points: &[Value], field: &str, title: &str) -> String {
@@ -476,7 +477,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
         &root().join("target/debug/stress_fixture").to_string_lossy(),
         &["--version"]
     ));
-    atomic_json(&output.join("hardware.json"), &hardware)?;
+    write_json(&output.join("hardware.json"), &hardware)?;
     let cpu = hardware["selected_cpu"].as_u64();
     if cfg!(target_os = "linux") && cpu.is_none() {
         return Err(io::Error::other("unable to find allowed CPU affinity"));
@@ -495,7 +496,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
         .unwrap_or_default()
         .as_secs();
     let write_run = |results: &[Value], faults: &[Value]| {
-        atomic_json(
+        write_json(
             &output.join("run.json"),
             &json!({"profile":profile_name,"driver":driver,"started_at_utc":started_at,
                 "scenario":scenario,"scenario_checksum":checksum,"hardware":"hardware.json","results":results,"faults":faults}),
@@ -596,7 +597,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
             "timer_max_delay_us":fixture["timer_max_delay_us"],"responsive":responsive,"final_lagging_tenants":final_lagging,
             "final_oldest_lag_blocks":oldest_lag,"min_tenant_cursor":min_cursor,
             "progressed_tenants":progressed_tenants,"fixture":fixture});
-        atomic_json(&output.join(format!("{name}.json")), &result)?;
+        write_json(&output.join(format!("{name}.json")), &result)?;
         results.push(result);
         write_run(&results, &faults)?;
         report(&output, driver, &hardware, &results, &faults)?;
@@ -726,7 +727,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
             "tenants":fault_tenants,"min_tenant_cursor":min_cursor,
             "scenario_version":scenario["schema_version"],"scenario_checksum":checksum,
             "command":command,"fixture":fixture});
-        atomic_json(&output.join(format!("{file}.json")), &fault)?;
+        write_json(&output.join(format!("{file}.json")), &fault)?;
         faults.push(fault);
         write_run(&results, &faults)?;
         report(&output, driver, &hardware, &results, &faults)?;

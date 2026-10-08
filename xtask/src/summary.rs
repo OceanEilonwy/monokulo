@@ -1,9 +1,15 @@
-//! GitHub job summaries: `cargo xtask test-summary`, a table of JUnit
+//! GitHub job summaries: `cargo xtask test-summary`, a table of `JUnit`
 //! reports with their failures, and `cargo xtask coverage summary`, the
 //! coverage components' table. Both print Markdown for `$GITHUB_STEP_SUMMARY`.
 
+use crate::support::{escape_html, read_json};
 use serde_json::Value;
 use std::{fmt::Write, fs, io, path::Path};
+
+pub(crate) const HELP: &str = "\
+        test-summary TITLE LABEL=JUNIT...\n\
+                      Print JUnit reports (nextest, Playwright, PHPUnit) as a GitHub job-summary table with\n\
+                      their failures; a missing report is a row that says so";
 
 const MESSAGE_LIMIT: usize = 3000;
 
@@ -14,9 +20,6 @@ struct Counts {
     flaky: u64,
     skipped: u64,
 }
-
-/// A suite's counts and wall time, or why it has none.
-type Row = Result<(Counts, f64), String>;
 
 struct Failure {
     label: String,
@@ -42,10 +45,10 @@ fn message(node: roxmltree::Node) -> String {
     text
 }
 
-fn escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+/// One suite's counts and wall time.
+struct Suite {
+    counts: Counts,
+    seconds: f64,
 }
 
 /// One suite's counts, wall time and failures. The run's wall time is the
@@ -56,7 +59,7 @@ fn read(
     text: &str,
     failures: &mut Vec<Failure>,
     flaky: &mut Vec<Failure>,
-) -> Result<(Counts, f64), String> {
+) -> Result<Suite, String> {
     let doc = roxmltree::Document::parse(text).map_err(|e| e.to_string())?;
     let root = doc.root_element();
     let cases: Vec<_> = root
@@ -98,7 +101,7 @@ fn read(
                 label: label.to_string(),
                 name: name.clone(),
                 text: message(node),
-            })
+            });
         };
         if let Some(node) = child("failure").or_else(|| child("error")) {
             counts.failed += 1;
@@ -113,14 +116,15 @@ fn read(
             counts.passed += 1;
         }
     }
-    Ok((counts, seconds))
+    Ok(Suite { counts, seconds })
 }
 
 /// The Markdown for `cargo xtask test-summary TITLE LABEL=PATH ...`. A missing
 /// file is a row that says so, since a suite that never reported is not a pass.
 pub(crate) fn test_summary(title: &str, suites: &[&str]) -> String {
     let (mut failures, mut flaky) = (Vec::new(), Vec::new());
-    let mut rows: Vec<(String, Row)> = Vec::new();
+    // Each suite's counts and wall time, or why it has none.
+    let mut rows: Vec<(String, Result<Suite, String>)> = Vec::new();
     for suite in suites {
         let (label, path) = suite.split_once('=').unwrap_or((suite, ""));
         let row = match fs::read_to_string(path) {
@@ -137,7 +141,7 @@ pub(crate) fn test_summary(title: &str, suites: &[&str]) -> String {
     for (label, row) in &rows {
         match row {
             Err(problem) => writeln!(out, "| {label} | ⚠️ {problem} | | | | | |").unwrap(),
-            Ok((c, seconds)) => {
+            Ok(Suite { counts: c, seconds }) => {
                 total.passed += c.passed;
                 total.failed += c.failed;
                 total.flaky += c.flaky;
@@ -179,8 +183,8 @@ pub(crate) fn test_summary(title: &str, suites: &[&str]) -> String {
                 out,
                 "<details><summary><b>{}</b>: <code>{}</code>: {}</summary>\n\n```\n{}\n```\n</details>\n",
                 f.label,
-                escape(&f.name),
-                escape(&first),
+                escape_html(&f.name),
+                escape_html(&first),
                 f.text.replace("```", "`\u{200b}``")
             )
             .unwrap();
@@ -200,12 +204,12 @@ pub(crate) fn coverage_summary(root: &Path) -> io::Result<String> {
         out.push_str("| all | unavailable | unavailable | unavailable | [artifact](.) |\n");
         return Ok(out);
     }
-    let run: Value = serde_json::from_slice(&fs::read(run)?)?;
+    let run: Value = read_json(&run)?;
     for item in run["components"].as_array().into_iter().flatten() {
         let name = item["component"].as_str().unwrap_or("?");
         let manifest = root.join(format!("{name}.json"));
         let data: Value = if manifest.is_file() {
-            serde_json::from_slice(&fs::read(manifest)?)?
+            read_json(&manifest)?
         } else {
             Value::Null
         };
@@ -233,18 +237,12 @@ pub(crate) fn coverage_summary(root: &Path) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("xtask-summary-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use crate::support::Scratch;
 
     #[test]
     fn a_suite_counts_every_outcome_and_lists_failures_and_retries() {
-        let dir = scratch("outcomes");
-        let report = dir.join("junit.xml");
+        let scratch = Scratch::new("summary-outcomes");
+        let report = scratch.join("junit.xml");
         fs::write(
             &report,
             r#"<testsuites time="12.4"><testsuite><testcase classname="engine" name="pays"/>
@@ -266,38 +264,37 @@ mod tests {
         assert!(summary.contains("<code>engine › breaks</code>: assertion failed: 1 == 2"));
         assert!(summary.contains("assertion failed: 1 == 2\nleft: 1 < right"));
         assert!(summary.contains("### Flaky: failed, then passed on retry (1)"));
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
     fn a_report_without_a_root_time_adds_its_cases_up() {
         let mut failures = Vec::new();
-        let (counts, seconds) = read(
+        let suite = read(
             "x",
             r#"<testsuite><testcase name="a" time="1.5"/><testcase name="b" time="2"/></testsuite>"#,
             &mut failures,
             &mut Vec::new(),
         )
         .unwrap();
-        assert_eq!((counts.passed, seconds), (2, 3.5));
+        assert_eq!((suite.counts.passed, suite.seconds), (2, 3.5));
     }
 
     #[test]
     fn coverage_summary_says_what_is_unavailable() {
-        let dir = scratch("coverage");
-        assert!(coverage_summary(&dir)
+        let scratch = Scratch::new("summary-coverage");
+        let dir = scratch.path();
+        assert!(coverage_summary(dir)
             .unwrap()
             .contains("| all | unavailable |"));
         fs::write(dir.join("run.json"), r#"{"components":[{"component":"rust","status":"passed"},{"component":"browser","status":"failed"}]}"#).unwrap();
         fs::write(dir.join("rust.json"), r#"{"lines":{"covered":9,"total":10},"branches":{"covered":1,"total":2},"report":"rust/index.html"}"#).unwrap();
         fs::create_dir_all(dir.join("rust")).unwrap();
         fs::write(dir.join("rust/index.html"), "").unwrap();
-        let summary = coverage_summary(&dir).unwrap();
+        let summary = coverage_summary(dir).unwrap();
         assert!(
             summary.contains("| rust | passed | 9/10 | 1/2 | `rust/index.html` |"),
             "{summary}"
         );
         assert!(summary.contains("| browser | failed | unavailable | unavailable | unavailable |"));
-        let _ = fs::remove_dir_all(dir);
     }
 }
