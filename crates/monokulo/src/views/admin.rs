@@ -293,6 +293,10 @@ pub struct AdminScalarFieldView {
     /// be written): shown, with a padlock and this reason, but not
     /// editable or sent with the form.
     pub locked: Option<String>,
+    /// The saved value, when `value` is one a save just refused (shown
+    /// again to fix): with JavaScript the setting is then still unsaved,
+    /// and Discard goes back to this.
+    pub saved_value: Option<String>,
 }
 
 /// Where a setting's value comes from, as the chip beside its name shows
@@ -442,6 +446,10 @@ pub struct NodeRowView {
     /// `None` for a node with no status yet (just saved, or `/status`
     /// didn't answer).
     pub status: Option<NodeStatusView>,
+    /// Its place in the network's saved list, which tells the page's script
+    /// when the rows have been reordered. `None` for rows a save refused,
+    /// shown as they were sent.
+    pub saved_index: Option<usize>,
 }
 
 /// One network's block on the Monero nodes tab: its nodes as rows, primary
@@ -461,11 +469,17 @@ pub struct AdminNetworkFieldView {
     pub error: Option<String>,
     /// How its block scan is going, from the engine's `/status`.
     pub scaling: Option<shared::scaling::NetworkScaling>,
+    /// How many nodes it has saved, which `rows` can differ from after a
+    /// refused save: the confirmation before clearing a network asks only
+    /// when it had some.
+    pub saved_count: usize,
 }
 
 /// A banner shown at the top of the page after a save (task 4.5).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Notice {
+    /// Good news that stays on the page (the welcome after setup).
+    Success(String),
     /// Saved and applied, but something needs attention (a restart).
     Warning(String),
     /// Saved, but something is now broken (stores without a node, an
@@ -557,83 +571,240 @@ impl SettingsTab {
         format!("/dashboard/admin/settings?tab={}", self.id())
     }
 
-    /// The groups the tab's settings are shown in, in order: an optional
-    /// heading and whose settings go under it. The Nodes tab's one group is
-    /// the node form, not scalar fields.
-    pub fn groups(self) -> &'static [(Option<&'static str>, SettingOwner)] {
-        use SettingOwner::{Engine, Monokulo};
-        match self {
-            SettingsTab::General | SettingsTab::Abuse => &[(None, Monokulo)],
-            SettingsTab::Nodes => &[(None, Engine)],
-            SettingsTab::Custody => &[(None, Engine), (Some(CLI_DOWNLOADS), Monokulo)],
-            SettingsTab::Payments => &[
-                (None, Engine),
-                (Some("Webhooks"), Engine),
-                (Some("Exchange rates"), Monokulo),
-            ],
-            SettingsTab::Server | SettingsTab::Other => &[(None, Engine), (None, Monokulo)],
-            SettingsTab::Logging => &[(Some("Monokulo"), Monokulo), (Some("Engine"), Engine)],
-        }
-    }
-
     /// Whether every setting on this tab is the engine's, so the tab has
     /// nothing to show or save while the engine can't be reached.
     pub fn engine_only(self) -> bool {
-        self.groups()
-            .iter()
-            .all(|(_, owner)| *owner == SettingOwner::Engine)
+        self == SettingsTab::Nodes
+    }
+
+    /// The tab's cards that are always there, in order. The Monero nodes
+    /// tab's networks come first, and each key custody backend's card after
+    /// Backends, from what the engine reports ([`tab_groups`]).
+    fn fixed_groups(self) -> &'static [&'static str] {
+        match self {
+            SettingsTab::General => &["signup", "public-address", "engine"],
+            SettingsTab::Nodes => &["nodes-all"],
+            SettingsTab::Payments => &["orders", "chain", "webhooks", "exchange-rates"],
+            SettingsTab::Custody => &["custody-backends", "custody-cli"],
+            SettingsTab::Abuse => &["abuse-limits", "abuse-challenge", "abuse-visitors"],
+            SettingsTab::Server => &["server-monokulo", "server-engine"],
+            SettingsTab::Logging => &["logging-monokulo", "logging-engine"],
+            SettingsTab::Other => &["other-monokulo", "other-engine"],
+        }
     }
 }
 
-/// The Custody tab's heading over where merchants get key-custody-cli.
-const CLI_DOWNLOADS: &str = "key-custody-cli downloads";
+/// Whether `name` is a network the engine scans (`stagenet`).
+fn is_network(name: &str) -> bool {
+    crate::admin_nodes::NETWORKS
+        .iter()
+        .any(|network| shared::network::network_str(*network) == name)
+}
 
-/// Where a setting shows on the admin page: its tab, and the heading it
-/// sits under on a tab that has more than one group. The one map both the
-/// page and the save use, so a setting can't be shown on one tab and then
-/// dropped when that tab is saved.
-pub fn setting_placement(key: &str, owner: SettingOwner) -> (SettingsTab, Option<&'static str>) {
-    let prefix = key.split('.').next().unwrap_or("");
+/// Where a setting shows on the admin page: its tab, and the card (group)
+/// it sits in, by the card's id. The one map both the page and the save
+/// use: a save saves each changed card on its own, so a setting can't be
+/// shown in one card and then saved with another.
+pub fn setting_placement(key: &str, owner: SettingOwner) -> (SettingsTab, String) {
+    use SettingsTab::{Abuse, Custody, General, Logging, Nodes, Other, Payments, Server};
+    let (prefix, rest) = key.split_once('.').unwrap_or((key, ""));
+    let fixed = |tab: SettingsTab, group: &str| (tab, group.to_string());
+    // `key_custody.<backend>_...`: a setting only that backend uses.
+    let backend = || format!("custody-{}", rest.split('_').next().unwrap_or(rest));
     match owner {
         SettingOwner::Monokulo => match prefix {
-            "signup" | "engine" | "public_url" => (SettingsTab::General, None),
-            "exchange_rate" => (SettingsTab::Payments, Some("Exchange rates")),
-            "abuse" | "rate_limit" => (SettingsTab::Abuse, None),
-            "http_cache" | "database" | "server" | "crypto" => (SettingsTab::Server, None),
-            "logging" => (SettingsTab::Logging, Some("Monokulo")),
-            "key_custody" => (SettingsTab::Custody, Some(CLI_DOWNLOADS)),
-            _ => (SettingsTab::Other, None),
+            "signup" => fixed(General, "signup"),
+            "public_url" => fixed(General, "public-address"),
+            "engine" => fixed(General, "engine"),
+            "exchange_rate" => fixed(Payments, "exchange-rates"),
+            "abuse" if matches!(rest, "challenge_bits" | "under_attack") => {
+                fixed(Abuse, "abuse-challenge")
+            }
+            "abuse" if matches!(rest, "trusted_proxies" | "onion_listener") => {
+                fixed(Abuse, "abuse-visitors")
+            }
+            "abuse" | "rate_limit" => fixed(Abuse, "abuse-limits"),
+            "http_cache" | "database" | "server" | "crypto" => fixed(Server, "server-monokulo"),
+            "logging" => fixed(Logging, "logging-monokulo"),
+            "key_custody" if rest.starts_with("cli_") => fixed(Custody, "custody-cli"),
+            "key_custody" => (Custody, backend()),
+            _ => fixed(Other, "other-monokulo"),
         },
         SettingOwner::Engine => match prefix {
-            "monero_node" => (SettingsTab::Nodes, None),
-            // Each network's own, shown in that network's block.
-            "proof_of_work" => (SettingsTab::Nodes, None),
+            // Each network's nodes and its proof-of-work switch, in the
+            // network's own card.
+            "monero_node" | "proof_of_work" if is_network(rest) => {
+                (Nodes, format!("network-{rest}"))
+            }
+            "monero_node" | "proof_of_work" => fixed(Nodes, "nodes-all"),
             // How much memory a scan may use is about the machine, not
             // about payments.
-            "payment" if key == "payment.scan_chunk_memory_budget_mb" => {
-                (SettingsTab::Server, None)
+            "payment" if rest == "scan_chunk_memory_budget_mb" => fixed(Server, "server-engine"),
+            "payment" if matches!(rest, "mempool_poll_interval_ms" | "reorg_check_depth") => {
+                fixed(Payments, "chain")
             }
-            "payment" => (SettingsTab::Payments, None),
-            "webhooks" => (SettingsTab::Payments, Some("Webhooks")),
-            "key_custody" => (SettingsTab::Custody, None),
-            "server" | "database" => (SettingsTab::Server, None),
-            "logging" => (SettingsTab::Logging, Some("Engine")),
-            _ => (SettingsTab::Other, None),
+            "payment" => fixed(Payments, "orders"),
+            "webhooks" => fixed(Payments, "webhooks"),
+            "key_custody" if matches!(rest, "enabled_backends" | "default_backend") => {
+                fixed(Custody, "custody-backends")
+            }
+            "key_custody" => (Custody, backend()),
+            "server" | "database" => fixed(Server, "server-engine"),
+            "logging" => fixed(Logging, "logging-engine"),
+            _ => fixed(Other, "other-engine"),
         },
     }
+}
+
+/// A card's heading.
+pub fn group_title(group: &str) -> String {
+    let title = match group {
+        "signup" => "Sign-up",
+        "public-address" => "Public address",
+        "engine" => "Engine connection",
+        "nodes-all" => "Every node",
+        "orders" => "Orders",
+        "chain" => "Watching the chain",
+        "webhooks" => "Webhooks",
+        "exchange-rates" => "Exchange rates",
+        "custody-backends" => "Backends",
+        "custody-cli" => "key-custody-cli downloads",
+        "custody-snp" => "SEV-SNP",
+        "abuse-limits" => "Request limits",
+        "abuse-challenge" => "Challenge",
+        "abuse-visitors" => "Telling visitors apart",
+        "server-monokulo" | "logging-monokulo" | "other-monokulo" => "Monokulo",
+        "server-engine" | "logging-engine" | "other-engine" => "Engine",
+        _ => {
+            if let Some(network) = group.strip_prefix("network-") {
+                return capitalized(network);
+            }
+            if let Some(backend) = group.strip_prefix("custody-") {
+                return format!("Key custody: {backend}");
+            }
+            group
+        }
+    };
+    title.to_string()
+}
+
+/// What a card is for, under its heading, where its name doesn't say.
+fn group_hint(group: &str) -> Option<&'static str> {
+    match group {
+        "orders" => Some("Defaults for new stores. Each store's own settings win for its orders."),
+        "exchange-rates" => Some("Which providers stores may price fiat orders with. Each store still chooses whether to use one, and in what order."),
+        "abuse-limits" => Some("Requests a minute, per visitor, merchant or shop."),
+        _ => None,
+    }
+}
+
+/// Whether a card holds only the engine's settings: while the engine can't
+/// be reached, it has nothing to show.
+fn engine_group(group: &str) -> bool {
+    group.starts_with("network-")
+        || matches!(
+            group,
+            "nodes-all"
+                | "orders"
+                | "chain"
+                | "webhooks"
+                | "custody-backends"
+                | "server-engine"
+                | "logging-engine"
+                | "other-engine"
+        )
+}
+
+/// Settings shown in a set order inside their card; any other keeps the
+/// order it comes in (monokulo's registry order, the engine's alphabetical).
+const FIELD_ORDER: &[&str] = &[
+    "key_custody.enabled_backends",
+    "key_custody.default_backend",
+    "payment.confirmations_required",
+    "payment.order_expiry_minutes",
+    "payment.expired_order_grace_period_minutes",
+    "payment.mempool_poll_interval_ms",
+    "payment.reorg_check_depth",
+    "webhooks.max_attempts",
+    "webhooks.delivery_timeout_ms",
+    "abuse.soft_per_min",
+    "abuse.hard_per_min",
+    "abuse.stream_cap",
+    "abuse.client_logs_per_min",
+    "abuse.signed_in_per_min",
+    "rate_limit.per_store_key_per_min",
+    "server.bind",
+    "server.worker_threads",
+    "server.cpus",
+    "server.nice",
+];
+
+fn field_rank(key: &str) -> usize {
+    FIELD_ORDER
+        .iter()
+        .position(|k| *k == key)
+        .unwrap_or(FIELD_ORDER.len())
+}
+
+/// A subheading inside a card, before the setting that starts its part.
+fn field_subheading(key: &str) -> Option<&'static str> {
+    match key {
+        "exchange_rate.coingecko_enabled" => Some("Coingecko"),
+        "exchange_rate.coinmarketcap_enabled" => Some("CoinMarketCap"),
+        "exchange_rate.haveno_enabled" => Some("RetoSwap (Haveno)"),
+        "exchange_rate.cache_seconds" => Some("Every provider"),
+        "abuse.soft_per_min" => Some("Visitors"),
+        "abuse.signed_in_per_min" => Some("Merchants and shops"),
+        _ => None,
+    }
+}
+
+/// A small message after a save, in the corner of the window (it fades
+/// on its own unless it says something wasn't saved).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Toast {
+    pub kind: ToastKind,
+    pub title: String,
+    pub lines: Vec<String>,
+    /// The card to go to, by id: the one that wasn't saved.
+    pub show: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind {
+    /// Saved and applied.
+    Success,
+    /// Saved, but something waits for a restart.
+    Warning,
+    /// Something wasn't saved.
+    Error,
+    /// Nothing happened (nothing had changed).
+    Neutral,
+}
+
+/// A card a save refused, and why.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupFailure {
+    pub group: String,
+    pub message: String,
 }
 
 #[derive(Default)]
 pub struct AdminSettingsViewModel {
     /// The tab on show.
     pub tab: SettingsTab,
-    /// The tab a save was for, or the tab holding the setting a refused
-    /// save was about: set only on the page a save answers with, so the
-    /// word beside the Save button says how it went.
-    pub saved_tab: Option<SettingsTab>,
-    pub error: Option<String>,
-    pub success: Option<String>,
+    /// Banners above the tabs: what is still true after a save (a network
+    /// stores use without a node), and the welcome after setup.
     pub notices: Vec<Notice>,
+    /// What the save or reload this page answers did, in a toast.
+    pub toast: Option<Toast>,
+    /// The cards that save saved, and when (the admin's own clock).
+    pub saved_groups: Vec<String>,
+    pub saved_at: Option<String>,
+    /// The cards that save refused: shown with what was typed and why.
+    pub failed_groups: Vec<GroupFailure>,
+    /// The panel answers a save: the save bar's message takes focus.
+    pub answers_save: bool,
     pub monokulo_fields: Vec<AdminScalarFieldView>,
     /// `true` only after a real, successful fetch of the scanner's own
     /// settings.
@@ -648,6 +819,12 @@ pub struct AdminSettingsViewModel {
     pub resources: Option<super::scaling::ResourcesView>,
     /// monokulo's options file, then the engine's (when it answered).
     pub options_files: Vec<OptionsFileView>,
+}
+
+impl AdminSettingsViewModel {
+    fn failure(&self, group: &str) -> Option<&GroupFailure> {
+        self.failed_groups.iter().find(|f| f.group == group)
+    }
 }
 
 /// The id of a setting's control, which its label and help point at.
@@ -678,18 +855,21 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
     let name = field.form_name();
     let id = field_id(name);
     let help = help_id(field);
+    // A refused value shown again carries the saved one, for the page's
+    // script to tell it's still unsaved.
+    let saved = field.saved_value.as_deref();
     match &field.kind {
         SettingKindView::Integer { min, max } => html! {
-            input type="number" name=(name) value=(field.value) min=[min] max=[max] step="1" id=(id) aria-describedby=[help];
+            input type="number" name=(name) value=(field.value) min=[min] max=[max] step="1" id=(id) aria-describedby=[help] data-saved=[saved];
         },
         SettingKindView::Bool => html! {
-            select name=(name) id=(id) aria-describedby=[help] {
+            select name=(name) id=(id) aria-describedby=[help] data-saved=[saved] {
                 option value="true" selected[field.value == "true"] { "true" }
                 option value="false" selected[field.value == "false"] { "false" }
             }
         },
         SettingKindView::Choice { choices } => html! {
-            select name=(name) id=(id) aria-describedby=[help] {
+            select name=(name) id=(id) aria-describedby=[help] data-saved=[saved] {
                 @for choice in choices {
                     option value=(choice) selected[&field.value == choice] { (choice) }
                 }
@@ -699,27 +879,30 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
         // first, so ticking none still says so.
         SettingKindView::ChoiceList { choices } => {
             let chosen: Vec<&str> = field.value.split(',').map(str::trim).collect();
+            let was: Option<Vec<&str>> =
+                saved.map(|saved| saved.split(',').map(str::trim).collect());
             html! {
                 input type="hidden" name=(name) value="";
                 @for choice in choices {
                     label class="inline" {
-                        input type="checkbox" name=(name) value=(choice) checked[chosen.contains(&choice.as_str())];
+                        input type="checkbox" name=(name) value=(choice) checked[chosen.contains(&choice.as_str())]
+                            data-saved=[was.as_ref().map(|was| if was.contains(&choice.as_str()) { "on" } else { "off" })];
                         " " (choice)
                     }
                 }
             }
         }
         SettingKindView::Url => {
-            html! { input type="url" name=(name) value=(field.value) id=(id) aria-describedby=[help]; }
+            html! { input type="url" name=(name) value=(field.value) id=(id) aria-describedby=[help] data-saved=[saved]; }
         }
         SettingKindView::Json => {
-            html! { textarea name=(name) rows="4" id=(id) aria-describedby=[help] { (field.value) } }
+            html! { textarea name=(name) rows="4" id=(id) aria-describedby=[help] data-saved=[saved] { (field.value) } }
         }
         SettingKindView::TimeLimit { now, until_label } => {
             let until: u64 = field.value.trim().parse().unwrap_or(0);
             let on = until > *now;
             html! {
-                select name=(name) id=(id) aria-describedby=[help] {
+                select name=(name) id=(id) aria-describedby=[help] data-saved=[saved] {
                     @if on {
                         option value=(until) selected { "On until " (until_label) }
                     }
@@ -731,7 +914,7 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
             }
         }
         _ => {
-            html! { input type="text" name=(name) value=(field.value) id=(id) aria-describedby=[help]; }
+            html! { input type="text" name=(name) value=(field.value) id=(id) aria-describedby=[help] data-saved=[saved]; }
         }
     }
 }
@@ -756,6 +939,7 @@ fn scalar_field(field: &AdminScalarFieldView) -> Markup {
                 legend class="setting-label-row" {
                     span class="setting-label" { (field.label) }
                     (source_chip(field.source))
+                    span class="changed-mark" { "changed" }
                 }
                 (help)
                 div class="setting-choices" { (scalar_input(field)) }
@@ -766,6 +950,7 @@ fn scalar_field(field: &AdminScalarFieldView) -> Markup {
                 div class="setting-label-row" {
                     label class="setting-label" for=(field_id(field.form_name())) { (field.label) }
                     (source_chip(field.source))
+                    span class="changed-mark" { "changed" }
                 }
                 (help)
                 // A secret comes from the environment only, and is never
@@ -828,6 +1013,7 @@ fn notices(items: &[Notice]) -> Markup {
     html! {
         @for notice in items {
             @match notice {
+                Notice::Success(text) => p class="success" role="status" { (text) },
                 Notice::Error(text) => p class="error" role="alert" { (text) },
                 Notice::Warning(text) => p class="warning" role="status" { (text) },
                 Notice::Info(text) => p class="notice" { (text) },
@@ -835,101 +1021,6 @@ fn notices(items: &[Notice]) -> Markup {
         }
     }
 }
-
-/// With JavaScript, confirm before a save (or a Remove) on the Monero nodes
-/// tab that would leave a network stores use with no node (task 4.4): a
-/// network's rows are counted as the save would see them, blank ones not
-/// counted and the row a pressed Remove is for left out. Without
-/// JavaScript, the form posts and the red banner after the save says what
-/// happened. Listens on the document, before fixi (capture), so it still
-/// works on the form fixi swaps in after a save; cancelling stops fixi too
-/// (`static/fx-glue.js`).
-const CONFIRM_CLEARED_NETWORK_SCRIPT: &str = r#"(function () {
-  function filled(block, skip) {
-    var rows = block.querySelectorAll("[data-node-row]"), count = 0, before = 0;
-    for (var i = 0; i < rows.length; i++) {
-      var box = rows[i].querySelector('input[name$="_address"]');
-      if (!box) continue;
-      if (box.defaultValue.trim() !== "") before++;
-      if (rows[i].getAttribute("data-node-row") !== skip && box.value.trim() !== "") count++;
-    }
-    return { now: count, before: before };
-  }
-  document.addEventListener("submit", function (event) {
-    var form = event.target;
-    if (form.id !== "settings-form") return;
-    var pressed = event.submitter && event.submitter.name === "node_action" ? event.submitter.value.split(":") : [];
-    var blocks = form.querySelectorAll(".node-network[data-tenant-count]");
-    for (var i = 0; i < blocks.length; i++) {
-      var block = blocks[i];
-      var stores = parseInt(block.getAttribute("data-tenant-count"), 10) || 0;
-      var network = block.getAttribute("data-network");
-      var skip = pressed[0] === "remove" && pressed[1] === network ? pressed[2] : null;
-      var rows = filled(block, skip);
-      if (stores > 0 && rows.now === 0 && rows.before > 0) {
-        var use = stores === 1 ? "1 store uses" : stores + " stores use";
-        if (!window.confirm(use + " the " + network + " network. Without a node, their payments won't be detected. Save anyway?")) {
-          event.preventDefault();
-          return;
-        }
-      }
-    }
-  }, true);
-})();"#;
-
-/// With JavaScript, the node form's conveniences, all bound on the document
-/// so they keep working on a panel fixi swaps in:
-/// - "Add another" adds a blank row after the others, numbered after the
-///   highest row, and puts the cursor in its address. Without JavaScript
-///   the one blank row does the same, a save at a time.
-/// - A row's self-signed box shows only while its Use TLS box is ticked
-///   (without JavaScript it's always there, and ignored without TLS).
-const NODE_FORM_SCRIPT: &str = r#"(function () {
-  function showSelfSigned(root) {
-    var boxes = root.querySelectorAll("[data-node-tls]");
-    for (var i = 0; i < boxes.length; i++) {
-      var row = boxes[i].closest("[data-node-row]");
-      var field = row && row.querySelector("[data-node-self-signed]");
-      if (field) field.hidden = !boxes[i].checked;
-    }
-  }
-  document.addEventListener("change", function (event) {
-    if (event.target.matches && event.target.matches("[data-node-tls]")) showSelfSigned(event.target.closest("[data-node-row]"));
-  });
-  document.addEventListener("click", function (event) {
-    var button = event.target.closest && event.target.closest("[data-node-add-another]");
-    if (!button) return;
-    var network = button.getAttribute("data-node-add-another");
-    var list = document.querySelector('[data-node-rows="' + network + '"]');
-    var blank = list && list.querySelector("[data-node-add]:last-of-type");
-    if (!blank) return;
-    var next = 0;
-    list.querySelectorAll("[data-node-row]").forEach(function (row) {
-      next = Math.max(next, (parseInt(row.getAttribute("data-node-row"), 10) || 0) + 1);
-    });
-    var old = blank.getAttribute("data-node-row");
-    var row = blank.cloneNode(true);
-    row.setAttribute("data-node-row", String(next));
-    var renamed = function (value) {
-      return value.split("node_" + network + "_" + old + "_").join("node_" + network + "_" + next + "_")
-        .split("node-" + network + "-" + old + "-").join("node-" + network + "-" + next + "-");
-    };
-    row.querySelectorAll("[name],[id],[for],[aria-describedby]").forEach(function (el) {
-      ["name", "id", "for", "aria-describedby"].forEach(function (attr) {
-        if (el.hasAttribute(attr)) el.setAttribute(attr, renamed(el.getAttribute(attr)));
-      });
-    });
-    row.querySelectorAll('input[type="text"]').forEach(function (box) { box.value = ""; box.defaultValue = ""; });
-    row.querySelectorAll("[data-node-tls]").forEach(function (box) { box.checked = false; box.defaultChecked = false; });
-    row.querySelectorAll('input[name$="_self_signed"]').forEach(function (box) { box.checked = true; box.defaultChecked = true; });
-    list.appendChild(row);
-    showSelfSigned(row);
-    var address = row.querySelector('input[name$="_address"]');
-    if (address) address.focus();
-  });
-  document.addEventListener("fx:swapped", function () { showSelfSigned(document); });
-  showSelfSigned(document);
-})();"#;
 
 const ENABLED_BACKENDS: &str = "key_custody.enabled_backends";
 
@@ -949,115 +1040,45 @@ fn custody_backends(fields: &[AdminScalarFieldView]) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// The backend a key custody setting belongs to: one only that backend
-/// uses is named `key_custody.<backend>_...` (`key_custody.snp_product`).
-fn custody_backend_of<'a>(
-    field: &AdminScalarFieldView,
-    backends: &'a [(String, bool)],
-) -> Option<&'a str> {
-    let rest = field.key.strip_prefix("key_custody.")?;
-    backends
-        .iter()
-        .map(|(backend, _)| backend.as_str())
-        .find(|backend| {
-            rest.strip_prefix(backend)
-                .is_some_and(|after| after.starts_with('_'))
-        })
-}
-
-/// The backend one of monokulo's own key custody settings is for:
-/// `key_custody.<backend>_...` (`key_custody.snp_entry_id_key`), all but
-/// the key-custody-cli links.
-fn monokulo_custody_backend_of(field: &AdminScalarFieldView) -> Option<&str> {
-    let rest = field.key.strip_prefix("key_custody.")?;
-    if rest.starts_with("cli_") {
-        return None;
-    }
-    rest.split('_').next()
-}
-
-/// A section of its own for each backend, shown only while it's turned on
-/// (at once with JavaScript, after saving without): the engine's settings
-/// for it, then this site's own (what its key entry forms check).
-fn custody_backend_sections(
-    engine_fields: &[AdminScalarFieldView],
-    monokulo_fields: &[AdminScalarFieldView],
-    backends: &[(String, bool)],
-) -> Markup {
-    html! {
-        @for (backend, enabled) in backends {
-            section class="custody-backend" data-custody-backend=(backend) hidden[!enabled] {
-                h3 { "Key custody: " (backend) }
-                @let own: Vec<&AdminScalarFieldView> =
-                    engine_fields.iter().filter(|f| custody_backend_of(f, backends) == Some(backend.as_str())).collect();
-                @let ours: Vec<&AdminScalarFieldView> =
-                    monokulo_fields.iter().filter(|f| monokulo_custody_backend_of(f) == Some(backend.as_str())).collect();
-                @if own.is_empty() && ours.is_empty() {
-                    p class="hint" { "Nothing to set up for this backend." }
-                }
-                @for field in own { (scalar_field(field)) }
-                (site_custody_fields(&ours))
-            }
-        }
-    }
-}
-
-/// This site's own settings for a key custody backend, under their own
-/// heading.
-fn site_custody_fields(fields: &[&AdminScalarFieldView]) -> Markup {
-    html! {
-        @if !fields.is_empty() {
-            h4 { "This site's key entry" }
-            p class="hint" {
-                "What this site's forms check before they encrypt a merchant's keys. They must match the engine's settings above: "
-                "they are checked against the engine when saved, and the status page shows an alert if they ever differ."
-            }
-            @for field in fields { (scalar_field(field)) }
-        }
-    }
-}
-
-/// With JavaScript, a key custody backend's section shows or hides as its
-/// box is ticked, before saving. Listens on the document, so it still
-/// works on the form fixi swaps in after a save.
-const CUSTODY_BACKENDS_SCRIPT: &str = r#"(function () {
-  document.addEventListener("change", function (event) {
-    var box = event.target;
-    if (box.name !== "key_custody.enabled_backends") return;
-    var section = document.querySelector('[data-custody-backend="' + box.value + '"]');
-    if (section) section.hidden = !box.checked;
-  });
-})();"#;
-
-/// A short word on the save beside the Save button, where the person who
-/// pressed it is looking; focused after a fixi swap (the banners above say
-/// more).
-fn save_status(data: &AdminSettingsViewModel) -> Markup {
-    html! {
-        @if data.saved_tab == Some(data.tab) {
-            @if data.error.is_some() {
-                span class="save-status error" role="alert" data-fx-focus tabindex="-1" { "Not saved - see the message above." }
-            } @else if data.success.is_some() {
-                span class="save-status success" role="status" data-fx-focus tabindex="-1" { "Saved." }
-            }
-        }
-    }
-}
-
-/// The page-wide banners (nicer_admin_screen.md T4): a save's error, its
-/// success and any notices, above the tab bar on every tab. `oob` marks it
-/// for fixi's glue to put in place of the page's own copy when it comes
-/// back with a swapped panel.
+/// The page-wide banners: what is still true after a save (a network
+/// stores use left without a node, an engine that doesn't answer at its
+/// new URL), above the tab bar on every tab. `oob` marks it for fixi's
+/// glue to put in place of the page's own copy when it comes back with a
+/// swapped panel.
 pub fn banners(data: &AdminSettingsViewModel, oob: bool) -> Markup {
     html! {
         div id="settings-banners" class="save-banners" data-fx-oob[oob] {
-            @if let Some(error) = &data.error {
-                p class="error" role="alert" { (error) }
-            }
-            @if let Some(success) = &data.success {
-                p class="success" role="status" { (success) }
-            }
             (notices(&data.notices))
+        }
+    }
+}
+
+/// The toast a save or a reload leaves, in the corner of the window. A new
+/// one comes with every save, so saving twice shows twice. Without
+/// JavaScript it fades by itself (CSS); with it, one saying something
+/// wasn't saved stays until it's closed.
+pub fn toasts(data: &AdminSettingsViewModel, oob: bool) -> Markup {
+    html! {
+        div id="settings-toasts" class="toasts" data-fx-oob[oob] {
+            @if let Some(toast) = &data.toast {
+                @let (class, icon, role) = match toast.kind {
+                    ToastKind::Success => ("toast toast-success", "\u{2713}", "status"),
+                    ToastKind::Warning => ("toast toast-warning", "!", "status"),
+                    ToastKind::Error => ("toast toast-error", "!", "alert"),
+                    ToastKind::Neutral => ("toast toast-neutral", "\u{2022}", "status"),
+                };
+                div class=(class) role=(role) data-toast {
+                    span class="toast-icon" aria-hidden="true" { (icon) }
+                    div class="toast-text" {
+                        strong { (toast.title) }
+                        @for line in &toast.lines { span class="toast-line" { (line) } }
+                        @if let Some(group) = &toast.show {
+                            a class="toast-show" href=(format!("#card-{group}")) data-show-card=(group) { "Show" }
+                        }
+                    }
+                    button type="button" class="toast-close js-only" aria-label="Dismiss" data-toast-close { "\u{00D7}" }
+                }
+            }
         }
     }
 }
@@ -1122,44 +1143,74 @@ fn engine_unavailable(data: &AdminSettingsViewModel) -> Markup {
         }
     }
 }
+/// The cards a tab shows, in order: its fixed ones, with the Monero nodes
+/// tab's networks first and each key custody backend's after Backends,
+/// from what the engine reports (and any backend only this site's own
+/// settings name, while the engine can't say).
+fn tab_groups(data: &AdminSettingsViewModel, tab: SettingsTab) -> Vec<String> {
+    let mut groups: Vec<String> = Vec::new();
+    if tab == SettingsTab::Nodes {
+        groups.extend(
+            data.engine_networks
+                .iter()
+                .map(|network| format!("network-{}", network.network)),
+        );
+    }
+    for fixed in tab.fixed_groups() {
+        groups.push((*fixed).to_string());
+        if *fixed == "custody-backends" {
+            let mut backends: Vec<String> = custody_backends(&data.engine_fields)
+                .into_iter()
+                .map(|(backend, _)| format!("custody-{backend}"))
+                .collect();
+            for field in &data.monokulo_fields {
+                let (on, group) = setting_placement(&field.key, SettingOwner::Monokulo);
+                if on == tab && group != "custody-cli" && !backends.contains(&group) {
+                    backends.push(group);
+                }
+            }
+            groups.extend(backends);
+        }
+    }
+    groups
+}
 
-/// A tab's settings from one owner under one heading, in the order they
-/// are shown: the engine's in its (alphabetical) order, except that the key
-/// custody backends to turn on come before the choice among them, and on
-/// Server the engine's own `server.*` come before the scan memory budget.
+/// A card's settings, both owners', in the order they are shown.
 fn group_fields<'a>(
     data: &'a AdminSettingsViewModel,
-    tab: SettingsTab,
-    heading: Option<&str>,
-    owner: SettingOwner,
+    group: &str,
 ) -> Vec<&'a AdminScalarFieldView> {
-    let fields = match owner {
-        SettingOwner::Monokulo => &data.monokulo_fields,
-        SettingOwner::Engine => &data.engine_fields,
-    };
-    let mut own: Vec<&AdminScalarFieldView> = fields
+    let mut fields: Vec<&AdminScalarFieldView> = data
+        .engine_fields
         .iter()
-        .filter(|f| setting_placement(&f.key, owner) == (tab, heading))
+        .filter(|f| setting_placement(&f.key, SettingOwner::Engine).1 == group)
+        .chain(
+            data.monokulo_fields
+                .iter()
+                .filter(|f| setting_placement(&f.key, SettingOwner::Monokulo).1 == group),
+        )
         .collect();
-    if owner == SettingOwner::Engine {
-        own.sort_by_key(|f| {
-            (
-                f.key != ENABLED_BACKENDS,
-                f.key.starts_with("payment.") && tab == SettingsTab::Server,
-            )
-        });
-    }
-    own
+    fields.sort_by_key(|f| field_rank(&f.key));
+    fields
+}
+
+/// A tab's settings, every card's.
+fn tab_fields(data: &AdminSettingsViewModel, tab: SettingsTab) -> Vec<&AdminScalarFieldView> {
+    data.engine_fields
+        .iter()
+        .filter(|f| setting_placement(&f.key, SettingOwner::Engine).0 == tab)
+        .chain(
+            data.monokulo_fields
+                .iter()
+                .filter(|f| setting_placement(&f.key, SettingOwner::Monokulo).0 == tab),
+        )
+        .collect()
 }
 
 /// Whether a tab has anything to show: always, except Other, which only
 /// shows while a setting nobody placed is in it.
 fn tab_shown(data: &AdminSettingsViewModel, tab: SettingsTab) -> bool {
-    tab != SettingsTab::Other
-        || tab
-            .groups()
-            .iter()
-            .any(|(heading, owner)| !group_fields(data, tab, *heading, *owner).is_empty())
+    tab != SettingsTab::Other || !tab_fields(data, tab).is_empty()
 }
 
 /// Whether a tab's label carries the marker (T5): a network stores use has
@@ -1172,12 +1223,7 @@ fn needs_attention(data: &AdminSettingsViewModel, tab: SettingsTab) -> bool {
                 .engine_networks
                 .iter()
                 .any(|n| n.tenant_count > 0 && n.rows.is_empty()));
-    let restart = tab.groups().iter().any(|(heading, owner)| {
-        group_fields(data, tab, *heading, *owner)
-            .iter()
-            .any(|f| f.pending_restart)
-    });
-    unserved || restart
+    unserved || tab_fields(data, tab).iter().any(|f| f.pending_restart)
 }
 
 /// The tab bar: plain links, each its own page, so it works without
@@ -1213,10 +1259,9 @@ fn thousands(n: u64) -> String {
     out
 }
 
-/// A row's status line: whether the node answers and on which network,
-/// then whether it's the one in use or resting after failures. Nothing
-/// for a node with no status yet.
-fn node_status(status: &NodeStatusView) -> Markup {
+/// A node's status from the engine's `/status`, in words, and whether it
+/// is a problem (it doesn't answer, or is on another network).
+fn node_status_words(status: &NodeStatusView) -> (String, bool) {
     let problem = status.wrong_network.is_some() || status.height.is_none();
     let mut parts: Vec<String> = Vec::new();
     if let Some(network) = &status.wrong_network {
@@ -1239,19 +1284,28 @@ fn node_status(status: &NodeStatusView) -> Markup {
     if status.resting {
         parts.push("Resting after failures".to_string());
     }
+    (parts.join(". "), problem)
+}
+
+fn node_status(status: &NodeStatusView) -> Markup {
+    let (words, problem) = node_status_words(status);
     html! {
-        @if !parts.is_empty() {
-            p class=(if problem { "node-status is-problem" } else { "node-status" }) { (parts.join(". ")) "." }
+        @if !words.is_empty() {
+            p class=(if problem { "node-status is-problem" } else { "node-status" }) { (words) "." }
         }
         @if let Some(link) = &status.link { (super::scaling::link_figures(link)) }
     }
 }
 
-/// One node row: its address, TLS and self-signed boxes, its status and
-/// its buttons. `position` is its place in the list (`None` for the blank
-/// "Add a node" row, which has no status or buttons); `index` numbers its
-/// fields. The buttons are submit buttons of the tab's form: pressing one
-/// applies it to the submitted rows and saves, with or without JavaScript.
+/// One node row, closed to a line until it's opened: a handle to drag it
+/// by (with JavaScript), its place (Primary, Fallback N), its address and
+/// its status. Open, its address, TLS and self-signed boxes, its status
+/// and its buttons. `position` is its place in the list (`None` for the
+/// blank "Add a node" row, which has no status or buttons); `index`
+/// numbers its fields. The buttons are submit buttons of the tab's form:
+/// without JavaScript pressing one applies it to the submitted rows and
+/// saves; with it, Remove takes the row out (saved with the bar) and the
+/// handle replaces Move up and Move down.
 fn node_row(
     network: &AdminNetworkFieldView,
     index: usize,
@@ -1261,7 +1315,7 @@ fn node_row(
     let n = &network.network;
     let name = |field: &str| format!("node_{n}_{index}_{field}");
     let id = |field: &str| format!("node-{n}-{index}-{field}");
-    let legend = match position {
+    let place = match position {
         None => "Add a node".to_string(),
         Some((0, _)) => "Primary".to_string(),
         Some((at, _)) => format!("Fallback {at}"),
@@ -1275,54 +1329,73 @@ fn node_row(
         Some(error) => format!("{} {error}", id("address-help")),
         None => id("address-help"),
     };
+    let summary_status = row.status.as_ref().map(node_status_words);
     html! {
-        fieldset class="node-row" data-node-row=(index) data-node-add[position.is_none()] {
-            legend class="node-row-name" { (legend) }
-            div class="setting-field" {
-                label class="setting-label" for=(id("address")) { "Address" }
-                span class="field-help" id=(id("address-help")) {
-                    "The node's host and port, like " code { (example) } ". "
-                    code { "http://" } " or " code { "https://" } " in front is fine (" code { "https://" } " also ticks Use TLS); "
-                    "an IPv6 address goes in brackets, like " code { "[::1]:18081" } "."
+        details class="node-row" data-node-row=(index) data-node-add[position.is_none()]
+            data-node-saved=[row.saved_index] open[row.row.error.is_some()] {
+            summary class="node-row-summary" {
+                @if position.is_some() {
+                    span class="node-handle js-only" role="button" tabindex="0" title="Drag to reorder"
+                        aria-label=(format!("Reorder {place}: press the up or down arrow")) data-node-handle { "\u{283F}" }
+                } @else {
+                    span class="node-add-mark" aria-hidden="true" { "+" }
                 }
-                input type="text" name=(name("address")) id=(id("address")) value=(row.row.address) aria-describedby=(described)
-                    aria-invalid=[row.row.error.as_ref().map(|_| "true")] autocomplete="off" spellcheck="false" inputmode="url";
-                @if let (Some(error), Some(error_id)) = (&row.row.error, &error_id) {
-                    span class="setting-problem" id=(error_id) { (error) }
+                span class="node-row-name" data-node-place { (place) }
+                @if position.is_some() {
+                    code class="node-row-address" { (row.row.address) }
+                }
+                span class="node-row-mark" data-node-mark {}
+                @if let Some((words, problem)) = &summary_status {
+                    span class=(if *problem { "node-row-status is-problem" } else { "node-row-status" }) { (words) }
                 }
             }
-            div class="setting-field node-tls" {
-                label class="setting-label" for=(id("ssl")) { "Use TLS" }
-                span class="field-help" id=(id("ssl-help")) { "Connect with TLS (https). Off by default; most nodes on port 18081 or 18089 don't use it." }
-                input type="checkbox" name=(name("ssl")) id=(id("ssl")) value="on" checked[row.row.ssl] aria-describedby=(id("ssl-help")) data-node-tls;
-            }
-            div class="setting-field node-self-signed" data-node-self-signed {
-                label class="setting-label" for=(id("self_signed")) { "Accept a self-signed certificate" }
-                span class="field-help" id=(id("self_signed-help")) {
-                    "Many community nodes use a self-signed TLS certificate; tick this to accept one. Only used with TLS."
-                }
-                input type="checkbox" name=(name("self_signed")) id=(id("self_signed")) value="on" checked[row.row.self_signed] aria-describedby=(id("self_signed-help"));
-            }
-            div class="setting-field node-zmq" {
-                label class="setting-label" for=(id("zmq_pub")) { "Announcements (ZMQ)" }
-                span class="field-help" id=(id("zmq_pub-help")) {
-                    "Optional, for your own node: the address it was started with as " code { "--zmq-pub" } ", like "
-                    code { "tcp://127.0.0.1:18083" } ". Payments are then seen the moment the node sees them, instead of at the next check. "
-                    "Needs an engine built with ZMQ support; leave empty otherwise."
-                }
-                input type="text" name=(name("zmq_pub")) id=(id("zmq_pub")) value=(row.row.zmq_pub) aria-describedby=(id("zmq_pub-help"))
-                    autocomplete="off" spellcheck="false" inputmode="url";
-            }
-            @if let Some(status) = &row.status { (node_status(status)) }
-            @if let Some((at, count)) = position {
-                div class="node-row-actions" {
-                    @if at > 0 {
-                        button type="submit" name="node_action" value=(format!("up:{n}:{index}")) { "Move up" }
+            div class="node-row-body" {
+                div class="setting-field" {
+                    label class="setting-label" for=(id("address")) { "Address" }
+                    span class="field-help" id=(id("address-help")) {
+                        "The node's host and port, like " code { (example) } ". "
+                        code { "http://" } " or " code { "https://" } " in front is fine (" code { "https://" } " also ticks Use TLS); "
+                        "an IPv6 address goes in brackets, like " code { "[::1]:18081" } "."
                     }
-                    @if at + 1 < count {
-                        button type="submit" name="node_action" value=(format!("down:{n}:{index}")) { "Move down" }
+                    input type="text" name=(name("address")) id=(id("address")) value=(row.row.address) aria-describedby=(described)
+                        aria-invalid=[row.row.error.as_ref().map(|_| "true")] autocomplete="off" spellcheck="false" inputmode="url";
+                    @if let (Some(error), Some(error_id)) = (&row.row.error, &error_id) {
+                        span class="setting-problem" id=(error_id) { (error) }
                     }
-                    button type="submit" name="node_action" value=(format!("remove:{n}:{index}")) data-node-remove { "Remove" }
+                }
+                div class="setting-field node-tls" {
+                    label class="setting-label" for=(id("ssl")) { "Use TLS" }
+                    span class="field-help" id=(id("ssl-help")) { "Connect with TLS (https). Off by default; most nodes on port 18081 or 18089 don't use it." }
+                    input type="checkbox" name=(name("ssl")) id=(id("ssl")) value="on" checked[row.row.ssl] aria-describedby=(id("ssl-help")) data-node-tls;
+                }
+                div class="setting-field node-self-signed" data-node-self-signed {
+                    label class="setting-label" for=(id("self_signed")) { "Accept a self-signed certificate" }
+                    span class="field-help" id=(id("self_signed-help")) {
+                        "Many community nodes use a self-signed TLS certificate; tick this to accept one. Only used with TLS."
+                    }
+                    input type="checkbox" name=(name("self_signed")) id=(id("self_signed")) value="on" checked[row.row.self_signed] aria-describedby=(id("self_signed-help"));
+                }
+                div class="setting-field node-zmq" {
+                    label class="setting-label" for=(id("zmq_pub")) { "Announcements (ZMQ)" }
+                    span class="field-help" id=(id("zmq_pub-help")) {
+                        "Optional, for your own node: the address it was started with as " code { "--zmq-pub" } ", like "
+                        code { "tcp://127.0.0.1:18083" } ". Payments are then seen the moment the node sees them, instead of at the next check. "
+                        "Needs an engine built with ZMQ support; leave empty otherwise."
+                    }
+                    input type="text" name=(name("zmq_pub")) id=(id("zmq_pub")) value=(row.row.zmq_pub) aria-describedby=(id("zmq_pub-help"))
+                        autocomplete="off" spellcheck="false" inputmode="url";
+                }
+                @if let Some(status) = &row.status { (node_status(status)) }
+                @if let Some((at, count)) = position {
+                    div class="node-row-actions" {
+                        @if at > 0 {
+                            button type="submit" class="no-js-only" name="node_action" value=(format!("up:{n}:{index}")) { "Move up" }
+                        }
+                        @if at + 1 < count {
+                            button type="submit" class="no-js-only" name="node_action" value=(format!("down:{n}:{index}")) { "Move down" }
+                        }
+                        button type="submit" name="node_action" value=(format!("remove:{n}:{index}")) data-node-remove { "Remove" }
+                    }
                 }
             }
         }
@@ -1336,53 +1409,6 @@ fn capitalized(word: &str) -> String {
         .next()
         .map(|first| first.to_uppercase().chain(chars).collect())
         .unwrap_or_default()
-}
-
-/// One network's block: its rows in order, then a blank "Add a node" row
-/// (adding needs no JavaScript: fill it in and save). A network with no
-/// nodes that no store uses starts closed, as "Add a node for <network>".
-fn network_block(network: &AdminNetworkFieldView, proof: Option<&AdminScalarFieldView>) -> Markup {
-    let n = &network.network;
-    let count = network.rows.len();
-    let rows = html! {
-        @if let Some(error) = &network.error {
-            p class="error" role="alert" { (error) }
-        }
-        p class="hint" { "Fallbacks are tried in order when the one before fails." }
-        div class="node-rows" data-node-rows=(n) {
-            @for (at, row) in network.rows.iter().enumerate() {
-                (node_row(network, at, row, Some((at, count))))
-            }
-            (node_row(network, count, &NodeRowView { row: crate::admin_nodes::NodeRow { self_signed: true, ..Default::default() }, ..Default::default() }, None))
-        }
-        button type="button" class="js-only node-add-another" data-node-add-another=(n) { "Add another" }
-        // Whether this network's blocks' proof of work is checked
-        // (`proof_of_work.<network>`).
-        @if let Some(field) = proof { (scalar_field(field)) }
-    };
-    let used_by = html! {
-        p class="setting-source" {
-            @if network.tenant_count == 1 { "Used by 1 store." } @else { "Used by " (network.tenant_count) " stores." }
-        }
-    };
-    html! {
-        @if count > 0 || network.tenant_count > 0 || network.error.is_some() {
-            section class="node-network" data-network=(n) data-tenant-count=(network.tenant_count) aria-labelledby=(format!("node-network-{n}")) {
-                h3 id=(format!("node-network-{n}")) { (capitalized(n)) }
-                (used_by)
-                @if let Some(scaling) = &network.scaling {
-                    (super::scaling::scanning_panel(n, scaling, active_node(network)))
-                }
-                (rows)
-            }
-        } @else {
-            details class="node-network" data-network=(n) data-tenant-count=(network.tenant_count) {
-                summary { "Add a node for " (n) }
-                (used_by)
-                (rows)
-            }
-        }
-    }
 }
 
 /// The node a network's scan reads from, with its measured rate.
@@ -1400,78 +1426,186 @@ fn active_node(network: &AdminNetworkFieldView) -> Option<super::scaling::Active
     })
 }
 
-/// `network`'s proof-of-work switch (`proof_of_work.<network>`).
-fn proof_field<'a>(
-    data: &'a AdminSettingsViewModel,
-    network: &str,
-) -> Option<&'a AdminScalarFieldView> {
-    let key = format!("proof_of_work.{network}");
-    data.engine_fields.iter().find(|f| f.key == key)
+/// The id of a card, which the toast's and the save bar's Show links go
+/// to (`#card-webhooks`), and a save without JavaScript comes back to.
+fn card_id(group: &str) -> String {
+    format!("card-{group}")
 }
 
-/// The Monero nodes tab's fields: a block per network.
-fn node_fields(data: &AdminSettingsViewModel) -> Markup {
+/// Who owns a card's settings, for the chip beside its heading.
+fn owner_label(fields: &[&AdminScalarFieldView], data: &AdminSettingsViewModel) -> &'static str {
+    let engine = fields
+        .iter()
+        .any(|f| data.engine_fields.iter().any(|e| std::ptr::eq(e, *f)));
+    let monokulo = fields
+        .iter()
+        .any(|f| data.monokulo_fields.iter().any(|m| std::ptr::eq(m, *f)));
+    match (engine, monokulo) {
+        (true, true) => "Engine and monokulo",
+        (false, true) => "Monokulo",
+        _ => "Engine",
+    }
+}
+
+/// A card's heading row: its name, whose settings these are, anything
+/// more (a network's stores), how the last save went for it, and (with
+/// JavaScript) its unsaved changes and a Discard button for them.
+fn card_header(
+    data: &AdminSettingsViewModel,
+    group: &str,
+    owner: &str,
+    meta: Option<String>,
+    fields: &[&AdminScalarFieldView],
+    readonly: bool,
+) -> Markup {
+    let failed = data.failure(group).is_some();
+    let saved = data.saved_groups.iter().any(|g| g == group);
+    let restart = fields.iter().any(|f| f.pending_restart);
     html! {
-        p class="hint" {
-            "The Monero nodes the engine reads each network's chain from: a primary, and fallbacks tried when it fails. "
-            "A network with no nodes isn't used. A node that doesn't answer is still saved; one on another network is refused."
+        header class="card-head" {
+            h3 id=(format!("{}-title", card_id(group))) { (group_title(group)) }
+            span class="owner-chip" { (owner) }
+            @if let Some(meta) = meta { span class="card-meta" { (meta) } }
+            span class="card-state" data-card-state {
+                @if failed {
+                    span class="badge badge-error" { "Not saved" }
+                } @else if restart {
+                    span class="badge badge-warning" { "Restart needed" }
+                }
+            }
+            span class="card-spacer" {}
+            @if readonly {
+                span class="card-meta" { "Can't be changed here" }
+            } @else {
+                @if saved && !failed {
+                    @if let Some(at) = &data.saved_at {
+                        span class="card-meta card-saved" data-card-saved { "Saved " (at) }
+                    }
+                }
+                button type="button" class="card-discard js-only" data-card-discard hidden { "Discard" }
+            }
         }
-        @for network in &data.engine_networks {
-            (network_block(network, proof_field(data, &network.network)))
-        }
-        // Settings for every node at once (`monero_node.strict_tls`).
-        @for field in group_fields(data, SettingsTab::Nodes, None, SettingOwner::Engine)
-            .into_iter()
-            .filter(|f| !f.key.starts_with("proof_of_work."))
-        {
+    }
+}
+
+/// A card's settings, with any subheadings, and this site's own key entry
+/// settings for a key custody backend under their own heading.
+fn card_fields(
+    group: &str,
+    fields: &[&AdminScalarFieldView],
+    data: &AdminSettingsViewModel,
+) -> Markup {
+    let site_heading =
+        group.starts_with("custody-") && group != "custody-cli" && group != "custody-backends";
+    let first_site = fields
+        .iter()
+        .position(|f| data.monokulo_fields.iter().any(|m| std::ptr::eq(m, *f)));
+    html! {
+        @for (i, field) in fields.iter().enumerate() {
+            @if site_heading && first_site == Some(i) {
+                h4 { "This site's key entry" }
+                p class="hint" {
+                    "What this site's forms check before they encrypt a merchant's keys. They must match the engine's settings above: "
+                    "they are checked against the engine when saved, and the status page shows an alert if they ever differ."
+                }
+            }
+            @if let Some(heading) = field_subheading(&field.key) { h4 { (heading) } }
             (scalar_field(field))
         }
     }
 }
 
-/// One tab's settings, group by group (`SettingsTab::groups`). Where the
-/// engine's settings would be while it can't be reached, its message
-/// stands in, once.
-fn tab_fields(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
-    let backends = custody_backends(&data.engine_fields);
-    let engine_down = !engine_available(data);
-    let first_engine_group = tab
-        .groups()
+/// One card of scalar settings. A key custody backend's card shows only
+/// while the backend is turned on (at once with JavaScript, after saving
+/// without).
+fn settings_card(data: &AdminSettingsViewModel, group: &str) -> Markup {
+    let fields = group_fields(data, group);
+    if fields.is_empty() {
+        return html! {};
+    }
+    let readonly = fields
         .iter()
-        .position(|(_, owner)| *owner == SettingOwner::Engine);
+        .all(|f| f.locked.is_some() || f.kind == SettingKindView::Secret);
+    let backend = group
+        .strip_prefix("custody-")
+        .filter(|b| *b != "cli" && *b != "backends");
+    let hidden = backend.is_some_and(|backend| {
+        custody_backends(&data.engine_fields)
+            .iter()
+            .any(|(listed, on)| listed == backend && !on)
+    });
+    let failure = data.failure(group);
     html! {
-        @for (i, (heading, owner)) in tab.groups().iter().enumerate() {
-            @if *owner == SettingOwner::Engine && engine_down {
-                @if first_engine_group == Some(i) {
-                    @if let Some(heading) = heading { h3 { (heading) } }
-                    (engine_unavailable(data))
+        section id=(card_id(group)) class={ "settings-card" @if failure.is_some() { " is-failed" } }
+            data-card=(group) data-custody-backend=[backend] hidden[hidden]
+            aria-labelledby=(format!("{}-title", card_id(group))) {
+            (card_header(data, group, owner_label(&fields, data), None, &fields, readonly))
+            div class="card-body" {
+                @if let Some(failure) = failure {
+                    p class="error" role="alert" { (failure.message) }
                 }
-            } @else if tab == SettingsTab::Nodes {
-                (node_fields(data))
-            } @else {
-                @let fields = group_fields(data, tab, *heading, *owner);
-                @if !fields.is_empty() {
-                    @if let Some(heading) = heading { h3 { (heading) } }
-                    @for field in fields.iter().filter(|f| custody_backend_of(f, &backends).is_none() && (*owner == SettingOwner::Engine || monokulo_custody_backend_of(f).is_none())) {
-                        (scalar_field(field))
+                @if let Some(hint) = group_hint(group) { p class="hint" { (hint) } }
+                (card_fields(group, &fields, data))
+            }
+        }
+    }
+}
+
+/// One network's card: its nodes in order, each closed to a line, then a
+/// blank "Add a node" row (adding needs no JavaScript: fill it in and
+/// save), and its proof-of-work switch. A network with no nodes that no
+/// store uses starts closed, as "Add a node for <network>".
+fn network_card(data: &AdminSettingsViewModel, network: &AdminNetworkFieldView) -> Markup {
+    let n = &network.network;
+    let group = format!("network-{n}");
+    let fields = group_fields(data, &group);
+    let count = network.rows.len();
+    let failure = data.failure(&group);
+    let used_by = if network.tenant_count == 1 {
+        "Used by 1 store".to_string()
+    } else if network.tenant_count == 0 {
+        "Not used by any store".to_string()
+    } else {
+        format!("Used by {} stores", network.tenant_count)
+    };
+    let rows = html! {
+        @if let Some(error) = &network.error {
+            p class="error" role="alert" { (error) }
+        } @else if let Some(failure) = failure {
+            p class="error" role="alert" { (failure.message) }
+        }
+        p class="hint" {
+            "Fallbacks are tried in order when the one before fails. Open a node to change it"
+            span class="js-only" { ", or drag it by its handle to reorder it" } "."
+        }
+        div class="node-rows" data-node-rows=(n) {
+            @for (at, row) in network.rows.iter().enumerate() {
+                (node_row(network, at, row, Some((at, count))))
+            }
+            (node_row(network, count, &NodeRowView { row: crate::admin_nodes::NodeRow { self_signed: true, ..Default::default() }, ..Default::default() }, None))
+        }
+        button type="button" class="js-only node-add-another" data-node-add-another=(n) { "Add another" }
+        // Whether this network's blocks' proof of work is checked
+        // (`proof_of_work.<network>`).
+        @for field in &fields { (scalar_field(field)) }
+    };
+    let open =
+        count > 0 || network.tenant_count > 0 || network.error.is_some() || failure.is_some();
+    html! {
+        section id=(card_id(&group)) class={ "settings-card node-network" @if failure.is_some() || network.error.is_some() { " is-failed" } }
+            data-card=(group) data-network=(n) data-tenant-count=(network.tenant_count) data-saved-count=(network.saved_count)
+            aria-labelledby=(format!("{}-title", card_id(&group))) {
+            (card_header(data, &group, "Engine", Some(used_by), &fields, false))
+            div class="card-body" {
+                @if open {
+                    @if let Some(scaling) = &network.scaling {
+                        (super::scaling::scanning_panel(n, scaling, active_node(network)))
                     }
-                    @if tab == SettingsTab::Custody && *owner == SettingOwner::Engine {
-                        (custody_backend_sections(&data.engine_fields, &data.monokulo_fields, &backends))
-                    }
-                    // This site's own settings for a backend the engine
-                    // shows no section for (it can't be reached, or doesn't
-                    // list it) are still shown.
-                    @if tab == SettingsTab::Custody && *owner == SettingOwner::Monokulo {
-                        @let ours: Vec<&AdminScalarFieldView> = fields
-                            .iter()
-                            .copied()
-                            .filter(|f| {
-                                monokulo_custody_backend_of(f).is_some_and(|backend| {
-                                    engine_down || !backends.iter().any(|(listed, _)| listed == backend)
-                                })
-                            })
-                            .collect();
-                        (site_custody_fields(&ours))
+                    (rows)
+                } @else {
+                    details class="node-network-closed" {
+                        summary { "Add a node for " (n) }
+                        (rows)
                     }
                 }
             }
@@ -1479,14 +1613,58 @@ fn tab_fields(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
     }
 }
 
-/// The open tab: its heading, its one form and its one Save button. What
-/// fixi swaps, for a tab link or a save. `focus` marks the heading for the
-/// glue to focus after a tab switch, so keyboard and screen reader users
-/// land on the new tab's content.
+/// One tab's cards (`tab_groups`). Where the engine's cards would be while
+/// it can't be reached, its message stands in, once.
+fn tab_cards(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
+    let groups = tab_groups(data, tab);
+    let engine_down = !engine_available(data);
+    let first_engine = groups.iter().position(|group| engine_group(group));
+    html! {
+        @for (i, group) in groups.iter().enumerate() {
+            @if engine_down && engine_group(group) {
+                @if first_engine == Some(i) { (engine_unavailable(data)) }
+            } @else if let Some(network) = group.strip_prefix("network-").and_then(|n| data.engine_networks.iter().find(|network| network.network == n)) {
+                (network_card(data, network))
+            } @else {
+                (settings_card(data, group))
+            }
+        }
+    }
+}
+
+/// The bar at the bottom of the window that saves the tab: the page's one
+/// Save. With JavaScript it shows once something on the tab changes and
+/// names the cards changed; without, it's always there. After a save that
+/// refused a card it's red, says why, and links to the card.
+fn save_bar(data: &AdminSettingsViewModel) -> Markup {
+    let failure = data.failed_groups.first();
+    html! {
+        div id="save-bar" class={ "save-bar" @if failure.is_some() { " is-failed" } } role="region" aria-label="Save changes" data-save-bar {
+            p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus[data.answers_save] {
+                @if let Some(failure) = failure {
+                    @let names: Vec<String> = data.failed_groups.iter().map(|f| group_title(&f.group)).collect();
+                    strong { (names.join(" and ")) " not saved." } " " (failure.message) " "
+                    a href=(format!("#{}", card_id(&failure.group))) data-show-card=(failure.group) { "Show" }
+                } @else {
+                    "Saving writes the changes on this tab to the options file and applies them."
+                }
+            }
+            div class="save-bar-actions" {
+                a class="btn" href=(data.tab.href()) data-discard-all { "Discard changes" }
+                button type="submit" class="btn-primary" data-save { "Save" }
+            }
+        }
+    }
+}
+
+/// The open tab: its heading, its one form, its cards and the save bar.
+/// What fixi swaps, for a tab link or a save. `focus` marks the heading for
+/// the glue to focus after a tab switch, so keyboard and screen reader
+/// users land on the new tab's content.
 pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
     let tab = data.tab;
     html! {
-        section id="settings-panel" aria-labelledby="settings-panel-title" {
+        section id="settings-panel" aria-labelledby="settings-panel-title" data-tab=(tab.id()) data-tab-label=(tab.label()) {
             h2 id="settings-panel-title" tabindex="-1" data-fx-focus[focus] { (tab.label()) }
             p class="hint" { "Saving writes the options file and applies the change straight away. A setting given on the command line or in the environment is locked here: change it where it is given." }
             @if tab == SettingsTab::Abuse {
@@ -1495,6 +1673,12 @@ pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
                     "past the soft limit is asked to pass a short check (automatic with JavaScript, a 10-second wait "
                     "without); past the hard limit they're refused until the minute is up. Signed-in merchants and "
                     "plugins using their store's secret key are never checked."
+                }
+            }
+            @if tab == SettingsTab::Nodes {
+                p class="hint" {
+                    "The Monero nodes the engine reads each network's chain from: a primary, and fallbacks tried when it fails. "
+                    "A network with no nodes isn't used. A node that doesn't answer is still saved; one on another network is refused."
                 }
             }
             @if tab.engine_only() && !engine_available(data) {
@@ -1512,11 +1696,8 @@ pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
                         // This one, first and out of sight, is Save.
                         button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true" { "Save" }
                     }
-                    (tab_fields(data, tab))
-                    div class="settings-actions" {
-                        button type="submit" class="btn-primary" { "Save" }
-                        (save_status(data))
-                    }
+                    (tab_cards(data, tab))
+                    (save_bar(data))
                 }
             }
         }
@@ -1525,11 +1706,13 @@ pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
 
 /// What fixi gets back for a tab link or a save: the panel, with the
 /// banners and the tab bar out of band (a save can change both: a marker
-/// comes or goes, a banner appears).
+/// comes or goes, a banner appears), and a save's toast. A tab link brings
+/// no toast, so the last save's stays until it fades or is closed.
 pub fn settings_fragment(data: &AdminSettingsViewModel, focus_heading: bool) -> Markup {
     html! {
         (settings_panel(data, focus_heading))
         (banners(data, true))
+        @if data.toast.is_some() { (toasts(data, true)) }
         (tab_bar(data, true))
     }
 }
@@ -1543,9 +1726,8 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
             (options_file_bars(data))
             (tab_bar(data, false))
             (settings_panel(data, false))
-            script { (maud::PreEscaped(CONFIRM_CLEARED_NETWORK_SCRIPT)) }
-            script { (maud::PreEscaped(CUSTODY_BACKENDS_SCRIPT)) }
-            script { (maud::PreEscaped(NODE_FORM_SCRIPT)) }
+            (toasts(data, false))
+            script { (maud::PreEscaped(include_str!("../../static/admin-settings.js"))) }
         }
     };
     layout(
@@ -1563,197 +1745,183 @@ mod tests {
         PageChrome::from_user(None, "/dashboard/admin/settings")
     }
 
-    /// Every setting both registries have today, with the tab (and
-    /// heading) the page shows it on (nicer_admin_screen.md section 2). A
-    /// setting added later fails the registry cross-checks below until it
-    /// is given a place here.
-    const PLACEMENTS: &[(&str, SettingOwner, SettingsTab, Option<&str>)] = {
+    /// Every setting both registries have today, with the tab and the card
+    /// the page shows it in (nicer_admin_screen.md section 2). A setting
+    /// added later fails the registry cross-checks below until it is given
+    /// a place here.
+    const PLACEMENTS: &[(&str, SettingOwner, SettingsTab, &str)] = {
         use SettingOwner::{Engine as E, Monokulo as M};
         use SettingsTab::*;
         &[
-            ("signup.mode", M, General, None),
-            ("public_url", M, General, None),
+            ("signup.mode", M, General, "signup"),
+            ("public_url", M, General, "public-address"),
             (
                 "exchange_rate.coingecko_enabled",
                 M,
                 Payments,
-                Some("Exchange rates"),
+                "exchange-rates",
             ),
             (
                 "exchange_rate.coingecko_base_url",
                 M,
                 Payments,
-                Some("Exchange rates"),
+                "exchange-rates",
             ),
             (
                 "exchange_rate.coinmarketcap_enabled",
                 M,
                 Payments,
-                Some("Exchange rates"),
+                "exchange-rates",
             ),
             (
                 "exchange_rate.coinmarketcap_base_url",
                 M,
                 Payments,
-                Some("Exchange rates"),
+                "exchange-rates",
             ),
             (
                 "exchange_rate.haveno_enabled",
                 M,
                 Payments,
-                Some("Exchange rates"),
+                "exchange-rates",
             ),
             (
                 "exchange_rate.haveno_base_url",
                 M,
                 Payments,
-                Some("Exchange rates"),
+                "exchange-rates",
             ),
+            ("exchange_rate.cache_seconds", M, Payments, "exchange-rates"),
+            ("engine.mode", M, General, "engine"),
+            ("engine.url", M, General, "engine"),
+            ("engine.token", M, General, "engine"),
+            ("http_cache.max_mb", M, Server, "server-monokulo"),
+            ("database.read_connections", M, Server, "server-monokulo"),
+            ("database.path", M, Server, "server-monokulo"),
+            ("server.bind", M, Server, "server-monokulo"),
+            ("crypto.encryption_key", M, Server, "server-monokulo"),
+            ("logging.format", M, Logging, "logging-monokulo"),
+            ("abuse.soft_per_min", M, Abuse, "abuse-limits"),
+            ("abuse.hard_per_min", M, Abuse, "abuse-limits"),
+            ("abuse.signed_in_per_min", M, Abuse, "abuse-limits"),
+            ("abuse.client_logs_per_min", M, Abuse, "abuse-limits"),
+            ("abuse.challenge_bits", M, Abuse, "abuse-challenge"),
+            ("abuse.under_attack", M, Abuse, "abuse-challenge"),
+            ("abuse.trusted_proxies", M, Abuse, "abuse-visitors"),
+            ("abuse.onion_listener", M, Abuse, "abuse-visitors"),
+            ("abuse.stream_cap", M, Abuse, "abuse-limits"),
+            ("rate_limit.per_store_key_per_min", M, Abuse, "abuse-limits"),
+            ("logging.level", M, Logging, "logging-monokulo"),
+            ("logging.dev_mode_until", M, Logging, "logging-monokulo"),
+            ("logging.retention_days", M, Logging, "logging-monokulo"),
+            ("logging.max_mb", M, Logging, "logging-monokulo"),
+            ("logging.otlp_endpoint", M, Logging, "logging-monokulo"),
+            ("logging.otlp_headers", M, Logging, "logging-monokulo"),
+            ("monero_node.mainnet", E, Nodes, "network-mainnet"),
+            ("monero_node.stagenet", E, Nodes, "network-stagenet"),
+            ("monero_node.testnet", E, Nodes, "network-testnet"),
+            ("monero_node.strict_tls", E, Nodes, "nodes-all"),
+            ("proof_of_work.mainnet", E, Nodes, "network-mainnet"),
+            ("proof_of_work.stagenet", E, Nodes, "network-stagenet"),
+            ("proof_of_work.testnet", E, Nodes, "network-testnet"),
             (
-                "exchange_rate.cache_seconds",
-                M,
-                Payments,
-                Some("Exchange rates"),
-            ),
-            ("engine.mode", M, General, None),
-            ("engine.url", M, General, None),
-            ("engine.token", M, General, None),
-            ("http_cache.max_mb", M, Server, None),
-            ("database.read_connections", M, Server, None),
-            ("database.path", M, Server, None),
-            ("server.bind", M, Server, None),
-            ("crypto.encryption_key", M, Server, None),
-            ("logging.format", M, Logging, Some("Monokulo")),
-            ("abuse.soft_per_min", M, Abuse, None),
-            ("abuse.hard_per_min", M, Abuse, None),
-            ("abuse.signed_in_per_min", M, Abuse, None),
-            ("abuse.client_logs_per_min", M, Abuse, None),
-            ("abuse.challenge_bits", M, Abuse, None),
-            ("abuse.under_attack", M, Abuse, None),
-            ("abuse.trusted_proxies", M, Abuse, None),
-            ("abuse.onion_listener", M, Abuse, None),
-            ("abuse.stream_cap", M, Abuse, None),
-            ("rate_limit.per_store_key_per_min", M, Abuse, None),
-            ("logging.level", M, Logging, Some("Monokulo")),
-            ("logging.dev_mode_until", M, Logging, Some("Monokulo")),
-            ("logging.retention_days", M, Logging, Some("Monokulo")),
-            ("logging.max_mb", M, Logging, Some("Monokulo")),
-            ("logging.otlp_endpoint", M, Logging, Some("Monokulo")),
-            ("logging.otlp_headers", M, Logging, Some("Monokulo")),
-            ("monero_node.mainnet", E, Nodes, None),
-            ("monero_node.stagenet", E, Nodes, None),
-            ("monero_node.testnet", E, Nodes, None),
-            ("monero_node.strict_tls", E, Nodes, None),
-            ("proof_of_work.mainnet", E, Nodes, None),
-            ("proof_of_work.stagenet", E, Nodes, None),
-            ("proof_of_work.testnet", E, Nodes, None),
-            ("key_custody.enabled_backends", E, Custody, None),
-            ("key_custody.default_backend", E, Custody, None),
-            ("key_custody.snp_product", E, Custody, None),
-            ("key_custody.snp_trusted_id_key", E, Custody, None),
-            ("key_custody.snp_min_guest_svn", E, Custody, None),
-            ("key_custody.snp_min_tcb", E, Custody, None),
-            ("key_custody.snp_handoff_url", E, Custody, None),
-            (
-                "key_custody.cli_download_url",
-                M,
+                "key_custody.enabled_backends",
+                E,
                 Custody,
-                Some(CLI_DOWNLOADS),
+                "custody-backends",
             ),
             (
-                "key_custody.cli_source_url",
-                M,
+                "key_custody.default_backend",
+                E,
                 Custody,
-                Some(CLI_DOWNLOADS),
+                "custody-backends",
             ),
-            // Shown in the snp backend's own section (`custody_backend_sections`).
-            (
-                "key_custody.snp_entry_id_key",
-                M,
-                Custody,
-                Some(CLI_DOWNLOADS),
-            ),
+            ("key_custody.snp_product", E, Custody, "custody-snp"),
+            ("key_custody.snp_trusted_id_key", E, Custody, "custody-snp"),
+            ("key_custody.snp_min_guest_svn", E, Custody, "custody-snp"),
+            ("key_custody.snp_min_tcb", E, Custody, "custody-snp"),
+            ("key_custody.snp_handoff_url", E, Custody, "custody-snp"),
+            ("key_custody.cli_download_url", M, Custody, "custody-cli"),
+            ("key_custody.cli_source_url", M, Custody, "custody-cli"),
+            ("key_custody.snp_entry_id_key", M, Custody, "custody-snp"),
             (
                 "key_custody.snp_entry_min_guest_svn",
                 M,
                 Custody,
-                Some(CLI_DOWNLOADS),
+                "custody-snp",
             ),
-            (
-                "key_custody.snp_entry_min_tcb",
-                M,
-                Custody,
-                Some(CLI_DOWNLOADS),
-            ),
-            (
-                "key_custody.snp_entry_required",
-                M,
-                Custody,
-                Some(CLI_DOWNLOADS),
-            ),
+            ("key_custody.snp_entry_min_tcb", M, Custody, "custody-snp"),
+            ("key_custody.snp_entry_required", M, Custody, "custody-snp"),
             (
                 "key_custody.snp_bundles_per_user",
                 M,
                 Custody,
-                Some(CLI_DOWNLOADS),
+                "custody-snp",
             ),
             (
                 "key_custody.snp_bundles_per_user_per_min",
                 M,
                 Custody,
-                Some(CLI_DOWNLOADS),
+                "custody-snp",
             ),
-            ("payment.confirmations_required", E, Payments, None),
-            ("payment.order_expiry_minutes", E, Payments, None),
+            ("payment.confirmations_required", E, Payments, "orders"),
+            ("payment.order_expiry_minutes", E, Payments, "orders"),
             (
                 "payment.expired_order_grace_period_minutes",
                 E,
                 Payments,
-                None,
+                "orders",
             ),
-            ("payment.reorg_check_depth", E, Payments, None),
-            ("payment.mempool_poll_interval_ms", E, Payments, None),
-            ("payment.scan_chunk_memory_budget_mb", E, Server, None),
-            ("webhooks.allow_private_urls", E, Payments, Some("Webhooks")),
+            ("payment.reorg_check_depth", E, Payments, "chain"),
+            ("payment.mempool_poll_interval_ms", E, Payments, "chain"),
             (
-                "webhooks.delivery_timeout_ms",
+                "payment.scan_chunk_memory_budget_mb",
                 E,
-                Payments,
-                Some("Webhooks"),
+                Server,
+                "server-engine",
             ),
-            ("webhooks.max_attempts", E, Payments, Some("Webhooks")),
-            ("server.bind", E, Server, None),
-            ("server.worker_threads", E, Server, None),
-            ("server.cpus", E, Server, None),
-            ("server.nice", E, Server, None),
-            ("server.max_body_bytes", E, Server, None),
-            ("server.rate_limit_per_token_per_min", E, Server, None),
-            ("database.read_connections", E, Server, None),
-            ("database.path", E, Server, None),
-            ("server.token", E, Server, None),
-            ("logging.format", E, Logging, Some("Engine")),
-            ("logging.level", E, Logging, Some("Engine")),
-            ("logging.dev_mode_until", E, Logging, Some("Engine")),
-            ("logging.retention_days", E, Logging, Some("Engine")),
-            ("logging.max_mb", E, Logging, Some("Engine")),
-            ("logging.otlp_endpoint", E, Logging, Some("Engine")),
-            ("logging.otlp_headers", E, Logging, Some("Engine")),
+            ("webhooks.allow_private_urls", E, Payments, "webhooks"),
+            ("webhooks.delivery_timeout_ms", E, Payments, "webhooks"),
+            ("webhooks.max_attempts", E, Payments, "webhooks"),
+            ("server.bind", E, Server, "server-engine"),
+            ("server.worker_threads", E, Server, "server-engine"),
+            ("server.cpus", E, Server, "server-engine"),
+            ("server.nice", E, Server, "server-engine"),
+            ("server.max_body_bytes", E, Server, "server-engine"),
+            (
+                "server.rate_limit_per_token_per_min",
+                E,
+                Server,
+                "server-engine",
+            ),
+            ("database.read_connections", E, Server, "server-engine"),
+            ("database.path", E, Server, "server-engine"),
+            ("server.token", E, Server, "server-engine"),
+            ("logging.format", E, Logging, "logging-engine"),
+            ("logging.level", E, Logging, "logging-engine"),
+            ("logging.dev_mode_until", E, Logging, "logging-engine"),
+            ("logging.retention_days", E, Logging, "logging-engine"),
+            ("logging.max_mb", E, Logging, "logging-engine"),
+            ("logging.otlp_endpoint", E, Logging, "logging-engine"),
+            ("logging.otlp_headers", E, Logging, "logging-engine"),
         ]
     };
 
     #[test]
     fn every_setting_known_today_has_a_named_tab() {
-        for (key, owner, tab, heading) in PLACEMENTS {
+        for (key, owner, tab, group) in PLACEMENTS {
             assert_eq!(
                 setting_placement(key, *owner),
-                (*tab, *heading),
+                (*tab, (*group).to_string()),
                 "{key} ({owner:?})"
             );
             assert_ne!(*tab, SettingsTab::Other, "{key}");
-            // The heading is one the tab actually shows, for that owner.
+            // The card is one the tab actually shows.
             assert!(
-                tab.groups().contains(&(*heading, *owner)),
-                "{key} is placed under a group {tab:?} doesn't have"
+                tab_groups(&full_view(*tab), *tab)
+                    .iter()
+                    .any(|g| g == group),
+                "{key} is placed in a card {tab:?} doesn't have"
             );
         }
     }
@@ -1791,15 +1959,15 @@ mod tests {
     fn a_setting_the_map_does_not_know_goes_to_other() {
         assert_eq!(
             setting_placement("telemetry.sample_rate", SettingOwner::Engine),
-            (SettingsTab::Other, None)
+            (SettingsTab::Other, "other-engine".to_string())
         );
         assert_eq!(
             setting_placement("brand_new", SettingOwner::Engine),
-            (SettingsTab::Other, None)
+            (SettingsTab::Other, "other-engine".to_string())
         );
         assert_eq!(
             setting_placement("brand.new", SettingOwner::Monokulo),
-            (SettingsTab::Other, None)
+            (SettingsTab::Other, "other-monokulo".to_string())
         );
     }
 
@@ -1979,6 +2147,7 @@ mod tests {
                     tenant_count: 0,
                     error: None,
                     scaling: None,
+                    saved_count: 1,
                 })
                 .collect(),
             ..Default::default()
@@ -1996,6 +2165,7 @@ mod tests {
             },
             label: address.to_string(),
             status: None,
+            saved_index: Some(0),
         }
     }
 
@@ -2076,8 +2246,10 @@ mod tests {
                 "{tab:?}"
             );
             assert_eq!(
-                html.matches(r#"<button type="submit" class="btn-primary">Save</button>"#)
-                    .count(),
+                html.matches(
+                    r#"<button type="submit" class="btn-primary" data-save>Save</button>"#
+                )
+                .count(),
                 1,
                 "{tab:?}"
             );
@@ -2089,9 +2261,9 @@ mod tests {
         let payments = page(&full_view(SettingsTab::Payments));
         let order = [
             "name=\"payment.confirmations_required\"",
-            "<h3>Webhooks</h3>",
+            ">Webhooks</h3>",
             "name=\"webhooks.max_attempts\"",
-            "<h3>Exchange rates</h3>",
+            ">Exchange rates</h3>",
             "name=\"exchange_rate.cache_seconds\"",
         ];
         let at: Vec<usize> = order
@@ -2105,8 +2277,8 @@ mod tests {
         assert!(at.windows(2).all(|w| w[0] < w[1]), "{at:?}");
 
         let logging = page(&full_view(SettingsTab::Logging));
-        let monokulo = logging.find("<h3>Monokulo</h3>").expect(&logging);
-        let engine = logging.find("<h3>Engine</h3>").expect(&logging);
+        let monokulo = logging.find(">Monokulo</h3>").expect(&logging);
+        let engine = logging.find(">Engine</h3>").expect(&logging);
         assert!(monokulo < logging.find(r#"name="logging.level""#).unwrap());
         assert!(
             engine < logging.find(r#"name="engine:logging.level""#).unwrap() && monokulo < engine
@@ -2179,14 +2351,14 @@ mod tests {
     #[test]
     fn banners_are_above_the_tab_bar_on_every_tab() {
         for tab in SettingsTab::ALL {
-            let data = AdminSettingsViewModel {
-                error: Some("Something was refused.".into()),
-                notices: vec![Notice::Warning(
+            let data =
+                AdminSettingsViewModel {
+                    notices: vec![Notice::Error("Something was refused.".into()), Notice::Warning(
                     "Saved. These settings take effect after the engine restarts: server.bind."
                         .into(),
                 )],
-                ..full_view(tab)
-            };
+                    ..full_view(tab)
+                };
             let html = page(&data);
             let banner = html.find("Something was refused.").expect(&html);
             let notice = html
@@ -2267,10 +2439,7 @@ mod tests {
             let data = unreachable(tab);
             let message = "Could not reach the configured engine: connection refused";
             let html = page(&data);
-            let engine_part = tab
-                .groups()
-                .iter()
-                .any(|(_, owner)| *owner == SettingOwner::Engine);
+            let engine_part = tab_groups(&data, tab).iter().any(|g| engine_group(g));
             assert_eq!(
                 html.matches(message).count(),
                 usize::from(engine_part),
@@ -2281,12 +2450,12 @@ mod tests {
             } else {
                 assert!(
                     html.contains("<form ")
-                        && html.contains(r#"class="btn-primary">Save</button>"#),
+                        && html.contains(r#"class="btn-primary" data-save>Save</button>"#),
                     "{tab:?}"
                 );
                 assert!(
-                    !html.contains("<h3>Webhooks</h3>"),
-                    "one message, not a heading per group: {html}"
+                    !html.contains(">Webhooks</h3>"),
+                    "one message, not a card per group: {html}"
                 );
             }
         }
@@ -2297,7 +2466,8 @@ mod tests {
         );
         let logging = page(&unreachable(SettingsTab::Logging));
         assert!(
-            logging.find("<h3>Engine</h3>").unwrap() < logging.find("Could not reach").unwrap(),
+            logging.find(">Monokulo</h3>").unwrap() < logging.find("Could not reach").unwrap()
+                && !logging.contains(">Engine</h3>"),
             "{logging}"
         );
     }
@@ -2325,7 +2495,7 @@ mod tests {
         );
         assert!(
             html.contains(concat!(
-                r#"<span class="visually-hidden">From the options file, which saving here writes.</span></span></div>"#,
+                r#"<span class="visually-hidden">From the options file, which saving here writes.</span></span><span class="changed-mark">changed</span></div>"#,
                 r#"<span class="field-help" id="setting-help-engine.url">Where the engine listens.</span>"#,
                 r#"<input type="url" name="engine.url" value="http://scanner.internal""#,
             )),
@@ -2344,12 +2514,19 @@ mod tests {
         let mut data = full_view(SettingsTab::Nodes);
         data.engine_networks[0].tenant_count = 2;
         data.engine_networks[2].rows.clear();
+        data.engine_networks[2].saved_count = 0;
         let html = page(&data);
         assert!(
-            html.contains(r#"<section class="node-network" data-network="mainnet" data-tenant-count="2" aria-labelledby="node-network-mainnet"><h3 id="node-network-mainnet">Mainnet</h3><p class="setting-source">Used by 2 stores.</p>"#),
+            html.contains(r#"<section id="card-network-mainnet" class="settings-card node-network" data-card="network-mainnet" data-network="mainnet" data-tenant-count="2" data-saved-count="1" aria-labelledby="card-network-mainnet-title"><header class="card-head"><h3 id="card-network-mainnet-title">Mainnet</h3><span class="owner-chip">Engine</span><span class="card-meta">Used by 2 stores</span>"#),
             "{html}"
         );
-        assert!(html.contains(r#"<details class="node-network" data-network="testnet" data-tenant-count="0"><summary>Add a node for testnet</summary>"#), "{html}");
+        let testnet = &html[html.find(r#"data-network="testnet""#).unwrap()..];
+        assert!(
+            testnet.contains(
+                r#"<details class="node-network-closed"><summary>Add a node for testnet</summary>"#
+            ),
+            "{testnet}"
+        );
         assert!(!html.contains("<textarea"), "no JSON box");
         assert!(
             !html.contains("<summary>Example</summary>"),
@@ -2359,7 +2536,12 @@ mod tests {
         // With stores but no node, it's open, so the admin sees the gap.
         data.engine_networks[2].tenant_count = 1;
         let html = page(&data);
-        assert!(html.contains(r#"<h3 id="node-network-testnet">Testnet</h3><p class="setting-source">Used by 1 store.</p>"#), "{html}");
+        let testnet = &html[html.find(r#"data-network="testnet""#).unwrap()..];
+        assert!(
+            testnet.contains(r#"<span class="card-meta">Used by 1 store</span>"#),
+            "{testnet}"
+        );
+        assert!(!testnet.contains("node-network-closed"), "{testnet}");
     }
 
     #[test]
@@ -2376,7 +2558,7 @@ mod tests {
         let block = &html[html.find(r#"data-network="stagenet""#).unwrap()
             ..html.find(r#"data-network="testnet""#).unwrap()];
         let legends: Vec<&str> = block
-            .match_indices("<legend class=\"node-row-name\">")
+            .match_indices("data-node-place>")
             .map(|(at, m)| {
                 &block[at + m.len()..at + m.len() + block[at + m.len()..].find('<').unwrap()]
             })
@@ -2648,7 +2830,7 @@ mod tests {
         // The snp backend's device and minimum security version sit in its
         // own section, hidden while snp is off; plain has nothing to set.
         let snp = html
-            .find(r#"<section class="custody-backend" data-custody-backend="snp" hidden>"#)
+            .find(r#"<section id="card-custody-snp" class="settings-card" data-card="custody-snp" data-custody-backend="snp" hidden"#)
             .expect(&html);
         assert!(
             html.find(r#"name="key_custody.snp_trusted_id_key""#)
@@ -2666,14 +2848,17 @@ mod tests {
             html.find(r#"name="key_custody.default_backend""#).unwrap() < snp,
             "{html}"
         );
-        assert!(html.contains(r#"<section class="custody-backend" data-custody-backend="plain"><h3>Key custody: plain</h3><p class="hint">Nothing to set up"#), "{html}");
         assert!(
-            html.contains(r#"name !== "key_custody.enabled_backends""#),
+            !html.contains(r#"data-custody-backend="plain""#),
+            "nothing to set up for plain: {html}"
+        );
+        assert!(
+            html.contains(r#"name === "key_custody.enabled_backends""#),
             "shown as soon as it's ticked, with JavaScript"
         );
 
         let html = page("plain,snp");
-        assert!(html.contains(r#"<section class="custody-backend" data-custody-backend="snp"><h3>Key custody: snp</h3>"#), "{html}");
+        assert!(html.contains(r#"<section id="card-custody-snp" class="settings-card" data-card="custody-snp" data-custody-backend="snp" aria-labelledby="card-custody-snp-title"><header class="card-head"><h3 id="card-custody-snp-title">SEV-SNP</h3>"#), "{html}");
         assert!(html.contains(r#"value="snp" checked"#), "{html}");
     }
 
@@ -2793,5 +2978,257 @@ mod tests {
         assert!(html.contains(r#"<p class="notice">Saved, but set by an environment variable."#));
         assert!(html.contains("Applies after a restart."));
         assert!(html.contains("restart needed"));
+    }
+
+    /// A card, by id, as the page renders it: from its section to the next.
+    fn card<'a>(html: &'a str, group: &str) -> &'a str {
+        let start = html
+            .find(&format!(r#"<section id="card-{group}""#))
+            .unwrap_or_else(|| panic!("card-{group} in {html}"));
+        let rest = &html[start..];
+        &rest[..rest.find("</section>").unwrap()]
+    }
+
+    #[test]
+    fn each_group_of_settings_is_a_card_with_its_heading_and_owner() {
+        let payments = page(&full_view(SettingsTab::Payments));
+        for (group, title, owner, key) in [
+            (
+                "orders",
+                "Orders",
+                "Engine",
+                "payment.confirmations_required",
+            ),
+            (
+                "chain",
+                "Watching the chain",
+                "Engine",
+                "payment.reorg_check_depth",
+            ),
+            ("webhooks", "Webhooks", "Engine", "webhooks.max_attempts"),
+            (
+                "exchange-rates",
+                "Exchange rates",
+                "Monokulo",
+                "exchange_rate.cache_seconds",
+            ),
+        ] {
+            let card = card(&payments, group);
+            assert!(
+                card.contains(&format!(r#"<h3 id="card-{group}-title">{title}</h3><span class="owner-chip">{owner}</span>"#)),
+                "{card}"
+            );
+            assert!(
+                card.contains(&format!(r#"name="{key}""#)),
+                "{group}: {card}"
+            );
+            // Its own Discard, shown by the script while it has changes.
+            assert!(
+                card.contains(r#"<button type="button" class="card-discard js-only" data-card-discard hidden>Discard</button>"#),
+                "{card}"
+            );
+        }
+        // Subheadings inside a card where it has parts.
+        let rates = card(&payments, "exchange-rates");
+        let parts: Vec<usize> = [
+            "<h4>Coingecko</h4>",
+            "<h4>CoinMarketCap</h4>",
+            "<h4>RetoSwap (Haveno)</h4>",
+            "<h4>Every provider</h4>",
+        ]
+        .iter()
+        .map(|h| rates.find(h).unwrap_or_else(|| panic!("{h}: {rates}")))
+        .collect();
+        assert!(parts.windows(2).all(|w| w[0] < w[1]), "{rates}");
+
+        // A card nothing on the page can change says so, with no Discard.
+        let mut data = full_view(SettingsTab::Custody);
+        for field in &mut data.monokulo_fields {
+            if field.key.starts_with("key_custody.cli_") {
+                field.locked = Some("Given on the command line.".into());
+            }
+        }
+        let html = page(&data);
+        let cli = card(&html, "custody-cli");
+        assert!(
+            cli.contains("Can't be changed here") && !cli.contains("data-card-discard"),
+            "{cli}"
+        );
+        // This site's own SEV-SNP settings share the engine's card.
+        let snp = card(&html, "custody-snp");
+        assert!(
+            snp.contains(r#"<span class="owner-chip">Engine and monokulo</span>"#),
+            "{snp}"
+        );
+        assert!(
+            snp.find(r#"name="key_custody.snp_min_tcb""#).unwrap()
+                < snp.find("<h4>This site's key entry</h4>").unwrap()
+                && snp.find("<h4>This site's key entry</h4>").unwrap()
+                    < snp.find(r#"name="key_custody.snp_entry_min_tcb""#).unwrap(),
+            "{snp}"
+        );
+    }
+
+    #[test]
+    fn the_save_bar_is_the_tabs_one_save_and_discard_loads_the_tab_again() {
+        let html = page(&full_view(SettingsTab::Payments));
+        let form = &html[html.find("<form ").unwrap()..html.find("</form>").unwrap()];
+        let bar = &form[form.find(r#"<div id="save-bar""#).expect(form)..];
+        assert!(
+            bar.starts_with(r#"<div id="save-bar" class="save-bar" role="region" aria-label="Save changes" data-save-bar>"#),
+            "{bar}"
+        );
+        assert!(bar.contains(
+            "Saving writes the changes on this tab to the options file and applies them."
+        ));
+        assert!(
+            bar.contains(r#"<a class="btn" href="/dashboard/admin/settings?tab=payments" data-discard-all>Discard changes</a><button type="submit" class="btn-primary" data-save>Save</button>"#),
+            "{bar}"
+        );
+        // After every card, last in the form.
+        assert!(form.rfind("</section>").unwrap() < form.find(r#"id="save-bar""#).unwrap());
+    }
+
+    #[test]
+    fn a_refused_card_is_red_says_why_and_shows_what_was_typed() {
+        let mut data = full_view(SettingsTab::Payments);
+        let attempts = data
+            .engine_fields
+            .iter_mut()
+            .find(|f| f.key == "webhooks.max_attempts")
+            .unwrap();
+        attempts.value = "100".into();
+        attempts.saved_value = Some("8".into());
+        attempts.problem = Some("must be from 1 to 64".into());
+        data.failed_groups = vec![GroupFailure {
+            group: "webhooks".into(),
+            message: "The engine refused the change: webhooks.max_attempts must be from 1 to 64."
+                .into(),
+        }];
+        data.saved_groups = vec!["exchange-rates".into()];
+        data.saved_at = Some("8 Oct, 14:22".into());
+        data.answers_save = true;
+        let html = page(&data);
+
+        let webhooks = card(&html, "webhooks");
+        assert!(
+            webhooks.starts_with(r#"<section id="card-webhooks" class="settings-card is-failed""#),
+            "{webhooks}"
+        );
+        assert!(
+            webhooks.contains(r#"<span class="badge badge-error">Not saved</span>"#),
+            "{webhooks}"
+        );
+        assert!(webhooks.contains(r#"<p class="error" role="alert">The engine refused the change: webhooks.max_attempts must be from 1 to 64.</p>"#), "{webhooks}");
+        // What was typed, still to fix, with the saved value for Discard.
+        assert!(
+            webhooks.contains(r#"name="webhooks.max_attempts" value="100""#),
+            "{webhooks}"
+        );
+        assert!(webhooks.contains(r#"data-saved="8""#), "{webhooks}");
+        assert!(webhooks.contains("must be from 1 to 64"), "{webhooks}");
+        assert!(!webhooks.contains("Saved 8 Oct"), "{webhooks}");
+
+        // The card that was saved says when; the others say nothing.
+        assert!(card(&html, "exchange-rates").contains(
+            r#"<span class="card-meta card-saved" data-card-saved>Saved 8 Oct, 14:22</span>"#
+        ));
+        assert!(!card(&html, "orders").contains("Saved 8 Oct"));
+
+        // The bar is red, says why, links to the card, and takes focus.
+        assert!(
+            html.contains(r#"<div id="save-bar" class="save-bar is-failed""#),
+            "{html}"
+        );
+        assert!(html.contains(r##"<p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus><strong>Webhooks not saved.</strong> The engine refused the change: webhooks.max_attempts must be from 1 to 64. <a href="#card-webhooks" data-show-card="webhooks">Show</a></p>"##), "{html}");
+    }
+
+    #[test]
+    fn a_toast_says_how_a_save_went() {
+        let toast = |kind, show: Option<&str>| {
+            let data = AdminSettingsViewModel {
+                toast: Some(Toast {
+                    kind,
+                    title: "Webhooks saved and applied".into(),
+                    lines: vec!["One more thing.".into()],
+                    show: show.map(str::to_string),
+                }),
+                ..full_view(SettingsTab::Payments)
+            };
+            let html = page(&data);
+            let at = html
+                .find(r#"<div id="settings-toasts" class="toasts">"#)
+                .expect(&html);
+            html[at..at + html[at..].find("</div></div>").unwrap()].to_string()
+        };
+        let success = toast(ToastKind::Success, None);
+        assert!(success.contains(r#"<div class="toast toast-success" role="status" data-toast><span class="toast-icon" aria-hidden="true">✓</span><div class="toast-text"><strong>Webhooks saved and applied</strong><span class="toast-line">One more thing.</span>"#), "{success}");
+        assert!(!success.contains("Show"), "{success}");
+        assert!(toast(ToastKind::Warning, None)
+            .contains(r#"class="toast toast-warning" role="status""#));
+        assert!(toast(ToastKind::Neutral, None)
+            .contains(r#"class="toast toast-neutral" role="status""#));
+        let error = toast(ToastKind::Error, Some("webhooks"));
+        assert!(
+            error.contains(r#"class="toast toast-error" role="alert""#),
+            "{error}"
+        );
+        assert!(error.contains(r##"<a class="toast-show" href="#card-webhooks" data-show-card="webhooks">Show</a>"##), "{error}");
+        // No toast, an empty place for one: a save with fixi fills it.
+        let html = page(&full_view(SettingsTab::Payments));
+        assert!(
+            html.contains(r#"<div id="settings-toasts" class="toasts"></div>"#),
+            "{html}"
+        );
+        // A save's panel brings its toast; a tab link's brings none, so
+        // the last save's stays.
+        let mut saved = full_view(SettingsTab::Payments);
+        saved.toast = Some(Toast {
+            kind: ToastKind::Success,
+            title: "Orders saved and applied".into(),
+            lines: vec![],
+            show: None,
+        });
+        let fragment = settings_fragment(&saved, false).into_string();
+        assert!(
+            fragment.contains(r#"<div id="settings-toasts" class="toasts" data-fx-oob>"#),
+            "{fragment}"
+        );
+        let fragment = settings_fragment(&full_view(SettingsTab::Payments), false).into_string();
+        assert!(!fragment.contains("settings-toasts"), "{fragment}");
+    }
+
+    #[test]
+    fn a_node_row_is_closed_to_a_line_with_a_handle_and_its_move_buttons_are_for_no_script() {
+        let mut data = full_view(SettingsTab::Nodes);
+        data.engine_networks[1].rows =
+            vec![node_row_view("a.example:1"), node_row_view("b.example:2")];
+        data.engine_networks[1].rows[1].saved_index = Some(1);
+        data.engine_networks[1].rows[1].status = Some(NodeStatusView {
+            height: Some(5),
+            in_use: true,
+            ..Default::default()
+        });
+        data.engine_networks[1].saved_count = 2;
+        let html = page(&data);
+        let block = card(&html, "network-stagenet");
+        assert!(block.contains(r#"data-saved-count="2""#), "{block}");
+        assert!(
+            block.contains(r#"<details class="node-row" data-node-row="1" data-node-saved="1"><summary class="node-row-summary"><span class="node-handle js-only" role="button" tabindex="0" title="Drag to reorder" aria-label="Reorder Fallback 1: press the up or down arrow" data-node-handle>⠿</span><span class="node-row-name" data-node-place>Fallback 1</span><code class="node-row-address">b.example:2</code><span class="node-row-mark" data-node-mark></span><span class="node-row-status">Reachable, height 5. In use</span></summary>"#),
+            "{block}"
+        );
+        assert!(block.contains(r#"<button type="submit" class="no-js-only" name="node_action" value="up:stagenet:1">Move up</button>"#), "{block}");
+        assert!(block.contains(r#"<button type="submit" name="node_action" value="remove:stagenet:1" data-node-remove>Remove</button>"#), "{block}");
+        // The blank row to add one: no handle, no buttons.
+        assert!(block.contains(r#"<details class="node-row" data-node-row="2" data-node-add><summary class="node-row-summary"><span class="node-add-mark" aria-hidden="true">+</span><span class="node-row-name" data-node-place>Add a node</span>"#), "{block}");
+        // A row with something to fix opens by itself.
+        data.engine_networks[1].rows[0].row.error = Some("Add the port.".into());
+        let html = page(&data);
+        assert!(
+            html.contains(
+                r#"<details class="node-row" data-node-row="0" data-node-saved="0" open>"#
+            ),
+            "{html}"
+        );
     }
 }
