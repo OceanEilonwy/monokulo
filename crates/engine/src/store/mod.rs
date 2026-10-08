@@ -142,6 +142,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         27,
         include_str!("../../migrations/0027_snp_master_keys.sql"),
     ),
+    (28, include_str!("../../migrations/0028_wallets.sql")),
 ];
 
 /// The engine's writing connections (the shared store and the database
@@ -397,6 +398,10 @@ pub enum StoreError {
     AddressAllocation(String),
     #[error("database worker unavailable: {0}")]
     WorkerUnavailable(String),
+    /// The row can't go while something still uses it (a wallet with
+    /// stores on it).
+    #[error("{0}")]
+    InUse(String),
 }
 
 impl From<shared::sqlite::PoolError> for StoreError {
@@ -419,6 +424,11 @@ pub struct Tenant {
     pub sealed_key_material: Vec<u8>,
     pub primary_address: String,
     pub network: String,
+    /// The wallet this store takes payments into (migration 0028), shared
+    /// with any other store on it.
+    pub wallet_id: String,
+    /// The wallet's subaddress counter, mirrored here: every index below it
+    /// has been handed out by some store on the wallet.
     pub next_minor_index: u32,
     pub confirmations_required: u64,
     pub order_expiry_seconds: i64,
@@ -444,6 +454,26 @@ pub struct NewTenant {
 pub struct TenantConfigPatch {
     pub confirmations_required: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
+}
+
+/// One set of keys several stores can take payments into (migration 0028).
+#[derive(Debug, Clone)]
+pub struct Wallet {
+    pub id: String,
+    pub key_custody_backend: String,
+    pub sealed_key_material: Vec<u8>,
+    pub primary_address: String,
+    pub network: String,
+    pub next_minor_index: u32,
+    pub created_at: i64,
+    pub deleted_at: Option<i64>,
+}
+
+pub struct NewWallet {
+    pub key_custody_backend: String,
+    pub sealed_key_material: Vec<u8>,
+    pub primary_address: String,
+    pub network: String,
 }
 
 #[derive(Debug)]
@@ -1084,37 +1114,175 @@ impl Store {
 
     // -- Tenants --------------------------------------------------------
 
+    /// A store on a wallet of its own, made with it: the keys in `new` go
+    /// to a new wallet nothing else uses.
     pub fn create_tenant(&self, new: &NewTenant, now: i64) -> Result<CreatedTenant> {
-        let id = TenantId::new(new_id("tn"));
-        let public_key = generate_public_key();
-        let secret_token = generate_secret_token();
-        let secret_hash = secret_token.hash();
-
-        self.conn.execute(
-            "INSERT INTO tenants (id, public_key, secret_token_hash, key_custody_backend,
-                sealed_key_material, primary_address, network, next_minor_index,
-                confirmations_required, order_expiry_seconds, created_at_utc, scanned_through_height)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10,
-                (SELECT MAX(height) FROM scanned_blocks WHERE network = ?7))",
-            params![
-                id,
-                public_key,
-                secret_hash,
-                new.key_custody_backend,
-                new.sealed_key_material,
-                new.primary_address,
-                new.network,
-                new.confirmations_required.unwrap_or(10) as i64,
-                new.order_expiry_seconds.unwrap_or(1800),
-                now,
-            ],
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
         )?;
-
+        let wallet_id = Self::insert_wallet(
+            &tx,
+            &NewWallet {
+                key_custody_backend: new.key_custody_backend.clone(),
+                sealed_key_material: new.sealed_key_material.clone(),
+                primary_address: new.primary_address.clone(),
+                network: new.network.clone(),
+            },
+            now,
+        )?;
+        let (id, secret_token) = Self::insert_tenant_on_wallet(
+            &tx,
+            &wallet_id,
+            new.confirmations_required,
+            new.order_expiry_seconds,
+            now,
+        )?;
+        tx.commit()?;
         let tenant = self.get_tenant_by_id(&id)?.ok_or(StoreError::NotFound)?;
         Ok(CreatedTenant {
             tenant,
             secret_token,
         })
+    }
+
+    /// A new store on an existing wallet: it starts from the wallet's sealed
+    /// keys and claims order addresses from the wallet's counter.
+    pub fn create_tenant_on_wallet(
+        &self,
+        wallet_id: &str,
+        confirmations_required: Option<u64>,
+        order_expiry_seconds: Option<i64>,
+        now: i64,
+    ) -> Result<CreatedTenant> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let (id, secret_token) = Self::insert_tenant_on_wallet(
+            &tx,
+            wallet_id,
+            confirmations_required,
+            order_expiry_seconds,
+            now,
+        )?;
+        tx.commit()?;
+        let tenant = self.get_tenant_by_id(&id)?.ok_or(StoreError::NotFound)?;
+        Ok(CreatedTenant {
+            tenant,
+            secret_token,
+        })
+    }
+
+    fn insert_tenant_on_wallet(
+        conn: &Connection,
+        wallet_id: &str,
+        confirmations_required: Option<u64>,
+        order_expiry_seconds: Option<i64>,
+        now: i64,
+    ) -> Result<(TenantId, RawToken)> {
+        let id = TenantId::new(new_id("tn"));
+        let public_key = generate_public_key();
+        let secret_token = generate_secret_token();
+        let secret_hash = secret_token.hash();
+        let inserted = conn.execute(
+            "INSERT INTO tenants (id, public_key, secret_token_hash, key_custody_backend,
+                sealed_key_material, primary_address, network, wallet_id, next_minor_index,
+                confirmations_required, order_expiry_seconds, created_at_utc, scanned_through_height)
+             SELECT ?1, ?2, ?3, w.key_custody_backend, w.sealed_key_material, w.primary_address,
+                w.network, w.id, w.next_minor_index, ?5, ?6, ?7,
+                (SELECT MAX(height) FROM scanned_blocks WHERE network = w.network)
+             FROM wallets w WHERE w.id = ?4 AND w.deleted_at_utc IS NULL",
+            params![
+                id,
+                public_key,
+                secret_hash,
+                wallet_id,
+                confirmations_required.unwrap_or(10) as i64,
+                order_expiry_seconds.unwrap_or(1800),
+                now,
+            ],
+        )?;
+        if inserted == 0 {
+            return Err(StoreError::NotFound);
+        }
+        Ok((id, secret_token))
+    }
+
+    // -- Wallets --------------------------------------------------------
+
+    pub fn create_wallet(&self, new: &NewWallet, now: i64) -> Result<Wallet> {
+        let id = Self::insert_wallet(&self.conn, new, now)?;
+        self.get_wallet(&id)?.ok_or(StoreError::NotFound)
+    }
+
+    fn insert_wallet(conn: &Connection, new: &NewWallet, now: i64) -> Result<String> {
+        let id = new_id("wl");
+        conn.execute(
+            "INSERT INTO wallets (id, key_custody_backend, sealed_key_material, primary_address,
+                network, next_minor_index, created_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6)",
+            params![
+                id,
+                new.key_custody_backend,
+                new.sealed_key_material,
+                new.primary_address,
+                new.network,
+                now,
+            ],
+        )?;
+        Ok(id)
+    }
+
+    /// A wallet, deleted or not.
+    pub fn get_wallet(&self, id: &str) -> Result<Option<Wallet>> {
+        Ok(self
+            .conn
+            .query_row("SELECT * FROM wallets WHERE id = ?1", params![id], |row| {
+                Ok(Wallet {
+                    id: row.get("id")?,
+                    key_custody_backend: row.get("key_custody_backend")?,
+                    sealed_key_material: row.get("sealed_key_material")?,
+                    primary_address: row.get("primary_address")?,
+                    network: row.get("network")?,
+                    next_minor_index: row
+                        .get::<_, shared::sqlite::Unsigned<u32>>("next_minor_index")?
+                        .0,
+                    created_at: row.get("created_at_utc")?,
+                    deleted_at: row.get("deleted_at_utc")?,
+                })
+            })
+            .optional()?)
+    }
+
+    /// Marks a wallet deleted, so no new store can use it. Refused while an
+    /// enabled store still takes payments into it. Its row stays: the
+    /// counter must never be handed out again, and disabled stores still
+    /// point at it.
+    pub fn delete_wallet(&self, id: &str, now: i64) -> Result<()> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let in_use: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM tenants WHERE wallet_id = ?1 AND disabled_at_utc IS NULL",
+            params![id],
+            |row| row.get(0),
+        )?;
+        if in_use > 0 {
+            return Err(StoreError::InUse(format!(
+                "{in_use} store(s) still take payments into this wallet"
+            )));
+        }
+        let changed = tx.execute(
+            "UPDATE wallets SET deleted_at_utc = ?2 WHERE id = ?1 AND deleted_at_utc IS NULL",
+            params![id, now],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NotFound);
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     fn row_to_tenant(row: &rusqlite::Row<'_>) -> rusqlite::Result<Tenant> {
@@ -1125,6 +1293,7 @@ impl Store {
             sealed_key_material: row.get("sealed_key_material")?,
             primary_address: row.get("primary_address")?,
             network: row.get("network")?,
+            wallet_id: row.get("wallet_id")?,
             next_minor_index: row
                 .get::<_, shared::sqlite::Unsigned<u32>>("next_minor_index")?
                 .0,
@@ -1201,22 +1370,48 @@ impl Store {
         Ok(rows)
     }
 
-    /// Moves one tenant to another key custody backend with its newly sealed
-    /// keys, in one statement (task 5.3).
+    /// Moves a store's wallet to another key custody backend with its newly
+    /// sealed keys (task 5.3): the wallet and every enabled store on it, in
+    /// one transaction, since they all hold the same keys. Returns the other
+    /// enabled stores on the wallet, whose live handles the caller swaps too.
     pub fn update_tenant_key_custody(
         &self,
         tenant_id: &TenantId,
         backend: &str,
         sealed: &[u8],
-    ) -> Result<()> {
-        let changed = self.conn.execute(
-            "UPDATE tenants SET key_custody_backend = ?2, sealed_key_material = ?3 WHERE id = ?1 AND disabled_at_utc IS NULL",
-            params![tenant_id, backend, sealed],
+    ) -> Result<Vec<TenantId>> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
         )?;
-        if changed == 0 {
-            return Err(StoreError::NotFound);
-        }
-        Ok(())
+        let wallet_id: Option<String> = tx
+            .query_row(
+                "SELECT wallet_id FROM tenants WHERE id = ?1 AND disabled_at_utc IS NULL",
+                params![tenant_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let wallet_id = wallet_id.ok_or(StoreError::NotFound)?;
+        tx.execute(
+            "UPDATE wallets SET key_custody_backend = ?2, sealed_key_material = ?3 WHERE id = ?1",
+            params![wallet_id, backend, sealed],
+        )?;
+        tx.execute(
+            "UPDATE tenants SET key_custody_backend = ?2, sealed_key_material = ?3
+             WHERE wallet_id = ?1 AND disabled_at_utc IS NULL",
+            params![wallet_id, backend, sealed],
+        )?;
+        let others = {
+            let mut stmt = tx.prepare(
+                "SELECT id FROM tenants WHERE wallet_id = ?1 AND id != ?2 AND disabled_at_utc IS NULL",
+            )?;
+            let rows = stmt
+                .query_map(params![wallet_id, tenant_id], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<TenantId>>>()?;
+            rows
+        };
+        tx.commit()?;
+        Ok(others)
     }
 
     /// Every wrapped SEV-SNP master key (`key_custody::snp`).
@@ -1481,11 +1676,15 @@ impl Store {
     /// `create_order_claiming_minor_index`, which advances the counter and inserts
     /// the order together.
     pub fn allocate_minor_index(&self, tenant_id: &TenantId) -> Result<u32> {
-        let allocated = self
-            .conn
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let allocated = tx
             .query_row(
-                "UPDATE tenants SET next_minor_index = next_minor_index + 1
-             WHERE id = ?1 AND next_minor_index > 0 AND next_minor_index < ?2
+                "UPDATE wallets SET next_minor_index = next_minor_index + 1
+             WHERE id = (SELECT wallet_id FROM tenants WHERE id = ?1)
+               AND next_minor_index > 0 AND next_minor_index < ?2
              RETURNING next_minor_index - 1",
                 params![tenant_id, i64::from(u32::MAX)],
                 |row| row.get::<_, shared::sqlite::Unsigned<u32>>(0),
@@ -1496,7 +1695,22 @@ impl Store {
                     "tenant missing or subaddress indices exhausted".to_owned(),
                 )
             })?;
+        Self::mirror_wallet_counter(&tx, tenant_id)?;
+        tx.commit()?;
         Ok(allocated.0)
+    }
+
+    /// Copies a wallet's counter to every store on it, so each store's scan
+    /// range (`0..next_minor_index`) covers every address handed out on the
+    /// wallet.
+    fn mirror_wallet_counter(conn: &Connection, tenant_id: &TenantId) -> Result<()> {
+        conn.execute(
+            "UPDATE tenants SET next_minor_index =
+                (SELECT w.next_minor_index FROM wallets w WHERE w.id = tenants.wallet_id)
+             WHERE wallet_id = (SELECT wallet_id FROM tenants WHERE id = ?1)",
+            params![tenant_id],
+        )?;
+        Ok(())
     }
 
     /// The index `allocate_minor_index` would hand out next, without claiming it.
@@ -1504,7 +1718,8 @@ impl Store {
     /// that method for why order creation can't simply allocate first.
     pub fn peek_next_minor_index(&self, tenant_id: &TenantId) -> Result<u32> {
         let next = self.conn.query_row(
-            "SELECT next_minor_index FROM tenants WHERE id = ?1",
+            "SELECT w.next_minor_index FROM tenants t JOIN wallets w ON w.id = t.wallet_id
+             WHERE t.id = ?1",
             params![tenant_id],
             |row| row.get::<_, shared::sqlite::Unsigned<u32>>(0),
         )?;
@@ -1568,14 +1783,18 @@ impl Store {
                 "subaddress index exhausted or inconsistent with the order".to_owned(),
             ));
         }
+        // The counter is the wallet's: stores sharing a wallet claim from it
+        // in turn, so none of them hands out an address another one has.
         let claimed = tx.execute(
-            "UPDATE tenants SET next_minor_index = next_minor_index + 1
-             WHERE id = ?1 AND next_minor_index = ?2 AND disabled_at_utc IS NULL",
+            "UPDATE wallets SET next_minor_index = next_minor_index + 1
+             WHERE id = (SELECT wallet_id FROM tenants WHERE id = ?1 AND disabled_at_utc IS NULL)
+               AND next_minor_index = ?2",
             params![new.tenant_id, expected_index],
         )?;
         if claimed == 0 {
             return Ok(None);
         }
+        Self::mirror_wallet_counter(&tx, &new.tenant_id)?;
         let id = OrderId::new(new_id("order"));
         Self::insert_order(&tx, &id, new)?;
         #[cfg(test)]
@@ -4848,6 +5067,78 @@ mod tests {
             has_unique_index,
             "the UNIQUE(order_id, txid, output_index) constraint must survive as a real index"
         );
+    }
+
+    #[test]
+    fn moving_a_stores_keys_moves_its_wallet_and_every_store_on_it() {
+        let store = Store::open_in_memory().unwrap();
+        let first = new_tenant(&store);
+        let second = store
+            .create_tenant_on_wallet(&first.tenant.wallet_id, None, None, 1001)
+            .unwrap();
+        let elsewhere = new_tenant(&store);
+
+        let others = store
+            .update_tenant_key_custody(&first.tenant.id, "snp", &[2])
+            .unwrap();
+        assert_eq!(others, vec![second.tenant.id.clone()]);
+        for id in [&first.tenant.id, &second.tenant.id] {
+            let row = store.get_tenant_by_id(id).unwrap().unwrap();
+            assert_eq!(
+                (
+                    row.key_custody_backend.as_str(),
+                    row.sealed_key_material.as_slice()
+                ),
+                ("snp", &[2u8][..])
+            );
+        }
+        let wallet = store.get_wallet(&first.tenant.wallet_id).unwrap().unwrap();
+        assert_eq!(wallet.key_custody_backend, "snp");
+        assert_eq!(wallet.sealed_key_material, vec![2]);
+        let untouched = store
+            .get_tenant_by_id(&elsewhere.tenant.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(untouched.key_custody_backend, "plain");
+    }
+
+    #[test]
+    fn stores_sharing_a_wallet_allocate_from_its_one_counter() {
+        let store = Store::open_in_memory().unwrap();
+        let first = new_tenant(&store);
+        let second = store
+            .create_tenant_on_wallet(&first.tenant.wallet_id, None, None, 1001)
+            .unwrap();
+        assert_eq!(store.allocate_minor_index(&first.tenant.id).unwrap(), 1);
+        assert_eq!(store.allocate_minor_index(&second.tenant.id).unwrap(), 2);
+        assert_eq!(store.allocate_minor_index(&first.tenant.id).unwrap(), 3);
+        assert_eq!(store.peek_next_minor_index(&second.tenant.id).unwrap(), 4);
+    }
+
+    #[test]
+    fn migration_0028_gives_every_existing_store_its_own_wallet_with_its_counter() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        shared::migrations::apply(&conn, &MIGRATIONS[..27]).unwrap();
+        conn.execute_batch(
+            "INSERT INTO tenants (id, public_key, secret_token_hash, key_custody_backend,
+                sealed_key_material, primary_address, network, next_minor_index, created_at_utc)
+             VALUES ('tn_old', 'pk_old', 'hash_old', 'plain', x'0102', '4addr', 'stagenet', 7, 1000);",
+        )
+        .unwrap();
+
+        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+        let store = Store::from_connection(conn);
+        let tenant = store
+            .get_tenant_by_id(&TenantId::new("tn_old"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(tenant.wallet_id, "wl_tn_old");
+        let wallet = store.get_wallet(&tenant.wallet_id).unwrap().unwrap();
+        assert_eq!(wallet.next_minor_index, 7);
+        assert_eq!(wallet.network, "stagenet");
+        assert_eq!(wallet.sealed_key_material, vec![1, 2]);
+        assert_eq!(store.allocate_minor_index(&tenant.id).unwrap(), 7);
     }
 
     #[test]

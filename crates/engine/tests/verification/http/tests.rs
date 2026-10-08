@@ -4239,3 +4239,203 @@ async fn forgetting_a_proof_anchor_keeps_checking_on() {
 
 #[path = "order_properties.rs"]
 mod properties;
+
+// -- Wallets shared by several stores (migration 0028) ----------------------
+
+async fn create_wallet(router: &Router, seed: u8) -> serde_json::Value {
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/wallets",
+        None,
+        &serde_json::json!({
+            "view_key_hex": valid_view_key_hex(seed),
+            "spend_pubkey_hex": valid_spend_pubkey_hex(seed.wrapping_add(1)),
+        }),
+    );
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await
+}
+
+async fn create_tenant_on(router: &Router, wallet_id: &str) -> TestTenant {
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/tenants",
+        None,
+        &serde_json::json!({ "wallet_id": wallet_id }),
+    );
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    TestTenant {
+        public_key: body["public_key"].as_str().unwrap().to_owned(),
+        secret_token: body["secret_token"].as_str().unwrap().to_owned(),
+    }
+}
+
+async fn order_address(router: &Router, tenant: &TestTenant) -> String {
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/tenant/orders",
+        Some(&tenant.secret_token),
+        &serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
+    );
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await["address"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// Two shops on one wallet claim order addresses from the wallet's one
+/// counter, in turn: no address is ever handed to both, so a payment can
+/// only ever match the order it was meant for.
+#[tokio::test]
+async fn two_stores_on_one_wallet_never_hand_out_the_same_address() {
+    let state = AppState::for_tests();
+    let store = Arc::clone(state.db.shared_store_for_test());
+    let router = build_router(state, 1_000_000);
+    let wallet = create_wallet(&router, 40).await;
+    let wallet_id = wallet["wallet_id"].as_str().unwrap();
+    let shop = create_tenant_on(&router, wallet_id).await;
+    let market = create_tenant_on(&router, wallet_id).await;
+
+    let mut addresses = Vec::new();
+    for tenant in [&shop, &market, &shop, &market, &market] {
+        addresses.push(order_address(&router, tenant).await);
+    }
+    let mut deduped = addresses.clone();
+    deduped.sort();
+    deduped.dedup();
+    assert_eq!(
+        deduped.len(),
+        addresses.len(),
+        "an address was handed out twice"
+    );
+
+    let s = store.lock();
+    let wallet_row = s.get_wallet(wallet_id).unwrap().unwrap();
+    assert_eq!(
+        wallet_row.next_minor_index, 6,
+        "five orders claimed indices 1..=5"
+    );
+    for tenant in [&shop, &market] {
+        let row = s
+            .find_tenant_by_secret_token(&shared::auth::RawToken::presented(&tenant.secret_token))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.wallet_id, wallet_id);
+        assert_eq!(
+            row.next_minor_index, 6,
+            "each store's scan range covers every index handed out on the wallet"
+        );
+        assert_eq!(
+            row.primary_address,
+            wallet["primary_address"].as_str().unwrap()
+        );
+    }
+}
+
+/// A store made with its own keys gets a wallet of its own, which a second
+/// store can then join.
+#[tokio::test]
+async fn a_store_made_with_keys_gets_its_own_wallet_another_store_can_join() {
+    let router = test_router();
+    let first = create_tenant(&router, 41).await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/tenant")
+        .header("authorization", format!("Bearer {}", first.secret_token))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let view = body_json(response).await;
+    let wallet_id = view["wallet_id"].as_str().unwrap().to_owned();
+    assert!(wallet_id.starts_with("wl_"));
+
+    let second = create_tenant_on(&router, &wallet_id).await;
+    assert_ne!(
+        order_address(&router, &first).await,
+        order_address(&router, &second).await
+    );
+}
+
+#[tokio::test]
+async fn a_wallet_is_only_deleted_once_no_store_uses_it_and_then_takes_no_new_store() {
+    let router = test_router();
+    let wallet = create_wallet(&router, 42).await;
+    let wallet_id = wallet["wallet_id"].as_str().unwrap();
+    let tenant = create_tenant_on(&router, wallet_id).await;
+
+    let delete_wallet = || {
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/v1/admin/wallets/{wallet_id}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let response = router.clone().oneshot(delete_wallet()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/api/v1/admin/tenant")
+        .header("authorization", format!("Bearer {}", tenant.secret_token))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        router.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+    let response = router.clone().oneshot(delete_wallet()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let response = router.clone().oneshot(delete_wallet()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/tenants",
+        None,
+        &serde_json::json!({ "wallet_id": wallet_id }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_store_on_a_wallet_refuses_keys_too_an_unknown_wallet_and_another_network() {
+    let router = test_router();
+    let wallet = create_wallet(&router, 43).await;
+    let wallet_id = wallet["wallet_id"].as_str().unwrap();
+    for body in [
+        serde_json::json!({
+            "wallet_id": wallet_id,
+            "view_key_hex": valid_view_key_hex(44),
+            "spend_pubkey_hex": valid_spend_pubkey_hex(45),
+        }),
+        serde_json::json!({ "wallet_id": "wl_nope" }),
+        serde_json::json!({ "wallet_id": wallet_id, "network": "stagenet" }),
+    ] {
+        let req = json_request("POST", "/api/v1/admin/tenants", None, &body);
+        let response = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
+    }
+}
+
+#[tokio::test]
+async fn adding_a_wallet_with_bad_keys_is_refused_and_registers_nothing() {
+    let state = AppState::for_tests();
+    let store = Arc::clone(state.db.shared_store_for_test());
+    let router = build_router(state, 1_000_000);
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/wallets",
+        None,
+        &serde_json::json!({ "view_key_hex": "zz", "spend_pubkey_hex": "00" }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(store.lock().count_tenants().unwrap(), 0);
+}

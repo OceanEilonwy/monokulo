@@ -51,6 +51,11 @@ fn key_custody_error_for_new_tenant(e: KeyCustodyError) -> ApiError {
 pub(super) struct CreateTenantRequest {
     #[serde(flatten)]
     keys: KeysIn,
+    /// An existing wallet the new store takes payments into
+    /// (`POST /api/v1/admin/wallets`), instead of `keys`: its keys are not
+    /// sent again, and it shares the wallet's address counter with the
+    /// wallet's other stores.
+    wallet_id: Option<String>,
     network: Option<String>,
     confirmations_required: Option<u64>,
     order_expiry_seconds: Option<i64>,
@@ -195,6 +200,9 @@ async fn create_tenant_to_completion(
     state: AppState,
     req: CreateTenantRequest,
 ) -> Result<Json<CreateTenantResponse>, ApiError> {
+    if let Some(wallet_id) = req.wallet_id.clone() {
+        return create_tenant_on_wallet(state, wallet_id, req).await;
+    }
     let network = parse_network(req.network.as_deref().unwrap_or("mainnet"))
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     if !state.networks.daemons.is_configured(network) {
@@ -283,6 +291,186 @@ async fn create_tenant_to_completion(
     }))
 }
 
+/// A new store on an existing wallet: the row starts from the wallet's
+/// sealed keys, which are then registered for it like a store's at boot.
+async fn create_tenant_on_wallet(
+    state: AppState,
+    wallet_id: String,
+    req: CreateTenantRequest,
+) -> Result<Json<CreateTenantResponse>, ApiError> {
+    if !req.keys.view_key_hex.trim().is_empty()
+        || req
+            .keys
+            .encrypted_keys
+            .as_deref()
+            .is_some_and(|e| !e.trim().is_empty())
+    {
+        return Err(ApiError::BadRequest(
+            "give either a wallet_id or keys, not both".to_owned(),
+        ));
+    }
+    validate_tenant_settings(req.confirmations_required, req.order_expiry_seconds)?;
+    let id = wallet_id.clone();
+    let wallet = state
+        .db
+        .write(move |s| s.get_wallet(&id))
+        .await?
+        .filter(|w| w.deleted_at.is_none())
+        .ok_or_else(|| ApiError::BadRequest(format!("no wallet {wallet_id:?}")))?;
+    if let Some(network) = req.network.as_deref() {
+        if network != wallet.network {
+            return Err(ApiError::BadRequest(format!(
+                "the wallet is on {:?}, not {network:?}",
+                wallet.network
+            )));
+        }
+    }
+    let network = parse_network(&wallet.network).map_err(|e| ApiError::Internal(e.to_string()))?;
+    if !state.networks.daemons.is_configured(network) {
+        return Err(ApiError::BadRequest(format!(
+            "no monero_node is configured for network {:?} on this instance",
+            wallet.network
+        )));
+    }
+    let (confirmations, expiry) = {
+        let defaults = state.settings.tenant_defaults.load();
+        (
+            req.confirmations_required
+                .unwrap_or(defaults.confirmations_required),
+            req.order_expiry_seconds
+                .unwrap_or(defaults.order_expiry_seconds),
+        )
+    };
+    let on = wallet.id.clone();
+    let created = state
+        .db
+        .write(move |s| {
+            s.create_tenant_on_wallet(&on, Some(confirmations), Some(expiry), now_unix())
+        })
+        .await?;
+    let tenant = created.tenant;
+    let handle = match state
+        .custody
+        .backends
+        .unseal_and_register_in_idempotent(
+            &tenant.key_custody_backend,
+            &tenant.sealed_key_material,
+            tenant.id.as_str(),
+        )
+        .await
+    {
+        Ok(handle) => handle,
+        Err(e) => {
+            // No store without its keys: the row goes again.
+            let id = tenant.id.clone();
+            if let Err(disable) = state
+                .db
+                .write(move |s| s.disable_tenant(&id, now_unix()))
+                .await
+            {
+                tracing::error!(store.id = %tenant.id, error = %disable, "creating a store on a wallet, its keys didn't register and disabling the row failed");
+            }
+            return Err(key_custody_error_for_new_tenant(e));
+        }
+    };
+    state
+        .custody
+        .wallet_handles
+        .write()
+        .insert(tenant.id.clone(), handle);
+    Ok(Json(CreateTenantResponse {
+        tenant_id: tenant.id,
+        public_key: tenant.public_key,
+        secret_token: created.secret_token.expose().to_owned(),
+    }))
+}
+
+/// `POST /api/v1/admin/wallets`: one wallet's keys, registered once, for any
+/// number of stores to take payments into (`wallet_id` on
+/// `POST /api/v1/admin/tenants`). Keys come in as for a store.
+#[derive(Deserialize)]
+pub(super) struct CreateWalletRequest {
+    #[serde(flatten)]
+    keys: KeysIn,
+    network: Option<String>,
+    key_custody_backend: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(super) struct WalletView {
+    wallet_id: String,
+    primary_address: String,
+    network: String,
+    key_custody_backend: String,
+}
+
+pub(super) async fn create_wallet(
+    State(state): State<AppState>,
+    Json(req): Json<CreateWalletRequest>,
+) -> Result<Json<WalletView>, ApiError> {
+    to_completion(create_wallet_to_completion(state, req)).await
+}
+
+async fn create_wallet_to_completion(
+    state: AppState,
+    req: CreateWalletRequest,
+) -> Result<Json<WalletView>, ApiError> {
+    let network = parse_network(req.network.as_deref().unwrap_or("mainnet"))
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    if !state.networks.daemons.is_configured(network) {
+        return Err(ApiError::BadRequest(format!(
+            "no monero_node is configured for network {:?} on this instance",
+            network_str(network)
+        )));
+    }
+    let backend = chosen_backend(&state, req.key_custody_backend.as_deref())?;
+    let registered = register_keys(&state, &backend, &req.keys, Action::Create, None).await?;
+    let (handle, sealed) = (registered.handle, registered.sealed);
+    // Registered only to check the keys and work out the address: each
+    // store on the wallet registers its own copy when it's made.
+    let derived = state
+        .custody
+        .backends
+        .derive_subaddress(handle, SubaddressIndex::default(), network)
+        .await;
+    remove_wallet_logged(
+        state.custody.backends.as_ref(),
+        handle,
+        None,
+        "adding a wallet, done with its check",
+    )
+    .await;
+    let primary_address = derived
+        .map_err(key_custody_error_for_new_tenant)?
+        .to_string();
+    let new = crate::store::NewWallet {
+        key_custody_backend: backend,
+        sealed_key_material: sealed,
+        primary_address,
+        network: network_str(network).to_owned(),
+    };
+    let wallet = state
+        .db
+        .write(move |s| s.create_wallet(&new, now_unix()))
+        .await?;
+    Ok(Json(WalletView {
+        wallet_id: wallet.id,
+        primary_address: wallet.primary_address,
+        network: wallet.network,
+        key_custody_backend: wallet.key_custody_backend,
+    }))
+}
+
+/// `DELETE /api/v1/admin/wallets/{id}`: no new store can use the wallet.
+/// `409` while a store still takes payments into it.
+pub(super) async fn delete_wallet(
+    State(db): State<Database>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    db.write(move |s| s.delete_wallet(&id, now_unix())).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Upper bound on a tenant-chosen order lifetime. Well past anything useful (30
 /// days), and far enough below `i64::MAX` that `created_at + order_expiry_seconds`
 /// cannot overflow for any wall-clock `created_at` this system will ever see -
@@ -341,6 +529,7 @@ fn validate_tenant_settings(
 pub(super) struct TenantView {
     tenant_id: crate::store::TenantId,
     public_key: String,
+    wallet_id: String,
     primary_address: String,
     network: String,
     confirmations_required: u64,
@@ -353,6 +542,7 @@ impl From<crate::store::Tenant> for TenantView {
         Self {
             tenant_id: t.id,
             public_key: t.public_key,
+            wallet_id: t.wallet_id,
             primary_address: t.primary_address,
             network: t.network,
             confirmations_required: t.confirmations_required,
@@ -445,15 +635,33 @@ async fn switch_key_custody_to_completion(
         .db
         .write(move |s| s.update_tenant_key_custody(&id, &chosen, &sealed))
         .await;
-    if let Err(e) = updated {
-        remove_wallet_logged(
-            state.custody.backends.as_ref(),
-            handle,
-            Some(tenant.id.as_str()),
-            "moving a store's keys, saving the move failed",
-        )
-        .await;
-        return Err(e.into());
+    let others = match updated {
+        Ok(others) => others,
+        Err(e) => {
+            remove_wallet_logged(
+                state.custody.backends.as_ref(),
+                handle,
+                Some(tenant.id.as_str()),
+                "moving a store's keys, saving the move failed",
+            )
+            .await;
+            return Err(e.into());
+        }
+    };
+    // The other stores on the wallet moved with it: drop their live
+    // handles in the old backend, and their next use registers them again
+    // from their rows, now in the new one (`resolve_wallet_handle`).
+    for other in others {
+        let previous = state.custody.wallet_handles.write().remove(&other);
+        if let Some(previous) = previous {
+            remove_wallet_logged(
+                state.custody.backends.as_ref(),
+                previous,
+                Some(other.as_str()),
+                "moved a wallet's keys, removing another store's from the old backend",
+            )
+            .await;
+        }
     }
     let previous = state
         .custody
