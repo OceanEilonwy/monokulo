@@ -4,4 +4,4 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
-cc 93d7cdb0ef7bfe3cf25e551aaa7044f31aa420c598fa83301e72ffd884a42fad # shrinks to version = 1, amount = 5, payload = "🃭d3⼸'rz🂽🕴P<*<+/<🕴𐤕\u{612}?8<M", after = true
+cc 62fbe88308bac3bc127940dfcf5bef774ef9df42bc3813ad6431e76301f42821 # shrinks to version = 29, amount = 1, payload = "", fault = 0
