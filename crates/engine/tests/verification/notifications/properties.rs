@@ -173,17 +173,26 @@ mod zmq {
     use super::*;
     use zeromq::{PubSocket, Socket as _, SocketSend as _, ZmqMessage};
 
+    /// These histories run on paused test time that only the test moves
+    /// (`hold_virtual_clock`): the subscriber's pause before reconnecting
+    /// passes when the test advances it, not after a real second, while the
+    /// real sockets get real time to answer. Waits are therefore bounded in
+    /// real time, by `within`, rather than by Tokio timeouts.
+    async fn within(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            tokio::task::yield_now().await;
+        }
+    }
     async fn until(wakes: &NodeWakes, condition: impl Fn(&Announcements) -> bool) {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if wakes.announcements().as_ref().is_some_and(&condition) {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
+        within("the subscriber's announcements", || {
+            wakes.announcements().as_ref().is_some_and(&condition)
         })
-        .await
-        .unwrap();
+        .await;
     }
     async fn save(
         settings: &crate::engine_settings::EngineSettings,
@@ -204,27 +213,37 @@ mod zmq {
     }
     async fn send_until(publisher: &mut PubSocket, wakes: &NodeWakes, topic: &str) {
         let before = wakes.announcements().unwrap().publishers[0].clone();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                publisher
-                    .send(ZmqMessage::from(format!(
-                        "{topic}:deliberately ignored JSON"
-                    )))
-                    .await
-                    .unwrap();
-                let now = wakes.announcements().unwrap().publishers[0].clone();
-                if now.pool_announcements > before.pool_announcements
-                    || now.block_announcements > before.block_announcements
-                {
+        let counted = || {
+            let now = wakes.announcements().unwrap().publishers[0].clone();
+            now.pool_announcements > before.pool_announcements
+                || now.block_announcements > before.block_announcements
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        // A frame sent before the subscription reaches the publisher is
+        // dropped, so send again every 10ms of real time until one counts.
+        loop {
+            publisher
+                .send(ZmqMessage::from(format!(
+                    "{topic}:deliberately ignored JSON"
+                )))
+                .await
+                .unwrap();
+            let resend = std::time::Instant::now() + Duration::from_millis(10);
+            while std::time::Instant::now() < resend {
+                if counted() {
                     return;
                 }
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
             }
-        })
-        .await
-        .unwrap();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {topic}"
+            );
+        }
     }
     async fn history(actions: Vec<(u8, bool, u8)>) {
+        tokio::time::pause();
+        let _clock = crate::property_support::hold_virtual_clock();
         let mut publishers = [PubSocket::new(), PubSocket::new()];
         let first = publishers[0]
             .bind("tcp://127.0.0.1:0")
@@ -267,6 +286,11 @@ mod zmq {
         })
         .await;
         publishers[0].bind(&endpoints[0]).await.unwrap();
+        // The listener set that error and started its pause in one poll, so
+        // the pause is already waiting on the clock.
+        // Tokio's timers fire on whole milliseconds after their deadline,
+        // hence the extra one.
+        tokio::time::advance(subscriber::FIRST_RETRY + Duration::from_millis(1)).await;
         until(&wakes, |a| {
             a.publishers[0].connected && a.publishers[0].connections > before.connections
         })
@@ -282,13 +306,7 @@ mod zmq {
         for (endpoint, duplicate, burst) in actions.into_iter().chain([(2, false, 1)]) {
             if endpoint == 2 {
                 save(&settings, None, false).await;
-                tokio::time::timeout(Duration::from_secs(5), async {
-                    while wakes.announcements().is_some() {
-                        tokio::task::yield_now().await;
-                    }
-                })
-                .await
-                .unwrap();
+                within("the subscriber to stop", || wakes.announcements().is_none()).await;
                 continue;
             }
             let index = usize::from(endpoint);
