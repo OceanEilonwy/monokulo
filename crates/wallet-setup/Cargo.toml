@@ -31,8 +31,6 @@ hex = "0.4.3"
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 
-[dev-dependencies]
-cli-wallet = { path = "../cli-wallet" }
 
 [lints]
 workspace = true

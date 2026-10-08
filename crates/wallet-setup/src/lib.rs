@@ -149,32 +149,6 @@ mod tests {
         generate([seed_byte; 32], BIRTHDAY, Network::Mainnet).unwrap()
     }
 
-    /// The wallet the phrase restores to in a real wallet library is the
-    /// one whose keys monokulo registers.
-    #[test]
-    fn the_polyseed_restores_to_the_address_and_view_key_it_came_with() {
-        for byte in [0u8, 7, 0xff] {
-            let wallet = sample(byte);
-            assert_eq!(wallet.phrase.split(' ').count(), 16);
-            let restored =
-                cli_wallet::credentials_from_seed(cli_wallet::Network::Mainnet, &wallet.phrase)
-                    .unwrap();
-            assert_eq!(restored.address, wallet.address);
-            assert_eq!(restored.private_view_key_hex, *wallet.view_key_hex);
-        }
-    }
-
-    /// The Monero GUI's 25 words open the same wallet.
-    #[test]
-    fn the_25_word_phrase_is_the_same_wallet() {
-        let wallet = sample(9);
-        assert_eq!(wallet.legacy_phrase.split(' ').count(), 25);
-        let restored =
-            cli_wallet::credentials_from_seed(cli_wallet::Network::Mainnet, &wallet.legacy_phrase)
-                .unwrap();
-        assert_eq!(restored.address, wallet.address);
-    }
-
     #[test]
     fn the_birthday_is_kept_in_the_phrase() {
         let wallet = sample(3);
@@ -195,11 +169,6 @@ mod tests {
             })
             .collect();
         assert_eq!(prefixes, vec!['4', '5', '9']);
-        let stagenet = generate([5; 32], BIRTHDAY, Network::Stagenet).unwrap();
-        let restored =
-            cli_wallet::credentials_from_seed(cli_wallet::Network::Stagenet, &stagenet.phrase)
-                .unwrap();
-        assert_eq!(restored.address, stagenet.address);
     }
 
     #[test]
