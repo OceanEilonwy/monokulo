@@ -5,7 +5,7 @@ scanning, stores, webhooks and its admin API) and `monokulo` (the control
 plane: the merchant dashboard and the checkout-facing HTTP surface), which
 uses the engine only through its admin API. By default the engine runs inside
 monokulo, as a library on threads of its own: one binary, one process, one
-options file ([engine_as_library.md](engine_as_library.md)). It can also run on its own
+options file ([engine_as_library.md](https://github.com/OceanEilonwy/monokulo/blob/main/docs/engine_as_library.md)). It can also run on its own
 (`monokulo-engine`), on another host if need be, with monokulo reaching it
 over HTTP with an engine token the two share (`engine.mode = "remote"`).
 Settings live in the options file (and a few runtime switches in the
@@ -51,8 +51,9 @@ which is also the package repository; `web/index.html` is its source.
 `scripts/build-openwrt.sh` builds the package, the signed repository and the
 landing page into `dist/` and `site/` (it needs Docker, for the OpenWrt
 SDK). The `OpenWrt package` workflow runs it on every pull request and push
-to main, uploads `dist/` and `site/` as artifacts, and deploys the site to
-GitHub Pages from main. On the router:
+to main and uploads `dist/` and `site/` as artifacts; the `Pages` workflow
+then publishes the site to GitHub Pages beside the quality report. On the
+router:
 
 - `/etc/config/monokulo` (or LuCI) sets the port, listen address (LAN only
   by default), data folder (`/srv/monokulo`) and the engine's CPUs (2 and 3,
@@ -64,7 +65,7 @@ GitHub Pages from main. On the router:
 - One procd instance runs monokulo, the engine inside it, as the `monokulo`
   user; `logread -e monokulo` shows its logs.
 
-The design and the CPU and capacity figures are in [flint2_openwrt_apk.md](flint2_openwrt_apk.md).
+The design and the CPU and capacity figures are in [flint2_openwrt_apk.md](https://github.com/OceanEilonwy/monokulo/blob/main/docs/flint2_openwrt_apk.md).
 
 ## From release binaries or source
 
@@ -89,7 +90,7 @@ from the Docker image.
    first use, and `rustup update nightly` keeps it current). Building
    monokulo also builds its POS app, so it needs Node 24 or later and the
    app's dependencies, installed once from the lockfile. The engine builds
-   RandomX (to check blocks' proof of work, [proof_of_work.md](proof_of_work.md)) from C++,
+   RandomX (to check blocks' proof of work, [proof_of_work.md](https://github.com/OceanEilonwy/monokulo/blob/main/docs/proof_of_work.md)) from C++,
    so it needs CMake and a C++ compiler:
 
    ```sh
@@ -125,7 +126,7 @@ long-running binary with no daemonization of its own.
 
 ## The engine on its own
 
- For a hardened setup that keeps the engine (and
+For a hardened setup that keeps the engine (and
 its key custody) away from the public-facing process, run `monokulo-engine`
 separately and point monokulo at it:
 

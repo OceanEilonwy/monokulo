@@ -63,24 +63,26 @@ jobs:
       # The latest nightly, as rust-toolchain.toml names it, for xtask.
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
+      # The artifacts land under target/, which the checkout ignores.
       - name: Download the newest artifacts on main
         env:
           GH_TOKEN: ${{ github.token }}
-        run: cargo xtask pages fetch inputs
+        run: cargo xtask pages fetch target/pages
       - name: Build the quality report beside the landing page
         run: |
-          args=(--out inputs/site/quality --sources inputs/sources.json --repo-url "https://github.com/$GITHUB_REPOSITORY")
+          args=(--out target/pages/site/quality --sources target/pages/sources.json --repo-url "https://github.com/$GITHUB_REPOSITORY")
           for source in coverage properties fuzz scale; do
-            if test -d "inputs/$source"; then args+=("--$source" "inputs/$source"); fi
+            if test -d "target/pages/$source"; then args+=("--$source" "target/pages/$source"); fi
           done
           cargo xtask pages build "${args[@]}"
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: inputs/site/
+          path: target/pages/site/
 
   deploy:
     needs: build
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       pages: write
       id-token: write

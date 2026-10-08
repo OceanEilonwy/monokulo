@@ -95,10 +95,12 @@ coverage of each crate and file (linked to its annotated source), the
 nightly property and fuzz runs, the stress points and the screenshot
 gallery. `.github/workflows/pages.yml` rebuilds it whenever CI, the engine
 property, fuzz or scale workflows, or the OpenWrt package finish on main:
-`cargo xtask pages fetch` downloads the newest artifact of each and
-`cargo xtask pages build` (`xtask/src/pages.rs`) turns them into the
-page, its `data.json` and `badge.json` (the README's coverage badge). Only
-the ZMQ build of the property and fuzz runs is shown.
+`cargo xtask pages fetch target/pages` downloads the newest artifact of
+each and `cargo xtask pages build` (`xtask/src/pages.rs`) turns them into
+the page, its `data.json` and `badge.json` (the README's coverage badge),
+shipping only the report pages the page links and the files those need.
+Only the ZMQ build of the property and fuzz runs is shown (`--feature` on
+both commands picks the other).
 
 To see a local run the same way, after `cargo xtask coverage all`:
 
