@@ -54,9 +54,11 @@ pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
                         "exchange rate provider (in this store's settings) to offer others."
                     }
                 } @else {
-                    select id="currency" name="currency" {
-                        @for currency in &data.order_currency_options {
-                            option value=(currency) selected[*currency == data.currency] { (currency) }
+                    mk-select {
+                        select id="currency" name="currency" {
+                            @for currency in &data.order_currency_options {
+                                (super::controls::Choice::new(currency, currency).selected(*currency == data.currency))
+                            }
                         }
                     }
                     span class="field-help" {

@@ -5,6 +5,7 @@
 
 use maud::{html, Markup};
 
+use super::controls::Choice;
 use super::{layout, layout_with_head, PageChrome};
 use crate::wallets::{AppMethod, WalletApp, WALLET_APPS};
 
@@ -99,9 +100,13 @@ fn back_arrow() -> Markup {
 
 fn network_select(selected: &str) -> Markup {
     html! {
-        select name="network" {
-            @for network in ["mainnet", "stagenet", "testnet"] {
-                option value=(network) selected[network == selected] { (network) }
+        mk-select {
+            select name="network" {
+                @for network in ["mainnet", "stagenet", "testnet"] {
+                    (Choice::new(network, network)
+                        .note(if network == "mainnet" { "real payments" } else { "test network" })
+                        .selected(network == selected))
+                }
             }
         }
     }
@@ -762,15 +767,16 @@ pub fn wallet_select(wallets: &[crate::db::WalletSummary], selected: Option<&str
     html! {
         label {
             "Wallet"
-            select name="wallet_id" required {
-                @if selected.is_none() {
-                    option value="" selected disabled { "Choose a wallet…" }
-                }
-                @for w in wallets {
-                    option value=(w.wallet.id) selected[selected == Some(w.wallet.id.as_str())] {
-                        (w.wallet.name) " · " (short_address(&w.wallet.primary_address))
-                        @if w.wallet.network != "mainnet" { " · " (w.wallet.network) }
-                        " · " (stores_label(w.store_count))
+            mk-select {
+                select name="wallet_id" required {
+                    @if selected.is_none() {
+                        (Choice::prompt("Choose a wallet…", true))
+                    }
+                    @for w in wallets {
+                        (Choice::new(&w.wallet.id, &w.wallet.name)
+                            .detail(short_address(&w.wallet.primary_address))
+                            .note(wallet_note(w))
+                            .selected(selected == Some(w.wallet.id.as_str())))
                     }
                 }
             }
@@ -782,6 +788,16 @@ pub fn wallet_select(wallets: &[crate::db::WalletSummary], selected: Option<&str
                 }
             }
         }
+    }
+}
+
+/// Under a wallet in a picker: how many stores use it, and its network
+/// when that isn't mainnet.
+fn wallet_note(w: &crate::db::WalletSummary) -> String {
+    if w.wallet.network == "mainnet" {
+        stores_label(w.store_count)
+    } else {
+        format!("{} · {}", w.wallet.network, stores_label(w.store_count))
     }
 }
 

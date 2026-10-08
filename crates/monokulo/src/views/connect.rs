@@ -8,6 +8,7 @@
 
 use maud::{html, Markup};
 
+use super::controls::Choice;
 use super::wallets::{add_wallet_links, wallet_select};
 use super::{layout, PageChrome};
 use crate::db::WalletSummary;
@@ -81,9 +82,11 @@ pub(crate) fn custody_select(choices: &[CustodyChoice]) -> Markup {
         @if choices.len() > 1 {
             label {
                 "Key storage"
-                select name="key_custody_backend" {
-                    @for choice in choices {
-                        option value=(choice.backend) selected[choice.selected] { (choice.label) }
+                mk-select {
+                    select name="key_custody_backend" {
+                        @for choice in choices {
+                            (Choice::new(&choice.backend, &choice.label).selected(choice.selected))
+                        }
                     }
                 }
                 span class="field-help" {
@@ -97,9 +100,11 @@ pub(crate) fn custody_select(choices: &[CustodyChoice]) -> Markup {
 
 fn currency_select(options: &[crate::currencies::CurrencyOptionView]) -> Markup {
     html! {
-        select name="base_currency" {
-            @for opt in options {
-                option value=(opt.code) selected[opt.selected] { (opt.description) " (" (opt.code) ")" }
+        mk-select {
+            select name="base_currency" {
+                @for opt in options {
+                    (Choice::new(&opt.code, &opt.description).detail(&opt.code).selected(opt.selected))
+                }
             }
         }
     }
@@ -267,10 +272,12 @@ pub fn platform_page(chrome: &PageChrome, data: &PlatformConnectViewModel) -> Ma
                             input type="hidden" name="mode" value="existing";
                             label {
                                 "Store"
-                                select name="connection_id" required {
-                                    option value="" disabled selected { "Choose a store…" }
-                                    @for store in &data.existing_stores {
-                                        option value=(store.connection_id) { (store.display_name) " (" (store.platform) ")" }
+                                mk-select {
+                                    select name="connection_id" required {
+                                        (Choice::prompt("Choose a store…", true))
+                                        @for store in &data.existing_stores {
+                                            (Choice::new(&store.connection_id, &store.display_name).note(&store.platform))
+                                        }
                                     }
                                 }
                             }

@@ -407,7 +407,7 @@ mod tests {
             "data-network=\"stagenet\"",
             // The switcher: the network scanned is a link, the others say why not.
             "<option value=\"stagenet\" selected>",
-            "mainnet (no node configured)",
+            "mainnet - no node configured",
         ] {
             assert!(html.contains(expected), "no {expected:?} in the page");
         }

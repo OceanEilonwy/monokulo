@@ -880,7 +880,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains("Automatic (this browser: Australia/Perth)"),
+            html.contains("Automatic - this browser: Australia/Perth"),
             "{html}"
         );
 

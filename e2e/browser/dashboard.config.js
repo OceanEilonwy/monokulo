@@ -6,6 +6,7 @@ module.exports = defineConfig({
   testMatch: [
     'store-setup.spec.js',
     'store-settings.spec.js',
+    'dropdowns.spec.js',
     'order-creation.spec.js',
     'javascript-disabled.spec.js',
     'timezone-preferences.spec.js',

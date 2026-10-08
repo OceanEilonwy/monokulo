@@ -110,6 +110,13 @@
   --tint-warning: color-mix(in srgb, var(--warning) 14%, var(--paper-raised));
   --tint-neutral: color-mix(in srgb, var(--muted) 12%, var(--paper-raised));
   --tint-highlight: color-mix(in srgb, var(--brand-orange) 20%, var(--paper-raised));
+  /* A dropdown's list (`<mk-select>`): the one thing that floats over the
+     page, so the one shadow, mixed from the text colour for either theme. */
+  --popup-shadow: color-mix(in srgb, var(--ink) 18%, transparent);
+  /* An on/off switch: the primary orange when on, a plain line when off. */
+  --switch-on: var(--accent);
+  --switch-off: var(--line-strong);
+  --switch-knob: var(--paper-raised);
   /* The logo's facets (`views::logo_mark`, the POS loading mark): the
      same oranges in both themes, only its lines follow the text colour. */
   --logo-facet-mid: var(--brand-orange);

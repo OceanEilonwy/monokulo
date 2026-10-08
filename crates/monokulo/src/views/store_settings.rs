@@ -242,9 +242,11 @@ fn key_storage_section(
         form method="post" action=(action) fx-action=(action) fx-method="POST" fx-target=(target) {
             label {
                 "Move to"
-                select name="backend" {
-                    @for choice in &key_storage.move_to {
-                        option value=(choice.backend) selected[choice.selected] { (choice.label) }
+                mk-select {
+                    select name="backend" {
+                        @for choice in &key_storage.move_to {
+                            (super::controls::Choice::new(&choice.backend, &choice.label).selected(choice.selected))
+                        }
                     }
                 }
             }
@@ -277,9 +279,11 @@ fn base_currency_section(store: &StoreSettingsData, in_place: bool, oob: bool) -
                 form method="post" action=(format!("/dashboard/stores/{}/settings/base-currency", store.connection_id)) fx-action=(format!("/dashboard/stores/{}/settings/base-currency", store.connection_id)) fx-method="POST" fx-target="#base-currency" {
                     label {
                         "Base currency"
-                        select name="base_currency" {
-                            @for opt in &store.base_currency_options {
-                                option value=(opt.code) selected[opt.selected] { (opt.description) " (" (opt.code) ")" }
+                        mk-select {
+                            select name="base_currency" {
+                                @for opt in &store.base_currency_options {
+                                    (super::controls::Choice::new(&opt.code, &opt.description).detail(&opt.code).selected(opt.selected))
+                                }
                             }
                         }
                         span class="field-help" {

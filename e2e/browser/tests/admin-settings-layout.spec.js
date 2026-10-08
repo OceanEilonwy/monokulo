@@ -134,3 +134,30 @@ for (const scheme of ['light', 'dark']) {
     });
   }
 }
+
+test('an on/off setting is a switch: on and off both save', async ({ page }) => {
+  await signInAsAdmin(page);
+  await openSettingsTab(page, 'abuse');
+  const input = page.locator('input[role=switch][name="abuse.under_attack"]');
+  const control = page.locator('.switch', { has: input });
+  await expect(control).toBeVisible();
+  await expect(page.getByRole('switch', { name: /under attack/i })).toHaveCount(1);
+  const save = async () => {
+    await page.locator('#settings-panel').getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.locator('#settings-panel .save-status')).toBeVisible();
+    await openSettingsTab(page, 'abuse');
+  };
+
+  await expect(input).not.toBeChecked();
+  await expect(control.locator('.switch-off')).toBeVisible();
+  await control.click();
+  await expect(input).toBeChecked();
+  await expect(control.locator('.switch-on')).toBeVisible();
+  await save();
+  await expect(input).toBeChecked();
+
+  // Off sends no value of its own; the page still saves it as off.
+  await control.click();
+  await save();
+  await expect(input).not.toBeChecked();
+});

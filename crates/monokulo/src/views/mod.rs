@@ -25,6 +25,7 @@ pub mod auth;
 pub mod challenge;
 pub mod checkout;
 pub mod connect;
+pub mod controls;
 pub mod create_order;
 pub mod dashboard;
 pub mod engine;
@@ -239,6 +240,8 @@ fn page_shell(
                     script src="/static/fx-glue.js" defer {}
                     script src="/static/fixi.js" defer {}
                     script src="/static/ssexi.js" defer {}
+                    // Every dropdown (`views::controls`).
+                    script src="/static/mk-select.js" defer {}
                 }
                 @if let Some(extra_head) = extra_head {
                     (extra_head)

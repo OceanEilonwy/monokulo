@@ -761,6 +761,10 @@ pub fn build_router(state: AppState) -> Router {
         "/static/fx-glue.js",
         axum::routing::get(pay::fx_glue_script),
     );
+    let router = router.route(
+        "/static/mk-select.js",
+        axum::routing::get(pay::mk_select_script),
+    );
     let router = router.route("/static/logo.svg", axum::routing::get(pay::logo_svg));
     let router = router.route("/static/favicon.svg", axum::routing::get(pay::favicon_svg));
     let router = router.route(

@@ -810,3 +810,63 @@ a.order-id { display: inline-block; max-width: 11em; }
   .seed-words, .seed-words.legacy { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .timeline li { grid-template-columns: 1fr; gap: 0; }
 }
+
+/* `<mk-select>` (static/mk-select.js, docs/dropdowns.md): the select the
+   page sent, drawn as a button and a list that floats over the page.
+   Without JavaScript the select is shown as it is. */
+mk-select { display: block; position: relative; }
+mk-select[compact] { display: inline-block; vertical-align: middle; }
+mk-select:defined > select.mk-native { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; pointer-events: none; }
+.mk-button, .mk-button:hover {
+  display: flex; align-items: center; gap: var(--space-sm); width: 100%; margin: 0;
+  padding: calc(var(--space-sm) + 1px) calc(var(--space-md) + 1px);
+  border: 1px solid var(--control-border); border-radius: var(--radius-sm);
+  background: var(--control-bg); color: var(--ink); font-weight: 400; text-align: left; cursor: pointer;
+}
+.mk-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--focus-ring); }
+.mk-button:disabled { opacity: .45; cursor: not-allowed; }
+.mk-invalid .mk-button { border-color: var(--error); box-shadow: 0 0 0 1px var(--error); }
+.mk-value { display: flex; align-items: center; gap: var(--space-sm); min-width: 0; flex: 1 1 auto; }
+.mk-value .mk-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-prompt { color: var(--muted); }
+.mk-caret { margin-left: auto; width: .5em; height: .5em; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: translateY(-25%) rotate(45deg); flex: none; }
+.mk-open .mk-caret { transform: translateY(25%) rotate(-135deg); }
+.mk-detail { font-family: var(--font-mono); font-size: .88em; color: var(--muted); }
+.mk-note { margin-left: auto; padding-left: var(--space-md); font-size: .88em; color: var(--muted); text-align: right; }
+.mk-popup {
+  position: absolute; top: calc(100% + 4px); left: 0; min-width: 100%; z-index: 50;
+  display: flex; flex-direction: column; max-height: 20rem; padding: 4px; box-sizing: border-box;
+  border: 1px solid var(--control-border); border-radius: var(--radius-sm);
+  background: var(--paper-raised); box-shadow: 0 8px 24px var(--popup-shadow);
+}
+.mk-popup[hidden] { display: none; }
+.mk-up .mk-popup { top: auto; bottom: calc(100% + 4px); }
+/* In the top layer (the Popover API): placed by the script, in the
+   window's coordinates, over any dialog. */
+.mk-popup[popover] { position: fixed; inset: auto; margin: 0; color: var(--ink); overflow: visible; }
+.mk-popup[popover]:not(:popover-open) { display: none; }
+.mk-find { margin: 0 0 4px; flex: none; }
+.mk-list { position: relative; list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
+.mk-option { display: flex; align-items: center; gap: var(--space-sm); padding: var(--space-sm) var(--space-md); border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap; }
+.mk-option:hover, .mk-option.mk-active { background: var(--surface-sunken); }
+.mk-option[aria-selected="true"] { background: var(--tint-highlight); font-weight: 700; }
+.mk-option[aria-selected="true"].mk-active { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.mk-option[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
+.mk-option .mk-note { font-weight: 400; }
+.mk-empty { margin: 0; padding: var(--space-sm) var(--space-md); color: var(--muted); }
+mk-select[compact] .mk-button { width: auto; min-width: 9rem; padding: .25rem .5rem; }
+mk-select[compact] .mk-popup { white-space: nowrap; }
+
+/* An on/off setting (`views::switch`): a checkbox drawn as a switch, so it
+   works the same without JavaScript. */
+.switch { position: relative; display: inline-flex; align-items: center; gap: var(--space-sm); margin: 0; cursor: pointer; font-weight: 600; }
+.switch input { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.switch .switch-track { position: relative; flex: none; width: 2.6rem; height: 1.5rem; border-radius: 999px; background: var(--switch-off); transition: background .15s; }
+.switch .switch-track::after { content: ""; position: absolute; top: 3px; left: 3px; width: calc(1.5rem - 6px); height: calc(1.5rem - 6px); border-radius: 50%; background: var(--switch-knob); transition: transform .15s; }
+.switch input:checked + .switch-track { background: var(--switch-on); }
+.switch input:checked + .switch-track::after { transform: translateX(1.1rem); }
+.switch input:focus-visible + .switch-track { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.switch input:disabled + .switch-track { opacity: .45; }
+.switch .switch-off, .switch input:checked ~ .switch-on { display: inline; }
+.switch .switch-on, .switch input:checked ~ .switch-off { display: none; }
+@media (prefers-reduced-motion: reduce) { .switch .switch-track, .switch .switch-track::after { transition: none; } }

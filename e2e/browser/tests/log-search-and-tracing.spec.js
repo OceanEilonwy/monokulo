@@ -38,8 +38,10 @@ test('a search swaps the results in place, keeps the URL, and back returns to th
   }
   expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
 
-  // A quick filter applies as soon as it changes.
-  await page.locator('select[name="level"]').selectOption('warn');
+  // A quick filter applies as soon as it changes: chosen from the
+  // compact dropdown, which keeps the select's value.
+  await page.getByRole('combobox', { name: 'Level' }).click();
+  await page.getByRole('option', { name: 'Warnings and errors' }).click();
   await expect(page).toHaveURL(/level=warn/);
   expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
 

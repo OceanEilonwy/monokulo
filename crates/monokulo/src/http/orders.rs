@@ -4947,7 +4947,7 @@ mod tests {
             .unwrap();
         let html = body_text(page).await;
         assert!(
-            html.contains(r#"<option value="EUR" selected>"#),
+            html.contains(r#"<option value="EUR" selected data-label="Euro""#),
             "expected EUR marked selected, got: {html}"
         );
     }
@@ -5306,7 +5306,7 @@ mod tests {
             "expected a clear rejection message, got: {html}"
         );
         assert!(
-            html.contains(r#"<option value="XMR" selected>"#),
+            html.contains(r#"<option value="XMR" selected data-label="Monero""#),
             "the store's base currency must still be the original default, got: {html}"
         );
     }
