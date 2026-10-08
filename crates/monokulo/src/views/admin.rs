@@ -1632,14 +1632,15 @@ fn tab_cards(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
     }
 }
 
-/// The bar at the bottom of the window that saves the tab: the page's one
-/// Save. With JavaScript it shows once something on the tab changes and
+/// The bar along the bottom of the window, the full width like the site's
+/// header, that saves the tab: the page's one Save. With JavaScript it shows once something on the tab changes and
 /// names the cards changed; without, it's always there. After a save that
 /// refused a card it's red, says why, and links to the card.
 fn save_bar(data: &AdminSettingsViewModel) -> Markup {
     let failure = data.failed_groups.first();
     html! {
         div id="save-bar" class={ "save-bar" @if failure.is_some() { " is-failed" } } role="region" aria-label="Save changes" data-save-bar {
+          div class="wrap save-bar-inner" {
             p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus[data.answers_save] {
                 @if let Some(failure) = failure {
                     @let names: Vec<String> = data.failed_groups.iter().map(|f| group_title(&f.group)).collect();
@@ -1653,6 +1654,7 @@ fn save_bar(data: &AdminSettingsViewModel) -> Markup {
                 a class="btn" href=(data.tab.href()) data-discard-all { "Discard changes" }
                 button type="submit" class="btn-primary" data-save { "Save" }
             }
+          }
         }
     }
 }
