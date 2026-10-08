@@ -141,7 +141,13 @@ fn build_browser_module(manifest: &Path, module: &BrowserModule) {
         println!("cargo:rerun-if-changed={}", workspace.join(input).display());
     }
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let target_dir = out.join(format!("{}-wasm", module.package));
+    // A target directory of its own beside this build's, not in `OUT_DIR`:
+    // `OUT_DIR` differs with every profile and feature set, so each would
+    // build the module again, and CI's Rust cache drops a workspace crate's
+    // `OUT_DIR` (it keeps a nested target directory's dependencies).
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| workspace.join("target"), PathBuf::from)
+        .join(format!("{}-wasm", module.package));
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let mut command = Command::new(cargo);
     command
