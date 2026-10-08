@@ -105,16 +105,26 @@ pre { padding: var(--space-md); overflow-x: auto; white-space: pre-wrap; word-br
 }
 /* A block taking us over two minutes: slow, not broken (docs/engine_scaling.md section 5). */
 .notice.slow-block { background: var(--tint-warning); border-color: var(--warning); }
-.setting-field { margin: 0 0 1.1em; }
-/* A setting reads name, what it's for, then its control. */
-.setting-field .setting-label { display: block; margin: 0.9em 0 0.15em; font-weight: 700; }
-.setting-field .setting-label + .field-help { margin: 0 0 0.4em; }
+/* A setting reads name, what it's for, then its control, then anything
+   more about it, on the site's spacing steps: the name sits close to what
+   it's for (xs), the control a step apart from both (sm), and settings a
+   wide step apart (xl), so each reads as one block. */
+.setting-field { margin: 0 0 var(--space-xl); }
+.setting-field:last-child { margin-bottom: 0; }
+.setting-field .setting-label-row { margin: 0 0 var(--space-xs); line-height: 1.3; }
+.setting-field .setting-label { display: inline; margin: 0; font-weight: 700; }
+.setting-field > .field-help { margin: 0; }
+.setting-field > .setting-label-row + .field-help { margin-bottom: var(--space-sm); }
+.setting-field > :is(input, select, textarea, .locked-input, .setting-choices) { margin-top: 0; }
+.setting-field > :is(input, select, textarea, .locked-input, .setting-choices) + * { margin-top: var(--space-sm); }
+.setting-field > :is(.field-help, .setting-pending, .setting-problem) + :is(.field-help, .setting-pending, .setting-problem) { margin-top: var(--space-xs); }
 fieldset.setting-field { border: 0; padding: 0; min-width: 0; }
-fieldset.setting-field > legend { padding: 0; }
+fieldset.setting-field > legend { padding: 0 0 var(--space-xs); margin: 0; }
+fieldset.setting-field > legend.setting-label-row { margin: 0; }
 .setting-field label.inline { display: inline-flex; gap: 0.3em; align-items: center; margin: 0.2em 1.2em 0.2em 0; font-weight: 400; }
 .setting-field input, .setting-field select, .setting-field textarea { max-width: 100%; }
 .setting-field textarea { width: 100%; font-family: ui-monospace, monospace; }
-.setting-pending { display: block; color: var(--warning); font-weight: 700; margin-top: 0.15em; }
+.setting-pending { display: block; color: var(--warning); font-weight: 700; }
 /* The admin settings page's tabs: a row of plain links. On a phone the row
    scrolls sideways inside itself rather than widening the page. */
 .tab-bar { position: relative; display: flex; gap: var(--space-xs); overflow-x: auto; margin: var(--space-md) 0 var(--space-lg); border-bottom: 1px solid var(--line); }
@@ -135,9 +145,14 @@ fieldset.setting-field > legend { padding: 0; }
 .card-state { display: contents; }
 .card-head .card-discard { margin: 0; padding: var(--space-xs) var(--space-md); font-size: 0.85em; font-weight: 600; }
 .card-discard[hidden] { display: none; }
-.card-body { padding: var(--space-md) var(--space-lg) var(--space-xs); min-width: 0; }
-.card-body > .hint:first-child { margin-top: 0; }
-.card-body > h4 { margin: var(--space-lg) 0 var(--space-xs); padding-top: var(--space-md); border-top: 1px dashed var(--card-border); font-size: 0.95rem; }
+.card-body { padding: var(--space-lg); min-width: 0; }
+.card-body > .hint:first-child { margin-top: 0; margin-bottom: var(--space-lg); }
+.card-body > p.error[role="alert"] { margin: 0 0 var(--space-lg); }
+/* A part of a card (Coingecko, Visitors): a small-caps heading over a rule,
+   unlike a setting's name, which is plain bold. */
+.card-body > h4 { margin: var(--space-xl) 0 var(--space-lg); padding-top: var(--space-lg); border-top: 1px solid var(--card-border); font-size: 0.75rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.card-body > h4:first-child, .card-body > .hint:first-child + h4 { margin-top: 0; padding-top: 0; border-top: 0; }
+.card-body > h4 + .hint { margin: calc(-1 * var(--space-sm)) 0 var(--space-lg); }
 .owner-chip { font-size: 0.72em; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--card-border); border-radius: var(--radius-sm); padding: 0 0.45em; }
 .badge { font-size: 0.75em; font-weight: 700; border-radius: 999px; padding: 0.05em 0.7em; white-space: nowrap; color: var(--ink); }
 .badge-unsaved { background: var(--tint-highlight); }
@@ -150,7 +165,11 @@ fieldset.setting-field > legend { padding: 0; }
 /* The bar at the bottom of the window that saves the tab. Without
    JavaScript it's always there; with it, only while something changed or
    a save refused a card. */
-.save-bar { position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin: var(--space-lg) calc(-1 * var(--space-md)) 0; padding: var(--space-sm) var(--space-md) calc(var(--space-sm) + env(safe-area-inset-bottom, 0px)); background: var(--save-bar-bg); border-top: 3px solid var(--save-bar-rule); }
+.save-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 15; background: var(--save-bar-bg); border-top: 3px solid var(--save-bar-rule); padding-bottom: env(safe-area-inset-bottom, 0px); }
+.save-bar-inner { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); padding-top: var(--space-sm); padding-bottom: var(--space-sm); }
+/* Room under the last card for the bar, which is always there without
+   JavaScript. */
+body:has(.save-bar) { padding-bottom: 9rem; }
 .save-bar.is-failed { border-top-color: var(--card-failed); }
 .save-bar.is-leaving { border-top-color: var(--warning); }
 .save-bar-message { flex: 1 1 16rem; min-width: 0; margin: 0; }
@@ -167,10 +186,10 @@ html.js .save-bar:not(.is-dirty):not(.is-failed):not(.is-leaving) { display: non
    fades by itself; with it, one saying something wasn't saved stays until
    it's closed. */
 .toasts { position: fixed; top: 4.5rem; right: var(--space-lg); z-index: 20; display: grid; gap: var(--space-sm); width: min(24rem, calc(100% - 2 * var(--space-lg))); pointer-events: none; }
-.toast { pointer-events: auto; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-sm) var(--space-md); align-items: start; background: var(--toast-bg); border: 1px solid var(--card-border); border-left: 5px solid var(--success); border-radius: var(--radius-md); box-shadow: 0 6px 24px var(--toast-shadow); padding: var(--space-sm) var(--space-md); font-size: 0.92em; animation: toast-in 0.22s ease-out, toast-out 0.3s ease-in 6s forwards; }
-.toast-warning { border-left-color: var(--warning); animation: toast-in 0.22s ease-out, toast-out 0.3s ease-in 10s forwards; }
-.toast-error { border-left-color: var(--error); animation: toast-in 0.22s ease-out, toast-out 0.3s ease-in 12s forwards; }
-.toast-neutral { border-left-color: var(--line-strong); }
+.toast { pointer-events: auto; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-sm) var(--space-md); align-items: start; background: var(--toast-bg); border: 1px solid var(--success); border-radius: var(--radius-md); box-shadow: 0 6px 24px var(--toast-shadow); padding: var(--space-sm) var(--space-md); font-size: 0.92em; animation: toast-in 0.22s ease-out, toast-out 0.3s ease-in 6s forwards; }
+.toast-warning { border-color: var(--warning); animation: toast-in 0.22s ease-out, toast-out 0.3s ease-in 10s forwards; }
+.toast-error { border-color: var(--error); animation: toast-in 0.22s ease-out, toast-out 0.3s ease-in 12s forwards; }
+.toast-neutral { border-color: var(--line-strong); }
 html.js .toast-error { animation: toast-in 0.22s ease-out; }
 .toast.is-closing { animation: toast-out 0.25s ease-in forwards; }
 .toast-icon { font-weight: 800; }
@@ -187,7 +206,8 @@ html.js .toast-error { animation: toast-in 0.22s ease-out; }
 }
 /* The Monero nodes tab: a card per network, a row per node, closed to a
    line until opened. */
-.node-rows { display: grid; gap: var(--space-sm); margin: var(--space-sm) 0; }
+.node-rows { display: grid; gap: var(--space-sm); margin: var(--space-sm) 0 var(--space-lg); }
+.node-add-another { margin: calc(-1 * var(--space-xs)) 0 var(--space-xl); }
 .node-row { background: var(--paper); border: 1px solid var(--card-border); border-radius: var(--radius-md); min-width: 0; }
 .node-row.is-changed { border-color: var(--card-changed); }
 .node-row:has(.setting-problem) { border-color: var(--card-failed); }
@@ -234,7 +254,7 @@ details.node-network-closed > summary { cursor: pointer; font-weight: 700; paddi
 .sparkline { width: 4rem; height: 1rem; vertical-align: middle; fill: none; stroke: var(--chart-engine); stroke-width: 1.5; }
 .sparkline polyline { vector-effect: non-scaling-stroke; }
 .sparkline circle { fill: var(--chart-engine); stroke: none; }
-.scanning { border-left: 3px solid var(--line); padding-left: var(--space-md); margin: var(--space-sm) 0 var(--space-md); }
+.scanning { background: var(--surface-sunken); border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md); margin: 0 0 var(--space-lg); }
 .scanning h4 { margin: 0 0 var(--space-xs); }
 .scan-figures { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-xs) var(--space-md); margin: 0; }
 .scan-figures dt { color: var(--muted); }
@@ -249,7 +269,7 @@ html:not(.js) .js-only { display: none; }
 html.js .no-js-only { display: none; }
 /* Read out, not shown: words that go with something only visible. */
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.setting-problem { display: block; color: var(--error); margin-top: 0.15em; }
+.setting-problem { display: block; color: var(--error); }
 /* Store page embed warnings (`views::store_detail::embed_warnings`). */
 .embed-warning {
   display: grid;

@@ -281,7 +281,7 @@
       if (choice[2]) button.className = choice[2];
       ask.appendChild(button);
     });
-    box.appendChild(ask);
+    (box.querySelector(".save-bar-inner") || box).appendChild(ask);
     ask.lastChild.focus();
   }
 
