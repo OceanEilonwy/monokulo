@@ -5,7 +5,7 @@
 // one tab at a time (nicer_admin_screen.md): its panel is swapped, and the
 // tab bar and page-wide banners come back whole.
 const { test, expect } = require('@playwright/test');
-const { useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, openSettingsTab, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY } = require('./backend-helpers');
+const { createStore, useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, openSettingsTab, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY } = require('./backend-helpers');
 
 useRealStack(test);
 
@@ -45,12 +45,7 @@ test('a store settings form that is refused shows why inside its own section', a
   // starts from a fresh instance).
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
   await expect(page.getByText('Settings saved and applied.')).toBeVisible();
-  await page.goto(base + '/dashboard/connect');
-  await page.locator('input[name="site_url"]').fill('https://sections.example.com');
-  await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);
-  await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
-  await page.locator('select[name="network"]').selectOption('stagenet');
-  await page.getByRole('button', { name: 'Connect' }).click();
+  await createStore(page, 'sections.example.com');
   await finishStoreSetup(page);
   await page.goto(base + '/dashboard');
   const store = await page.locator('tr', { hasText: 'sections.example.com' }).first().getByRole('link', { name: 'view →' }).getAttribute('href');

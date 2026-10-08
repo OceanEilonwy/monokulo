@@ -7,7 +7,7 @@
 const { test, expect } = require('../coverage-test');
 const { serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
-const { useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./backend-helpers');
+const { createStore, useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./backend-helpers');
 
 useRealStack(test);
 
@@ -224,12 +224,7 @@ test("a caller's traceparent (as the WooCommerce plugin sends it) is followed th
   await signInAsAdmin(page);
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
   await expect(page.getByText('Settings saved and applied.')).toBeVisible();
-  await page.goto(base + '/dashboard/connect');
-  await page.locator('input[name="site_url"]').fill('https://traced.example.com');
-  await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);
-  await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
-  await page.locator('select[name="network"]').selectOption('stagenet');
-  await page.getByRole('button', { name: 'Connect' }).click();
+  await createStore(page, 'traced.example.com');
   await expect(page.getByRole('heading', { name: 'Store connected' })).toBeVisible();
   await page.goto(base + '/dashboard');
   const store = await page.locator('tr', { hasText: 'traced.example.com' }).first().getByRole('link', { name: 'view →' }).getAttribute('href');

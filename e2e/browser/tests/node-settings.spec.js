@@ -5,7 +5,7 @@
 // can then be connected, and the warnings for restart-only settings and
 // for clearing a network stores use work.
 const { test, expect } = require('@playwright/test');
-const { useRealStack, fixture, reloadUntil, saveEngineSettings, saveNodes, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY } = require('./backend-helpers');
+const { createStore, useRealStack, fixture, reloadUntil, saveEngineSettings, saveNodes, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY } = require('./backend-helpers');
 
 useRealStack(test);
 
@@ -28,12 +28,7 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
   await reloadUntil(page, base + '/status', (html) => html.includes('<h2>stagenet</h2>') && html.includes('reachable'));
 
   // 4. A stagenet store can be connected.
-  await page.goto(base + '/dashboard/connect');
-  await page.locator('input[name="site_url"]').fill('https://shop.example.com');
-  await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);
-  await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
-  await page.locator('select[name="network"]').selectOption('stagenet');
-  await page.getByRole('button', { name: 'Connect' }).click();
+  await createStore(page, 'shop.example.com');
   const storeLink = await finishStoreSetup(page);
   const storeId = storeLink.split('/').pop();
 

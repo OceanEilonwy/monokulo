@@ -6,7 +6,7 @@
 // both themes.
 const { test, expect } = require('@playwright/test');
 const {
-  useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, fillNodes, saveEngineSettings, openSettingsTab, SETTINGS_TABS, VIEW_KEY, SPEND_PUBKEY,
+  createStore, useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, fillNodes, saveEngineSettings, openSettingsTab, SETTINGS_TABS, VIEW_KEY, SPEND_PUBKEY,
 } = require('./backend-helpers');
 
 useRealStack(test);
@@ -58,12 +58,7 @@ test('clearing a network stores use asks first; one no store uses does not', asy
   const stagenet = page.locator('.node-network[data-network="stagenet"]');
   if (Number(await stagenet.getAttribute('data-tenant-count')) === 0) {
     // Run on its own: make a store on stagenet to protect.
-    await page.goto(base + '/dashboard/connect');
-    await page.locator('input[name="site_url"]').fill('https://guarded.example.com');
-    await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);
-    await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
-    await page.locator('select[name="network"]').selectOption('stagenet');
-    await page.getByRole('button', { name: 'Connect' }).click();
+    await createStore(page, 'guarded.example.com');
     await expect(page.getByRole('heading', { name: 'Store connected' })).toBeVisible();
     await openSettingsTab(page, 'nodes');
   }
