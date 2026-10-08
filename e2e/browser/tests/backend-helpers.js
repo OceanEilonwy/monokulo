@@ -66,8 +66,9 @@ function nodeAddressBoxes(page, network) {
  */
 async function fillNodes(page, nodes) {
   for (const [network, addresses] of Object.entries(nodes)) {
-    // A network with no nodes and no stores starts closed.
-    await page.locator(`details[data-network="${network}"]`).evaluateAll((all) => all.forEach((d) => { d.open = true; }));
+    // A network with no nodes and no stores starts closed, and so does
+    // each of its node rows.
+    await openNodes(page, network);
     const boxes = nodeAddressBoxes(page, network);
     const count = await boxes.count();
     if (addresses.length > count) throw new Error(`only ${count} rows for ${network}`);
@@ -75,11 +76,34 @@ async function fillNodes(page, nodes) {
   }
 }
 
+/** Opens a network's card on the Monero nodes tab, and each of its node rows. */
+async function openNodes(page, network) {
+  await page.locator(`[data-network="${network}"] details`).evaluateAll((all) => all.forEach((d) => { d.open = true; }));
+}
+
+/**
+ * Presses Save on the save bar. With JavaScript the bar only shows once
+ * something on the tab changed: with nothing changed, the form is sent as
+ * Enter would send it, and the toast says there was nothing to save.
+ */
+async function pressSave(page) {
+  // The last save's toast goes first, so `expectSaved` waits for this one's.
+  await page.locator('#settings-toasts .toast').evaluateAll((all) => all.forEach((toast) => toast.remove()));
+  const save = page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true });
+  if (await save.isVisible()) await save.click();
+  else await page.locator('#settings-form').evaluate((form) => form.requestSubmit(form.querySelector('[data-save]')));
+}
+
+/** Waits for the toast a save leaves: saved (green, or amber for a restart it waits for), or nothing to save. */
+async function expectSaved(page) {
+  await expect(page.locator('#settings-toasts').locator('.toast-success, .toast-warning, .toast-neutral').first()).toBeVisible();
+}
+
 /** Sets networks' nodes on the Monero nodes tab and saves, e.g. `{ stagenet: [fakeNodeAddress()] }`. */
 async function saveNodes(page, nodes) {
   await openSettingsTab(page, 'nodes');
   await fillNodes(page, nodes);
-  await page.locator('#settings-panel').getByRole('button', { name: 'Save', exact: true }).click();
+  await pressSave(page);
 }
 
 /**
@@ -143,8 +167,8 @@ async function saveEngineSettings(page, fields) {
   for (const [i, tab] of tabs.entries()) {
     await openSettingsTab(page, tab);
     await fillSettings(page, byTab.get(tab));
-    await page.locator('#settings-panel').getByRole('button', { name: 'Save', exact: true }).click();
-    if (i < tabs.length - 1) await expect(page.locator('#settings-panel .save-status')).toBeVisible();
+    await pressSave(page);
+    if (i < tabs.length - 1) await expect(page.locator('#settings-toasts .toast')).toBeVisible();
   }
 }
 
@@ -172,7 +196,7 @@ async function finishStoreSetup(page) {
 async function connectStore(page, site) {
   const { monokulo_url: base } = fixture();
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
-  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await expectSaved(page);
   await page.goto(base + '/dashboard/connect');
   await page.locator('input[name="site_url"]').fill(`https://${site}`);
   await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);
@@ -198,6 +222,6 @@ async function transitionDone(page) {
 
 module.exports = {
   useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, fillNodes, nodeAddressBoxes, saveEngineSettings,
-  settingsTabOf, openSettingsTab, fillSettings,
+  settingsTabOf, openSettingsTab, fillSettings, openNodes, pressSave, expectSaved,
   SETTINGS_TABS, reloadUntil, connectStore, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY,
 };

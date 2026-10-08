@@ -6,7 +6,7 @@
 // stand-in security processor; here, turning snp on where it can't run is
 // reported, and plain stores carry on.
 const { test, expect } = require('@playwright/test');
-const { useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY } = require('./backend-helpers');
+const { useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY, expectSaved } = require('./backend-helpers');
 
 useRealStack(test);
 
@@ -21,7 +21,7 @@ test('a store keeps its keys in the engine; snp turned on without SEV-SNP hardwa
   const { monokulo_url: base } = fixture();
   await signInAsAdmin(page);
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
-  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await expectSaved(page);
 
   // One backend: no choice is offered, and the keys go in as they are.
   await page.goto(base + '/dashboard/connect');
@@ -51,5 +51,5 @@ test('a store keeps its keys in the engine; snp turned on without SEV-SNP hardwa
   expect(await page.content()).not.toContain(VIEW_KEY);
 
   await saveEngineSettings(page, { 'key_custody.enabled_backends': 'plain', 'key_custody.default_backend': 'plain' });
-  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await expectSaved(page);
 });

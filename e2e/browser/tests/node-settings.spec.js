@@ -5,7 +5,7 @@
 // can then be connected, and the warnings for restart-only settings and
 // for clearing a network stores use work.
 const { test, expect } = require('@playwright/test');
-const { useRealStack, fixture, reloadUntil, saveEngineSettings, saveNodes, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY } = require('./backend-helpers');
+const { useRealStack, fixture, reloadUntil, saveEngineSettings, saveNodes, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY, expectSaved } = require('./backend-helpers');
 
 useRealStack(test);
 
@@ -22,7 +22,7 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
 
   // 2. Save a stagenet node on the admin page.
   await saveNodes(page, { stagenet: [node] });
-  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await expectSaved(page);
 
   // 3. The status page shows stagenet, reachable, with no restart.
   await reloadUntil(page, base + '/status', (html) => html.includes('<h2>stagenet</h2>') && html.includes('reachable'));
@@ -39,7 +39,7 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
 
   // 5. A saved poll interval shows on the status page.
   await saveEngineSettings(page, { 'payment.mempool_poll_interval_ms': '2000' });
-  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await expectSaved(page);
   await reloadUntil(page, base + '/status', (html) => html.includes('polls every 2s'));
 
   // 6. A restart-only setting says so.
@@ -62,6 +62,6 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
 
   // 8. Restoring the node clears the alert.
   await saveNodes(page, { stagenet: [node] });
-  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await expectSaved(page);
   await reloadUntil(page, base + '/dashboard', (html) => !html.includes('payments aren'));
 });
