@@ -23,6 +23,7 @@ pub(crate) mod scenario;
 use crate::key_custody::{KeyCustody as _, WalletMaterial};
 use crate::store::{Db, NewOrder, NewTenant, TenantId};
 use effects::{SqlFailure, World};
+use scenario::Command;
 use std::{collections::BTreeMap, time::Duration};
 #[path = "model.rs"]
 mod model;
@@ -49,9 +50,8 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
         .unwrap();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         runtime.block_on(async {
-            let semantic = scenario::Scenario::decode(data);
-            let setup = semantic.as_ref().map_or(data, |s| s.setup.as_slice());
-            let mut bytes = Bytes(setup, 0);
+            let scenario = scenario::Scenario::decode(data);
+            let mut bytes = Bytes(&scenario.setup, 0);
             let first = bytes.next();
             let recorded = first & 128 != 0;
             let wallets = 2 + usize::from(first % 3);
@@ -60,8 +60,11 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             } else {
                 2 + usize::from(bytes.next() % 3)
             };
-            let mode = bytes.next() % 3;
-            let worker = bytes.next() % 2 == 1;
+            let variant = bytes.next() % 3;
+            let backend_byte = bytes.next();
+            let worker = backend_byte % 2 == 1;
+            // Every transaction observed in the pool before any command.
+            let pool_first = backend_byte & 2 != 0;
             let mut pairs = (0..wallets)
                 .map(|i| pair(10 + i as u8 * 2))
                 .collect::<Vec<_>>();
@@ -74,7 +77,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                 let mut planned = Vec::new();
                 if recorded && t == 0 {
                     transactions.push(super::portfolio_fixture::recorded_payment(
-                        (mode + (first >> 4)) % 3,
+                        (variant + (first >> 4)) % 3,
                     ));
                     outputs.push(vec![Output {
                         index: 1,
@@ -171,21 +174,13 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                         .filter(|o| o.wallet == wallet && o.minor == minor)
                         .map(|o| o.amount)
                         .sum::<u64>();
-                    let goal = match if semantic.is_some() {
-                        bytes.next() % 3
-                    } else {
-                        mode
-                    } {
+                    let goal = match bytes.next() % 3 {
                         0 => total.max(1),
                         1 => (total / 2).max(1),
                         _ => total + 1,
                     };
                     let threshold = u64::from(bytes.next() % 4);
-                    let expires = if semantic.is_some() {
-                        daemon.now.get() + 1000 + i64::from(bytes.next() % 8) * 301
-                    } else {
-                        i64::MAX
-                    };
+                    let expires = daemon.now.get() + 1000 + i64::from(bytes.next() % 8) * 301;
                     let id = store
                         .create_order(&NewOrder {
                             tenant_id: tenant.clone(),
@@ -218,20 +213,19 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             daemon.push_block(&effects::hash(0, 2), vec![]);
             let mut state = ScanState::default();
             let mut locations = vec![
-                if semantic.is_some() {
-                    Location::Gone
-                } else {
+                if pool_first {
                     Location::Pool
+                } else {
+                    Location::Gone
                 };
                 count
             ];
-            let mut observed = vec![semantic.is_none(); count];
+            let mut observed = vec![pool_first; count];
             let mut epoch = 0u64;
             let mut oracle = Oracle::default();
-            // Legacy histories observe all transactions before generated effects.
-            // Typed histories start empty; observations enter the ledger on arrival.
+            // Otherwise observations enter the ledger on arrival.
             daemon.remember(transactions.clone());
-            daemon.set_mempool(if semantic.is_none() {
+            daemon.set_mempool(if pool_first {
                 transactions.clone()
             } else {
                 vec![]
@@ -264,199 +258,118 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                 )
                 .await;
             state = ScanState::default();
-            if let Some(scenario) = &semantic {
-                use scenario::Command;
-                let mut tip = 2;
-                for command in &scenario.commands {
-                    daemon.hit(&format!("selected-command:{}", command.family()));
-                    let mut applied = true;
-                    match *command {
-                        Command::Arrive(t) => {
-                            let t = usize::from(t) % count;
-                            let before = (locations[t], observed[t], voided[t]);
-                            if !matches!(locations[t], Location::Block(_)) {
-                                locations[t] = Location::Pool;
-                                observed[t] = true;
-                                voided[t] = false;
-                                daemon.clear_spent(&transactions[t]);
-                            }
-                            applied = (locations[t], observed[t], voided[t]) != before;
-                            if applied {
-                                assert_eq!(
-                                    locations[t],
-                                    Location::Pool,
-                                    "arrival must put the transaction in the pool"
-                                );
-                                assert!(
-                                    observed[t] && !voided[t],
-                                    "arrival must mark observation and clear stale void evidence"
-                                );
-                            }
-                        }
-                        Command::Mine(t) => {
-                            let t = usize::from(t) % count;
-                            tip += 1;
-                            if matches!(locations[t], Location::Block(_)) {
-                                applied = false;
-                                daemon.push_block(&effects::hash(epoch, tip), vec![]);
-                                daemon.hit("applied-transition:ExtendInsteadOfMine");
-                            } else {
-                                locations[t] = Location::Block(tip);
-                                observed[t] = true;
-                                voided[t] = false;
-                                daemon.clear_spent(&transactions[t]);
-                                daemon.push_block(
-                                    &effects::hash(epoch, tip),
-                                    vec![transactions[t].clone()],
-                                );
-                                assert_eq!(
-                                    locations[t],
-                                    Location::Block(tip),
-                                    "mining must attach the output to the new height"
-                                );
-                            }
-                        }
-                        Command::Extend(n) => {
-                            for _ in 0..=n % 4 {
-                                tip += 1;
-                                daemon.push_block(&effects::hash(epoch, tip), vec![]);
-                            }
-                        }
-                        Command::Reorg(n) => {
-                            epoch += 1;
-                            let from = 3.max(tip.saturating_sub(u64::from(n % 4)));
-                            for location in &mut locations {
-                                if matches!(location, Location::Block(h) if *h >= from) {
-                                    *location = Location::Gone;
-                                }
-                            }
-                            let replacement = effects::hash(epoch, from);
-                            daemon.reorg_from(from, vec![(replacement.as_str(), vec![])]);
-                            tip = from;
-                        }
-                        Command::Drop(t) => {
-                            let t = usize::from(t) % count;
-                            applied = matches!(locations[t], Location::Pool);
-                            if applied {
-                                locations[t] = Location::Gone;
-                                assert!(
-                                    observed[t],
-                                    "a departing pool transaction must have been observed"
-                                );
-                            }
-                        }
-                        Command::Spent {
-                            transaction,
-                            unanimous,
-                        } => {
-                            let t = usize::from(transaction) % count;
-                            applied = !matches!(locations[t], Location::Block(_));
-                            if applied {
-                                let expected_void = voided[t] || (observed[t] && unanimous);
-                                locations[t] = Location::Gone;
-                                voided[t] |= observed[t] && unanimous;
-                                daemon.spent(&transactions[t], unanimous);
-                                assert_eq!(
-                                    voided[t], expected_void,
-                                    "spent evidence must follow observation and unanimity"
-                                );
-                            }
-                        }
-                        Command::Proof { lag, mismatch } => {
-                            daemon
-                                .proof(
-                                    backend.db(),
-                                    tip.saturating_sub(u64::from(lag % 8)),
-                                    mismatch,
-                                )
-                                .await;
-                        }
-                        Command::Advance(n) => {
-                            for _ in 0..=n % 8 {
-                                daemon.advance().await;
-                            }
-                        }
-                        Command::Restart => {
-                            state = ScanState::default();
-                            backend.reopen().await;
-                            daemon.hit("connection-reopened-mid-history");
-                            if worker {
-                                daemon.hit("worker-restarted-mid-history");
-                            }
-                        }
-                        Command::Fault { writes, position } => {
-                            daemon
-                                .fault_episode(
-                                    backend.db(),
-                                    &custody,
-                                    &tenants,
-                                    &state,
-                                    backend.store(),
-                                    SqlFailure {
-                                        writes,
-                                        position: usize::from(position),
-                                    },
-                                )
-                                .await;
-                        }
-                        Command::Deliver(failing) => {
-                            daemon.deliver(backend.db(), backend.store(), failing).await;
-                        }
-                        Command::Round => {}
-                    }
-                    daemon.hit(&format!(
-                        "{}:{}",
-                        if applied {
-                            "applied-transition"
-                        } else {
-                            "skipped-command"
-                        },
-                        command.family()
-                    ));
-                    daemon.set_mempool(
-                        transactions
-                            .iter()
-                            .zip(&locations)
-                            .filter(|(_, l)| matches!(l, Location::Pool))
-                            .map(|(t, _)| t.clone())
-                            .collect(),
-                    );
-                    settle(
-                        &Effects::new(&backend, &custody, &daemon, &tenants, &state),
-                        &Ledger {
-                            invoices: &invoices,
-                            outputs: &outputs,
-                            txids: &txids,
-                            locations: &locations,
-                            voided: &voided,
-                            observed: &observed,
-                        },
-                        tip,
-                        &mut oracle,
-                    )
-                    .await;
-                }
-            }
-            for step in 0..if semantic.is_some() { 0 } else { 16 } {
-                if bytes.1 >= data.len() {
-                    break;
-                }
+            let mut tip = 2;
+            for command in &scenario.commands {
+                daemon.hit(&format!("selected-command:{}", command.family()));
                 let spent_before = daemon.spent_calls();
-                let action = bytes.next() % 12;
-                let target = usize::from(bytes.next()) % count;
-                let slot = u64::from(bytes.next() % 4);
-                let was_voided = voided[target];
-                match action {
-                    0 => {
-                        locations[target] = Location::Block(3 + slot);
-                        voided[target] = false;
+                let mut applied = true;
+                match *command {
+                    Command::Arrive(t) => {
+                        let t = usize::from(t) % count;
+                        let before = (locations[t], observed[t], voided[t]);
+                        if !matches!(locations[t], Location::Block(_)) {
+                            locations[t] = Location::Pool;
+                            observed[t] = true;
+                            voided[t] = false;
+                            daemon.clear_spent(&transactions[t]);
+                        }
+                        applied = (locations[t], observed[t], voided[t]) != before;
+                        if applied {
+                            assert_eq!(
+                                locations[t],
+                                Location::Pool,
+                                "arrival must put the transaction in the pool"
+                            );
+                            assert!(
+                                observed[t] && !voided[t],
+                                "arrival must mark observation and clear stale void evidence"
+                            );
+                        }
                     }
-                    1 => {
-                        locations[target] = Location::Pool;
-                        voided[target] = false;
+                    Command::Mine(t) => {
+                        let t = usize::from(t) % count;
+                        tip += 1;
+                        if matches!(locations[t], Location::Block(_)) {
+                            applied = false;
+                            daemon.push_block(&effects::hash(epoch, tip), vec![]);
+                            daemon.hit("applied-transition:ExtendInsteadOfMine");
+                        } else {
+                            locations[t] = Location::Block(tip);
+                            observed[t] = true;
+                            voided[t] = false;
+                            daemon.clear_spent(&transactions[t]);
+                            daemon.push_block(
+                                &effects::hash(epoch, tip),
+                                vec![transactions[t].clone()],
+                            );
+                            assert_eq!(
+                                locations[t],
+                                Location::Block(tip),
+                                "mining must attach the output to the new height"
+                            );
+                        }
                     }
-                    2 => locations[target] = Location::Gone,
-                    3 => {
+                    Command::Extend(n) => {
+                        for _ in 0..=n % 4 {
+                            tip += 1;
+                            daemon.push_block(&effects::hash(epoch, tip), vec![]);
+                        }
+                    }
+                    Command::Reorg(n) => {
+                        epoch += 1;
+                        let from = 3.max(tip.saturating_sub(u64::from(n % 4)));
+                        for location in &mut locations {
+                            if matches!(location, Location::Block(h) if *h >= from) {
+                                *location = Location::Gone;
+                            }
+                        }
+                        let replacement = effects::hash(epoch, from);
+                        daemon.reorg_from(from, vec![(replacement.as_str(), vec![])]);
+                        tip = from;
+                    }
+                    Command::Drop(t) => {
+                        let t = usize::from(t) % count;
+                        applied = matches!(locations[t], Location::Pool);
+                        if applied {
+                            locations[t] = Location::Gone;
+                            assert!(
+                                observed[t],
+                                "a departing pool transaction must have been observed"
+                            );
+                        }
+                    }
+                    Command::Spent {
+                        transaction,
+                        unanimous,
+                    } => {
+                        let t = usize::from(transaction) % count;
+                        applied = !matches!(locations[t], Location::Block(_));
+                        if applied {
+                            let expected_void = voided[t] || (observed[t] && unanimous);
+                            locations[t] = Location::Gone;
+                            voided[t] |= observed[t] && unanimous;
+                            daemon.spent(&transactions[t], unanimous);
+                            assert_eq!(
+                                voided[t], expected_void,
+                                "spent evidence must follow observation and unanimity"
+                            );
+                        }
+                    }
+                    Command::Proof { lag, mismatch } => {
+                        daemon
+                            .proof(
+                                backend.db(),
+                                tip.saturating_sub(u64::from(lag % 8)),
+                                mismatch,
+                            )
+                            .await;
+                    }
+                    Command::Advance(n) => {
+                        for _ in 0..=n % 8 {
+                            daemon.advance().await;
+                        }
+                    }
+                    Command::Restart => {
                         state = ScanState::default();
                         backend.reopen().await;
                         daemon.hit("connection-reopened-mid-history");
@@ -464,41 +377,78 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                             daemon.hit("worker-restarted-mid-history");
                         }
                     }
-                    4 => {
-                        let input = inputs(backend.db(), &custody, &daemon, &tenants);
-                        fast_pass(&state, &input).await.unwrap();
-                        fast_pass(&state, &input).await.unwrap();
+                    Command::Fault { writes, position } => {
+                        daemon
+                            .fault_episode(
+                                backend.db(),
+                                &custody,
+                                &tenants,
+                                &state,
+                                backend.store(),
+                                SqlFailure {
+                                    writes,
+                                    position: usize::from(position),
+                                },
+                            )
+                            .await;
                     }
-                    6 | 7 => {
-                        locations[target] = Location::Gone;
-                        // Only unanimous affirmative evidence may remove funds.
-                        // A previously voided transaction stays void until mined.
-                        voided[target] |= action == 6;
+                    Command::Deliver(failing) => {
+                        daemon.deliver(backend.db(), backend.store(), failing).await;
                     }
-                    _ => {}
-                }
-                epoch += 1;
-                let span = 4 + if action == 5 { slot } else { 0 };
-                let blocks = (3..3 + span)
-                    .map(|height| {
-                        (
-                            effects::hash(epoch, height),
-                            transactions
-                                .iter()
-                                .zip(&locations)
-                                .filter(|(_, l)| matches!(l,Location::Block(h) if *h==height))
-                                .map(|(t, _)| t.clone())
-                                .collect::<Vec<_>>(),
+                    Command::Round => {}
+                    Command::Rebuild {
+                        transaction,
+                        place,
+                        slot,
+                    } => {
+                        let t = usize::from(transaction) % count;
+                        let slot = u64::from(slot % 4);
+                        let was_voided = voided[t];
+                        match place % 4 {
+                            0 => {
+                                locations[t] = Location::Block(3 + slot);
+                                observed[t] = true;
+                                voided[t] = false;
+                            }
+                            1 => {
+                                locations[t] = Location::Pool;
+                                observed[t] = true;
+                                voided[t] = false;
+                            }
+                            2 => locations[t] = Location::Gone,
+                            _ => {}
+                        }
+                        epoch += 1;
+                        let span = 4 + if place % 4 == 3 { slot } else { 0 };
+                        tip = rebuild(&daemon, &transactions, &mut locations, epoch, span);
+                        if was_voided && place % 4 == 0 {
+                            daemon.hit("void-restored-to-canonical-block");
+                        }
+                    }
+                    Command::FastPass => {
+                        fast_passes(&state, backend.db(), &custody, &daemon, &tenants).await;
+                    }
+                    Command::ReplaceCustody(wallet) => {
+                        replace_custody(
+                            &custody,
+                            &mut tenants,
+                            &pairs,
+                            usize::from(wallet) % wallets,
+                            &daemon,
                         )
-                    })
-                    .collect::<Vec<_>>();
-                daemon.reorg_from(
-                    3,
-                    blocks
-                        .iter()
-                        .map(|(hash, txs)| (hash.as_str(), txs.clone()))
-                        .collect(),
-                );
+                        .await;
+                        state = ScanState::default();
+                    }
+                }
+                daemon.hit(&format!(
+                    "{}:{}",
+                    if applied {
+                        "applied-transition"
+                    } else {
+                        "skipped-command"
+                    },
+                    command.family()
+                ));
                 daemon.set_mempool(
                     transactions
                         .iter()
@@ -507,54 +457,6 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                         .map(|(t, _)| t.clone())
                         .collect(),
                 );
-                for (t, location) in locations.iter().enumerate() {
-                    if !matches!(location, Location::Gone) {
-                        daemon.clear_spent(&transactions[t]);
-                    }
-                }
-                if action == 6 || action == 7 {
-                    daemon.spent(&transactions[target], action == 6);
-                }
-                // Hold settlement through the first three branch changes, first
-                // by missing proof, then by a mismatching proven chain. Release
-                // thereafter: proof checking gates NEW settlements, not ones an
-                // operator already accepted. Reorg depth remains independently checked.
-                daemon
-                    .proof(
-                        backend.db(),
-                        if step == 0 { 2 } else { 2 + span },
-                        step == 1 || step == 2,
-                    )
-                    .await;
-                if matches!(action, 9 | 10) {
-                    daemon
-                        .fault_episode(
-                            backend.db(),
-                            &custody,
-                            &tenants,
-                            &state,
-                            backend.store(),
-                            SqlFailure {
-                                writes: action == 10,
-                                position: slot as usize,
-                            },
-                        )
-                        .await;
-                    // Replace the backend handle while retaining durable identity.
-                    let wallet = target % wallets;
-                    custody.remove_wallet(tenants[wallet].1).await.unwrap();
-                    let old_handle = tenants[wallet].1;
-                    tenants[wallet].1 = custody
-                        .register_wallet(WalletMaterial::new(
-                            pairs[wallet].view.to_bytes(),
-                            pairs[wallet].spend.to_bytes(),
-                        ))
-                        .await
-                        .unwrap();
-                    assert_ne!(tenants[wallet].1, old_handle);
-                    daemon.hit("custody-handle-replaced");
-                    state = ScanState::default();
-                }
                 settle(
                     &Effects::new(&backend, &custody, &daemon, &tenants, &state),
                     &Ledger {
@@ -565,19 +467,22 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                         voided: &voided,
                         observed: &observed,
                     },
-                    2 + span,
+                    tip,
                     &mut oracle,
                 )
                 .await;
-                if was_voided && action == 0 {
-                    daemon.hit("void-restored-to-canonical-block");
-                }
-                if matches!(action, 6 | 7) && daemon.spent_calls() > spent_before {
-                    daemon.hit(if action == 6 {
-                        "unanimous-spent-void-checked"
-                    } else {
-                        "disputed-spent-retains-funds"
-                    });
+                if let Command::Spent {
+                    transaction: _,
+                    unanimous,
+                } = *command
+                {
+                    if applied && daemon.spent_calls() > spent_before {
+                        daemon.hit(if unanimous {
+                            "unanimous-spent-void-checked"
+                        } else {
+                            "disputed-spent-retains-funds"
+                        });
+                    }
                 }
             }
             // Force the most revealing transition even for empty/short inputs:
@@ -651,6 +556,80 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             std::panic::resume_unwind(error)
         }
     }
+}
+/// Replaces every block from height 3 with `span` blocks of a new branch
+/// (`epoch`), each holding the transactions located at its height; one
+/// above the new branch is gone. Spent evidence clears for every transaction
+/// still somewhere. Returns the new tip.
+fn rebuild(
+    daemon: &World,
+    transactions: &[monero::Transaction],
+    locations: &mut [Location],
+    epoch: u64,
+    span: u64,
+) -> u64 {
+    for location in locations.iter_mut() {
+        if matches!(location, Location::Block(h) if *h >= 3 + span) {
+            *location = Location::Gone;
+        }
+    }
+    let blocks = (3..3 + span)
+        .map(|height| {
+            (
+                effects::hash(epoch, height),
+                transactions
+                    .iter()
+                    .zip(locations.iter())
+                    .filter(|(_, l)| matches!(l, Location::Block(h) if *h == height))
+                    .map(|(t, _)| t.clone())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Vec<_>>();
+    daemon.reorg_from(
+        3,
+        blocks
+            .iter()
+            .map(|(hash, txs)| (hash.as_str(), txs.clone()))
+            .collect(),
+    );
+    for (t, location) in locations.iter().enumerate() {
+        if !matches!(location, Location::Gone) {
+            daemon.clear_spent(&transactions[t]);
+        }
+    }
+    2 + span
+}
+async fn fast_passes(
+    state: &ScanState,
+    db: &Db,
+    custody: &FlakyKeyCustody,
+    daemon: &World,
+    tenants: &[(TenantId, crate::key_custody::WalletHandle)],
+) {
+    let input = inputs(db, custody, daemon, tenants);
+    fast_pass(state, &input).await.unwrap();
+    fast_pass(state, &input).await.unwrap();
+}
+/// Replaces `wallet`'s custody handle while its tenant keeps its durable identity.
+async fn replace_custody(
+    custody: &FlakyKeyCustody,
+    tenants: &mut [(TenantId, crate::key_custody::WalletHandle)],
+    pairs: &[monero::ViewPair],
+    wallet: usize,
+    daemon: &World,
+) {
+    custody.remove_wallet(tenants[wallet].1).await.unwrap();
+    let old_handle = tenants[wallet].1;
+    tenants[wallet].1 = custody
+        .register_wallet(WalletMaterial::new(
+            pairs[wallet].view.to_bytes(),
+            pairs[wallet].spend.to_bytes(),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(tenants[wallet].1, old_handle);
+    daemon.hit("custody-handle-replaced");
 }
 fn inputs<'a>(
     db: &'a Db,

@@ -886,7 +886,7 @@ impl Store {
     /// every migration applied: for tests that need a file (a worker's own
     /// connection, a reopen) without migrating it each time. Fails rather
     /// than overwrite a database already at `path`.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-support", feature = "fuzzing"))]
     pub fn create_file(path: &str) -> Result<Self> {
         let template = migrated_template()?;
         let mut conn = Connection::open_in_memory()?;

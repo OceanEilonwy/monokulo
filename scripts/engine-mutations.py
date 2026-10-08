@@ -73,7 +73,7 @@ MUTATIONS = (
     Mutation("double-credit-amount", "crates/engine/src/store/mod.rs",
              "sum.saturating_add(v.amount_piconero)",
              "sum.saturating_add(v.amount_piconero).saturating_add(v.amount_piconero)",
-             "work::tests::properties::reviewed_mixed_wallet_histories_replay",
+             "work::tests::properties::combined_portfolio_interactions_have_fixed_positive_controls",
              expected_failure="BOUNDARY: independent-amount-ledger"),
     Mutation("accept-stale-block-parent", "crates/engine/src/work/blocks.rs",
              "if s.get_scanned_block_hash(network, block.parent)?",
