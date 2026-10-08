@@ -23,17 +23,26 @@ slow-timeout = { period = "120s", terminate-after = 10 }
 
 # Proof-of-work tests hash real blocks with RandomX, each process holding up
 # to two 256 MiB light-mode caches (pow::hasher::MAX_KEYS) on a thread that
-# competes with their real 30ms RPC timeouts. Eight at a time keeps that to
-# about 4 GiB and leaves CPU for the rest of the run.
+# competes with their real 30ms RPC timeouts. Sixteen at a time keeps that to
+# about 8 GiB; a 4-thread CI runner never reaches the cap.
 [test-groups.proof-workers]
-max-threads = 8
+max-threads = 16
 
+# Overrides apply to every profile: nextest reads the default profile's after
+# the selected profile's own. Each setting comes from the first override that
+# matches the test and sets it.
 [[profile.default.overrides]]
 filter = 'test(/^proof::/) | test(real_verifier_and_scanner)'
 test-group = 'proof-workers'
 slow-timeout = { period = "300s", terminate-after = 12 }
 
-[[profile.ci.overrides]]
-filter = 'test(/^proof::/) | test(real_verifier_and_scanner)'
-test-group = 'proof-workers'
-slow-timeout = { period = "300s", terminate-after = 12 }
+# The slowest tests start first (nextest otherwise starts binaries and tests
+# in name order), so a run does not end waiting on a 20-30s property that
+# started last. Only the order changes; every test still runs.
+[[profile.default.overrides]]
+filter = 'test(/^work::tests::properties::money::(nodes|expansions)::/) | test(/^proof::tests::properties::/) | test(/every_recorded_ringct_variant/) | test(/^work::tests::every_sql_failure_while_a_payment_confirms/) | test(/^work::mempool::properties::scale::/)'
+priority = 100
+
+[[profile.default.overrides]]
+filter = 'test(/properties/) | test(/every_sql_failure/) | test(/scale/)'
+priority = 50
