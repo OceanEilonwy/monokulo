@@ -6,10 +6,13 @@
 //! session still gets `403` here, same as the nav only shows the "admin"
 //! link to the one instance-wide admin account (`is_admin`, `crate::db`).
 //!
-//! **Two owners, one save per tab.** The page is split into tabs by job
-//! (`views::admin::SettingsTab`), and a tab can hold both processes'
-//! settings; its one Save posts here, and [`save`] splits the form by
-//! owner and saves each half the way it always has. Monokulo's own
+//! **Two owners, a save per card.** The page is split into tabs by job
+//! (`views::admin::SettingsTab`), and each tab into cards (groups of
+//! settings saved together, `views::admin::setting_placement`); a tab can
+//! hold both processes' settings. The tab's one Save (the save bar) posts
+//! the whole tab here, and [`save`] saves each card whose settings differ
+//! from the ones in effect on its own, so a value one card refuses doesn't
+//! stop the others, splitting each card by owner. Monokulo's own
 //! settings (`crate::settings::ALL`) are saved through its registry, into
 //! its options file (or, for the runtime switches, its database). The
 //! scanner half is a live HTTP proxy - this
@@ -46,8 +49,8 @@ use crate::db::UserRow;
 use crate::views;
 use crate::views::admin::{
     setting_placement, AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel,
-    NodeRowView, NodeStatusView, Notice, OptionsFileView, SettingKindView, SettingOwner,
-    SettingSourceView, SettingsTab,
+    GroupFailure, NodeRowView, NodeStatusView, Notice, OptionsFileView, SettingKindView,
+    SettingOwner, SettingSourceView, SettingsTab, Toast, ToastKind,
 };
 
 use super::fx::FxRequest;
@@ -114,6 +117,7 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
                 pending_restart: view.pending_restart,
                 problem: view.problem.map(|p| p.message),
                 locked,
+                saved_value: None,
             }
         })
         .collect()
@@ -252,6 +256,7 @@ async fn fetch_engine_settings(
             pending_restart: s.pending_restart,
             problem: s.problem,
             locked: s.locked,
+            saved_value: None,
         })
         .collect();
     let mut networks_meta = parsed.networks;
@@ -270,15 +275,19 @@ async fn fetch_engine_settings(
                         .next()
                 })
                 .map(|(_, row)| row.address);
+            let rows: Vec<NodeRowView> = admin_nodes::rows_from_setting(value.as_ref())
+                .into_iter()
+                .enumerate()
+                .map(|(at, (label, row))| NodeRowView {
+                    row,
+                    label,
+                    status: None,
+                    saved_index: Some(at),
+                })
+                .collect();
             AdminNetworkFieldView {
-                rows: admin_nodes::rows_from_setting(value.as_ref())
-                    .into_iter()
-                    .map(|(label, row)| NodeRowView {
-                        row,
-                        label,
-                        status: None,
-                    })
-                    .collect(),
+                saved_count: rows.len(),
+                rows,
                 network,
                 example_address,
                 tenant_count: meta.tenant_count,
@@ -318,17 +327,31 @@ fn with_time_limits(fields: &mut [AdminScalarFieldView], clock: &views::time::Cl
     }
 }
 
-/// What the page says about a save, when it answers one.
+/// What the page says about a save (or a reload), when it answers one.
 #[derive(Default)]
 struct SaveResult {
-    error: Option<String>,
-    success: Option<String>,
+    /// Banners: what stays true after the save.
     notices: Vec<Notice>,
-    /// The node rows as submitted, shown again (with what's wrong) when
-    /// the save was refused.
+    toast: Option<Toast>,
+    /// The cards saved, and those refused, with why.
+    saved_groups: Vec<String>,
+    failed_groups: Vec<GroupFailure>,
+    /// What was sent for the refused cards, by form name, shown again to
+    /// fix.
+    posted: HashMap<String, String>,
+    /// The node rows as submitted for refused networks, shown again (with
+    /// what's wrong).
     nodes: Option<NodeForm>,
-    /// The engine's refusal of particular settings (its `fields`), by key.
+    /// A refusal's word on particular settings, by key.
     field_errors: Vec<(String, String)>,
+}
+
+/// A refused save's value for `field`, shown in place of the saved one,
+/// which it keeps for the page's script (and Discard).
+fn show_posted(field: &mut AdminScalarFieldView, posted: &HashMap<String, String>) {
+    if let Some(value) = posted.get(field.form_name()) {
+        field.saved_value = Some(std::mem::replace(&mut field.value, value.clone()));
+    }
 }
 
 async fn build_view_model(
@@ -338,20 +361,26 @@ async fn build_view_model(
     result: SaveResult,
 ) -> AdminSettingsViewModel {
     let SaveResult {
-        error,
-        success,
         notices,
+        toast,
+        saved_groups,
+        failed_groups,
+        posted,
         nodes,
         field_errors,
     } = result;
     let clock = views::time::Clock::for_user(admin);
-    let mut monokulo_fields = monokulo_fields(state);
-    with_time_limits(&mut monokulo_fields, &clock);
-    // A refused save's word on a setting, beside it.
-    for field in &mut monokulo_fields {
+    let problem = |field: &mut AdminScalarFieldView| {
         if let Some((_, message)) = field_errors.iter().find(|(key, _)| *key == field.key) {
             field.problem = Some(message.clone());
         }
+    };
+    let mut monokulo_fields = monokulo_fields(state);
+    with_time_limits(&mut monokulo_fields, &clock);
+    // A refused save's word on a setting, beside it, and what was typed.
+    for field in &mut monokulo_fields {
+        problem(field);
+        show_posted(field, &posted);
     }
     let options_files = state
         .settings
@@ -366,11 +395,14 @@ async fn build_view_model(
         })
         .into_iter()
         .collect();
+    let saved_at = (!saved_groups.is_empty()).then(|| clock.text(crate::now_unix()));
     let mut view = AdminSettingsViewModel {
         tab,
-        error,
-        success,
         notices,
+        toast,
+        saved_groups,
+        saved_at,
+        failed_groups,
         monokulo_fields,
         options_files,
         ..Default::default()
@@ -379,6 +411,10 @@ async fn build_view_model(
         Ok(engine) => {
             let mut fields = engine.fields;
             with_time_limits(&mut fields, &clock);
+            for field in &mut fields {
+                problem(field);
+                show_posted(field, &posted);
+            }
             view.engine_reachable = true;
             view.engine_fields = fields;
             view.engine_networks = engine.networks;
@@ -411,6 +447,7 @@ async fn build_view_model(
                             .unwrap_or_default(),
                         row: row.clone(),
                         status: None,
+                        saved_index: None,
                     })
                     .collect();
             }
@@ -524,7 +561,7 @@ pub struct SettingsPageQuery {
 
 /// `GET /dashboard/admin/settings?tab=<id>` - one tab of the page
 /// (General when `tab` is missing or unknown). With fixi (a tab link), just
-/// the panel, with the tab bar and banners out of band.
+/// the panel, with the tab bar, banners and toast out of band.
 pub async fn page(
     State(state): State<AppState>,
     AuthedAdmin(admin_user, _): AuthedAdmin,
@@ -532,22 +569,19 @@ pub async fn page(
     Query(query): Query<SettingsPageQuery>,
 ) -> Response {
     let tab = SettingsTab::from_id(query.tab.as_deref());
-    let view = match query.saved.as_deref().and_then(take_flash) {
-        Some(flash) => {
-            let result = SaveResult {
-                success: Some(flash.success),
-                notices: flash.notices,
-                ..Default::default()
-            };
-            let mut view = build_view_model(&state, &admin_user, tab, result).await;
-            view.saved_tab = (!flash.reloaded).then_some(flash.tab);
-            view
-        }
-        None => build_view_model(&state, &admin_user, tab, SaveResult {
-            success: query.welcome.filter(|v| *v).map(|_| "Your admin account is ready. Connect a Monero node below to start scanning payments. Save its address and check the connection status.".to_string()),
+    let result = match query.saved.as_deref().and_then(take_flash) {
+        Some(flash) => flash.result,
+        None => SaveResult {
+            notices: query
+                .welcome
+                .filter(|v| *v)
+                .map(|_| Notice::Success("Your admin account is ready. Connect a Monero node below to start scanning payments. Save its address and check the connection status.".to_string()))
+                .into_iter()
+                .collect(),
             ..Default::default()
-        }).await,
+        },
     };
+    let view = build_view_model(&state, &admin_user, tab, result).await;
     if fx.0 {
         return axum::response::Html(views::admin::settings_fragment(&view, true).into_string())
             .into_response();
@@ -576,54 +610,60 @@ fn joined(pairs: Vec<(String, String)>) -> HashMap<String, String> {
     form
 }
 
-/// A submitted tab, split by who owns each field (nicer_admin_screen.md
+/// One card's changes in a submitted tab, by owner (nicer_admin_screen.md
 /// T3): monokulo's are the names its registry knows; everything else is
 /// the engine's.
 #[derive(Default)]
-struct SplitForm {
+struct GroupChanges {
     monokulo: HashMap<String, String>,
     engine: RemoteUpdateRequest,
-    /// The node form was submitted (`node_*` fields: `admin_nodes`).
-    nodes: bool,
+    /// The values as sent, by form name, to show again if it's refused.
+    posted: HashMap<String, String>,
 }
 
-impl SplitForm {
-    fn new(form: &HashMap<String, String>) -> SplitForm {
-        let mut split = SplitForm::default();
-        for (name, value) in form {
-            if name == "tab" {
-                continue;
-            }
-            if admin_nodes::is_node_field(name) {
-                split.nodes = true;
-                continue;
-            }
-            let engine_key = name.strip_prefix("engine:");
-            if engine_key.is_none() && is_monokulo_key(name) {
-                split.monokulo.insert(name.clone(), value.clone());
-            } else {
-                split
-                    .engine
-                    .scalars
-                    .insert(engine_key.unwrap_or(name).to_string(), value.clone());
+/// Whether a submitted value is the one in effect, as the page shows it: a
+/// list of choices in any order, JSON however it's spaced, and development
+/// logging that's off however long ago it ended.
+fn same_value(field: &AdminScalarFieldView, submitted: &str) -> bool {
+    let (shown, submitted) = (field.value.trim(), submitted.trim());
+    match &field.kind {
+        SettingKindView::ChoiceList { .. } => {
+            let set = |value: &str| -> std::collections::BTreeSet<String> {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            };
+            set(shown) == set(submitted)
+        }
+        SettingKindView::Json => {
+            let parsed = |value: &str| serde_json::from_str::<serde_json::Value>(value).ok();
+            match (parsed(shown), parsed(submitted)) {
+                (Some(a), Some(b)) => a == b,
+                _ => shown == submitted,
             }
         }
-        split
+        SettingKindView::TimeLimit { now, .. } => {
+            let off = |value: &str| {
+                value
+                    .parse::<u64>()
+                    .map_or(value.is_empty(), |until| until <= *now)
+            };
+            shown == submitted || (off(shown) && off(submitted))
+        }
+        _ => shown == submitted,
     }
 }
 
-/// What saving a tab did, for the page: both halves' results merged.
+/// What saving one card did.
 #[derive(Default)]
 struct SaveOutcome {
     error: Option<String>,
-    /// The setting the error is about, when it names one: the page opens
-    /// the tab holding it.
-    error_key: Option<(String, SettingOwner)>,
     notices: Vec<Notice>,
-    /// The node rows as submitted, for the page to show again when the
-    /// save is refused.
-    nodes: Option<NodeForm>,
-    /// The engine's refusal of particular settings (its `fields`), by key.
+    /// The refusal's word on particular settings (the engine's `fields`),
+    /// by key.
     field_errors: Vec<(String, String)>,
 }
 
@@ -650,10 +690,7 @@ async fn save_monokulo(state: &AppState, form: &HashMap<String, String>) -> Save
         .find_map(|key| only_for_a_remote_engine(state, key))
     {
         return SaveOutcome {
-            error_key: Some((
-                crate::settings::ENGINE_URL.key.to_string(),
-                SettingOwner::Monokulo,
-            )),
+            field_errors: vec![(crate::settings::ENGINE_URL.key.to_string(), why.clone())],
             ..SaveOutcome::refused(why)
         };
     }
@@ -694,9 +731,10 @@ async fn save_monokulo(state: &AppState, form: &HashMap<String, String>) -> Save
             }
         }
         Err(live_settings::SaveError::Invalid(errors)) => SaveOutcome {
-            error_key: errors
-                .first()
-                .map(|e| (e.key.clone(), SettingOwner::Monokulo)),
+            field_errors: errors
+                .iter()
+                .map(|e| (e.key.clone(), e.to_string()))
+                .collect(),
             ..SaveOutcome::refused(
                 errors
                     .iter()
@@ -781,7 +819,6 @@ async fn check_snp_entry_against_engine(
         Err(_) if !changed => return None,
         Err(e) => {
             return Some(SaveOutcome {
-                error_key: Some((ID_KEY.key.to_owned(), SettingOwner::Monokulo)),
                 ..SaveOutcome::refused(format!(
                     "Nothing was saved: the SEV-SNP key entry settings are checked against the engine's before they're saved, and the engine isn't answering ({e})."
                 ))
@@ -797,7 +834,6 @@ async fn check_snp_entry_against_engine(
         .map(|(_, problem)| problem.as_str())
         .collect();
     Some(SaveOutcome {
-        error_key: Some((problems[0].0.to_owned(), SettingOwner::Monokulo)),
         field_errors: problems
             .iter()
             .map(|(key, problem)| ((*key).to_owned(), problem.clone()))
@@ -962,9 +998,6 @@ async fn save_engine(state: &AppState, req: RemoteUpdateRequest) -> SaveOutcome 
                 .and_then(|v| v["error"].as_str().map(str::to_string))
                 .unwrap_or(body);
             SaveOutcome {
-                error_key: field_errors
-                    .first()
-                    .map(|(key, _)| (key.clone(), SettingOwner::Engine)),
                 field_errors,
                 ..SaveOutcome::refused(format!(
                     "The engine refused the change ({status}): {message}"
@@ -975,83 +1008,278 @@ async fn save_engine(state: &AppState, req: RemoteUpdateRequest) -> SaveOutcome 
     }
 }
 
-/// Saves a whole tab (nicer_admin_screen.md T3): monokulo's half first,
-/// through its registry, then the engine's, through its admin API. If
-/// monokulo refuses its half, the engine's isn't sent, so a refused tab
-/// changes nothing.
-async fn save_tab(state: &AppState, form: &HashMap<String, String>) -> SaveOutcome {
-    let mut split = SplitForm::new(form);
-    // The node form: the rows as submitted, with a row button applied.
-    // Nothing is saved while any row has something to fix.
-    let nodes = split
-        .nodes
-        .then(|| NodeForm::from_form(form, &admin_nodes::NETWORKS));
-    if let Some(nodes) = &nodes {
-        if nodes.has_errors() {
-            let first = nodes
-                .networks
-                .iter()
-                .find(|(_, rows)| rows.iter().any(|row| row.error.is_some()))
-                .map(|(n, _)| *n);
-            return SaveOutcome {
-                error_key: first.map(|network| {
-                    (
-                        format!("monero_node.{}", shared::network::network_str(network)),
-                        SettingOwner::Engine,
-                    )
-                }),
-                nodes: Some(nodes.clone()),
-                ..SaveOutcome::refused(
-                    "Nothing was saved: some node addresses need fixing (marked below)."
-                        .to_string(),
-                )
-            };
-        }
-        for (network, rows) in &nodes.networks {
-            split.engine.monero_node.insert(
-                shared::network::network_str(*network).to_string(),
-                admin_nodes::rows_to_setting(rows),
-            );
-        }
-    }
+/// Saves one card: monokulo's settings in it first, through its registry,
+/// then the engine's, through its admin API. If monokulo refuses its part,
+/// the engine's isn't sent.
+async fn save_group(state: &AppState, changes: GroupChanges) -> SaveOutcome {
     let mut outcome = SaveOutcome::default();
-    if !split.monokulo.is_empty() {
-        outcome = save_monokulo(state, &split.monokulo).await;
+    if !changes.monokulo.is_empty() {
+        outcome = save_monokulo(state, &changes.monokulo).await;
         if outcome.error.is_some() {
             return outcome;
         }
     }
-    let mut saved_here: Vec<String> = split.monokulo.keys().cloned().collect();
-    saved_here.sort();
-    if !split.engine.is_empty() {
-        let engine = save_engine(state, split.engine).await;
-        if engine.error.is_some() {
-            outcome.nodes = nodes;
-        }
-        // Monokulo's own settings on this tab were already saved: say so,
-        // or the page reads as if nothing was.
-        outcome.error = match engine.error {
-            Some(error) if !saved_here.is_empty() => Some(format!(
-                "Saved {} here; the engine refused its settings: {error}",
-                saved_here.join(", ")
-            )),
-            other => other,
-        };
-        outcome.error_key = engine.error_key;
+    if !changes.engine.is_empty() {
+        let engine = save_engine(state, changes.engine).await;
+        outcome.error = engine.error;
         outcome.field_errors = engine.field_errors;
         outcome.notices.extend(engine.notices);
     }
     outcome
 }
 
-/// A save's banners, kept for the page a save without JavaScript
-/// redirects to (post, redirect, get), shown once.
-struct Flash {
-    tab: SettingsTab,
-    /// From the Reload button, not Save: no word beside Save.
-    reloaded: bool,
-    success: String,
+/// What saving a tab did, card by card.
+#[derive(Default)]
+struct SaveReport {
+    saved: Vec<String>,
+    failed: Vec<GroupFailure>,
+    /// What stays true after the save (a network without a node): banners.
     notices: Vec<Notice>,
+    /// What the toast says about the saved cards: a restart they wait for,
+    /// an environment variable that still wins.
+    remarks: Vec<String>,
+    /// Something saved waits for a restart.
+    restart: bool,
+    posted: HashMap<String, String>,
+    nodes: Option<NodeForm>,
+    field_errors: Vec<(String, String)>,
+}
+
+/// The network a node form field (`node_stagenet_0_address`) is for.
+fn node_field_network(name: &str) -> Option<&str> {
+    name.strip_prefix("node_")?.split('_').next()
+}
+
+/// Saves a tab: each card with a change on its own, in the order the page
+/// shows them (`order`, the submitted names in order), so a value one card
+/// refuses doesn't stop the others. A setting is changed when what was
+/// sent isn't what's in effect; one the page shows locked, or that it
+/// doesn't know, is sent on (and refused there). The node form is a card per
+/// network, changed when its rows (with a row button applied) aren't the
+/// ones saved.
+async fn save_tab(
+    state: &AppState,
+    form: &HashMap<String, String>,
+    order: &[String],
+) -> SaveReport {
+    let monokulo = monokulo_fields(state);
+    let engine = fetch_engine_settings(&state.engine.client).await.ok();
+    let mut groups: Vec<(String, GroupChanges)> = Vec::new();
+    let mut report = SaveReport::default();
+    fn group_entry(groups: &mut Vec<(String, GroupChanges)>, group: String) -> &mut GroupChanges {
+        let at = match groups.iter().position(|(g, _)| *g == group) {
+            Some(at) => at,
+            None => {
+                groups.push((group, GroupChanges::default()));
+                groups.len() - 1
+            }
+        };
+        &mut groups[at].1
+    }
+    let nodes = form
+        .keys()
+        .any(|name| admin_nodes::is_node_field(name))
+        .then(|| NodeForm::from_form(form, &admin_nodes::NETWORKS));
+    let mut seen: Vec<&str> = Vec::new();
+    for name in order {
+        if seen.contains(&name.as_str()) || name == "tab" {
+            continue;
+        }
+        seen.push(name);
+        if admin_nodes::is_node_field(name) {
+            let (Some(nodes), Some(network)) = (&nodes, node_field_network(name)) else {
+                continue;
+            };
+            let Ok(parsed) = shared::network::parse_network(network) else {
+                continue;
+            };
+            let group = format!("network-{network}");
+            if groups.iter().any(|(g, _)| *g == group)
+                || report.failed.iter().any(|f| f.group == group)
+            {
+                continue;
+            }
+            let Some(rows) = nodes.rows(parsed) else {
+                continue;
+            };
+            if rows.iter().any(|row| row.error.is_some()) {
+                report.failed.push(GroupFailure {
+                    group,
+                    message: "Nothing was saved: some node addresses need fixing (marked below)."
+                        .to_string(),
+                });
+                continue;
+            }
+            let proposed = admin_nodes::rows_to_setting(rows);
+            let saved = engine.as_ref().and_then(|engine| {
+                engine
+                    .networks
+                    .iter()
+                    .find(|n| n.network == network)
+                    .map(|n| {
+                        let rows: Vec<admin_nodes::NodeRow> =
+                            n.rows.iter().map(|r| r.row.clone()).collect();
+                        admin_nodes::rows_to_setting(&rows)
+                    })
+            });
+            if saved.as_ref() != Some(&proposed) {
+                group_entry(&mut groups, group)
+                    .engine
+                    .monero_node
+                    .insert(network.to_string(), proposed);
+            }
+            continue;
+        }
+        let Some(value) = form.get(name) else {
+            continue;
+        };
+        let engine_key = name.strip_prefix("engine:");
+        let (key, owner) = match engine_key {
+            None if is_monokulo_key(name) => (name.as_str(), SettingOwner::Monokulo),
+            other => (other.unwrap_or(name), SettingOwner::Engine),
+        };
+        let shown = match owner {
+            SettingOwner::Monokulo => monokulo.iter().find(|f| f.key == key),
+            SettingOwner::Engine => engine
+                .as_ref()
+                .and_then(|engine| engine.fields.iter().find(|f| f.key == key)),
+        };
+        let editable =
+            |f: &&AdminScalarFieldView| f.locked.is_none() && f.kind != SettingKindView::Secret;
+        if shown.filter(editable).is_some_and(|f| same_value(f, value)) {
+            continue;
+        }
+        let changes = group_entry(&mut groups, setting_placement(key, owner).1);
+        // Shown again if it's refused; never a secret, or what the page
+        // shows locked.
+        if shown.filter(editable).is_some() {
+            changes.posted.insert(name.clone(), value.clone());
+        }
+        match owner {
+            SettingOwner::Monokulo => {
+                changes.monokulo.insert(key.to_string(), value.clone());
+            }
+            SettingOwner::Engine => {
+                changes
+                    .engine
+                    .scalars
+                    .insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    for (group, changes) in groups {
+        let posted = changes.posted.clone();
+        let outcome = save_group(state, changes).await;
+        report.field_errors.extend(outcome.field_errors);
+        for notice in outcome.notices {
+            match notice {
+                Notice::Warning(text) => {
+                    report.restart = true;
+                    report.remarks.push(text);
+                }
+                Notice::Info(text) | Notice::Success(text) => report.remarks.push(text),
+                error @ Notice::Error(_) => report.notices.push(error),
+            }
+        }
+        match outcome.error {
+            Some(message) => {
+                report.posted.extend(posted);
+                report.failed.push(GroupFailure { group, message });
+            }
+            None => report.saved.push(group),
+        }
+    }
+    // The refused networks' rows, as sent, to fix.
+    report.nodes = nodes.map(|nodes| NodeForm {
+        networks: nodes
+            .networks
+            .into_iter()
+            .filter(|(network, _)| {
+                let group = format!("network-{}", shared::network::network_str(*network));
+                report.failed.iter().any(|f| f.group == group)
+            })
+            .collect(),
+    });
+    report
+}
+
+/// `A`, `A and B`, `A, B and C`.
+fn joined_names(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// The toast after a save: what was saved, what wasn't and why, or that
+/// nothing had changed.
+fn save_toast(report: &SaveReport) -> Toast {
+    let titles = |groups: &mut dyn Iterator<Item = &String>| {
+        joined_names(
+            &groups
+                .map(|g| views::admin::group_title(g))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let saved = titles(&mut report.saved.iter());
+    if let Some(first) = report.failed.first() {
+        let mut lines = vec![first.message.clone()];
+        if !report.saved.is_empty() {
+            lines.push(format!("{saved} saved."));
+        }
+        return Toast {
+            kind: ToastKind::Error,
+            title: format!(
+                "{} not saved",
+                titles(&mut report.failed.iter().map(|f| &f.group))
+            ),
+            lines,
+            show: Some(first.group.clone()),
+        };
+    }
+    if report.saved.is_empty() {
+        return Toast {
+            kind: ToastKind::Neutral,
+            title: "Nothing to save".to_string(),
+            lines: vec!["Nothing on this tab had changed.".to_string()],
+            show: None,
+        };
+    }
+    Toast {
+        kind: if report.restart {
+            ToastKind::Warning
+        } else {
+            ToastKind::Success
+        },
+        title: if report.restart {
+            format!("{saved} saved")
+        } else {
+            format!("{saved} saved and applied")
+        },
+        lines: report.remarks.clone(),
+        show: None,
+    }
+}
+
+impl From<SaveReport> for SaveResult {
+    fn from(report: SaveReport) -> SaveResult {
+        SaveResult {
+            toast: Some(save_toast(&report)),
+            notices: report.notices,
+            saved_groups: report.saved,
+            failed_groups: report.failed,
+            posted: report.posted,
+            nodes: report.nodes,
+            field_errors: report.field_errors,
+        }
+    }
+}
+
+/// A save's result, kept for the page a save without JavaScript redirects
+/// to (post, redirect, get), shown once.
+struct Flash {
+    result: SaveResult,
     created: std::time::Instant,
 }
 
@@ -1093,51 +1321,38 @@ fn take_flash(token: &str) -> Option<Flash> {
         .filter(|f| f.created.elapsed() < FLASH_TTL)
 }
 
-/// `POST /dashboard/admin/settings` - saves one tab: any mix of monokulo's
-/// and the engine's settings (nicer_admin_screen.md step 2). Without
-/// JavaScript a successful save redirects back to its tab (303), its
-/// banners carried across in a flash; a refused one renders the page again
-/// with the error, on the tab holding the setting it's about. With fixi,
-/// that tab's panel comes back (`422` when nothing was saved), with the
-/// banners and the tab bar out of band.
+/// `POST /dashboard/admin/settings` - saves one tab, card by card: any mix
+/// of monokulo's and the engine's settings (nicer_admin_screen.md step 2).
+/// Without JavaScript it redirects back to the tab (303), at the card that
+/// was refused or else the first one saved, with the result carried across
+/// in a flash. With fixi, the tab's panel comes back (`422` when a card was
+/// refused), with the banners, toast and tab bar out of band.
 pub async fn save(
     State(state): State<AppState>,
     AuthedAdmin(admin_user, _): AuthedAdmin,
     fx: FxRequest,
-    Form(form): Form<Vec<(String, String)>>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    let form = joined(form);
-    let submitted_tab = SettingsTab::from_id(form.get("tab").map(String::as_str));
-    let outcome = save_tab(&state, &form).await;
-    let tab = outcome
-        .error_key
-        .as_ref()
-        .map(|(key, owner)| setting_placement(key, *owner).0)
-        .unwrap_or(submitted_tab);
-    let success = "Settings saved and applied.".to_string();
-    if outcome.error.is_none() && !fx.0 {
+    let order: Vec<String> = pairs.iter().map(|(name, _)| name.clone()).collect();
+    let form = joined(pairs);
+    let tab = SettingsTab::from_id(form.get("tab").map(String::as_str));
+    let result = SaveResult::from(save_tab(&state, &form, &order).await);
+    let refused = !result.failed_groups.is_empty();
+    if !fx.0 {
+        let card = result
+            .failed_groups
+            .first()
+            .map(|f| f.group.clone())
+            .or_else(|| result.saved_groups.first().cloned());
         let token = put_flash(Flash {
-            tab,
-            reloaded: false,
-            success,
-            notices: outcome.notices,
+            result,
             created: std::time::Instant::now(),
         });
-        return super::dashboard::redirect_303(&format!("{}&saved={token}", tab.href()));
+        let anchor = card.map(|card| format!("#card-{card}")).unwrap_or_default();
+        return super::dashboard::redirect_303(&format!("{}&saved={token}{anchor}", tab.href()));
     }
-    let refused = outcome.error.is_some();
-    let result = SaveResult {
-        error: outcome.error,
-        success: (!refused).then_some(success),
-        notices: outcome.notices,
-        nodes: outcome.nodes,
-        field_errors: outcome.field_errors,
-    };
     let mut view = build_view_model(&state, &admin_user, tab, result).await;
-    view.saved_tab = Some(tab);
-    if !fx.0 {
-        return render(&state, &admin_user, view).await;
-    }
+    view.answers_save = true;
     let fragment = views::admin::settings_fragment(&view, false);
     if refused {
         super::fx::invalid(fragment)
@@ -1253,8 +1468,8 @@ async fn reload_engine(state: &AppState) -> Result<(String, Vec<Notice>), String
 /// reads monokulo's or the engine's options file again, after an edit by
 /// hand, and applies all of it, or, when anything in it is wrong, none of
 /// it, with every problem named by line. A reload that worked redirects
-/// back to the tab with its banners (post, redirect, get); one that didn't
-/// renders the page with why.
+/// back to the tab with a toast saying what changed (post, redirect, get);
+/// one that didn't renders the page with a toast saying why.
 pub async fn reload(
     State(state): State<AppState>,
     AuthedAdmin(admin_user, _): AuthedAdmin,
@@ -1267,18 +1482,43 @@ pub async fn reload(
     };
     match result {
         Ok((success, notices)) => {
+            let mut result = SaveResult::default();
+            let mut lines = vec![success];
+            let mut restart = false;
+            for notice in notices {
+                match notice {
+                    Notice::Warning(text) => {
+                        restart = true;
+                        lines.push(text);
+                    }
+                    Notice::Info(text) | Notice::Success(text) => lines.push(text),
+                    error @ Notice::Error(_) => result.notices.push(error),
+                }
+            }
+            result.toast = Some(Toast {
+                kind: if restart {
+                    ToastKind::Warning
+                } else {
+                    ToastKind::Success
+                },
+                title: "Options file reloaded".to_string(),
+                lines,
+                show: None,
+            });
             let token = put_flash(Flash {
-                tab,
-                reloaded: true,
-                success,
-                notices,
+                result,
                 created: std::time::Instant::now(),
             });
             super::dashboard::redirect_303(&format!("{}&saved={token}", tab.href()))
         }
         Err(error) => {
             let result = SaveResult {
-                error: Some(error),
+                toast: Some(Toast {
+                    kind: ToastKind::Error,
+                    title: "Options file not reloaded".to_string(),
+                    lines: vec![error],
+                    show: None,
+                }),
                 ..Default::default()
             };
             let view = build_view_model(&state, &admin_user, tab, result).await;
@@ -1455,11 +1695,30 @@ mod tests {
 
     /// The page a save leads to: the redirect's target after a successful
     /// save without JavaScript, or the page rendered with its error.
+    /// Whether a page says a save was saved: its toast, green, or amber for
+    /// a restart it waits for, and nothing refused.
+    fn is_saved(html: &str) -> bool {
+        (html.contains(r#"class="toast toast-success""#)
+            || html.contains(r#"class="toast toast-warning""#))
+            && !html.contains(r#"class="toast toast-error""#)
+    }
+
+    /// The toast's text, when a page has one.
+    fn toast_text(html: &str) -> String {
+        let Some(at) = html.find(r#"<div id="settings-toasts""#) else {
+            return String::new();
+        };
+        let rest = &html[at..];
+        unescaped(&rest[..rest.find("</button>").unwrap_or(rest.len())])
+    }
+
     async fn follow(router: &Router, cookie: &str, response: axum::response::Response) -> String {
         if response.status() != StatusCode::SEE_OTHER {
             return body_text(response).await;
         }
-        let location = response.headers()["location"].to_str().unwrap().to_string();
+        // The card to land on (`#card-...`) is the browser's, not the server's.
+        let location = response.headers()["location"].to_str().unwrap();
+        let location = location.split('#').next().unwrap().to_string();
         let page = router
             .clone()
             .oneshot(
@@ -1669,10 +1928,7 @@ mod tests {
             .unwrap();
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
         let html = follow(&router, &cookie, save).await;
-        assert!(
-            html.contains("Settings saved and applied."),
-            "expected a success banner, got: {html}"
-        );
+        assert!(is_saved(&html), "expected a success banner, got: {html}");
         assert!(
             html.contains("value=\"5\""),
             "expected the just-saved value reflected immediately, got: {html}"
@@ -1770,10 +2026,7 @@ mod tests {
             .unwrap();
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
         let html = follow(&router, &cookie, save).await;
-        assert!(
-            html.contains("Settings saved and applied."),
-            "expected a success banner, got: {html}"
-        );
+        assert!(is_saved(&html), "expected a success banner, got: {html}");
 
         let html = settings_tabs_html(&router, &cookie).await;
         for (key, value) in new_values {
@@ -1856,10 +2109,7 @@ mod tests {
             .unwrap();
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
         let html = follow(&router, &cookie, save).await;
-        assert!(
-            html.contains("Settings saved and applied."),
-            "expected a success banner, got: {html}"
-        );
+        assert!(is_saved(&html), "expected a success banner, got: {html}");
         assert!(
             html.contains("take effect after the engine restarts"),
             "worker threads and bind are restart-only: {html}"
@@ -2068,7 +2318,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        let said = body_text(response).await;
+        let said = follow(&router, &cookie, response).await;
         assert!(said.contains("Only used with a remote engine"), "{said}");
         assert_eq!(
             monokulo_value(&settings, "engine.url").1,
@@ -2197,8 +2447,8 @@ mod tests {
             }
         };
         let refused = save(vec![("key_custody.snp_entry_id_key", other.clone())]).await;
-        assert_eq!(refused.status(), StatusCode::OK);
-        let html = unescaped(&body_text(refused).await);
+        assert_eq!(refused.status(), StatusCode::SEE_OTHER);
+        let html = unescaped(&follow(&router, &cookie, refused).await);
         assert!(html.contains("must match the engine's"), "{html}");
         assert!(
             html.contains(&format!("key_custody.snp_entry_id_key here is {other}")),
@@ -2221,8 +2471,8 @@ mod tests {
         assert!(policy.required);
 
         let refused = save(vec![("key_custody.snp_entry_min_guest_svn", "3".into())]).await;
-        assert_eq!(refused.status(), StatusCode::OK);
-        let html = unescaped(&body_text(refused).await);
+        assert_eq!(refused.status(), StatusCode::SEE_OTHER);
+        let html = unescaped(&follow(&router, &cookie, refused).await);
         assert!(
             html.contains("key_custody.snp_entry_min_guest_svn here is 3, the engine's key_custody.snp_min_guest_svn is 0"),
             "{html}"
@@ -2309,8 +2559,8 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(refused.status(), StatusCode::OK);
-        let html = unescaped(&body_text(refused).await);
+        assert_eq!(refused.status(), StatusCode::SEE_OTHER);
+        let html = unescaped(&follow(&router, &cookie, refused).await);
         assert!(html.contains("MONOKULO_LOGGING_OTLP_HEADERS"), "{html}");
         assert!(
             !html.contains("sk-live-x"),
@@ -2338,8 +2588,8 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(save.status(), StatusCode::OK);
-        let html = body_text(save).await;
+        assert_eq!(save.status(), StatusCode::SEE_OTHER);
+        let html = follow(&router, &cookie, save).await;
         assert!(
             html.contains("abuse.soft_per_min: Enter a whole number"),
             "expected a clear validation error, got: {html}"
@@ -2409,8 +2659,8 @@ mod tests {
                 ))
                 .await
                 .unwrap();
-            assert_eq!(save.status(), StatusCode::OK, "{key}={value:?}");
-            let html = body_text(save)
+            assert_eq!(save.status(), StatusCode::SEE_OTHER, "{key}={value:?}");
+            let html = follow(&router, &cookie, save)
                 .await
                 .replace("&quot;", "\"")
                 .replace("&#34;", "\"")
@@ -2447,10 +2697,7 @@ mod tests {
             .unwrap();
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
         let html = follow(&router, &cookie, save).await;
-        assert!(
-            html.contains("Settings saved and applied."),
-            "expected a success banner, got: {html}"
-        );
+        assert!(is_saved(&html), "expected a success banner, got: {html}");
         assert!(
             html.contains("value=\"5\""),
             "expected the scanner's own just-saved value reflected, got: {html}"
@@ -2505,19 +2752,29 @@ mod tests {
         let html = body_text(save).await;
         assert!(
             html.starts_with(
-                r#"<section id="settings-panel" aria-labelledby="settings-panel-title">"#
+                r#"<section id="settings-panel" aria-labelledby="settings-panel-title" data-tab="abuse""#
             ),
             "{html}"
         );
-        assert!(html.contains(r#"<div id="settings-banners" class="save-banners" data-fx-oob><p class="success" role="status">Settings saved and applied."#), "{html}");
+        assert!(
+            html.contains(r#"<div id="settings-banners" class="save-banners" data-fx-oob>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"<div id="settings-toasts" class="toasts" data-fx-oob><div class="toast toast-success" role="status" data-toast><span class="toast-icon" aria-hidden="true">✓</span><div class="toast-text"><strong>Request limits saved and applied</strong>"#), "{html}");
         assert!(html.contains(r#"<nav id="settings-tabs" class="tab-bar" aria-label="Settings sections" data-fx-oob>"#), "{html}");
         assert!(
             html.contains(r#"value="70""#) && !html.contains("<html"),
             "{html}"
         );
         assert!(
-            html.contains(r#"<span class="save-status success" role="status" data-fx-focus"#),
-            "a word by the button gets focus: {html}"
+            html.contains(
+                r#"<p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus>"#
+            ),
+            "the save bar's message gets focus: {html}"
+        );
+        assert!(
+            html.contains(r#"<span class="card-meta card-saved" data-card-saved>Saved "#),
+            "the card says it was saved: {html}"
         );
 
         let refused = router
@@ -2541,8 +2798,14 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"<span class="save-status error" role="alert" data-fx-focus"#),
-            "a word by the button gets focus: {html}"
+            html.contains(r#"<div id="save-bar" class="save-bar is-failed""#)
+                && html.contains(r#"<strong>Orders not saved.</strong>"#)
+                && html.contains(r#"data-save-bar-message tabindex="-1" data-fx-focus>"#),
+            "the save bar says which card, and gets focus: {html}"
+        );
+        assert!(
+            html.contains(r#"<section id="card-orders" class="settings-card is-failed""#),
+            "{html}"
         );
 
         let saved = router
@@ -2556,9 +2819,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(saved.status(), StatusCode::OK);
-        assert!(body_text(saved)
-            .await
-            .contains("Settings saved and applied."));
+        assert!(is_saved(&body_text(saved).await));
     }
 
     /// Saving a wrong engine token on General with fixi: the engine's tabs
@@ -2615,8 +2876,8 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(save.status(), StatusCode::OK);
-        let html = body_text(save).await;
+        assert_eq!(save.status(), StatusCode::SEE_OTHER);
+        let html = follow(&router, &cookie, save).await;
         assert!(
             html.contains("The engine refused the change"),
             "expected the engine's own rejection surfaced, got: {html}"
@@ -2697,9 +2958,7 @@ mod tests {
             location.starts_with("/dashboard/admin/settings?tab=abuse&saved="),
             "{location}"
         );
-        assert!(follow(&router, &cookie, save)
-            .await
-            .contains("Settings saved and applied."));
+        assert!(is_saved(&follow(&router, &cookie, save).await));
         assert_eq!(
             monokulo_value(&settings, "abuse.soft_per_min"),
             ("61".to_string(), live_settings::SettingSource::Toml)
@@ -2755,7 +3014,7 @@ mod tests {
         .await;
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
         let html = follow(&router, &cookie, save).await;
-        assert!(html.contains("Settings saved and applied."), "{html}");
+        assert!(is_saved(&html), "{html}");
         assert_eq!(
             engine_settings(&engine).await["scalars"]["payment.confirmations_required"]["value"],
             "7"
@@ -2779,10 +3038,68 @@ mod tests {
         );
     }
 
-    /// Monokulo's half is checked first; when it's refused, the engine's
-    /// half isn't sent, so nothing changes anywhere.
+    /// A tab is sent whole, but only what differs from the settings in
+    /// effect is saved, card by card; sent again unchanged, nothing is.
     #[tokio::test]
-    async fn an_invalid_monokulo_value_in_a_mixed_tab_saves_neither_half() {
+    async fn a_save_saves_only_the_cards_whose_settings_changed() {
+        let state = test_app_state_over_http("127.0.0.1:1".parse().unwrap()).await;
+        let db = state.db.clone();
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        // The tab as shown, with one setting changed: the engine isn't
+        // reachable, but nothing of its is sent, so nothing is refused.
+        let tab = [
+            ("tab", "abuse"),
+            ("abuse.soft_per_min", "61"),
+            ("abuse.hard_per_min", "300"),
+            ("abuse.challenge_bits", "16"),
+            ("abuse.under_attack", "false"),
+            ("abuse.trusted_proxies", ""),
+        ];
+        let save = post_settings(&router, &cookie, &tab).await;
+        assert_eq!(save.status(), StatusCode::SEE_OTHER);
+        let location = save.headers()["location"].to_str().unwrap().to_string();
+        assert!(
+            location.ends_with("#card-abuse-limits"),
+            "back at the saved card: {location}"
+        );
+        let html = follow(&router, &cookie, save).await;
+        assert!(
+            toast_text(&html).contains("Request limits saved and applied"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<section id="card-abuse-limits" class="settings-card""#)
+                && html[html.find(r#"id="card-abuse-limits""#).unwrap()..]
+                    .contains(r#"<span class="card-meta card-saved" data-card-saved>Saved "#),
+            "{html}"
+        );
+        assert_eq!(
+            db.lock().get_setting("abuse.soft_per_min").unwrap(),
+            None,
+            "kept in the options file, not the database"
+        );
+        assert_eq!(
+            db.lock().get_setting("abuse.under_attack").unwrap(),
+            None,
+            "unchanged, not saved"
+        );
+
+        // The same again: nothing to save, and it says so.
+        let again = post_settings(&router, &cookie, &tab).await;
+        let html = follow(&router, &cookie, again).await;
+        let toast = toast_text(&html);
+        assert!(
+            toast.contains("Nothing to save") && toast.contains("Nothing on this tab had changed."),
+            "{toast}"
+        );
+        assert!(!is_saved(&html), "{html}");
+    }
+
+    /// Each card is saved on its own: one a save refuses shows what was
+    /// typed and why, and the others on the tab are saved anyway.
+    #[tokio::test]
+    async fn a_card_a_save_refuses_does_not_stop_the_others_on_its_tab() {
         let engine = spawn_engine().await;
         let state = test_app_state_in_process(&engine).await;
         let db = state.db.clone();
@@ -2799,21 +3116,36 @@ mod tests {
             ],
         )
         .await;
-        assert_eq!(
-            save.status(),
-            StatusCode::OK,
-            "a refused save shows the page again"
-        );
-        let html = unescaped(&body_text(save).await);
+        assert_eq!(save.status(), StatusCode::SEE_OTHER);
+        let location = save.headers()["location"].to_str().unwrap().to_string();
         assert!(
-            html.contains("exchange_rate.cache_seconds: Enter a whole number from 0 to 86400."),
+            location.starts_with("/dashboard/admin/settings?tab=payments&saved=")
+                && location.ends_with("#card-exchange-rates"),
+            "back at the refused card: {location}"
+        );
+        let html = unescaped(&follow(&router, &cookie, save).await);
+        let toast = toast_text(&html);
+        assert!(
+            toast.contains("Exchange rates not saved")
+                && toast
+                    .contains("exchange_rate.cache_seconds: Enter a whole number from 0 to 86400.")
+                && toast.contains("Orders saved."),
+            "{toast}"
+        );
+        assert!(html.contains(r##"<a class="toast-show" href="#card-exchange-rates" data-show-card="exchange-rates">Show</a>"##), "{html}");
+        // What was typed is still there to fix, beside why.
+        assert!(
+            html.contains(r#"name="exchange_rate.cache_seconds" value="-5" min="0" max="86400" step="1" id="setting-exchange_rate.cache_seconds" aria-describedby="setting-help-exchange_rate.cache_seconds" data-saved="30">"#),
             "{html}"
         );
-        assert!(html.contains(r##"href="/dashboard/admin/settings?tab=payments" fx-action="/dashboard/admin/settings?tab=payments" fx-target="#settings-panel" fx-push-url aria-current="page""##), "shown on the tab holding it: {html}");
+        assert!(
+            html.contains(r#"<section id="card-exchange-rates" class="settings-card is-failed""#),
+            "{html}"
+        );
+        // The engine's card was saved anyway.
         assert_eq!(
             engine_settings(&engine).await["scalars"]["payment.confirmations_required"]["value"],
-            "10",
-            "the engine half wasn't sent"
+            "8"
         );
         assert_eq!(
             db.lock()
@@ -2854,8 +3186,8 @@ mod tests {
             ],
         )
         .await;
-        assert_eq!(save.status(), StatusCode::OK);
-        let html = unescaped(&body_text(save).await);
+        assert_eq!(save.status(), StatusCode::SEE_OTHER);
+        let html = unescaped(&follow(&router, &cookie, save).await);
         assert!(
             html.contains(&format!(
                 "The engine refused the change (400 Bad Request): {message}"
@@ -2949,11 +3281,9 @@ mod tests {
         )
         .await;
         let location = save.headers()["location"].to_str().unwrap().to_string();
-        assert!(follow(&router, &cookie, save)
-            .await
-            .contains("Settings saved and applied."));
+        assert!(is_saved(&follow(&router, &cookie, save).await));
         let again = body_text(get(&router, &location, Some(&cookie)).await).await;
-        assert!(!again.contains("Settings saved and applied."), "{again}");
+        assert!(!is_saved(&again), "{again}");
     }
 
     // -- The tabbed page (nicer_admin_screen.md step 3) -------------------
@@ -3125,7 +3455,14 @@ mod tests {
                 .contains("Reloaded monokulo's options file and applied it: abuse.soft_per_min."),
             "{html}"
         );
-        assert!(!html.contains("save-status"), "no word beside Save: {html}");
+        assert!(
+            toast_text(&html).contains("Options file reloaded"),
+            "{html}"
+        );
+        assert!(
+            !html.contains(r#"class="card-meta card-saved""#),
+            "no card was saved: {html}"
+        );
         assert_eq!(
             monokulo_value(&settings, "abuse.soft_per_min"),
             ("70".to_string(), live_settings::SettingSource::Toml)
@@ -3152,7 +3489,7 @@ mod tests {
             &[("tab", "abuse"), ("abuse.hard_per_min", "400")],
         )
         .await;
-        let html = unescaped(&body_text(refused).await);
+        let html = unescaped(&follow(&router, &cookie, refused).await);
         assert!(html.contains("has changed since it was loaded"), "{html}");
     }
 
@@ -3235,8 +3572,8 @@ mod tests {
             &[("tab", "abuse"), ("abuse.soft_per_min", "61")],
         )
         .await;
-        assert_eq!(refused.status(), StatusCode::OK);
-        let html = unescaped(&body_text(refused).await);
+        assert_eq!(refused.status(), StatusCode::SEE_OTHER);
+        let html = unescaped(&follow(&router, &cookie, refused).await);
         assert!(
             html.contains("Nothing was saved") && html.contains("can't be written by this process"),
             "{html}"
@@ -3271,7 +3608,7 @@ mod tests {
         .await;
         if refused.status() == StatusCode::SEE_OTHER {
             let html = unescaped(&follow(&router, &cookie, refused).await);
-            assert!(!html.contains("Settings saved and applied."), "{html}");
+            assert!(!is_saved(&html), "{html}");
         }
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
         assert_eq!(
@@ -3530,7 +3867,7 @@ mod tests {
             .unwrap();
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
         let html = unescaped(&follow(&router, &cookie, save).await);
-        assert!(html.contains("Settings saved and applied."), "{html}");
+        assert!(is_saved(&html), "{html}");
         assert!(
             html.contains("take effect after the engine restarts"),
             "worker threads are restart-only: {html}"
@@ -3644,10 +3981,7 @@ mod tests {
             } else {
                 unescaped(&body_text(response).await)
             };
-            assert!(
-                !html.contains("Settings saved and applied."),
-                "{key} is not saved: {html}"
-            );
+            assert!(!is_saved(&html), "{key} is not saved: {html}");
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
                 text,
@@ -3689,7 +4023,7 @@ mod tests {
         .await;
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
         let html = follow(&router, &cookie, save).await;
-        assert!(html.contains("Settings saved and applied."), "{html}");
+        assert!(is_saved(&html), "{html}");
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
             text.starts_with("# Mine.\n[signup]\nmode = \"public\"\n"),
@@ -3943,8 +4277,27 @@ mod tests {
             "the page shows the saved order"
         );
         assert!(
-            page.contains(r#"<legend class="node-row-name">Primary</legend>"#),
+            page.contains(r#"<span class="node-row-name" data-node-place>Primary</span>"#),
             "{page}"
+        );
+
+        // Rows the page's script reordered come numbered in their new order,
+        // with no button pressed: saved in that order.
+        let reordered = post_nodes(
+            &router,
+            &cookie,
+            &nodes_form("stagenet", &[&b, &c], "", None),
+        )
+        .await;
+        let page = follow(&router, &cookie, reordered).await;
+        assert!(is_saved(&page), "{page}");
+        assert!(
+            toast_text(&page).contains("Stagenet saved and applied"),
+            "{page}"
+        );
+        assert_eq!(
+            saved_nodes(&engine, "stagenet").await,
+            [b.clone(), c.clone()]
         );
     }
 
@@ -3963,10 +4316,10 @@ mod tests {
         let refused = post_nodes(&router, &cookie, &fields).await;
         assert_eq!(
             refused.status(),
-            StatusCode::OK,
+            StatusCode::SEE_OTHER,
             "the page again, not a redirect"
         );
-        let html = body_text(refused).await;
+        let html = follow(&router, &cookie, refused).await;
         assert!(
             html.contains("Nothing was saved: some node addresses need fixing (marked below)."),
             "{html}"
@@ -4026,8 +4379,8 @@ mod tests {
             &nodes_form("testnet", &[], &mainnet.to_string(), None),
         )
         .await;
-        assert_eq!(refused.status(), StatusCode::OK);
-        let html = unescaped(&body_text(refused).await);
+        assert_eq!(refused.status(), StatusCode::SEE_OTHER);
+        let html = unescaped(&follow(&router, &cookie, refused).await);
         let message = format!("127.0.0.1:{} is on mainnet, not testnet.", mainnet.port());
         let block = &html[html.find(r#"data-network="testnet""#).expect(&html)..];
         assert!(

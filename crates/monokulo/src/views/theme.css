@@ -76,6 +76,18 @@
   --btn-primary-bg: var(--accent);
   --btn-primary-hover: var(--accent-hover);
   --btn-primary-ink: var(--accent-ink);
+  /* The admin settings page's cards (a group of settings saved together):
+     the card, its edge, the edge of one with unsaved changes or that a
+     save refused; the save bar at the bottom of the window; and the toast
+     a save leaves, which floats over the page. */
+  --card-bg: var(--paper-raised);
+  --card-border: var(--line);
+  --card-changed: var(--accent-text);
+  --card-failed: var(--error);
+  --save-bar-bg: var(--chrome-bg);
+  --save-bar-rule: var(--accent);
+  --toast-bg: var(--paper-raised);
+  --toast-shadow: color-mix(in srgb, var(--ink) 18%, transparent);
   /* The admin settings tab bar: the rule under the open tab, and the dot
      on a tab that needs attention (it also says so in words). */
   --tab-current: var(--accent-text);
