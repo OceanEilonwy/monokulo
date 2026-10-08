@@ -15,10 +15,10 @@ latest run of each suite. The database defaults to target/test-timings.sqlite.
 Suites run:
   rust     cargo nextest run --workspace --exclude xtask --profile ci
            --features engine/zmq, as CI runs it.
-  browser  The offline Playwright configurations: coverage-browser (without
-           instrumenting, so no coverage overhead), dashboard and
-           real-binaries. Needs `npm ci` in e2e/browser and
-           crates/monokulo/pos-ui.
+  browser  The offline Playwright configurations: coverage-browser (its
+           fixture and real-binaries projects, without instrumenting, so no
+           coverage overhead) and dashboard. Needs `npm ci` in e2e/browser
+           and crates/monokulo/pos-ui.
 
 Not run: the #[ignore]d stagenet/Tor Rust tests and the stagenet POS
 Playwright suite (playwright.config.js), since they spend stagenet funds and
@@ -52,7 +52,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BROWSER = ROOT / 'e2e' / 'browser'
-BROWSER_CONFIGS = ['coverage-browser', 'dashboard', 'real-binaries']
+BROWSER_CONFIGS = ['coverage-browser', 'dashboard']
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
