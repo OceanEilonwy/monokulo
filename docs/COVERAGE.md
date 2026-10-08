@@ -96,7 +96,7 @@ nightly property and fuzz runs, the stress points and the screenshot
 gallery. `.github/workflows/pages.yml` rebuilds it whenever CI, the engine
 property, fuzz or scale workflows, or the OpenWrt package finish on main:
 `cargo xtask pages fetch` downloads the newest artifact of each and
-`cargo xtask pages build` (`xtask/src/quality.rs`) turns them into the
+`cargo xtask pages build` (`xtask/src/pages.rs`) turns them into the
 page, its `data.json` and `badge.json` (the README's coverage badge). Only
 the ZMQ build of the property and fuzz runs is shown.
 

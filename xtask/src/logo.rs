@@ -401,7 +401,7 @@ fn render(path: &str, old: &str) -> io::Result<String> {
         "crates/monokulo/src/views/logo_art.rs" => rust_module(),
         "crates/monokulo/pos-ui/src/logo.ts" => ts_module(),
         "web/index.html" => web_page(old, 2, path)?,
-        "web/quality/index.html" => web_page(old, 1, path)?,
+        "web/pages/quality/index.html" => web_page(old, 1, path)?,
         _ => unreachable!("{path} is not a logo output"),
     })
 }
@@ -415,7 +415,7 @@ const OUTPUTS: [&str; 9] = [
     "crates/monokulo/src/views/logo_art.rs",
     "crates/monokulo/pos-ui/src/logo.ts",
     "web/index.html",
-    "web/quality/index.html",
+    "web/pages/quality/index.html",
 ];
 
 /// Writes every output under `root` that differs from what the mark draws.

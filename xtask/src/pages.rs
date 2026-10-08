@@ -3,7 +3,7 @@
 //! downloaded from main's newest runs.
 //!
 //! Every input of the report is optional; the page says what it has no data
-//! for. It writes the page (web/quality/index.html), its data (data.json),
+//! for. It writes the page (web/pages/quality/index.html), its data (data.json),
 //! the screenshot gallery (gallery/), the annotated coverage reports
 //! (reports/) and a shields.io endpoint for the coverage badge (badge.json).
 //! Only one engine build of the property and fuzz runs is shown (ZMQ unless
@@ -712,7 +712,7 @@ pub(crate) fn site(root: &Path, args: &[&str]) -> io::Result<bool> {
             out.join("assets").join(&font),
         )?;
     }
-    let page = fs::read_to_string(root.join("web/quality/index.html"))?;
+    let page = fs::read_to_string(root.join("web/pages/quality/index.html"))?;
     fs::write(
         out.join("index.html"),
         page.replace("@REPO_URL@", &args.repo_url),

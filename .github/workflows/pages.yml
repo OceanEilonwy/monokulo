@@ -32,8 +32,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'web/quality/**'
-      - 'xtask/src/quality.rs'
+      - 'web/pages/**'
+      - 'xtask/src/pages.rs'
       - 'xtask/Cargo.toml'
       - 'crates/monokulo/src/views/theme.css'
       - '.github/workflows/pages.yml'

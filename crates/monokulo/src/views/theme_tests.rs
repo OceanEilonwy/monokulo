@@ -77,7 +77,7 @@ fn stylesheets() -> Vec<(String, String)> {
     }
     // The GitHub Pages site (web/) loads theme.css too: the landing page and
     // the quality report.
-    for page in ["index.html", "quality/index.html"] {
+    for page in ["index.html", "pages/quality/index.html"] {
         let text = read(&crate_dir().join("../../web").join(page));
         for (i, block) in text.split("<style>").skip(1).enumerate() {
             let end = block.find("</style>").expect("an unterminated <style>");

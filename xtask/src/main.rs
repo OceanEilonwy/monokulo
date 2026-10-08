@@ -2,7 +2,7 @@ mod coverage;
 mod exploration;
 mod logo;
 mod mutations;
-mod quality;
+mod pages;
 mod rounds;
 mod snp;
 mod stress;
@@ -59,7 +59,7 @@ fn help() {
     println!("        logo          Draw the Monokulo mark and write every copy of it (xtask/src/logo.rs)");
     println!("{}", exploration::HELP);
     println!("{}", mutations::HELP);
-    println!("{}", quality::HELP);
+    println!("{}", pages::HELP);
 }
 
 fn main() -> ExitCode {
@@ -105,9 +105,9 @@ fn main() -> ExitCode {
             print!("{}", summary::test_summary(title, suites));
             Ok(true)
         }
-        ["pages", "build", rest @ ..] => quality::site(&root(), rest),
-        ["pages", "fetch", rest @ ..] => quality::pages_inputs(rest),
-        ["serve", rest @ ..] => quality::serve(rest),
+        ["pages", "build", rest @ ..] => pages::site(&root(), rest),
+        ["pages", "fetch", rest @ ..] => pages::pages_inputs(rest),
+        ["serve", rest @ ..] => pages::serve(rest),
         _ => {
             help();
             return ExitCode::FAILURE;
