@@ -7,7 +7,7 @@
 const { test, expect } = require('../coverage-test');
 const { serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
-const { useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY, expectSaved } = require('./backend-helpers');
+const { createStore, useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY, expectSaved } = require('./backend-helpers');
 
 useRealStack(test);
 
@@ -38,8 +38,10 @@ test('a search swaps the results in place, keeps the URL, and back returns to th
   }
   expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
 
-  // A quick filter applies as soon as it changes.
-  await page.locator('select[name="level"]').selectOption('warn');
+  // A quick filter applies as soon as it changes: chosen from the
+  // compact dropdown, which keeps the select's value.
+  await page.getByRole('combobox', { name: 'Level' }).click();
+  await page.getByRole('option', { name: 'Warnings and errors' }).click();
   await expect(page).toHaveURL(/level=warn/);
   expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
 
@@ -224,12 +226,7 @@ test("a caller's traceparent (as the WooCommerce plugin sends it) is followed th
   await signInAsAdmin(page);
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
   await expectSaved(page);
-  await page.goto(base + '/dashboard/connect');
-  await page.locator('input[name="site_url"]').fill('https://traced.example.com');
-  await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);
-  await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
-  await page.locator('select[name="network"]').selectOption('stagenet');
-  await page.getByRole('button', { name: 'Connect' }).click();
+  await createStore(page, 'traced.example.com');
   await expect(page.getByRole('heading', { name: 'Store connected' })).toBeVisible();
   await page.goto(base + '/dashboard');
   const store = await page.locator('tr', { hasText: 'traced.example.com' }).first().getByRole('link', { name: 'view →' }).getAttribute('href');

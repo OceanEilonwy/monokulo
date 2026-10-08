@@ -51,6 +51,11 @@ fn key_custody_error_for_new_tenant(e: KeyCustodyError) -> ApiError {
 pub(super) struct CreateTenantRequest {
     #[serde(flatten)]
     keys: KeysIn,
+    /// An existing wallet the new store takes payments into
+    /// (`POST /api/v1/admin/wallets`), instead of `keys`: its keys are not
+    /// sent again, and it shares the wallet's address counter with the
+    /// wallet's other stores.
+    wallet_id: Option<String>,
     network: Option<String>,
     confirmations_required: Option<u64>,
     order_expiry_seconds: Option<i64>,
@@ -195,6 +200,9 @@ async fn create_tenant_to_completion(
     state: AppState,
     req: CreateTenantRequest,
 ) -> Result<Json<CreateTenantResponse>, ApiError> {
+    if let Some(wallet_id) = req.wallet_id.clone() {
+        return create_tenant_on_wallet(state, wallet_id, req).await;
+    }
     let network = parse_network(req.network.as_deref().unwrap_or("mainnet"))
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     if !state.networks.daemons.is_configured(network) {
@@ -283,6 +291,311 @@ async fn create_tenant_to_completion(
     }))
 }
 
+/// A new store on an existing wallet: the row starts from the wallet's
+/// sealed keys, which are then registered for it like a store's at boot.
+async fn create_tenant_on_wallet(
+    state: AppState,
+    wallet_id: String,
+    req: CreateTenantRequest,
+) -> Result<Json<CreateTenantResponse>, ApiError> {
+    if !req.keys.view_key_hex.trim().is_empty()
+        || req
+            .keys
+            .encrypted_keys
+            .as_deref()
+            .is_some_and(|e| !e.trim().is_empty())
+    {
+        return Err(ApiError::BadRequest(
+            "give either a wallet_id or keys, not both".to_owned(),
+        ));
+    }
+    validate_tenant_settings(req.confirmations_required, req.order_expiry_seconds)?;
+    let id = wallet_id.clone();
+    let wallet = state
+        .db
+        .write(move |s| s.get_wallet(&id))
+        .await?
+        .filter(|w| w.deleted_at.is_none())
+        .ok_or_else(|| ApiError::BadRequest(format!("no wallet {wallet_id:?}")))?;
+    if let Some(network) = req.network.as_deref() {
+        if network != wallet.network {
+            return Err(ApiError::BadRequest(format!(
+                "the wallet is on {:?}, not {network:?}",
+                wallet.network
+            )));
+        }
+    }
+    let network = parse_network(&wallet.network).map_err(|e| ApiError::Internal(e.to_string()))?;
+    if !state.networks.daemons.is_configured(network) {
+        return Err(ApiError::BadRequest(format!(
+            "no monero_node is configured for network {:?} on this instance",
+            wallet.network
+        )));
+    }
+    let (confirmations, expiry) = {
+        let defaults = state.settings.tenant_defaults.load();
+        (
+            req.confirmations_required
+                .unwrap_or(defaults.confirmations_required),
+            req.order_expiry_seconds
+                .unwrap_or(defaults.order_expiry_seconds),
+        )
+    };
+    let on = wallet.id.clone();
+    let created = state
+        .db
+        .write(move |s| {
+            s.create_tenant_on_wallet(&on, Some(confirmations), Some(expiry), now_unix())
+        })
+        .await?;
+    let tenant = created.tenant;
+    let handle = match state
+        .custody
+        .backends
+        .unseal_and_register_in_idempotent(
+            &tenant.key_custody_backend,
+            &tenant.sealed_key_material,
+            tenant.id.as_str(),
+        )
+        .await
+    {
+        Ok(handle) => handle,
+        Err(e) => {
+            // No store without its keys: the row goes again.
+            let id = tenant.id.clone();
+            if let Err(disable) = state
+                .db
+                .write(move |s| s.disable_tenant(&id, now_unix()))
+                .await
+            {
+                tracing::error!(store.id = %tenant.id, error = %disable, "creating a store on a wallet, its keys didn't register and disabling the row failed");
+            }
+            return Err(key_custody_error_for_new_tenant(e));
+        }
+    };
+    state
+        .custody
+        .wallet_handles
+        .write()
+        .insert(tenant.id.clone(), handle);
+    Ok(Json(CreateTenantResponse {
+        tenant_id: tenant.id,
+        public_key: tenant.public_key,
+        secret_token: created.secret_token.expose().to_owned(),
+    }))
+}
+
+/// `POST /api/v1/admin/wallets`: one wallet's keys, registered once, for any
+/// number of stores to take payments into (`wallet_id` on
+/// `POST /api/v1/admin/tenants`). Keys come in as for a store.
+#[derive(Deserialize)]
+pub(super) struct CreateWalletRequest {
+    #[serde(flatten)]
+    keys: KeysIn,
+    network: Option<String>,
+    key_custody_backend: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(super) struct WalletView {
+    wallet_id: String,
+    primary_address: String,
+    network: String,
+    key_custody_backend: String,
+}
+
+pub(super) async fn create_wallet(
+    State(state): State<AppState>,
+    Json(req): Json<CreateWalletRequest>,
+) -> Result<Json<WalletView>, ApiError> {
+    to_completion(create_wallet_to_completion(state, req)).await
+}
+
+async fn create_wallet_to_completion(
+    state: AppState,
+    req: CreateWalletRequest,
+) -> Result<Json<WalletView>, ApiError> {
+    let network = parse_network(req.network.as_deref().unwrap_or("mainnet"))
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    if !state.networks.daemons.is_configured(network) {
+        return Err(ApiError::BadRequest(format!(
+            "no monero_node is configured for network {:?} on this instance",
+            network_str(network)
+        )));
+    }
+    let backend = chosen_backend(&state, req.key_custody_backend.as_deref())?;
+    let registered = register_keys(&state, &backend, &req.keys, Action::Create, None).await?;
+    let (handle, sealed) = (registered.handle, registered.sealed);
+    // Registered only to check the keys and work out the address: each
+    // store on the wallet registers its own copy when it's made.
+    let derived = state
+        .custody
+        .backends
+        .derive_subaddress(handle, SubaddressIndex::default(), network)
+        .await;
+    remove_wallet_logged(
+        state.custody.backends.as_ref(),
+        handle,
+        None,
+        "adding a wallet, done with its check",
+    )
+    .await;
+    let primary_address = derived
+        .map_err(key_custody_error_for_new_tenant)?
+        .to_string();
+    let new = crate::store::NewWallet {
+        key_custody_backend: backend,
+        sealed_key_material: sealed,
+        primary_address,
+        network: network_str(network).to_owned(),
+    };
+    let wallet = state
+        .db
+        .write(move |s| s.create_wallet(&new, now_unix()))
+        .await?;
+    Ok(Json(WalletView {
+        wallet_id: wallet.id,
+        primary_address: wallet.primary_address,
+        network: wallet.network,
+        key_custody_backend: wallet.key_custody_backend,
+    }))
+}
+
+#[derive(Serialize)]
+pub(super) struct WalletStatusView {
+    wallet_id: String,
+    primary_address: String,
+    network: String,
+    key_custody_backend: String,
+    /// When it was retired; its keys were deleted then.
+    retired_at: Option<i64>,
+    /// Enabled stores taking payments into it.
+    stores: u64,
+    /// Orders on it that can still be paid.
+    payable_orders: u64,
+    /// The latest an order on it could still be paid, as far as the
+    /// engine can tell.
+    payable_until: Option<i64>,
+}
+
+/// `GET /api/v1/admin/wallets/{id}`: the wallet, and what its retirement
+/// would wait for.
+pub(super) async fn get_wallet(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<WalletStatusView>, ApiError> {
+    let grace = grace_period(&state);
+    let (wallet, in_use) = state
+        .db
+        .read(move |s| {
+            let wallet = s
+                .get_wallet(&id)?
+                .ok_or(crate::store::StoreError::NotFound)?;
+            let in_use = s.wallet_in_use(&id, now_unix(), grace)?;
+            Ok((wallet, in_use))
+        })
+        .await?;
+    Ok(Json(WalletStatusView {
+        wallet_id: wallet.id,
+        primary_address: wallet.primary_address,
+        network: wallet.network,
+        key_custody_backend: wallet.key_custody_backend,
+        retired_at: wallet.deleted_at,
+        stores: in_use.stores,
+        payable_orders: in_use.payable_orders,
+        payable_until: in_use.payable_until,
+    }))
+}
+
+fn grace_period(state: &AppState) -> i64 {
+    state
+        .settings
+        .scan
+        .load()
+        .expired_order_grace_period_seconds
+}
+
+#[derive(Serialize)]
+pub(super) struct RetiredView {
+    retired_at: i64,
+}
+
+/// `POST /api/v1/admin/wallets/{id}/retire`: no store can use the wallet
+/// again, and its keys are deleted, from the database and from key
+/// custody. `409` while a store uses it or an order on it can still be
+/// paid; `404` for an unknown or already retired one.
+pub(super) async fn retire_wallet(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<RetiredView>, ApiError> {
+    let grace = grace_period(&state);
+    let now = now_unix();
+    let holders = state
+        .db
+        .write(move |s| s.retire_wallet(&id, now, grace))
+        .await?;
+    forget_handles(&state.custody, holders, "retiring a wallet").await;
+    Ok(Json(RetiredView { retired_at: now }))
+}
+
+#[derive(Deserialize)]
+pub(super) struct RestoreWalletRequest {
+    #[serde(flatten)]
+    keys: KeysIn,
+    key_custody_backend: Option<String>,
+}
+
+/// `POST /api/v1/admin/wallets/{id}/restore`: a retired wallet back, with
+/// its keys entered again. They must be this wallet's: checked by the
+/// address they make, compared by keys. `400` for other keys.
+pub(super) async fn restore_wallet(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RestoreWalletRequest>,
+) -> Result<Json<WalletView>, ApiError> {
+    let lookup = id.clone();
+    let wallet = state
+        .db
+        .read(move |s| s.get_wallet(&lookup))
+        .await?
+        .filter(|w| w.deleted_at.is_some())
+        .ok_or(ApiError::NotFound)?;
+    let network = parse_network(&wallet.network).map_err(|e| ApiError::Internal(e.to_string()))?;
+    let backend = chosen_backend(&state, req.key_custody_backend.as_deref())?;
+    let registered = register_keys(&state, &backend, &req.keys, Action::Create, None).await?;
+    let same = match &registered.material {
+        Some(material) => is_same_wallet(material, &wallet.primary_address, network),
+        None => {
+            derives_primary_address(&state, registered.handle, &wallet.primary_address, network)
+                .await
+        }
+    };
+    remove_wallet_logged(
+        state.custody.backends.as_ref(),
+        registered.handle,
+        None,
+        "bringing back a wallet, done with its check",
+    )
+    .await;
+    if !matches!(same, Ok(true)) {
+        same?;
+        return Err(ApiError::BadRequest(
+            "These keys belong to a different wallet.".to_owned(),
+        ));
+    }
+    let sealed = registered.sealed;
+    let wallet = state
+        .db
+        .write(move |s| s.restore_wallet(&id, &backend, &sealed))
+        .await?;
+    Ok(Json(WalletView {
+        wallet_id: wallet.id,
+        primary_address: wallet.primary_address,
+        network: wallet.network,
+        key_custody_backend: wallet.key_custody_backend,
+    }))
+}
+
 /// Upper bound on a tenant-chosen order lifetime. Well past anything useful (30
 /// days), and far enough below `i64::MAX` that `created_at + order_expiry_seconds`
 /// cannot overflow for any wall-clock `created_at` this system will ever see -
@@ -341,6 +654,7 @@ fn validate_tenant_settings(
 pub(super) struct TenantView {
     tenant_id: crate::store::TenantId,
     public_key: String,
+    wallet_id: String,
     primary_address: String,
     network: String,
     confirmations_required: u64,
@@ -353,6 +667,7 @@ impl From<crate::store::Tenant> for TenantView {
         Self {
             tenant_id: t.id,
             public_key: t.public_key,
+            wallet_id: t.wallet_id,
             primary_address: t.primary_address,
             network: t.network,
             confirmations_required: t.confirmations_required,
@@ -445,15 +760,33 @@ async fn switch_key_custody_to_completion(
         .db
         .write(move |s| s.update_tenant_key_custody(&id, &chosen, &sealed))
         .await;
-    if let Err(e) = updated {
-        remove_wallet_logged(
-            state.custody.backends.as_ref(),
-            handle,
-            Some(tenant.id.as_str()),
-            "moving a store's keys, saving the move failed",
-        )
-        .await;
-        return Err(e.into());
+    let others = match updated {
+        Ok(others) => others,
+        Err(e) => {
+            remove_wallet_logged(
+                state.custody.backends.as_ref(),
+                handle,
+                Some(tenant.id.as_str()),
+                "moving a store's keys, saving the move failed",
+            )
+            .await;
+            return Err(e.into());
+        }
+    };
+    // The other stores on the wallet moved with it: drop their live
+    // handles in the old backend, and their next use registers them again
+    // from their rows, now in the new one (`resolve_wallet_handle`).
+    for other in others {
+        let previous = state.custody.wallet_handles.write().remove(&other);
+        if let Some(previous) = previous {
+            remove_wallet_logged(
+                state.custody.backends.as_ref(),
+                previous,
+                Some(other.as_str()),
+                "moved a wallet's keys, removing another store's from the old backend",
+            )
+            .await;
+        }
     }
     let previous = state
         .custody
@@ -639,18 +972,121 @@ pub(super) async fn delete_own_tenant(
     State(db): State<Database>,
 ) -> Result<StatusCode, ApiError> {
     let id = tenant.id.clone();
+    let watchers = db.read(move |s| s.watchers_of(&id)).await?;
+    let id = tenant.id.clone();
     db.write(move |s| s.disable_tenant(&id, now_unix())).await?;
-    let removed_handle = custody.wallet_handles.write().remove(&tenant.id);
-    if let Some(handle) = removed_handle {
+    let ids = std::iter::once(tenant.id).chain(watchers.into_iter().map(|w| w.id));
+    forget_handles(&custody, ids, "deleting a store").await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Drops tenant rows' live handles and removes their keys from key custody.
+async fn forget_handles(
+    custody: &Custody,
+    ids: impl IntoIterator<Item = crate::store::TenantId>,
+    why: &str,
+) {
+    for id in ids {
+        let removed = custody.wallet_handles.write().remove(&id);
+        if let Some(handle) = removed {
+            remove_wallet_logged(custody.backends.as_ref(), handle, Some(id.as_str()), why).await;
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct ChangeWalletRequest {
+    wallet_id: String,
+}
+
+#[derive(Serialize)]
+pub(super) struct WalletChangeView {
+    tenant: TenantView,
+    /// The store's orders on the wallet it left, still watched with that
+    /// wallet's keys.
+    orders_on_previous_wallet: u64,
+}
+
+/// `PUT /api/v1/admin/tenant/wallet` - changes the wallet the store takes
+/// payments into (docs/wallets.md, "Changing a store's wallet"). New orders
+/// get addresses on the new wallet; the store's orders on the old one keep
+/// their addresses and go on being watched with the old wallet's keys, by a
+/// scan-only row (`Store::change_tenant_wallet`). `409` for a wallet on
+/// another network, or the one it already uses; `404` for an unknown or
+/// deleted one.
+pub(super) async fn change_wallet(
+    AuthedTenant(tenant): AuthedTenant,
+    State(state): State<AppState>,
+    Json(req): Json<ChangeWalletRequest>,
+) -> Result<Json<WalletChangeView>, ApiError> {
+    // One change at a time: each moves handles between rows.
+    static CHANGING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _changing = CHANGING.lock().await;
+
+    // The store's handle holds the old wallet's keys. It leaves the map
+    // before the change commits, so no scan round starting from here on
+    // scans the store with them; one already running started before the
+    // change, and what it finds isn't recorded against the store
+    // (`scanner::record_scan_match`).
+    let old_handle = state.custody.wallet_handles.write().remove(&tenant.id);
+    let (id, wallet_id) = (tenant.id.clone(), req.wallet_id.clone());
+    let changed = state
+        .db
+        .write(move |s| s.change_tenant_wallet(&id, &wallet_id, now_unix()))
+        .await;
+    let change = match changed {
+        Ok(change) => change,
+        Err(e) => {
+            if let Some(handle) = old_handle {
+                let winner = *state
+                    .custody
+                    .wallet_handles
+                    .write()
+                    .entry(tenant.id.clone())
+                    .or_insert(handle);
+                if winner != handle {
+                    remove_wallet_logged(
+                        state.custody.backends.as_ref(),
+                        handle,
+                        Some(tenant.id.as_str()),
+                        "changing a store's wallet was refused, its keys were registered again meanwhile",
+                    )
+                    .await;
+                }
+            }
+            return Err(e.into());
+        }
+    };
+    // The old keys leave custody under the store's id; the scan row and
+    // the store register theirs under their own ids (a backend keys a
+    // registration by it), the scan row's now rather than on the
+    // scanner's next pass.
+    if let Some(handle) = old_handle {
         remove_wallet_logged(
-            custody.backends.as_ref(),
+            state.custody.backends.as_ref(),
             handle,
             Some(tenant.id.as_str()),
-            "deleting a store",
+            "changed a store's wallet, its old keys go to the scan row",
         )
         .await;
     }
-    Ok(StatusCode::NO_CONTENT)
+    let (id, watcher_id) = (tenant.id.clone(), change.watcher.clone());
+    let (refetched, watcher) = state
+        .db
+        .read(move |s| Ok((s.get_tenant_by_id(&id)?, s.get_tenant_by_id(&watcher_id)?)))
+        .await?;
+    let refetched = refetched.ok_or(ApiError::NotFound)?;
+    if let Some(watcher) = watcher {
+        if let Err(e) = resolve_wallet_handle(&state, &watcher).await {
+            tracing::warn!(store.id = %tenant.id, error = ?e, "registering the old wallet's keys for a store's orders failed; the scanner retries");
+        }
+    }
+    // The new wallet's keys, now rather than on the store's next order.
+    resolve_wallet_handle(&state, &refetched).await?;
+    Ok(Json(WalletChangeView {
+        tenant: TenantView::from(refetched),
+        orders_on_previous_wallet: change.orders_moved,
+    }))
 }
 
 #[derive(Serialize)]
@@ -1132,35 +1568,7 @@ pub(super) async fn lookup_payment(
         Some((fetched, crate::daemon::TxLocation::InPool)) => (fetched.tx, None),
         Some((fetched, crate::daemon::TxLocation::InBlock(h))) => (fetched.tx, Some(h)),
     };
-    let mut handle = resolve_wallet_handle(&state, &tenant).await?;
     let now = now_unix();
-
-    // Computed (async, no `&Store` held) then persisted (sync, brief lock) as
-    // two separate steps, same as the scheduler/`engine::rescan_order`
-    // already do everywhere else in this codebase - never a single
-    // await-spanning call holding the store's lock.
-    let mut retries = 0;
-    let scan = loop {
-        match crate::scanner::scan_transaction_as(
-            state.custody.backends.as_ref(),
-            handle,
-            &txid,
-            &tx,
-            0..tenant.next_minor_index,
-        )
-        .await
-        {
-            Ok(scan) => break scan,
-            Err(crate::scanner::ScannerError::KeyCustody(KeyCustodyError::UnknownWallet))
-                if retries < super::UNKNOWN_WALLET_RETRIES =>
-            {
-                retries += 1;
-                super::forget_wallet_handle(&state, &tenant.id, handle);
-                handle = resolve_wallet_handle(&state, &tenant).await?;
-            }
-            Err(e) => return Err(e.into()),
-        }
-    };
     // The block's own list of transactions, so that under proof-of-work
     // checking the payment settles only if that block is the proven one
     // (docs/proof_of_work.md).
@@ -1168,18 +1576,32 @@ pub(super) async fn lookup_payment(
         Some(height) => crate::work::chain::block_holding(daemon.as_ref(), &txid, height).await,
         None => None,
     };
+
+    // With the store's keys, then with those of each wallet it used before
+    // (`Store::change_tenant_wallet`): a transaction may pay an order it
+    // took on an old wallet.
     let id = tenant.id.clone();
-    let touched = state
-        .db
-        .write(move |store| {
-            let touched = crate::scanner::record_scan_match(store, &id, &scan, now, block_height)?;
-            if let (false, Some(height), Some(hash)) = (touched.is_empty(), block_height, &found_in)
-            {
-                store.attest_payment_block(&scan.txid, height, hash)?;
-            }
-            Ok::<_, crate::scanner::ScannerError>(touched)
-        })
-        .await?;
+    let watchers = state.db.read(move |s| s.watchers_of(&id)).await?;
+    let mut touched = std::collections::BTreeSet::new();
+    for scanner in std::iter::once(tenant).chain(watchers) {
+        let scan = scan_for_lookup(&state, &scanner, &txid, &tx).await?;
+        let (id, found_in) = (scanner.id.clone(), found_in.clone());
+        touched.extend(
+            state
+                .db
+                .write(move |store| {
+                    let touched =
+                        crate::scanner::record_scan_match(store, &id, &scan, now, block_height)?;
+                    if let (false, Some(height), Some(hash)) =
+                        (touched.is_empty(), block_height, &found_in)
+                    {
+                        store.attest_payment_block(&scan.txid, height, hash)?;
+                    }
+                    Ok::<_, crate::scanner::ScannerError>(touched)
+                })
+                .await?,
+        );
+    }
 
     if touched.is_empty() {
         return Ok(Json(PaymentLookupView::NoMatchingOrder));
@@ -1204,6 +1626,44 @@ pub(super) async fn lookup_payment(
     Ok(Json(PaymentLookupView::Matched {
         order_ids: touched.into_iter().collect(),
     }))
+}
+
+/// One transaction scanned with a tenant row's keys over every address its
+/// wallet has handed out.
+///
+/// Computed (async, no `&Store` held) then persisted (sync, brief lock) as
+/// two separate steps, same as the scheduler/`engine::rescan_order` already
+/// do everywhere else in this codebase - never a single await-spanning call
+/// holding the store's lock.
+async fn scan_for_lookup(
+    state: &AppState,
+    tenant: &crate::store::Tenant,
+    txid: &str,
+    tx: &monero::Transaction,
+) -> Result<crate::scanner::ScanResult, ApiError> {
+    let mut handle = resolve_wallet_handle(state, tenant).await?;
+    let mut retries = 0;
+    loop {
+        match crate::scanner::scan_transaction_as(
+            state.custody.backends.as_ref(),
+            handle,
+            txid,
+            tx,
+            0..tenant.next_minor_index,
+        )
+        .await
+        {
+            Ok(scan) => return Ok(scan),
+            Err(crate::scanner::ScannerError::KeyCustody(KeyCustodyError::UnknownWallet))
+                if retries < super::UNKNOWN_WALLET_RETRIES =>
+            {
+                retries += 1;
+                super::forget_wallet_handle(state, &tenant.id, handle);
+                handle = resolve_wallet_handle(state, tenant).await?;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 /// `GET /api/v1/admin/tenant/events` - a Server-Sent Events stream of this

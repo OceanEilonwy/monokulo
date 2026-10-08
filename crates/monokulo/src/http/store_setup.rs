@@ -1,6 +1,7 @@
 //! Common settings immediately after connecting a store. Plugin credentials
 //! are minted only on completion, so time spent in this form cannot expire them.
 use super::{dashboard::redirect_302, orders, AppState, AuthedUser};
+use crate::views::controls::Choice;
 use crate::{db::ConnectionId, views};
 use axum::extract::{Form, Path, Query, State};
 use axum::http::StatusCode;
@@ -75,11 +76,13 @@ async fn render(
             form method="post" action=(format!("/dashboard/stores/{}/setup", row.id)) class="box store-setup" {
                 input type="hidden" name="return_url" value=(input.return_url);
                 input type="hidden" name="nonce" value=(input.nonce);
-                label { "Base currency" select name="base_currency" { @for currency in &currencies { option value=(currency.code) selected[currency.selected] { (currency.description) } } } }
-                label { "Exchange rate provider" select name="provider" {
-                    option value="" selected[selected_provider.is_empty()] { "None (XMR orders only)" }
-                    @for provider in providers { option value=(provider) selected[selected_provider == provider] { (provider) } }
-                } }
+                label { "Base currency" mk-select { select name="base_currency" {
+                    @for currency in &currencies { (Choice::new(&currency.code, &currency.description).detail(&currency.code).selected(currency.selected)) }
+                } } }
+                label { "Exchange rate provider" mk-select { select name="provider" {
+                    (Choice::new("", "None").note("XMR orders only").selected(selected_provider.is_empty()))
+                    @for provider in providers { (Choice::new(provider, provider).selected(selected_provider == provider)) }
+                } } }
                 label { "Payment confirmations" input type="number" name="confirmations" value=(confirmations) min="0" max="720" required; }
                 p class="field-help" { "0 accepts unconfirmed payments. 10 is the usual default." }
                 button type="submit" class="btn-primary" { "Save and continue" }

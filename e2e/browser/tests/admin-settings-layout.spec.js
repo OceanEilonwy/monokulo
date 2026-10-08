@@ -7,7 +7,7 @@
 // true after it).
 const { test, expect } = require('@playwright/test');
 const {
-  useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, fillNodes, saveEngineSettings, openSettingsTab, SETTINGS_TABS, VIEW_KEY, SPEND_PUBKEY, expectSaved, openNodes, pressSave,
+  createStore, useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, fillNodes, saveEngineSettings, openSettingsTab, SETTINGS_TABS, VIEW_KEY, SPEND_PUBKEY, expectSaved, openNodes, pressSave,
 } = require('./backend-helpers');
 
 useRealStack(test);
@@ -59,12 +59,7 @@ test('clearing a network stores use asks first; one no store uses does not', asy
   const stagenet = page.locator('.node-network[data-network="stagenet"]');
   if (Number(await stagenet.getAttribute('data-tenant-count')) === 0) {
     // Run on its own: make a store on stagenet to protect.
-    await page.goto(base + '/dashboard/connect');
-    await page.locator('input[name="site_url"]').fill('https://guarded.example.com');
-    await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);
-    await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
-    await page.locator('select[name="network"]').selectOption('stagenet');
-    await page.getByRole('button', { name: 'Connect' }).click();
+    await createStore(page, 'guarded.example.com');
     await expect(page.getByRole('heading', { name: 'Store connected' })).toBeVisible();
     await openSettingsTab(page, 'nodes');
   }
@@ -140,3 +135,36 @@ for (const scheme of ['light', 'dark']) {
     });
   }
 }
+
+test('an on/off setting is a switch: on and off both save', async ({ page }) => {
+  await signInAsAdmin(page);
+  await openSettingsTab(page, 'abuse');
+  const input = page.locator('input[role=switch][name="abuse.under_attack"]');
+  const control = page.locator('.switch', { has: input });
+  await expect(control).toBeVisible();
+  await expect(page.getByRole('switch', { name: /under attack/i })).toHaveCount(1);
+  const save = async () => {
+    await pressSave(page);
+    await expectSaved(page);
+    await openSettingsTab(page, 'abuse');
+  };
+
+  await expect(input).not.toBeChecked();
+  await expect(control.locator('.switch-off')).toBeVisible();
+  // At the right edge of its setting, where the other controls end.
+  const [box, field] = await Promise.all([
+    control.boundingBox(),
+    control.locator('xpath=ancestor::div[contains(@class, "setting-field")][1]').boundingBox(),
+  ]);
+  expect(Math.abs(box.x + box.width - (field.x + field.width))).toBeLessThan(1);
+  await control.click();
+  await expect(input).toBeChecked();
+  await expect(control.locator('.switch-on')).toBeVisible();
+  await save();
+  await expect(input).toBeChecked();
+
+  // Off sends no value of its own; the page still saves it as off.
+  await control.click();
+  await save();
+  await expect(input).not.toBeChecked();
+});

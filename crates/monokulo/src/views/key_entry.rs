@@ -93,6 +93,21 @@ pub fn snp_section(entry: &SnpKeyEntry, backend_field: Option<&str>) -> Markup {
     }
 }
 
+/// What a form needs for `key-custody.js` to encrypt its keys to SEV-SNP
+/// key storage, without the key-custody-cli steps: for keys the page made
+/// itself (a new wallet), which there is nothing to type into the CLI for.
+pub fn snp_bundle(entry: &SnpKeyEntry) -> Markup {
+    match entry {
+        SnpKeyEntry::Ready(ready) => html! {
+            div data-key-custody-bundle=(ready.bundle_json) data-key-custody-id-key=[ready.id_key_digest.as_deref()] data-key-custody-min-svn=(ready.min_guest_svn) data-key-custody-min-tcb=(ready.min_tcb) {
+                p class="notice" role="status" data-key-custody-status hidden {}
+            }
+            script src="/static/key-custody.js" defer {}
+        },
+        other => snp_section(other, None),
+    }
+}
+
 fn ready_section(ready: &SnpReady, backend_field: Option<&str>) -> Markup {
     html! {
         div class="box" data-key-custody-bundle=(ready.bundle_json) data-key-custody-id-key=[ready.id_key_digest.as_deref()] data-key-custody-min-svn=(ready.min_guest_svn) data-key-custody-min-tcb=(ready.min_tcb) data-key-custody-backend-field=[backend_field] {

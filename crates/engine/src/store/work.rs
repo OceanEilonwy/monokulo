@@ -933,8 +933,8 @@ impl Store {
         let ids = json_array(tenant_ids);
         let rows = self.rows(
             &format!(
-                "SELECT tenant_id, minor_index FROM orders WHERE id IN ({}) ORDER BY tenant_id, minor_index",
-                super::scan_window_orders("o.tenant_id IN (SELECT value FROM json_each(:ids))")
+                "SELECT scan_tenant_id, minor_index FROM orders WHERE id IN ({}) ORDER BY scan_tenant_id, minor_index",
+                super::scan_window_orders("o.scan_tenant_id IN (SELECT value FROM json_each(:ids))")
             ),
             rusqlite::named_params! { ":ids": ids, ":since_minus_grace": since.saturating_sub(grace_period_seconds) },
             |row| Ok((row.get::<_, TenantId>(0)?, unsigned::<u32>(row, 1)?)),

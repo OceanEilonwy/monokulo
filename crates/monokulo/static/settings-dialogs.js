@@ -15,7 +15,8 @@ document.addEventListener('DOMContentLoaded', () => {
   };
   function enhance() {
     for (const section of root.querySelectorAll(':scope > section')) {
-      if (section.dataset.dialogReady || !section.querySelector('h2')) continue;
+      // A section shown in place (the store's wallet) stays as it is.
+      if (section.dataset.dialogReady || !section.querySelector('h2') || section.hasAttribute('data-settings-inline')) continue;
       section.dataset.dialogReady = 'true';
       const heading = section.querySelector('h2');
       const title = heading.textContent;

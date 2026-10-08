@@ -431,6 +431,16 @@ pub async fn fx_glue_script(headers: axum::http::HeaderMap) -> Response {
     )
 }
 
+/// `GET /static/mk-select.js` - every dropdown (`views::controls`).
+pub async fn mk_select_script(headers: axum::http::HeaderMap) -> Response {
+    static_asset(
+        &headers,
+        "text/javascript; charset=utf-8",
+        REVALIDATE,
+        include_str!("../../static/mk-select.js").as_bytes(),
+    )
+}
+
 /// `GET /static/telemetry.js` - browser problem reports (`http::telemetry_client`).
 pub async fn telemetry_script(headers: axum::http::HeaderMap) -> Response {
     static_asset(

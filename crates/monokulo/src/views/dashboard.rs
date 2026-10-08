@@ -2,6 +2,7 @@
 
 use maud::{html, Markup};
 
+use super::controls::Choice;
 use super::{layout, PageChrome};
 
 /// One connected store as shown on the dashboard home page - a much smaller
@@ -133,9 +134,9 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
 fn timezone_setting(chrome: &PageChrome) -> Markup {
     let clock = &chrome.clock;
     let automatic = if clock.is_automatic() && clock.name() != "UTC" {
-        format!("Automatic (this browser: {})", clock.name())
+        Choice::new("", "Automatic").note(format!("this browser: {}", clock.name()))
     } else {
-        "Automatic (this browser's zone, UTC until it's known)".to_string()
+        Choice::new("", "Automatic").note("this browser's zone, UTC until it's known")
     };
     html! {
         section class="box timezone-setting" id="timezone" {
@@ -144,10 +145,12 @@ fn timezone_setting(chrome: &PageChrome) -> Markup {
             summary { "Edit time zone" }
             form method="post" action="/dashboard/timezone" class="setting-field" {
                 label for="timezone-select" { "Show dates and times in" }
-                select id="timezone-select" name="timezone" {
-                    option value="" selected[clock.is_automatic()] { (automatic) }
-                    @for name in super::time::zone_names() {
-                        option value=(name) selected[!clock.is_automatic() && name == clock.name()] { (name) }
+                mk-select {
+                    select id="timezone-select" name="timezone" {
+                        (automatic.selected(clock.is_automatic()))
+                        @for name in super::time::zone_names() {
+                            (Choice::new(&name, &name).selected(!clock.is_automatic() && name == clock.name()))
+                        }
                     }
                 }
                 button type="submit" { "Save" }

@@ -191,18 +191,45 @@ async function finishStoreSetup(page) {
   return new URL(page.url()).pathname;
 }
 
+/** The dev wallet's name once brought in (addWallet). */
+const WALLET_NAME = 'Dev stagenet';
+
+/**
+ * Brings in the dev stagenet wallet ("Bring your own wallet"), unless this
+ * account already has it. Stagenet needs a node first (saveNodes).
+ */
+async function addWallet(page) {
+  const { monokulo_url: base } = fixture();
+  await page.goto(base + '/dashboard/wallets/import');
+  await page.locator('input[name="name"]').fill(WALLET_NAME);
+  await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);
+  await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
+  await page.locator('select[name="network"]').selectOption('stagenet');
+  await page.getByRole('button', { name: 'Add wallet' }).click();
+  await expect(page.getByText(/You're ready to take payments|is added|already added this wallet/)).toBeVisible();
+}
+
+/**
+ * Fills the custom store form for `site` on the dev wallet (adding it
+ * first) and submits it; the store setup step comes next.
+ */
+async function createStore(page, site) {
+  const { monokulo_url: base } = fixture();
+  await addWallet(page);
+  await page.goto(base + '/dashboard/connect');
+  await page.locator('input[name="site_url"]').fill(`https://${site}`);
+  const option = page.locator('select[name="wallet_id"] option', { hasText: WALLET_NAME });
+  await page.locator('select[name="wallet_id"]').selectOption(await option.getAttribute('value'));
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+}
+
 /** Connects a stagenet store for `site` (giving stagenet the fake node
  * first) and returns its dashboard path, `/dashboard/stores/{id}`. */
 async function connectStore(page, site) {
   const { monokulo_url: base } = fixture();
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
   await expectSaved(page);
-  await page.goto(base + '/dashboard/connect');
-  await page.locator('input[name="site_url"]').fill(`https://${site}`);
-  await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);
-  await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
-  await page.locator('select[name="network"]').selectOption('stagenet');
-  await page.getByRole('button', { name: 'Connect' }).click();
+  await createStore(page, site);
   await finishStoreSetup(page);
   await page.goto(base + '/dashboard');
   return page.locator('tr', { hasText: site }).first().getByRole('link', { name: 'view →' }).getAttribute('href');
@@ -223,5 +250,5 @@ async function transitionDone(page) {
 module.exports = {
   useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, fillNodes, nodeAddressBoxes, saveEngineSettings,
   settingsTabOf, openSettingsTab, fillSettings, openNodes, pressSave, expectSaved,
-  SETTINGS_TABS, reloadUntil, connectStore, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY,
+  SETTINGS_TABS, reloadUntil, connectStore, createStore, addWallet, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY, WALLET_NAME,
 };

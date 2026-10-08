@@ -36,6 +36,7 @@ use futures_util::{Stream, StreamExt as _};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use shared::auth::RawToken;
+use shared::ids::EngineWalletId;
 
 /// Longest one engine call may take, the order-event stream excepted. The
 /// engine refuses a request of its own after 30 s; a few seconds more
@@ -601,6 +602,82 @@ impl EngineClient {
             .parsed()
     }
 
+    /// `POST /api/v1/admin/wallets` — registers a wallet's keys once, for
+    /// any number of stores to take payments into (`create_tenant_on_wallet`).
+    pub async fn create_wallet(
+        &self,
+        req: CreateWalletRequest,
+    ) -> Result<EngineWallet, EngineClientError> {
+        self.send(Call::post("/api/v1/admin/wallets").json(&req))
+            .await?
+            .parsed()
+    }
+
+    /// `POST /api/v1/admin/tenants` with a `wallet_id`: a store taking
+    /// payments into a wallet the engine already holds. Its order addresses
+    /// come from the wallet's one counter, so no two stores on it share one.
+    pub async fn create_tenant_on_wallet(
+        &self,
+        req: CreateTenantOnWalletRequest,
+    ) -> Result<CreateTenantResponse, EngineClientError> {
+        self.send(Call::post("/api/v1/admin/tenants").json(&req))
+            .await?
+            .parsed()
+    }
+
+    /// `GET /api/v1/admin/wallets/{id}` — the wallet, and what its
+    /// retirement would wait for.
+    pub async fn wallet_status(
+        &self,
+        id: &EngineWalletId,
+    ) -> Result<WalletStatus, EngineClientError> {
+        self.send(Call::get(format!("/api/v1/admin/wallets/{}", id.as_str())))
+            .await?
+            .parsed()
+    }
+
+    /// `POST /api/v1/admin/wallets/{id}/retire` — no store can use it again
+    /// and its keys are deleted. The engine refuses (`409`) while a store
+    /// uses it or an order on it can still be paid. When, as unix seconds.
+    pub async fn retire_wallet(&self, id: &EngineWalletId) -> Result<i64, EngineClientError> {
+        #[derive(Deserialize)]
+        struct Retired {
+            retired_at: i64,
+        }
+        self.send(Call::post(format!(
+            "/api/v1/admin/wallets/{}/retire",
+            id.as_str()
+        )))
+        .await?
+        .parsed::<Retired>()
+        .map(|r| r.retired_at)
+    }
+
+    /// `POST /api/v1/admin/wallets/{id}/restore` — a retired wallet back,
+    /// with its keys. The engine refuses (`400`) another wallet's.
+    pub async fn restore_wallet(
+        &self,
+        id: &EngineWalletId,
+        keys: &StoreKeys,
+        key_custody_backend: Option<&str>,
+    ) -> Result<EngineWallet, EngineClientError> {
+        #[derive(Serialize)]
+        struct Restore<'a> {
+            #[serde(flatten)]
+            keys: &'a StoreKeys,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            key_custody_backend: Option<&'a str>,
+        }
+        self.send(
+            Call::post(format!("/api/v1/admin/wallets/{}/restore", id.as_str())).json(&Restore {
+                keys,
+                key_custody_backend,
+            }),
+        )
+        .await?
+        .parsed()
+    }
+
     /// `POST /api/v1/admin/key-custody/bundle` — a bundle to encrypt a new
     /// store's keys against, for `backend` (one that takes keys only
     /// encrypted to it). One per key entry form.
@@ -645,6 +722,24 @@ impl EngineClient {
             Call::new(Method::PUT, "/api/v1/admin/tenant/key-custody")
                 .store(sk)
                 .json(&SwitchKeyCustodyRequest { backend, keys }),
+        )
+        .await?
+        .parsed()
+    }
+
+    /// `PUT /api/v1/admin/tenant/wallet` — changes the wallet `sk`'s store
+    /// takes payments into. The store's orders on the old wallet keep being
+    /// watched with its keys; the engine refuses (`409`) a wallet on another
+    /// network.
+    pub async fn change_wallet(
+        &self,
+        sk: &RawToken,
+        wallet_id: &EngineWalletId,
+    ) -> Result<WalletChangeAnswer, EngineClientError> {
+        self.send(
+            Call::new(Method::PUT, "/api/v1/admin/tenant/wallet")
+                .store(sk)
+                .json(&serde_json::json!({ "wallet_id": wallet_id.as_str() })),
         )
         .await?
         .parsed()
@@ -1064,6 +1159,42 @@ pub struct KeyBundleAnswer {
     pub bundle: serde_json::Value,
 }
 
+/// A wallet's keys, for `create_wallet`: given like a store's.
+#[derive(Debug, Serialize)]
+pub struct CreateWalletRequest {
+    #[serde(flatten)]
+    pub keys: StoreKeys,
+    pub network: String,
+    /// The engine's default when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_custody_backend: Option<String>,
+}
+
+/// Mirrors the engine's `WalletStatusView`.
+#[derive(Debug, Deserialize)]
+pub struct WalletStatus {
+    pub retired_at: Option<i64>,
+    pub stores: u64,
+    pub payable_orders: u64,
+    pub payable_until: Option<i64>,
+}
+
+/// Mirrors the engine's `WalletView`.
+#[derive(Debug, Deserialize)]
+pub struct EngineWallet {
+    pub wallet_id: EngineWalletId,
+    pub primary_address: String,
+    pub network: String,
+    pub key_custody_backend: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateTenantOnWalletRequest {
+    pub wallet_id: EngineWalletId,
+    pub confirmations_required: Option<u64>,
+    pub order_expiry_seconds: Option<i64>,
+}
+
 /// Mirrors the engine's own `CreateTenantResponse`.
 #[derive(Debug, Deserialize)]
 pub struct CreateTenantResponse {
@@ -1077,6 +1208,9 @@ pub struct CreateTenantResponse {
 pub struct TenantView {
     pub tenant_id: String,
     pub public_key: String,
+    /// The engine's wallet this store takes payments into.
+    #[serde(default)]
+    pub wallet_id: Option<EngineWalletId>,
     pub primary_address: String,
     pub network: String,
     pub confirmations_required: u64,
@@ -1085,6 +1219,14 @@ pub struct TenantView {
     /// engine older than part 5.
     #[serde(default)]
     pub key_custody_backend: Option<String>,
+}
+
+/// Mirrors the engine's own `WalletChangeView`.
+#[derive(Debug, Deserialize)]
+pub struct WalletChangeAnswer {
+    pub tenant: TenantView,
+    /// The store's orders on the wallet it left, still watched there.
+    pub orders_on_previous_wallet: u64,
 }
 
 /// Mirrors the engine's own `OrderView` (`src/http/admin.rs` at the repo
@@ -1959,6 +2101,41 @@ mod contract_tests {
             .await
             .unwrap();
         let sk = created.secret_token.clone();
+        let wallet = client
+            .create_wallet(CreateWalletRequest {
+                keys: StoreKeys {
+                    view_key_hex: VIEW_KEY_HEX.to_string(),
+                    spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
+                    encrypted_keys: None,
+                },
+                network: "mainnet".to_string(),
+                key_custody_backend: None,
+            })
+            .await
+            .unwrap();
+        let on_wallet = client
+            .create_tenant_on_wallet(CreateTenantOnWalletRequest {
+                wallet_id: wallet.wallet_id.clone(),
+                confirmations_required: None,
+                order_expiry_seconds: None,
+            })
+            .await
+            .unwrap();
+        let on_wallet_view = client.get_tenant(&on_wallet.secret_token).await.unwrap();
+        lines.push(format!(
+            "store on wallet: {}, same address {}",
+            on_wallet_view.wallet_id.as_ref() == Some(&wallet.wallet_id),
+            on_wallet_view.primary_address == wallet.primary_address
+        ));
+        lines.push(format!(
+            "retiring a wallet in use: {}",
+            outcome(&client.retire_wallet(&wallet.wallet_id).await)
+        ));
+        client.delete_tenant(&on_wallet.secret_token).await.unwrap();
+        lines.push(format!(
+            "retiring it once unused: {}",
+            outcome(&client.retire_wallet(&wallet.wallet_id).await)
+        ));
         let tenant = client.get_tenant(&sk).await.unwrap();
         lines.push(format!(
             "tenant {} on {}, {} confirmations",
@@ -2183,6 +2360,9 @@ mod contract_tests {
         // two can't agree on being wrong.
         let expected_lines = [
             "tenant true on mainnet, ",
+            "store on wallet: true, same address true",
+            "retiring a wallet in use: 409 Conflict: 1 store(s) still take payments into this wallet",
+            "retiring it once unused: ok",
             "confirmations now 3",
             "the same idempotency key gives the same order: true",
             "listed 1, page 1, by ids 1",

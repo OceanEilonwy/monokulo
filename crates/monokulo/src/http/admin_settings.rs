@@ -622,7 +622,14 @@ pub async fn page(
 /// the name): they're joined with commas, the setting's own format.
 fn joined(pairs: Vec<(String, String)>) -> HashMap<String, String> {
     let mut form: HashMap<String, String> = HashMap::new();
+    // An on/off switch (`views::controls::switch`) sends `true` only when
+    // on; its `switches` field says it was on the form, so off is `false`.
+    let mut switches = Vec::new();
     for (name, value) in pairs {
+        if name == "switches" {
+            switches.push(value);
+            continue;
+        }
         match form.get_mut(&name) {
             Some(joined) if joined.is_empty() => *joined = value,
             Some(joined) if !value.is_empty() => {
@@ -634,6 +641,9 @@ fn joined(pairs: Vec<(String, String)>) -> HashMap<String, String> {
                 form.insert(name, value);
             }
         }
+    }
+    for name in switches {
+        form.entry(name).or_insert_with(|| "false".to_string());
     }
     form
 }
@@ -2240,7 +2250,7 @@ mod tests {
         let html = settings_tabs_html(&router, &cookie).await;
         for (key, value) in new_values {
             assert!(
-                shows_value(&html, value),
+                shows_setting(&html, key, value),
                 "expected {key}={value:?} to have round-tripped, got: {html}"
             );
         }
@@ -2332,7 +2342,7 @@ mod tests {
         let html = settings_tabs_html(&router, &cookie).await;
         for (key, value) in new_values {
             assert!(
-                shows_value(&html, value),
+                shows_setting(&html, key, value),
                 "expected {key}={value:?} to have round-tripped, got: {html}"
             );
         }
@@ -2367,6 +2377,36 @@ mod tests {
         assert_eq!(form["list"], "plain,snp");
         assert_eq!(form["other"], "a,b");
         assert_eq!(super::joined(pairs(&[("list", "")]))["list"], "");
+    }
+
+    #[test]
+    fn a_switch_left_off_is_sent_as_false() {
+        let pairs = |list: &[(&str, &str)]| {
+            list.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<Vec<_>>()
+        };
+        let form = super::joined(pairs(&[
+            ("switches", "on"),
+            ("on", "true"),
+            ("switches", "off"),
+        ]));
+        assert_eq!(form["on"], "true");
+        assert_eq!(form["off"], "false");
+        assert!(!form.contains_key("switches"));
+    }
+
+    /// A setting shown with this value: an on/off switch on or off, else
+    /// as [`shows_value`].
+    fn shows_setting(html: &str, key: &str, value: &str) -> bool {
+        for name in [key.to_string(), format!("engine:{key}")] {
+            let switch = format!(r#"role="switch" name="{name}" value="true""#);
+            if let Some(at) = html.find(&switch) {
+                let tag = &html[at..at + html[at..].find('>').unwrap()];
+                return tag.contains("checked") == (value == "true");
+            }
+        }
+        shows_value(html, value)
     }
 
     /// A value shown in a text or number input, or selected in a select.
@@ -2485,12 +2525,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(saved.status(), StatusCode::SEE_OTHER);
-        let after = body_text(get(&router, confirm, Some(&cookie)).await).await;
+        // The next request sees it: the link works now, so an account
+        // with no wallet yet is sent to set one up first, and back.
+        let after = get(&router, confirm, Some(&cookie)).await;
+        assert_eq!(after.status(), StatusCode::FOUND);
         assert!(
-            !after.contains("connect plugins yet"),
-            "the next request sees it: {after}"
+            after.headers()["location"]
+                .to_str()
+                .unwrap()
+                .starts_with("/dashboard/wallets/setup?next=%2Fconnect%2Fwoocommerce"),
+            "{:?}",
+            after.headers()["location"]
         );
-        assert!(after.contains(r#"name="view_key_hex""#), "{after}");
     }
 
     #[tokio::test]
@@ -3968,6 +4014,19 @@ mod tests {
             monokulo_value(&settings, "abuse.under_attack"),
             ("true".to_string(), live_settings::SettingSource::Database)
         );
+
+        // Switched off: an unticked switch sends only its `switches` name.
+        let saved = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "abuse"), ("switches", "abuse.under_attack")],
+        )
+        .await;
+        assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            monokulo_value(&settings, "abuse.under_attack"),
+            ("false".to_string(), live_settings::SettingSource::Database)
+        );
     }
 
     /// No options file yet: the page says so, everything is editable, and
@@ -4224,7 +4283,7 @@ mod tests {
                 continue; // see the remote test: an empty value can't be told apart
             }
             assert!(
-                shows_value(&html, value),
+                shows_setting(&html, key, value),
                 "expected {key}={value:?} to have round-tripped, got: {html}"
             );
         }

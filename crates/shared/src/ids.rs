@@ -107,6 +107,15 @@ id!(
     /// An engine webhook (`webhooks.id`).
     WebhookId
 );
+id!(
+    /// A merchant's named wallet in monokulo (`wallets.id`).
+    WalletId
+);
+id!(
+    /// The engine's record of a wallet's keys (the engine's `wallets.id`),
+    /// which stores on that wallet are created from.
+    EngineWalletId
+);
 
 #[cfg(test)]
 mod tests {

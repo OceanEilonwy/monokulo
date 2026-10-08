@@ -366,7 +366,7 @@ settings! {
     ABUSE_UNDER_ATTACK: bool {
         key: "abuse.under_attack",
         default: false,
-        description: "When true, every visitor who isn't signed in must pass a challenge before using the checkout or public pages (live updates are not affected). A pass lasts 10 minutes.",
+        description: "When on, every visitor who isn't signed in must pass a challenge before using the checkout or public pages (live updates are not affected). A pass lasts 10 minutes.",
         example: "false",
         sources: [Database],
     },

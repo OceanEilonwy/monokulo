@@ -558,9 +558,11 @@ fn select(name: &str, label: &str, options: &[(&str, &str)], current: &str) -> M
     html! {
         label {
             span class="sr-only" { (label) }
-            select name=(name) aria-label=(label) {
-                @for (value, text) in options {
-                    option value=(value) selected[*value == current] { (text) }
+            mk-select compact {
+                select name=(name) aria-label=(label) {
+                    @for (value, text) in options {
+                        (super::controls::Choice::new(*value, *text).selected(*value == current))
+                    }
                 }
             }
         }
