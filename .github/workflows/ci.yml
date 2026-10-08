@@ -190,8 +190,7 @@ jobs:
         if: always()
         run: |
           python3 scripts/test-summary.py 'Browser coverage tests' \
-            fixture=target/coverage/browser/junit-fixture.xml \
-            real-binaries=target/coverage/browser/junit-real-binaries.xml >> "$GITHUB_STEP_SUMMARY"
+            browser=target/coverage/browser/junit.xml >> "$GITHUB_STEP_SUMMARY"
       - name: Upload browser coverage
         if: always()
         uses: actions/upload-artifact@v7
@@ -310,8 +309,7 @@ jobs:
           python3 scripts/coverage-job-summary.py >> "$GITHUB_STEP_SUMMARY"
           python3 scripts/test-summary.py 'Coverage tests' \
             rust=target/coverage/rust/junit.xml \
-            browser-fixture=target/coverage/browser/junit-fixture.xml \
-            browser-real-binaries=target/coverage/browser/junit-real-binaries.xml \
+            browser=target/coverage/browser/junit.xml \
             woocommerce=target/coverage/woocommerce/junit.xml >> "$GITHUB_STEP_SUMMARY"
       - name: Upload offline coverage artifact
         if: always()
