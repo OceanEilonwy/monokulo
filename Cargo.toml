@@ -36,37 +36,12 @@ all = { level = "deny", priority = -1 }
 # Set by `cargo +nightly llvm-cov`, which leaves test code out of reports.
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
 
-# Password hashing (Argon2id) is deliberately slow; unoptimised, as in debug
-# and test builds, one hash takes about a second, and most HTTP tests sign
-# users up and in. Optimising just these dependencies keeps our own code
-# unoptimised for debugging and coverage while tests run several times faster.
-[profile.dev.package.argon2]
-opt-level = 3
-[profile.dev.package.blake2]
-opt-level = 3
-# The same for Monero output scanning (curve arithmetic and hashing): the
-# scanner's fault-sweep tests scan the same payment thousands of times.
-[profile.dev.package.curve25519-dalek]
-opt-level = 3
-[profile.dev.package.monero]
-opt-level = 3
-[profile.dev.package.keccak]
-opt-level = 3
-[profile.dev.package.tiny-keccak]
-opt-level = 3
-[profile.dev.package.sha3]
-opt-level = 3
-# RandomX (its C++ is built at this level too): block proof-of-work tests
-# hash and mine real blocks.
-[profile.dev.package.randomx-rs]
-opt-level = 3
-# TLS setup: every HTTP client a test builds loads and parses the platform's
-# root certificates.
-[profile.dev.package.rustls-webpki]
-opt-level = 3
-[profile.dev.package.rustls-pki-types]
-opt-level = 3
-[profile.dev.package.rustls-native-certs]
-opt-level = 3
-[profile.dev.package.untrusted]
+# Every dependency is optimised, even in dev and test builds; the workspace's
+# own crates stay unoptimised for debugging and coverage. Tests spend most of
+# their time in dependencies: SQLite, password hashing (Argon2id, about a
+# second a hash unoptimised), Monero output scanning (curve arithmetic and
+# hashing), RandomX proof of work (its C++ is built at this level too) and the
+# TLS root certificates every HTTP client loads. A dependency is rebuilt only
+# when Cargo.lock changes, and CI caches the build.
+[profile.dev.package."*"]
 opt-level = 3
