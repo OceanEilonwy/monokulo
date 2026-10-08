@@ -60,7 +60,7 @@ opt-level = 3
 # hash and mine real blocks.
 [profile.dev.package.randomx-rs]
 opt-level = 3
-# Decoding and encoding images (`cargo xtask quality-site`'s screenshot
+# Decoding and encoding images (`cargo xtask pages build`'s screenshot
 # gallery): unoptimised, the 552 screenshots of a CI run take minutes.
 [profile.dev.package.image]
 opt-level = 3

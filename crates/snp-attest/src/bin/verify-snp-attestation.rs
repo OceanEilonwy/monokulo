@@ -16,7 +16,7 @@
 //!
 //! Exits 0 only if every check below passes; prints exactly what was and
 //! wasn't verified either way, matching this repo's existing operator-facing
-//! script convention (`scripts/backup-database.sh`/`restore-database.sh`).
+//! script convention (`deploy/backup/monokulo-backup.sh`/`monokulo-restore.sh`).
 //!
 //! WHY THE --min-*-spl FLAGS ARE OPTIONAL, AND WHAT THAT MEANS:
 //! This WBS item names one concrete target explicitly: "AMD's July 2025
@@ -29,7 +29,7 @@
 //! human-readable date - and the SPL number that corresponds to "patched"
 //! differs per silicon (Milan vs. Genoa vs. Turin) and isn't something this
 //! tool hardcodes as if it were a fixed, timeless fact, for the same reason
-//! `restore-database.sh` doesn't hardcode a "safe" row count: it's real data
+//! `monokulo-restore.sh` doesn't hardcode a "safe" row count: it's real data
 //! that must come from the actual deployment, not a guess baked in at
 //! authorship time. What this tool *does* do unconditionally, with no flag
 //! required: cryptographically prove the reported SPL values are genuine

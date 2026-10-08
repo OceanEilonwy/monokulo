@@ -82,7 +82,7 @@ proptest! {
     }
 }
 #[test]
-#[ignore = "large deterministic scale package; scripts/engine-scale.sh runs it"]
+#[ignore = "large deterministic scale package; `cargo xtask engine scale` runs it"]
 fn twelve_thousand_accepted_jobs_survive_sustained_saturation() {
     runtime().block_on(waves(64));
 }

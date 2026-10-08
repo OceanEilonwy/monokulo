@@ -106,7 +106,7 @@ jobs:
           cache-dependency-path: crates/monokulo/pos-ui/package-lock.json
       - name: Install POS app dependencies
         run: npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
-      # The latest nightly and collector, as scripts/coverage-rust-tools.sh
+      # The latest nightly and collector, as `cargo xtask coverage rust`
       # installs locally, but prebuilt.
       - uses: dtolnay/rust-toolchain@nightly
         with:

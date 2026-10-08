@@ -46,9 +46,9 @@ Run the same commands as before, from the repository root:
 
 ```sh
 cargo nextest run -p engine --lib --locked -E 'test(::properties::)'
-scripts/engine-scale.sh default
-scripts/engine-scale.sh zmq
-cargo xtask fuzz history
+cargo xtask engine scale default
+cargo xtask engine scale zmq
+cargo xtask engine fuzz history
 ```
 
 See the [engine verification guide](../../../../docs/ENGINE_VERIFICATION.md) for

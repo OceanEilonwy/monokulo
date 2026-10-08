@@ -50,7 +50,7 @@ remain if another component fails. An unavailable metric is labeled
 
 If wp-env downloads time out locally, set
 `NODE_OPTIONS='--dns-result-order=ipv4first --network-family-autoselection-attempt-timeout=5000'`
-for its start/stop commands. The coverage script reports a missing tool,
+for its start/stop commands. `cargo xtask coverage` reports a missing tool,
 dependencies, or test container explicitly and exits nonzero.
 
 ## Reading the artifact
@@ -95,15 +95,15 @@ coverage of each crate and file (linked to its annotated source), the
 nightly property and fuzz runs, the stress points and the screenshot
 gallery. `.github/workflows/pages.yml` rebuilds it whenever CI, the engine
 property, fuzz or scale workflows, or the OpenWrt package finish on main:
-`cargo xtask pages-inputs` downloads the newest artifact of each and
-`cargo xtask quality-site` (`xtask/src/quality.rs`) turns them into the
+`cargo xtask pages fetch` downloads the newest artifact of each and
+`cargo xtask pages build` (`xtask/src/quality.rs`) turns them into the
 page, its `data.json` and `badge.json` (the README's coverage badge). Only
 the ZMQ build of the property and fuzz runs is shown.
 
 To see a local run the same way, after `cargo xtask coverage all`:
 
 ```sh
-cargo xtask quality-site --coverage target/coverage --out target/quality
+cargo xtask pages build --coverage target/coverage --out target/quality
 cargo xtask serve target/quality   # then open http://127.0.0.1:8000
 ```
 

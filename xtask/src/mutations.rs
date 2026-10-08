@@ -1,4 +1,4 @@
-//! `cargo xtask mutations`: proves selected money, scheduling and isolation
+//! `cargo xtask engine mutations`: proves selected money, scheduling and isolation
 //! tests reject named production defects.
 //!
 //! It uses a temporary detached worktree, restores each mutant, and never
@@ -220,8 +220,8 @@ fn required_hits(test: &str) -> &'static [&'static str] {
 }
 
 pub(crate) const HELP: &str = "\
-        mutations [--features both|default|zmq] [--cases N] [--seed N] [--timeout SECONDS]\n\
-                  [--output DIR] [--only NAME]...\n\
+        engine mutations [--features both|default|zmq] [--cases N] [--seed N] [--timeout SECONDS]\n\
+                         [--output DIR] [--only NAME]...\n\
                       Prove the engine's named-defect tests catch each defect: every mutant in a detached\n\
                       worktree, against passing baselines (target/engine-mutations/report.json)";
 

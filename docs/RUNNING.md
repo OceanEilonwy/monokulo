@@ -139,3 +139,14 @@ MONOKULO_ENCRYPTION_KEY=<...> MONOKULO_ENGINE_TOKEN=<the same token> \
 The engine refuses every request without the token (at least 32
 characters), so only monokulo can use it; bind it where only monokulo can
 reach it. Its settings are then in its own options file, `engine.toml`.
+
+## Backups
+
+`deploy/backup/monokulo-backup.sh DATA_DIR BACKUP_DIR [--retain-days N]`
+backs up both databases while monokulo runs, with SQLite's online backup,
+into a timestamped folder with their checksums;
+`monokulo-backup.service` and `monokulo-backup.timer` beside it run it daily
+under systemd. `deploy/backup/monokulo-restore.sh BACKUP_FOLDER DATA_DIR`
+restores one, and its header is the whole procedure. Neither copies the
+encryption key or the options file: keep those with the backups, since a
+restore needs the same key.

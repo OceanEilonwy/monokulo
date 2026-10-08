@@ -1,8 +1,9 @@
-//! Engine exploration evidence: `cargo xtask fuzz` runs one coverage-guided
-//! fuzz campaign and records its replay settings and measured exploration,
-//! and `cargo xtask properties-report` summarizes a property run's scenario
-//! observations. Neither infers line coverage: they record what the fuzzer
-//! and the properties report (docs/ENGINE_VERIFICATION.md).
+//! Engine verification runs: `cargo xtask engine fuzz` runs one
+//! coverage-guided fuzz campaign and records its replay settings and measured
+//! exploration; `engine properties` and `engine scale` run the property and
+//! scale tests, the property run reporting the scenarios it reached. None of
+//! them infers line coverage: they record what the fuzzer and the tests
+//! report (docs/ENGINE_VERIFICATION.md).
 
 use regex::Regex;
 use serde_json::{json, Map, Value};
@@ -37,13 +38,17 @@ fn limits(target: &str) -> Option<(u64, u64, u64)> {
 }
 
 pub(crate) const HELP: &str = "\
-        fuzz TARGET [SECONDS] [zmq]\n\
+        engine fuzz TARGET [SECONDS] [zmq]\n\
                       One fuzz campaign (scheduler, resources, inputs, queue, mempool, status, history,\n\
                       notifications or portfolio): reviewed seeds copied into the corpus, a calibrated\n\
                       build, then libFuzzer for SECONDS, with its evidence under\n\
                       target/engine-exploration/fuzz (ENGINE_FUZZ_SEED sets the seed; needs cargo-fuzz)\n\
-        properties-report DIR\n\
-                      Summarize the semantics.*.jsonl a property run left in DIR as DIR/report.json";
+        engine properties [default|zmq]\n\
+                      The engine's and key custody's property tests (PROPTEST_CASES, ENGINE_PROOF_CASES and\n\
+                      PROPTEST_RNG_SEED as set), then target/engine-exploration/properties/report.json\n\
+        engine scale [default|zmq]\n\
+                      The scale tests: generated cases and every large fixture, one test at a time\n\
+                      (target/engine-scale)";
 
 fn sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -243,7 +248,7 @@ impl Tools {
 
 /// Runs a program to a log file and our own output at once (`2>&1 | tee`),
 /// returning its exit code.
-fn tee(mut command: Command, log: &Path) -> io::Result<i32> {
+pub(crate) fn tee(mut command: Command, log: &Path) -> io::Result<i32> {
     let (mut reader, writer) = io::pipe()?;
     let mut child = command.stdout(writer.try_clone()?).stderr(writer).spawn()?;
     drop(command);
@@ -667,7 +672,7 @@ pub(crate) fn fuzz(root: &Path, args: &[&str], tools: &Tools) -> io::Result<i32>
 
 /// `report.json` for a property run: the toolchain, the cases and seed it
 /// ran with, and the scenario observations it left in `output`.
-pub(crate) fn properties_report(root: &Path, output: &Path, tools: &Tools) -> io::Result<bool> {
+fn properties_report(root: &Path, output: &Path, tools: &Tools) -> io::Result<()> {
     fs::create_dir_all(output)?;
     let (cases, counts) = semantics(output);
     let settings: Map<String, Value> = [
@@ -687,8 +692,138 @@ pub(crate) fn properties_report(root: &Path, output: &Path, tools: &Tools) -> io
             "nextest": tools.output(root, "cargo", &["nextest", "--version"]),
             "settings": settings, "semantic_cases": cases, "semantic_observations": counts,
         }),
+    )
+}
+
+/// The build named on the command line: `default` or `zmq`.
+fn build_of(args: &[&str], command: &str) -> io::Result<&'static str> {
+    match args {
+        [] | ["default"] | [""] => Ok("default"),
+        ["zmq"] => Ok("zmq"),
+        _ => Err(io::Error::other(format!(
+            "usage: cargo xtask engine {command} [default|zmq]"
+        ))),
+    }
+}
+
+/// `cargo xtask engine properties`: the property tests of one build, then
+/// their report, written whether or not they passed. Returns their exit code.
+pub(crate) fn properties(root: &Path, args: &[&str], tools: &Tools) -> io::Result<i32> {
+    let build = build_of(args, "properties")?;
+    let output = root.join("target/engine-exploration/properties");
+    fs::create_dir_all(&output)?;
+    let mut tools = tools.clone();
+    tools.vars.insert(
+        "ENGINE_FEATURES".into(),
+        if build == "zmq" {
+            "zmq".into()
+        } else {
+            String::new()
+        },
+    );
+    if tools.var("ENGINE_SEMANTIC_REPORT").is_none() {
+        tools.vars.insert(
+            "ENGINE_SEMANTIC_REPORT".into(),
+            output.join("semantics").display().to_string(),
+        );
+    }
+    let toolchain = [
+        tools.output(root, "rustc", &["-Vv"]),
+        tools.output(root, "cargo", &["-V"]),
+        tools.output(root, "cargo", &["nextest", "--version"]),
+        tools.output(root, "git", &["rev-parse", "HEAD"]),
+    ];
+    fs::write(output.join("toolchain.txt"), toolchain.join("\n") + "\n")?;
+    let unset = || "unset".to_string();
+    let settings = format!(
+        "Cases per property: {}; proof cases: {}; RNG seed: {}; features: {build}",
+        tools.var("PROPTEST_CASES").unwrap_or_else(unset),
+        tools.var("ENGINE_PROOF_CASES").unwrap_or_else(unset),
+        tools.var("PROPTEST_RNG_SEED").unwrap_or_else(unset)
+    );
+    println!("{settings}");
+    if let Some(summary) = tools.var("GITHUB_STEP_SUMMARY") {
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(summary)?;
+        writeln!(file, "{settings}")?;
+    }
+    let mut command = tools.command("cargo", root);
+    command.args([
+        "nextest",
+        "run",
+        "-p",
+        "engine",
+        "-p",
+        "key-custody",
+        "--lib",
+        "--locked",
+        "--profile",
+        "ci",
+    ]);
+    if build == "zmq" {
+        command.args(["--features", "engine/zmq"]);
+    }
+    let code = command
+        .args(["-E", "test(::properties::)"])
+        .status()?
+        .code()
+        .unwrap_or(1);
+    properties_report(root, &output, &tools)?;
+    Ok(code)
+}
+
+/// `cargo xtask engine scale`: generated cases and every explicit large
+/// fixture. One test at a time in separate processes, so the scale suite
+/// doesn't measure its own competition. Returns the tests' exit code.
+pub(crate) fn scale(root: &Path, args: &[&str], tools: &Tools) -> io::Result<i32> {
+    let build = build_of(args, "scale")?;
+    let mut tools = tools.clone();
+    let cases = tools.var("PROPTEST_CASES").unwrap_or_else(|| "32".into());
+    let seed = tools
+        .var("PROPTEST_RNG_SEED")
+        .unwrap_or_else(|| "24601".into());
+    tools.vars.insert("PROPTEST_CASES".into(), cases.clone());
+    tools.vars.insert("PROPTEST_RNG_SEED".into(), seed.clone());
+    let output = root.join("target/engine-scale").join(build);
+    fs::create_dir_all(&output)?;
+    fs::write(
+        output.join("replay.txt"),
+        format!(
+            "revision={}\nfeatures={build} cases={cases} seed={seed}\n{}\n",
+            tools.output(root, "git", &["rev-parse", "HEAD"]),
+            tools.output(root, "rustc", &["--version"])
+        ),
     )?;
-    Ok(true)
+    let mut command = tools.command("cargo", root);
+    command.args([
+        "nextest",
+        "run",
+        "-p",
+        "engine",
+        "--lib",
+        "--locked",
+        "--profile",
+        "ci",
+        "--run-ignored",
+        "all",
+        "--test-threads",
+        "1",
+    ]);
+    if build == "zmq" {
+        command.args(["--features", "zmq"]);
+    }
+    command.args(["-E", "test(::scale::)"]);
+    let code = tee(command, &output.join("tests.log"))?;
+    let target = tools
+        .var("CARGO_TARGET_DIR")
+        .map_or_else(|| root.join("target"), |t| root.join(t));
+    let junit = target.join("nextest/ci/junit.xml");
+    if junit.is_file() {
+        fs::copy(junit, output.join("junit.xml"))?;
+    }
+    Ok(code)
 }
 
 #[cfg(test)]

@@ -37,7 +37,7 @@ jobs:
       - name: Check runner rejects invalid outcomes
         run: cargo test -p xtask mutations
       - name: Prove intended defect assertions and required boundary observations
-        run: cargo xtask mutations --features "$ENGINE_MUTATION_FEATURES" --cases "$ENGINE_MUTATION_CASES"
+        run: cargo xtask engine mutations --features "$ENGINE_MUTATION_FEATURES" --cases "$ENGINE_MUTATION_CASES"
       - name: Preserve baseline, mutation and boundary evidence
         if: always()
         uses: actions/upload-artifact@v7

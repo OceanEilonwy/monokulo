@@ -195,7 +195,7 @@ proptest! {
     }
 }
 #[test]
-#[ignore = "large deterministic scale package; scripts/engine-scale.sh runs it"]
+#[ignore = "large deterministic scale package; `cargo xtask engine scale` runs it"]
 fn eight_thousand_pool_transactions_recover_and_release_cache() {
     for count in [257, 1025, 4097, 8193] {
         runtime().block_on(large_pool(count));
@@ -398,7 +398,7 @@ proptest! {
     }
 }
 #[test]
-#[ignore = "large deterministic scale package; scripts/engine-scale.sh runs it"]
+#[ignore = "large deterministic scale package; `cargo xtask engine scale` runs it"]
 fn tenant_and_transaction_rotations_cannot_phase_lock() {
     for (tenants, transactions) in [(257, 2), (513, 3), (1025, 5)] {
         runtime().block_on(transaction_tenant_matrix(tenants, transactions));

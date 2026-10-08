@@ -1,0 +1,15 @@
+# Starts monokulo-backup.service daily; see that file for installing both.
+#
+# 03:17 rather than 03:00 so boxes that copied the same setup don't all wake
+# at once. Persistent=true runs a backup missed while the box was off or
+# asleep when it next starts, which a crontab line can't.
+[Unit]
+Description=Daily Monokulo database backup
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

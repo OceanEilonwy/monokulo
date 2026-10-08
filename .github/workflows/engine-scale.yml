@@ -11,7 +11,7 @@ on:
       - 'Cargo.lock'
       - 'Cargo.toml'
       - '.config/nextest.toml'
-      - 'scripts/engine-scale.sh'
+      - 'xtask/src/exploration.rs'
       - '.github/workflows/engine-scale.yml'
       - 'xtask/src/stress.rs'
       - 'xtask/stress/scenario_scale_v1.json'
@@ -37,7 +37,7 @@ jobs:
         with:
           tool: cargo-nextest
       - name: Generated cases and all large fixtures
-        run: scripts/engine-scale.sh '${{ matrix.features }}'
+        run: cargo xtask engine scale '${{ matrix.features }}'
       - name: Preserve replay settings, failures and reports
         if: always()
         uses: actions/upload-artifact@v7

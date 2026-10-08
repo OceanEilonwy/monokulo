@@ -2,7 +2,7 @@
 #   /           the landing page and the signed apk repository, as the
 #               OpenWrt workflow last built them on main (its site artifact)
 #   /quality/   the quality report: tests, coverage, property tests, fuzzing,
-#               load and screenshots (`cargo xtask quality-site`), from the newest
+#               load and screenshots (`cargo xtask pages build`), from the newest
 #               runs on main of CI, the nightly engine property and fuzz
 #               explorations, and the weekly engine scale measurements
 #
@@ -66,14 +66,14 @@ jobs:
       - name: Download the newest artifacts on main
         env:
           GH_TOKEN: ${{ github.token }}
-        run: cargo xtask pages-inputs inputs
+        run: cargo xtask pages fetch inputs
       - name: Build the quality report beside the landing page
         run: |
           args=(--out inputs/site/quality --sources inputs/sources.json --repo-url "https://github.com/$GITHUB_REPOSITORY")
           for source in coverage properties fuzz scale; do
             if test -d "inputs/$source"; then args+=("--$source" "inputs/$source"); fi
           done
-          cargo xtask quality-site "${args[@]}"
+          cargo xtask pages build "${args[@]}"
       - uses: actions/upload-pages-artifact@v5
         with:
           path: inputs/site/

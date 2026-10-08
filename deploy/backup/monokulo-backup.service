@@ -1,0 +1,26 @@
+# systemd service running monokulo-backup.sh once; monokulo-backup.timer
+# starts it daily.
+#
+# Type=oneshot runs to completion and exits, like a cron job, with
+# `systemctl status monokulo-backup.service` and
+# `journalctl -u monokulo-backup.service` instead of a hand-made log file.
+# systemd also refuses to start a second run while one is still active, the
+# overlap protection plain cron needs flock for.
+#
+# Install: copy this file and monokulo-backup.timer to /etc/systemd/system/,
+# set User= and the two folders on ExecStart= to your deployment (the data
+# folder monokulo uses, and where backups should land, for example a folder an
+# off-box sync job picks up from), then:
+#   systemctl daemon-reload
+#   systemctl enable --now monokulo-backup.timer
+[Unit]
+Description=Monokulo database backup
+# Documents that the backup belongs with monokulo's own unit (remove it if
+# monokulo doesn't run as monokulo.service here). Not an ordering dependency:
+# backing up while monokulo runs is what the online backup is for.
+Wants=monokulo.service
+
+[Service]
+Type=oneshot
+User=monokulo
+ExecStart=/opt/monokulo/deploy/backup/monokulo-backup.sh /var/lib/monokulo /var/backups/monokulo --retain-days 14

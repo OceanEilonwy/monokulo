@@ -1,14 +1,14 @@
-//! WBS 2.3.1's own literal acceptance test: "actually perform the restore
-//! once against a copy; diff tenant/order counts before and after as the
-//! pass condition."
+//! The backup's acceptance test: "actually perform the restore once against
+//! a copy; diff tenant/order counts before and after as the pass condition."
 //!
-//! Drives the real `scripts/backup-database.sh` and `scripts/restore-database.sh`
-//! (not a reimplementation of their logic) against a real `Store`-backed
-//! SQLite database, with a concurrent writer thread still inserting orders
-//! while the backup runs - the exact hazard `backup-database.sh`'s own header
-//! comment investigates (a writer mid-commit while `.backup` runs). Excluded
-//! from the default run like `e2e_stagenet.rs` is, since it shells out to
-//! external scripts and requires `sqlite3` on PATH; run explicitly with:
+//! Drives the real `deploy/backup/monokulo-backup.sh` and
+//! `deploy/backup/monokulo-restore.sh` (not a reimplementation of their
+//! logic) against a data folder holding a real `Store`-backed engine.db and a
+//! monokulo.db, with a concurrent writer thread still inserting orders while
+//! the backup runs - the exact hazard `monokulo-backup.sh`'s header reasons
+//! about (a writer mid-commit while `.backup` runs). Excluded from the default
+//! run like `e2e_stagenet.rs` is, since it shells out to external scripts and
+//! requires `sqlite3` on PATH; run explicitly with:
 //!
 //! ```sh
 //! cargo test --test backup_restore -- --ignored --nocapture
@@ -30,13 +30,52 @@ use std::sync::Arc;
 use engine::store::{NewOrder, NewTenant, Store};
 use uuid::Uuid;
 
-/// Path to a script in the workspace's `scripts/` directory. Cargo runs this
-/// test with the scanner crate as its working directory.
+/// Path to a script in the workspace's `deploy/backup/` directory. Cargo
+/// runs this test with the engine crate as its working directory.
 fn script(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join("scripts")
+        .join("deploy/backup")
         .join(name)
+}
+
+/// A small monokulo.db beside the engine's: the scripts back up and restore
+/// whichever of the two a data folder holds.
+fn seed_monokulo_db(path: &std::path::Path) {
+    let status = Command::new("sqlite3")
+        .arg(path)
+        .arg("PRAGMA journal_mode=WAL; CREATE TABLE users (id INTEGER PRIMARY KEY); CREATE TABLE wallets (id INTEGER PRIMARY KEY); INSERT INTO users VALUES (1), (2); INSERT INTO wallets VALUES (1);")
+        .output()
+        .unwrap();
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+}
+
+/// The one backup folder `monokulo-backup.sh` wrote into `backup_dir`.
+fn backup_folder(backup_dir: &std::path::Path) -> PathBuf {
+    let folders: Vec<PathBuf> = std::fs::read_dir(backup_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    assert_eq!(
+        folders.len(),
+        1,
+        "monokulo-backup.sh should have written exactly one backup folder: {folders:?}"
+    );
+    assert!(
+        folders[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("monokulo-"),
+        "a backup folder is named monokulo-<timestamp>: {folders:?}"
+    );
+    folders[0].clone()
 }
 
 fn require_sqlite3() {
@@ -44,7 +83,7 @@ fn require_sqlite3() {
         .arg("-version")
         .output()
         .is_ok_and(|o| o.status.success());
-    assert!(ok, "sqlite3 CLI must be on PATH for this test - it's what backup-database.sh/restore-database.sh themselves require");
+    assert!(ok, "sqlite3 CLI must be on PATH for this test - it's what monokulo-backup.sh and monokulo-restore.sh themselves require");
 }
 
 fn seed_tenant_and_orders(store: &Store, n: u32) -> String {
@@ -87,16 +126,19 @@ fn seed_tenant_and_orders(store: &Store, n: u32) -> String {
 /// destination, and diff `tenant/order/order_payments` counts between source
 /// and restored copy.
 #[test]
-#[ignore = "shells out to scripts/*.sh and requires the sqlite3 CLI - see module docs"]
+#[ignore = "shells out to deploy/backup/*.sh and requires the sqlite3 CLI - see module docs"]
 fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
     require_sqlite3();
 
     let work_dir =
-        std::env::temp_dir().join(format!("moneropay_backup_restore_test_{}", Uuid::new_v4()));
-    std::fs::create_dir_all(&work_dir).unwrap();
-    let src_db_path = work_dir.join("moneropay.db");
+        std::env::temp_dir().join(format!("monokulo_backup_restore_test_{}", Uuid::new_v4()));
+    let data_dir = work_dir.join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let src_db_path = data_dir.join("engine.db");
+    seed_monokulo_db(&data_dir.join("monokulo.db"));
     let backup_dir = work_dir.join("backups");
-    let restore_dest = work_dir.join("restored.db");
+    let restore_data = work_dir.join("restored");
+    let restore_dest = restore_data.join("engine.db");
 
     // Seed the live database with an initial batch before the backup starts,
     // so the restore-side assertions have a known floor even if the
@@ -107,7 +149,7 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
 
     // Concurrent writer: keeps inserting orders against the same live
     // database file for as long as the backup step is running - this is the
-    // real hazard backup-database.sh's header comment reasons about (a
+    // real hazard monokulo-backup.sh's header comment reasons about (a
     // writer mid-commit while `.backup` steps through the source), not a
     // synthetic scenario.
     let stop = Arc::new(AtomicBool::new(false));
@@ -145,18 +187,18 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
     // rather than possibly racing ahead of the first insert.
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    let backup_output = Command::new(script("backup-database.sh"))
-        .arg(&src_db_path)
+    let backup_output = Command::new(script("monokulo-backup.sh"))
+        .arg(&data_dir)
         .arg(&backup_dir)
         .output()
-        .expect("failed to run scripts/backup-database.sh");
+        .expect("failed to run deploy/backup/monokulo-backup.sh");
 
     stop.store(true, Ordering::Relaxed);
     let inserted_concurrently = writer.join().unwrap();
 
     assert!(
         backup_output.status.success(),
-        "backup-database.sh failed:\nstdout: {}\nstderr: {}",
+        "monokulo-backup.sh failed:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&backup_output.stdout),
         String::from_utf8_lossy(&backup_output.stderr)
     );
@@ -175,25 +217,23 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
         "concurrent writer should have gotten at least one insert in before the backup completed"
     );
 
-    // Locate the single backup file the script just produced.
-    let backup_file = std::fs::read_dir(&backup_dir)
-        .unwrap()
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .find(|p| p.extension().and_then(|e| e.to_str()) == Some("db"))
-        .expect("backup-database.sh should have written exactly one .db file");
+    // Locate the backup folder the script just produced: both databases and
+    // their checksums.
+    let folder = backup_folder(&backup_dir);
+    let backup_file = folder.join("engine.db");
+    assert!(folder.join("monokulo.db").is_file() && folder.join("SHA256SUMS").is_file());
 
-    // Restore it to a brand-new destination - the real WBS 2.3.1 acceptance
-    // step: "restores cleanly on a fresh box."
-    let restore_output = Command::new(script("restore-database.sh"))
-        .arg(&backup_file)
-        .arg(&restore_dest)
+    // Restore it into a brand-new data folder - the acceptance step:
+    // "restores cleanly on a fresh box."
+    let restore_output = Command::new(script("monokulo-restore.sh"))
+        .arg(&folder)
+        .arg(&restore_data)
         .output()
-        .expect("failed to run scripts/restore-database.sh");
+        .expect("failed to run deploy/backup/monokulo-restore.sh");
 
     assert!(
         restore_output.status.success(),
-        "restore-database.sh failed:\nstdout: {}\nstderr: {}",
+        "monokulo-restore.sh failed:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&restore_output.stdout),
         String::from_utf8_lossy(&restore_output.stderr)
     );
@@ -237,6 +277,11 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
     // seeded before the writer even started, proving the .backup step really
     // did see committed data, not an empty/corrupt file.
     assert!(backup_order_count >= 20, "backup should contain at least the 20 orders seeded before the writer started, got {backup_order_count}");
+    assert_eq!(
+        count(restore_data.join("monokulo.db").to_str().unwrap(), "users"),
+        2,
+        "monokulo.db is restored beside engine.db"
+    );
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
@@ -245,42 +290,40 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
 /// aimed at an existing destination must fail loudly rather than silently
 /// clobber it, and must succeed once `--force` is supplied.
 #[test]
-#[ignore = "shells out to scripts/*.sh and requires the sqlite3 CLI - see module docs"]
+#[ignore = "shells out to deploy/backup/*.sh and requires the sqlite3 CLI - see module docs"]
 fn restore_refuses_to_overwrite_an_existing_destination_without_force() {
     require_sqlite3();
 
     let work_dir = std::env::temp_dir().join(format!(
-        "moneropay_backup_restore_force_test_{}",
+        "monokulo_backup_restore_force_test_{}",
         Uuid::new_v4()
     ));
-    std::fs::create_dir_all(&work_dir).unwrap();
-    let src_db_path = work_dir.join("moneropay.db");
+    let data_dir = work_dir.join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let src_db_path = data_dir.join("engine.db");
     let backup_dir = work_dir.join("backups");
-    let restore_dest = work_dir.join("restored.db");
+    let restore_data = work_dir.join("restored");
+    std::fs::create_dir_all(&restore_data).unwrap();
+    let restore_dest = restore_data.join("engine.db");
 
     let store = Store::open_file(src_db_path.to_str().unwrap()).unwrap();
     seed_tenant_and_orders(&store, 3);
     drop(store);
 
-    let backup_output = Command::new(script("backup-database.sh"))
-        .arg(&src_db_path)
+    let backup_output = Command::new(script("monokulo-backup.sh"))
+        .arg(&data_dir)
         .arg(&backup_dir)
         .output()
         .unwrap();
     assert!(backup_output.status.success());
-    let backup_file = std::fs::read_dir(&backup_dir)
-        .unwrap()
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .find(|p| p.extension().and_then(|e| e.to_str()) == Some("db"))
-        .unwrap();
+    let folder = backup_folder(&backup_dir);
 
     // Something is already sitting at the destination.
     std::fs::write(&restore_dest, b"not a real database, must not be clobbered").unwrap();
 
-    let refused = Command::new(script("restore-database.sh"))
-        .arg(&backup_file)
-        .arg(&restore_dest)
+    let refused = Command::new(script("monokulo-restore.sh"))
+        .arg(&folder)
+        .arg(&restore_data)
         .output()
         .unwrap();
     assert!(
@@ -293,9 +336,9 @@ fn restore_refuses_to_overwrite_an_existing_destination_without_force() {
         "the pre-existing destination file must be untouched after a refused restore"
     );
 
-    let forced = Command::new(script("restore-database.sh"))
-        .arg(&backup_file)
-        .arg(&restore_dest)
+    let forced = Command::new(script("monokulo-restore.sh"))
+        .arg(&folder)
+        .arg(&restore_data)
         .arg("--force")
         .output()
         .unwrap();
@@ -314,10 +357,10 @@ fn restore_refuses_to_overwrite_an_existing_destination_without_force() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
-fn count_orders(db_path: &str) -> i64 {
+fn count(db_path: &str, table: &str) -> i64 {
     let output = Command::new("sqlite3")
         .arg(db_path)
-        .arg("SELECT COUNT(*) FROM orders;")
+        .arg(format!("SELECT COUNT(*) FROM {table};"))
         .output()
         .unwrap();
     String::from_utf8_lossy(&output.stdout)
@@ -326,14 +369,10 @@ fn count_orders(db_path: &str) -> i64 {
         .unwrap()
 }
 
+fn count_orders(db_path: &str) -> i64 {
+    count(db_path, "orders")
+}
+
 fn count_order_payments(db_path: &str) -> i64 {
-    let output = Command::new("sqlite3")
-        .arg(db_path)
-        .arg("SELECT COUNT(*) FROM order_payments;")
-        .output()
-        .unwrap();
-    String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse()
-        .unwrap()
+    count(db_path, "order_payments")
 }

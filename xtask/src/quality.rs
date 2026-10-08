@@ -1,5 +1,5 @@
-//! `cargo xtask quality-site`: the quality report (GitHub Pages: /quality/)
-//! from CI artifacts, and `cargo xtask pages-inputs`: those artifacts,
+//! `cargo xtask pages build`: the quality report (GitHub Pages: /quality/)
+//! from CI artifacts, and `cargo xtask pages fetch`: those artifacts,
 //! downloaded from main's newest runs.
 //!
 //! Every input of the report is optional; the page says what it has no data
@@ -40,13 +40,13 @@ const SHAPES: [&str; 8] = [
 ];
 
 pub(crate) const HELP: &str = "\
-        quality-site --out DIR [--coverage DIR] [--properties DIR] [--fuzz DIR] [--scale DIR]\n\
+        pages build --out DIR [--coverage DIR] [--properties DIR] [--fuzz DIR] [--scale DIR]\n\
                      [--sources FILE] [--feature zmq|default] [--repo-url URL]\n\
                       Build the quality report (GitHub Pages /quality/) from CI artifacts: the joined\n\
                       coverage artifact (or target/coverage), an engine-properties artifact, a folder of\n\
                       engine-fuzz artifacts, an engine-scale-measurements artifact, and a JSON file naming\n\
                       the run behind each (docs/COVERAGE.md)\n\
-        pages-inputs DIR [--repo OWNER/NAME]\n\
+        pages fetch DIR [--repo OWNER/NAME]\n\
                       Download main's newest OpenWrt site, coverage, property, fuzz and scale artifacts\n\
                       into DIR, with DIR/sources.json naming their runs (needs the gh CLI)\n\
         serve DIR [PORT]\n\
@@ -663,7 +663,7 @@ pub(crate) fn site(root: &Path, args: &[&str]) -> io::Result<bool> {
     let args = parse(args)?;
     let out = args
         .out
-        .ok_or_else(|| io::Error::other("quality-site needs --out DIR"))?;
+        .ok_or_else(|| io::Error::other("pages build needs --out DIR"))?;
     if out.exists() {
         fs::remove_dir_all(&out)?;
     }
@@ -809,7 +809,7 @@ pub(crate) fn pages_inputs(args: &[&str]) -> io::Result<bool> {
         [dir, "--repo", repo] => (PathBuf::from(dir), Some(repo.to_string())),
         _ => {
             return Err(io::Error::other(
-                "usage: cargo xtask pages-inputs DIR [--repo OWNER/NAME]",
+                "usage: cargo xtask pages fetch DIR [--repo OWNER/NAME]",
             ))
         }
     };
