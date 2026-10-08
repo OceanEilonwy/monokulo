@@ -4097,6 +4097,146 @@ async fn a_stagenet_node_that_says_it_is_on_mainnet_is_refused_and_nothing_chang
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
+async fn try_check(router: &Router, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/settings/check")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    (status, body_json(response).await)
+}
+
+/// A check refuses what a save would refuse, with the same answer, and
+/// otherwise says what a save would do; either way it saves nothing.
+#[tokio::test]
+async fn a_check_answers_as_a_save_would_and_saves_nothing() {
+    let router = settings_router().await;
+    let mainnet = spawn_node_on(Some("mainnet")).await;
+    let stagenet = spawn_node_on(Some("stagenet")).await;
+
+    for refused in [
+        serde_json::json!({ "monero_node": { "stagenet": node_json(mainnet, &[]) } }),
+        serde_json::json!({ "scalars": { "payment.confirmations_required": "-1" } }),
+        serde_json::json!({ "scalars": { "payment.nope": "1" } }),
+        serde_json::json!({ "monero_node": { "moonnet": null } }),
+    ] {
+        let checked = try_check(&router, refused.clone()).await;
+        assert_eq!(
+            checked.0,
+            StatusCode::BAD_REQUEST,
+            "{refused}: {}",
+            checked.1
+        );
+        assert_eq!(
+            checked,
+            try_save(&router, refused.clone()).await,
+            "{refused}"
+        );
+    }
+
+    let request = serde_json::json!({
+        "scalars": { "payment.confirmations_required": "4" },
+        "monero_node": { "stagenet": node_json(stagenet, &[]) },
+    });
+    let (status, body) = try_check(&router, request.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["checked"], true);
+    assert_eq!(body["has_changes"], true);
+    assert_eq!(
+        body["changed"],
+        serde_json::json!(["payment.confirmations_required", "monero_node.stagenet"]),
+        "{body}"
+    );
+    // Nothing was saved.
+    assert_eq!(
+        saved_node(&router, "stagenet").await,
+        serde_json::Value::Null
+    );
+    let get = router
+        .clone()
+        .oneshot(settings_request("GET", None))
+        .await
+        .unwrap();
+    assert_eq!(
+        body_json(get).await["scalars"]["payment.confirmations_required"]["value"],
+        "10"
+    );
+
+    // The save says the same; checked again, nothing would change.
+    let (status, saved) = try_save(&router, request.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["changed"], body["changed"]);
+    let (status, again) = try_check(&router, request).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["has_changes"], false, "{again}");
+    assert_eq!(again["changed"], serde_json::json!([]));
+}
+
+/// A check says which networks stores use would be left without a node
+/// that answers, as the save would after the fact, before anything changes.
+#[tokio::test]
+async fn a_check_says_a_network_stores_use_would_be_left_without_a_node() {
+    let (router, daemons, _) = engine_that_applies_node_settings().await;
+    let node = spawn_node_on(Some("stagenet")).await;
+    save_settings(
+        &router,
+        serde_json::json!({ "monero_node": { "stagenet": node_json(node, &[]) } }),
+    )
+    .await;
+    let created = router
+        .clone()
+        .oneshot(stagenet_tenant_request(7))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+
+    let unserved = serde_json::json!([{ "network": "stagenet", "tenants": 1 }]);
+    // Cleared.
+    let (status, body) = try_check(
+        &router,
+        serde_json::json!({ "monero_node": { "stagenet": null } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["warnings"]["unserved_networks"], unserved, "{body}");
+    assert!(daemons.is_configured(Network::Stagenet), "nothing changed");
+    // Moved to a node that doesn't answer.
+    let nothing = std::net::SocketAddr::from(([127, 0, 0, 1], closed_port()));
+    let (status, body) = try_check(
+        &router,
+        serde_json::json!({ "monero_node": { "stagenet": node_json(nothing, &[]) } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["warnings"]["unserved_networks"], unserved, "{body}");
+    // Moved to one that answers: fine.
+    let other = spawn_node_on(Some("stagenet")).await;
+    let (status, body) = try_check(
+        &router,
+        serde_json::json!({ "monero_node": { "stagenet": node_json(other, &[]) } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["warnings"]["unserved_networks"],
+        serde_json::json!([]),
+        "{body}"
+    );
+    assert_eq!(
+        saved_node(&router, "stagenet").await["port"],
+        node.port(),
+        "still the saved node"
+    );
+}
+
 /// Only a node that answers with a network it isn't being saved for is
 /// refused: one that doesn't answer may just be down (D2), and one that
 /// doesn't say, or is a regtest node, might be right.

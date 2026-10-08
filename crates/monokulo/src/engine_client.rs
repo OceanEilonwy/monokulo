@@ -557,6 +557,17 @@ impl EngineClient {
             .await
     }
 
+    /// `POST /api/v1/admin/settings/check` — checks the engine's half of
+    /// an admin settings form as a save would, and saves nothing: a refusal
+    /// as the save's, or what the save would change.
+    pub async fn check_settings(
+        &self,
+        request: &impl Serialize,
+    ) -> Result<EngineReply, EngineClientError> {
+        self.send(Call::post("/api/v1/admin/settings/check").json(request))
+            .await
+    }
+
     /// `POST /api/v1/admin/settings/reload` — has the engine read its
     /// options file again.
     pub async fn reload_options(&self) -> Result<EngineReply, EngineClientError> {

@@ -803,6 +803,11 @@ pub struct AdminSettingsViewModel {
     pub saved_at: Option<String>,
     /// The cards that save refused: shown with what was typed and why.
     pub failed_groups: Vec<GroupFailure>,
+    /// Why that save was refused, when it names no setting (the engine
+    /// couldn't be reached).
+    pub save_error: Option<String>,
+    /// The engine's part of that save was saved, and monokulo's refused.
+    pub partly_saved: bool,
     /// The panel answers a save: the save bar's message takes focus.
     pub answers_save: bool,
     pub monokulo_fields: Vec<AdminScalarFieldView>,
@@ -906,7 +911,9 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
                     @if on {
                         option value=(until) selected { "On until " (until_label) }
                     }
-                    option value="0" selected[!on] { "Off" }
+                    // Off, a time already past posts as it is, so it isn't
+                    // read as a change.
+                    option value=(if on || until == 0 { 0 } else { until }) selected[!on] { "Off" }
                     @for (hours, label) in [(1, "On for 1 hour"), (4, "On for 4 hours"), (24, "On for 24 hours")] {
                         option value=(now + hours * 3600) { (label) }
                     }
@@ -1638,14 +1645,18 @@ fn tab_cards(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
 /// refused a card it's red, says why, and links to the card.
 fn save_bar(data: &AdminSettingsViewModel) -> Markup {
     let failure = data.failed_groups.first();
+    let reason = failure
+        .map(|f| f.message.as_str())
+        .or(data.save_error.as_deref());
     html! {
-        div id="save-bar" class={ "save-bar" @if failure.is_some() { " is-failed" } } role="region" aria-label="Save changes" data-save-bar {
+        div id="save-bar" class={ "save-bar" @if reason.is_some() { " is-failed" } } role="region" aria-label="Save changes" data-save-bar {
           div class="wrap save-bar-inner" {
             p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus[data.answers_save] {
-                @if let Some(failure) = failure {
-                    @let names: Vec<String> = data.failed_groups.iter().map(|f| group_title(&f.group)).collect();
-                    strong { (names.join(" and ")) " not saved." } " " (failure.message) " "
-                    a href=(format!("#{}", card_id(&failure.group))) data-show-card=(failure.group) { "Show" }
+                @if let Some(reason) = reason {
+                    strong { @if data.partly_saved { "Changes partly saved." } @else { "Nothing saved." } } " " (reason)
+                    @if let Some(failure) = failure {
+                        " " a href=(format!("#{}", card_id(&failure.group))) data-show-card=(failure.group) { "Show" }
+                    }
                 } @else {
                     "Saving writes the changes on this tab to the options file and applies them."
                 }
@@ -2947,8 +2958,12 @@ mod tests {
         assert!(on.contains(r#"<option value="0">Off</option>"#), "{on}");
 
         let ended = scalar_field(&field(&(now - 1).to_string())).into_string();
+        // Off, and sent as it is, so saving the tab as shown changes nothing.
         assert!(
-            ended.contains(r#"<option value="0" selected>Off</option>"#),
+            ended.contains(&format!(
+                r#"<option value="{}" selected>Off</option>"#,
+                now - 1
+            )),
             "a time already past is off: {ended}"
         );
     }
@@ -3142,7 +3157,16 @@ mod tests {
             html.contains(r#"<div id="save-bar" class="save-bar is-failed""#),
             "{html}"
         );
-        assert!(html.contains(r##"<p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus><strong>Webhooks not saved.</strong> The engine refused the change: webhooks.max_attempts must be from 1 to 64. <a href="#card-webhooks" data-show-card="webhooks">Show</a></p>"##), "{html}");
+        assert!(html.contains(r##"<p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus><strong>Nothing saved.</strong> The engine refused the change: webhooks.max_attempts must be from 1 to 64. <a href="#card-webhooks" data-show-card="webhooks">Show</a></p>"##), "{html}");
+        // The engine's part saved, monokulo's not: it says so.
+        data.partly_saved = true;
+        assert!(page(&data).contains("<strong>Changes partly saved.</strong>"));
+        // A refusal that names no setting: the bar says it, with no card to show.
+        data.failed_groups.clear();
+        data.partly_saved = false;
+        data.save_error = Some("Could not reach the configured engine: connection refused".into());
+        let html = page(&data);
+        assert!(html.contains(r#"data-fx-focus><strong>Nothing saved.</strong> Could not reach the configured engine: connection refused</p>"#), "{html}");
     }
 
     #[test]
