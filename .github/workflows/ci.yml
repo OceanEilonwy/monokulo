@@ -56,12 +56,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - name: Check the quality report generator
-        # The Pages workflow builds /quality/ with it from main's artifacts.
-        # Without Pillow the screenshot test is skipped; Pages installs it.
-        env:
-          PYTHONDONTWRITEBYTECODE: '1'
-        run: python3 scripts/test_quality_site.py
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -84,6 +78,10 @@ jobs:
         # compiler's own. Every feature, so the e2e targets (built only with
         # `e2e`) are checked too.
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Test xtask
+        # The workspace tests leave xtask out; its own cover the quality
+        # report the Pages workflow builds from main's artifacts.
+        run: cargo test -p xtask --locked
       - name: Clippy, engine without SEV-SNP
         # --all-features above builds the snp backend in; this is the
         # default build, where it is left out.

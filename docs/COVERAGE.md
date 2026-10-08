@@ -95,21 +95,20 @@ coverage of each crate and file (linked to its annotated source), the
 nightly property and fuzz runs, the stress points and the screenshot
 gallery. `.github/workflows/pages.yml` rebuilds it whenever CI, the engine
 property, fuzz or scale workflows, or the OpenWrt package finish on main:
-`scripts/pages-inputs.py` downloads the newest artifact of each and
-`scripts/quality-site.py` turns them into the page, its `data.json` and
-`badge.json` (the README's coverage badge). Only the ZMQ build of the
-property and fuzz runs is shown.
+`cargo xtask pages-inputs` downloads the newest artifact of each and
+`cargo xtask quality-site` (`xtask/src/quality.rs`) turns them into the
+page, its `data.json` and `badge.json` (the README's coverage badge). Only
+the ZMQ build of the property and fuzz runs is shown.
 
 To see a local run the same way, after `cargo xtask coverage all`:
 
 ```sh
-python3 scripts/quality-site.py --coverage target/coverage --out target/quality
-python3 -m http.server --directory target/quality 8000   # then open http://127.0.0.1:8000
+cargo xtask quality-site --coverage target/coverage --out target/quality
+cargo xtask serve target/quality   # then open http://127.0.0.1:8000
 ```
 
 The page reads `data.json`, so it needs a web server rather than a file
-opened from disk. The screenshot gallery needs Pillow
-(`apt install python3-pil`).
+opened from disk.
 
 Rust metrics include production source in Cargo workspace crates, with a
 separate `mock-woocommerce` row. Browser metrics include checked-in

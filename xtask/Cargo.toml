@@ -12,6 +12,9 @@ hex = "0.4"
 getrandom = "0.4"
 p384 = { version = "0.14.0", features = ["ecdsa"] }
 snp-attest = { path = "../crates/snp-attest", default-features = false }
+# quality-site: the screenshot gallery's thumbnails, and the JUnit reports.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+roxmltree = "0.21"
 
 [lints]
 workspace = true

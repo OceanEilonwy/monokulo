@@ -1,3 +1,4 @@
+mod quality;
 mod rounds;
 mod snp;
 mod stress;
@@ -20,7 +21,7 @@ fn root() -> PathBuf {
 }
 
 fn help() {
-    println!("Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|open>\n       cargo xtask stress <ci|full|scale|open> [driver]\n       cargo xtask stress rounds\n       cargo xtask snp-id-key [--from-env]\n       cargo xtask snp-id-block ...\n\n\
+    println!("Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|open>\n       cargo xtask stress <ci|full|scale|open> [driver]\n       cargo xtask stress rounds\n       cargo xtask snp-id-key [--from-env]\n       cargo xtask snp-id-block ...\n       cargo xtask quality-site --out DIR [...]\n       cargo xtask pages-inputs DIR\n       cargo xtask serve DIR [PORT]\n\n\
         rust          Refresh nightly and cargo-llvm-cov; run workspace tests and collect Rust coverage\n\
         browser       Run deterministic Playwright tests and collect authored browser source coverage\n\
         woocommerce   Run default PHPUnit tests in wp-env and collect plugin coverage\n\
@@ -40,6 +41,7 @@ fn help() {
                       Sign an engine image's ID block with SNP_ID_KEY (deploy/sev-snp/README.md)\n\
         [driver]      The scanner entry point to measure (default: the production one)\n\
         --help        Show this help");
+    println!("{}", quality::HELP);
 }
 
 /// The collectors `all` runs, in the order the index and validation expect.
@@ -726,6 +728,9 @@ fn main() -> ExitCode {
         ["snp-id-key"] => snp::id_key(&root(), false).map_err(io::Error::other),
         ["snp-id-key", "--from-env"] => snp::id_key(&root(), true).map_err(io::Error::other),
         ["snp-id-block", rest @ ..] => snp::id_block(rest).map_err(io::Error::other),
+        ["quality-site", rest @ ..] => quality::site(&root(), rest),
+        ["pages-inputs", rest @ ..] => quality::pages_inputs(rest),
+        ["serve", rest @ ..] => quality::serve(rest),
         _ => {
             help();
             return ExitCode::FAILURE;
