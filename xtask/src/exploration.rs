@@ -79,7 +79,7 @@ impl fmt::Display for Build {
 /// A campaign's verdict in report.json; `running` until it has one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-enum Status {
+pub(crate) enum Status {
     Running,
     Passed,
     Failed,
@@ -90,6 +90,17 @@ enum Status {
 impl Status {
     fn is_terminal(self) -> bool {
         self != Status::Running
+    }
+
+    /// As report.json writes it.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Status::Running => "running",
+            Status::Passed => "passed",
+            Status::Failed => "failed",
+            Status::InvalidEvidence => "invalid-evidence",
+            Status::InsufficientExploration => "insufficient-exploration",
+        }
     }
 }
 

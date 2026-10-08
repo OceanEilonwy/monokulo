@@ -80,7 +80,7 @@ const ALL: [Component; 3] = [Component::Rust, Component::Browser, Component::Woo
 /// How a collector ended; `unavailable` is a collector that left no result.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum Status {
+pub(crate) enum Status {
     Passed,
     Failed,
     Unavailable,

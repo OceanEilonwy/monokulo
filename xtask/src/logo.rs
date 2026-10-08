@@ -390,7 +390,7 @@ fn rust_module() -> String {
     format!(
         "//! The Monokulo mark's drawings for inline use. {GENERATED_NOTE}\n//!\n//! Each is the inside of a `viewBox=\"0 0 64 64\"` SVG. Lines are\n//! `currentColor`; the facets take the `--logo-*` roles in theme.css.\n\n/// 48px and up: facet lines and the chain.\npub const FULL: &str = r##\"{}\"##;\n\n/// Under 48px, beside the name: no facet lines, fewer and heavier chain links.\npub const SMALL: &str = r##\"{}\"##;\n",
         drawing(Kind::Full, &INLINE, "monokulo-lens-full", ""),
-        drawing(Kind::Small, &INLINE, "monokulo-lens-small", "")
+        small()
     )
 }
 
@@ -402,6 +402,12 @@ fn ts_module() -> String {
     format!(
         "// The Monokulo mark's loading drawing. {GENERATED_NOTE}\n// Lines are currentColor; the facets take the --logo-* roles in theme.css.\n// The `.logo-glow` group is the animation; hide it for reduced motion.\nexport const LOADING_MARK = '{svg}';\n"
     )
+}
+
+/// The small mark's drawing, for a page rendered with it inline: the inside
+/// of a `viewBox="0 0 64 64"` SVG.
+pub(crate) fn small() -> String {
+    drawing(Kind::Small, &INLINE, "monokulo-lens-small", "")
 }
 
 /// A page with `<!-- logo:small -->` / `<!-- logo:full -->` markers before
@@ -417,7 +423,7 @@ fn web_page(text: &str, markers: usize, name: &str) -> io::Result<String> {
     Ok(marker
         .replace_all(text, |c: &regex::Captures| {
             let mark = if &c[2] == "small" {
-                drawing(Kind::Small, &INLINE, "monokulo-lens-small", "")
+                small()
             } else {
                 drawing(Kind::Full, &INLINE, "monokulo-lens-full", "")
             };
@@ -438,12 +444,11 @@ fn render(path: &str, old: &str) -> io::Result<String> {
         "crates/monokulo/src/views/logo_art.rs" => rust_module(),
         "crates/monokulo/pos-ui/src/logo.ts" => ts_module(),
         "web/index.html" => web_page(old, 2, path)?,
-        "web/pages/quality/index.html" => web_page(old, 1, path)?,
         _ => unreachable!("{path} is not a logo output"),
     })
 }
 
-const OUTPUTS: [&str; 9] = [
+const OUTPUTS: [&str; 8] = [
     "crates/monokulo/static/logo.svg",
     "docs/readme/logo.svg",
     "docs/readme/logo-dark.svg",
@@ -452,7 +457,6 @@ const OUTPUTS: [&str; 9] = [
     "crates/monokulo/src/views/logo_art.rs",
     "crates/monokulo/pos-ui/src/logo.ts",
     "web/index.html",
-    "web/pages/quality/index.html",
 ];
 
 /// Writes every output under `root` that differs from what the mark draws.

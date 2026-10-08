@@ -141,11 +141,6 @@ pub(crate) fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> io::R
     write_atomically(path, &text)
 }
 
-/// `write_json` without the whitespace, for data a page downloads.
-pub(crate) fn write_json_compact<T: Serialize + ?Sized>(path: &Path, value: &T) -> io::Result<()> {
-    write_atomically(path, &serde_json::to_vec(value)?)
-}
-
 /// Every file under `dir`, sorted, so a search finds the same one each time.
 /// Folders `prune` says yes to are left out, with everything under them.
 pub(crate) fn files_under(

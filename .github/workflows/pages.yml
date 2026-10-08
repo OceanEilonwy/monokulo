@@ -33,7 +33,7 @@ on:
     branches: [main]
     paths:
       - 'web/pages/**'
-      - 'xtask/src/pages.rs'
+      - 'xtask/src/pages/**'
       - 'xtask/Cargo.toml'
       - 'crates/monokulo/src/views/theme.css'
       - '.github/workflows/pages.yml'
