@@ -675,6 +675,24 @@ impl EngineClient {
         .parsed()
     }
 
+    /// `PUT /api/v1/admin/tenant/wallet` — changes the wallet `sk`'s store
+    /// takes payments into. The store's orders on the old wallet keep being
+    /// watched with its keys; the engine refuses (`409`) a wallet on another
+    /// network.
+    pub async fn change_wallet(
+        &self,
+        sk: &RawToken,
+        wallet_id: &EngineWalletId,
+    ) -> Result<WalletChangeAnswer, EngineClientError> {
+        self.send(
+            Call::new(Method::PUT, "/api/v1/admin/tenant/wallet")
+                .store(sk)
+                .json(&serde_json::json!({ "wallet_id": wallet_id.as_str() })),
+        )
+        .await?
+        .parsed()
+    }
+
     /// `DELETE /api/v1/admin/tenant` — disables the tenant that
     /// owns `sk` and drops its keys from custody. Used when a tenant was
     /// provisioned but the connection that would own it couldn't be saved:
@@ -1140,6 +1158,14 @@ pub struct TenantView {
     /// engine older than part 5.
     #[serde(default)]
     pub key_custody_backend: Option<String>,
+}
+
+/// Mirrors the engine's own `WalletChangeView`.
+#[derive(Debug, Deserialize)]
+pub struct WalletChangeAnswer {
+    pub tenant: TenantView,
+    /// The store's orders on the wallet it left, still watched there.
+    pub orders_on_previous_wallet: u64,
 }
 
 /// Mirrors the engine's own `OrderView` (`src/http/admin.rs` at the repo

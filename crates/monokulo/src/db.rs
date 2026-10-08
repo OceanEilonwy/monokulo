@@ -115,6 +115,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/0030_dashboard_order_requests.sql"),
     ),
     (31, include_str!("../migrations/0031_wallets.sql")),
+    (
+        32,
+        include_str!("../migrations/0032_store_wallet_periods.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -680,10 +684,35 @@ pub struct WalletSummary {
 /// One entry in a wallet's history (`wallet_events`).
 pub struct WalletEventRow {
     pub at: i64,
-    /// `created`, `imported`, `renamed` (detail: the old name) or
-    /// `store_connected` (detail: the store's id).
+    /// `created`, `imported`, `renamed` (detail: the old name),
+    /// `store_connected`, `store_changed_to` (a store changed to this
+    /// wallet) or `store_changed_away` (a store changed to another one);
+    /// the store ones' detail is the store's id.
     pub kind: String,
     pub detail: String,
+}
+
+/// A stretch of time a store took payments into one wallet
+/// (`store_wallet_periods`, migration 0032).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreWalletPeriod {
+    pub connection_id: ConnectionId,
+    /// `None` once the wallet was deleted.
+    pub wallet_id: Option<WalletId>,
+    pub wallet_name: Option<String>,
+    pub from: i64,
+    /// `None` for the store's current wallet.
+    pub until: Option<i64>,
+    /// Orders the store made in the period.
+    pub orders: u64,
+}
+
+/// Changing a store's wallet (`Db::change_store_wallet`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ChangeStoreWallet {
+    Changed,
+    /// The store already takes payments into that wallet.
+    Unchanged,
 }
 
 pub enum DeleteWallet {
@@ -1172,6 +1201,10 @@ impl Db {
             "INSERT INTO wallet_events (wallet_id, at_utc, kind, detail) VALUES (?1, ?2, 'store_connected', ?3)",
             params![wallet_id, created_at, id],
         )?;
+        tx.execute(
+            "INSERT INTO store_wallet_periods (connection_id, wallet_id, from_utc) VALUES (?1, ?2, ?3)",
+            params![id, wallet_id, created_at],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -1383,9 +1416,105 @@ impl Db {
                 "INSERT INTO wallet_events (wallet_id, at_utc, kind, detail) VALUES (?1, ?2, 'store_connected', ?3)",
                 params![wallet_id, now, connection_id],
             )?;
+            // It has used the wallet since it was connected.
+            tx.execute(
+                "INSERT INTO store_wallet_periods (connection_id, wallet_id, from_utc)
+                 SELECT id, wallet_id, created_at_utc FROM store_connections WHERE id = ?1",
+                params![connection_id],
+            )?;
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Records that a store now takes payments into `wallet_id` (the engine
+    /// has made the change): its current period ends and the next begins,
+    /// and both wallets' histories say so.
+    pub fn change_store_wallet(
+        &self,
+        connection_id: &ConnectionId,
+        wallet_id: &WalletId,
+        now: i64,
+    ) -> Result<ChangeStoreWallet> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let old: Option<WalletId> = tx.query_row(
+            "SELECT wallet_id FROM store_connections WHERE id = ?1",
+            params![connection_id],
+            |row| row.get(0),
+        )?;
+        if old.as_ref() == Some(wallet_id) {
+            return Ok(ChangeStoreWallet::Unchanged);
+        }
+        tx.execute(
+            "UPDATE store_connections SET wallet_id = ?2 WHERE id = ?1",
+            params![connection_id, wallet_id],
+        )?;
+        tx.execute(
+            "UPDATE store_wallet_periods SET until_utc = ?2 WHERE connection_id = ?1 AND until_utc IS NULL",
+            params![connection_id, now],
+        )?;
+        tx.execute(
+            "INSERT INTO store_wallet_periods (connection_id, wallet_id, from_utc) VALUES (?1, ?2, ?3)",
+            params![connection_id, wallet_id, now],
+        )?;
+        if let Some(old) = &old {
+            tx.execute(
+                "INSERT INTO wallet_events (wallet_id, at_utc, kind, detail) VALUES (?1, ?2, 'store_changed_away', ?3)",
+                params![old, now, connection_id],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO wallet_events (wallet_id, at_utc, kind, detail) VALUES (?1, ?2, 'store_changed_to', ?3)",
+            params![wallet_id, now, connection_id],
+        )?;
+        tx.commit()?;
+        Ok(ChangeStoreWallet::Changed)
+    }
+
+    /// The wallets a store has taken payments into, newest first, with how
+    /// many orders it made in each period.
+    pub fn store_wallet_periods(
+        &self,
+        connection_id: &ConnectionId,
+    ) -> Result<Vec<StoreWalletPeriod>> {
+        self.wallet_periods("p.connection_id = ?1", params![connection_id])
+    }
+
+    /// Every store's periods on one wallet, newest first.
+    pub fn wallet_store_periods(&self, wallet_id: &WalletId) -> Result<Vec<StoreWalletPeriod>> {
+        self.wallet_periods("p.wallet_id = ?1", params![wallet_id])
+    }
+
+    fn wallet_periods(
+        &self,
+        condition: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Vec<StoreWalletPeriod>> {
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT p.connection_id, p.wallet_id, w.name, p.from_utc, p.until_utc,
+                (SELECT COUNT(*) FROM order_currency_metadata m
+                 WHERE m.connection_id = p.connection_id AND m.created_at_utc >= p.from_utc
+                   AND (p.until_utc IS NULL OR m.created_at_utc < p.until_utc)) AS orders
+             FROM store_wallet_periods p LEFT JOIN wallets w ON w.id = p.wallet_id
+             WHERE {condition}
+             ORDER BY p.from_utc DESC, p.rowid DESC"
+        ))?;
+        let rows = stmt
+            .query_map(params, |row| {
+                Ok(StoreWalletPeriod {
+                    connection_id: row.get(0)?,
+                    wallet_id: row.get(1)?,
+                    wallet_name: row.get(2)?,
+                    from: row.get(3)?,
+                    until: row.get(4)?,
+                    orders: row.get::<_, i64>(5)? as u64,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Direct row lookup by id - used by tests to confirm what actually

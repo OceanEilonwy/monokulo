@@ -150,6 +150,12 @@ test('an on/off setting is a switch: on and off both save', async ({ page }) => 
 
   await expect(input).not.toBeChecked();
   await expect(control.locator('.switch-off')).toBeVisible();
+  // At the right edge of its setting, where the other controls end.
+  const [box, field] = await Promise.all([
+    control.boundingBox(),
+    control.locator('xpath=ancestor::div[contains(@class, "setting-field")][1]').boundingBox(),
+  ]);
+  expect(Math.abs(box.x + box.width - (field.x + field.width))).toBeLessThan(1);
   await control.click();
   await expect(input).toBeChecked();
   await expect(control.locator('.switch-on')).toBeVisible();

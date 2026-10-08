@@ -976,6 +976,112 @@ pub(super) async fn render_store_settings_page(
     created_webhook_signing_secret: Option<String>,
     from: Option<(StoreSection, FxRequest)>,
 ) -> Response {
+    render_store_settings_page_with(
+        state,
+        row,
+        user,
+        settings_error,
+        created_webhook_signing_secret,
+        from,
+        WalletState::default(),
+    )
+    .await
+}
+
+/// What the Wallet section shows beyond the store's wallets: a change
+/// waiting to be confirmed, or one just made.
+#[derive(Default)]
+pub(super) struct WalletState {
+    pending: Option<views::store_settings::PendingWalletChange>,
+    changed: Option<String>,
+}
+
+/// The Wallet section's data: the store's wallet, the account's wallets to
+/// change to, and its history.
+async fn store_wallet_view(
+    state: &AppState,
+    row: &crate::db::StoreConnectionRow,
+    user: &UserRow,
+    extra: WalletState,
+) -> views::store_settings::StoreWalletView {
+    let (user_id, connection_id) = (user.id.clone(), row.id.clone());
+    let read = state
+        .db
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                db.list_wallets(&user_id)?,
+                db.store_wallet_periods(&connection_id)?,
+            ))
+        })
+        .await;
+    let Ok((wallets, periods)) = read else {
+        return views::store_settings::StoreWalletView {
+            pending: extra.pending,
+            changed: extra.changed,
+            ..Default::default()
+        };
+    };
+    let current = row.wallet_id.as_ref().and_then(|id| {
+        let wallet = wallets.iter().find(|w| &w.wallet.id == id)?;
+        let since = periods
+            .iter()
+            .find(|p| p.until.is_none())
+            .map_or(row.created_at, |p| p.from);
+        Some(views::store_settings::CurrentWallet {
+            id: id.to_string(),
+            name: wallet.wallet.name.clone(),
+            since,
+        })
+    });
+    let network = current
+        .as_ref()
+        .and_then(|c| wallets.iter().find(|w| w.wallet.id.as_str() == c.id))
+        .map(|w| w.wallet.network.clone());
+    let mut choices: Vec<views::store_settings::WalletChoice> = wallets
+        .iter()
+        .map(|w| {
+            let is_current = row.wallet_id.as_ref() == Some(&w.wallet.id);
+            views::store_settings::WalletChoice {
+                id: w.wallet.id.to_string(),
+                name: w.wallet.name.clone(),
+                short_address: views::wallets::short_address(&w.wallet.primary_address),
+                current: is_current,
+                other_network: network
+                    .as_ref()
+                    .filter(|n| **n != w.wallet.network)
+                    .map(|_| w.wallet.network.clone()),
+                other_stores: w.store_count.saturating_sub(u64::from(is_current)),
+            }
+        })
+        .collect();
+    choices.sort_by_key(|c| !c.current);
+    views::store_settings::StoreWalletView {
+        current,
+        choices,
+        pending: extra.pending,
+        history: periods
+            .into_iter()
+            .map(|p| views::store_settings::WalletPeriodView {
+                wallet_id: p.wallet_id.map(|id| id.to_string()),
+                wallet_name: p.wallet_name,
+                from: p.from,
+                until: p.until,
+                orders: p.orders,
+            })
+            .collect(),
+        changed: extra.changed,
+    }
+}
+
+async fn render_store_settings_page_with(
+    state: &AppState,
+    row: super::OwnedStore,
+    user: &UserRow,
+    settings_error: Option<String>,
+    created_webhook_signing_secret: Option<String>,
+    from: Option<(StoreSection, FxRequest)>,
+    wallet_state: WalletState,
+) -> Response {
     let chrome = super::page_chrome(
         state,
         Some(user),
@@ -1107,6 +1213,7 @@ pub(super) async fn render_store_settings_page(
     };
 
     let row = row.into_row();
+    let wallet = store_wallet_view(state, &row, user, wallet_state).await;
     let view_model = views::store_settings::StoreSettingsViewModel {
         store: Some(views::store_settings::StoreSettingsData {
             clock: chrome.clock.clone(),
@@ -1130,6 +1237,7 @@ pub(super) async fn render_store_settings_page(
             key_storage,
             active_section: from.map(|(section, _)| section),
             client_logging,
+            wallet,
         }),
     };
     if let (Some((section, FxRequest(true))), Some(store)) = (from, &view_model.store) {
@@ -1736,6 +1844,189 @@ pub async fn move_key_storage(
                 .await
         }
     }
+}
+
+#[derive(Deserialize)]
+pub struct ChangeWalletForm {
+    #[serde(default)]
+    pub wallet_id: String,
+    /// `yes` once the change was confirmed; without it the section asks.
+    #[serde(default)]
+    pub confirm: String,
+}
+
+/// `POST /dashboard/stores/{id}/settings/wallet` - changes the wallet the
+/// store takes payments into (docs/wallets.md, "Changing a store's
+/// wallet"). Picking a wallet first shows what will happen, with the
+/// store's open orders counted; confirming makes the change in the engine
+/// and then records the new period here. A wallet on another network is
+/// refused, here and by the engine.
+pub async fn change_store_wallet(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
+    Path(id): Path<crate::db::ConnectionId>,
+    Form(form): Form<ChangeWalletForm>,
+) -> Response {
+    const SECTION: StoreSection = StoreSection::Wallet;
+    let row = match load_owned_connection(&state.db, &user, &id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let refuse = |message: String, row| {
+        let (state, user) = (&state, &user);
+        async move {
+            render_store_settings_page(state, row, user, Some(message), None, Some((SECTION, fx)))
+                .await
+        }
+    };
+    let (user_id, wallet_id) = (
+        user.id.clone(),
+        crate::db::WalletId::new(form.wallet_id.trim().to_owned()),
+    );
+    let chosen = state
+        .db
+        .read(move |db| db.get_wallet(&user_id, &wallet_id))
+        .await
+        .ok()
+        .flatten();
+    let Some(chosen) = chosen else {
+        return refuse("Choose one of your wallets.".to_owned(), row).await;
+    };
+    let current = match &row.wallet_id {
+        Some(current_id) => {
+            let (user_id, current_id) = (user.id.clone(), current_id.clone());
+            state
+                .db
+                .read(move |db| db.get_wallet(&user_id, &current_id))
+                .await
+                .ok()
+                .flatten()
+        }
+        None => None,
+    };
+    if current.as_ref().is_some_and(|c| c.id == chosen.id) {
+        // Picked the one it already uses: nothing to ask.
+        return render_store_settings_page(&state, row, &user, None, None, Some((SECTION, fx)))
+            .await;
+    }
+    if let Some(current) = &current {
+        if current.network != chosen.network {
+            return refuse(
+                format!(
+                    "{} is a {} wallet and this store takes {} payments. A store's network can't change.",
+                    chosen.name, chosen.network, current.network
+                ),
+                row,
+            )
+            .await;
+        }
+    }
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
+        Ok(sk) => sk,
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if form.confirm != "yes" {
+        let open_orders = state
+            .engine
+            .client
+            .list_orders_page(&sk, true, None, 200, 0)
+            .await
+            .ok()
+            .map(|orders| orders.len());
+        let pending = views::store_settings::PendingWalletChange {
+            wallet_id: chosen.id.to_string(),
+            wallet_name: chosen.name.clone(),
+            open_orders,
+        };
+        return render_store_settings_page_with(
+            &state,
+            row,
+            &user,
+            None,
+            None,
+            fx.0.then_some((SECTION, fx)),
+            WalletState {
+                pending: Some(pending),
+                changed: None,
+            },
+        )
+        .await;
+    }
+    let moved = match state
+        .engine
+        .client
+        .change_wallet(&sk, &chosen.engine_wallet_id)
+        .await
+    {
+        Ok(answer) => answer.orders_on_previous_wallet,
+        Err(EngineClientError::EngineError { status, message })
+            if status == reqwest::StatusCode::CONFLICT
+                || status == reqwest::StatusCode::NOT_FOUND =>
+        {
+            return refuse(format!("The wallet couldn't be changed: {message}."), row).await;
+        }
+        Err(e) => {
+            tracing::error!(store.id = %row.id, error = %e, "the engine could not change a store's wallet");
+            return refuse(
+                "The wallet couldn't be changed right now. Nothing changed; try again in a minute."
+                    .to_owned(),
+                row,
+            )
+            .await;
+        }
+    };
+    let (connection_id, wallet_id) = (row.id.clone(), chosen.id.clone());
+    if let Err(e) = state
+        .db
+        .write(move |db| db.change_store_wallet(&connection_id, &wallet_id, crate::now_unix()))
+        .await
+    {
+        // The engine changed it: the next page load shows the engine's
+        // wallet, so say so rather than pretending nothing happened.
+        tracing::error!(store.id = %row.id, error = %e, "the store's new wallet could not be recorded");
+    }
+    super::status_page::invalidate_status_cache(&state.engine);
+    let changed = match (&current, moved) {
+        (Some(current), 0) => format!(
+            "Changed to {}. No orders were left on {}.",
+            chosen.name, current.name
+        ),
+        (Some(current), 1) => format!(
+            "Changed to {}. The 1 order it took on {} is still watched there.",
+            chosen.name, current.name
+        ),
+        (Some(current), n) => format!(
+            "Changed to {}. The {n} orders it took on {} are still watched there.",
+            chosen.name, current.name
+        ),
+        (None, _) => format!("This store now takes payments into {}.", chosen.name),
+    };
+    let row = match load_owned_connection(&state.db, &user, &id).await {
+        Ok(Some(fresh)) => fresh,
+        _ => row,
+    };
+    if !fx.0 {
+        return redirect_302(&format!(
+            "/dashboard/stores/{id}/settings?saved={}#{}",
+            SECTION.id(),
+            SECTION.id()
+        ));
+    }
+    render_store_settings_page_with(
+        &state,
+        row,
+        &user,
+        None,
+        None,
+        Some((SECTION, fx)),
+        WalletState {
+            pending: None,
+            changed: Some(changed),
+        },
+    )
+    .await
 }
 
 #[derive(Deserialize)]

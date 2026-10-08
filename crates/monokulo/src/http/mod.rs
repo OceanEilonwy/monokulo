@@ -510,6 +510,10 @@ pub fn build_router(state: AppState) -> Router {
             post(orders::move_key_storage),
         )
         .route(
+            "/dashboard/stores/{id}/settings/wallet",
+            post(orders::change_store_wallet),
+        )
+        .route(
             "/dashboard/stores/{id}/embed-warning/dismiss",
             post(embed_domains::dismiss_embed_warning),
         )

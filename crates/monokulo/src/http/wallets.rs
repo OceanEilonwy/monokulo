@@ -538,15 +538,21 @@ async fn render_detail(
 ) -> Response {
     let chrome = super::page_chrome(state, Some(user), "/dashboard/wallets").await;
     let (user_id, wallet_id) = (user.id.clone(), wallet.id.clone());
-    let (stores, events) = state
+    // Every store that has used the wallet: those on it now, and those
+    // that changed to another (`store_wallet_periods`).
+    let (stores, periods, events) = state
         .db
         .read(move |db| {
+            let periods = db.wallet_store_periods(&wallet_id)?;
             let stores: Vec<_> = db
                 .list_store_connections_for_user(&user_id)?
                 .into_iter()
-                .filter(|s| s.wallet_id.as_ref() == Some(&wallet_id))
+                .filter(|s| {
+                    s.wallet_id.as_ref() == Some(&wallet_id)
+                        || periods.iter().any(|p| p.connection_id == s.id)
+                })
                 .collect();
-            Ok::<_, crate::db::DbError>((stores, db.wallet_events(&wallet_id)?))
+            Ok::<_, crate::db::DbError>((stores, periods, db.wallet_events(&wallet_id)?))
         })
         .await
         .unwrap_or_default();
@@ -573,14 +579,29 @@ async fn render_detail(
                     Some((id, name)) => html! { "Store " a href=(format!("/dashboard/stores/{id}")) { (name) } " connected" },
                     None => html! { "A store connected" },
                 },
+                "store_changed_to" => match store_name(&event.detail) {
+                    Some((id, name)) => html! { "Store " a href=(format!("/dashboard/stores/{id}")) { (name) } " changed to this wallet" },
+                    None => html! { "A store changed to this wallet" },
+                },
+                "store_changed_away" => match store_name(&event.detail) {
+                    Some((id, name)) => html! { "Store " a href=(format!("/dashboard/stores/{id}")) { (name) } " changed to another wallet" },
+                    None => html! { "A store changed to another wallet" },
+                },
                 other => html! { (other) },
             };
             (event.at, WalletEvent { when: chrome.clock.text(event.at), what })
         })
         .collect();
     // Payments into the wallet: its stores' orders that have received
-    // something, newest first.
+    // something, made while the store used this wallet, newest first.
     for store in &stores {
+        let on_this_wallet = |at: i64| {
+            periods.iter().any(|p| {
+                p.connection_id == store.id
+                    && at >= p.from
+                    && p.until.is_none_or(|until| at < until)
+            })
+        };
         let Ok(sk) = super::orders::decrypt_sk(&state.encryption_key, store) else {
             continue;
         };
@@ -590,7 +611,7 @@ async fn render_detail(
         let name = super::orders::display_name_for(&store.site_url);
         for order in orders
             .into_iter()
-            .filter(|o| o.amount_received_piconero > 0)
+            .filter(|o| o.amount_received_piconero > 0 && on_this_wallet(o.created_at))
         {
             let link = format!("/dashboard/stores/{}/orders/{}", store.id, order.order_id);
             history.push((
@@ -612,11 +633,33 @@ async fn render_detail(
         name_field: name_field.unwrap_or_else(|| wallet.name.clone()),
         stores: stores
             .iter()
+            .filter(|s| s.wallet_id.as_ref() == Some(&wallet.id))
             .map(|s| WalletStore {
                 id: s.id.to_string(),
                 name: super::orders::display_name_for(&s.site_url),
+                until: None,
             })
             .collect(),
+        past_stores: periods
+            .iter()
+            .filter_map(|p| {
+                let until = p.until?;
+                let store = stores.iter().find(|s| {
+                    s.id == p.connection_id && s.wallet_id.as_ref() != Some(&wallet.id)
+                })?;
+                Some(WalletStore {
+                    id: store.id.to_string(),
+                    name: super::orders::display_name_for(&store.site_url),
+                    until: Some(chrome.clock.text(until)),
+                })
+            })
+            .fold(Vec::new(), |mut seen: Vec<WalletStore>, store| {
+                // Newest first: a store that left twice is listed once.
+                if !seen.iter().any(|s| s.id == store.id) {
+                    seen.push(store);
+                }
+                seen
+            }),
         history: history.into_iter().map(|(_, e)| e).collect(),
         wallet,
         error,
@@ -1438,6 +1481,348 @@ mod tests {
         let wallets = wallets_of(&state, "legacy@example.com");
         assert_eq!(wallets.len(), 1);
         assert_eq!(wallets[0].store_count, 1);
+    }
+
+    // -- Changing a store's wallet ------------------------------------------
+
+    /// Brings in a second wallet, with keys of its own.
+    async fn bring_in_another(router: &Router, cookie: &str, name: &str, seed: u8) {
+        let made = made_in_the_browser(seed);
+        let response = router
+            .clone()
+            .oneshot(post(
+                "/dashboard/wallets/import",
+                Some(cookie),
+                &[
+                    ("name", name),
+                    ("view_key_hex", &made.view_key_hex),
+                    ("spend_pubkey_hex", &made.spend_pubkey_hex),
+                    ("network", "mainnet"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER, "{name}");
+    }
+
+    /// A store on `wallet`, its id.
+    async fn connect_store(router: &Router, cookie: &str, site: &str, wallet: &str) -> String {
+        let response = router
+            .clone()
+            .oneshot(post(
+                "/dashboard/connect",
+                Some(cookie),
+                &[
+                    ("site_url", site),
+                    ("wallet_id", wallet),
+                    ("base_currency", "XMR"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        location(&response)
+            .trim_start_matches("/dashboard/stores/")
+            .split(['/', '?'])
+            .next()
+            .unwrap()
+            .to_owned()
+    }
+
+    fn wallet_named(state: &AppState, email: &str, name: &str) -> crate::db::WalletRow {
+        wallets_of(state, email)
+            .into_iter()
+            .find(|w| w.wallet.name == name)
+            .unwrap()
+            .wallet
+    }
+
+    fn store_row(state: &AppState, id: &str) -> crate::db::StoreConnectionRow {
+        state
+            .db
+            .lock()
+            .get_store_connection_by_id(&crate::db::ConnectionId::new(id.to_owned()))
+            .unwrap()
+            .unwrap()
+    }
+
+    /// The whole change, without JavaScript: the store's settings show its
+    /// wallet as Current; picking another asks first, counting the open
+    /// order that stays behind; confirming changes it in the engine and
+    /// here, and both wallets and the store's history say so.
+    #[tokio::test]
+    async fn changing_a_stores_wallet_asks_first_then_records_it_everywhere() {
+        let (state, _engine) = real_engine_state().await;
+        let router = build_router(state.clone());
+        let email = "changer@example.com";
+        let (cookie, _) = sign_up(&router, email, None).await;
+        bring_in(&router, &cookie, "Copper Heron").await;
+        bring_in_another(&router, &cookie, "Cafe till", 30).await;
+        let copper = wallet_named(&state, email, "Copper Heron");
+        let cafe = wallet_named(&state, email, "Cafe till");
+        let store = connect_store(
+            &router,
+            &cookie,
+            "https://shop.example.com",
+            copper.id.as_str(),
+        )
+        .await;
+        let sk =
+            super::super::orders::decrypt_sk(&state.encryption_key, &store_row(&state, &store))
+                .unwrap();
+        let open = state
+            .engine
+            .client
+            .create_order(
+                &sk,
+                shared::xmr_amount::Piconero(1_000_000),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let settings = format!("/dashboard/stores/{store}/settings");
+        let html = body_text(get(&router, &settings, &cookie).await).await;
+        assert!(
+            html.contains(r#"id="wallet""#) && html.contains("data-settings-inline"),
+            "{html}"
+        );
+        assert!(html.contains("Payments go to"), "{html}");
+        assert!(
+            html.contains(&format!(
+                r#"value="{}" selected data-label="Copper Heron""#,
+                copper.id
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"data-chip="Current" data-chip-tone="current""#),
+            "{html}"
+        );
+
+        let action = format!("/dashboard/stores/{store}/settings/wallet");
+        let asked = router
+            .clone()
+            .oneshot(post(
+                &action,
+                Some(&cookie),
+                &[("wallet_id", cafe.id.as_str())],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(asked.status(), StatusCode::OK);
+        let html = body_text(asked).await;
+        assert!(html.contains("Change to Cafe till?"), "{html}");
+        assert!(
+            html.contains("The 1 order still open on Copper Heron keeps being paid into it"),
+            "{html}"
+        );
+        assert_eq!(
+            store_row(&state, &store).wallet_id.as_ref(),
+            Some(&copper.id),
+            "only asked"
+        );
+
+        let changed = router
+            .clone()
+            .oneshot(post(
+                &action,
+                Some(&cookie),
+                &[("wallet_id", cafe.id.as_str()), ("confirm", "yes")],
+            ))
+            .await
+            .unwrap();
+        let status = changed.status();
+        assert_eq!(status, StatusCode::FOUND, "{}", body_text(changed).await);
+        assert_eq!(store_row(&state, &store).wallet_id.as_ref(), Some(&cafe.id));
+        let tenant = state.engine.client.get_tenant(&sk).await.unwrap();
+        assert_eq!(tenant.wallet_id.as_ref(), Some(&cafe.engine_wallet_id));
+        assert_eq!(tenant.primary_address, cafe.primary_address);
+
+        let periods = state
+            .db
+            .lock()
+            .store_wallet_periods(&crate::db::ConnectionId::new(store.clone()))
+            .unwrap();
+        assert_eq!(periods.len(), 2);
+        assert_eq!(periods[0].wallet_id.as_ref(), Some(&cafe.id));
+        assert_eq!(periods[0].until, None);
+        assert_eq!(periods[1].wallet_id.as_ref(), Some(&copper.id));
+        assert_eq!(periods[1].until, Some(periods[0].from));
+
+        let html = body_text(get(&router, &settings, &cookie).await).await;
+        assert!(html.contains("Wallet history (2 wallets)"), "{html}");
+        assert!(
+            html.contains(r#"<tr class="current" aria-current="true">"#),
+            "{html}"
+        );
+        // The open order stays on Copper Heron, which can't go yet.
+        let copper_page = body_text(
+            get(
+                &router,
+                &format!("/dashboard/wallets/{}", copper.id),
+                &cookie,
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            copper_page.contains("changed to another wallet"),
+            "{copper_page}"
+        );
+        assert!(copper_page.contains("Before"), "{copper_page}");
+        let cafe_page =
+            body_text(get(&router, &format!("/dashboard/wallets/{}", cafe.id), &cookie).await)
+                .await;
+        assert!(cafe_page.contains("changed to this wallet"), "{cafe_page}");
+        let refused = router
+            .clone()
+            .oneshot(post(
+                &format!("/dashboard/wallets/{}/delete", copper.id),
+                Some(&cookie),
+                &[("confirm", "Copper Heron")],
+            ))
+            .await
+            .unwrap();
+        let html = body_text(refused).await;
+        assert!(html.contains("can still be paid into it"), "{html}");
+        assert!(wallets_of(&state, email)
+            .iter()
+            .any(|w| w.wallet.id == copper.id));
+
+        // New orders get the new wallet's addresses.
+        let after = state
+            .engine
+            .client
+            .create_order(
+                &sk,
+                shared::xmr_amount::Piconero(1_000_000),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_ne!(after.address, open.address);
+    }
+
+    /// With fixi, picking a wallet in the dropdown posts it at once and the
+    /// section comes back asking; refusals stay in the section.
+    #[tokio::test]
+    async fn the_wallet_section_asks_in_place_and_refuses_another_network() {
+        let (state, _engine) = real_engine_state().await;
+        let router = build_router(state.clone());
+        let email = "fixi-changer@example.com";
+        let (cookie, _) = sign_up(&router, email, None).await;
+        bring_in(&router, &cookie, "Copper Heron").await;
+        bring_in_another(&router, &cookie, "Cafe till", 31).await;
+        let copper = wallet_named(&state, email, "Copper Heron");
+        let cafe = wallet_named(&state, email, "Cafe till");
+        let store = connect_store(
+            &router,
+            &cookie,
+            "https://fixi.example.com",
+            copper.id.as_str(),
+        )
+        .await;
+        let action = format!("/dashboard/stores/{store}/settings/wallet");
+        let fx_post = |fields: &[(&str, &str)]| {
+            let mut request = post(&action, Some(&cookie), fields);
+            request
+                .headers_mut()
+                .insert("FX-Request", "true".parse().unwrap());
+            request
+        };
+
+        let response = router
+            .clone()
+            .oneshot(fx_post(&[("wallet_id", cafe.id.as_str())]))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(
+            html.starts_with(r#"<section id="wallet""#),
+            "only the section: {html}"
+        );
+        assert!(html.contains("Change to Cafe till?"), "{html}");
+        assert!(
+            html.contains("No orders are open on Copper Heron"),
+            "{html}"
+        );
+
+        // Picking the current one again asks nothing.
+        let html = body_text(
+            router
+                .clone()
+                .oneshot(fx_post(&[("wallet_id", copper.id.as_str())]))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(!html.contains("change-confirm"), "{html}");
+
+        // A stagenet wallet: shown, can't be picked, refused if sent.
+        let stagenet = crate::db::WalletId::new("w_stagenet".to_owned());
+        {
+            let db = state.db.lock();
+            let user = db.get_user_by_email(email).unwrap().unwrap();
+            db.create_wallet(&crate::db::NewWalletRow {
+                id: &stagenet,
+                user_id: &user.id,
+                name: "Quiet Lantern",
+                network: "stagenet",
+                primary_address: "5stagenetaddress",
+                engine_wallet_id: &crate::db::EngineWalletId::new("wl_x".to_owned()),
+                origin: crate::db::WalletOrigin::Imported,
+                backup: None,
+                created_at: 1,
+            })
+            .unwrap();
+        }
+        let page = body_text(
+            get(
+                &router,
+                &format!("/dashboard/stores/{store}/settings"),
+                &cookie,
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            page.contains(r#"value="w_stagenet" disabled data-label="Quiet Lantern""#),
+            "{page}"
+        );
+        assert!(
+            page.contains("stagenet: not this store&#39;s network")
+                || page.contains("stagenet: not this store's network"),
+            "{page}"
+        );
+        let response = router
+            .clone()
+            .oneshot(fx_post(&[("wallet_id", "w_stagenet"), ("confirm", "yes")]))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let html = body_text(response).await;
+        assert!(html.contains("network can"), "{html}");
+        assert_eq!(
+            store_row(&state, &store).wallet_id.as_ref(),
+            Some(&copper.id)
+        );
+
+        // Someone else's wallet, or none: refused the same way.
+        let response = router
+            .clone()
+            .oneshot(fx_post(&[("wallet_id", "w_nope"), ("confirm", "yes")]))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(body_text(response)
+            .await
+            .contains("Choose one of your wallets"));
     }
 
     #[test]

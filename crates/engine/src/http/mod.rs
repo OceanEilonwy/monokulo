@@ -224,6 +224,10 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
             axum::routing::put(admin::switch_key_custody),
         )
         .route(
+            "/api/v1/admin/tenant/wallet",
+            axum::routing::put(admin::change_wallet),
+        )
+        .route(
             "/api/v1/admin/tenant/key-custody/bundle",
             post(admin::move_key_bundle),
         )
@@ -702,7 +706,9 @@ impl From<StoreError> for ApiError {
     fn from(e: StoreError) -> Self {
         match e {
             StoreError::NotFound => Self::NotFound,
-            StoreError::AddressAllocation(e) | StoreError::InUse(e) => Self::Conflict(e),
+            StoreError::AddressAllocation(e) | StoreError::InUse(e) | StoreError::Refused(e) => {
+                Self::Conflict(e)
+            }
             StoreError::Sqlite(e) if is_transient_sqlite(&e) => Self::Unavailable(e.to_string()),
             StoreError::Sqlite(e) => Self::Internal(e.to_string()),
             StoreError::WorkerUnavailable(e) => Self::Unavailable(e),

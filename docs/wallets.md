@@ -50,13 +50,8 @@ Each: what was decided, what else was possible, and why.
    commands), so offering it alone would ship an untested half. The card is
    drawn with both marks and a *Coming soon* tag, unavailable with and without
    JavaScript. The design's hardware screens wait for that work.
-2. **Moving a store to another wallet is not built.** The design showed it on
-   the wallet field's states. A store's engine tenant holds its keys and has
-   handed out addresses from its wallet's counter; moving it means re-keying
-   the tenant and deciding what happens to its open orders, which is its own
-   piece of work. A store keeps the wallet it was made with; to change, make a
-   new store. Store settings say so implicitly: their key storage section now
-   explains that moving keys moves the wallet.
+2. **A store can change its wallet** (see "Changing a store's wallet"
+   below). It is called changing the wallet, never moving the store.
 3. **Signing up logs the new account in** (it used to send it to the login
    page) and goes on to wallet setup, carrying `next` (a plugin's connect
    page) through both, so someone arriving from WooCommerce ends up back at
@@ -72,11 +67,21 @@ Each: what was decided, what else was possible, and why.
    account has yet. Names are unique per account (ignoring case) so a picker
    is never ambiguous. The same keys can't be added twice to one account: the
    form says which wallet already has them.
-7. **Deleting a wallet** needs its name typed, and is refused while a store
-   uses it. The engine forgets it first, then monokulo.
-8. **A wallet's history** is its own events (made, brought in, renamed, store
-   connected) plus payments to its stores, read live from the engine (not
-   copied into monokulo).
+7. **Deleting a wallet** needs its name typed. It is refused while a store
+   uses it, or while an order on it can still be paid (a store that changed
+   wallet leaves its orders behind). The engine forgets it first, then
+   monokulo.
+8. **A wallet's history** is its own events plus payments to its stores,
+   read live from the engine (not copied into monokulo). Its events are:
+   - made;
+   - brought in;
+   - renamed;
+   - store connected;
+   - a store changed to it, or changed to another wallet.
+
+   The payments listed are those for orders a store made while it used the
+   wallet. The wallet page lists the stores on it now and, under "Before",
+   the stores that used it and changed to another wallet.
 9. **Skipping the backup is allowed**, behind the warning, a tick and typing
    `skip`. The wallet records `backup = skipped` and its ready page says the
    phrase wasn't saved. Refusing outright would leave someone who already has
@@ -167,3 +172,67 @@ Each: what was decided, what else was possible, and why.
     setup steps, with contrast checks in both themes.
 29. **Dead code**: the connect forms' network select helper
     (`templates::network_selected_flags`) went with the key fields.
+
+## Changing a store's wallet
+
+A store's settings start with a **Wallet** section:
+
+- the wallet payments go to, and since when;
+- a dropdown of the account's wallets, with the current one marked
+  Current;
+- the wallet history, folded under "Wallet history (N wallets)". The
+  history lists each wallet, from, until and how many orders the store made
+  then, with the current row highlighted.
+
+Picking another wallet asks first, saying how many orders are still open on
+the current wallet and that they keep being paid into it. Confirming makes
+the change. With fixi, picking posts at once and the question appears in
+place. Without JavaScript, **Change wallet** asks and the next button
+confirms.
+
+30. **Changing is allowed while orders are open.** Orders keep their
+    addresses on the old wallet and go on being watched with its keys, open
+    or closed within the grace period, so a late payment is still seen.
+31. **Only to a wallet on the same network.** Wallets on another network are
+    in the dropdown, unavailable, saying why. A form that sends one anyway
+    is refused, by monokulo and again by the engine.
+32. **The history lives in monokulo** (`store_wallet_periods`, migration
+    0032). Each store has one open period, its current wallet; a change
+    closes it and opens the next at the same moment. Existing stores got a
+    period from the day they were connected. A deleted wallet leaves its
+    periods behind, shown as "A deleted wallet". The order counts come from
+    monokulo's own order records, by when each order was made.
+33. **In the engine, orders are watched by a scan row** (migration 0029).
+    Each order records its wallet (`wallet_id`) and the tenant row whose
+    keys watch it (`scan_tenant_id`). A change does three things in one
+    transaction:
+    - it moves the store's orders to a scan-only row (`watches_for` = the
+      store) holding the old wallet's keys and starting at the store's
+      cursor;
+    - it gives the store the new wallet's keys and counter;
+    - it records when (`wallet_changed_at_utc`).
+
+    The scanner treats a scan row like any other tenant: its own cursor,
+    handle, windows and mempool claims. So nothing in the scanning code had
+    to learn about wallets. A scan row has keys for the API that nobody is
+    given, and is never listed or counted as a store.
+34. **One scan row per wallet a store left.** Changing back to a wallet and
+    away again reuses the row. Its indices stay unique because they come
+    from that wallet's one counter. `orders` is now unique on
+    `(scan_tenant_id, minor_index)`, not `(tenant_id, minor_index)`: a
+    store's orders on two wallets can share an index. That needed the
+    orders table rebuilt, which SQLite only allows with foreign keys off.
+    The migration runner turns them off for a migration whose first line is
+    `-- foreign_keys: off`, and refuses it if `PRAGMA foreign_key_check`
+    finds anything.
+35. **A scan already running when the wallet changes is not trusted for the
+    store.** It may have used the old keys, and an index it found may now
+    name a new order on the new wallet. So the change handler takes the
+    store's handle out of the map before committing. A result from a scan
+    that began at or before `wallet_changed_at_utc` is then not recorded
+    against the store: the scan row, starting from the store's cursor, looks
+    at those blocks itself. The mempool records with the time its scan
+    began, for the same check.
+36. **The txid lookup tries every row**: the store, then each wallet it left.
+37. **Deleting a store turns its scan rows off too.** Deleting a wallet
+    turns off the scan rows on it and drops their keys from key custody.

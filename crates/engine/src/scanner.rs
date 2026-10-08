@@ -273,7 +273,30 @@ pub(crate) async fn scan_for_tenants(
     .collect()
 }
 
-/// Persists a `ScanResult` against one tenant.
+/// Whether a scan that began at `scanned_at` must not be recorded against
+/// the tenant row: it changed wallet since, so the scan may have used the
+/// old wallet's keys, and an index it found may now name a new order on the
+/// new wallet (migration 0029). The scan-only row holding the old keys looks
+/// at the same transactions itself.
+fn stale_after_wallet_change(
+    store: &Store,
+    tenant_id: &crate::store::TenantId,
+    scan: &ScanResult,
+    scanned_at: i64,
+) -> Result<bool> {
+    if scan.matches.is_empty() || !store.wallet_changed_since(tenant_id, scanned_at)? {
+        return Ok(false);
+    }
+    tracing::info!(
+        store.id = %tenant_id,
+        tx.id = %scan.txid,
+        "a scan from before the store changed wallet found outputs - leaving them to the old wallet's watch"
+    );
+    Ok(true)
+}
+
+/// Persists a `ScanResult` against one tenant. `seen_at` is when the scan
+/// began (a round's start), or earlier.
 ///
 /// Purely synchronous - no `.await` anywhere in this function, so a `&Store`
 /// parameter here is never an issue. Returns the set of order ids touched, so
@@ -286,6 +309,9 @@ pub fn record_scan_match(
     block_height: Option<u64>,
 ) -> Result<std::collections::BTreeSet<crate::store::OrderId>> {
     let mut touched = std::collections::BTreeSet::new();
+    if stale_after_wallet_change(store, tenant_id, scan, seen_at)? {
+        return Ok(touched);
+    }
     for m in &scan.matches {
         let Some(order) = store.find_order_by_minor_index(tenant_id, m.subaddress_index.minor)?
         else {
@@ -332,6 +358,9 @@ pub(crate) fn stage_block_match(
     scan: &ScanResult,
     seen_at: i64,
 ) -> Result<()> {
+    if stale_after_wallet_change(store, tenant_id, scan, seen_at)? {
+        return Ok(());
+    }
     for m in &scan.matches {
         let Some(order) = store.find_order_by_minor_index(tenant_id, m.subaddress_index.minor)?
         else {

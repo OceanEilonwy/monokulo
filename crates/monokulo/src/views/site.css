@@ -867,6 +867,21 @@ mk-select[compact] .mk-popup { white-space: nowrap; }
 .switch input:checked + .switch-track::after { transform: translateX(1.1rem); }
 .switch input:focus-visible + .switch-track { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .switch input:disabled + .switch-track { opacity: .45; }
+/* On the settings page it sits at the right edge, where the other controls
+   end, its word before it. */
+.setting-field .switch { display: flex; width: fit-content; margin-left: auto; }
+.switch .switch-on, .switch .switch-off { order: -1; }
 .switch .switch-off, .switch input:checked ~ .switch-on { display: inline; }
 .switch .switch-on, .switch input:checked ~ .switch-off { display: none; }
 @media (prefers-reduced-motion: reduce) { .switch .switch-track, .switch .switch-track::after { transition: none; } }
+
+/* The store's Wallet section (`views::store_settings::wallet_section`):
+   shown in place, a confirmation before a change, the history folded. */
+.change-confirm { margin: var(--space-md) 0 0; padding: var(--space-md) var(--space-lg); border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--tint-neutral); }
+.change-confirm h3 { margin: 0 0 var(--space-xs); }
+.change-confirm p { margin: 0 0 var(--space-md); }
+.wallet-history { margin-top: var(--space-lg); }
+.wallet-history summary { cursor: pointer; font-weight: 600; }
+.wallet-history table { margin-top: var(--space-sm); }
+.wallet-history .num { text-align: right; }
+.wallet-history tr.current td { background: var(--tint-highlight); font-weight: 600; }

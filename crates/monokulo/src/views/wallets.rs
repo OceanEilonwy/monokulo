@@ -670,6 +670,9 @@ pub fn list_page(chrome: &PageChrome, wallets: &[WalletListItem]) -> Markup {
 pub struct WalletStore {
     pub id: String,
     pub name: String,
+    /// For a store that changed to another wallet: when, in the viewer's
+    /// time zone.
+    pub until: Option<String>,
 }
 
 pub struct WalletEvent {
@@ -681,6 +684,8 @@ pub struct WalletEvent {
 pub struct DetailViewModel {
     pub wallet: crate::db::WalletRow,
     pub stores: Vec<WalletStore>,
+    /// Stores that took payments into it before changing to another wallet.
+    pub past_stores: Vec<WalletStore>,
     pub history: Vec<WalletEvent>,
     pub error: Option<String>,
     pub notice: Option<String>,
@@ -736,13 +741,24 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
                         } @else {
                             p class="hint" { "No stores use this wallet." }
                         }
+                        @if !data.past_stores.is_empty() {
+                            h3 { "Before" }
+                            ul class="past-stores" {
+                                @for store in &data.past_stores {
+                                    li {
+                                        a href=(format!("/dashboard/stores/{}", store.id)) { (store.name) }
+                                        @if let Some(until) = &store.until { span class="muted" { " until " (until) } }
+                                    }
+                                }
+                            }
+                        }
                     }
                     section class="danger-zone" {
                         h2 { "Delete wallet" }
                         p { "Monokulo stops watching " (w.name) " and forgets its keys. The money in it stays yours, in your wallet app." }
                         @if in_use {
                             p class="field-error" id="delete-why" {
-                                (data.stores.len()) " store(s) still use this wallet. Delete or move them first."
+                                (data.stores.len()) " store(s) still use this wallet. Change their wallet, or delete them, first."
                             }
                             button type="button" disabled aria-describedby="delete-why" { "Delete wallet" }
                         } @else {

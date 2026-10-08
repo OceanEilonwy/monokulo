@@ -170,3 +170,61 @@ test('stores pick a wallet, and a wallet lists its stores and is renamed on its 
   await page.locator('form.rename-form input[name="name"]').fill(WALLET_NAME);
   await page.getByRole('button', { name: 'Rename' }).click();
 });
+
+test('a store changes its wallet: the dropdown asks first, then the history shows both', async ({ page }) => {
+  const { monokulo_url: base } = fixture();
+  await signInAsAdmin(page);
+  await saveNodes(page, { stagenet: [fakeNodeAddress()] });
+  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
+  await createStore(page, 'changing-shop.example.com');
+  const store = await finishStoreSetup(page);
+  // A second stagenet wallet, with keys of its own.
+  await page.goto(base + '/dashboard/wallets/import');
+  await page.locator('input[name="name"]').fill('Cafe till');
+  await page.locator('input[name="view_key_hex"]').fill('0707070707070707070707070707070707070707070707070707070707070707');
+  await page.locator('input[name="spend_pubkey_hex"]').fill('8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90');
+  await page.locator('select[name="network"]').selectOption('stagenet');
+  await page.getByRole('button', { name: 'Add wallet' }).click();
+  await expect(page.getByText(/is added|You're ready|already added this wallet/)).toBeVisible();
+
+  await page.goto(base + store + '/settings');
+  const section = page.locator('#wallet');
+  // Shown in place, not behind an Edit button.
+  await expect(section.getByRole('button', { name: /Edit/ })).toHaveCount(0);
+  await expect(section).toContainText(`Payments go to ${WALLET_NAME}`);
+  const wallet = section.getByRole('combobox', { name: 'Wallet' });
+  await expect(wallet).toContainText(WALLET_NAME);
+  await expect(wallet.locator('.tag-ok')).toHaveText('Current');
+
+  await wallet.click();
+  await section.getByRole('option', { name: /Cafe till/ }).click();
+  // Picking posts at once (fixi): the section asks.
+  await expect(section.getByRole('heading', { name: 'Change to Cafe till?' })).toBeVisible();
+  await expect(section).toContainText(`No orders are open on ${WALLET_NAME}`);
+  await captureCoverageStage(page, 'wallets-change-ask', test.info(), { group: GROUP });
+  await section.getByRole('button', { name: 'Change to Cafe till' }).click();
+  await expect(section.getByText('Changed to Cafe till.')).toBeVisible();
+  await expect(section).toContainText('Payments go to Cafe till');
+  await expect(section.getByRole('combobox', { name: 'Wallet' }).locator('.tag-ok')).toHaveText('Current');
+
+  const history = section.locator('details.wallet-history');
+  await expect(history.locator('summary')).toHaveText('Wallet history (2 wallets)');
+  await history.locator('summary').click();
+  await expect(history.locator('tbody tr')).toHaveCount(2);
+  await expect(history.locator('tbody tr.current')).toContainText('Cafe till');
+  await expect(history.locator('tbody tr').nth(1)).toContainText(WALLET_NAME);
+  await expect(history.locator('.tag')).toHaveCount(0);
+  await captureCoverageStage(page, 'wallets-change-history', test.info(), { group: GROUP });
+
+  // The old wallet's page lists the store under Before. Changing back
+  // leaves the helpers' wallet in use again.
+  await page.goto(base + '/dashboard/wallets');
+  await page.getByRole('link', { name: WALLET_NAME }).click();
+  await expect(page.getByText('changed to another wallet')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Before' })).toBeVisible();
+  await page.goto(base + store + '/settings');
+  await page.locator('#wallet').getByRole('combobox', { name: 'Wallet' }).click();
+  await page.locator('#wallet').getByRole('option', { name: new RegExp(WALLET_NAME) }).click();
+  await page.locator('#wallet').getByRole('button', { name: `Change to ${WALLET_NAME}` }).click();
+  await expect(page.locator('#wallet')).toContainText(`Payments go to ${WALLET_NAME}`);
+});

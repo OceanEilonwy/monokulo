@@ -68,7 +68,12 @@
 
   class MkSelect extends HTMLElement {
     connectedCallback() {
-      if (this.button) return;
+      // Moved within the page: watch the select again.
+      if (this.button) {
+        this.observer.observe(this.select, { attributes: true, childList: true, subtree: true, characterData: true });
+        this.sync();
+        return;
+      }
       const select = this.querySelector(':scope > select');
       if (!select) return;
       this.select = select;
