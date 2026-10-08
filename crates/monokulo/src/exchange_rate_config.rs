@@ -488,6 +488,7 @@ mod tests {
             fx_providers: fx_providers.iter().map(|p| p.to_string()).collect(),
             base_currency: "XMR".to_string(),
             fx_provider_settings: FxProviderSettings::default(),
+            wallet_id: None,
         }
     }
 

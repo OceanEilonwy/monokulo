@@ -2026,12 +2026,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(saved.status(), StatusCode::SEE_OTHER);
-        let after = body_text(get(&router, confirm, Some(&cookie)).await).await;
+        // The next request sees it: the link works now, so an account
+        // with no wallet yet is sent to set one up first, and back.
+        let after = get(&router, confirm, Some(&cookie)).await;
+        assert_eq!(after.status(), StatusCode::FOUND);
         assert!(
-            !after.contains("connect plugins yet"),
-            "the next request sees it: {after}"
+            after.headers()["location"]
+                .to_str()
+                .unwrap()
+                .starts_with("/dashboard/wallets/setup?next=%2Fconnect%2Fwoocommerce"),
+            "{:?}",
+            after.headers()["location"]
         );
-        assert!(after.contains(r#"name="view_key_hex""#), "{after}");
     }
 
     #[tokio::test]

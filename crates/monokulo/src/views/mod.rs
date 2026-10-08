@@ -40,6 +40,7 @@ pub mod status;
 pub mod store_detail;
 pub mod store_settings;
 pub mod time;
+pub mod wallets;
 
 /// Every colour, and the spacing, radius and type tokens: the only place a
 /// colour is defined (`theme_tests`).
@@ -544,6 +545,9 @@ fn nav(chrome: &PageChrome) -> Markup {
                 label for="nav-toggle" class="nav-toggle-label" aria-label="Menu" { "☰" }
                 div class="site-nav-links" {
                     a href="/dashboard" { "dashboard" }
+                    @if chrome.logged_in {
+                        a href="/dashboard/wallets" { "wallets" }
+                    }
                     @if chrome.is_admin {
                         a href="/dashboard/admin/settings" { "admin" }
                         a href="/dashboard/admin/invites" { "invites" }

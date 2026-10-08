@@ -34,6 +34,10 @@ pub struct SignupViewModel {
     /// is) - the raw, not-yet-validated token; real validation happens at
     /// submit time (`Db::redeem_invite_and_create_user`), never here.
     pub invite_token: String,
+    /// Where the visitor was going (a plugin's connect page), already
+    /// checked to be a path on this site: kept through sign-up and wallet
+    /// setup.
+    pub next: Option<String>,
 }
 
 pub struct LoginViewModel {
@@ -45,6 +49,18 @@ pub struct LoginViewModel {
     /// happens in `login_submit`, right before it's ever used as a
     /// redirect location, never here at render time).
     pub next: Option<String>,
+    /// The plugin's site, when `next` is a WooCommerce connect page.
+    pub connecting_site: Option<String>,
+}
+
+fn with_next(path: &str, next: Option<&str>) -> String {
+    match next {
+        Some(next) => format!(
+            "{path}?next={}",
+            url::form_urlencoded::byte_serialize(next.as_bytes()).collect::<String>()
+        ),
+        None => path.to_owned(),
+    }
 }
 
 pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
@@ -64,12 +80,15 @@ pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
             } @else {
                 form method="post" action="/dashboard/signup" {
                     input type="hidden" name="invite" value=(data.invite_token);
+                    @if let Some(next) = &data.next {
+                        input type="hidden" name="next" value=(next);
+                    }
                     label { "Email " input type="email" name="email" required; }
                     label { "Password " input type="password" name="password" required minlength=(crate::http::MIN_PASSWORD_LEN) autocomplete="new-password"; }
                     button type="submit" class="btn-primary" { "Sign up" }
                 }
             }
-            p { "Already have an account? " a href="/dashboard/login" { "Log in" } }
+            p { "Already have an account? " a href=(with_next("/dashboard/login", data.next.as_deref())) { "Log in" } }
         }
     };
     layout(chrome, "Sign up - Monokulo", body)
@@ -80,6 +99,15 @@ pub fn login_page(chrome: &PageChrome, data: &LoginViewModel) -> Markup {
         div class="wrap" {
             nav class="context-nav" aria-label="Breadcrumb" { a href="/" { "Home" } }
             h1 { "Log in" }
+            @if let Some(site) = &data.connecting_site {
+                div class="notice" {
+                    p { strong { (site) " wants to connect to Monokulo." } }
+                    p {
+                        "Its WooCommerce plugin sent you here. Log in to choose which wallet its payments go to. "
+                        "New to Monokulo? Sign up instead: you'll set up a wallet, then come straight back to this."
+                    }
+                }
+            }
             @if let Some(error) = &data.error {
                 p class="error" { (error) }
             }
@@ -91,7 +119,7 @@ pub fn login_page(chrome: &PageChrome, data: &LoginViewModel) -> Markup {
                 label { "Password " input type="password" name="password" required; }
                 button type="submit" class="btn-primary" { "Log in" }
             }
-            p { "Need an account? " a href="/dashboard/signup" { "Sign up" } }
+            p { "Need an account? " a href=(with_next("/dashboard/signup", data.next.as_deref())) { "Sign up" } }
         }
     };
     layout(chrome, "Log in - Monokulo", body)
@@ -110,6 +138,7 @@ mod tests {
         let html = signup_page(
             &chrome(),
             &SignupViewModel {
+                next: None,
                 error: None,
                 invite_required: false,
                 invite_token: String::new(),
@@ -125,6 +154,7 @@ mod tests {
         let html = signup_page(
             &chrome(),
             &SignupViewModel {
+                next: None,
                 error: Some("that email is already registered".to_string()),
                 invite_required: false,
                 invite_token: String::new(),
@@ -139,6 +169,7 @@ mod tests {
         let html = signup_page(
             &chrome(),
             &SignupViewModel {
+                next: None,
                 error: None,
                 invite_required: true,
                 invite_token: String::new(),
@@ -157,6 +188,7 @@ mod tests {
         let html = login_page(
             &chrome(),
             &LoginViewModel {
+                connecting_site: None,
                 error: None,
                 next: None,
             },
@@ -171,6 +203,7 @@ mod tests {
         let html = login_page(
             &chrome(),
             &LoginViewModel {
+                connecting_site: None,
                 error: Some("invalid email or password".to_string()),
                 next: None,
             },
@@ -184,6 +217,7 @@ mod tests {
         let html = login_page(
             &chrome(),
             &LoginViewModel {
+                connecting_site: None,
                 error: None,
                 next: Some("/connect/woocommerce?nonce=abc".to_string()),
             },
@@ -208,6 +242,7 @@ mod tests {
         let html = login_page(
             &chrome(),
             &LoginViewModel {
+                connecting_site: None,
                 error: None,
                 next: Some("/connect/woocommerce?a=1&b=2".to_string()),
             },
@@ -228,6 +263,7 @@ mod tests {
         let html = login_page(
             &chrome(),
             &LoginViewModel {
+                connecting_site: None,
                 error: None,
                 next: None,
             },

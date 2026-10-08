@@ -193,7 +193,9 @@ fn build_browser_module(manifest: &Path, module: &BrowserModule) {
         "\n\nBuilding {what} failed. It needs the WebAssembly target \
          (rust-toolchain.toml installs it; otherwise `rustup target add wasm32-unknown-unknown`).\n"
     );
-    let built = target_dir.join("wasm32-unknown-unknown/release").join(module.artifact);
+    let built = target_dir
+        .join("wasm32-unknown-unknown/release")
+        .join(module.artifact);
     std::fs::copy(&built, out.join(module.artifact))
         .unwrap_or_else(|e| panic!("copying {}: {e}", built.display()));
 }

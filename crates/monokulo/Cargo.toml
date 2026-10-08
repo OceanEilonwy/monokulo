@@ -86,6 +86,8 @@ engine-test-support = { path = "../engine-test-support" }
 http-body-util = "0.1.5"
 engine = { path = "../engine" }
 tower = { version = "0.5.3", features = ["util"] }
+# Makes a wallet in the tests the way the "Create a new wallet" page does.
+wallet-setup = { path = "../wallet-setup" }
 # The real-Tor e2e test (`tests/e2e_tor.rs`) connects through tor's SocksPort,
 # one set of SOCKS credentials per simulated visitor.
 tokio-socks = "0.5"

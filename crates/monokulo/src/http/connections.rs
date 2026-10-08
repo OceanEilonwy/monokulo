@@ -27,7 +27,7 @@ use uuid::Uuid;
 
 use crate::crypto;
 use crate::db::UserRow;
-use crate::engine_client::{CreateTenantRequest, EngineClientError};
+use crate::engine_client::{CreateTenantOnWalletRequest, EngineClientError};
 use crate::now_unix;
 
 use super::{ApiError, AppState, AuthedUser};
@@ -68,6 +68,10 @@ pub struct CreateConnectionRequest {
     /// default when absent (part 5).
     #[serde(default)]
     pub key_custody_backend: Option<String>,
+    /// One of the caller's wallets for the store to take payments into,
+    /// instead of keys (docs/wallets.md).
+    #[serde(default)]
+    pub wallet_id: Option<crate::db::WalletId>,
 }
 
 #[derive(Serialize)]
@@ -97,6 +101,11 @@ pub(super) struct CreateConnectionFields {
     pub base_currency: String,
     /// The engine's default when `None` (part 5).
     pub key_custody_backend: Option<String>,
+    /// The merchant's wallet the store takes payments into. `None` for a
+    /// caller that sends keys instead (`POST /connections`): the keys
+    /// become a brought-in wallet, or the one the account already has with
+    /// them.
+    pub wallet_id: Option<crate::db::WalletId>,
 }
 
 /// What a successful connection creation hands back to either caller - the
@@ -148,42 +157,60 @@ pub(super) async fn create_connection_for_user(
             ))
         })?;
 
-    // Keys typed in the clear never go on to a backend that takes them only
-    // encrypted: with no backend named, the engine's default decides, so its
-    // status is read first if it isn't known.
-    if req.key_custody_backend.is_none() {
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_millis(1500),
-            super::status_page::get_status_cached(&state.engine),
+    // The wallet the store takes payments into: the one picked, or the
+    // keys sent made into one (docs/wallets.md).
+    let wallet = match req.wallet_id.clone() {
+        Some(wallet_id) => {
+            let user_id = user.id.clone();
+            state
+                .db
+                .read(move |db| db.get_wallet(&user_id, &wallet_id))
+                .await
+                .map_err(|_| CreateConnectionError::Internal)?
+                .ok_or_else(|| {
+                    CreateConnectionError::BadRequest("Choose one of your wallets.".to_owned())
+                })?
+        }
+        None => match super::wallet_service::add_wallet(
+            state,
+            user,
+            super::wallet_service::AddWallet {
+                name: String::new(),
+                view_key_hex: req.view_key_hex.clone(),
+                spend_pubkey_hex: req.spend_pubkey_hex.clone(),
+                encrypted_keys: req.encrypted_keys.clone(),
+                network: req.network.clone().unwrap_or_else(|| "mainnet".to_owned()),
+                key_custody_backend: req.key_custody_backend.clone(),
+                origin: crate::db::WalletOrigin::Imported,
+                backup: None,
+                expected_address: None,
+            },
         )
-        .await;
-    }
-    let (key_custody_backend, keys) = super::key_entry::store_keys(
-        state,
-        req.key_custody_backend.as_deref(),
-        &req.view_key_hex,
-        &req.spend_pubkey_hex,
-        req.encrypted_keys.as_deref(),
-    )
-    .map_err(CreateConnectionError::BadRequest)?;
+        .await
+        {
+            Ok(wallet) => wallet,
+            Err(super::wallet_service::AddWalletError::AlreadyAdded(existing)) => *existing,
+            Err(super::wallet_service::AddWalletError::Invalid(message)) => {
+                return Err(CreateConnectionError::BadRequest(message))
+            }
+            Err(super::wallet_service::AddWalletError::Internal) => {
+                return Err(CreateConnectionError::Internal)
+            }
+        },
+    };
     let created = state
         .engine
         .client
-        .create_tenant(CreateTenantRequest {
-            keys,
-            network: req.network,
+        .create_tenant_on_wallet(CreateTenantOnWalletRequest {
+            wallet_id: wallet.engine_wallet_id.clone(),
             confirmations_required: req.confirmations_required,
             order_expiry_seconds: req.order_expiry_seconds,
-            key_custody_backend,
         })
         .await
         .map_err(|e| match e {
-            // The engine's own `ApiError::BadRequest` (bad hex, an
-            // unconfigured network, etc.) - a mistake the *caller* made,
-            // worth surfacing verbatim rather than collapsing into a generic
-            // 500. Any other status (or a transport-level failure reaching
-            // the engine at all) is this service's own problem, not the
-            // caller's - that stays `Internal`.
+            // The engine's own `ApiError::BadRequest` (an unconfigured
+            // network, a wallet it no longer has) - a mistake worth showing
+            // as it is. Anything else is this service's own problem.
             EngineClientError::EngineError { status, message }
                 if status == reqwest::StatusCode::BAD_REQUEST =>
             {
@@ -198,12 +225,16 @@ pub(super) async fn create_connection_for_user(
         crypto::Binding::StoreSecret(id.as_str()),
         created.secret_token.expose(),
     );
-    let (connection_id, user_id, public_key) =
-        (id.clone(), user.id.clone(), created.public_key.clone());
+    let (connection_id, user_id, public_key, wallet_id) = (
+        id.clone(),
+        user.id.clone(),
+        created.public_key.clone(),
+        wallet.id.clone(),
+    );
     let saved = state
         .db
         .write(move |db| {
-            db.create_store_connection(
+            db.create_store_connection_on_wallet(
                 &connection_id,
                 &user_id,
                 &req.platform,
@@ -212,6 +243,7 @@ pub(super) async fn create_connection_for_user(
                 &encrypted_secret_token,
                 now_unix(),
                 &base_currency,
+                &wallet_id,
             )?;
             // The site's domain, and any extra domains an API caller passed,
             // join the store's domains waiting for DNS
@@ -268,6 +300,7 @@ pub async fn create_connection(
         order_expiry_seconds: req.order_expiry_seconds,
         base_currency: req.base_currency,
         key_custody_backend: req.key_custody_backend,
+        wallet_id: req.wallet_id.clone(),
     };
 
     let outcome = create_connection_for_user(&state, &user, fields)

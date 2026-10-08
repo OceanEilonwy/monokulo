@@ -36,6 +36,7 @@ use futures_util::{Stream, StreamExt as _};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use shared::auth::RawToken;
+use shared::ids::EngineWalletId;
 
 /// Longest one engine call may take, the order-event stream excepted. The
 /// engine refuses a request of its own after 30 s; a few seconds more
@@ -590,6 +591,41 @@ impl EngineClient {
             .parsed()
     }
 
+    /// `POST /api/v1/admin/wallets` — registers a wallet's keys once, for
+    /// any number of stores to take payments into (`create_tenant_on_wallet`).
+    pub async fn create_wallet(
+        &self,
+        req: CreateWalletRequest,
+    ) -> Result<EngineWallet, EngineClientError> {
+        self.send(Call::post("/api/v1/admin/wallets").json(&req))
+            .await?
+            .parsed()
+    }
+
+    /// `POST /api/v1/admin/tenants` with a `wallet_id`: a store taking
+    /// payments into a wallet the engine already holds. Its order addresses
+    /// come from the wallet's one counter, so no two stores on it share one.
+    pub async fn create_tenant_on_wallet(
+        &self,
+        req: CreateTenantOnWalletRequest,
+    ) -> Result<CreateTenantResponse, EngineClientError> {
+        self.send(Call::post("/api/v1/admin/tenants").json(&req))
+            .await?
+            .parsed()
+    }
+
+    /// `DELETE /api/v1/admin/wallets/{id}` — no new store can use it. The
+    /// engine refuses (`409`) while a store still takes payments into it.
+    pub async fn delete_wallet(&self, id: &EngineWalletId) -> Result<(), EngineClientError> {
+        self.send(Call::new(
+            Method::DELETE,
+            format!("/api/v1/admin/wallets/{}", id.as_str()),
+        ))
+        .await?
+        .checked()
+        .map(drop)
+    }
+
     /// `POST /api/v1/admin/key-custody/bundle` — a bundle to encrypt a new
     /// store's keys against, for `backend` (one that takes keys only
     /// encrypted to it). One per key entry form.
@@ -1053,6 +1089,33 @@ pub struct KeyBundleAnswer {
     pub bundle: serde_json::Value,
 }
 
+/// A wallet's keys, for `create_wallet`: given like a store's.
+#[derive(Debug, Serialize)]
+pub struct CreateWalletRequest {
+    #[serde(flatten)]
+    pub keys: StoreKeys,
+    pub network: String,
+    /// The engine's default when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_custody_backend: Option<String>,
+}
+
+/// Mirrors the engine's `WalletView`.
+#[derive(Debug, Deserialize)]
+pub struct EngineWallet {
+    pub wallet_id: EngineWalletId,
+    pub primary_address: String,
+    pub network: String,
+    pub key_custody_backend: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateTenantOnWalletRequest {
+    pub wallet_id: EngineWalletId,
+    pub confirmations_required: Option<u64>,
+    pub order_expiry_seconds: Option<i64>,
+}
+
 /// Mirrors the engine's own `CreateTenantResponse`.
 #[derive(Debug, Deserialize)]
 pub struct CreateTenantResponse {
@@ -1066,6 +1129,9 @@ pub struct CreateTenantResponse {
 pub struct TenantView {
     pub tenant_id: String,
     pub public_key: String,
+    /// The engine's wallet this store takes payments into.
+    #[serde(default)]
+    pub wallet_id: Option<EngineWalletId>,
     pub primary_address: String,
     pub network: String,
     pub confirmations_required: u64,
@@ -1948,6 +2014,41 @@ mod contract_tests {
             .await
             .unwrap();
         let sk = created.secret_token.clone();
+        let wallet = client
+            .create_wallet(CreateWalletRequest {
+                keys: StoreKeys {
+                    view_key_hex: VIEW_KEY_HEX.to_string(),
+                    spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
+                    encrypted_keys: None,
+                },
+                network: "mainnet".to_string(),
+                key_custody_backend: None,
+            })
+            .await
+            .unwrap();
+        let on_wallet = client
+            .create_tenant_on_wallet(CreateTenantOnWalletRequest {
+                wallet_id: wallet.wallet_id.clone(),
+                confirmations_required: None,
+                order_expiry_seconds: None,
+            })
+            .await
+            .unwrap();
+        let on_wallet_view = client.get_tenant(&on_wallet.secret_token).await.unwrap();
+        lines.push(format!(
+            "store on wallet: {}, same address {}",
+            on_wallet_view.wallet_id.as_ref() == Some(&wallet.wallet_id),
+            on_wallet_view.primary_address == wallet.primary_address
+        ));
+        lines.push(format!(
+            "deleting a wallet in use: {}",
+            outcome(&client.delete_wallet(&wallet.wallet_id).await)
+        ));
+        client.delete_tenant(&on_wallet.secret_token).await.unwrap();
+        lines.push(format!(
+            "deleting it once unused: {}",
+            outcome(&client.delete_wallet(&wallet.wallet_id).await)
+        ));
         let tenant = client.get_tenant(&sk).await.unwrap();
         lines.push(format!(
             "tenant {} on {}, {} confirmations",
@@ -2172,6 +2273,9 @@ mod contract_tests {
         // two can't agree on being wrong.
         let expected_lines = [
             "tenant true on mainnet, ",
+            "store on wallet: true, same address true",
+            "deleting a wallet in use: 409 Conflict",
+            "deleting it once unused: ok",
             "confirmations now 3",
             "the same idempotency key gives the same order: true",
             "listed 1, page 1, by ids 1",

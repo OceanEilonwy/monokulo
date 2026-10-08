@@ -884,6 +884,19 @@ async fn render_store_detail_page(
     };
 
     let is_woocommerce = row.platform == "woocommerce";
+    let wallet = match row.wallet_id.clone() {
+        Some(wallet_id) => {
+            let user_id = user.id.clone();
+            state
+                .db
+                .read(move |db| db.get_wallet(&user_id, &wallet_id))
+                .await
+                .ok()
+                .flatten()
+                .map(|w| (w.id.to_string(), w.name))
+        }
+        None => None,
+    };
     let embed_warnings =
         super::embed_domains::store_page_warnings(state, &row.id, crate::now_unix()).await;
     let row = row.into_row();
@@ -905,6 +918,7 @@ async fn render_store_detail_page(
             lookup_message,
             lookup_found_order_id,
             embed_warnings,
+            wallet,
         }),
     };
     views::store_detail::page(&chrome, &view_model).into_response()
@@ -4384,8 +4398,11 @@ mod tests {
         assert!(!order_id.is_empty());
     }
 
+    /// The key storage choice is made when a wallet is added (its keys are
+    /// registered once, for every store on it), and a store on that wallet
+    /// keeps its keys there.
     #[tokio::test]
-    async fn a_new_store_can_choose_where_its_keys_are_kept_when_there_is_a_choice() {
+    async fn a_new_wallet_can_choose_where_its_keys_are_kept_when_there_is_a_choice() {
         let (state, engine) = test_state_with_two_custody_backends().await;
         let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
@@ -4395,7 +4412,7 @@ mod tests {
         )
         .await;
 
-        let html = get_page(&router, &session_token, "/dashboard/connect").await;
+        let html = get_page(&router, &session_token, "/dashboard/wallets/import").await;
         assert!(
             html.contains(r#"<select name="key_custody_backend">"#),
             "{html}"
@@ -4410,6 +4427,32 @@ mod tests {
         );
 
         let encrypted = cli_seal(&router, &engine, &html, TEST_VIEW_KEY_HEX).await;
+        let added = router
+            .clone()
+            .oneshot(form_post_request(
+                "/dashboard/wallets/import",
+                &session_token,
+                &[
+                    ("name", "Kept apart"),
+                    ("view_key_hex", ""),
+                    ("spend_pubkey_hex", ""),
+                    ("encrypted_keys", encrypted.as_str()),
+                    ("network", "mainnet"),
+                    ("key_custody_backend", "snp"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(added.status(), StatusCode::SEE_OTHER);
+        let wallet_id = {
+            let db = state.db.lock();
+            let user = db
+                .get_user_by_email("key-choice@example.com")
+                .unwrap()
+                .unwrap();
+            db.list_wallets(&user.id).unwrap()[0].wallet.id.to_string()
+        };
+
         let response = router
             .clone()
             .oneshot(form_post_request(
@@ -4417,12 +4460,8 @@ mod tests {
                 &session_token,
                 &[
                     ("site_url", "https://kept-apart.example.com"),
-                    ("view_key_hex", ""),
-                    ("spend_pubkey_hex", ""),
-                    ("encrypted_keys", encrypted.as_str()),
-                    ("network", "mainnet"),
+                    ("wallet_id", wallet_id.as_str()),
                     ("base_currency", "XMR"),
-                    ("key_custody_backend", "snp"),
                 ],
             ))
             .await

@@ -41,8 +41,7 @@ use url::Url;
 
 use crate::db::UserRow;
 use crate::now_unix;
-use crate::templates::network_selected_flags;
-use crate::views::connect::{ExistingStoreOption, PlatformConnectViewModel};
+use crate::views::connect::{ConnectMode, ExistingStoreOption, PlatformConnectViewModel};
 
 use super::connections::{self, CreateConnectionError, CreateConnectionFields};
 use super::dashboard::redirect_302;
@@ -63,15 +62,21 @@ pub struct ConnectQuery {
     pub site_url: String,
     pub return_url: String,
     pub nonce: String,
+    /// Which screen: none for the question ("is this shop already a
+    /// store?"), `new` or `existing` for its answers.
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 /// The plugin's connect request, carried through every render of the confirm
-/// form, whether it came from the first `GET` or a resubmitted `POST`.
+/// form, whether it came from the first `GET` or a resubmitted `POST`, and
+/// which screen of the flow it is on.
 #[derive(Clone, Copy)]
 struct ConnectRequest<'a> {
     site_url: &'a str,
     return_url: &'a str,
     nonce: &'a str,
+    mode: Option<&'a str>,
 }
 
 /// Where a connecting plugin's store credentials may be sent: its
@@ -147,6 +152,7 @@ impl ConnectQuery {
             site_url: &self.site_url,
             return_url: &self.return_url,
             nonce: &self.nonce,
+            mode: self.mode.as_deref(),
         }
     }
 }
@@ -173,29 +179,25 @@ async fn render_confirm_form(
         site_url,
         return_url,
         nonce,
+        mode,
     } = request;
-    let (network_mainnet_selected, network_stagenet_selected, network_testnet_selected) =
-        network_selected_flags(
-            resubmit
-                .and_then(|f| f.network.as_deref())
-                .unwrap_or("mainnet"),
-        );
     let selected_currency = resubmit
         .and_then(|f| f.base_currency.as_deref())
         .unwrap_or("XMR");
     let (selected, user_id) = (selected_currency.to_string(), user.id.clone());
-    let (currency_options, stores) = state
+    let (currency_options, stores, wallets) = state
         .db
         .read(move |db| {
             Ok::<_, crate::db::DbError>((
                 crate::currencies::currency_options(db, &selected).unwrap_or_default(),
                 db.list_store_connections_for_user(&user_id)
                     .unwrap_or_default(),
+                db.list_wallets(&user_id).unwrap_or_default(),
             ))
         })
         .await
         .unwrap_or_default();
-    let existing_stores = stores
+    let existing_stores: Vec<ExistingStoreOption> = stores
         .into_iter()
         .map(|row| ExistingStoreOption {
             connection_id: row.id,
@@ -203,44 +205,29 @@ async fn render_confirm_form(
             platform: row.platform,
         })
         .collect();
+    // No store to add it to: there's no question to ask.
+    let mode = match mode {
+        Some("existing") if !existing_stores.is_empty() => ConnectMode::Existing,
+        Some("new") => ConnectMode::New,
+        _ if existing_stores.is_empty() => ConnectMode::New,
+        _ => ConnectMode::Ask,
+    };
     // A link whose return address isn't the shop's shows why, and no form.
     let unavailable = match ConnectTarget::parse(site_url, return_url) {
         Err(reason) => Some(reason.to_string()),
         Ok(_) => public_url_for_plugins(state).await.err(),
     };
     let chrome = super::page_chrome(state, Some(user), format!("/connect/{platform}")).await;
-    let custody_choices = super::status_page::custody_choice_views(
-        state,
-        resubmit.and_then(|f| f.key_custody_backend.as_deref()),
-    );
-    let snp_entry = if unavailable.is_none() {
-        super::key_entry::prepare(
-            state,
-            &user.id,
-            super::key_entry::Purpose::Create,
-            &super::key_entry::offered_backends(state, &custody_choices),
-        )
-        .await
-    } else {
-        None
-    };
     let data = PlatformConnectViewModel {
         platform: platform.to_string(),
         site_url: site_url.to_string(),
         return_url: return_url.to_string(),
         nonce: nonce.to_string(),
         error: error.map(str::to_string),
-        // Never echoed back: the private view key isn't put in a page.
-        view_key_hex: String::new(),
-        spend_pubkey_hex: resubmit
-            .and_then(|f| f.spend_pubkey_hex.clone())
-            .unwrap_or_default(),
-        network_mainnet_selected,
-        network_stagenet_selected,
-        network_testnet_selected,
+        mode,
         currency_options,
-        custody_choices,
-        snp_entry,
+        wallets,
+        selected_wallet: resubmit.and_then(|f| f.wallet_id.clone()),
         existing_stores,
         unavailable,
     };
@@ -307,6 +294,32 @@ pub async fn start(
         ));
     };
 
+    // A store needs a wallet: a new account sets one up first and comes
+    // back here (stores made before wallets are matched to theirs).
+    super::wallet_service::adopt_unlinked_stores(&state, &user).await;
+    let user_id = user.id.clone();
+    let has_wallet = state
+        .db
+        .read(move |db| db.list_wallets(&user_id))
+        .await
+        .map(|w| !w.is_empty())
+        .unwrap_or(true);
+    // A link that can't work says why first, before any wallet setup.
+    let connectable = ConnectTarget::parse(&query.site_url, &query.return_url).is_ok()
+        && public_url_for_plugins(&state).await.is_ok();
+    if connectable && !has_wallet && query.mode.as_deref() != Some("existing") {
+        let this_url = format!(
+            "/connect/{}?site_url={}&return_url={}&nonce={}",
+            platform,
+            encode_query_value(&query.site_url),
+            encode_query_value(&query.return_url),
+            encode_query_value(&query.nonce),
+        );
+        return redirect_302(&format!(
+            "/dashboard/wallets/setup?next={}",
+            encode_query_value(&this_url)
+        ));
+    }
     render_confirm_form(&state, &platform, query.request(), None, None, &user).await
 }
 
@@ -377,6 +390,11 @@ pub struct ConfirmForm {
     /// Only sent when the form offered a choice (part 5).
     #[serde(default)]
     pub key_custody_backend: Option<String>,
+    /// The merchant's wallet the new store takes payments into
+    /// (docs/wallets.md). A caller sending keys instead gets them added as
+    /// a wallet.
+    #[serde(default)]
+    pub wallet_id: Option<String>,
 }
 
 impl ConfirmForm {
@@ -385,6 +403,7 @@ impl ConfirmForm {
             site_url: &self.site_url,
             return_url: &self.return_url,
             nonce: &self.nonce,
+            mode: Some(&self.mode),
         }
     }
 }
@@ -442,6 +461,11 @@ async fn confirm_new_store(
         order_expiry_seconds: form.order_expiry_seconds,
         base_currency: form.base_currency.clone().unwrap_or_default(),
         key_custody_backend: form.key_custody_backend.clone().filter(|b| !b.is_empty()),
+        wallet_id: form
+            .wallet_id
+            .clone()
+            .filter(|w| !w.is_empty())
+            .map(crate::db::WalletId::new),
     };
 
     let outcome = match connections::create_connection_for_user(state, user, fields).await {
@@ -851,7 +875,24 @@ mod tests {
             .to_str()
             .unwrap()
             .to_string();
-        set_cookie.split(';').next().unwrap().to_string()
+        let cookie = set_cookie.split(';').next().unwrap().to_string();
+        // Signing up sets up a wallet next (docs/wallets.md): one brought
+        // in with the test keys, as a merchant would.
+        let added = router
+            .clone()
+            .oneshot(form_request(
+                "/dashboard/wallets/import",
+                Some(&cookie),
+                &[
+                    ("view_key_hex", TEST_VIEW_KEY_HEX),
+                    ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+                    ("network", "mainnet"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(added.status(), StatusCode::SEE_OTHER, "the wallet is added");
+        cookie
     }
 
     async fn complete_store_setup(
@@ -1412,8 +1453,10 @@ mod tests {
     /// `/connect/{platform}` confirm form: a rejected submission must not
     /// throw away the site_url/view key/spend key/network/allowed_origins
     /// the merchant already typed in.
+    /// A new-store submission naming a wallet that isn't the merchant's is
+    /// refused with a reason, on the same page, the plugin's request kept.
     #[tokio::test]
-    async fn a_rejected_confirm_submission_re_fills_what_the_merchant_typed_but_the_view_key() {
+    async fn a_refused_new_store_submission_shows_why_and_keeps_the_plugins_request() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -1432,12 +1475,8 @@ mod tests {
                     ("site_url", "https://shop.example.com"),
                     ("return_url", "https://shop.example.com/settings"),
                     ("nonce", "nonce-abc"),
-                    ("view_key_hex", TEST_VIEW_KEY_HEX),
-                    // Well-formed hex, real, verified invalid curve point -
-                    // same value `http/tests.rs`'s sibling test uses.
-                    ("spend_pubkey_hex", &"ff".repeat(32)),
-                    ("network", "stagenet"),
-                    ("allowed_origins", "https://shop.example.com"),
+                    ("mode", "new"),
+                    ("wallet_id", "w_not_mine"),
                     ("base_currency", "XMR"),
                 ],
             ))
@@ -1446,31 +1485,12 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
-        assert!(
-            html.contains("class=\"error\""),
-            "expected a visible error, got: {html}"
-        );
-        assert!(
-            !html.contains(TEST_VIEW_KEY_HEX),
-            "the private view key is never put back in a page: {html}"
-        );
-        assert!(
-            html.contains(&format!(r#"value="{}""#, "ff".repeat(32))),
-            "expected the rejected spend key re-filled, got: {html}"
-        );
-        assert!(
-            !html.contains("allowed_origins"),
-            "allowed origins are no longer asked for, got: {html}"
-        );
-        assert!(
-            html.contains(r#"value="stagenet" selected"#),
-            "expected stagenet to stay selected, got: {html}"
-        );
-        // The hidden site_url/return_url/nonce fields were already always
-        // preserved (they're passed straight through, not part of this
-        // bug) - confirmed here too so a future refactor can't silently
-        // break that while fixing something else nearby.
+        assert!(html.contains("Choose one of your wallets."), "{html}");
         assert!(html.contains(r#"name="nonce" value="nonce-abc""#));
+        assert!(
+            html.contains(r#"name="mode" value="new""#),
+            "still on the new-store form: {html}"
+        );
     }
 
     #[tokio::test]
@@ -1600,6 +1620,7 @@ mod tests {
             create_a_store(&router, &cookie, "https://my-existing-shop.example.com").await;
 
         let response = router
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -1613,7 +1634,26 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
         assert!(
-            html.contains("Use an existing store"),
+            html.contains("Is this shop already a store in Monokulo?")
+                && html.contains("mode=existing"),
+            "with a store to add it to, the page asks first: {html}"
+        );
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/connect/woocommerce?site_url=https%3A%2F%2Fnew-wp-site.example.com&return_url=https%3A%2F%2Fnew-wp-site.example.com%2Fsettings&nonce=n&mode=existing")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(
+            html.contains("Existing store"),
             "expected the picker, got: {html}"
         );
         assert!(

@@ -230,6 +230,9 @@ fn key_storage_section(
         h2 { "Key storage" }
         (section_error(store, StoreSection::KeyStorage, in_place))
         p { strong { "Kept: " } (key_storage.current) }
+        p class="hint" {
+            "The keys belong to this store's wallet: moving them moves the wallet, for every store that uses it."
+        }
         @if key_storage.current_disabled {
             p class="error" {
                 "This way of storing keys has been turned off on this instance, so payments to this store aren't "

@@ -1,0 +1,14 @@
+Wallet app icons, shown next to each app's name where monokulo explains how
+to restore a new wallet in it. Each is that project's own app icon, taken
+unchanged from its repository; the names and icons are their owners'
+trademarks, used here only to name the apps.
+
+cake.png       Cake Wallet   https://github.com/cake-tech/cake_wallet  assets/images/cakewallet_icon_180.png
+monerocom.png  Monero.com    https://github.com/cake-tech/cake_wallet  assets/images/monero.com_icon_180.png
+stack.png      Stack Wallet  https://github.com/cypherstack/stack_wallet  asset_sources/icon/stack_wallet/app_icon_alpha.png
+feather.png    Feather       https://github.com/feather-wallet/feather  src/assets/images/appicons/128x128.png
+gui.png        Monero GUI    https://github.com/monero-project/monero-gui  images/appicons/128x128.png
+
+The Trezor and Ledger marks are inline SVG in src/views/wallets.rs, from
+https://github.com/trezor/trezor-suite (packages/product-components/src/images/logos/trezor_logo_symbol.svg)
+and https://github.com/LedgerHQ/ledger-live (libs/ui/packages/icons/src/svg/Ledger-Logo.svg).
