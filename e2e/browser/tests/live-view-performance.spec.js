@@ -1,6 +1,9 @@
-const { test, expect } = require('@playwright/test');
+const { test, expect } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture } = require('../coverage-fixture');
 let fixture;
+// This file's tests share one fixture and the settings they save, so
+// they run in order on one worker.
+test.describe.configure({ mode: 'default' });
 test.beforeAll(async () => { fixture = await startCoverageFixture(); });
 test.afterAll(async () => { await stopCoverageFixture(fixture?.process); });
 async function login(context, admin = false) {

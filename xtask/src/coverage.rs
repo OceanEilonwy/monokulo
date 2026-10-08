@@ -400,18 +400,13 @@ fn collect_browser(log: &Log) -> io::Result<Exit> {
     {
         return Ok(log.missing("POS Vite dependencies (run npm ci in crates/monokulo/pos-ui)"));
     }
-    // Build the fixture server up front: each spec's beforeAll rebuilds it,
-    // and a cold build there overruns the 40s hook timeout.
+    // Build every binary the suites run up front, with the one command the
+    // Playwright run's global setup and each fixture spec's beforeAll repeat
+    // (real-stack.js BUILD_ARGS), so theirs find nothing to do: a cold build
+    // in a beforeAll overruns its 40s hook timeout.
     step!(log.run(
-        "cargo",
-        &[
-            "build",
-            "--locked",
-            "-p",
-            "monokulo",
-            "--example",
-            "coverage_fixture"
-        ],
+        "node",
+        &["-e", "require('./e2e/browser/real-stack').buildBinaries()"],
         None,
         &[]
     ));

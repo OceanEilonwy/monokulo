@@ -1,4 +1,5 @@
 // @ts-check
+const os = require('node:os');
 const { defineConfig } = require('@playwright/test');
 
 // End-to-end tests against the real engine and monokulo binaries and a
@@ -23,10 +24,12 @@ module.exports = defineConfig({
   expect: { timeout: 30 * 1000 },
   // A spec file's tests share its processes and run in order; files each
   // have their own (tests/backend-helpers.js useRealStack), so they run side
-  // by side. Most of a file's time is spent waiting on the engine and
-  // monokulo, not the CPU, hence more workers than Playwright's default.
+  // by side. Half the machine's threads, from four (a CI runner has four:
+  // most of a file's time is spent waiting on the engine and monokulo, not
+  // the CPU) to eight (more finish no sooner: the longest file, which runs in
+  // order, bounds the run). E2E_WORKERS sets another number.
   fullyParallel: false,
-  workers: process.env.E2E_WORKERS ? Number(process.env.E2E_WORKERS) : 4,
+  workers: process.env.E2E_WORKERS ? Number(process.env.E2E_WORKERS) : Math.min(8, Math.max(4, Math.floor(os.cpus().length / 2))),
   retries: 0,
   reporter: [['list']],
   globalSetup: require.resolve('./real-binaries-setup.js'),

@@ -10,10 +10,10 @@
 //! Suites run:
 //!   rust     cargo nextest run --workspace --exclude xtask --profile ci
 //!            --features engine/zmq, as CI runs it.
-//!   browser  The offline Playwright configurations: coverage-browser (its
-//!            fixture and real-binaries projects, without instrumenting, so
-//!            no coverage overhead) and dashboard. Needs `npm ci` in
-//!            e2e/browser and crates/monokulo/pos-ui.
+//!   browser  The offline Playwright run, coverage-browser (its fixture
+//!            and real-binaries projects, without instrumenting, so no
+//!            coverage overhead). Needs `npm ci` in e2e/browser and
+//!            crates/monokulo/pos-ui.
 //!
 //! Not run: the #[ignore]d stagenet/Tor Rust tests and the stagenet POS
 //! Playwright suite, since they spend stagenet funds and need public nodes.
@@ -73,7 +73,7 @@ CREATE VIEW IF NOT EXISTS latest AS
 ";
 
 /// The offline Playwright configurations `run` times.
-const BROWSER_CONFIGS: [&str; 2] = ["coverage-browser", "dashboard"];
+const BROWSER_CONFIGS: [&str; 1] = ["coverage-browser"];
 const DEFAULT_TOP: u32 = 25;
 
 /// The suites `run` can run.
@@ -384,36 +384,14 @@ fn run_browser(db: &mut Connection) -> io::Result<()> {
     let root = root();
     let out = target_dir().join("test-timings");
     fs::create_dir_all(&out).map_err(|e| at(&out, e))?;
-    // The fixture the coverage-browser specs start, and the binaries
-    // real-binaries starts; built here so their build stays out of the times.
-    for args in [
-        &[
-            "build",
-            "--locked",
-            "-p",
-            "monokulo",
-            "--example",
-            "coverage_fixture",
-        ][..],
-        &[
-            "build",
-            "--locked",
-            "-p",
-            "engine",
-            "--bin",
-            "monokulo-engine",
-            "-p",
-            "monokulo",
-            "--bin",
-            "monokulo",
-            "-p",
-            "engine-test-support",
-            "--bin",
-            "fake-monerod",
-        ][..],
-    ] {
-        timed(Command::new("cargo").args(args).current_dir(&root))?;
-    }
+    // Every binary the suites run, with the command the Playwright run's
+    // global setup repeats (real-stack.js BUILD_ARGS), so their build stays
+    // out of the times.
+    timed(
+        Command::new("node")
+            .args(["-e", "require('./e2e/browser/real-stack').buildBinaries()"])
+            .current_dir(&root),
+    )?;
     let browser = root.join("e2e/browser");
     for config in BROWSER_CONFIGS {
         let junit = out.join(format!("browser-{config}.xml"));
@@ -693,7 +671,7 @@ mod tests {
         let db = scratch.join("t.sqlite");
         let db_arg = db.to_string_lossy().into_owned();
         let rust = format!("rust={}", junit.display());
-        let page = format!("browser:dashboard={}", browser.display());
+        let page = format!("browser:coverage-browser={}", browser.display());
         timings(&["--db", &db_arg, "load", "--note", "local", &rust, &page]).unwrap();
         let conn = Connection::open(&db).unwrap();
         let (runs, tests): (i64, i64) = conn
@@ -711,7 +689,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(binary, "dashboard:checkout.spec.js");
+        assert_eq!(binary, "coverage-browser:checkout.spec.js");
         let text = report(&conn, 2).unwrap();
         assert!(text.contains("\nSlowest tests\n"), "{text}");
         assert!(text.contains("pays"), "{text}");

@@ -5,9 +5,8 @@ checkout, and POS. The configurations select separate environments and workloads
 
 | Configuration | Coverage | Environment |
 | --- | --- | --- |
-| `dashboard.config.js` | Store setup, settings dialogs, order resubmission, JavaScript-disabled pages, time zone preferences, and live-view controls and performance | Local rendered-UI fixture |
 | `surface.config.js` | Client challenge protocol | Local mocked server |
-| `coverage-browser.config.js` | Checkout, challenge, camera, client, POS, layout, and live view | Local rendered-UI fixture with coverage reporting |
+| `coverage-browser.config.js` | Checkout, challenge, camera, client, POS, layout, live view, store setup and settings, dropdowns, order resubmission, JavaScript-disabled pages and time zone preferences; and the `real-binaries.config.js` specs as a second project | Local rendered-UI fixture with coverage reporting |
 | `real-binaries.config.js` | Admin setup and settings, store keys, logs, themes, crash recovery, sections, and POS timeline | Real binaries and a local fake node |
 | `playwright.config.js` | POS payments and confirmations | Public stagenet and funded test wallet |
 
@@ -19,8 +18,8 @@ npx playwright install chromium
 ```
 
 Run a selected suite with `npx playwright test -c <configuration>`. For example,
-`npx playwright test -c dashboard.config.js` runs the dashboard and live-view
-regressions without a public node or funds. `npm test` selects the stagenet POS
+`npx playwright test -c coverage-browser.config.js` runs every offline browser
+test, without a public node or funds. `npm test` selects the stagenet POS
 configuration; it is an explicit real-payment run, not the local regression suite.
 
 ## POS terminal with real stagenet payments
@@ -179,7 +178,8 @@ a temporary directory, plus `fake-monerod`
 serving a fixed chain of empty blocks (`real-stack.js`, through
 `useRealStack(test)` at the top of the spec). So every file starts from a
 fresh instance, a file's tests run in order against its own processes, and
-files run side by side on four workers (`E2E_WORKERS=1` runs one at a time).
+files run side by side on half the machine's threads, from four to eight
+(`E2E_WORKERS=1` runs one at a time).
 The fake node can't produce payments, so payment flows stay in the Rust
 integration tests. `KEEP_E2E_LOGS=1` keeps the processes' logs and
 databases; `E2E_ENGINE_BIN=<path>` runs another engine build, for

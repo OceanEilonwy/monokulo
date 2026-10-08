@@ -81,8 +81,10 @@ test('a value either check refuses saves nothing, and every change stays to fix 
   // The bar is red and says why, with a link to the card.
   await expect(bar).toHaveClass(/is-failed/);
   await expect(bar).toContainText('Nothing saved.');
-  // An error toast stays until it's closed.
-  await page.waitForTimeout(13_000);
+  // An error toast stays until it's closed: past the 12s at which site.css
+  // fades one out on a page without JavaScript, it's still shown. Its
+  // animations are moved on to 13s rather than waited out.
+  await toast.evaluate(element => element.getAnimations().forEach(animation => { animation.currentTime = 13_000; }));
   await expect(toast).toBeVisible();
   await toast.getByRole('button', { name: 'Dismiss' }).click();
   await expect(toast).toHaveCount(0);
