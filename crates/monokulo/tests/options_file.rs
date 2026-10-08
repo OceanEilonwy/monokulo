@@ -5,6 +5,8 @@
 //! are tested in `live-settings` and on the admin page; this is the wiring
 //! in `main.rs` that only a real process shows.
 
+use std::io::{BufRead as _, BufReader};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -68,58 +70,48 @@ fn text(output: &Output) -> String {
     )
 }
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// Starts `command` with its log piped back, and waits until it says it's
+/// listening (its own "monokulo listening" log line): the address it listens on, as it
+/// bound it, so a port of 0 says which port it got. The rest of its log is
+/// read in the background, so it never blocks on a full pipe. `Err` is its
+/// log, when it exits first or doesn't say it's listening within 30
+/// seconds.
+fn start_listening(command: &mut Command, said: &str) -> Result<(Child, SocketAddr), String> {
+    let mut child = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("it didn't start: {e}"))?;
+    let stderr = child.stderr.take().ok_or("its log isn't piped")?;
+    let (lines, read) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut log = String::new();
+    while let Ok(line) = read.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        if let Some(address) = listening_on(&line, said) {
+            std::thread::spawn(move || read.into_iter().for_each(drop));
+            return Ok((child, address));
+        }
+        log.push_str(&line);
+        log.push('\n');
+    }
+    stop(child);
+    Err(log)
 }
 
-/// Starts the process `start` builds for a free port, and waits until it says
-/// it's listening on that port: its own "monokulo listening" log line, not just
-/// something answering there, which another test's process may have taken
-/// between the port being chosen and this one binding it. A port taken
-/// first (the bind fails, the address in use) is chosen again. Returns the
-/// running process, its port and its log.
-fn start_listening(
-    dir: &Path,
-    name: &str,
-    said: &str,
-    start: impl Fn(u16) -> Command,
-) -> (Child, u16, String) {
-    (0..5)
-        .find_map(|attempt| {
-            let port = free_port();
-            let log = dir.join(format!("{name}-{attempt}.log"));
-            let mut child = start(port)
-                .stdout(Stdio::null())
-                .stderr(std::fs::File::create(&log).unwrap())
-                .spawn()
-                .unwrap();
-            let address = format!("127.0.0.1:{port}");
-            let deadline = Instant::now() + Duration::from_secs(30);
-            loop {
-                let text = std::fs::read_to_string(&log).unwrap_or_default();
-                if text
-                    .lines()
-                    .any(|line| line.contains(said) && line.contains(&address))
-                {
-                    return Some((child, port, text));
-                }
-                let exited = child.try_wait().unwrap().is_some();
-                if exited || Instant::now() > deadline {
-                    stop(child);
-                    let taken = ["already in use", "AddrInUse", "os error 10048"]
-                        .iter()
-                        .any(|sign| text.contains(sign));
-                    assert!(taken, "{name} didn't start listening on {address}: {text}");
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        })
-        .expect("every port tried was taken first")
+/// The address a "`said`" log line (one JSON object) says it listens on.
+fn listening_on(line: &str, said: &str) -> Option<SocketAddr> {
+    let line: serde_json::Value = serde_json::from_str(line).ok()?;
+    if line["message"] != said {
+        return None;
+    }
+    line["attributes"]["server.address"].as_str()?.parse().ok()
 }
 
 fn stop(mut child: Child) {
@@ -260,16 +252,16 @@ fn monokulo_starts_without_a_file_and_follows_one() {
     let dir = TempDir::new("start");
     let data = dir.0.join("data");
     let missing = dir.0.join("nowhere").join("monokulo.toml");
-    let (child, _, _) = start_listening(&dir.0, "start", "monokulo listening", |port| {
-        let mut command = with_secrets(&dir.0);
-        command
+    let (child, _) = start_listening(
+        with_secrets(&dir.0)
             .env("XDG_DATA_HOME", &data)
             .arg("--options")
             .arg(&missing)
             .arg("--server-bind")
-            .arg(format!("127.0.0.1:{port}"));
-        command
-    });
+            .arg("127.0.0.1:0"),
+        "monokulo listening",
+    )
+    .unwrap();
     stop(child);
     assert!(data.join("monokulo").join("monokulo.db").exists());
     assert!(
@@ -278,23 +270,29 @@ fn monokulo_starts_without_a_file_and_follows_one() {
     );
     assert!(!missing.exists(), "nothing is written until a save");
 
+    // Listening where its file says: any free port, not its default 8081
+    // (the path as a TOML literal string: a Windows path's backslashes
+    // aren't escapes).
     let path = dir.0.join("monokulo.toml");
-    // Listening where its file says (the path as a TOML literal string: a
-    // Windows path's backslashes aren't escapes).
-    let (child, _, _) = start_listening(&dir.0, "file", "monokulo listening", |port| {
-        std::fs::write(
-            &path,
-            format!(
-                "[server]\nbind = \"127.0.0.1:{port}\"\n[database]\npath = '{}'\n",
-                dir.0.join("mine.db").display()
-            ),
-        )
-        .unwrap();
-        let mut command = with_secrets(&dir.0);
-        command.arg("--options").arg(&path);
-        command
-    });
+    std::fs::write(
+        &path,
+        format!(
+            "[server]\nbind = \"127.0.0.1:0\"\n[database]\npath = '{}'\n",
+            dir.0.join("mine.db").display()
+        ),
+    )
+    .unwrap();
+    let (child, address) = start_listening(
+        with_secrets(&dir.0).arg("--options").arg(&path),
+        "monokulo listening",
+    )
+    .unwrap();
     stop(child);
+    assert_ne!(
+        address.port(),
+        8081,
+        "monokulo listened where its file says"
+    );
     assert!(dir.0.join("mine.db").exists());
     assert!(dir.0.join("engine.db").exists());
 }
