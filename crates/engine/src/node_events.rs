@@ -147,7 +147,7 @@ mod subscriber {
     use crate::engine_settings::EngineSettings;
 
     use super::{announcement, Announcement, CHAIN_TOPIC, POOL_TOPIC};
-    const FIRST_RETRY: Duration = Duration::from_secs(1);
+    pub(super) const FIRST_RETRY: Duration = Duration::from_secs(1);
     const LAST_RETRY: Duration = Duration::from_secs(60);
 
     /// Every `zmq_pub` configured for `network`'s node and its fallbacks,
