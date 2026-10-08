@@ -102,11 +102,18 @@ async fn run(config: EngineConfig) {
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .expect("failed to bind server address");
-    tracing::info!(server.address = %bind, "engine listening");
+    // The address listened on, as bound: a port of 0 (any free port) says
+    // which one it got.
+    let local = listener.local_addr();
+    if let Ok(local) = &local {
+        tracing::info!(server.address = %local, "engine listening");
+    } else {
+        tracing::info!(server.address = %bind, "engine listening");
+    }
     // The engine is private: only monokulo, on this machine or a private
     // network, should ever reach it. Nothing stops an operator binding it
     // elsewhere, but it must not happen by accident.
-    if let Ok(local) = listener.local_addr() {
+    if let Ok(local) = local {
         if !engine::settings::is_private_bind_address(local.ip()) {
             tracing::warn!(
                 server.address = %local,
