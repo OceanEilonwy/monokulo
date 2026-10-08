@@ -36,7 +36,7 @@ test('saving an admin settings tab swaps only its panel, and the tab bar and ban
   await bar.getByRole('button', { name: 'Save', exact: true }).click();
 
   // A toast says what was saved; the card says when; the bar goes.
-  await expect(page.locator('#settings-toasts .toast-success')).toContainText('Webhooks saved and applied');
+  await expect(page.locator('#settings-toasts .toast-success')).toContainText('Changes saved and applied');
   await expect(page.locator('#card-webhooks .card-saved')).toBeVisible();
   await expect(bar).toBeHidden();
   expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
@@ -52,11 +52,11 @@ test('saving an admin settings tab swaps only its panel, and the tab bar and ban
   await field.fill('10');
   await bar.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.locator('#settings-toasts .toast-success')).toHaveCount(1);
-  await expect(page.locator('#settings-toasts .toast-success')).toContainText('Webhooks saved and applied');
+  await expect(page.locator('#settings-toasts .toast-success')).toContainText('Changes saved and applied');
   await expect(field).toHaveValue('10');
 });
 
-test('a card a save refuses stays red with what was typed, and the others are saved', async ({ page }) => {
+test('a value either check refuses saves nothing, and every change stays to fix or discard', async ({ page }) => {
   await signInAsAdmin(page);
   await openSettingsTab(page, 'server');
   await page.locator('input[name="server.cpus"]').fill('abc');
@@ -65,27 +65,34 @@ test('a card a save refuses stays red with what was typed, and the others are sa
   await expect(bar).toContainText('2 unsaved changes in Monokulo and Engine');
   await bar.getByRole('button', { name: 'Save', exact: true }).click();
 
+  // All or nothing: the engine refused its part, so monokulo's isn't saved
+  // either.
   const toast = page.locator('#settings-toasts .toast-error');
-  await expect(toast).toContainText('Engine not saved');
-  await expect(toast).toContainText('Monokulo saved.');
+  await expect(toast).toContainText('Nothing saved');
+  await expect(toast).toContainText('server.cpus');
   await expect(page.locator('#card-server-engine')).toHaveClass(/is-failed/);
   await expect(page.locator('#card-server-engine .card-body > p.error')).toContainText('server.cpus');
   await expect(page.locator('input[name="server.cpus"]')).toHaveValue('abc');
-  await expect(page.locator('#card-server-monokulo .card-saved')).toBeVisible();
+  await expect(page.locator('#card-server-monokulo')).not.toHaveClass(/is-failed/);
+  await expect(page.locator('#card-server-monokulo .card-saved')).toHaveCount(0);
+  await expect(page.locator('input[name="http_cache.max_mb"]')).toHaveValue('20');
   // The bar is red and says why, with a link to the card.
   await expect(bar).toHaveClass(/is-failed/);
-  await expect(bar).toContainText('Engine not saved.');
+  await expect(bar).toContainText('Nothing saved.');
   // An error toast stays until it's closed.
   await page.waitForTimeout(13_000);
   await expect(toast).toBeVisible();
   await toast.getByRole('button', { name: 'Dismiss' }).click();
   await expect(toast).toHaveCount(0);
 
-  // Discard puts the saved value back, and the bar goes.
-  await page.locator('#card-server-engine').getByRole('button', { name: 'Discard' }).click();
-  await expect(page.locator('input[name="server.cpus"]')).toHaveValue('');
-  await expect(page.locator('#card-server-engine')).not.toHaveClass(/is-failed/);
+  // Both changes are still unsaved: each card discards its own.
+  await page.locator('input[name="server.cpus"]').fill('');
+  await expect(bar).toContainText('1 unsaved change in Monokulo');
+  await page.locator('#card-server-monokulo').getByRole('button', { name: 'Discard' }).click();
+  await expect(page.locator('input[name="http_cache.max_mb"]')).toHaveValue('16');
   await expect(bar).toBeHidden();
+  await openSettingsTab(page, 'server');
+  await expect(page.locator('input[name="http_cache.max_mb"]')).toHaveValue('16');
 });
 
 test('leaving a tab with unsaved changes asks first, and Save and go saves then goes', async ({ page }) => {
@@ -108,7 +115,7 @@ test('leaving a tab with unsaved changes asks first, and Save and go saves then 
   await bar.getByRole('button', { name: 'Save and go' }).click();
   await expect(page.locator('#settings-panel h2')).toHaveText('Server');
   await expect(page).toHaveURL(/\?tab=server$/);
-  await expect(page.locator('#settings-toasts .toast-success')).toContainText('Request limits saved and applied');
+  await expect(page.locator('#settings-toasts .toast-success')).toContainText('Changes saved and applied');
   await openSettingsTab(page, 'abuse');
   await expect(page.locator('input[name="abuse.stream_cap"]')).toHaveValue('17');
 

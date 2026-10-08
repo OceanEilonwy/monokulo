@@ -18,11 +18,12 @@ use crate::value::SettingKind;
 /// to delete the stored value so the setting goes back to its default.
 pub type Changes = Vec<(String, Option<String>)>;
 
-/// What an accepted save did.
+/// What an accepted save did, or what a check found a save would do.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SaveReport {
-    /// Keys whose stored value changed. A submitted value equal to the one
-    /// already stored is not a change.
+    /// Keys whose stored value changed (would change, for a check). A
+    /// submitted value equal to the one already stored is not a change, and
+    /// neither is a setting's default for a key with nothing stored.
     pub changed: Vec<&'static str>,
     /// Restart-only keys whose effective value now differs from the one
     /// the process started with.
@@ -34,7 +35,27 @@ pub struct SaveReport {
     pub env_overridden: Vec<&'static str>,
 }
 
-/// Why a save was refused. Nothing was stored or applied.
+impl SaveReport {
+    /// Whether anything submitted differs from what's stored: a save of
+    /// these changes would change something.
+    pub fn has_changes(&self) -> bool {
+        !self.changed.is_empty()
+    }
+}
+
+/// What [`Registry::check`] found: what a save of the same changes would
+/// do, as a save reports it.
+pub type CheckReport = SaveReport;
+
+/// Whether a run of the save pipeline stores and installs what it
+/// prepared, or only checks that it could.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Save,
+    Check,
+}
+
+/// Why a save (or a check) was refused. Nothing was stored or applied.
 #[derive(Debug, thiserror::Error)]
 pub enum SaveError {
     #[error("there is no setting called {0:?}")]
@@ -576,6 +597,27 @@ impl Registry {
     /// Once step 4 has succeeded, step 5 runs to the end even if the
     /// caller stops waiting.
     pub async fn save(&self, changes: Changes) -> Result<SaveReport, SaveError> {
+        self.run(changes, Mode::Save).await
+    }
+
+    /// Checks `changes` as [`Registry::save`] would save them, and saves
+    /// nothing: steps 1 to 3 (parse, cross-field rules, prepare), then
+    /// everything prepared is dropped. It refuses what a save would refuse,
+    /// with the same errors, and otherwise reports what a save would do:
+    /// which keys would change ([`SaveReport::has_changes`]), which would
+    /// wait for a restart, which the environment would still override, and
+    /// the warnings from preparing. It takes the same lock as a save, so it
+    /// never sees one half done.
+    ///
+    /// Preparing does real work and undoes it: a new listener is bound,
+    /// then closed, so a port that's taken is refused here as it would be
+    /// by the save.
+    pub async fn check(&self, changes: Changes) -> Result<CheckReport, SaveError> {
+        self.run(changes, Mode::Check).await
+    }
+
+    /// A save or a check of `changes`, under the save lock.
+    async fn run(&self, changes: Changes, mode: Mode) -> Result<SaveReport, SaveError> {
         let inner = &self.inner;
         let lock = Arc::clone(&inner.save_lock).lock_owned().await;
         if !*lock {
@@ -640,7 +682,7 @@ impl Registry {
             writes.push((key, value));
             changed.push(setting);
         }
-        self.apply(lock, new, changed, Some(writes)).await
+        self.apply(lock, new, changed, Some(writes), mode).await
     }
 
     /// Reads the options file (and the database) again and applies what
@@ -674,7 +716,7 @@ impl Registry {
             .copied()
             .filter(|setting| old.get(setting.key()) != new.get(setting.key()))
             .collect();
-        self.apply(lock, new, changed, None).await
+        self.apply(lock, new, changed, None, Mode::Save).await
     }
 
     /// Where the options file is and whether it can be written, when the
@@ -683,20 +725,24 @@ impl Registry {
         self.inner.store.file_info()
     }
 
-    /// The rest of a save or a reload, under its lock: rebuilds the sections
-    /// that read a changed key, prepares the live ones, writes `writes` (a
-    /// save's; a reload has none), then installs and reports.
+    /// The rest of a save, a check or a reload, under its lock: rebuilds the
+    /// sections that read a changed key and prepares the live ones; then a
+    /// check drops what was prepared and reports, and a save or a reload
+    /// writes `writes` (a save's; a reload has none), installs and reports.
     async fn apply(
         &self,
         lock: tokio::sync::OwnedMutexGuard<bool>,
         new: HashMap<String, String>,
         changed: Vec<&'static dyn AnySetting>,
         writes: Option<Vec<(&'static str, Option<String>)>>,
+        mode: Mode,
     ) -> Result<SaveReport, SaveError> {
         let inner = &self.inner;
         let mut errors = Vec::new();
         if changed.is_empty() {
-            *inner.stored.write() = new;
+            if mode == Mode::Save {
+                *inner.stored.write() = new;
+            }
             return Ok(SaveReport::default());
         }
 
@@ -734,6 +780,14 @@ impl Registry {
             return Err(SaveError::Invalid(errors));
         }
 
+        // A check ends here: dropping `staging` drops everything staged and
+        // prepared (closing a listener it bound), and nothing is stored.
+        if mode == Mode::Check {
+            drop(staging);
+            drop(lock);
+            return Ok(self.report(&snapshot, changed, warnings));
+        }
+
         // 4. Persist (a save only: a reload read them from the store).
         if let Some(writes) = writes {
             inner.store.write_all(writes).await?;
@@ -761,6 +815,20 @@ impl Registry {
         .map_err(|e| SaveError::Install(e.to_string()))?;
 
         // 6. Report.
+        Ok(self.report(&snapshot, changed, warnings))
+    }
+
+    /// What a save of `changed`, leaving `snapshot` stored, did (or would
+    /// do): its changed keys, the ones the environment still overrides,
+    /// and the restart-only ones whose value would differ from the one the
+    /// process started with.
+    fn report(
+        &self,
+        snapshot: &Snapshot,
+        changed: Vec<&'static dyn AnySetting>,
+        warnings: Vec<Warning>,
+    ) -> SaveReport {
+        let inner = &self.inner;
         let env = snapshot.env();
         let mut report = SaveReport {
             warnings,
@@ -784,7 +852,7 @@ impl Registry {
                 }
             }
         }
-        Ok(report)
+        report
     }
 
     /// Every declared setting, in declaration order, as the admin page

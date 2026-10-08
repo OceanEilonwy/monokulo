@@ -173,6 +173,8 @@
     var total = 0, changed = [];
     each(panel, "[data-card]", function (card) {
       var count = card.hidden ? 0 : cardChanges(card);
+      // A refused card put back as it's saved has nothing left to refuse.
+      if (count === 0 && touched && card.classList.contains("is-failed")) clearFailure(card);
       card.classList.toggle("is-dirty", count > 0);
       var state = card.querySelector("[data-card-state]");
       var badge = state && state.querySelector("[data-unsaved]");
@@ -220,7 +222,10 @@
       });
     } else if (barAtLoad && (total === 0 || barAtLoad.failed)) {
       message.innerHTML = barAtLoad.html;
-      box.classList.toggle("is-failed", barAtLoad.failed && document.querySelector("[data-card].is-failed") !== null);
+      // A refusal on cards lasts while one of them still shows it; one
+      // that names no card, until the next save.
+      var stillFailed = barAtLoad.cards === 0 || document.querySelector("[data-card].is-failed") !== null;
+      box.classList.toggle("is-failed", barAtLoad.failed && stillFailed);
     }
   }
 
@@ -242,11 +247,14 @@
       if (field.closest("[data-node-row]")) return;
       Array.prototype.forEach.call(settingControls(field), restore);
     });
-    if (card.classList.contains("is-failed")) {
-      card.classList.remove("is-failed");
-      each(card, ".card-body > p.error[role=alert], [data-card-state] .badge-error", function (el) { el.remove(); });
-    }
+    clearFailure(card);
     showCustodyBackends(document);
+  }
+
+  function clearFailure(card) {
+    if (!card.classList.contains("is-failed")) return;
+    card.classList.remove("is-failed");
+    each(card, ".card-body > p.error[role=alert], [data-card-state] .badge-error", function (el) { el.remove(); });
   }
 
   function discardAll() {
@@ -514,7 +522,9 @@
     });
     var box = bar();
     var message = box && box.querySelector("[data-save-bar-message]");
-    barAtLoad = message ? { html: message.innerHTML, failed: box.classList.contains("is-failed") } : null;
+    barAtLoad = message
+      ? { html: message.innerHTML, failed: box.classList.contains("is-failed"), cards: document.querySelectorAll("[data-card].is-failed").length }
+      : null;
     showSelfSigned(document);
     showCustodyBackends(document);
     update();

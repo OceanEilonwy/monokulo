@@ -219,12 +219,13 @@ const NODE_INFO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3)
 async fn nodes_that_cannot_work(
     submitted: &BTreeMap<String, Option<serde_json::Value>>,
     current: &crate::engine_settings::NodeConfig,
-) -> Vec<live_settings::FieldError> {
+) -> NodeProbe {
     use crate::daemon::MoneroDaemonClient as _;
     use crate::settings::MoneroNodeSetting;
 
     let mut errors = Vec::new();
     let mut probes = Vec::new();
+    let mut changed_networks: Vec<&'static str> = Vec::new();
     for (network, value) in submitted {
         let Some((name, setting)) = NETWORKS.iter().find(|(n, _)| n == network) else {
             continue;
@@ -253,6 +254,7 @@ async fn nodes_that_cannot_work(
             ));
             continue;
         }
+        changed_networks.push(name);
         for node in nodes {
             let key = setting.key;
             let network = *name;
@@ -268,30 +270,48 @@ async fn nodes_that_cannot_work(
                     .await
                     .ok()?
                     .ok()?;
-                let on = info.network()?;
-                (crate::network::network_str(on) != network).then(|| {
-                    live_settings::FieldError::new(
-                        key,
-                        format!(
-                            "{}:{} is on {}, not {network}.",
-                            node.host, node.port, info.nettype
-                        ),
-                    )
-                })
+                let wrong = info.network().and_then(|on| {
+                    (crate::network::network_str(on) != network).then(|| {
+                        live_settings::FieldError::new(
+                            key,
+                            format!(
+                                "{}:{} is on {}, not {network}.",
+                                node.host, node.port, info.nettype
+                            ),
+                        )
+                    })
+                });
+                Some((network, wrong))
             });
         }
     }
-    let mut wrong: Vec<live_settings::FieldError> = futures_util::future::join_all(probes)
-        .await
+    let answers: Vec<(&'static str, Option<live_settings::FieldError>)> =
+        futures_util::future::join_all(probes)
+            .await
+            .into_iter()
+            .flatten()
+            .collect();
+    let answered: Vec<&'static str> = changed_networks
         .into_iter()
-        .flatten()
+        .filter(|network| answers.iter().any(|(n, _)| n == network))
         .collect();
+    let mut wrong: Vec<live_settings::FieldError> =
+        answers.into_iter().filter_map(|(_, wrong)| wrong).collect();
     // One message per network: the first of its nodes in the order saved.
     let mut reported = std::collections::HashSet::new();
     wrong.retain(|e| reported.insert(e.key.clone()));
     errors.extend(wrong);
     errors.sort_by(|a, b| a.key.cmp(&b.key));
-    errors
+    NodeProbe { errors, answered }
+}
+
+/// What asking the submitted nodes found.
+struct NodeProbe {
+    /// The nodes that can never work where they're being saved.
+    errors: Vec<live_settings::FieldError>,
+    /// The networks whose nodes changed and of which at least one node
+    /// answered.
+    answered: Vec<&'static str>,
 }
 
 fn refused(errors: &[live_settings::FieldError]) -> axum::response::Response {
@@ -313,6 +333,101 @@ pub struct UnservedNetwork {
     tenants: u64,
 }
 
+/// A settings request as the registry takes it, once what can't be saved
+/// at all is refused: on an engine inside monokulo, the settings only a
+/// standalone engine uses; nodes that can never work where they're being
+/// saved (T9); a network the engine doesn't scan. The one gate a save and a
+/// check both go through, so a check refuses exactly what a save would.
+async fn changes_from(
+    settings: &EngineSettings,
+    req: UpdateSettingsRequest,
+) -> Result<(live_settings::Changes, NodeProbe, Vec<&'static str>), Box<axum::response::Response>> {
+    if settings.embedded {
+        let standalone: Vec<live_settings::FieldError> = req
+            .scalars
+            .keys()
+            .filter(|key| crate::engine_settings::standalone_only(key))
+            .map(|key| {
+                live_settings::FieldError::new(
+                    key.clone(),
+                    "Only the engine running on its own uses this, not the engine inside monokulo.",
+                )
+            })
+            .collect();
+        if !standalone.is_empty() {
+            return Err(Box::new(refused(&standalone)));
+        }
+    }
+    let mut changes: live_settings::Changes =
+        req.scalars.into_iter().map(|(k, v)| (k, Some(v))).collect();
+    let current_nodes = settings.nodes.load();
+    let probe = nodes_that_cannot_work(&req.monero_node, &current_nodes).await;
+    if !probe.errors.is_empty() {
+        return Err(Box::new(refused(&probe.errors)));
+    }
+    // The networks the request clears.
+    let mut cleared = Vec::new();
+    for (network, node) in req.monero_node {
+        let Some((name, setting)) = NETWORKS.iter().find(|(n, _)| *n == network) else {
+            return Err(Box::new(
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("unknown network {network:?}") })),
+                )
+                    .into_response(),
+            ));
+        };
+        let raw = match node {
+            Some(value) if !value.is_null() => Some(value.to_string()),
+            _ => {
+                cleared.push(*name);
+                None
+            }
+        };
+        changes.push((setting.key.to_owned(), raw));
+    }
+    Ok((changes, probe, cleared))
+}
+
+/// The registry, or the answer for an engine without one.
+fn registry_of(
+    settings: &EngineSettings,
+) -> Result<&live_settings::Registry, Box<axum::response::Response>> {
+    settings.registry.as_ref().ok_or_else(|| {
+        Box::new(
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "settings are not available on this engine" })),
+            )
+                .into_response(),
+        )
+    })
+}
+
+/// A save's (or a check's) answer: what changed (or would), and its
+/// warnings.
+fn accepted(
+    report: &live_settings::SaveReport,
+    unserved: &[UnservedNetwork],
+    checked: bool,
+) -> axum::response::Response {
+    let mut body = json!({
+        "ok": true,
+        "changed": report.changed,
+        "warnings": {
+            "restart_required": report.restart_required,
+            "env_overridden": report.env_overridden,
+            "messages": report.warnings.iter().map(|w| json!({ "key": w.key, "message": w.message })).collect::<Vec<_>>(),
+            "unserved_networks": unserved,
+        },
+    });
+    if checked {
+        body["checked"] = json!(true);
+        body["has_changes"] = json!(report.has_changes());
+    }
+    (StatusCode::OK, Json(body)).into_response()
+}
+
 /// `POST /api/v1/admin/settings`: saves any subset of settings through the
 /// registry (`admin_settings_v2.md` part 1).
 ///
@@ -329,53 +444,14 @@ pub async fn update_settings(
     State(settings): State<Arc<EngineSettings>>,
     Json(req): Json<UpdateSettingsRequest>,
 ) -> axum::response::Response {
-    let Some(registry) = settings.registry.as_ref() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "settings are not available on this engine" })),
-        )
-            .into_response();
+    let registry = match registry_of(&settings) {
+        Ok(registry) => registry,
+        Err(response) => return *response,
     };
-    if settings.embedded {
-        let standalone: Vec<live_settings::FieldError> = req
-            .scalars
-            .keys()
-            .filter(|key| crate::engine_settings::standalone_only(key))
-            .map(|key| {
-                live_settings::FieldError::new(
-                    key.clone(),
-                    "Only the engine running on its own uses this, not the engine inside monokulo.",
-                )
-            })
-            .collect();
-        if !standalone.is_empty() {
-            return refused(&standalone);
-        }
-    }
-    let mut changes: live_settings::Changes =
-        req.scalars.into_iter().map(|(k, v)| (k, Some(v))).collect();
-    // A node that can never work where it's being saved is refused before
-    // anything is stored (T9).
-    let current_nodes = settings.nodes.load();
-    let cannot_work = nodes_that_cannot_work(&req.monero_node, &current_nodes).await;
-    if !cannot_work.is_empty() {
-        return refused(&cannot_work);
-    }
-    for (network, node) in req.monero_node {
-        let Some((_, setting)) = NETWORKS.iter().find(|(n, _)| *n == network) else {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("unknown network {network:?}") })),
-            )
-                .into_response();
-        };
-        let raw = match node {
-            Some(value) if !value.is_null() => Some(value.to_string()),
-            _ => None,
-        };
-        changes.push((setting.key.to_owned(), raw));
-    }
-
+    let (changes, _, _) = match changes_from(&settings, req).await {
+        Ok(changes) => changes,
+        Err(response) => return *response,
+    };
     match registry.save(changes).await {
         Ok(report) => {
             // Networks stores use that have no node now, or whose just-saved
@@ -419,20 +495,57 @@ pub async fn update_settings(
                 }
             }
             unserved.sort_by(|a, b| a.network.cmp(&b.network));
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "ok": true,
-                    "changed": report.changed,
-                    "warnings": {
-                        "restart_required": report.restart_required,
-                        "env_overridden": report.env_overridden,
-                        "messages": report.warnings.iter().map(|w| json!({ "key": w.key, "message": w.message })).collect::<Vec<_>>(),
-                        "unserved_networks": unserved,
-                    },
-                })),
-            )
-                .into_response()
+            accepted(&report, &unserved, false)
+        }
+        Err(e) => save_refused(e),
+    }
+}
+
+/// `POST /api/v1/admin/settings/check`: checks a settings request exactly
+/// as `POST /api/v1/admin/settings` would save it, and saves nothing.
+///
+/// It goes through the save's own gate and `live_settings::Registry::check`.
+/// What a save would refuse is refused the same way: `400` with the same
+/// `fields`. Otherwise `200` with what a save would report: the keys that
+/// would change (`has_changes` false when none would), what would wait for
+/// a restart, what the environment would still override, the warnings from
+/// preparing, and the networks stores use that would be left without a
+/// node that answers (the request clears them, or none of their new nodes
+/// answered when asked). Nodes whose settings change are asked, as a save
+/// asks them.
+pub async fn check_settings(
+    State(db): State<Database>,
+    State(settings): State<Arc<EngineSettings>>,
+    Json(req): Json<UpdateSettingsRequest>,
+) -> axum::response::Response {
+    let registry = match registry_of(&settings) {
+        Ok(registry) => registry,
+        Err(response) => return *response,
+    };
+    let (changes, probe, cleared) = match changes_from(&settings, req).await {
+        Ok(changes) => changes,
+        Err(response) => return *response,
+    };
+    match registry.check(changes).await {
+        Ok(report) => {
+            let counts = db
+                .read(super::super::store::Store::count_tenants_by_network)
+                .await
+                .unwrap_or_default();
+            let mut unserved: Vec<UnservedNetwork> = counts
+                .into_iter()
+                .filter(|(network, tenants)| {
+                    let Some((name, setting)) = NETWORKS.iter().find(|(n, _)| n == network) else {
+                        return false;
+                    };
+                    *tenants > 0
+                        && report.changed.contains(&setting.key)
+                        && (cleared.contains(name) || !probe.answered.contains(name))
+                })
+                .map(|(network, tenants)| UnservedNetwork { network, tenants })
+                .collect();
+            unserved.sort_by(|a, b| a.network.cmp(&b.network));
+            accepted(&report, &unserved, true)
         }
         Err(e) => save_refused(e),
     }
