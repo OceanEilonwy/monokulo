@@ -75,6 +75,7 @@ key-custody = { path = "../key-custody", default-features = false }
 # WebAssembly with a separate, offline `cargo build`, and naming it here makes
 # Cargo fetch everything that build needs first.
 key-custody = { path = "../key-custody", default-features = false, features = ["wasm"] }
+wallet-setup = { path = "../wallet-setup", features = ["wasm"] }
 
 [dev-dependencies]
 # Turns on `test-support` for this crate's own integration tests and examples.

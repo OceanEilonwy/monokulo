@@ -12,9 +12,11 @@
 //! a build that reaches the network would break offline builds and make
 //! builds depend on the registry.
 
-// Built separately for WebAssembly (`build_key_custody_wasm`); a build
-// dependency only so its crates are fetched first.
+// Built separately for WebAssembly (`build_key_custody_wasm`,
+// `build_wallet_setup_wasm`); build dependencies only so their crates are
+// fetched first.
 extern crate key_custody as _;
+extern crate wallet_setup as _;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -76,28 +78,70 @@ fn main() {
     }
 
     build_key_custody_wasm(&manifest);
+    build_wallet_setup_wasm(&manifest);
     release_identity();
 }
 
+/// A browser module built from one of the workspace's crates.
+struct BrowserModule {
+    /// What the build failure message calls it.
+    what: &'static str,
+    package: &'static str,
+    /// The crate's own sources and anything else that changes its build.
+    inputs: &'static [&'static str],
+    /// The `.wasm` the build makes, and the name it's copied to in `OUT_DIR`.
+    artifact: &'static str,
+}
+
 /// Builds the `key-custody` crate's browser module (`--features wasm`,
-/// without its backends) into `OUT_DIR/key_custody.wasm`, with the same
-/// lockfile, offline: its dependencies are this crate's build dependencies
-/// too, so they're already fetched. Always optimised for size, whatever this
-/// build's profile: it is downloaded by every key entry form.
+/// without its backends) into `OUT_DIR/key_custody.wasm`.
 fn build_key_custody_wasm(manifest: &Path) {
+    build_browser_module(
+        manifest,
+        &BrowserModule {
+            what: "key custody's browser module",
+            package: "key-custody",
+            inputs: &[
+                "crates/key-custody/src",
+                "crates/key-custody/Cargo.toml",
+                "crates/snp-attest/src",
+                "crates/snp-attest/Cargo.toml",
+            ],
+            artifact: "key_custody.wasm",
+        },
+    );
+}
+
+/// Builds the `wallet-setup` crate's browser module (`--features wasm`) into
+/// `OUT_DIR/wallet_setup.wasm`: the "Create a new wallet" page's recovery
+/// phrase, keys and QR codes.
+fn build_wallet_setup_wasm(manifest: &Path) {
+    build_browser_module(
+        manifest,
+        &BrowserModule {
+            what: "the new wallet page's browser module",
+            package: "wallet-setup",
+            inputs: &["crates/wallet-setup/src", "crates/wallet-setup/Cargo.toml"],
+            artifact: "wallet_setup.wasm",
+        },
+    );
+}
+
+/// Builds `module` for WebAssembly into `OUT_DIR`, with the same lockfile,
+/// offline: its dependencies are this crate's build dependencies too, so
+/// they're already fetched. Always optimised for size, whatever this build's
+/// profile: the pages that use it download it.
+fn build_browser_module(manifest: &Path, module: &BrowserModule) {
     let workspace = manifest.join("../..");
-    for input in [
-        "crates/key-custody/src",
-        "crates/key-custody/Cargo.toml",
-        "crates/snp-attest/src",
-        "crates/snp-attest/Cargo.toml",
-        "Cargo.lock",
-        ".cargo/config.toml",
-    ] {
+    for input in module
+        .inputs
+        .iter()
+        .chain(&["Cargo.lock", ".cargo/config.toml"])
+    {
         println!("cargo:rerun-if-changed={}", workspace.join(input).display());
     }
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let target_dir = out.join("key-custody-wasm");
+    let target_dir = out.join(format!("{}-wasm", module.package));
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let mut command = Command::new(cargo);
     command
@@ -110,7 +154,7 @@ fn build_key_custody_wasm(manifest: &Path) {
             "--locked",
             "--release",
             "--package",
-            "key-custody",
+            module.package,
             "--lib",
             "--no-default-features",
             "--features",
@@ -140,16 +184,17 @@ fn build_key_custody_wasm(manifest: &Path) {
     ] {
         command.env_remove(var);
     }
-    let status = command.status().unwrap_or_else(|e| {
-        panic!("could not run cargo to build key custody's browser module: {e}")
-    });
+    let what = module.what;
+    let status = command
+        .status()
+        .unwrap_or_else(|e| panic!("could not run cargo to build {what}: {e}"));
     assert!(
         status.success(),
-        "\n\nBuilding key custody's browser module failed. It needs the WebAssembly target \
+        "\n\nBuilding {what} failed. It needs the WebAssembly target \
          (rust-toolchain.toml installs it; otherwise `rustup target add wasm32-unknown-unknown`).\n"
     );
-    let built = target_dir.join("wasm32-unknown-unknown/release/key_custody.wasm");
-    std::fs::copy(&built, out.join("key_custody.wasm"))
+    let built = target_dir.join("wasm32-unknown-unknown/release").join(module.artifact);
+    std::fs::copy(&built, out.join(module.artifact))
         .unwrap_or_else(|e| panic!("copying {}: {e}", built.display()));
 }
 
