@@ -23,7 +23,6 @@ use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 
 use crate::db::{Theme, UserRow};
-use crate::templates::network_selected_flags;
 use crate::views;
 
 use super::connections::{self, CreateConnectionError, CreateConnectionFields};
@@ -42,6 +41,10 @@ pub struct SignupForm {
     /// `"public"` mode, where it's submitted but simply ignored.
     #[serde(default)]
     pub invite: String,
+    /// Where the visitor was going before signing up (a plugin's connect
+    /// page): carried through wallet setup and back there.
+    #[serde(default)]
+    pub next: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -52,6 +55,8 @@ pub struct SignupQuery {
     /// only ever happens at submit time).
     #[serde(default)]
     pub invite: Option<String>,
+    #[serde(default)]
+    pub next: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -158,6 +163,7 @@ pub struct ConnectForm {
     /// the two above.
     #[serde(default)]
     pub encrypted_keys: Option<String>,
+    #[serde(default)]
     pub network: String,
     /// Validated against `crate::currencies` in `connect_submit` - see
     /// that module's own doc comment.
@@ -168,13 +174,22 @@ pub struct ConnectForm {
     /// Only sent when the form offered a choice (part 5).
     #[serde(default)]
     pub key_custody_backend: Option<String>,
+    /// The merchant's wallet the store takes payments into (docs/wallets.md).
+    /// A caller that sends keys instead gets them added as a wallet.
+    #[serde(default)]
+    pub wallet_id: Option<String>,
 }
 
 /// `chrome.logged_in` is always `false` here, not a real per-request
 /// session check - this page's whole purpose is establishing a *new*
 /// session, so showing the sign-up/log-in links regardless of any existing
 /// one is the reasonable default (see `views::auth`'s own doc comment).
-async fn render_signup(state: &AppState, error: Option<&str>, invite_token: &str) -> Response {
+async fn render_signup(
+    state: &AppState,
+    error: Option<&str>,
+    invite_token: &str,
+    next: Option<&str>,
+) -> Response {
     let invite_only = state.settings.signup_mode() == crate::settings::SignupMode::InviteOnly;
     let invite_required = invite_only && invite_token.trim().is_empty();
     let chrome = super::page_chrome(state, None, "").await;
@@ -182,6 +197,9 @@ async fn render_signup(state: &AppState, error: Option<&str>, invite_token: &str
         error: error.map(str::to_string),
         invite_required,
         invite_token: invite_token.to_string(),
+        next: next
+            .and_then(SafePath::parse)
+            .map(|p| p.as_str().to_owned()),
     };
     views::auth::signup_page(&chrome, &data).into_response()
 }
@@ -191,6 +209,7 @@ async fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>)
     let chrome = super::page_chrome(state, None, "").await;
     let data = views::auth::LoginViewModel {
         error: error.map(str::to_string),
+        connecting_site: super::wallets::connecting_site(next),
         next: next.map(str::to_string),
     };
     views::auth::login_page(&chrome, &data).into_response()
@@ -209,44 +228,28 @@ async fn render_connect_form(
     resubmit: Option<&ConnectForm>,
     user: &UserRow,
 ) -> Response {
-    let (network_mainnet_selected, network_stagenet_selected, network_testnet_selected) =
-        network_selected_flags(resubmit.map(|f| f.network.as_str()).unwrap_or("mainnet"));
     let selected_currency = resubmit.map(|f| f.base_currency.as_str()).unwrap_or("XMR");
-    let selected = selected_currency.to_string();
-    let currency_options = state
+    let (selected, user_id) = (selected_currency.to_string(), user.id.clone());
+    let (currency_options, wallets) = state
         .db
-        .read(move |db| crate::currencies::currency_options(db, &selected))
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                crate::currencies::currency_options(db, &selected).unwrap_or_default(),
+                db.list_wallets(&user_id).unwrap_or_default(),
+            ))
+        })
         .await
         .unwrap_or_default();
     let chrome = super::page_chrome(state, Some(user), "/dashboard/connect").await;
-    let custody_choices = super::status_page::custody_choice_views(
-        state,
-        resubmit.and_then(|f| f.key_custody_backend.as_deref()),
-    );
-    let snp_entry = super::key_entry::prepare(
-        state,
-        &user.id,
-        super::key_entry::Purpose::Create,
-        &super::key_entry::offered_backends(state, &custody_choices),
-    )
-    .await;
     let data = views::connect::ConnectViewModel {
         error: error.map(str::to_string),
         public_key: None,
         connection_id: None,
         public_url: None,
         site_url: resubmit.map(|f| f.site_url.clone()).unwrap_or_default(),
-        // Never echoed back: the private view key isn't put in a page.
-        view_key_hex: String::new(),
-        spend_pubkey_hex: resubmit
-            .map(|f| f.spend_pubkey_hex.clone())
-            .unwrap_or_default(),
-        network_mainnet_selected,
-        network_stagenet_selected,
-        network_testnet_selected,
         currency_options,
-        custody_choices,
-        snp_entry,
+        wallets,
+        selected_wallet: resubmit.and_then(|f| f.wallet_id.clone()),
     };
     views::connect::page(&chrome, &data).into_response()
 }
@@ -270,11 +273,18 @@ pub async fn signup_form(
     State(state): State<AppState>,
     Query(query): Query<SignupQuery>,
 ) -> Response {
-    render_signup(&state, None, query.invite.as_deref().unwrap_or("")).await
+    render_signup(
+        &state,
+        None,
+        query.invite.as_deref().unwrap_or(""),
+        query.next.as_deref(),
+    )
+    .await
 }
 
 pub async fn signup_submit(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Form(form): Form<SignupForm>,
 ) -> Response {
     match signup::create_account(
@@ -286,16 +296,32 @@ pub async fn signup_submit(
     )
     .await
     {
-        // Simplest reasonable post-signup behavior: send the new user to the
-        // login page rather than also logging them in here - it reuses
-        // `login_submit`'s own cookie-setting path instead of duplicating it,
-        // at the cost of one extra form submission for the user.
-        Ok(_user_id) => redirect_302("/dashboard/login"),
+        // Logged in straight away, and on to setting up the first wallet:
+        // a store needs one. Where they were going (a plugin's connect
+        // page) comes after it.
+        Ok(user_id) => {
+            let user_id = crate::db::UserId::new(user_id);
+            let Ok(raw_token) = login::start_session(&state, &user_id).await else {
+                return redirect_302("/dashboard/login");
+            };
+            let cookie = super::session_cookie(&headers, raw_token.expose().to_string());
+            let jar = CookieJar::new().add(cookie);
+            let setup = match form.next.as_deref().and_then(SafePath::parse) {
+                Some(next) => format!(
+                    "/dashboard/wallets/setup?next={}",
+                    url::form_urlencoded::byte_serialize(next.as_str().as_bytes())
+                        .collect::<String>()
+                ),
+                None => "/dashboard/wallets/setup".to_owned(),
+            };
+            (jar, redirect_302(&setup)).into_response()
+        }
         Err(CreateAccountError::DuplicateEmail) => {
             render_signup(
                 &state,
                 Some("That email is already registered. Try logging in instead."),
                 &form.invite,
+                form.next.as_deref(),
             )
             .await
         }
@@ -304,14 +330,18 @@ pub async fn signup_submit(
                 &state,
                 Some("Something went wrong. Please try again."),
                 &form.invite,
+                form.next.as_deref(),
             )
             .await
         }
-        Err(CreateAccountError::InviteRequired) => render_signup(&state, None, "").await,
+        Err(CreateAccountError::InviteRequired) => {
+            render_signup(&state, None, "", form.next.as_deref()).await
+        }
         Err(CreateAccountError::InvalidOrUsedInvite) => render_signup(
             &state,
             Some("That invite link is invalid or has already been used. Please request a new one."),
             "",
+            form.next.as_deref(),
         )
         .await,
         Err(CreateAccountError::WeakPassword) => {
@@ -322,11 +352,18 @@ pub async fn signup_submit(
                     signup::MIN_PASSWORD_LEN
                 )),
                 &form.invite,
+                form.next.as_deref(),
             )
             .await
         }
         Err(CreateAccountError::InvalidEmail) => {
-            render_signup(&state, Some("That is not an email address."), &form.invite).await
+            render_signup(
+                &state,
+                Some("That is not an email address."),
+                &form.invite,
+                form.next.as_deref(),
+            )
+            .await
         }
         // Not a path a non-admin signup takes.
         Err(CreateAccountError::AlreadySetUp) => redirect_302("/dashboard/login"),
@@ -547,12 +584,17 @@ pub async fn connect_submit(
         view_key_hex: form.view_key_hex.clone(),
         spend_pubkey_hex: form.spend_pubkey_hex.clone(),
         encrypted_keys: form.encrypted_keys.clone(),
-        network: Some(form.network.clone()),
+        network: Some(form.network.clone()).filter(|n| !n.is_empty()),
         domains: Vec::new(),
         confirmations_required: form.confirmations_required,
         order_expiry_seconds: None,
         base_currency: form.base_currency.clone(),
         key_custody_backend: form.key_custody_backend.clone().filter(|b| !b.is_empty()),
+        wallet_id: form
+            .wallet_id
+            .clone()
+            .filter(|w| !w.is_empty())
+            .map(crate::db::WalletId::new),
     };
 
     match connections::create_connection_for_user(&state, &user, fields).await {
@@ -838,7 +880,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains("Automatic (this browser: Australia/Perth)"),
+            html.contains("Automatic - this browser: Australia/Perth"),
             "{html}"
         );
 

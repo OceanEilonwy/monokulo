@@ -5,6 +5,7 @@
 
 use maud::{html, Markup, PreEscaped};
 
+use super::controls::Choice;
 use super::{layout_with_head, reload_button, PageChrome};
 use crate::engine_view::present::{
     Bar, ChainView, Lane, MarkView, Panel, Presented, RibbonMark, RoundView,
@@ -287,11 +288,12 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
                 (help())
                 form class="engine-network" method="get" action="/status/engine" {
                     label for="engine-network" { "Network" }
-                    select id="engine-network" name="network" {
-                        @for network in NETWORKS {
-                            option value=(network) selected[*network == page.network] disabled[!page.networks.iter().any(|n| n == network)] {
-                                (network)
-                                @if !page.networks.iter().any(|n| n == network) { " (no node configured)" }
+                    mk-select compact {
+                        select id="engine-network" name="network" {
+                            @for network in NETWORKS {
+                                @let configured = page.networks.iter().any(|n| n == network);
+                                @let choice = Choice::new(network, network).selected(*network == page.network).disabled(!configured);
+                                (if configured { choice } else { choice.note("no node configured") })
                             }
                         }
                     }
@@ -338,10 +340,12 @@ fn timeline() -> Markup {
             div class="tl-read" id="tl-read" { span id="tl-text" {} }
             div class="tl-modes" id="tl-modes" {
                 label for="tl-mode" { "Playback" }
-                select id="tl-mode" name="tl-mode" {
-                    option value="live" selected { "Live" }
-                    option value="replay" disabled { "Play" }
-                    option value="paused" { "Pause" }
+                mk-select compact {
+                    select id="tl-mode" name="tl-mode" {
+                        option value="live" selected { "Live" }
+                        option value="replay" disabled { "Play" }
+                        option value="paused" { "Pause" }
+                    }
                 }
             }
         }

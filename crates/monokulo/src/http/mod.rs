@@ -75,6 +75,8 @@ mod telemetry_client;
 mod test_support;
 #[cfg(test)]
 mod tests;
+mod wallet_service;
+mod wallets;
 
 use std::sync::Arc;
 
@@ -442,6 +444,39 @@ pub fn build_router(state: AppState) -> Router {
             "/dashboard/stores/new",
             axum::routing::get(home::new_store_picker),
         )
+        .route("/dashboard/wallets", axum::routing::get(wallets::index))
+        .route(
+            "/dashboard/wallets/setup",
+            axum::routing::get(wallets::setup),
+        )
+        .route(
+            "/dashboard/wallets/import",
+            axum::routing::get(wallets::import_form).post(wallets::import_submit),
+        )
+        .route(
+            "/dashboard/wallets/new",
+            axum::routing::get(wallets::create_form).post(wallets::create_submit),
+        )
+        .route(
+            "/dashboard/wallets/{id}",
+            axum::routing::get(wallets::detail),
+        )
+        .route(
+            "/dashboard/wallets/{id}/ready",
+            axum::routing::get(wallets::ready),
+        )
+        .route(
+            "/dashboard/wallets/{id}/rename",
+            axum::routing::post(wallets::rename),
+        )
+        .route(
+            "/dashboard/wallets/{id}/retire",
+            axum::routing::post(wallets::retire),
+        )
+        .route(
+            "/dashboard/wallets/{id}/restore",
+            axum::routing::post(wallets::restore),
+        )
         .route(
             "/dashboard/stores/new/woocommerce",
             axum::routing::get(home::woocommerce_instructions),
@@ -477,6 +512,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/dashboard/stores/{id}/settings/key-custody",
             post(orders::move_key_storage),
+        )
+        .route(
+            "/dashboard/stores/{id}/settings/wallet",
+            post(orders::change_store_wallet),
         )
         .route(
             "/dashboard/stores/{id}/embed-warning/dismiss",
@@ -710,6 +749,18 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::get(key_entry::module),
         )
         .route(
+            "/static/wallet-setup.js",
+            axum::routing::get(wallets::script),
+        )
+        .route(
+            "/static/wallet-setup.wasm",
+            axum::routing::get(wallets::module),
+        )
+        .route(
+            "/static/wallet-logos/{file}",
+            axum::routing::get(wallets::logo),
+        )
+        .route(
             "/key-custody/bundles/{id}",
             axum::routing::get(key_entry::bundle),
         );
@@ -717,6 +768,10 @@ pub fn build_router(state: AppState) -> Router {
     let router = router.route(
         "/static/fx-glue.js",
         axum::routing::get(pay::fx_glue_script),
+    );
+    let router = router.route(
+        "/static/mk-select.js",
+        axum::routing::get(pay::mk_select_script),
     );
     let router = router.route("/static/logo.svg", axum::routing::get(pay::logo_svg));
     let router = router.route("/static/favicon.svg", axum::routing::get(pay::favicon_svg));

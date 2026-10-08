@@ -294,7 +294,7 @@ proptest! {
     fn exhaustion_and_mismatched_claims_cannot_corrupt_allocation(offset in 0u32..4,mismatch in any::<bool>()) {
         runtime().block_on(async {
             let w=World::new(1,false).await; let next=u32::MAX-offset;
-            w.store.lock().conn_for_test().execute("UPDATE tenants SET next_minor_index=?1",[i64::from(next)]).unwrap();
+            w.store.lock().conn_for_test().execute("UPDATE wallets SET next_minor_index=?1",[i64::from(next)]).unwrap();
             let new=crate::store::NewOrder { tenant_id:w.ids[0].clone(),minor_index:if mismatch {next.saturating_sub(1)} else {next},address:"derived".to_owned(),xmr_amount_piconero:1,idempotency_key:Some("boundary".to_owned()),merchant_order_id:None,description:None,confirmations_required_override:None,created_at:1,expires_at:2 };
             let result=w.store.lock().create_order_claiming_minor_index(next,&new);
             if mismatch || next==u32::MAX {
@@ -393,7 +393,7 @@ fn exhausted_counter_still_allows_idempotent_replays_and_never_wraps() {
             .lock()
             .conn_for_test()
             .execute(
-                "UPDATE tenants SET next_minor_index=?1",
+                "UPDATE wallets SET next_minor_index=?1",
                 [i64::from(u32::MAX)],
             )
             .unwrap();
@@ -409,7 +409,7 @@ fn exhausted_counter_still_allows_idempotent_replays_and_never_wraps() {
             .lock()
             .conn_for_test()
             .execute(
-                "UPDATE tenants SET next_minor_index=?1",
+                "UPDATE wallets SET next_minor_index=?1",
                 [i64::from(u32::MAX) + 1],
             )
             .unwrap();

@@ -117,18 +117,27 @@ pub(super) async fn authenticate(
         return Err(LoginError::Unauthorized);
     };
 
+    let raw_token = start_session(state, &user.id).await?;
+    Ok((user, raw_token))
+}
+
+/// A new session for `user_id`: the raw token for its cookie. Shared by
+/// logging in and signing up (a new account is logged in straight away).
+pub(super) async fn start_session(
+    state: &AppState,
+    user_id: &crate::db::UserId,
+) -> Result<shared::auth::RawToken, LoginError> {
     let raw_token = shared::auth::generate_session_token();
     let token_hash = raw_token.hash();
-    let (hash, user_id) = (token_hash.clone(), user.id.clone());
+    let (hash, id) = (token_hash.clone(), user_id.clone());
     state
         .db
-        .write(move |db| db.create_session(&hash, &user_id, now_unix()))
+        .write(move |db| db.create_session(&hash, &id, now_unix()))
         .await
         .map_err(|_| LoginError::Internal)?;
     // The sign-in's own lines start the session's.
-    super::record_identity(user.id.as_str(), &token_hash);
-
-    Ok((user, raw_token))
+    super::record_identity(user_id.as_str(), &token_hash);
+    Ok(raw_token)
 }
 
 pub async fn login(

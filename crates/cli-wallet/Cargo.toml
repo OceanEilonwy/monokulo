@@ -79,5 +79,11 @@ path = "src/bin/refresh_decoy_pool.rs"
 name = "wallet-cli"
 path = "src/bin/cli/main.rs"
 
+[dev-dependencies]
+# The browser-made wallet (monokulo's "Create a new wallet") restores here to
+# the same keys: tests/wallet_setup.rs. The check lives on this side so the
+# WebAssembly build of wallet-setup never needs this crate's dependencies.
+wallet-setup = { path = "../wallet-setup" }
+
 [lints]
 workspace = true

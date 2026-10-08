@@ -532,6 +532,9 @@ async fn scan_and_record(
         .iter()
         .map(|(id, _, w)| (id.as_str(), w.generation()))
         .collect();
+    // When the scan began: what a store that changed wallet since is
+    // checked against (`record_scan_match`).
+    let scanned_at = crate::now_unix();
     for (tenant_id, result) in scan_for_tenants(
         inputs.custody,
         txid,
@@ -560,7 +563,7 @@ async fn scan_and_record(
             claims.complete(&tenant_id, generation);
             continue;
         };
-        let (id, now) = (tenant_id.clone(), crate::now_unix());
+        let (id, now) = (tenant_id.clone(), scanned_at);
         let recorded = inputs
             .db
             .run(Class::Scanner, move |s| {

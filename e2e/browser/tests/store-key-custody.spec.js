@@ -6,7 +6,7 @@
 // stand-in security processor; here, turning snp on where it can't run is
 // reported, and plain stores carry on.
 const { test, expect } = require('@playwright/test');
-const { useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY, expectSaved } = require('./backend-helpers');
+const { createStore, useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY, expectSaved } = require('./backend-helpers');
 
 useRealStack(test);
 
@@ -24,13 +24,10 @@ test('a store keeps its keys in the engine; snp turned on without SEV-SNP hardwa
   await expectSaved(page);
 
   // One backend: no choice is offered, and the keys go in as they are.
-  await page.goto(base + '/dashboard/connect');
+  // A wallet's keys are given when it's added (Bring your own wallet).
+  await page.goto(base + '/dashboard/wallets/import');
   await expect(page.locator('select[name="key_custody_backend"]')).toHaveCount(0);
-  await page.locator('input[name="site_url"]').fill('https://kept.example.com');
-  await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);
-  await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
-  await page.locator('select[name="network"]').selectOption('stagenet');
-  await page.getByRole('button', { name: 'Connect' }).click();
+  await createStore(page, 'kept.example.com');
   const storeId = (await finishStoreSetup(page)).split('/').pop();
   await createOrder(page, base, storeId, '0.5');
 
@@ -44,7 +41,7 @@ test('a store keeps its keys in the engine; snp turned on without SEV-SNP hardwa
   // Said in the toast, and as a banner that stays: the backend can't run.
   await expect(page.locator('#settings-toasts').getByText(/snp backend can.t start/)).toBeVisible();
   await expect(page.locator('#settings-banners').getByText(/snp key custody backend can.t run/)).toBeVisible();
-  await page.goto(base + '/dashboard/connect');
+  await page.goto(base + '/dashboard/wallets/import');
   await expect(page.locator('input[name="view_key_hex"]')).toBeVisible();
   await expect(page.locator('select[name="key_custody_backend"]')).toHaveCount(0);
 

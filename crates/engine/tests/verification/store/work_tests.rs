@@ -514,7 +514,7 @@ fn the_scanners_hot_queries_use_their_indexes() {
     };
     let window = format!(
         "SELECT minor_index FROM orders WHERE id IN ({}) ORDER BY minor_index",
-        crate::store::scan_window_orders("o.tenant_id = 'x'")
+        crate::store::scan_window_orders("o.scan_tenant_id = 'x'")
     )
     .replace(":since_minus_grace", "0");
     let in_scope = format!(
@@ -525,9 +525,9 @@ fn the_scanners_hot_queries_use_their_indexes() {
     .replace(":since_minus_grace", "0");
     for (what, sql, index) in [
         ("scan window, open half", window.as_str(), "_status_"),
-        ("scan window, closed half", window.as_str(), "orders_tenant_closed_idx"),
+        ("scan window, closed half", window.as_str(), "orders_scan_tenant_closed_idx"),
         ("tenant in scope, open half", in_scope.as_str(), "_status_"),
-        ("tenant in scope, closed half", in_scope.as_str(), "orders_tenant_closed_idx"),
+        ("tenant in scope, closed half", in_scope.as_str(), "orders_scan_tenant_closed_idx"),
         (
             "catch-up groups",
             "SELECT DISTINCT scanned_through_height FROM tenants WHERE network = 'mainnet' AND disabled_at_utc IS NULL \

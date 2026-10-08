@@ -27,6 +27,7 @@ pub mod qr;
 pub mod settings;
 pub mod templates;
 pub mod views;
+pub mod wallets;
 
 /// Seconds since the Unix epoch: the one clock both services share.
 pub use shared::time::now_unix;

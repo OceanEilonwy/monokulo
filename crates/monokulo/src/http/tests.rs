@@ -477,8 +477,10 @@ async fn get_dashboard_login_returns_html() {
     assert!(html.contains("/dashboard/login"));
 }
 
+/// A new account is logged in straight away and goes on to set up its
+/// first wallet: a store needs one.
 #[tokio::test]
-async fn posting_valid_form_encoded_signup_data_redirects_to_the_login_page() {
+async fn signing_up_logs_in_and_goes_on_to_set_up_a_wallet() {
     let router = test_router();
     let response = router
         .oneshot(form_request(
@@ -501,7 +503,14 @@ async fn posting_valid_form_encoded_signup_data_redirects_to_the_login_page() {
         .unwrap()
         .to_str()
         .unwrap();
-    assert_eq!(location, "/dashboard/login");
+    assert_eq!(location, "/dashboard/wallets/setup");
+    assert!(
+        response.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .starts_with("session="),
+        "the new account is logged in"
+    );
 }
 
 #[tokio::test]
@@ -973,6 +982,53 @@ async fn signed_up_and_logged_in_session_cookie(
     set_cookie.split(';').next().unwrap().to_string()
 }
 
+/// A form post as the browser holding `cookie` sends it.
+fn cookie_form_request(uri: &str, cookie: &str, fields: &[(&str, &str)]) -> Request<Body> {
+    let body = fields
+        .iter()
+        .map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("cookie", cookie)
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// Brings in a wallet with the test keys ("Bring your own wallet"), as a
+/// merchant does right after signing up; its id.
+async fn add_test_wallet(router: &Router, cookie: &str) -> String {
+    let response = router
+        .clone()
+        .oneshot(cookie_form_request(
+            "/dashboard/wallets/import",
+            cookie,
+            &[
+                ("name", "Test wallet"),
+                ("view_key_hex", TEST_VIEW_KEY_HEX),
+                ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+                ("network", "mainnet"),
+            ],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::SEE_OTHER,
+        "the wallet is added"
+    );
+    let location = response.headers()["location"].to_str().unwrap().to_owned();
+    location
+        .trim_start_matches("/dashboard/wallets/")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
 #[tokio::test]
 async fn get_dashboard_connect_without_a_session_is_rejected() {
     let (state, _engine) = test_state_with_real_engine().await;
@@ -1122,42 +1178,27 @@ async fn submitting_an_invalid_view_key_rerenders_the_form_with_a_visible_error(
     );
 }
 
-/// The real UX bug: losing every field on a rejected submission - a
-/// merchant who mistyped one character of a 64-char hex key shouldn't have
-/// to retype the whole form, including the *other*, perfectly valid key.
-/// Drives the real endpoint end to end (not just the template layer, which
-/// `templates.rs`'s own `connect_template_re_fills_...` test already
-/// covers) with a genuinely invalid spend key, so this exercises the real
-/// `connect_submit` -> `render_connect_form(..., Some(&form))` path.
+/// A refused custom-store submission keeps what the merchant typed and
+/// says why on the same page.
 #[tokio::test]
-async fn a_rejected_connect_submission_re_fills_what_the_merchant_typed_but_the_view_key() {
+async fn a_refused_custom_store_submission_keeps_the_site_url_and_says_why() {
     let (state, _engine) = test_state_with_real_engine().await;
     let router = build_router(state);
-
     let cookie = signed_up_and_logged_in_session_cookie(
         &router,
         "keep-my-inputs@example.com",
         "correct horse battery staple",
     )
     .await;
+    add_test_wallet(&router, &cookie).await;
 
     let response = router
-        .oneshot(connect_post_request(
+        .oneshot(cookie_form_request(
+            "/dashboard/connect",
             &cookie,
             &[
-                ("site_url", "https://my-real-shop.example.com"),
-                ("view_key_hex", TEST_VIEW_KEY_HEX),
-                // 64 hex chars, well-formed, but not a real curve point -
-                // real, verified invalid input (see admin.rs's own
-                // regression tests at the repo root), not a length/hex
-                // mistake this form's client-side pattern= would already
-                // catch before ever reaching the server.
-                ("spend_pubkey_hex", &"ff".repeat(32)),
-                ("network", "stagenet"),
-                (
-                    "allowed_origins",
-                    "https://my-real-shop.example.com, https://admin.example.com",
-                ),
+                ("site_url", "https://shop.example.com"),
+                ("wallet_id", "w_not_mine"),
                 ("base_currency", "XMR"),
             ],
         ))
@@ -1166,34 +1207,10 @@ async fn a_rejected_connect_submission_re_fills_what_the_merchant_typed_but_the_
 
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_text(response).await;
+    assert!(html.contains("Choose one of your wallets."), "{html}");
     assert!(
-        html.contains("class=\"error\""),
-        "expected a visible error, got: {html}"
-    );
-
-    assert!(
-        html.contains(r#"value="https://my-real-shop.example.com""#),
-        "expected site_url re-filled, got: {html}"
-    );
-    assert!(
-        !html.contains(TEST_VIEW_KEY_HEX),
-        "the private view key is never put back in a page: {html}"
-    );
-    assert!(
-        html.contains(&format!(r#"value="{}""#, "ff".repeat(32))),
-        "expected the rejected spend key re-filled too, so the merchant can see and fix exactly it, got: {html}"
-    );
-    assert!(
-        !html.contains("allowed_origins"),
-        "allowed origins are no longer asked for, got: {html}"
-    );
-    assert!(
-        html.contains(r#"value="stagenet" selected"#),
-        "expected stagenet to stay selected, got: {html}"
-    );
-    assert!(
-        !html.contains(r#"value="mainnet" selected"#),
-        "mainnet must not silently reappear as selected, got: {html}"
+        html.contains(r#"value="https://shop.example.com""#),
+        "{html}"
     );
 }
 

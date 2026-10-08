@@ -33,6 +33,8 @@ pub struct StoreDetailData {
     /// the now-updated order, alongside `lookup_message`.
     pub lookup_found_order_id: Option<String>,
     pub embed_warnings: EmbedWarnings,
+    /// The wallet the store takes payments into: its id and name.
+    pub wallet: Option<(String, String)>,
 }
 
 /// A verified domain whose DNS record has gone missing
@@ -172,6 +174,15 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 (embed_warnings(store.connection_id.as_str(), &store.embed_warnings))
 
                 table class="kv-table" {
+                    tr {
+                        th { "Wallet" }
+                        td {
+                            @match &store.wallet {
+                                Some((id, name)) => a href=(format!("/dashboard/wallets/{id}")) { (name) },
+                                None => span class="muted" { "-" },
+                            }
+                        }
+                    }
                     tr { th { "Base currency" } td { (store.base_currency) } }
                     tr { th { "Public key" } td { code { (store.public_key) } } }
                     tr { th { "Connected" } td { (chrome.clock.time(store.created_at)) } }
@@ -264,19 +275,17 @@ pub fn woocommerce_instructions_page(chrome: &PageChrome) -> Markup {
             ol class="steps" {
                 li { "Install and activate the " strong { "Monokulo" } " plugin (WordPress admin → Plugins → Add New, search \"Monokulo\")." }
                 li { "Go to " strong { "WooCommerce → Settings → Payments" } " and enable " strong { "Monokulo" } "." }
-                li { "Open its settings and click " strong { "Connect to Monokulo" } "." }
+                li { "Open its settings and click " strong { "Connect your Monero wallet" } "." }
                 li {
-                    "You'll land back here to paste in your view key and spend public key (the same \"custom\" "
-                    "form the advanced flow uses) - your WooCommerce site is remembered automatically, so nothing "
-                    "else needs typing."
+                    "You'll land back here: say whether the shop is a new store, and pick the wallet its payments go to "
+                    "(or set one up on the way). Your WooCommerce site is remembered automatically."
                 }
                 li { "Once confirmed, you're sent straight back to your WooCommerce settings, already connected." }
             }
             div class="box" {
                 p class="hint" {
-                    "Don't have the plugin installed yet, or just want to see what the advanced form "
-                    "looks like first? You can also "
-                    a href="/dashboard/connect" { "connect manually" }
+                    "Don't have the plugin installed yet? You can also "
+                    a href="/dashboard/connect" { "add it as a custom store" }
                     " right now and enter your WooCommerce site's URL yourself."
                 }
             }
@@ -295,6 +304,7 @@ mod tests {
 
     fn base_store(is_woocommerce: bool) -> StoreDetailData {
         StoreDetailData {
+            wallet: None,
             connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             platform: if is_woocommerce {
@@ -337,6 +347,7 @@ mod tests {
         assert!(html.contains(r#"href="/dashboard/stores/conn_1/settings#verified-domains""#));
 
         let store = StoreDetailData {
+            wallet: None,
             embed_warnings: EmbedWarnings {
                 restricted: false,
                 any_site_dismissed: true,
@@ -387,6 +398,7 @@ mod tests {
             failing: vec![],
         };
         let store = StoreDetailData {
+            wallet: None,
             embed_warnings: warnings(false),
             ..base_store(false)
         };
@@ -394,6 +406,7 @@ mod tests {
         assert!(!html.contains(r#"class="embed-warning"#), "got: {html}");
 
         let store = StoreDetailData {
+            wallet: None,
             embed_warnings: warnings(true),
             ..base_store(false)
         };
@@ -410,6 +423,7 @@ mod tests {
     #[test]
     fn renders_integration_help_with_the_right_public_key_via_the_shared_fragment() {
         let store = StoreDetailData {
+            wallet: None,
             health: "error".to_string(),
             health_label: "unreachable".to_string(),
             ..base_store(true)
@@ -458,6 +472,7 @@ mod tests {
     #[test]
     fn shows_the_base_currency_at_the_top_of_the_table_and_hides_the_engine_endpoint() {
         let store = StoreDetailData {
+            wallet: None,
             base_currency: "USD".to_string(),
             ..base_store(false)
         };
@@ -526,6 +541,7 @@ mod tests {
     #[test]
     fn shows_the_lookup_message_when_present() {
         let store = StoreDetailData {
+            wallet: None,
             lookup_txid_value: "abc123".to_string(),
             lookup_message: Some(
                 "No transaction with that ID was found on the network.".to_string(),

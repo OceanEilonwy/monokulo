@@ -4355,3 +4355,646 @@ async fn forgetting_a_proof_anchor_keeps_checking_on() {
 
 #[path = "order_properties.rs"]
 mod properties;
+
+// -- Wallets shared by several stores (migration 0028) ----------------------
+
+async fn create_wallet(router: &Router, seed: u8) -> serde_json::Value {
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/wallets",
+        None,
+        &serde_json::json!({
+            "view_key_hex": valid_view_key_hex(seed),
+            "spend_pubkey_hex": valid_spend_pubkey_hex(seed.wrapping_add(1)),
+        }),
+    );
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await
+}
+
+async fn create_tenant_on(router: &Router, wallet_id: &str) -> TestTenant {
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/tenants",
+        None,
+        &serde_json::json!({ "wallet_id": wallet_id }),
+    );
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    TestTenant {
+        public_key: body["public_key"].as_str().unwrap().to_owned(),
+        secret_token: body["secret_token"].as_str().unwrap().to_owned(),
+    }
+}
+
+async fn order_address(router: &Router, tenant: &TestTenant) -> String {
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/tenant/orders",
+        Some(&tenant.secret_token),
+        &serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
+    );
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await["address"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// Two shops on one wallet claim order addresses from the wallet's one
+/// counter, in turn: no address is ever handed to both, so a payment can
+/// only ever match the order it was meant for.
+#[tokio::test]
+async fn two_stores_on_one_wallet_never_hand_out_the_same_address() {
+    let state = AppState::for_tests();
+    let store = Arc::clone(state.db.shared_store_for_test());
+    let router = build_router(state, 1_000_000);
+    let wallet = create_wallet(&router, 40).await;
+    let wallet_id = wallet["wallet_id"].as_str().unwrap();
+    let shop = create_tenant_on(&router, wallet_id).await;
+    let market = create_tenant_on(&router, wallet_id).await;
+
+    let mut addresses = Vec::new();
+    for tenant in [&shop, &market, &shop, &market, &market] {
+        addresses.push(order_address(&router, tenant).await);
+    }
+    let mut deduped = addresses.clone();
+    deduped.sort();
+    deduped.dedup();
+    assert_eq!(
+        deduped.len(),
+        addresses.len(),
+        "an address was handed out twice"
+    );
+
+    let s = store.lock();
+    let wallet_row = s.get_wallet(wallet_id).unwrap().unwrap();
+    assert_eq!(
+        wallet_row.next_minor_index, 6,
+        "five orders claimed indices 1..=5"
+    );
+    for tenant in [&shop, &market] {
+        let row = s
+            .find_tenant_by_secret_token(&shared::auth::RawToken::presented(&tenant.secret_token))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.wallet_id, wallet_id);
+        assert_eq!(
+            row.next_minor_index, 6,
+            "each store's scan range covers every index handed out on the wallet"
+        );
+        assert_eq!(
+            row.primary_address,
+            wallet["primary_address"].as_str().unwrap()
+        );
+    }
+}
+
+/// A store made with its own keys gets a wallet of its own, which a second
+/// store can then join.
+#[tokio::test]
+async fn a_store_made_with_keys_gets_its_own_wallet_another_store_can_join() {
+    let router = test_router();
+    let first = create_tenant(&router, 41).await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/tenant")
+        .header("authorization", format!("Bearer {}", first.secret_token))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let view = body_json(response).await;
+    let wallet_id = view["wallet_id"].as_str().unwrap().to_owned();
+    assert!(wallet_id.starts_with("wl_"));
+
+    let second = create_tenant_on(&router, &wallet_id).await;
+    assert_ne!(
+        order_address(&router, &first).await,
+        order_address(&router, &second).await
+    );
+}
+
+fn retire_request(wallet_id: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/admin/wallets/{wallet_id}/retire"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+async fn wallet_status(router: &Router, wallet_id: &str) -> serde_json::Value {
+    let req = Request::builder()
+        .uri(format!("/api/v1/admin/wallets/{wallet_id}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await
+}
+
+/// Retiring: refused while a store uses the wallet; then its keys are
+/// deleted from every row that held them, no store can be made on it, and
+/// it comes back only with its own keys.
+#[tokio::test]
+async fn a_retired_wallet_has_its_keys_deleted_everywhere_and_comes_back_only_with_them() {
+    let state = AppState::for_tests();
+    let store = Arc::clone(state.db.shared_store_for_test());
+    let router = build_router(state, 1_000_000);
+    let wallet = create_wallet(&router, 42).await;
+    let wallet_id = wallet["wallet_id"].as_str().unwrap();
+    let tenant = create_tenant_on(&router, wallet_id).await;
+    let status = wallet_status(&router, wallet_id).await;
+    assert_eq!(status["stores"], 1);
+    assert_eq!(status["retired_at"], serde_json::Value::Null);
+
+    let response = router
+        .clone()
+        .oneshot(retire_request(wallet_id))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert!(body_json(response).await.to_string().contains("store"));
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/api/v1/admin/tenant")
+        .header("authorization", format!("Bearer {}", tenant.secret_token))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        router.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+    let response = router
+        .clone()
+        .oneshot(retire_request(wallet_id))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let retired_at = body_json(response).await["retired_at"].as_i64().unwrap();
+    assert_eq!(
+        wallet_status(&router, wallet_id).await["retired_at"],
+        retired_at
+    );
+    assert_eq!(
+        router
+            .clone()
+            .oneshot(retire_request(wallet_id))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    // No copy of the keys is left: not the wallet's, not the deleted store's.
+    {
+        let s = store.lock();
+        assert!(s
+            .get_wallet(wallet_id)
+            .unwrap()
+            .unwrap()
+            .sealed_key_material
+            .is_empty());
+        let holders: Vec<Vec<u8>> = s
+            .conn_for_test()
+            .prepare("SELECT sealed_key_material FROM tenants WHERE wallet_id = ?1")
+            .unwrap()
+            .query_map([wallet_id], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(holders.len(), 1);
+        assert!(holders.iter().all(Vec::is_empty), "{holders:?}");
+    }
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/tenants",
+        None,
+        &serde_json::json!({ "wallet_id": wallet_id }),
+    );
+    assert_eq!(
+        router.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let restore = |seed: u8| {
+        json_request(
+            "POST",
+            &format!("/api/v1/admin/wallets/{wallet_id}/restore"),
+            None,
+            &serde_json::json!({
+                "view_key_hex": valid_view_key_hex(seed),
+                "spend_pubkey_hex": valid_spend_pubkey_hex(seed.wrapping_add(1)),
+            }),
+        )
+    };
+    let response = router.clone().oneshot(restore(7)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "another wallet's keys"
+    );
+    let response = router.clone().oneshot(restore(42)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(response).await["primary_address"],
+        wallet["primary_address"]
+    );
+    assert_eq!(
+        wallet_status(&router, wallet_id).await["retired_at"],
+        serde_json::Value::Null
+    );
+    let again = create_tenant_on(&router, wallet_id).await;
+    assert!(!order_address(&router, &again).await.is_empty());
+    assert_eq!(
+        router.clone().oneshot(restore(42)).await.unwrap().status(),
+        StatusCode::NOT_FOUND,
+        "only a retired wallet is brought back"
+    );
+}
+
+#[tokio::test]
+async fn a_store_on_a_wallet_refuses_keys_too_an_unknown_wallet_and_another_network() {
+    let router = test_router();
+    let wallet = create_wallet(&router, 43).await;
+    let wallet_id = wallet["wallet_id"].as_str().unwrap();
+    for body in [
+        serde_json::json!({
+            "wallet_id": wallet_id,
+            "view_key_hex": valid_view_key_hex(44),
+            "spend_pubkey_hex": valid_spend_pubkey_hex(45),
+        }),
+        serde_json::json!({ "wallet_id": "wl_nope" }),
+        serde_json::json!({ "wallet_id": wallet_id, "network": "stagenet" }),
+    ] {
+        let req = json_request("POST", "/api/v1/admin/tenants", None, &body);
+        let response = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
+    }
+}
+
+#[tokio::test]
+async fn adding_a_wallet_with_bad_keys_is_refused_and_registers_nothing() {
+    let state = AppState::for_tests();
+    let store = Arc::clone(state.db.shared_store_for_test());
+    let router = build_router(state, 1_000_000);
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/wallets",
+        None,
+        &serde_json::json!({ "view_key_hex": "zz", "spend_pubkey_hex": "00" }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(store.lock().count_tenants().unwrap(), 0);
+}
+
+// -- Changing a store's wallet (migration 0029) -----------------------------
+
+async fn change_wallet(
+    router: &Router,
+    tenant: &TestTenant,
+    wallet_id: &str,
+) -> axum::response::Response {
+    let req = json_request(
+        "PUT",
+        "/api/v1/admin/tenant/wallet",
+        Some(&tenant.secret_token),
+        &serde_json::json!({ "wallet_id": wallet_id }),
+    );
+    router.clone().oneshot(req).await.unwrap()
+}
+
+async fn new_order(router: &Router, tenant: &TestTenant) -> serde_json::Value {
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/tenant/orders",
+        Some(&tenant.secret_token),
+        &serde_json::json!({ "xmr_amount_piconero": 1u64 }),
+    );
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await
+}
+
+fn tenant_row(store: &crate::store::SharedStore, tenant: &TestTenant) -> crate::store::Tenant {
+    store
+        .lock()
+        .find_tenant_by_secret_token(&shared::auth::RawToken::presented(&tenant.secret_token))
+        .unwrap()
+        .unwrap()
+}
+
+/// A store changes wallet with an order still open. A payment to that order
+/// arrives after the change: it is still found, with the old wallet's keys,
+/// and credited to that order, not to the store's first order on the new
+/// wallet, which has the same subaddress index there.
+#[tokio::test]
+async fn an_order_from_before_a_wallet_change_is_still_paid_and_a_new_order_with_its_index_is_not()
+{
+    use monero::cryptonote::hash::Hashable as _;
+    let (state, daemon) = test_app_state_with_real_daemon().await;
+    let store = Arc::clone(state.db.shared_store_for_test());
+    let handles = Arc::clone(&state.custody.wallet_handles);
+    let router = build_router(state, 1_000_000);
+    // `subaddress_tx.hex` pays this wallet's subaddress 0/1: the first order.
+    let tenant = create_fixture_tenant(&router).await;
+    let before = new_order(&router, &tenant).await;
+    let old_wallet = tenant_row(&store, &tenant).wallet_id;
+    let new_wallet = create_wallet(&router, 50).await;
+    let new_wallet_id = new_wallet["wallet_id"].as_str().unwrap();
+
+    let response = change_wallet(&router, &tenant, new_wallet_id).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["orders_on_previous_wallet"], 1);
+    assert_eq!(body["tenant"]["wallet_id"], new_wallet_id);
+    assert_eq!(
+        body["tenant"]["primary_address"],
+        new_wallet["primary_address"]
+    );
+
+    // The new wallet's counter: index 1 again, so a new address.
+    let after = new_order(&router, &tenant).await;
+    assert_ne!(after["address"], before["address"]);
+    let row = tenant_row(&store, &tenant);
+    let watchers = store.lock().watchers_of(&row.id).unwrap();
+    assert_eq!(watchers.len(), 1);
+    let watcher = &watchers[0];
+    assert_eq!(watcher.wallet_id, old_wallet);
+    {
+        let s = store.lock();
+        let before_id = shared::ids::OrderId::new(before["order_id"].as_str().unwrap().to_owned());
+        let after_id = shared::ids::OrderId::new(after["order_id"].as_str().unwrap().to_owned());
+        assert_eq!(
+            s.find_order_by_minor_index(&watcher.id, 1)
+                .unwrap()
+                .unwrap()
+                .id,
+            before_id
+        );
+        assert_eq!(
+            s.find_order_by_minor_index(&row.id, 1).unwrap().unwrap().id,
+            after_id
+        );
+        // Each row's scan window: its own orders.
+        let windows = s
+            .scan_windows(&[row.id.clone(), watcher.id.clone()], crate::now_unix(), 0)
+            .unwrap();
+        assert_eq!(windows[&row.id], vec![1]);
+        assert_eq!(windows[&watcher.id], vec![1]);
+    }
+    // The store has the new keys; the scan row the old ones.
+    assert!(handles.read().contains_key(&row.id));
+    assert!(handles.read().contains_key(&watcher.id));
+    // A scan row is no store: not counted, never called as.
+    assert_eq!(store.lock().count_tenants().unwrap(), 1);
+
+    let tx = fixture_tx_for_lookup_tests();
+    daemon.set_mempool(vec![tx.clone()]);
+    let txid = hex::encode(tx.hash().to_bytes());
+    let response = router
+        .clone()
+        .oneshot(lookup_request(&tenant.secret_token, &txid))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["outcome"], "matched");
+    assert_eq!(body["order_ids"], serde_json::json!([before["order_id"]]));
+    let s = store.lock();
+    let paid = |order: &serde_json::Value| {
+        s.get_all_payments(&shared::ids::OrderId::new(
+            order["order_id"].as_str().unwrap().to_owned(),
+        ))
+        .unwrap()
+        .len()
+    };
+    assert_eq!(paid(&before), 1);
+    assert_eq!(
+        paid(&after),
+        0,
+        "the new wallet's order at the same index was not paid"
+    );
+}
+
+/// A scan that began before the change may have used the old keys for the
+/// store: what it found isn't recorded against the store, where an index
+/// can now name an order on the new wallet.
+#[tokio::test]
+async fn a_scan_from_before_a_wallet_change_is_not_recorded_against_the_store() {
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
+    let store = Arc::clone(state.db.shared_store_for_test());
+    let router = build_router(state, 1_000_000);
+    let tenant = create_fixture_tenant(&router).await;
+    new_order(&router, &tenant).await;
+    let began = crate::now_unix();
+    let wallet = create_wallet(&router, 51).await;
+    assert_eq!(
+        change_wallet(&router, &tenant, wallet["wallet_id"].as_str().unwrap())
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let after = new_order(&router, &tenant).await;
+    let row = tenant_row(&store, &tenant);
+    let found = crate::scanner::ScanResult {
+        matches: vec![crate::key_custody::MatchedOutput {
+            output_index: 0,
+            subaddress_index: crate::key_custody::SubaddressIndex { major: 0, minor: 1 },
+            amount_piconero: Some(1),
+        }],
+        txid: "aa".repeat(32),
+        key_images_json: "[]".into(),
+        output_keys: HashMap::new(),
+    };
+    let locked = store.lock();
+    let before_change =
+        crate::scanner::record_scan_match(&locked, &row.id, &found, began, None).unwrap();
+    assert!(before_change.is_empty());
+    let order_id = shared::ids::OrderId::new(after["order_id"].as_str().unwrap().to_owned());
+    assert!(locked.get_all_payments(&order_id).unwrap().is_empty());
+    // A scan begun after the change is the store's own.
+    let current =
+        crate::scanner::record_scan_match(&locked, &row.id, &found, crate::now_unix() + 1, None)
+            .unwrap();
+    assert_eq!(current.into_iter().collect::<Vec<_>>(), vec![order_id]);
+}
+
+#[tokio::test]
+async fn a_wallet_change_is_refused_to_the_same_wallet_an_unknown_one_or_another_network() {
+    let state = AppState::for_tests();
+    let store = Arc::clone(state.db.shared_store_for_test());
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 52).await;
+    let own = tenant_row(&store, &tenant).wallet_id;
+
+    let response = change_wallet(&router, &tenant, &own).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        change_wallet(&router, &tenant, "wl_nope").await.status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let stagenet = store
+        .lock()
+        .create_wallet(
+            &crate::store::NewWallet {
+                key_custody_backend: "plain".into(),
+                sealed_key_material: vec![1],
+                primary_address: "5stagenet".into(),
+                network: "stagenet".into(),
+            },
+            crate::now_unix(),
+        )
+        .unwrap();
+    let response = change_wallet(&router, &tenant, &stagenet.id).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = body_json(response).await;
+    assert!(body.to_string().contains("network"), "{body}");
+    assert_eq!(
+        tenant_row(&store, &tenant).wallet_id,
+        own,
+        "nothing changed"
+    );
+    assert!({
+        let id = tenant_row(&store, &tenant).id;
+        store.lock().watchers_of(&id)
+    }
+    .unwrap()
+    .is_empty());
+
+    // Without a store's token, nothing.
+    let req = json_request(
+        "PUT",
+        "/api/v1/admin/tenant/wallet",
+        None,
+        &serde_json::json!({ "wallet_id": own }),
+    );
+    assert_eq!(
+        router.oneshot(req).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+/// The wallet a store left can't be deleted while an order on it can still
+/// be paid; once none can, it can, and the keys watching it go.
+#[tokio::test]
+async fn a_wallet_left_with_open_orders_is_only_retired_once_they_closed() {
+    let state = AppState::for_tests();
+    let store = Arc::clone(state.db.shared_store_for_test());
+    let handles = Arc::clone(&state.custody.wallet_handles);
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 53).await;
+    let order = new_order(&router, &tenant).await;
+    let old_wallet = tenant_row(&store, &tenant).wallet_id;
+    let new_wallet = create_wallet(&router, 54).await;
+    assert_eq!(
+        change_wallet(&router, &tenant, new_wallet["wallet_id"].as_str().unwrap())
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let watcher = {
+        let id = tenant_row(&store, &tenant).id;
+        store.lock().watchers_of(&id)
+    }
+    .unwrap()
+    .remove(0);
+
+    let delete = || retire_request(&old_wallet);
+    let response = router.clone().oneshot(delete()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert!(body_json(response).await.to_string().contains("order"));
+    let status = wallet_status(&router, &old_wallet).await;
+    assert_eq!(
+        (status["stores"].as_u64(), status["payable_orders"].as_u64()),
+        (Some(0), Some(1))
+    );
+    assert!(status["payable_until"].as_i64().is_some());
+
+    // Closed long ago: past the grace period, nothing can pay it now.
+    store
+        .lock()
+        .execute_raw_for_test(&format!(
+            "UPDATE orders SET status = 'expired', closed_at_utc = 1 WHERE id = '{}'",
+            order["order_id"].as_str().unwrap()
+        ))
+        .unwrap();
+    assert_eq!(
+        router.clone().oneshot(delete()).await.unwrap().status(),
+        StatusCode::OK
+    );
+    assert!({
+        let id = tenant_row(&store, &tenant).id;
+        store.lock().watchers_of(&id)
+    }
+    .unwrap()
+    .is_empty());
+    assert!(
+        !handles.read().contains_key(&watcher.id),
+        "the old keys left key custody"
+    );
+}
+
+/// Back and forth: a store returning to a wallet it left, and leaving it
+/// again, uses the one scan row for its orders there, whose indices stay
+/// unique since they come from that wallet's one counter.
+#[tokio::test]
+async fn a_store_changing_back_and_forth_keeps_one_scan_row_per_wallet_it_left() {
+    let state = AppState::for_tests();
+    let store = Arc::clone(state.db.shared_store_for_test());
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 55).await;
+    let first = tenant_row(&store, &tenant).wallet_id;
+    let second = create_wallet(&router, 56).await["wallet_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut addresses = vec![new_order(&router, &tenant).await["address"].clone()];
+    for wallet in [&second, &first, &second, &first] {
+        assert_eq!(
+            change_wallet(&router, &tenant, wallet).await.status(),
+            StatusCode::OK
+        );
+        addresses.push(new_order(&router, &tenant).await["address"].clone());
+    }
+    let mut unique = addresses.clone();
+    unique.sort_by_key(ToString::to_string);
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        addresses.len(),
+        "an address was handed out twice"
+    );
+    let row = tenant_row(&store, &tenant);
+    let watchers = store.lock().watchers_of(&row.id).unwrap();
+    let mut wallets: Vec<_> = watchers.iter().map(|w| w.wallet_id.clone()).collect();
+    wallets.sort();
+    let mut expected = vec![first.clone(), second.clone()];
+    expected.sort();
+    assert_eq!(wallets, expected, "one scan row per wallet left");
+    assert_eq!(row.wallet_id, first);
+    // Every order the store took is watched by the row holding its wallet.
+    let s = store.lock();
+    let windows = s
+        .scan_windows(
+            &std::iter::once(row.id.clone())
+                .chain(watchers.iter().map(|w| w.id.clone()))
+                .collect::<Vec<_>>(),
+            crate::now_unix(),
+            0,
+        )
+        .unwrap();
+    let watched: usize = windows.values().map(Vec::len).sum();
+    assert_eq!(watched, addresses.len());
+    assert_eq!(
+        windows[&row.id].len(),
+        1,
+        "the store watches only what it took since the last change"
+    );
+}

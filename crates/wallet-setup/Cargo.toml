@@ -1,0 +1,36 @@
+[package]
+name = "wallet-setup"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+
+# A new wallet, made in the merchant's browser: its 16-word polyseed, the
+# keys and address worked out from it, the older 25-word form of the same
+# wallet, and QR codes to restore it in a wallet app. Built to WebAssembly
+# for monokulo's "Create a new wallet" page (feature `wasm`); the recovery
+# phrase never leaves the page. See src/lib.rs.
+[lib]
+# `cdylib` for the browser's WebAssembly module (feature `wasm`).
+crate-type = ["rlib", "cdylib"]
+
+[features]
+wasm = ["dep:serde", "dep:serde_json"]
+
+[dependencies]
+# Without their `std` feature: it reads the system clock (there is none in
+# the browser's WebAssembly) and pulls in an OS random source. The page
+# gives the entropy and the birthday instead.
+polyseed = { git = "https://github.com/kayabaNerve/monero-wallet-util", branch = "develop", package = "polyseed", default-features = false }
+monero-seed = { git = "https://github.com/kayabaNerve/monero-wallet-util", branch = "develop", package = "monero-seed", default-features = false }
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize"] }
+sha3 = { version = "0.10", default-features = false }
+base58-monero = { version = "2.1", default-features = false, features = ["check"] }
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+zeroize = { version = "1.9.0", features = ["derive"] }
+hex = "0.4.3"
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+
+[lints]
+workspace = true

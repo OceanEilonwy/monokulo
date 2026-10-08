@@ -800,7 +800,7 @@ mod tests {
         );
         assert_eq!(
             signup.headers().get("location").unwrap(),
-            "/dashboard/login"
+            "/dashboard/wallets/setup"
         );
 
         // The real point: it cannot be reused for a second account.

@@ -238,7 +238,7 @@ $rng.Dispose()
     </div>
     <div class="card">
       <h3>Finish setup in your browser</h3>
-      <p>Leave the terminal running and open <a href="http://127.0.0.1:8081/" target="_blank" rel="noreferrer"><code>http://127.0.0.1:8081</code></a>. The first-run wizard creates your admin account. On the admin page, add a Monero node for the network you’ll accept payments on, then add a store with its wallet address and view key. You can use your own reachable node or a remote node over HTTPS.</p>
+      <p>Leave the terminal running and open <a href="http://127.0.0.1:8081/" target="_blank" rel="noreferrer"><code>http://127.0.0.1:8081</code></a>. The first-run wizard creates your admin account. On the admin page, add a Monero node for the network you’ll accept payments on, then set up a wallet (make a new one in your browser, or bring your own view key) and add a store that takes payments into it. You can use your own reachable node or a remote node over HTTPS.</p>
       <p style="margin-top:var(--space-md)">Monokulo listens on this computer only by default. To serve customers over the internet, configure its listen address in Server settings, put it behind an HTTPS reverse proxy, and set the public URL customers will use. For a Tor onion service, see <a href="@REPO_URL@/blob/main/docs/TOR.md">the Tor guide</a>.</p>
       <p style="margin-top:var(--space-md)">Press <strong>Ctrl+C</strong> to stop it. For automatic startup, run it under your system’s service manager with the same encryption key. For data paths, options and building from source, see <a href="@REPO_URL@/blob/main/docs/RUNNING.md#from-release-binaries-or-source">Running Monokulo</a>.</p>
     </div>
@@ -319,7 +319,7 @@ $rng.Dispose()
           </div></li>
           <li><span class="num">6</span><div>
             <h3>Add a Monero node, then a store</h3>
-            <p>On Monokulo’s admin page, add your node under the network you’ll take payments on, then add a store with its address and view key.</p>
+            <p>On Monokulo’s admin page, add your node under the network you’ll take payments on, then set up a wallet and add a store on it.</p>
           </div></li>
         </ol>
       </div>

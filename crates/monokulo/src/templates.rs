@@ -1,20 +1,5 @@
 //! Plain display/formatting helpers shared by several `views`/`http`
-//! modules: duration formatting and the connect forms' network-select
-//! flags.
-
-/// The three `<option>` "selected" flags both connect forms' network
-/// `<select>` need, derived from a submitted (or default) network value.
-/// `network` not matching any known
-/// value (shouldn't happen - the `<select>` only ever offers these three -
-/// but a resubmitted form is still untrusted input) selects none of them,
-/// same as an unrecognized value would render in a plain `<select>` anyway.
-pub fn network_selected_flags(network: &str) -> (bool, bool, bool) {
-    (
-        network == "mainnet",
-        network == "stagenet",
-        network == "testnet",
-    )
-}
+//! modules: durations, scan ranges and empty values.
 
 /// `value`, escaped, or a muted placeholder for a field with nothing to
 /// show - same `<span class="muted">-</span>` convention the status page

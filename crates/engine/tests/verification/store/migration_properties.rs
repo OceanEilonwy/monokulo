@@ -64,6 +64,7 @@ fn seed(conn: &Connection, version: usize, amount: i64, payload: &str) {
         &[
             ("id", text("order")),
             ("tenant_id", text("tenant")),
+            ("scan_tenant_id", text("tenant")),
             ("minor_index", number(1)),
             ("address", text("address-1")),
             ("fiat_currency", text("USD")),

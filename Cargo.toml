@@ -13,6 +13,7 @@ members = [
     "crates/snp-attest",
     "crates/key-custody",
     "crates/key-custody-cli",
+    "crates/wallet-setup",
     "xtask",
 ]
 

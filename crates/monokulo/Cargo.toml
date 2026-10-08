@@ -75,6 +75,7 @@ key-custody = { path = "../key-custody", default-features = false }
 # WebAssembly with a separate, offline `cargo build`, and naming it here makes
 # Cargo fetch everything that build needs first.
 key-custody = { path = "../key-custody", default-features = false, features = ["wasm"] }
+wallet-setup = { path = "../wallet-setup", features = ["wasm"] }
 
 [dev-dependencies]
 # Turns on `test-support` for this crate's own integration tests and examples.
@@ -85,6 +86,8 @@ engine-test-support = { path = "../engine-test-support" }
 http-body-util = "0.1.5"
 engine = { path = "../engine" }
 tower = { version = "0.5.3", features = ["util"] }
+# Makes a wallet in the tests the way the "Create a new wallet" page does.
+wallet-setup = { path = "../wallet-setup" }
 # The real-Tor e2e test (`tests/e2e_tor.rs`) connects through tor's SocksPort,
 # one set of SOCKS credentials per simulated visitor.
 tokio-socks = "0.5"

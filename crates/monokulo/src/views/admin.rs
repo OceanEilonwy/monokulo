@@ -5,6 +5,7 @@
 
 use maud::{html, Markup};
 
+use super::controls::Choice;
 use super::{layout, PageChrome};
 
 /// `error` means the same thing every other page's own re-render-on-
@@ -1033,16 +1034,19 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
         SettingKindView::Integer { min, max } => html! {
             input type="number" name=(name) value=(field.value) min=[min] max=[max] step="1" id=(id) aria-describedby=[help] data-saved=[saved];
         },
-        SettingKindView::Bool => html! {
-            select name=(name) id=(id) aria-describedby=[help] data-saved=[saved] {
-                option value="true" selected[field.value == "true"] { "true" }
-                option value="false" selected[field.value == "false"] { "false" }
-            }
-        },
+        SettingKindView::Bool => super::controls::switch(
+            name,
+            &id,
+            field.value == "true",
+            help.as_deref(),
+            saved.map(|saved| saved == "true"),
+        ),
         SettingKindView::Choice { choices } => html! {
-            select name=(name) id=(id) aria-describedby=[help] data-saved=[saved] {
-                @for choice in choices {
-                    option value=(choice) selected[&field.value == choice] { (choice) }
+            mk-select {
+                select name=(name) id=(id) aria-describedby=[help] data-saved=[saved] {
+                    @for choice in choices {
+                        (Choice::new(choice, choice).selected(&field.value == choice))
+                    }
                 }
             }
         },
@@ -1083,18 +1087,20 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
                 .filter(|saved| *saved > *now && *saved != until)
                 .zip(saved_until_label.as_deref());
             html! {
-                select name=(name) id=(id) aria-describedby=[help] data-saved=[saved] {
-                    @if on {
-                        option value=(until) selected { "On until " (until_label) }
-                    }
-                    @if let Some((saved, label)) = saved_on {
-                        option value=(saved) { "On until " (label) }
-                    }
-                    // Off, a time already past posts as it is, so it isn't
-                    // read as a change.
-                    option value=(if on || until == 0 { 0 } else { until }) selected[!on] { "Off" }
-                    @for (hours, label) in [(1, "On for 1 hour"), (4, "On for 4 hours"), (24, "On for 24 hours")] {
-                        option value=(now + hours * 3600) { (label) }
+                mk-select {
+                    select name=(name) id=(id) aria-describedby=[help] data-saved=[saved] {
+                        @if on {
+                            (Choice::new(until.to_string(), format!("On until {until_label}")).selected(true))
+                        }
+                        @if let Some((saved, label)) = saved_on {
+                            (Choice::new(saved.to_string(), format!("On until {label}")))
+                        }
+                        // Off, a time already past posts as it is, so it isn't
+                        // read as a change.
+                        (Choice::new((if on || until == 0 { 0 } else { until }).to_string(), "Off").selected(!on))
+                        @for (hours, label) in [(1, "On for 1 hour"), (4, "On for 4 hours"), (24, "On for 24 hours")] {
+                            (Choice::new((now + hours * 3600).to_string(), label))
+                        }
                     }
                 }
             }
@@ -3085,9 +3091,11 @@ mod tests {
         );
         let boolean = scalar_field(&field(SettingKindView::Bool, "false")).into_string();
         assert!(
-            boolean.contains(r#"<option value="false" selected>"#),
-            "{boolean}"
+            boolean.contains(r#"role="switch""#) && !boolean.contains("checked"),
+            "an on/off setting is a switch, off here: {boolean}"
         );
+        let on = scalar_field(&field(SettingKindView::Bool, "true")).into_string();
+        assert!(on.contains("checked"), "{on}");
         let secret = scalar_field(&field(
             SettingKindView::Secret,
             "\u{2022}\u{2022}\u{2022}\u{2022}",

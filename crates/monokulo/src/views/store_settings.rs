@@ -128,12 +128,67 @@ pub struct StoreSettingsData {
     pub active_section: Option<StoreSection>,
     /// The store sends client logs (`db::Db::client_logging`).
     pub client_logging: bool,
+    /// The wallet it takes payments into, and the ones it could change to.
+    pub wallet: StoreWalletView,
+}
+
+/// "Wallet": the wallet a store takes payments into, the others it could
+/// change to, and the ones it used before (docs/wallets.md, "Changing a
+/// store's wallet").
+#[derive(Default)]
+pub struct StoreWalletView {
+    /// `None` for a store made before wallets, not yet matched to one.
+    pub current: Option<CurrentWallet>,
+    /// Every wallet of the account: the current one first.
+    pub choices: Vec<WalletChoice>,
+    /// A change picked and waiting to be confirmed.
+    pub pending: Option<PendingWalletChange>,
+    /// Newest first; the first is the current one.
+    pub history: Vec<WalletPeriodView>,
+    /// Just changed: what the section says.
+    pub changed: Option<String>,
+}
+
+pub struct CurrentWallet {
+    pub id: String,
+    pub name: String,
+    pub since: i64,
+}
+
+pub struct WalletChoice {
+    pub id: String,
+    pub name: String,
+    pub short_address: String,
+    pub current: bool,
+    /// On another network: shown, but can't be picked.
+    pub other_network: Option<String>,
+    /// Stores other than this one that use it.
+    pub other_stores: u64,
+}
+
+pub struct PendingWalletChange {
+    pub wallet_id: String,
+    pub wallet_name: String,
+    /// The store's open orders, which stay on the current wallet; `None`
+    /// when the engine couldn't say.
+    pub open_orders: Option<usize>,
+}
+
+pub struct WalletPeriodView {
+    pub wallet_id: Option<String>,
+    /// `None` once the wallet was deleted.
+    pub wallet_name: Option<String>,
+    pub wallet_retired: bool,
+    pub from: i64,
+    pub until: Option<i64>,
+    pub orders: u64,
 }
 
 /// The page's sections, each saved (and, with fixi, swapped back) on its
 /// own (structured_logging.md part 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreSection {
+    Wallet,
     BaseCurrency,
     Confirmations,
     FxProvider,
@@ -146,6 +201,7 @@ pub enum StoreSection {
 impl StoreSection {
     pub fn from_id(id: &str) -> Option<Self> {
         [
+            Self::Wallet,
             Self::BaseCurrency,
             Self::Confirmations,
             Self::FxProvider,
@@ -160,6 +216,7 @@ impl StoreSection {
 
     pub fn id(self) -> &'static str {
         match self {
+            StoreSection::Wallet => "wallet",
             StoreSection::BaseCurrency => "base-currency",
             StoreSection::Confirmations => "confirmation-thresholds",
             StoreSection::FxProvider => "fx-provider",
@@ -175,6 +232,8 @@ impl StoreSection {
     pub fn also_changes(self) -> &'static [StoreSection] {
         match self {
             StoreSection::BaseCurrency => &[StoreSection::Confirmations],
+            // The keys are the new wallet's, wherever it keeps them.
+            StoreSection::Wallet => &[StoreSection::KeyStorage],
             _ => &[],
         }
     }
@@ -230,6 +289,9 @@ fn key_storage_section(
         h2 { "Key storage" }
         (section_error(store, StoreSection::KeyStorage, in_place))
         p { strong { "Kept: " } (key_storage.current) }
+        p class="hint" {
+            "The keys belong to this store's wallet: moving them moves the wallet, for every store that uses it."
+        }
         @if key_storage.current_disabled {
             p class="error" {
                 "This way of storing keys has been turned off on this instance, so payments to this store aren't "
@@ -239,9 +301,11 @@ fn key_storage_section(
         form method="post" action=(action) fx-action=(action) fx-method="POST" fx-target=(target) {
             label {
                 "Move to"
-                select name="backend" {
-                    @for choice in &key_storage.move_to {
-                        option value=(choice.backend) selected[choice.selected] { (choice.label) }
+                mk-select {
+                    select name="backend" {
+                        @for choice in &key_storage.move_to {
+                            (super::controls::Choice::new(&choice.backend, &choice.label).selected(choice.selected))
+                        }
                     }
                 }
             }
@@ -265,6 +329,131 @@ pub struct StoreSettingsViewModel {
     pub store: Option<StoreSettingsData>,
 }
 
+/// "Wallet": which wallet the store takes payments into, a dropdown of the
+/// account's wallets to change it (the current one marked Current), and,
+/// collapsed, the wallets it used before. Picking another wallet asks first,
+/// saying what happens to the orders already open. Shown in place, not in a
+/// dialog (`data-settings-inline`).
+fn wallet_section(store: &StoreSettingsData, in_place: bool, oob: bool) -> Markup {
+    let wallet = &store.wallet;
+    let action = format!("/dashboard/stores/{}/settings/wallet", store.connection_id);
+    let target = format!("#{}", StoreSection::Wallet.id());
+    let picked = wallet
+        .pending
+        .as_ref()
+        .map(|p| p.wallet_id.as_str())
+        .or(wallet.current.as_ref().map(|c| c.id.as_str()));
+    html! {
+      section id=(StoreSection::Wallet.id()) data-fx-oob[oob] data-settings-inline {
+        h2 { "Wallet" }
+        (section_error(store, StoreSection::Wallet, in_place && wallet.changed.is_none()))
+        @if let Some(changed) = &wallet.changed {
+            p class="success" role="status" data-fx-focus tabindex="-1" { (changed) }
+        }
+        @if let Some(current) = &wallet.current {
+            p class="settings-summary-line" {
+                "Payments go to " strong { a href=(format!("/dashboard/wallets/{}", current.id)) { (current.name) } }
+                " since " (store.clock.time(current.since)) "."
+            }
+        } @else {
+            p class="hint" { "This store isn't linked to one of your wallets yet. Pick the one it takes payments into." }
+        }
+        form method="post" action=(action) fx-action=(action) fx-method="POST" fx-target=(target) fx-submit-on-change {
+            label {
+                "Wallet"
+                mk-select {
+                    select name="wallet_id" required {
+                        @if picked.is_none() { (super::controls::Choice::prompt("Choose a wallet…", true)) }
+                        @for choice in &wallet.choices {
+                            (wallet_choice(choice, picked))
+                        }
+                    }
+                }
+                span class="field-help" { "The store takes new payments into the wallet picked here." }
+            }
+            @if let (Some(pending), Some(current)) = (&wallet.pending, &wallet.current) {
+                div class="change-confirm" role="status" {
+                    h3 { "Change to " (pending.wallet_name) "?" }
+                    p {
+                        "New orders take payments into " strong { (pending.wallet_name) } ". "
+                        (open_orders_line(pending.open_orders, &current.name))
+                    }
+                    button type="submit" name="confirm" value="yes" class="btn-primary" { "Change to " (pending.wallet_name) }
+                }
+            } @else if let Some(pending) = &wallet.pending {
+                div class="change-confirm" role="status" {
+                    h3 { "Take payments into " (pending.wallet_name) "?" }
+                    button type="submit" name="confirm" value="yes" class="btn-primary" { "Use " (pending.wallet_name) }
+                }
+            } @else {
+                button type="submit" { "Change wallet" }
+            }
+        }
+        @if !wallet.history.is_empty() {
+            details class="wallet-history" {
+                summary { "Wallet history (" (wallets_label(wallet.history.len())) ")" }
+                table {
+                    thead { tr { th { "Wallet" } th { "From" } th { "Until" } th class="num" { "Orders" } } }
+                    tbody {
+                        @for period in &wallet.history {
+                            tr class=[period.until.is_none().then_some("current")] aria-current=[period.until.is_none().then_some("true")] {
+                                td {
+                                    @match (&period.wallet_id, &period.wallet_name) {
+                                        (Some(id), Some(name)) => {
+                                            a href=(format!("/dashboard/wallets/{id}")) { (name) }
+                                            @if period.wallet_retired { " " span class="tag tag-unknown" { "Retired" } }
+                                        },
+                                        _ => span class="muted" { "A deleted wallet" },
+                                    }
+                                }
+                                td { (store.clock.time(period.from)) }
+                                td { @match period.until { Some(until) => (store.clock.time(until)), None => "now" } }
+                                td class="num" { (period.orders) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+      }
+    }
+}
+
+fn wallet_choice(choice: &WalletChoice, picked: Option<&str>) -> Markup {
+    let note = match (&choice.other_network, choice.current, choice.other_stores) {
+        (Some(network), _, _) => format!("{network}: not this store's network"),
+        (None, true, 0) => "this store only".to_owned(),
+        (None, _, 0) => "no other stores".to_owned(),
+        (None, _, 1) => "1 other store".to_owned(),
+        (None, _, n) => format!("{n} other stores"),
+    };
+    let option = super::controls::Choice::new(&choice.id, &choice.name)
+        .detail(&choice.short_address)
+        .current(choice.current)
+        .note(note)
+        .disabled(choice.other_network.is_some())
+        .selected(picked == Some(choice.id.as_str()));
+    html! { (option) }
+}
+
+/// What happens to the orders already open, said before the change.
+fn open_orders_line(open: Option<usize>, current: &str) -> String {
+    match open {
+        Some(0) => format!("No orders are open on {current}; any that close late are still watched there."),
+        Some(1) => format!("The 1 order still open on {current} keeps being paid into it, and is watched until it closes."),
+        Some(n) => format!("The {n} orders still open on {current} keep being paid into it, and are watched until they close."),
+        None => format!("Orders already open keep being paid into {current}, and are watched until they close."),
+    }
+}
+
+fn wallets_label(n: usize) -> String {
+    if n == 1 {
+        "1 wallet".to_owned()
+    } else {
+        format!("{n} wallets")
+    }
+}
+
 /// "Base currency".
 fn base_currency_section(store: &StoreSettingsData, in_place: bool, oob: bool) -> Markup {
     html! {
@@ -274,9 +463,11 @@ fn base_currency_section(store: &StoreSettingsData, in_place: bool, oob: bool) -
                 form method="post" action=(format!("/dashboard/stores/{}/settings/base-currency", store.connection_id)) fx-action=(format!("/dashboard/stores/{}/settings/base-currency", store.connection_id)) fx-method="POST" fx-target="#base-currency" {
                     label {
                         "Base currency"
-                        select name="base_currency" {
-                            @for opt in &store.base_currency_options {
-                                option value=(opt.code) selected[opt.selected] { (opt.description) " (" (opt.code) ")" }
+                        mk-select {
+                            select name="base_currency" {
+                                @for opt in &store.base_currency_options {
+                                    (super::controls::Choice::new(&opt.code, &opt.description).detail(&opt.code).selected(opt.selected))
+                                }
                             }
                         }
                         span class="field-help" {
@@ -559,6 +750,7 @@ fn diagnostics_section(store: &StoreSettingsData, in_place: bool, oob: bool) -> 
 /// another save changed too).
 pub fn section(store: &StoreSettingsData, which: StoreSection, oob: bool) -> Markup {
     match which {
+        StoreSection::Wallet => wallet_section(store, true, oob),
         StoreSection::BaseCurrency => base_currency_section(store, true, oob),
         StoreSection::Confirmations => confirmations_section(store, true, oob),
         StoreSection::FxProvider => fx_provider_section(store, true, oob),
@@ -590,6 +782,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                         }
                     }
                 }
+                (section(store, StoreSection::Wallet, false))
                 (section(store, StoreSection::BaseCurrency, false))
                 (section(store, StoreSection::Confirmations, false))
                 (section(store, StoreSection::FxProvider, false))
@@ -734,6 +927,7 @@ mod tests {
             key_storage: None,
             active_section: None,
             client_logging: false,
+            wallet: StoreWalletView::default(),
         }
     }
 

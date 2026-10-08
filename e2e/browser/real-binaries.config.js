@@ -17,6 +17,7 @@ module.exports = defineConfig({
     'pos-session-diagnostics.spec.js',
     'site-themes.spec.js',
     'admin-settings-and-nodes.spec.js',
+    'wallet-setup.spec.js',
   ],
   timeout: 3 * 60 * 1000,
   expect: { timeout: 30 * 1000 },
