@@ -44,8 +44,8 @@ On Windows (PowerShell):
 \$env:MONOKULO_ENCRYPTION_KEY = "<64 hex chars>"; .\\monokulo.exe
 \`\`\`
 
-Then open http://127.0.0.1:8081 to create the admin account. The README in
-the zip has the rest.
+Then open http://127.0.0.1:8081 to create the admin account. RUNNING.md and
+CONFIGURATION.md in the zip have the rest.
 
 - **macOS**: the binary isn't signed by Apple, so macOS refuses one
   downloaded in a browser. Clear that once with
