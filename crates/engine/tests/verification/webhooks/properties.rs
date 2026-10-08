@@ -111,7 +111,7 @@ struct World {
 impl World {
     fn new(worker: bool) -> Self {
         let path = TempFile::new();
-        let s = Store::open_file(&path.0).unwrap();
+        let s = Store::create_file(&path.0).unwrap();
         let db = if worker {
             Db::open(&path.0, &s).unwrap()
         } else {

@@ -21,7 +21,7 @@ struct World {
 impl World {
     async fn new(count: usize, worker: bool) -> Self {
         let path = TempFile::new();
-        let store = Store::open_file(&path.0).unwrap().into_shared();
+        let store = Store::create_file(&path.0).unwrap().into_shared();
         let custody = Arc::new(GateCustody::default());
         let mut state = AppState::for_tests_with_store(Arc::clone(&store));
         if worker {

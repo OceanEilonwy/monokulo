@@ -10,7 +10,7 @@ use proptest::prelude::*;
 
 async fn late_commit(change: u8, cancelled: bool, staged: bool) {
     let path = TempFile::new();
-    let store = Store::open_file(&path.0).unwrap();
+    let store = Store::create_file(&path.0).unwrap();
     let custody = PlainKeyCustody::default();
     let (tenant, handle, order) = fixture_tenant(&store, &custody, i64::MAX).await;
     let network = monero::Network::Mainnet;

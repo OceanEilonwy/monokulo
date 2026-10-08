@@ -405,7 +405,7 @@ mod tests {
     fn file_store() -> (Store, String) {
         let path = std::env::temp_dir().join(format!("scanner_db_{}.db", uuid::Uuid::new_v4()));
         let path = path.to_string_lossy().into_owned();
-        (Store::open_file(&path).unwrap(), path)
+        (Store::create_file(&path).unwrap(), path)
     }
 
     fn cleanup(path: &str) {
