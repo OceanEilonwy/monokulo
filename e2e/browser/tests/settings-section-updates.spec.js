@@ -38,6 +38,8 @@ test('saving an admin settings tab swaps only its panel, and the tab bar and ban
   // A toast says what was saved; the card says when; the bar goes.
   await expect(page.locator('#settings-toasts .toast-success')).toContainText('Changes saved and applied');
   await expect(page.locator('#card-webhooks .card-saved')).toBeVisible();
+  // Focus lands on what the save did, not lost with the hidden bar.
+  await expect(page.locator('#card-webhooks .card-saved')).toBeFocused();
   await expect(bar).toBeHidden();
   expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
   await expect(field).toHaveValue('9');

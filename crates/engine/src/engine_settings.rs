@@ -898,7 +898,7 @@ impl live_settings::Reloadable for CustodyReloadable {
                         warnings.push(live_settings::Warning::for_key(
                             KEY_CUSTODY_ENABLED_BACKENDS.key,
                             format!(
-                                "Saved, but the snp backend can't start: {e}. Stores on it aren't scanned until it can (its settings apply at a restart)."
+                                "The snp backend can't start: {e}. Stores on it aren't scanned until it can (its settings apply at a restart)."
                             ),
                         ));
                         Arc::new(crate::key_custody::Unstarted(format!(

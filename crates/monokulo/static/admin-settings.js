@@ -323,7 +323,15 @@
 
   function go(href) {
     var link = document.querySelector('#settings-tabs a[href="' + href + '"]');
-    if (link) { link.__go = true; link.click(); } else location.href = href;
+    // Marked only for this click (the capture handler below runs inside
+    // it), so a later click on the same link still asks.
+    if (link) {
+      link.__go = true;
+      link.click();
+      link.__go = false;
+    } else {
+      location.href = href;
+    }
   }
 
   // ---- reordering node rows --------------------------------------------
@@ -551,10 +559,11 @@
     if (goAfterSave) {
       var href = goAfterSave;
       goAfterSave = null;
-      // After fixi's glue has put the new tab bar in: a link it replaces
-      // mid-request would never say its request finished.
+      // On "fx:settled", the glue has put the new tab bar in, so the link
+      // clicked is the one that stays (one it replaced mid-request would
+      // never say its request finished).
       var refused = document.querySelector("[data-card].is-failed, #save-bar.is-failed");
-      if (!refused) setTimeout(function () { go(href); }, 0);
+      if (!refused) go(href);
     }
   }
 
@@ -571,7 +580,9 @@
     goAfterSave = null;
   });
 
-  document.addEventListener("fx:swapped", settle);
+  // After fixi's glue has finished with a swap (fx-glue.js "fx:settled"):
+  // the panel, and the tab bar and banners it brought, are all in place.
+  document.addEventListener("fx:settled", settle);
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", settle);
   else settle();
 })();

@@ -235,6 +235,9 @@ pub enum SettingKindView {
         /// When it ends, in the admin's own zone like every other time on
         /// the page.
         until_label: String,
+        /// When the saved one ends, when a refused save shows another
+        /// value: so Discard can put it back.
+        saved_until_label: Option<String>,
     },
 }
 
@@ -447,9 +450,13 @@ pub struct NodeRowView {
     /// didn't answer).
     pub status: Option<NodeStatusView>,
     /// Its place in the network's saved list, which tells the page's script
-    /// when the rows have been reordered. `None` for rows a save refused,
-    /// shown as they were sent.
+    /// when the rows have been reordered. `None` for a row that isn't saved
+    /// (one a refused save added).
     pub saved_index: Option<usize>,
+    /// The saved node's values, when a refused save shows the row with
+    /// others: so the page's script counts it as changed, and Discard puts
+    /// them back.
+    pub saved: Option<crate::admin_nodes::NodeRow>,
 }
 
 /// One network's block on the Monero nodes tab: its nodes as rows, primary
@@ -982,6 +989,13 @@ impl AdminSettingsViewModel {
     fn saved_at(&self, group: Group) -> Option<&str> {
         self.outcome.as_ref()?.saved_at(group)
     }
+
+    /// Whether `group`'s "Saved" takes focus: the first card a save this
+    /// page answers saved.
+    fn focus_saved(&self, group: Group) -> bool {
+        self.answers_save
+            && matches!(&self.outcome, Some(SaveOutcome::Saved { groups, .. }) if groups.first() == Some(&group))
+    }
 }
 
 /// The id of a setting's control, which its label and help point at.
@@ -1055,13 +1069,26 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
         SettingKindView::Json => {
             html! { textarea name=(name) rows="4" id=(id) aria-describedby=[help] data-saved=[saved] { (field.value) } }
         }
-        SettingKindView::TimeLimit { now, until_label } => {
+        SettingKindView::TimeLimit {
+            now,
+            until_label,
+            saved_until_label,
+        } => {
             let until: u64 = field.value.trim().parse().unwrap_or(0);
             let on = until > *now;
+            // The saved time too, when a refused save shows another: Discard
+            // puts it back, so it needs an option to select.
+            let saved_on = saved
+                .and_then(|saved| saved.trim().parse::<u64>().ok())
+                .filter(|saved| *saved > *now && *saved != until)
+                .zip(saved_until_label.as_deref());
             html! {
                 select name=(name) id=(id) aria-describedby=[help] data-saved=[saved] {
                     @if on {
                         option value=(until) selected { "On until " (until_label) }
+                    }
+                    @if let Some((saved, label)) = saved_on {
+                        option value=(saved) { "On until " (label) }
                     }
                     // Off, a time already past posts as it is, so it isn't
                     // read as a change.
@@ -1485,6 +1512,11 @@ fn node_row(
         None => id("address-help"),
     };
     let summary_status = row.status.as_ref().map(node_status_words);
+    let saved = row.saved.as_ref();
+    let saved_text = |f: fn(&crate::admin_nodes::NodeRow) -> &str| saved.map(|s| f(s).to_string());
+    let saved_box = |f: fn(&crate::admin_nodes::NodeRow) -> bool| {
+        saved.map(|s| if f(s) { "on" } else { "off" })
+    };
     html! {
         details class="node-row" data-node-row=(index) data-node-add[position.is_none()]
             data-node-saved=[row.saved_index] open[row.row.error.is_some()] {
@@ -1513,6 +1545,7 @@ fn node_row(
                         "an IPv6 address goes in brackets, like " code { "[::1]:18081" } "."
                     }
                     input type="text" name=(name("address")) id=(id("address")) value=(row.row.address) aria-describedby=(described)
+                        data-saved=[saved_text(|s| &s.address)]
                         aria-invalid=[row.row.error.as_ref().map(|_| "true")] autocomplete="off" spellcheck="false" inputmode="url";
                     @if let (Some(error), Some(error_id)) = (&row.row.error, &error_id) {
                         span class="setting-problem" id=(error_id) { (error) }
@@ -1521,14 +1554,16 @@ fn node_row(
                 div class="setting-field node-tls" {
                     div class="setting-label-row" { label class="setting-label" for=(id("ssl")) { "Use TLS" } }
                     span class="field-help" id=(id("ssl-help")) { "Connect with TLS (https). Off by default; most nodes on port 18081 or 18089 don't use it." }
-                    input type="checkbox" name=(name("ssl")) id=(id("ssl")) value="on" checked[row.row.ssl] aria-describedby=(id("ssl-help")) data-node-tls;
+                    input type="checkbox" name=(name("ssl")) id=(id("ssl")) value="on" checked[row.row.ssl] aria-describedby=(id("ssl-help")) data-node-tls
+                        data-saved=[saved_box(|s| s.ssl)];
                 }
                 div class="setting-field node-self-signed" data-node-self-signed {
                     div class="setting-label-row" { label class="setting-label" for=(id("self_signed")) { "Accept a self-signed certificate" } }
                     span class="field-help" id=(id("self_signed-help")) {
                         "Many community nodes use a self-signed TLS certificate; tick this to accept one. Only used with TLS."
                     }
-                    input type="checkbox" name=(name("self_signed")) id=(id("self_signed")) value="on" checked[row.row.self_signed] aria-describedby=(id("self_signed-help"));
+                    input type="checkbox" name=(name("self_signed")) id=(id("self_signed")) value="on" checked[row.row.self_signed] aria-describedby=(id("self_signed-help"))
+                        data-saved=[saved_box(|s| s.self_signed)];
                 }
                 div class="setting-field node-zmq" {
                     div class="setting-label-row" { label class="setting-label" for=(id("zmq_pub")) { "Announcements (ZMQ)" } }
@@ -1538,6 +1573,7 @@ fn node_row(
                         "Needs an engine built with ZMQ support; leave empty otherwise."
                     }
                     input type="text" name=(name("zmq_pub")) id=(id("zmq_pub")) value=(row.row.zmq_pub) aria-describedby=(id("zmq_pub-help"))
+                        data-saved=[saved_text(|s| &s.zmq_pub)]
                         autocomplete="off" spellcheck="false" inputmode="url";
                 }
                 @if let Some(status) = &row.status { (node_status(status)) }
@@ -1627,7 +1663,10 @@ fn card_header(
                 span class="card-meta" { "Can't be changed here" }
             } @else {
                 @if let (Some(at), false) = (saved_at, failed) {
-                    span class="card-meta card-saved" data-card-saved { "Saved " (at) }
+                    // After a save, focus lands on the first card it saved:
+                    // the save bar it was pressed in has gone.
+                    span class="card-meta card-saved" data-card-saved
+                        tabindex=[data.focus_saved(group).then_some("-1")] data-fx-focus[data.focus_saved(group)] { "Saved " (at) }
                 }
                 button type="button" class="card-discard js-only" data-card-discard hidden { "Discard" }
             }
@@ -1800,7 +1839,7 @@ fn save_bar(data: &AdminSettingsViewModel) -> Markup {
     html! {
         div id="save-bar" class={ "save-bar" @if failure.is_some() { " is-failed" } } role="region" aria-label="Save changes" data-save-bar {
           div class="wrap save-bar-inner" {
-            p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus[data.answers_save] {
+            p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus[data.answers_save && failure.is_some()] {
                 @if let Some(failure) = failure {
                     strong { @if partly { "Changes partly saved." } @else { "Nothing saved." } } " " (failure.message)
                     @if let Some(group) = failure.group {
@@ -2330,6 +2369,7 @@ mod tests {
             label: address.to_string(),
             status: None,
             saved_index: Some(0),
+            saved: None,
         }
     }
 
@@ -3071,6 +3111,7 @@ mod tests {
             kind: SettingKindView::TimeLimit {
                 now,
                 until_label: "21 Sep, 22:23".into(),
+                saved_until_label: None,
             },
             ..Default::default()
         };
@@ -3411,6 +3452,68 @@ mod tests {
             html.contains(
                 r#"<details class="node-row" data-node-row="0" data-node-saved="0" open>"#
             ),
+            "{html}"
+        );
+    }
+
+    /// A refused save showing development logging off while it's saved on
+    /// keeps an option for the saved time, so Discard can put it back.
+    #[test]
+    fn a_time_limit_shown_again_keeps_the_saved_time_to_discard_to() {
+        let now = 1_790_000_000;
+        let field = AdminScalarFieldView {
+            key: "logging.dev_mode_until".into(),
+            label: "logging dev mode until".into(),
+            value: "0".into(),
+            saved_value: Some((now + 600).to_string()),
+            kind: SettingKindView::TimeLimit {
+                now,
+                until_label: "1 Jan, 00:00".into(),
+                saved_until_label: Some("21 Sep, 22:23".into()),
+            },
+            ..Default::default()
+        };
+        let html = scalar_field(&field).into_string();
+        assert!(
+            html.contains(r#"<option value="0" selected>Off</option>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<option value="{}">On until 21 Sep, 22:23</option>"#,
+                now + 600
+            )),
+            "{html}"
+        );
+    }
+
+    /// After a save, focus lands where it says what it did: the first card
+    /// saved, or the save bar when it was refused.
+    #[test]
+    fn after_a_save_focus_lands_where_it_says_what_it_did() {
+        let mut data = full_view(SettingsTab::Payments);
+        data.answers_save = true;
+        data.outcome = Some(SaveOutcome::Saved {
+            groups: vec![Group::Webhooks, Group::Orders],
+            at: "now".into(),
+        });
+        let html = page(&data);
+        assert_eq!(html.matches("data-fx-focus").count(), 1, "{html}");
+        assert!(
+            card(&html, "webhooks")
+                .contains(r#"data-card-saved tabindex="-1" data-fx-focus>Saved now"#),
+            "{html}"
+        );
+        data.outcome = Some(SaveOutcome::Refused {
+            failures: vec![Failure {
+                group: Some(Group::Orders),
+                message: "No.".into(),
+            }],
+        });
+        let html = page(&data);
+        assert_eq!(html.matches("data-fx-focus").count(), 1, "{html}");
+        assert!(
+            html.contains(r#"data-save-bar-message tabindex="-1" data-fx-focus>"#),
             "{html}"
         );
     }

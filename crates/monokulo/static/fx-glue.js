@@ -29,6 +29,10 @@
 //   - after a swap, the element marked data-fx-focus (an error, or the
 //     section's heading) gets focus, so keyboard and screen reader users
 //     land on the result;
+//   - once a swap is done with all of that (its out-of-band parts in place,
+//     focus moved), "fx:settled" is sent on the document, so a page's own
+//     script can act on the page as it now is (fixi's "fx:swapped" comes
+//     before this glue has put those parts in);
 //   - every request says the browser's time zone (X-Timezone, and a tz
 //     cookie for full page loads), so the server formats times in it;
 //   - <html> gets class "js", so CSS can hide controls that need it.
@@ -142,7 +146,7 @@
     banner("Couldn't reach the server. Check your connection and try again.");
   });
 
-  document.addEventListener("fx:swapped", function () {
+  document.addEventListener("fx:swapped", function (evt) {
     // Out-of-band parts: an element marked data-fx-oob that came back with
     // a swap replaces the page's element with the same id, wherever that
     // is (a save in one section that changes another).
@@ -159,6 +163,7 @@
       // Without scrolling: the swapped section stays where it was on screen.
       focus.focus({ preventScroll: true });
     }
+    document.dispatchEvent(new CustomEvent("fx:settled", { detail: evt.detail }));
   });
 
   // A page streaming its own updates doesn't need its Reload button;

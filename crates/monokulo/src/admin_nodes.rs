@@ -265,13 +265,6 @@ impl NodeForm {
         NodeForm { networks }
     }
 
-    /// Whether any row has something to fix.
-    pub fn has_errors(&self) -> bool {
-        self.networks
-            .iter()
-            .any(|(_, rows)| rows.iter().any(|row| row.error.is_some()))
-    }
-
     /// One network's rows, if it was submitted.
     pub fn rows(&self, network: Network) -> Option<&[NodeRow]> {
         self.networks
@@ -549,7 +542,10 @@ mod tests {
         );
         assert!(!rows[0].ssl && rows[0].self_signed);
         assert!(rows[1].ssl && !rows[1].self_signed);
-        assert!(!nodes.has_errors());
+        assert!(nodes
+            .networks
+            .iter()
+            .all(|(_, rows)| rows.iter().all(|row| row.error.is_none())));
         assert_eq!(nodes.rows(monero::Network::Testnet), None, "not submitted");
     }
 
@@ -668,7 +664,10 @@ mod tests {
             ORDER,
         );
         let rows = nodes.rows(monero::Network::Mainnet).unwrap();
-        assert!(nodes.has_errors());
+        assert!(nodes
+            .networks
+            .iter()
+            .any(|(_, rows)| rows.iter().any(|row| row.error.is_some())));
         assert_eq!(
             rows[0].error, None,
             "the first of a repeated address is fine"
@@ -690,7 +689,10 @@ mod tests {
             ("node_mainnet_1_address", "node.example.com"),
         ]);
         fields.insert("node_action".into(), "remove:mainnet:1".into());
-        assert!(!NodeForm::from_form(&fields, ORDER).has_errors());
+        assert!(NodeForm::from_form(&fields, ORDER)
+            .networks
+            .iter()
+            .all(|(_, rows)| rows.iter().all(|row| row.error.is_none())));
     }
 
     #[test]
@@ -801,7 +803,10 @@ mod tests {
             ]),
             ORDER,
         );
-        assert!(!parsed.has_errors());
+        assert!(parsed
+            .networks
+            .iter()
+            .all(|(_, rows)| rows.iter().all(|row| row.error.is_none())));
         let rows = parsed.rows(Network::Mainnet).unwrap();
         assert_eq!(rows[0].zmq_pub, "tcp://127.0.0.1:18083");
         assert_eq!(rows[1].zmq_pub, "");
