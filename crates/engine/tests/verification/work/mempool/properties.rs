@@ -58,7 +58,7 @@ proptest! {
 
 async fn competing_scans(boundary: u8) {
     let path = TempFile::new();
-    let store = Store::open_file(&path.0).unwrap();
+    let store = Store::create_file(&path.0).unwrap();
     let custody = GateCustody::default();
     let (id, handle, order) = fixture_tenant(&store, &custody, i64::MAX).await;
     let db = Db::open(&path.0, &store).unwrap();
@@ -398,7 +398,7 @@ fn reviewed_fuzz_histories_remain_valid_regressions() {
 
 async fn entry_point_contention(fast_first: bool, cancel: bool, competitors: usize) {
     let path = TempFile::new();
-    let store = Store::open_file(&path.0).unwrap();
+    let store = Store::create_file(&path.0).unwrap();
     let custody = GateCustody::default();
     let (id, handle, order) = fixture_tenant(&store, &custody, i64::MAX).await;
     let db = Db::open(&path.0, &store).unwrap();
@@ -504,7 +504,7 @@ proptest! {
 
 async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
     let path = TempFile::new();
-    let store = Store::open_file(&path.0).unwrap();
+    let store = Store::create_file(&path.0).unwrap();
     let custody = GateCustody::default();
     let (a, ah, ao) = fixture_tenant(&store, &custody, i64::MAX).await;
     let (b, bh, bo) = fixture_tenant(&store, &custody, i64::MAX).await;

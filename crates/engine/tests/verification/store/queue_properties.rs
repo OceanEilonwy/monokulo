@@ -67,7 +67,7 @@ proptest! {
     ) {
         runtime().block_on(async {
             let path = TempFile::new();
-            let store = Store::open_file(&path.0).unwrap();
+            let store = Store::create_file(&path.0).unwrap();
             let db = Db::open(&path.0, &store).unwrap();
             let (mut release, blocker) = held(&db).await;
             let trace = Arc::new(parking_lot::Mutex::new(Vec::new()));
@@ -132,7 +132,7 @@ proptest! {
     fn closing_all_senders_drains_accepted_jobs(lengths in prop::array::uniform3(1usize..=64)) {
         runtime().block_on(async {
             let path = TempFile::new();
-            let store = Store::open_file(&path.0).unwrap();
+            let store = Store::create_file(&path.0).unwrap();
             let db = Db::open(&path.0, &store).unwrap();
             let (mut release, blocker) = held(&db).await;
             let total: usize = lengths.iter().sum();

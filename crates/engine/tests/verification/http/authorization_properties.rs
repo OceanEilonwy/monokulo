@@ -24,7 +24,7 @@ impl World {
     async fn with_network(count: usize, worker: bool, node_state: Option<AppState>) -> Self {
         let fixture = node_state.is_some();
         let path = TempFile::new();
-        let store = Store::open_file(&path.0).unwrap().into_shared();
+        let store = Store::create_file(&path.0).unwrap().into_shared();
         let mut state = AppState::for_tests_with_store(Arc::clone(&store));
         if let Some(node_state) = node_state {
             state.networks = node_state.networks;

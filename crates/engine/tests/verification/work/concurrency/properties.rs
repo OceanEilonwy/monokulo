@@ -54,7 +54,7 @@ fn request(token: &str, method: &str, path: &str, value: &serde_json::Value) -> 
 }
 async fn overlap(ordering: usize, cancelled: u8, change: u8, repeats: usize) {
     let path = TempFile::new();
-    let store = Store::open_file(&path.0).unwrap();
+    let store = Store::create_file(&path.0).unwrap();
     let custody = Arc::new(GateCustody::default());
     let (tenant, handle, order) = fixture_tenant(&store, custody.as_ref(), i64::MAX).await;
     store
@@ -345,7 +345,7 @@ fn every_overlap_admission_order_and_abandoned_caller_recovers() {
 async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_custody: bool) {
     use crate::key_custody::KeyCustody as _;
     let path = TempFile::new();
-    let store = Store::open_file(&path.0).unwrap();
+    let store = Store::create_file(&path.0).unwrap();
     let custody = Arc::new(GateCustody::default());
     let (tenant, mut handle, order) = fixture_tenant(&store, custody.as_ref(), i64::MAX).await;
     store
