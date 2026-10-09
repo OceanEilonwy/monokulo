@@ -853,6 +853,7 @@ mod tests {
 
     /// Past the per-minute limit, the form is an alert and the engine isn't
     /// asked for a challenge; another account is unaffected.
+    #[cfg(feature = "snp")]
     #[tokio::test]
     async fn an_account_opening_too_many_forms_gets_an_alert() {
         let engine = engine_test_support::TestEngineConfig::new()

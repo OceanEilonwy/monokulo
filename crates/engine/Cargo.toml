@@ -81,15 +81,17 @@ fuzzing = ["tokio/test-util", "rusqlite/hooks"]
 # handoff route. Off by default; without it, enabling `snp` in
 # key_custody.enabled_backends is refused.
 snp = ["key-custody/snp", "snp-attest/guest", "snp-attest/kds"]
-# The in-thread database pools (`store::Database::inline`) for
-# `engine-test-support` and the e2e harness (`crates/e2e-harness`). Never in
-# production.
+# The in-thread database pools (`store::Database::inline`) and other helpers
+# for `engine-test-support` and the e2e harness (`crates/e2e-harness`). Only
+# adds code tests call; it never changes what the engine does.
 test-support = ["shared/test-support"]
 # Wakes the scan loops when a node configured with `zmq_pub` says a block or
 # a pool transaction arrived (docs/monero_zmq.md). Polling stays on as the
 # safety net. Without this feature a node setting naming `zmq_pub` is
-# refused, so it can't be saved and silently ignored.
+# refused, so it can't be saved and silently ignored. On by default: every
+# build that ships has it (`--no-default-features` builds without).
 zmq = ["dep:zeromq"]
+default = ["zmq"]
 
 # Pinning the engine's threads to CPUs and setting their niceness
 # (`threads`, server.cpus and server.nice): Linux's per-thread calls, through

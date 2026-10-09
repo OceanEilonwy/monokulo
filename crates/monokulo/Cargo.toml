@@ -16,8 +16,9 @@ default = ["embedded-engine"]
 # Without it the client only reaches an engine over HTTP.
 embedded-engine = ["dep:engine", "dep:tower", "dep:http-body-util"]
 # The embedded engine's `snp` key custody backend (the engine's `snp`
-# feature). Off by default.
-snp = ["engine?/snp"]
+# feature), and in a test build the test engine's stand-in for it. Off by
+# default; every test build turns it on (`--features monokulo/snp`).
+snp = ["engine?/snp", "engine-test-support/snp"]
 
 [dependencies]
 engine = { path = "../engine", optional = true }

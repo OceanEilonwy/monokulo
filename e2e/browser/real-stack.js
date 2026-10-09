@@ -71,9 +71,10 @@ function cleanEnv() {
 // stack's three and the coverage fixture server. Cargo unifies features
 // across the packages a command names, so building them with different
 // commands compiles engine and monokulo twice; with this one, the fixture's
-// own rebuild check (coverage-fixture.js) finds nothing to do.
+// own rebuild check (coverage-fixture.js) finds nothing to do. With the snp
+// key custody backend, as every test build is (zmq is on by default).
 const BUILD_ARGS = [
-  'build', '--locked',
+  'build', '--locked', '--features', 'monokulo/snp',
   '-p', 'engine', '--bin', 'monokulo-engine',
   '-p', 'monokulo', '--bin', 'monokulo', '--example', 'coverage_fixture',
   '-p', 'engine-test-support', '--bin', 'fake-monerod',

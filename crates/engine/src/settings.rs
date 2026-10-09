@@ -86,7 +86,7 @@ fn check_zmq_pub(zmq_pub: &str) -> Result<(), String> {
 
 #[cfg(not(feature = "zmq"))]
 fn check_zmq_pub(_zmq_pub: &str) -> Result<(), String> {
-    Err("needs an engine built with the `zmq` feature (cargo build --features zmq); this one wasn't".to_owned())
+    Err("needs an engine built with the `zmq` feature (on by default); this one was built without it".to_owned())
 }
 
 /// Whether an address the engine is listening on can only be reached from
@@ -232,18 +232,6 @@ mod tests {
     #[test]
     fn a_node_without_a_publisher_needs_no_zmq_support() {
         assert_eq!(check_node(&Some(with_zmq(None, None))), Ok(()));
-    }
-
-    #[cfg(not(feature = "zmq"))]
-    #[test]
-    fn a_publisher_is_refused_by_an_engine_built_without_zmq() {
-        for node in [
-            with_zmq(Some("tcp://127.0.0.1:18083"), None),
-            with_zmq(None, Some("tcp://127.0.0.1:18083")),
-        ] {
-            let error = check_node(&Some(node)).unwrap_err();
-            assert!(error.contains("`zmq` feature"), "{error}");
-        }
     }
 
     #[cfg(feature = "zmq")]

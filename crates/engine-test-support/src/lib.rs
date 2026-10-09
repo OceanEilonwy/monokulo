@@ -342,8 +342,10 @@ impl TestEngineHandle {
 
 /// AMD's certificates, as far as the snp test backend needs them: present.
 /// Its bundles are checked against the stand-in's key, not AMD's chain.
+#[cfg(feature = "snp")]
 struct TestEvidence;
 
+#[cfg(feature = "snp")]
 #[async_trait::async_trait]
 impl engine::key_custody::snp::EvidenceSource for TestEvidence {
     async fn evidence(
@@ -357,6 +359,49 @@ impl engine::key_custody::snp::EvidenceSource for TestEvidence {
             crl_der: Vec::new(),
         })
     }
+}
+
+/// `plain` and `snp` behind a router, `snp` on a stand-in security
+/// processor; the router's default is `plain`. With the slot, for the
+/// engine's reloads, and the key the stand-in signs its reports with.
+#[cfg(feature = "snp")]
+async fn snp_custody(
+    store: &engine::store::SharedStore,
+) -> (
+    Arc<dyn KeyCustody>,
+    Arc<engine::key_custody::SnpSlot>,
+    p384::ecdsa::VerifyingKey,
+) {
+    let guest =
+        snp_attest::guest::TestGuest::new([7; 32], snp_attest::guest::TestIdentity::default());
+    let vcek = guest.vcek();
+    let slot = Arc::new(
+        engine::key_custody::SnpSlot::new(
+            Ok(engine::key_custody::snp::SnpConfig {
+                product: snp_attest::report::Product::Genoa,
+                trust: snp_test_trust(),
+            }),
+            Arc::new(guest),
+            Arc::new(engine::key_custody::StoreWraps(store.clone())),
+        )
+        .with_anchor(engine::key_custody::transport::Anchor::Vcek(vcek)),
+    );
+    let snp = slot.start().expect("the snp test backend starts");
+    snp.refresh_evidence(&TestEvidence)
+        .await
+        .expect("test evidence");
+    let backends: HashMap<String, Arc<dyn KeyCustody>> = HashMap::from([
+        (
+            "plain".to_string(),
+            Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>,
+        ),
+        ("snp".to_string(), snp as Arc<dyn KeyCustody>),
+    ]);
+    (
+        Arc::new(engine::key_custody::CustodyRouter::new(backends, "plain")),
+        slot,
+        vcek,
+    )
 }
 
 impl TestEngineHandle {
@@ -637,6 +682,7 @@ pub struct TestEngineConfig {
     background_loops: bool,
     background_scan_loop: bool,
     /// `true` when [`TestEngineConfig::with_snp_backend`] has been used.
+    #[cfg(feature = "snp")]
     snp_backend: bool,
     /// `true` when [`TestEngineConfig::with_admin_lookup_daemon`] has been used -
     /// see that method's own doc comment.
@@ -817,7 +863,9 @@ impl TestEngineConfig {
     /// (`snp_attest::guest::TestGuest`), so stores can be created in either
     /// and moved between them. Keys for `snp` go in encrypted: get a bundle
     /// from the engine and seal them with
-    /// [`TestEngineHandle::seal_keys_for_snp`].
+    /// [`TestEngineHandle::seal_keys_for_snp`]. Needs this crate's `snp`
+    /// feature.
+    #[cfg(feature = "snp")]
     pub fn with_snp_backend(mut self) -> Self {
         self.snp_backend = true;
         self
@@ -843,46 +891,20 @@ impl TestEngineConfig {
         let store = Store::open_in_memory()
             .expect("failed to open in-memory store for test engine")
             .into_shared();
-        let mut snp_slot = None;
-        let mut snp_vcek = None;
-        let (key_custody, key_custody_backend): (Arc<dyn KeyCustody>, &'static str) =
-            if self.snp_backend {
-                let guest = snp_attest::guest::TestGuest::new(
-                    [7; 32],
-                    snp_attest::guest::TestIdentity::default(),
-                );
-                let vcek = guest.vcek();
-                let slot = Arc::new(
-                    engine::key_custody::SnpSlot::new(
-                        Ok(engine::key_custody::snp::SnpConfig {
-                            product: snp_attest::report::Product::Genoa,
-                            trust: snp_test_trust(),
-                        }),
-                        Arc::new(guest),
-                        Arc::new(engine::key_custody::StoreWraps(store.clone())),
-                    )
-                    .with_anchor(engine::key_custody::transport::Anchor::Vcek(vcek)),
-                );
-                let snp = slot.start().expect("the snp test backend starts");
-                snp.refresh_evidence(&TestEvidence)
-                    .await
-                    .expect("test evidence");
-                let backends: HashMap<String, Arc<dyn KeyCustody>> = HashMap::from([
-                    (
-                        "plain".to_string(),
-                        Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>,
-                    ),
-                    ("snp".to_string(), snp as Arc<dyn KeyCustody>),
-                ]);
-                snp_slot = Some(slot);
-                snp_vcek = Some(vcek);
-                (
-                    Arc::new(engine::key_custody::CustodyRouter::new(backends, "plain")),
-                    "plain",
-                )
-            } else {
-                (Arc::new(PlainKeyCustody::default()), "plain")
-            };
+        let custody: (
+            Arc<dyn KeyCustody>,
+            Option<Arc<engine::key_custody::SnpSlot>>,
+            _,
+        ) = (Arc::new(PlainKeyCustody::default()), None, None);
+        #[cfg(feature = "snp")]
+        let custody = if self.snp_backend {
+            let (custody, slot, vcek) = snp_custody(&store).await;
+            (custody, Some(slot), Some(vcek))
+        } else {
+            custody
+        };
+        let (key_custody, snp_slot, snp_vcek) = custody;
+        let key_custody_backend = "plain";
 
         // Held separately (not just inline in `AppState`) so the background scan loop
         // below can clone the same `Arc` and re-read it fresh every tick, exactly like
@@ -1315,518 +1337,522 @@ mod tests {
         receiver_task.abort();
     }
 
-    // -----------------------------------------------------------------------
-    // The snp backend: the same outcomes as plain, through encrypted keys
-    // -----------------------------------------------------------------------
+    /// The snp backend: the same outcomes as plain, through encrypted keys.
+    #[cfg(feature = "snp")]
+    mod snp {
+        use super::*;
 
-    /// A `MoneroDaemonClient` serving exactly one real transaction: the same
-    /// fixture `key-custody`'s and `src/scanner.rs`'s own test suites use
-    /// (`tests/fixtures/subaddress_tx.hex`, lifted from monero-rs's own
-    /// `code_coverage_owned_tx_out` test - real RingCT amount decryption, not a
-    /// synthetic tx) - deliberately reused rather than inventing a fresh one, per
-    /// this task's own framing ("there should already be an existing test doing
-    /// this... just swapping which backend answers"). Height stuck at 1 with one
-    /// already-seeded empty block, tx served from the mempool - mirrors
-    /// `src/scanner.rs`'s own
-    /// `run_scan_tick_matches_mempool_tx_recomputes_status_and_enqueues_a_webhook`
-    /// setup exactly (`daemon.push_block("h1", vec![])` then
-    /// `daemon.set_mempool(vec![fixture_tx()])`), not a fresh scenario.
-    struct FixtureTxDaemonClient;
+        /// A `MoneroDaemonClient` serving exactly one real transaction: the same
+        /// fixture `key-custody`'s and `src/scanner.rs`'s own test suites use
+        /// (`tests/fixtures/subaddress_tx.hex`, lifted from monero-rs's own
+        /// `code_coverage_owned_tx_out` test - real RingCT amount decryption, not a
+        /// synthetic tx) - deliberately reused rather than inventing a fresh one, per
+        /// this task's own framing ("there should already be an existing test doing
+        /// this... just swapping which backend answers"). Height stuck at 1 with one
+        /// already-seeded empty block, tx served from the mempool - mirrors
+        /// `src/scanner.rs`'s own
+        /// `run_scan_tick_matches_mempool_tx_recomputes_status_and_enqueues_a_webhook`
+        /// setup exactly (`daemon.push_block("h1", vec![])` then
+        /// `daemon.set_mempool(vec![fixture_tx()])`), not a fresh scenario.
+        struct FixtureTxDaemonClient;
 
-    #[async_trait::async_trait]
-    impl MoneroDaemonClient for FixtureTxDaemonClient {
-        async fn get_height(&self) -> Result<u64, DaemonError> {
-            Ok(1)
-        }
+        #[async_trait::async_trait]
+        impl MoneroDaemonClient for FixtureTxDaemonClient {
+            async fn get_height(&self) -> Result<u64, DaemonError> {
+                Ok(1)
+            }
 
-        async fn get_block_hash(&self, _height: u64) -> Result<String, DaemonError> {
-            Ok("h1".to_string())
-        }
+            async fn get_block_hash(&self, _height: u64) -> Result<String, DaemonError> {
+                Ok("h1".to_string())
+            }
 
-        /// Blocks 0 and 1, both empty.
-        async fn get_chain_blocks(
-            &self,
-            start_height: u64,
-            count: u64,
-        ) -> Result<Vec<ChainBlock>, DaemonError> {
-            Ok((start_height..start_height.saturating_add(count))
-                .take_while(|height| *height <= 1)
-                .map(|height| ChainBlock {
-                    height,
-                    hash: "h1".to_string(),
-                    prev_hash: if height == 0 {
-                        String::new()
-                    } else {
-                        "h1".to_string()
-                    },
-                    timestamp: 0,
-                    txs: vec![],
-                    txids: vec![],
-                    wire_bytes: 0,
+            /// Blocks 0 and 1, both empty.
+            async fn get_chain_blocks(
+                &self,
+                start_height: u64,
+                count: u64,
+            ) -> Result<Vec<ChainBlock>, DaemonError> {
+                Ok((start_height..start_height.saturating_add(count))
+                    .take_while(|height| *height <= 1)
+                    .map(|height| ChainBlock {
+                        height,
+                        hash: "h1".to_string(),
+                        prev_hash: if height == 0 {
+                            String::new()
+                        } else {
+                            "h1".to_string()
+                        },
+                        timestamp: 0,
+                        txs: vec![],
+                        txids: vec![],
+                        wire_bytes: 0,
+                    })
+                    .collect())
+            }
+
+            async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+                Ok(vec![tx_id_hex(&fixture_tx())])
+            }
+
+            async fn get_transactions_with_ids(
+                &self,
+                txids: &[String],
+            ) -> Result<Vec<FetchedTx>, DaemonError> {
+                let tx = fixture_tx();
+                let txid = tx_id_hex(&tx);
+                Ok(if txids.contains(&txid) {
+                    vec![FetchedTx { txid, tx }]
+                } else {
+                    vec![]
                 })
-                .collect())
+            }
+
+            async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
+                Ok(TxLocation::NotFound)
+            }
+
+            async fn is_key_image_spent(
+                &self,
+                key_images: &[String],
+            ) -> Result<Vec<KeyImageStatus>, DaemonError> {
+                Ok(vec![KeyImageStatus::Unspent; key_images.len()])
+            }
         }
 
-        async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
-            Ok(vec![tx_id_hex(&fixture_tx())])
+        /// Same fixture bytes/keys `src/key_custody/plain.rs::scan_tx_outputs_finds_
+        /// output_paid_to_subaddress` and `src/scanner.rs::setup_with_zero_conf_
+        /// ceiling` use, copied verbatim (not re-derived) so this test provably
+        /// exercises the identical scenario those already-trusted tests do.
+        fn fixture_tx() -> monero::Transaction {
+            let raw = hex::decode(include_str!(
+                "../../engine/tests/fixtures/subaddress_tx.hex"
+            ))
+            .expect("fixture is valid hex");
+            monero::consensus::encode::deserialize(&raw).expect("fixture is a valid monero tx")
         }
 
-        async fn get_transactions_with_ids(
-            &self,
-            txids: &[String],
-        ) -> Result<Vec<FetchedTx>, DaemonError> {
-            let tx = fixture_tx();
-            let txid = tx_id_hex(&tx);
-            Ok(if txids.contains(&txid) {
-                vec![FetchedTx { txid, tx }]
-            } else {
-                vec![]
+        const FIXTURE_VIEW_KEY_HEX: &str =
+            "bcfdda53205318e1c14fa0ddca1a45df363bb427972981d0249d0f4652a7df07";
+        const FIXTURE_SECRET_SPEND_HEX: &str =
+            "e5f4301d32f3bdaef814a835a18aaaa24b13cc76cf01a832a7852faf9322e907";
+
+        /// The fixture transaction pays subaddress 0/1 for the *public* spend key
+        /// derived from [`FIXTURE_SECRET_SPEND_HEX`] - `admin::create_tenant`'s HTTP
+        /// API (unlike the internal engine tests, which can construct `WalletMaterial`
+        /// directly) only ever takes the public spend key, exactly as a real tenant
+        /// pasting watch-only keys would.
+        fn fixture_spend_pubkey_hex() -> String {
+            let secret_spend =
+                monero::PrivateKey::from_slice(&hex::decode(FIXTURE_SECRET_SPEND_HEX).unwrap())
+                    .expect("fixture secret spend key is a valid scalar");
+            hex::encode(monero::PublicKey::from_private_key(&secret_spend).to_bytes())
+        }
+
+        /// The keys a request creating or moving a store carries for `backend`:
+        /// the fixture wallet's, in the clear for `plain`, encrypted to the
+        /// engine's snp backend (under a bundle fetched from `bundle_url`) for
+        /// `snp`.
+        async fn fixture_keys_for(
+            engine: &TestEngineHandle,
+            backend: &str,
+            bundle_url: &str,
+            secret_token: Option<&str>,
+        ) -> serde_json::Value {
+            if backend != "snp" {
+                return serde_json::json!({
+                    "view_key_hex": FIXTURE_VIEW_KEY_HEX,
+                    "spend_pubkey_hex": fixture_spend_pubkey_hex(),
+                });
+            }
+            let mut request = engine_http_client()
+                .post(bundle_url)
+                .json(&serde_json::json!({ "backend": "snp" }));
+            if let Some(token) = secret_token {
+                request = request.bearer_auth(token);
+            }
+            let answer: serde_json::Value = request.send().await.unwrap().json().await.unwrap();
+            let bundle = serde_json::from_value(answer["bundle"].clone()).unwrap();
+            serde_json::json!({
+                "encrypted_keys": engine.seal_keys_for_snp(
+                    &bundle,
+                    FIXTURE_VIEW_KEY_HEX,
+                    &fixture_spend_pubkey_hex(),
+                ),
             })
         }
 
-        async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
-            Ok(TxLocation::NotFound)
-        }
+        /// Runs the real order-creation-plus-chain-scan scenario against a freshly
+        /// spawned engine built from `engine_config`, entirely through the engine's
+        /// own public/admin HTTP API plus one real `run_scan_tick_now` call - exactly
+        /// the pattern `background_loops_genuinely_deliver_a_real_expired_webhook`
+        /// above already established for this crate, generalized to take the
+        /// `KeyCustody` backend as a parameter instead of hardcoding it. Returns
+        /// `(status, amount_received_piconero)` so the caller can compare two runs for
+        /// exact equality rather than each asserting the expected values separately
+        /// (a divergence between the two backends would otherwise have to coincidentally
+        /// both match the same hardcoded expectation to go unnoticed - comparing the
+        /// two results directly rules that out).
+        async fn run_order_creation_and_scan_scenario(
+            engine_config: TestEngineConfig,
+            backend: &str,
+        ) -> (String, u64) {
+            // A deliberately tiny target amount (1000 piconero), not a realistic one:
+            // the fixture transaction's real, already-fixed amount is unknown ahead of
+            // time (it's a real historical Monero transaction, not something this test
+            // controls), so the target amount only needs to be trivially satisfied by
+            // whatever it actually paid - same reasoning
+            // `src/scanner.rs::setup_with_zero_conf_ceiling` already documents for its
+            // own `xmr_amount_piconero: 1`. A too-large amount here would make the
+            // order land on `partial` instead of `unconfirmed`, which is exactly what
+            // the first version of this test got wrong before this comment was added.
+            let engine = engine_config
+                .with_networks(&[Network::Mainnet])
+                .spawn()
+                .await;
+            let base_url = format!("http://{}", engine.addr);
+            let client = engine_http_client();
 
-        async fn is_key_image_spent(
-            &self,
-            key_images: &[String],
-        ) -> Result<Vec<KeyImageStatus>, DaemonError> {
-            Ok(vec![KeyImageStatus::Unspent; key_images.len()])
-        }
-    }
-
-    /// Same fixture bytes/keys `src/key_custody/plain.rs::scan_tx_outputs_finds_
-    /// output_paid_to_subaddress` and `src/scanner.rs::setup_with_zero_conf_
-    /// ceiling` use, copied verbatim (not re-derived) so this test provably
-    /// exercises the identical scenario those already-trusted tests do.
-    fn fixture_tx() -> monero::Transaction {
-        let raw = hex::decode(include_str!(
-            "../../engine/tests/fixtures/subaddress_tx.hex"
-        ))
-        .expect("fixture is valid hex");
-        monero::consensus::encode::deserialize(&raw).expect("fixture is a valid monero tx")
-    }
-
-    const FIXTURE_VIEW_KEY_HEX: &str =
-        "bcfdda53205318e1c14fa0ddca1a45df363bb427972981d0249d0f4652a7df07";
-    const FIXTURE_SECRET_SPEND_HEX: &str =
-        "e5f4301d32f3bdaef814a835a18aaaa24b13cc76cf01a832a7852faf9322e907";
-
-    /// The fixture transaction pays subaddress 0/1 for the *public* spend key
-    /// derived from [`FIXTURE_SECRET_SPEND_HEX`] - `admin::create_tenant`'s HTTP
-    /// API (unlike the internal engine tests, which can construct `WalletMaterial`
-    /// directly) only ever takes the public spend key, exactly as a real tenant
-    /// pasting watch-only keys would.
-    fn fixture_spend_pubkey_hex() -> String {
-        let secret_spend =
-            monero::PrivateKey::from_slice(&hex::decode(FIXTURE_SECRET_SPEND_HEX).unwrap())
-                .expect("fixture secret spend key is a valid scalar");
-        hex::encode(monero::PublicKey::from_private_key(&secret_spend).to_bytes())
-    }
-
-    /// The keys a request creating or moving a store carries for `backend`:
-    /// the fixture wallet's, in the clear for `plain`, encrypted to the
-    /// engine's snp backend (under a bundle fetched from `bundle_url`) for
-    /// `snp`.
-    async fn fixture_keys_for(
-        engine: &TestEngineHandle,
-        backend: &str,
-        bundle_url: &str,
-        secret_token: Option<&str>,
-    ) -> serde_json::Value {
-        if backend != "snp" {
-            return serde_json::json!({
-                "view_key_hex": FIXTURE_VIEW_KEY_HEX,
-                "spend_pubkey_hex": fixture_spend_pubkey_hex(),
-            });
-        }
-        let mut request = engine_http_client()
-            .post(bundle_url)
-            .json(&serde_json::json!({ "backend": "snp" }));
-        if let Some(token) = secret_token {
-            request = request.bearer_auth(token);
-        }
-        let answer: serde_json::Value = request.send().await.unwrap().json().await.unwrap();
-        let bundle = serde_json::from_value(answer["bundle"].clone()).unwrap();
-        serde_json::json!({
-            "encrypted_keys": engine.seal_keys_for_snp(
-                &bundle,
-                FIXTURE_VIEW_KEY_HEX,
-                &fixture_spend_pubkey_hex(),
-            ),
-        })
-    }
-
-    /// Runs the real order-creation-plus-chain-scan scenario against a freshly
-    /// spawned engine built from `engine_config`, entirely through the engine's
-    /// own public/admin HTTP API plus one real `run_scan_tick_now` call - exactly
-    /// the pattern `background_loops_genuinely_deliver_a_real_expired_webhook`
-    /// above already established for this crate, generalized to take the
-    /// `KeyCustody` backend as a parameter instead of hardcoding it. Returns
-    /// `(status, amount_received_piconero)` so the caller can compare two runs for
-    /// exact equality rather than each asserting the expected values separately
-    /// (a divergence between the two backends would otherwise have to coincidentally
-    /// both match the same hardcoded expectation to go unnoticed - comparing the
-    /// two results directly rules that out).
-    async fn run_order_creation_and_scan_scenario(
-        engine_config: TestEngineConfig,
-        backend: &str,
-    ) -> (String, u64) {
-        // A deliberately tiny target amount (1000 piconero), not a realistic one:
-        // the fixture transaction's real, already-fixed amount is unknown ahead of
-        // time (it's a real historical Monero transaction, not something this test
-        // controls), so the target amount only needs to be trivially satisfied by
-        // whatever it actually paid - same reasoning
-        // `src/scanner.rs::setup_with_zero_conf_ceiling` already documents for its
-        // own `xmr_amount_piconero: 1`. A too-large amount here would make the
-        // order land on `partial` instead of `unconfirmed`, which is exactly what
-        // the first version of this test got wrong before this comment was added.
-        let engine = engine_config
-            .with_networks(&[Network::Mainnet])
-            .spawn()
+            let mut request = fixture_keys_for(
+                &engine,
+                backend,
+                &format!("{base_url}/api/v1/admin/key-custody/bundle"),
+                None,
+            )
             .await;
-        let base_url = format!("http://{}", engine.addr);
-        let client = engine_http_client();
+            request["network"] = "mainnet".into();
+            request["key_custody_backend"] = backend.into();
+            let created: serde_json::Value = client
+                .post(format!("{base_url}/api/v1/admin/tenants"))
+                .json(&request)
+                .send()
+                .await
+                .expect("create_tenant request failed")
+                .json()
+                .await
+                .expect("create_tenant response was not valid JSON");
+            let secret_token = created["secret_token"].as_str().unwrap().to_string();
 
-        let mut request = fixture_keys_for(
-            &engine,
-            backend,
-            &format!("{base_url}/api/v1/admin/key-custody/bundle"),
-            None,
-        )
-        .await;
-        request["network"] = "mainnet".into();
-        request["key_custody_backend"] = backend.into();
-        let created: serde_json::Value = client
-            .post(format!("{base_url}/api/v1/admin/tenants"))
-            .json(&request)
-            .send()
-            .await
-            .expect("create_tenant request failed")
-            .json()
-            .await
-            .expect("create_tenant response was not valid JSON");
-        let secret_token = created["secret_token"].as_str().unwrap().to_string();
-
-        // The tenant's very first order lands on minor index 1 (`next_minor_index`
-        // starts at 1 - see `migrations/0001_init.sql`) - exactly the subaddress
-        // the fixture transaction pays, same as `src/scanner.rs::setup_with_zero_
-        // conf_ceiling`'s own assertion pins this for the internal test.
-        let order: serde_json::Value = client
-            .post(format!("{base_url}/api/v1/admin/tenant/orders"))
-            .bearer_auth(&secret_token)
-            .json(&serde_json::json!({ "xmr_amount_piconero": 1_000u64 }))
-            .send()
-            .await
-            .expect("create_order request failed")
-            .json()
-            .await
-            .expect("create_order response was not valid JSON");
-        let order_id = order["order_id"].as_str().unwrap().to_string();
-
-        engine
-            .run_scan_tick_now(&FixtureTxDaemonClient, Network::Mainnet, 20)
-            .await
-            .expect("real scan tick failed");
-
-        let status: serde_json::Value = client
-            .get(format!("{base_url}/api/v1/admin/tenant/orders/{order_id}"))
-            .bearer_auth(&secret_token)
-            .send()
-            .await
-            .expect("get_order_status request failed")
-            .json()
-            .await
-            .expect("get_order_status response was not valid JSON");
-
-        (
-            status["status"]
-                .as_str()
-                .expect("status field present")
-                .to_string(),
-            status["amount_received_piconero"]
-                .as_u64()
-                .expect("amount_received_piconero field present"),
-        )
-    }
-
-    async fn order_status(base_url: &str, secret_token: &str, order_id: &str) -> String {
-        let status: serde_json::Value = engine_http_client()
-            .get(format!("{base_url}/api/v1/admin/tenant/orders/{order_id}"))
-            .bearer_auth(secret_token)
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        status["status"].as_str().unwrap().to_string()
-    }
-
-    /// A store that moves from plain to snp, its keys sent encrypted under a
-    /// bundle for that store, has a payment to an order made before the
-    /// move matched by the snp backend; keys sent in the clear for snp, or
-    /// another store's encrypted keys, are refused.
-    #[tokio::test]
-    async fn a_payment_is_matched_after_a_store_moves_its_keys_to_snp() {
-        let engine = TestEngineConfig::new()
-            .with_networks(&[Network::Mainnet])
-            .with_snp_backend()
-            .spawn()
-            .await;
-        let base_url = format!("http://{}", engine.addr);
-        let client = engine_http_client();
-
-        // `/status` says which images the backend trusts, for monokulo to
-        // compare with its own key entry policy.
-        let status: serde_json::Value = client
-            .get(format!("{base_url}/status"))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(
-            status["key_custody_snp_trust"],
-            serde_json::json!({
-                "id_key_digest": hex::encode(snp_test_trust().id_key_digest),
-                "min_guest_svn": 0,
-                "min_tcb": "",
-            }),
-            "{status}"
-        );
-
-        let created: serde_json::Value = client
-            .post(format!("{base_url}/api/v1/admin/tenants"))
-            .json(&serde_json::json!({
-                "view_key_hex": FIXTURE_VIEW_KEY_HEX,
-                "spend_pubkey_hex": fixture_spend_pubkey_hex(),
-                "network": "mainnet",
-            }))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        let secret_token = created["secret_token"].as_str().unwrap().to_string();
-        let backend = || async {
-            let me: serde_json::Value = client
-                .get(format!("{base_url}/api/v1/admin/tenant"))
+            // The tenant's very first order lands on minor index 1 (`next_minor_index`
+            // starts at 1 - see `migrations/0001_init.sql`) - exactly the subaddress
+            // the fixture transaction pays, same as `src/scanner.rs::setup_with_zero_
+            // conf_ceiling`'s own assertion pins this for the internal test.
+            let order: serde_json::Value = client
+                .post(format!("{base_url}/api/v1/admin/tenant/orders"))
                 .bearer_auth(&secret_token)
+                .json(&serde_json::json!({ "xmr_amount_piconero": 1_000u64 }))
+                .send()
+                .await
+                .expect("create_order request failed")
+                .json()
+                .await
+                .expect("create_order response was not valid JSON");
+            let order_id = order["order_id"].as_str().unwrap().to_string();
+
+            engine
+                .run_scan_tick_now(&FixtureTxDaemonClient, Network::Mainnet, 20)
+                .await
+                .expect("real scan tick failed");
+
+            let status: serde_json::Value = client
+                .get(format!("{base_url}/api/v1/admin/tenant/orders/{order_id}"))
+                .bearer_auth(&secret_token)
+                .send()
+                .await
+                .expect("get_order_status request failed")
+                .json()
+                .await
+                .expect("get_order_status response was not valid JSON");
+
+            (
+                status["status"]
+                    .as_str()
+                    .expect("status field present")
+                    .to_string(),
+                status["amount_received_piconero"]
+                    .as_u64()
+                    .expect("amount_received_piconero field present"),
+            )
+        }
+
+        async fn order_status(base_url: &str, secret_token: &str, order_id: &str) -> String {
+            let status: serde_json::Value = engine_http_client()
+                .get(format!("{base_url}/api/v1/admin/tenant/orders/{order_id}"))
+                .bearer_auth(secret_token)
                 .send()
                 .await
                 .unwrap()
                 .json()
                 .await
                 .unwrap();
-            me["key_custody_backend"].as_str().unwrap().to_string()
-        };
-        assert_eq!(backend().await, "plain", "the default");
-        // Minor index 1: the subaddress the fixture transaction pays.
-        let order: serde_json::Value = client
-            .post(format!("{base_url}/api/v1/admin/tenant/orders"))
-            .bearer_auth(&secret_token)
-            .json(&serde_json::json!({ "xmr_amount_piconero": 1_000u64 }))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        let order_id = order["order_id"].as_str().unwrap().to_string();
-
-        let move_url = format!("{base_url}/api/v1/admin/tenant/key-custody");
-        let in_the_clear = client
-            .put(&move_url)
-            .bearer_auth(&secret_token)
-            .json(&serde_json::json!({
-                "backend": "snp",
-                "view_key_hex": FIXTURE_VIEW_KEY_HEX,
-                "spend_pubkey_hex": fixture_spend_pubkey_hex(),
-            }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(in_the_clear.status(), reqwest::StatusCode::BAD_REQUEST);
-        let for_creating = fixture_keys_for(
-            &engine,
-            "snp",
-            &format!("{base_url}/api/v1/admin/key-custody/bundle"),
-            None,
-        )
-        .await;
-        let wrong_challenge = client
-            .put(&move_url)
-            .bearer_auth(&secret_token)
-            .json(&serde_json::json!({
-                "backend": "snp",
-                "encrypted_keys": for_creating["encrypted_keys"],
-            }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            wrong_challenge.status(),
-            reqwest::StatusCode::BAD_REQUEST,
-            "keys sealed for creating a store don't move one"
-        );
-        assert_eq!(backend().await, "plain");
-
-        let mut keys = fixture_keys_for(
-            &engine,
-            "snp",
-            &format!("{base_url}/api/v1/admin/tenant/key-custody/bundle"),
-            Some(&secret_token),
-        )
-        .await;
-        keys["backend"] = "snp".into();
-        let moved = client
-            .put(&move_url)
-            .bearer_auth(&secret_token)
-            .json(&keys)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(moved.status(), reqwest::StatusCode::OK);
-        assert_eq!(backend().await, "snp");
-
-        engine
-            .run_scan_tick_now(&FixtureTxDaemonClient, Network::Mainnet, 20)
-            .await
-            .unwrap();
-        assert_eq!(
-            order_status(&base_url, &secret_token, &order_id).await,
-            "unconfirmed",
-            "the snp backend matched the payment"
-        );
-    }
-
-    /// The engine's order-creation-plus-chain-scan outcome is the same
-    /// whichever backend holds the keys: reproduced end to end through the
-    /// HTTP API once per backend, and compared for equality, not just
-    /// plausibility.
-    #[tokio::test]
-    async fn order_creation_and_chain_scanning_behave_identically_on_the_snp_backend() {
-        let plain_result =
-            run_order_creation_and_scan_scenario(TestEngineConfig::new(), "plain").await;
-        let snp_result =
-            run_order_creation_and_scan_scenario(TestEngineConfig::new().with_snp_backend(), "snp")
-                .await;
-
-        assert_eq!(
-            plain_result, snp_result,
-            "plain and snp must produce identical order-creation-plus-scan outcomes"
-        );
-        // And that shared outcome is the genuine, expected match - not two
-        // backends agreeing on a no-op.
-        assert_eq!(plain_result.0, "unconfirmed");
-        assert!(
-            plain_result.1 > 0,
-            "the fixture transaction's amount must have been detected"
-        );
-    }
-
-    /// An upgraded engine image (another measurement, a later security
-    /// version, signed by the same ID key) on the same chip finds only the
-    /// old image's wrap of the master key, asks the running engine for it
-    /// over HTTP, and then opens the keys that engine sealed.
-    #[tokio::test]
-    async fn an_upgraded_engine_takes_the_master_key_over_http() {
-        use engine::key_custody::snp::{SnpConfig, SnpKeyCustody, StoredWrap, WrapStore};
-        use engine::key_custody::KeyCustody as _;
-
-        struct OtherImagesWrap;
-        impl WrapStore for OtherImagesWrap {
-            fn load(&self) -> Result<Vec<StoredWrap>, String> {
-                Ok(vec![StoredWrap {
-                    measurement: [0xEE; 48],
-                    guest_svn: 1,
-                    tcb: snp_attest::guest::TestIdentity::default().tcb,
-                    wrapped: vec![0; 60],
-                }])
-            }
-            fn save(&self, _wrap: &StoredWrap) -> Result<(), String> {
-                Ok(())
-            }
+            status["status"].as_str().unwrap().to_string()
         }
 
-        let old = TestEngineConfig::new()
-            .with_networks(&[Network::Mainnet])
-            .with_snp_backend()
-            .spawn()
+        /// A store that moves from plain to snp, its keys sent encrypted under a
+        /// bundle for that store, has a payment to an order made before the
+        /// move matched by the snp backend; keys sent in the clear for snp, or
+        /// another store's encrypted keys, are refused.
+        #[tokio::test]
+        async fn a_payment_is_matched_after_a_store_moves_its_keys_to_snp() {
+            let engine = TestEngineConfig::new()
+                .with_networks(&[Network::Mainnet])
+                .with_snp_backend()
+                .spawn()
+                .await;
+            let base_url = format!("http://{}", engine.addr);
+            let client = engine_http_client();
+
+            // `/status` says which images the backend trusts, for monokulo to
+            // compare with its own key entry policy.
+            let status: serde_json::Value = client
+                .get(format!("{base_url}/status"))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(
+                status["key_custody_snp_trust"],
+                serde_json::json!({
+                    "id_key_digest": hex::encode(snp_test_trust().id_key_digest),
+                    "min_guest_svn": 0,
+                    "min_tcb": "",
+                }),
+                "{status}"
+            );
+
+            let created: serde_json::Value = client
+                .post(format!("{base_url}/api/v1/admin/tenants"))
+                .json(&serde_json::json!({
+                    "view_key_hex": FIXTURE_VIEW_KEY_HEX,
+                    "spend_pubkey_hex": fixture_spend_pubkey_hex(),
+                    "network": "mainnet",
+                }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let secret_token = created["secret_token"].as_str().unwrap().to_string();
+            let backend = || async {
+                let me: serde_json::Value = client
+                    .get(format!("{base_url}/api/v1/admin/tenant"))
+                    .bearer_auth(&secret_token)
+                    .send()
+                    .await
+                    .unwrap()
+                    .json()
+                    .await
+                    .unwrap();
+                me["key_custody_backend"].as_str().unwrap().to_string()
+            };
+            assert_eq!(backend().await, "plain", "the default");
+            // Minor index 1: the subaddress the fixture transaction pays.
+            let order: serde_json::Value = client
+                .post(format!("{base_url}/api/v1/admin/tenant/orders"))
+                .bearer_auth(&secret_token)
+                .json(&serde_json::json!({ "xmr_amount_piconero": 1_000u64 }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let order_id = order["order_id"].as_str().unwrap().to_string();
+
+            let move_url = format!("{base_url}/api/v1/admin/tenant/key-custody");
+            let in_the_clear = client
+                .put(&move_url)
+                .bearer_auth(&secret_token)
+                .json(&serde_json::json!({
+                    "backend": "snp",
+                    "view_key_hex": FIXTURE_VIEW_KEY_HEX,
+                    "spend_pubkey_hex": fixture_spend_pubkey_hex(),
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(in_the_clear.status(), reqwest::StatusCode::BAD_REQUEST);
+            let for_creating = fixture_keys_for(
+                &engine,
+                "snp",
+                &format!("{base_url}/api/v1/admin/key-custody/bundle"),
+                None,
+            )
             .await;
-        let base_url = format!("http://{}", old.addr);
-        let mut request = fixture_keys_for(
-            &old,
-            "snp",
-            &format!("{base_url}/api/v1/admin/key-custody/bundle"),
-            None,
-        )
-        .await;
-        request["network"] = "mainnet".into();
-        request["key_custody_backend"] = "snp".into();
-        let created = engine_http_client()
-            .post(format!("{base_url}/api/v1/admin/tenants"))
-            .json(&request)
-            .send()
+            let wrong_challenge = client
+                .put(&move_url)
+                .bearer_auth(&secret_token)
+                .json(&serde_json::json!({
+                    "backend": "snp",
+                    "encrypted_keys": for_creating["encrypted_keys"],
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                wrong_challenge.status(),
+                reqwest::StatusCode::BAD_REQUEST,
+                "keys sealed for creating a store don't move one"
+            );
+            assert_eq!(backend().await, "plain");
+
+            let mut keys = fixture_keys_for(
+                &engine,
+                "snp",
+                &format!("{base_url}/api/v1/admin/tenant/key-custody/bundle"),
+                Some(&secret_token),
+            )
+            .await;
+            keys["backend"] = "snp".into();
+            let moved = client
+                .put(&move_url)
+                .bearer_auth(&secret_token)
+                .json(&keys)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(moved.status(), reqwest::StatusCode::OK);
+            assert_eq!(backend().await, "snp");
+
+            engine
+                .run_scan_tick_now(&FixtureTxDaemonClient, Network::Mainnet, 20)
+                .await
+                .unwrap();
+            assert_eq!(
+                order_status(&base_url, &secret_token, &order_id).await,
+                "unconfirmed",
+                "the snp backend matched the payment"
+            );
+        }
+
+        /// The engine's order-creation-plus-chain-scan outcome is the same
+        /// whichever backend holds the keys: reproduced end to end through the
+        /// HTTP API once per backend, and compared for equality, not just
+        /// plausibility.
+        #[tokio::test]
+        async fn order_creation_and_chain_scanning_behave_identically_on_the_snp_backend() {
+            let plain_result =
+                run_order_creation_and_scan_scenario(TestEngineConfig::new(), "plain").await;
+            let snp_result = run_order_creation_and_scan_scenario(
+                TestEngineConfig::new().with_snp_backend(),
+                "snp",
+            )
+            .await;
+
+            assert_eq!(
+                plain_result, snp_result,
+                "plain and snp must produce identical order-creation-plus-scan outcomes"
+            );
+            // And that shared outcome is the genuine, expected match - not two
+            // backends agreeing on a no-op.
+            assert_eq!(plain_result.0, "unconfirmed");
+            assert!(
+                plain_result.1 > 0,
+                "the fixture transaction's amount must have been detected"
+            );
+        }
+
+        /// An upgraded engine image (another measurement, a later security
+        /// version, signed by the same ID key) on the same chip finds only the
+        /// old image's wrap of the master key, asks the running engine for it
+        /// over HTTP, and then opens the keys that engine sealed.
+        #[tokio::test]
+        async fn an_upgraded_engine_takes_the_master_key_over_http() {
+            use engine::key_custody::snp::{SnpConfig, SnpKeyCustody, StoredWrap, WrapStore};
+            use engine::key_custody::KeyCustody as _;
+
+            struct OtherImagesWrap;
+            impl WrapStore for OtherImagesWrap {
+                fn load(&self) -> Result<Vec<StoredWrap>, String> {
+                    Ok(vec![StoredWrap {
+                        measurement: [0xEE; 48],
+                        guest_svn: 1,
+                        tcb: snp_attest::guest::TestIdentity::default().tcb,
+                        wrapped: vec![0; 60],
+                    }])
+                }
+                fn save(&self, _wrap: &StoredWrap) -> Result<(), String> {
+                    Ok(())
+                }
+            }
+
+            let old = TestEngineConfig::new()
+                .with_networks(&[Network::Mainnet])
+                .with_snp_backend()
+                .spawn()
+                .await;
+            let base_url = format!("http://{}", old.addr);
+            let mut request = fixture_keys_for(
+                &old,
+                "snp",
+                &format!("{base_url}/api/v1/admin/key-custody/bundle"),
+                None,
+            )
+            .await;
+            request["network"] = "mainnet".into();
+            request["key_custody_backend"] = "snp".into();
+            let created = engine_http_client()
+                .post(format!("{base_url}/api/v1/admin/tenants"))
+                .json(&request)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(created.status(), reqwest::StatusCode::OK);
+            let sealed = old
+                .store
+                .lock()
+                .list_active_tenants()
+                .unwrap()
+                .remove(0)
+                .sealed_key_material;
+
+            let new = SnpKeyCustody::start(
+                Arc::new(snp_attest::guest::TestGuest::new(
+                    [7; 32],
+                    snp_attest::guest::TestIdentity {
+                        measurement: [0x22; 48],
+                        guest_svn: 2,
+                        ..snp_attest::guest::TestIdentity::default()
+                    },
+                )),
+                SnpConfig {
+                    product: snp_attest::report::Product::Genoa,
+                    trust: snp_test_trust(),
+                },
+                Arc::new(OtherImagesWrap),
+            )
+            .unwrap();
+            new.refresh_evidence(&TestEvidence).await.unwrap();
+            assert!(new.awaiting_handoff());
+            // The old engine's answer is checked against its stand-in VCEK.
+            let old_anchor = engine::key_custody::transport::Anchor::Vcek(old.snp_vcek.unwrap());
+
+            let wrong_token = engine::key_custody::request_handoff(
+                &reqwest::Client::new(),
+                &new,
+                &engine::key_custody::Handoff {
+                    url: base_url.clone(),
+                    token: "not-the-engine-token".into(),
+                },
+                &old_anchor,
+            )
+            .await;
+            assert!(wrong_token.is_err());
+            engine::key_custody::request_handoff(
+                &reqwest::Client::new(),
+                &new,
+                &engine::key_custody::Handoff {
+                    url: base_url,
+                    token: TEST_ENGINE_TOKEN.into(),
+                },
+                &old_anchor,
+            )
             .await
             .unwrap();
-        assert_eq!(created.status(), reqwest::StatusCode::OK);
-        let sealed = old
-            .store
-            .lock()
-            .list_active_tenants()
-            .unwrap()
-            .remove(0)
-            .sealed_key_material;
-
-        let new = SnpKeyCustody::start(
-            Arc::new(snp_attest::guest::TestGuest::new(
-                [7; 32],
-                snp_attest::guest::TestIdentity {
-                    measurement: [0x22; 48],
-                    guest_svn: 2,
-                    ..snp_attest::guest::TestIdentity::default()
-                },
-            )),
-            SnpConfig {
-                product: snp_attest::report::Product::Genoa,
-                trust: snp_test_trust(),
-            },
-            Arc::new(OtherImagesWrap),
-        )
-        .unwrap();
-        new.refresh_evidence(&TestEvidence).await.unwrap();
-        assert!(new.awaiting_handoff());
-        // The old engine's answer is checked against its stand-in VCEK.
-        let old_anchor = engine::key_custody::transport::Anchor::Vcek(old.snp_vcek.unwrap());
-
-        let wrong_token = engine::key_custody::request_handoff(
-            &reqwest::Client::new(),
-            &new,
-            &engine::key_custody::Handoff {
-                url: base_url.clone(),
-                token: "not-the-engine-token".into(),
-            },
-            &old_anchor,
-        )
-        .await;
-        assert!(wrong_token.is_err());
-        engine::key_custody::request_handoff(
-            &reqwest::Client::new(),
-            &new,
-            &engine::key_custody::Handoff {
-                url: base_url,
-                token: TEST_ENGINE_TOKEN.into(),
-            },
-            &old_anchor,
-        )
-        .await
-        .unwrap();
-        assert!(!new.awaiting_handoff());
-        new.unseal_and_register(&sealed).await.unwrap();
+            assert!(!new.awaiting_handoff());
+            new.unseal_and_register(&sealed).await.unwrap();
+        }
     }
 }

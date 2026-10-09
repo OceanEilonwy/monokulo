@@ -1426,27 +1426,6 @@ mod tests {
         }
     }
 
-    /// An engine built without the `snp` feature refuses to enable it,
-    /// rather than saving a backend it can't run.
-    #[cfg(not(feature = "snp"))]
-    #[test]
-    fn snp_is_refused_by_an_engine_built_without_snp() {
-        let snapshot = Snapshot::new(
-            HashMap::from([(
-                KEY_CUSTODY_ENABLED_BACKENDS.key.to_owned(),
-                "plain,snp".to_owned(),
-            )]),
-            live_settings::Env::fixed(Vec::<(String, String)>::new()),
-        );
-        let errors = CustodyConfig::from_snapshot(&snapshot).unwrap_err();
-        assert_eq!(errors[0].key, KEY_CUSTODY_ENABLED_BACKENDS.key);
-        assert!(
-            errors[0].message.contains("`snp` feature"),
-            "{}",
-            errors[0].message
-        );
-    }
-
     /// A slot whose backend runs on a stand-in security processor.
     #[cfg(feature = "snp")]
     fn test_slot_config() -> crate::key_custody::snp::SnpConfig {

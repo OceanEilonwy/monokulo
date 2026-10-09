@@ -15,7 +15,7 @@ axum = { version = "0.8.9", default-features = false, features = ["form", "http1
 snp-attest = { path = "../snp-attest", features = ["test-support"] }
 p384 = { version = "0.14.0", features = ["ecdsa"] }
 monero = "0.22.0"
-engine = { path = "../engine", features = ["test-support", "snp"] }
+engine = { path = "../engine", features = ["test-support"] }
 shared = { path = "../shared" }
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
 serde_json = "1.0.151"
@@ -27,3 +27,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["s
 
 [lints]
 workspace = true
+
+[features]
+# The snp backend on a stand-in security processor (`with_snp_backend`).
+snp = ["engine/snp"]

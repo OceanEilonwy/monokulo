@@ -102,8 +102,8 @@ monerod --zmq-pub tcp://127.0.0.1:18083
 `--no-zmq` turns the publisher off too (monerod warns and ignores
 `--zmq-pub`).
 
-On the engine (the Docker image, or `cargo build -p engine --release
---features zmq`), add `zmq_pub` to the node setting
+On the engine (any build: `zmq` is a default feature), add `zmq_pub` to the
+node setting
 (`monero_node.<network>`, a fallback can have its own), or fill in
 "Announcements (ZMQ)" on the node's row of the admin nodes form:
 
