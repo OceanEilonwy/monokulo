@@ -47,6 +47,15 @@ const EARLY: usize = 2_000;
 const BATCH: usize = 1_000;
 const MAINTENANCE_EVERY: Duration = Duration::from_secs(60);
 
+/// How long a SQLite connection waits for another connection's lock before
+/// reporting the database busy, here and on every connection the services
+/// open (`shared::sqlite` re-exports it). Transactions are short, so this
+/// is only reached if something is badly wrong. rusqlite happens to open
+/// connections with a 5 s timeout already, but says that default may
+/// change; without any, SQLite gives up at once, and a batch of log lines
+/// that met a lock would be lost. So it is set here, not inherited.
+pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub(crate) const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS logs (
     id INTEGER PRIMARY KEY,
@@ -429,6 +438,7 @@ pub fn path_beside(database: &Path) -> PathBuf {
 
 fn open_writer(path: &Path) -> Result<Connection, StoreError> {
     let conn = Connection::open(path)?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
     // Before any table exists, so freed pages can be given back to the
     // file system as retention deletes rows.
     conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
@@ -464,6 +474,9 @@ impl LogStore {
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
+        // A WAL reader rarely meets a lock, but can (while another
+        // connection recovers the WAL after a crash, for one).
+        reader.busy_timeout(BUSY_TIMEOUT)?;
         let latest: i64 =
             writer.query_row("SELECT coalesce(max(id), 0) FROM logs", [], |r| r.get(0))?;
         let store = LogStore {

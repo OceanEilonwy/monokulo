@@ -25,9 +25,10 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 /// How long a connection waits for another connection's lock before
-/// reporting the database busy. Transactions are short, so this is only
-/// reached if something is badly wrong.
-pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+/// reporting the database busy. Defined in `telemetry`, whose log store
+/// waits the same time: `shared` depends on `telemetry`, so the one value
+/// lives there.
+pub use telemetry::store::BUSY_TIMEOUT;
 
 /// Prepared statements kept per connection (SQLite's default, 16, is fewer
 /// than either service's hot queries).

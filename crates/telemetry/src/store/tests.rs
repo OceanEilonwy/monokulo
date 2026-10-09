@@ -209,6 +209,28 @@ async fn flush_returns_once_every_line_logged_so_far_is_stored() {
     assert!(s.telemetry.flush(Duration::ZERO).await);
 }
 
+/// Lines written while another connection holds the write lock wait for
+/// it instead of failing as busy and being lost.
+#[tokio::test]
+async fn lines_logged_while_another_connection_writes_are_stored_once_it_commits() {
+    let s = setup("info");
+    let other = Connection::open(s.store.path()).unwrap();
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        other.execute_batch("BEGIN IMMEDIATE").unwrap();
+        locked_tx.send(()).unwrap();
+        // Long enough for the writer to try its batch and meet the lock.
+        std::thread::sleep(Duration::from_millis(300));
+        other.execute_batch("COMMIT").unwrap();
+    });
+    locked_rx.recv().unwrap();
+    tracing::info!("while locked");
+    assert!(s.telemetry.flush(Duration::from_secs(30)).await);
+    holder.join().unwrap();
+    let messages: Vec<String> = all(&s.store).into_iter().map(|r| r.message).collect();
+    assert_eq!(messages, ["while locked"]);
+}
+
 #[test]
 fn lines_logged_before_the_store_opens_are_kept() {
     let dir = TempDir::new();
