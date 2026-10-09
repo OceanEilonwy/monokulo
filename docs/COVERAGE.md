@@ -79,14 +79,15 @@ the real-binaries tests file by file, each spec file with processes of its own.
 
 ## In CI
 
-On main, `.github/workflows/release.yml`'s Coverage job runs each collector
-in a job of its own (`tests.yml` with `coverage: true`: Rust, browser,
-WooCommerce and the engine stress run), then its Coverage report job joins
-their outputs with
-`cargo xtask coverage report` and uploads the combined artifact
-(`coverage-<sha>`). Each job's summary has a table of passed, failed and
-skipped tests (`cargo xtask test-summary`, from the JUnit reports) with the
-failures listed; the Coverage report job's also has the coverage table.
+On main, once every platform's tests pass, `.github/workflows/release.yml`'s
+`coverage` job runs each collector in a job of its own (`tests.yml` with
+`coverage: true`: Rust, browser, WooCommerce and the engine stress run),
+then its Summary job joins their outputs with `cargo xtask coverage report`
+and uploads the combined artifact (`coverage-<sha>`). Each job's summary
+has a table of passed, failed and skipped tests (`cargo xtask test-summary`,
+from the JUnit reports) with the failures listed; Summary's also has the
+coverage table. A manual Checks run with coverage does the same for any
+branch.
 
 ## On GitHub Pages
 
