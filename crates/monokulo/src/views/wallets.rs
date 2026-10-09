@@ -802,6 +802,9 @@ fn wallets_count(n: usize) -> String {
 pub struct WalletStore {
     pub id: String,
     pub name: String,
+    /// Where it sells, under its name: its host when that isn't already
+    /// its name, "in person" for a store with no website.
+    pub place: Option<String>,
     /// For a store that changed to another wallet: when, in the viewer's
     /// time zone.
     pub until: Option<String>,
@@ -813,19 +816,35 @@ pub struct WalletEvent {
     pub what: Markup,
 }
 
-/// Whether a wallet can be retired (`http::wallets::retire_state`).
+/// Whether a wallet can be retired (`http::wallets::retire_state`): the
+/// retire dialog's checklist.
 pub enum RetireState {
-    Ready,
-    /// Stores (of any account) take payments into it.
-    Stores(u64),
-    /// Orders on it can still be paid, until about then.
-    Orders {
-        count: u64,
+    /// What the engine says uses it.
+    Checked {
+        /// Stores (of any account) taking payments into it.
+        stores: u64,
+        /// Orders on it that can still be paid.
+        orders: u64,
+        /// Until about when, in the viewer's time zone.
         until: Option<String>,
     },
     /// The engine couldn't say.
     Unknown,
     Retired,
+}
+
+impl RetireState {
+    /// Every condition is ticked.
+    pub fn ready(&self) -> bool {
+        matches!(
+            self,
+            RetireState::Checked {
+                stores: 0,
+                orders: 0,
+                ..
+            }
+        )
+    }
 }
 
 /// Bringing a retired wallet back: its keys, as when it was brought in.
@@ -861,7 +880,7 @@ pub enum RenameOutcome {
 
 /// "Details": the wallet's name, a settings form of its own (renaming
 /// posts and comes back with a toast), and its facts.
-fn details_card(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
+fn details_card(data: &DetailViewModel) -> Markup {
     let w = &data.wallet;
     let (shown, refusal) = match &data.rename {
         Some(RenameOutcome::Refused { name, message }) => (name.as_str(), Some(message.as_str())),
@@ -892,12 +911,8 @@ fn details_card(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
                                 data-saved=[refusal.map(|_| w.name.as_str())];
                         }))
                     dl class="facts" {
-                        dt { "Address" } dd { code { (w.primary_address) } }
-                        dt { "Network" } dd { (super::network_badge(&w.network)) }
-                        dt { "Kind" } dd { (origin_label(w)) }
-                        @if let Some(at) = w.retired_at {
-                            dt { "Keys" } dd { "Deleted " (chrome.clock.time(at)) }
-                        }
+                        dt { "Address" } dd { code { (super::short_address(&w.primary_address)) } }
+                        dt { "Kind" } dd { (kind_label(w)) }
                     }
                 }))
             (settings::save_bar(refusal.is_some(), false, html! {
@@ -912,155 +927,441 @@ fn details_card(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
     }
 }
 
+fn wallet_path(w: &crate::db::WalletRow) -> String {
+    format!("/account/wallets/{}", w.id)
+}
+
+/// `GET /account/wallets/{id}`: one centred column. The name and its
+/// network; where the wallet lives; its stores; its details (the rename);
+/// its history, folded; and at the bottom, Retire (or, once retired,
+/// Restore), each opening a dialog, or without JavaScript a page holding
+/// the same content (`retire_page`, `restore_page`).
 pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
     let w = &data.wallet;
-    let in_use = !data.stores.is_empty();
     let body = html! {
-        div class="wrap" {
+        div class="wrap wallet-page" {
             nav class="context-nav" aria-label="Breadcrumb" { a href="/account?tab=wallets" { "Wallets" } }
             div class="wallet-title" { h1 { (w.name) } (super::network_badge(&w.network)) }
-            p class="hint" {
-                (origin_label(w))
-                @if w.network == "mainnet" { " · real money" } @else { " · test network, no real value" }
+            @if let Some(at) = w.retired_at {
+                p class="wallet-meta" {
+                    span class="tag tag-unknown" { "retired" }
+                    span { "Keys deleted " (chrome.clock.time(at)) ". History kept." }
+                }
             }
             @if let Some(notice) = &data.notice { p class="success" role="status" { (notice) } }
             @if let Some(error) = &data.error { p class="error" role="alert" { (error) } }
-            @if let Some(at) = w.retired_at {
-                div class="keys-gone-banner" role="status" {
-                    (key_gone_icon(28))
-                    div {
-                        p class="keys-gone-title" { "Retired. Its keys are deleted." }
-                        p {
-                            "On " (chrome.clock.time(at)) " Monokulo deleted " (w.name) "'s private view key and public spend key "
-                            "from key storage. It no longer sees payments into this wallet, and no store can use it."
+            (where_banner(w))
+            (stores_card(&data.stores, &data.past_stores))
+            (details_card(data))
+            details class="history-fold" {
+                summary { "History " span class="hint" { (events_count(data.history.len())) } }
+                @if data.history.is_empty() {
+                    p class="hint" { "Nothing yet." }
+                } @else {
+                    ol class="timeline" {
+                        @for event in &data.history {
+                            li { time { (event.when) } span { (event.what) } }
                         }
-                        p class="hint" { "The money is still yours, in your wallet app." }
                     }
                 }
             }
-            div class="wallet-layout" {
-                div class="main" {
-                    (details_card(chrome, data))
-                    section class="box" {
-                        h2 { "History" }
-                        @if data.history.is_empty() {
-                            p class="hint" { "Nothing yet." }
-                        } @else {
-                            ol class="timeline" {
-                                @for event in &data.history {
-                                    li { time { (event.when) } span { (event.what) } }
-                                }
-                            }
-                        }
+            @if let Some(restore) = &data.restore {
+                div class="wallet-foot" {
+                    div {
+                        strong { "Restore this wallet" }
+                        p class="hint" { "Enter its keys again and Monokulo watches it for payments." }
                     }
+                    a class="btn" href=(format!("{}/restore", wallet_path(w))) data-opens-dialog="restore-dialog" { "Restore wallet…" }
                 }
-                aside {
-                    section class="box" {
-                        h2 { "Stores" }
-                        @if in_use {
-                            ul {
-                                @for store in &data.stores {
-                                    li { a href=(format!("/dashboard/stores/{}", store.id)) { (store.name) } }
-                                }
-                            }
-                        } @else {
-                            p class="hint" { "No stores use this wallet." }
-                        }
-                        @if !data.past_stores.is_empty() {
-                            h3 { "Before" }
-                            ul class="past-stores" {
-                                @for store in &data.past_stores {
-                                    li {
-                                        a href=(format!("/dashboard/stores/{}", store.id)) { (store.name) }
-                                        @if let Some(until) = &store.until { span class="muted" { " until " (until) } }
-                                    }
-                                }
-                            }
-                        }
+                dialog id="restore-dialog" class="settings-dialog wallet-dialog" aria-labelledby="restore-title" {
+                    (restore_content(w, restore, None, true))
+                }
+            } @else {
+                div class="wallet-foot" {
+                    div {
+                        strong { "Retire this wallet" }
+                        p class="hint" { "Takes it out of every list and deletes its keys from Monokulo. The money stays in your wallet app." }
                     }
-                    @if let Some(restore) = &data.restore {
-                        (restore_section(w, restore))
-                    } @else {
-                        (retire_section(w, &data.retire))
-                    }
+                    a class="btn btn-danger" href=(format!("{}/retire", wallet_path(w))) data-opens-dialog="retire-dialog" { "Retire wallet…" }
+                }
+                dialog id="retire-dialog" class="settings-dialog wallet-dialog" aria-labelledby="retire-title" {
+                    (retire_content(w, &data.retire, &data.stores, None, true))
                 }
             }
         }
+        (super::script("wallet-page.js", super::Load::Defer))
     };
     layout(chrome, &format!("{} - Wallets - Monokulo", w.name), body)
 }
 
-/// "Retire wallet": offered only once no store uses the wallet and no
-/// order on it can still be paid; otherwise it says what it waits for.
-fn retire_section(w: &crate::db::WalletRow, state: &RetireState) -> Markup {
-    let why = match state {
-        RetireState::Ready | RetireState::Retired => None,
-        RetireState::Stores(n) => Some(if *n == 1 {
-            "1 store still uses this wallet. Change its wallet first.".to_owned()
-        } else {
-            format!("{n} stores still use this wallet. Change their wallet first.")
-        }),
-        RetireState::Orders { count, until } => Some(format!(
-            "{} on it can still be paid{}. Retire it after then.",
-            if *count == 1 {
-                "1 order".to_owned()
-            } else {
-                format!("{count} orders")
-            },
-            until
-                .as_ref()
-                .map(|u| format!(", until about {u}"))
-                .unwrap_or_default()
-        )),
-        RetireState::Unknown => Some(
-            "Monokulo can't check whether it's still in use right now. Try again in a minute."
-                .to_owned(),
+fn events_count(n: usize) -> String {
+    match n {
+        0 => "nothing yet".to_owned(),
+        1 => "1 event".to_owned(),
+        n => format!("{n} events"),
+    }
+}
+
+/// The Details card's "Kind": where the wallet came from. Where it lives
+/// is the banner's to say.
+fn kind_label(w: &crate::db::WalletRow) -> &'static str {
+    match w.origin {
+        crate::db::WalletOrigin::Created => "Made in Monokulo",
+        crate::db::WalletOrigin::Imported => "Brought in",
+    }
+}
+
+/// "Where it lives", first on a wallet's page: the app holding its keys
+/// and recovery phrase, from how a made wallet was backed up
+/// (`wallets.backup`) or which app a brought-in one is in (`wallets.app`).
+/// A skipped backup is tinted as a warning, gently.
+pub fn where_banner(w: &crate::db::WalletRow) -> Markup {
+    use crate::db::WalletOrigin;
+    const WATCHES: &str = "Monokulo only watches this wallet; it can never spend from it.";
+    let app = |key: &str| crate::wallets::wallet_app(key);
+    let (icon, title, text, warn) = match (w.origin, w.backup.as_deref(), w.app.as_deref()) {
+        (WalletOrigin::Created, Some("paper"), _) => (
+            paper_glyph(),
+            "Backed up on paper".to_owned(),
+            format!("Its recovery phrase is the words you wrote down: keep them safe, they're the only copy. {WATCHES}"),
+            false,
+        ),
+        (WalletOrigin::Created, Some("skipped"), _) => (
+            warning_glyph(),
+            "Backup skipped".to_owned(),
+            "Its recovery phrase wasn't saved, so money paid into it can't be spent. Consider taking payments into a wallet you've backed up.".to_owned(),
+            true,
+        ),
+        (WalletOrigin::Created, Some(key), _) if app(key).is_some() => {
+            let app = app(key).expect("checked");
+            (
+                app_logo(app.key, 40, None),
+                format!("Backed up to {}", app.name),
+                format!("Its keys and recovery phrase live in {}. {WATCHES}", app.name),
+                false,
+            )
+        }
+        (WalletOrigin::Created, _, _) => (
+            muted_glyph(),
+            "Made in Monokulo".to_owned(),
+            format!("Its keys and recovery phrase live wherever you saved them. {WATCHES}"),
+            false,
+        ),
+        (WalletOrigin::Imported, _, Some(key)) if app(key).is_some() => {
+            let app = app(key).expect("checked");
+            (
+                app_logo(app.key, 40, None),
+                format!("Brought in from {}", app.name),
+                format!("Its keys and recovery phrase live in {}. {WATCHES}", app.name),
+                false,
+            )
+        }
+        (WalletOrigin::Imported, _, Some("other")) => (
+            muted_glyph(),
+            "Brought in from another app".to_owned(),
+            format!("Its keys and recovery phrase live in your wallet app. {WATCHES}"),
+            false,
+        ),
+        (WalletOrigin::Imported, _, _) => (
+            muted_glyph(),
+            "Brought in · app not recorded".to_owned(),
+            format!("Its keys and recovery phrase live in your wallet app. {WATCHES}"),
+            false,
         ),
     };
     html! {
-        section class="danger-zone" {
-            h2 { "Retire wallet" }
-            p {
-                "Retiring takes " (w.name) " out of every wallet list and deletes its keys from Monokulo: its private view key "
-                "and public spend key. Monokulo will no longer see payments into it. Its name and history stay, and the money "
-                "stays yours, in your wallet app."
+        section class=(if warn { "where-banner is-warn" } else { "where-banner" }) aria-label="Where it lives" {
+            (icon)
+            div {
+                strong { (title) }
+                p class="hint" { (text) }
             }
-            @if let Some(why) = why {
-                p class="field-error" id="retire-why" { (why) }
-                button type="button" disabled aria-describedby="retire-why" { "Retire wallet" }
-            } @else {
-                form method="post" action=(format!("/account/wallets/{}/retire", w.id)) {
-                    label { "Type " strong { (w.name) } " to confirm" input type="text" name="confirm" autocomplete="off" required; }
-                    button type="submit" class="btn-danger" { "Retire wallet" }
+        }
+    }
+}
+
+/// A sheet of paper with lines: a phrase written down.
+fn paper_glyph() -> Markup {
+    html! {
+        span class="where-glyph" aria-hidden="true" {
+            svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" {
+                path d="M6 3h9l4 4v14H6z" {}
+                path d="M15 3v4h4M9 11h7M9 14h7M9 17h5" {}
+            }
+        }
+    }
+}
+
+/// A warning triangle: a backup skipped.
+fn warning_glyph() -> Markup {
+    html! {
+        span class="where-glyph" aria-hidden="true" {
+            svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" {
+                path d="M12 3 2 20h20z" {}
+                path d="M12 10v4M12 17h.01" {}
+            }
+        }
+    }
+}
+
+/// A wallet, drawn plain: no app recorded.
+fn muted_glyph() -> Markup {
+    html! {
+        span class="where-glyph" aria-hidden="true" {
+            svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" {
+                rect x="3" y="6" width="18" height="13" rx="2" {}
+                path d="M16 12.5h2M3 9h15" {}
+            }
+        }
+    }
+}
+
+/// The stores taking payments into a wallet, each with a link to change
+/// its wallet; those that did before, muted under "Before".
+fn stores_card(stores: &[WalletStore], past: &[WalletStore]) -> Markup {
+    let meta = match stores.len() {
+        0 => "none now".to_owned(),
+        1 => "1 takes payments into this wallet".to_owned(),
+        n => format!("{n} take payments into this wallet"),
+    };
+    html! {
+        section class="settings-card" aria-labelledby="stores-title" {
+            header class="card-head" { h3 id="stores-title" { "Stores" } span class="card-meta" { (meta) } }
+            div class="card-body" {
+                @if stores.is_empty() && past.is_empty() {
+                    p class="hint" { "No stores use this wallet." }
+                }
+                @if !stores.is_empty() {
+                    ul class="store-rows" {
+                        @for store in stores {
+                            li {
+                                span class="sr-name" {
+                                    a href=(format!("/dashboard/stores/{}", store.id)) { (store.name) }
+                                    @if let Some(place) = &store.place { span class="sr-host" { (place) } }
+                                }
+                                a class="sr-act" href=(change_wallet_link(&store.id)) { "change the wallet" }
+                            }
+                        }
+                    }
+                }
+                @if !past.is_empty() {
+                    h4 { "Before" }
+                    ul class="store-rows past" {
+                        @for store in past {
+                            li {
+                                span class="sr-name" {
+                                    a href=(format!("/dashboard/stores/{}", store.id)) { (store.name) }
+                                    @if let Some(place) = &store.place { span class="sr-host" { (place) } }
+                                }
+                                @if let Some(until) = &store.until { span class="sr-host" { "until " (until) } }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-/// "Bring it back": a retired wallet's keys, entered again.
-fn restore_section(w: &crate::db::WalletRow, restore: &RestoreForm) -> Markup {
+/// A store's Wallet section, where its wallet is changed.
+fn change_wallet_link(store_id: &str) -> String {
+    format!("/dashboard/stores/{store_id}/settings#wallet")
+}
+
+/// The retire dialog (D1, the checklist), and the same on the page
+/// without JavaScript (`retire_page`): what retiring does, then whether no
+/// store takes payments into it and no order on it can still be paid,
+/// each with its fix. When both are ticked, the name typed to confirm;
+/// until then the red button is off.
+fn retire_content(
+    w: &crate::db::WalletRow,
+    state: &RetireState,
+    stores: &[WalletStore],
+    error: Option<&str>,
+    in_dialog: bool,
+) -> Markup {
+    let action = format!("{}/retire", wallet_path(w));
+    let title = html! { "Retire \u{201c}" (w.name) "\u{201d}?" };
     html! {
-        section class="box" {
-            h2 { "Bring it back" }
-            p { "Enter the keys again to watch " (w.name) " and offer it to stores. They must be this wallet's: Monokulo checks them against its address." }
-            form method="post" action=(format!("/account/wallets/{}/restore", w.id)) {
-                (super::key_entry::key_fields(
-                    "",
-                    "",
-                    restore.snp_entry.as_ref(),
-                    html! { "Lets Monokulo see payments arriving. It cannot spend." },
-                    html! { "The " em { "public" } " half of your spend key." },
-                ))
-                (keys_help())
-                (super::connect::custody_select(&restore.custody_choices))
-                @if let Some(entry) = &restore.snp_entry {
-                    (super::key_entry::snp_section(entry, (!restore.custody_choices.is_empty()).then_some("key_custody_backend")))
+        @if in_dialog {
+            h2 id="retire-title" class="dialog-title" {
+                (title)
+                button type="button" class="dialog-x" aria-label="Close" data-closes-dialog { "×" }
+            }
+        } @else {
+            h1 id="retire-title" class="dialog-title" { (title) }
+        }
+        p { "Retiring deletes its keys from Monokulo, so it stops seeing payments. The money stays in your wallet app." }
+        @if let Some(error) = error { p class="error" role="alert" { (error) } }
+        ul class="checks" {
+            @match state {
+                RetireState::Checked { stores: in_use, orders, until } => {
+                    (check(*in_use == 0, html! { "No store takes payments into it" }, html! {
+                        @if stores.is_empty() {
+                            (if *in_use == 1 { "A store does".to_owned() } else { format!("{in_use} stores do") })
+                        }
+                        @for store in stores {
+                            span class="fix-line" {
+                                (store.name) " does · "
+                                a href=(change_wallet_link(&store.id)) { "change its wallet" }
+                            }
+                        }
+                    }))
+                    (check(*orders == 0, html! { "No order on it can still be paid" }, html! {
+                        @match until {
+                            Some(until) => { "until about " (until) }
+                            None => { (if *orders == 1 { "1 order can".to_owned() } else { format!("{orders} orders can") }) }
+                        }
+                    }))
                 }
-                button type="submit" { "Bring back " (w.name) }
+                RetireState::Unknown => {
+                    (check(false, html! { "Monokulo can't check right now" }, html! {
+                        a href=(action) { "try again" }
+                    }))
+                }
+                RetireState::Retired => {
+                    (check(true, html! { "Already retired" }, html! {}))
+                }
+            }
+        }
+        @if state.ready() {
+            form method="post" action=(action) {
+                div class="setting-field" {
+                    div class="setting-label-row" {
+                        label class="setting-label" for="retire-confirm" { "Type " strong { "\u{201c}" (w.name) "\u{201d}" } " to confirm" }
+                    }
+                    input type="text" id="retire-confirm" name="confirm" autocomplete="off" spellcheck="false" required;
+                }
+                div class="dialog-actions" {
+                    a class="btn" href=(wallet_path(w)) data-closes-dialog { "Cancel" }
+                    button type="submit" class="btn-danger" { "Retire wallet" }
+                }
+            }
+        } @else {
+            p class="hint" id="retire-why" {
+                @if matches!(state, RetireState::Unknown) {
+                    "Retire becomes available once Monokulo can check."
+                } @else {
+                    "Retire becomes available when both are ticked."
+                }
+            }
+            div class="dialog-actions" {
+                a class="btn" href=(wallet_path(w)) data-closes-dialog { "Close" }
+                button type="button" class="btn-danger" disabled aria-describedby="retire-why" { "Retire wallet" }
             }
         }
     }
+}
+
+/// One row of the retire checklist: ✓, or ✕ with its fix beside it.
+fn check(ok: bool, what: Markup, fix: Markup) -> Markup {
+    html! {
+        li class=(if ok { "ok" } else { "no" }) {
+            span class="mark" aria-hidden="true" { (if ok { "✓" } else { "✕" }) }
+            span {
+                span class="visually-hidden" { (if ok { "Done: " } else { "Not yet: " }) }
+                (what)
+                @if !ok { span class="fix" { (fix) } }
+            }
+        }
+    }
+}
+
+/// Restoring a retired wallet: its keys entered again, in the dialog and
+/// on the page without JavaScript (`restore_page`).
+fn restore_content(
+    w: &crate::db::WalletRow,
+    restore: &RestoreForm,
+    error: Option<&str>,
+    in_dialog: bool,
+) -> Markup {
+    let title = html! { "Restore \u{201c}" (w.name) "\u{201d}" };
+    html! {
+        @if in_dialog {
+            h2 id="restore-title" class="dialog-title" {
+                (title)
+                button type="button" class="dialog-x" aria-label="Close" data-closes-dialog { "×" }
+            }
+        } @else {
+            h1 id="restore-title" class="dialog-title" { (title) }
+        }
+        p { "Paste its keys again and Monokulo watches it as before. It must be the same wallet: the address has to match." }
+        @if let Some(error) = error { p class="error" role="alert" { (error) } }
+        form method="post" action=(format!("{}/restore", wallet_path(w))) {
+            (super::key_entry::key_fields(
+                "",
+                "",
+                restore.snp_entry.as_ref(),
+                html! { "Lets Monokulo see payments arriving. It cannot spend." },
+                html! { "The " em { "public" } " half of your spend key." },
+            ))
+            (keys_help())
+            (super::connect::custody_select(&restore.custody_choices))
+            @if let Some(entry) = &restore.snp_entry {
+                (super::key_entry::snp_section(entry, (!restore.custody_choices.is_empty()).then_some("key_custody_backend")))
+            }
+            div class="dialog-actions" {
+                a class="btn" href=(wallet_path(w)) data-closes-dialog { "Cancel" }
+                button type="submit" class="btn-primary" { "Restore wallet" }
+            }
+        }
+    }
+}
+
+/// A page holding a wallet dialog's content, for a browser without
+/// JavaScript.
+fn dialog_page(
+    chrome: &PageChrome,
+    w: &crate::db::WalletRow,
+    title: &str,
+    content: Markup,
+) -> Markup {
+    let body = html! {
+        div class="wrap wallet-page" {
+            nav class="context-nav" aria-label="Breadcrumb" {
+                a href="/account?tab=wallets" { "Wallets" }
+                " › "
+                a href=(wallet_path(w)) { (w.name) }
+            }
+            div class="wallet-dialog-page" { (content) }
+        }
+    };
+    layout(
+        chrome,
+        &format!("{title} {} - Wallets - Monokulo", w.name),
+        body,
+    )
+}
+
+/// `GET /account/wallets/{id}/retire`: the retire dialog as a page.
+pub fn retire_page(
+    chrome: &PageChrome,
+    w: &crate::db::WalletRow,
+    state: &RetireState,
+    stores: &[WalletStore],
+    error: Option<&str>,
+) -> Markup {
+    dialog_page(
+        chrome,
+        w,
+        "Retire",
+        retire_content(w, state, stores, error, false),
+    )
+}
+
+/// `GET /account/wallets/{id}/restore`: the restore dialog as a page.
+pub fn restore_page(
+    chrome: &PageChrome,
+    w: &crate::db::WalletRow,
+    restore: &RestoreForm,
+    error: Option<&str>,
+) -> Markup {
+    dialog_page(
+        chrome,
+        w,
+        "Restore",
+        restore_content(w, restore, error, false),
+    )
 }
 
 /// After a wallet in a picker: how many stores use it.
@@ -1226,6 +1527,437 @@ mod tests {
             },
             store_count: stores,
         }
+    }
+
+    fn row(
+        origin: crate::db::WalletOrigin,
+        backup: Option<&str>,
+        app: Option<&str>,
+    ) -> crate::db::WalletRow {
+        let mut w = summary("Shop takings", "mainnet", 0).wallet;
+        w.origin = origin;
+        w.backup = backup.map(str::to_owned);
+        w.app = app.map(str::to_owned);
+        w
+    }
+
+    /// Each state of "Where it lives": title, logo or glyph, and whether
+    /// it's tinted as a warning.
+    #[test]
+    fn where_it_lives_says_which_app_holds_the_keys() {
+        use crate::db::WalletOrigin::{Created, Imported};
+        let cases: [(_, _, _, &str, &str, bool); 9] = [
+            (
+                Created,
+                Some("cake"),
+                None,
+                "Backed up to Cake Wallet",
+                "wallet-logos/cake.",
+                false,
+            ),
+            (
+                Created,
+                Some("monerocom"),
+                None,
+                "Backed up to Monero.com",
+                "wallet-logos/monerocom.",
+                false,
+            ),
+            (
+                Created,
+                Some("stack"),
+                None,
+                "Backed up to Stack Wallet",
+                "wallet-logos/stack.",
+                false,
+            ),
+            (
+                Created,
+                Some("feather"),
+                None,
+                "Backed up to Feather",
+                "wallet-logos/feather.",
+                false,
+            ),
+            (
+                Created,
+                Some("gui"),
+                None,
+                "Backed up to Monero GUI / CLI",
+                "wallet-logos/gui.",
+                false,
+            ),
+            (
+                Created,
+                Some("paper"),
+                None,
+                "Backed up on paper",
+                "where-glyph",
+                false,
+            ),
+            (
+                Created,
+                Some("skipped"),
+                None,
+                "Backup skipped",
+                "where-glyph",
+                true,
+            ),
+            (
+                Imported,
+                None,
+                Some("feather"),
+                "Brought in from Feather",
+                "wallet-logos/feather.",
+                false,
+            ),
+            (
+                Imported,
+                None,
+                None,
+                "Brought in · app not recorded",
+                "where-glyph",
+                false,
+            ),
+        ];
+        for (origin, backup, app, title, picture, warn) in cases {
+            let html = where_banner(&row(origin, backup, app)).into_string();
+            assert!(
+                html.contains(&format!("<strong>{title}</strong>")),
+                "{html}"
+            );
+            assert!(html.contains(picture), "{title}: {html}");
+            assert_eq!(html.contains("where-banner is-warn"), warn, "{html}");
+        }
+        let other = where_banner(&row(Imported, None, Some("other"))).into_string();
+        assert!(
+            other.contains("<strong>Brought in from another app</strong>"),
+            "{other}"
+        );
+        let feather = where_banner(&row(Imported, None, Some("feather"))).into_string();
+        assert!(feather.contains("Its keys and recovery phrase live in Feather. Monokulo only watches this wallet; it can never spend from it."), "{feather}");
+        let skipped = where_banner(&row(Created, Some("skipped"), None)).into_string();
+        assert!(
+            skipped.contains("money paid into it can't be spent"),
+            "{skipped}"
+        );
+    }
+
+    fn store(id: &str, name: &str, place: Option<&str>, until: Option<&str>) -> WalletStore {
+        WalletStore {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            place: place.map(str::to_owned),
+            until: until.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn the_stores_card_lists_stores_flush_with_a_change_link_and_past_ones_muted() {
+        let html = stores_card(
+            &[
+                store("s1", "bakery.example", None, None),
+                store("s2", "Saturday market", Some("in person"), None),
+            ],
+            &[store("s0", "old-shop.example", None, Some("1 Oct"))],
+        )
+        .into_string();
+        assert!(
+            html.contains(r#"<span class="card-meta">2 take payments into this wallet</span>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"<li><span class="sr-name"><a href="/dashboard/stores/s1">bakery.example</a></span><a class="sr-act" href="/dashboard/stores/s1/settings#wallet">change the wallet</a></li>"#), "{html}");
+        assert!(
+            html.contains(r#"Saturday market</a><span class="sr-host">in person</span>"#),
+            "{html}"
+        );
+        let before = between(&html, "<h4>Before</h4>", "</ul>");
+        assert!(
+            before.contains(r#"<ul class="store-rows past">"#),
+            "{before}"
+        );
+        assert!(
+            before.contains(r#"<span class="sr-host">until 1 Oct</span>"#),
+            "{before}"
+        );
+        assert!(!before.contains("change the wallet"), "{before}");
+
+        let none = stores_card(&[], &[]).into_string();
+        assert!(
+            none.contains("none now") && none.contains("No stores use this wallet."),
+            "{none}"
+        );
+        let one = stores_card(&[store("s1", "a", None, None)], &[]).into_string();
+        assert!(one.contains("1 takes payments into this wallet"), "{one}");
+    }
+
+    fn retire(state: RetireState, stores: &[WalletStore]) -> String {
+        retire_content(
+            &summary("Shop takings", "mainnet", 0).wallet,
+            &state,
+            stores,
+            None,
+            true,
+        )
+        .into_string()
+    }
+
+    const DISABLED: &str = r#"<button type="button" class="btn-danger" disabled aria-describedby="retire-why">Retire wallet</button>"#;
+
+    #[test]
+    fn retire_is_blocked_by_a_store_with_its_fix_beside_it() {
+        let html = retire(
+            RetireState::Checked {
+                stores: 1,
+                orders: 0,
+                until: None,
+            },
+            &[store("s1", "Bakery", None, None)],
+        );
+        assert!(html.starts_with("<h2 id=\"retire-title\" class=\"dialog-title\">Retire \u{201c}Shop takings\u{201d}?<button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></h2>"), "{html}");
+        assert!(html.contains("<p>Retiring deletes its keys from Monokulo, so it stops seeing payments. The money stays in your wallet app.</p>"), "{html}");
+        assert!(html.contains(r#"<li class="no"><span class="mark" aria-hidden="true">✕</span><span><span class="visually-hidden">Not yet: </span>No store takes payments into it<span class="fix"><span class="fix-line">Bakery does · <a href="/dashboard/stores/s1/settings#wallet">change its wallet</a></span></span></span></li>"#), "{html}");
+        assert!(html.contains(r#"<li class="ok"><span class="mark" aria-hidden="true">✓</span><span><span class="visually-hidden">Done: </span>No order on it can still be paid</span></li>"#), "{html}");
+        assert!(
+            html.contains("Retire becomes available when both are ticked."),
+            "{html}"
+        );
+        assert!(html.contains(DISABLED), "{html}");
+        assert!(
+            html.contains(">Close</a>") && !html.contains("<form"),
+            "{html}"
+        );
+        // A store of another account: counted, not named.
+        let html = retire(
+            RetireState::Checked {
+                stores: 2,
+                orders: 0,
+                until: None,
+            },
+            &[],
+        );
+        assert!(
+            html.contains(r#"<span class="fix">2 stores do</span>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn retire_is_blocked_by_orders_until_about_when() {
+        let html = retire(
+            RetireState::Checked {
+                stores: 0,
+                orders: 2,
+                until: Some("9 Oct, 14:00".to_owned()),
+            },
+            &[],
+        );
+        assert!(html.contains(r#"No order on it can still be paid<span class="fix">until about 9 Oct, 14:00</span>"#), "{html}");
+        assert!(html.contains(r#"<li class="ok"><span class="mark" aria-hidden="true">✓</span><span><span class="visually-hidden">Done: </span>No store takes payments into it</span></li>"#), "{html}");
+        assert!(html.contains(DISABLED), "{html}");
+        let html = retire(
+            RetireState::Checked {
+                stores: 0,
+                orders: 1,
+                until: None,
+            },
+            &[],
+        );
+        assert!(
+            html.contains(r#"<span class="fix">1 order can</span>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn retire_waits_when_monokulo_cant_check() {
+        let html = retire(RetireState::Unknown, &[]);
+        assert!(html.contains(r#"Monokulo can't check right now<span class="fix"><a href="/account/wallets/w_Shop takings/retire">try again</a></span>"#), "{html}");
+        assert!(
+            html.contains("Retire becomes available once Monokulo can check."),
+            "{html}"
+        );
+        assert!(html.contains(DISABLED), "{html}");
+    }
+
+    #[test]
+    fn retire_is_ready_once_both_are_ticked_and_asks_for_the_name() {
+        let html = retire(
+            RetireState::Checked {
+                stores: 0,
+                orders: 0,
+                until: None,
+            },
+            &[],
+        );
+        assert_eq!(html.matches(r#"<li class="ok">"#).count(), 2, "{html}");
+        assert!(!html.contains(r#"class="no""#), "{html}");
+        assert!(html.contains(r#"<form method="post" action="/account/wallets/w_Shop takings/retire"><div class="setting-field"><div class="setting-label-row"><label class="setting-label" for="retire-confirm">Type <strong>“Shop takings”</strong> to confirm</label></div><input type="text" id="retire-confirm" name="confirm" autocomplete="off" spellcheck="false" required></div>"#), "{html}");
+        assert!(html.contains(r#"<div class="dialog-actions"><a class="btn" href="/account/wallets/w_Shop takings" data-closes-dialog>Cancel</a><button type="submit" class="btn-danger">Retire wallet</button></div>"#), "{html}");
+        assert!(
+            !html.contains("disabled") && !html.contains("retire-why"),
+            "{html}"
+        );
+    }
+
+    fn detail(retired: bool) -> String {
+        let mut wallet = summary("Shop takings", "mainnet", 0).wallet;
+        wallet.retired_at = retired.then_some(1_791_000_000);
+        let data = DetailViewModel {
+            retire: if retired {
+                RetireState::Retired
+            } else {
+                RetireState::Checked {
+                    stores: 1,
+                    orders: 0,
+                    until: None,
+                }
+            },
+            restore: retired.then(|| RestoreForm {
+                custody_choices: Vec::new(),
+                snp_entry: None,
+            }),
+            wallet,
+            stores: if retired {
+                Vec::new()
+            } else {
+                vec![store("s1", "Bakery", None, None)]
+            },
+            past_stores: Vec::new(),
+            history: vec![WalletEvent {
+                when: "2 Oct, 09:40".to_owned(),
+                what: html! { "Brought in" },
+            }],
+            error: None,
+            notice: None,
+            rename: None,
+        };
+        detail_page(&PageChrome::from_user(None, ""), &data).into_string()
+    }
+
+    /// One column: the name and its badge, where it lives, Stores, Details,
+    /// History (folded), and Retire at the bottom opening its dialog.
+    #[test]
+    fn a_wallets_page_is_one_column_in_the_agreed_order() {
+        let html = detail(false);
+        assert!(html.contains(r#"<div class="wallet-title"><h1>Shop takings</h1><span class="tag-network is-main">"#), "{html}");
+        let order = [
+            r#"<section class="where-banner""#,
+            r#"<h3 id="stores-title">Stores</h3>"#,
+            r#"<h3 id="details-title">Details</h3>"#,
+            r#"<details class="history-fold"><summary>History <span class="hint">1 event</span></summary>"#,
+            r#"<div class="wallet-foot"><div><strong>Retire this wallet</strong>"#,
+            r#"<dialog id="retire-dialog" class="settings-dialog wallet-dialog" aria-labelledby="retire-title">"#,
+        ];
+        let at: Vec<usize> = order
+            .iter()
+            .map(|part| {
+                html.find(part)
+                    .unwrap_or_else(|| panic!("{part} in {html}"))
+            })
+            .collect();
+        assert!(at.windows(2).all(|w| w[0] < w[1]), "{at:?}");
+        assert!(
+            !html.contains("wallet-layout") && !html.contains("<aside"),
+            "{html}"
+        );
+        // No network fact, and no "real money": the badge says it.
+        assert!(!html.contains("<dt>Network</dt>"), "{html}");
+        assert!(!html.to_lowercase().contains("real money"), "{html}");
+        assert!(
+            html.contains(r#"<dt>Address</dt><dd><code><span class="mid-ellipsis""#),
+            "{html}"
+        );
+        assert!(html.contains("<dt>Kind</dt><dd>Brought in</dd>"), "{html}");
+        // The rename form, as it was.
+        assert!(html.contains(r#"<form class="rename-form" method="post" action="/account/wallets/w_Shop takings/rename">"#), "{html}");
+        assert!(html.contains("wallet-page."), "its script: {html}");
+        // The red button is the only colour; no orange one.
+        assert!(!html.contains("btn-primary"), "{html}");
+    }
+
+    #[test]
+    fn a_retired_wallets_page_offers_restore_at_the_bottom() {
+        let html = detail(true);
+        assert!(html.contains(r#"<p class="wallet-meta"><span class="tag tag-unknown">retired</span><span>Keys deleted "#), "{html}");
+        assert!(
+            html.contains(r#"<div class="wallet-foot"><div><strong>Restore this wallet</strong>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"<a class="btn" href="/account/wallets/w_Shop takings/restore" data-opens-dialog="restore-dialog">Restore wallet…</a>"#), "{html}");
+        let dialog = between(&html, r#"<dialog id="restore-dialog""#, "</dialog>");
+        assert!(dialog.contains("<h2 id=\"restore-title\" class=\"dialog-title\">Restore \u{201c}Shop takings\u{201d}"), "{dialog}");
+        assert!(
+            dialog.contains(r#"name="view_key_hex""#)
+                && dialog.contains(r#"name="spend_pubkey_hex""#),
+            "{dialog}"
+        );
+        assert!(dialog.contains("Monero CLI"), "the key help: {dialog}");
+        assert!(
+            dialog.contains(r#"<button type="submit" class="btn-primary">Restore wallet</button>"#),
+            "{dialog}"
+        );
+        assert!(
+            !html.contains("Retire wallet") && !html.contains("btn-danger"),
+            "{html}"
+        );
+    }
+
+    /// The pages holding the dialogs' content, for a browser without
+    /// JavaScript: the same content, with an h1 and no close button.
+    #[test]
+    fn the_no_javascript_pages_hold_the_dialogs_content() {
+        let w = summary("Shop takings", "mainnet", 0).wallet;
+        let chrome = PageChrome::from_user(None, "");
+        let state = RetireState::Checked {
+            stores: 0,
+            orders: 0,
+            until: None,
+        };
+        let page = retire_page(&chrome, &w, &state, &[], Some("Type it exactly.")).into_string();
+        assert!(page.contains("<h1 id=\"retire-title\" class=\"dialog-title\">Retire \u{201c}Shop takings\u{201d}?</h1>"), "{page}");
+        assert!(
+            page.contains(r#"<p class="error" role="alert">Type it exactly.</p>"#),
+            "{page}"
+        );
+        assert!(!page.contains("dialog-x"), "{page}");
+        let content = retire_content(&w, &state, &[], None, true).into_string();
+        let after_title = |html: &str| html[html.find("<p>Retiring").unwrap()..].to_owned();
+        let plain = retire_page(&chrome, &w, &state, &[], None).into_string();
+        assert!(
+            plain.contains(&after_title(&content)),
+            "the dialog's content: {plain}"
+        );
+
+        let restore = RestoreForm {
+            custody_choices: Vec::new(),
+            snp_entry: None,
+        };
+        let page = restore_page(&chrome, &w, &restore, None).into_string();
+        assert!(page.contains("<h1 id=\"restore-title\" class=\"dialog-title\">Restore \u{201c}Shop takings\u{201d}</h1>"), "{page}");
+        assert!(
+            page.contains(
+                r#"<form method="post" action="/account/wallets/w_Shop takings/restore">"#
+            ),
+            "{page}"
+        );
+    }
+
+    /// The setup flow's network dropdown: each network as its badge.
+    #[test]
+    fn the_setup_network_dropdown_shows_each_networks_badge() {
+        let html = network_select("stagenet").into_string();
+        assert!(
+            html.contains(
+                r#"<option value="mainnet" data-label="" data-network="mainnet">[Mainnet]</option>"#
+            ),
+            "{html}"
+        );
+        assert!(html.contains(r#"<option value="stagenet" selected data-label="" data-network="stagenet">[Stagenet]</option>"#), "{html}");
+        assert!(
+            html.contains(r#"data-network="testnet">[Testnet]</option>"#),
+            "{html}"
+        );
     }
 
     /// Setup's picker of wallets already added names each wallet's network

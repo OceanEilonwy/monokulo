@@ -635,7 +635,10 @@ async fn render_detail(
                     "Made in this browser"
                     @if !event.detail.is_empty() { ", " (crate::wallets::backup_label(&event.detail).to_lowercase()) }
                 },
-                "imported" => html! { "Brought in" },
+                "imported" => match crate::wallets::wallet_app(&event.detail) {
+                    Some(app) => html! { "Brought in from " (app.name) },
+                    None => html! { "Brought in" },
+                },
                 "renamed" => html! { "Renamed from \u{201c}" (event.detail) "\u{201d}" },
                 "store_connected" => match store_name(&event.detail) {
                     Some((id, name)) => html! { "Store " a href=(format!("/dashboard/stores/{id}")) { (name) } " connected" },
@@ -705,11 +708,7 @@ async fn render_detail(
         stores: stores
             .iter()
             .filter(|s| s.wallet_id.as_ref() == Some(&wallet.id))
-            .map(|s| WalletStore {
-                id: s.id.to_string(),
-                name: s.name.clone(),
-                until: None,
-            })
+            .map(|s| wallet_store(s, None))
             .collect(),
         past_stores: periods
             .iter()
@@ -718,11 +717,7 @@ async fn render_detail(
                 let store = stores.iter().find(|s| {
                     s.id == p.connection_id && s.wallet_id.as_ref() != Some(&wallet.id)
                 })?;
-                Some(WalletStore {
-                    id: store.id.to_string(),
-                    name: store.name.clone(),
-                    until: Some(chrome.clock.text(until)),
-                })
+                Some(wallet_store(store, Some(chrome.clock.text(until))))
             })
             .fold(Vec::new(), |mut seen: Vec<WalletStore>, store| {
                 // Newest first: a store that left twice is listed once.
@@ -821,6 +816,35 @@ pub async fn rename(
     }
 }
 
+/// A store as a wallet's page lists it: its name, and under it its site,
+/// or "in person" for a store with no site.
+fn wallet_store(store: &crate::db::StoreConnectionRow, until: Option<String>) -> WalletStore {
+    WalletStore {
+        id: store.id.to_string(),
+        name: store.name.clone(),
+        place: Some(if store.site.is_empty() {
+            "in person".to_owned()
+        } else {
+            store.site.clone()
+        }),
+        until,
+    }
+}
+
+/// The stores of `user`'s taking payments into `wallet` now.
+async fn current_stores(state: &AppState, user: &UserRow, wallet: &WalletRow) -> Vec<WalletStore> {
+    let (user_id, wallet_id) = (user.id.clone(), wallet.id.clone());
+    state
+        .db
+        .read(move |db| db.list_store_connections_for_user(&user_id))
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|s| s.wallet_id.as_ref() == Some(&wallet_id))
+        .map(|s| wallet_store(s, None))
+        .collect()
+}
+
 /// Whether the wallet can be retired now, and if not why: the engine knows
 /// its stores (of any account) and its orders.
 async fn retire_state(
@@ -838,12 +862,14 @@ async fn retire_state(
         .wallet_status(&wallet.engine_wallet_id)
         .await
     {
-        Ok(status) if status.stores > 0 => RetireState::Stores(status.stores),
-        Ok(status) if status.payable_orders > 0 => RetireState::Orders {
-            count: status.payable_orders,
-            until: status.payable_until.map(|at| clock.text(at)),
+        Ok(status) => RetireState::Checked {
+            stores: status.stores,
+            orders: status.payable_orders,
+            until: status
+                .payable_until
+                .filter(|_| status.payable_orders > 0)
+                .map(|at| clock.text(at)),
         },
-        Ok(_) => RetireState::Ready,
         Err(e) => {
             tracing::warn!(error = %e, wallet = %wallet.id, "could not ask the engine whether a wallet is in use");
             RetireState::Unknown
@@ -866,6 +892,74 @@ async fn restore_form(state: &AppState, user: &UserRow) -> views::wallets::Resto
         custody_choices,
         snp_entry,
     }
+}
+
+/// The retire checklist as a page, with `error` from a refused retire.
+async fn render_retire(
+    state: &AppState,
+    user: &UserRow,
+    wallet: WalletRow,
+    error: Option<String>,
+) -> Response {
+    let chrome = super::page_chrome(
+        state,
+        Some(user),
+        format!("/account/wallets/{}/retire", wallet.id),
+    )
+    .await;
+    let retire = retire_state(state, &wallet, &chrome.clock).await;
+    let stores = current_stores(state, user, &wallet).await;
+    views::wallets::retire_page(&chrome, &wallet, &retire, &stores, error.as_deref())
+        .into_response()
+}
+
+/// `GET /account/wallets/{id}/retire`: the retire dialog as a page, for a
+/// browser without JavaScript.
+pub async fn retire_form(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+) -> Response {
+    let Some(wallet) = load_wallet(&state, &user, &id).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if wallet.retired_at.is_some() {
+        return redirect_303(&format!("/account/wallets/{}", wallet.id));
+    }
+    render_retire(&state, &user, wallet, None).await
+}
+
+/// The restore form as a page, with `error` from a refused restore.
+async fn render_restore(
+    state: &AppState,
+    user: &UserRow,
+    wallet: WalletRow,
+    error: Option<String>,
+) -> Response {
+    let chrome = super::page_chrome(
+        state,
+        Some(user),
+        format!("/account/wallets/{}/restore", wallet.id),
+    )
+    .await;
+    let restore = restore_form(state, user).await;
+    views::wallets::restore_page(&chrome, &wallet, &restore, error.as_deref()).into_response()
+}
+
+/// `GET /account/wallets/{id}/restore`: the restore dialog as a page, for
+/// a browser without JavaScript.
+pub async fn restore_form_page(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+) -> Response {
+    let Some(wallet) = load_wallet(&state, &user, &id).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if wallet.retired_at.is_none() {
+        return redirect_303(&format!("/account/wallets/{}", wallet.id));
+    }
+    render_restore(&state, &user, wallet, None).await
 }
 
 #[derive(Deserialize)]
@@ -892,7 +986,7 @@ pub async fn retire(
     }
     if form.confirm.trim() != wallet.name {
         let message = format!("Type \u{201c}{}\u{201d} exactly to retire it.", wallet.name);
-        return render_detail(&state, &user, wallet, Some(message), None, None).await;
+        return render_retire(&state, &user, wallet, Some(message)).await;
     }
     // The engine first: it deletes the keys, and refuses while a store of
     // any account uses them or an order on them can still be paid.
@@ -907,14 +1001,14 @@ pub async fn retire(
             if status == StatusCode::CONFLICT =>
         {
             let message = format!("It can't be retired yet: {message}.");
-            return render_detail(&state, &user, wallet, Some(message), None, None).await;
+            return render_retire(&state, &user, wallet, Some(message)).await;
         }
         Err(e) => {
             tracing::error!(error = %e, wallet = %wallet.id, "the engine could not retire a wallet");
             let message =
                 "The wallet couldn't be retired right now. Nothing changed; try again in a minute."
                     .to_owned();
-            return render_detail(&state, &user, wallet, Some(message), None, None).await;
+            return render_retire(&state, &user, wallet, Some(message)).await;
         }
     };
     let (user_id, wallet_id) = (user.id.clone(), wallet.id.clone());
@@ -967,9 +1061,7 @@ pub async fn restore(
         form.encrypted_keys.as_deref(),
     ) {
         Ok((_, keys)) => keys,
-        Err(message) => {
-            return render_detail(&state, &user, wallet, Some(message), None, None).await
-        }
+        Err(message) => return render_restore(&state, &user, wallet, Some(message)).await,
     };
     match state
         .engine
@@ -981,13 +1073,13 @@ pub async fn restore(
         Err(crate::engine_client::EngineClientError::EngineError { status, message })
             if status == StatusCode::BAD_REQUEST =>
         {
-            return render_detail(&state, &user, wallet, Some(message), None, None).await;
+            return render_restore(&state, &user, wallet, Some(message)).await;
         }
         Err(e) => {
             tracing::error!(error = %e, wallet = %wallet.id, "the engine could not bring a wallet back");
             let message =
                 "The wallet couldn't be brought back right now. Try again in a minute.".to_owned();
-            return render_detail(&state, &user, wallet, Some(message), None, None).await;
+            return render_restore(&state, &user, wallet, Some(message)).await;
         }
     }
     let (user_id, wallet_id) = (user.id.clone(), wallet.id.clone());
@@ -1116,6 +1208,82 @@ mod tests {
     /// same module the page runs.
     fn made_in_the_browser(seed: u8) -> wallet_setup::NewWallet {
         wallet_setup::generate([seed; 32], 1_791_400_000, wallet_setup::Network::Mainnet).unwrap()
+    }
+
+    /// "Which app is it in?" is saved and its page says so; an app the form
+    /// doesn't offer is refused, the keys kept for another go.
+    #[tokio::test]
+    async fn a_brought_in_wallet_records_which_app_it_is_in() {
+        let (state, _engine) = real_engine_state().await;
+        let router = build_router(state.clone());
+        let (cookie, _) = sign_up(&router, "app@example.com", None).await;
+        let form = body_text(get(&router, "/account/wallets/import", &cookie).await).await;
+        assert!(form.contains("Which app is it in? "), "{form}");
+        assert!(
+            form.contains(r#"<option value="" selected>Not saying</option>"#),
+            "{form}"
+        );
+        assert!(
+            form.contains(r#"<option value="feather" data-label="Feather" data-logo="/static/wallet-logos/feather."#),
+            "{form}"
+        );
+        assert!(
+            form.contains(r#"<option value="other">Other</option>"#),
+            "{form}"
+        );
+
+        let fields = |app: &'static str| {
+            vec![
+                ("name", "Feather till"),
+                ("view_key_hex", TEST_VIEW_KEY_HEX),
+                ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+                ("network", "mainnet"),
+                ("app", app),
+            ]
+        };
+        let refused = router
+            .clone()
+            .oneshot(post(
+                "/account/wallets/import",
+                Some(&cookie),
+                &fields("dropbox"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::OK);
+        let html = body_text(refused).await;
+        assert!(
+            html.contains("That wallet app isn't one this page offers."),
+            "{html}"
+        );
+        assert!(wallets_of(&state, "app@example.com").is_empty());
+
+        let added = router
+            .clone()
+            .oneshot(post(
+                "/account/wallets/import",
+                Some(&cookie),
+                &fields("feather"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(added.status(), StatusCode::SEE_OTHER);
+        let wallet = wallets_of(&state, "app@example.com").remove(0).wallet;
+        assert_eq!(wallet.app.as_deref(), Some("feather"));
+        assert_eq!(wallet.backup, None);
+        let ready = body_text(get(&router, &location(&added), &cookie).await).await;
+        assert!(ready.contains("Brought in from Feather"), "{ready}");
+        let page =
+            body_text(get(&router, &format!("/account/wallets/{}", wallet.id), &cookie).await)
+                .await;
+        assert!(
+            page.contains("<strong>Brought in from Feather</strong><p class=\"hint\">Its keys and recovery phrase live in Feather."),
+            "{page}"
+        );
+        assert!(
+            page.contains("<span>Brought in from Feather</span>"),
+            "the history too: {page}"
+        );
     }
 
     #[tokio::test]
@@ -1473,10 +1641,33 @@ mod tests {
 
         let html =
             body_text(get(&router, &format!("/account/wallets/{wallet_id}"), &cookie).await).await;
-        assert!(html.contains(">One<") && html.contains(">Two<"), "{html}");
         assert!(
-            html.contains("2 stores still use this wallet"),
-            "it can't be retired yet: {html}"
+            html.contains("one.example.com") && html.contains("two.example.com"),
+            "{html}"
+        );
+        assert!(html.contains("2 take payments into this wallet"), "{html}");
+        // It can't be retired yet: the checklist names both stores.
+        let retire = body_text(
+            get(
+                &router,
+                &format!("/account/wallets/{wallet_id}/retire"),
+                &cookie,
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            retire.contains("one.example.com does · ")
+                && retire.contains("two.example.com does · "),
+            "{retire}"
+        );
+        assert!(
+            retire.contains("Retire becomes available when both are ticked."),
+            "{retire}"
+        );
+        assert!(
+            retire.contains(r#"<button type="button" class="btn-danger" disabled"#),
+            "{retire}"
         );
     }
 
@@ -1544,8 +1735,18 @@ mod tests {
         );
         assert!(html.contains(r#"data-saved="New name""#), "{html}");
         assert!(
-            html.contains("btn-danger") && html.contains("Retire wallet"),
-            "no store uses it, so retiring is offered: {html}"
+            html.contains(&format!(r#"<a class="btn btn-danger" href="{page}/retire" data-opens-dialog="retire-dialog">Retire wallet…</a>"#)),
+            "{html}"
+        );
+        // No store uses it and no order is open: the name is asked for,
+        // in the dialog and on the page without JavaScript alike.
+        let form = format!(r#"<form method="post" action="{page}/retire">"#);
+        assert!(html.contains(&form), "{html}");
+        let retire_page = body_text(get(&router, &format!("{page}/retire"), &cookie).await).await;
+        assert!(retire_page.contains(&form), "{retire_page}");
+        assert!(
+            retire_page.contains("<h1 id=\"retire-title\" class=\"dialog-title\">Retire \u{201c}New name\u{201d}?</h1>"),
+            "{retire_page}"
         );
 
         let wrong = router
@@ -1558,6 +1759,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(wrong.status(), StatusCode::OK);
+        let html = body_text(wrong).await;
+        assert!(
+            html.contains("Type \u{201c}New name\u{201d} exactly to retire it.")
+                && html.contains("id=\"retire-confirm\""),
+            "the retire page again, saying why: {html}"
+        );
         assert_eq!(wallets_of(&state, "detail@example.com").len(), 1);
 
         let retired = router
@@ -1575,17 +1782,33 @@ mod tests {
             "offered nowhere"
         );
         let html = body_text(get(&router, &page, &cookie).await).await;
-        assert!(html.contains("Retired. Its keys are deleted."), "{html}");
         assert!(
-            html.contains("private view key and public spend key"),
+            html.contains(r#"<p class="wallet-meta"><span class="tag tag-unknown">retired</span><span>Keys deleted "#)
+                && html.contains(". History kept.</span></p>"),
             "{html}"
         );
         assert!(
             html.contains("Retired: its keys were deleted from key storage"),
             "{html}"
         );
-        assert!(html.contains("Bring it back"), "{html}");
+        assert!(
+            html.contains(&format!(r#"<a class="btn" href="{page}/restore" data-opens-dialog="restore-dialog">Restore wallet…</a>"#)),
+            "{html}"
+        );
+        assert!(html.contains("Restore \u{201c}New name\u{201d}"), "{html}");
         assert!(!html.contains("Retire wallet"), "{html}");
+        // Without JavaScript: the same form on a page of its own.
+        let restore_page = body_text(get(&router, &format!("{page}/restore"), &cookie).await).await;
+        assert!(
+            restore_page.contains(&format!(r#"<form method="post" action="{page}/restore">"#))
+                && restore_page.contains("name=\"view_key_hex\""),
+            "{restore_page}"
+        );
+        // Retired, there is no retire page; not retired, no restore page.
+        assert_eq!(
+            location(&get(&router, &format!("{page}/retire"), &cookie).await),
+            page
+        );
         let list = body_text(get(&router, "/account?tab=wallets", &cookie).await).await;
         assert!(list.contains("Retired wallets (1)"), "{list}");
         // Its keys again: it's this one, retired, to be brought back.
@@ -1608,6 +1831,10 @@ mod tests {
         let html = body_text(get(&router, &location(&restored), &cookie).await).await;
         assert!(html.contains("New name is back"), "{html}");
         assert!(html.contains("Brought back with its keys"), "{html}");
+        assert_eq!(
+            location(&get(&router, &format!("{page}/restore"), &cookie).await),
+            page
+        );
         assert_eq!(wallets_of(&state, "detail@example.com").len(), 1);
     }
 
@@ -1649,6 +1876,10 @@ mod tests {
         assert_eq!(refused.status(), StatusCode::OK);
         let html = body_text(refused).await;
         assert!(html.contains("belong to a different wallet"), "{html}");
+        assert!(
+            html.contains(r#"<h1 id="restore-title" class="dialog-title">"#),
+            "the restore page again: {html}"
+        );
         assert!(wallets_of(&state, "restore@example.com").is_empty());
     }
 
@@ -1908,11 +2139,12 @@ mod tests {
             .unwrap();
         let html = body_text(refused).await;
         assert!(html.contains("can still be paid into it"), "{html}");
-        // The page says so before anyone tries: Retire is off.
+        // The checklist says so before anyone tries: Retire is off.
         assert!(
-            html.contains("1 order on it can still be paid, until about"),
+            html.contains(r#"No order on it can still be paid<span class="fix">until about "#),
             "{html}"
         );
+        assert!(html.contains(r#"<li class="ok"><span class="mark" aria-hidden="true">✓</span><span><span class="visually-hidden">Done: </span>No store takes payments into it"#), "{html}");
         assert!(wallets_of(&state, email)
             .iter()
             .any(|w| w.wallet.id == copper.id));

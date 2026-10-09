@@ -35,8 +35,9 @@ cargo run -p monokulo          # with an engine and a node for the network you u
    mainnet wallet), each network shown with one badge
    (`views::network_badge`), as on a wallet's page, the dashboard and the
    wallet dropdowns. **+ add a wallet** (`/account/wallets/add`) uses the
-   same screens as setup's Wallet step. A wallet's page renames it, shows
-   its stores and history, and retires it once no store uses it.
+   same screens as setup's Wallet step. A wallet's page (below) says where
+   it lives, lists its stores, renames it, shows its history and retires it
+   once nothing uses it.
 
 Tests: `cargo test -p engine -p wallet-setup -p monokulo`, and in
 `e2e/browser`, `npx playwright test -c real-binaries.config.js
@@ -192,6 +193,42 @@ Each: what was decided, what else was possible, and why.
 29. **Dead code**: the connect forms' network select helper
     (`templates::network_selected_flags`) went with the key fields.
 
+## A wallet's page
+
+`/account/wallets/{id}` is one centred column
+(`docs/design/user-testing/wallet-page.html`, "Agreed · 2 + 3"):
+
+- **The header**: the name and its network badge, nothing else. A retired
+  wallet adds a "retired" tag and "Keys deleted (date). History kept."
+- **Where it lives**: the app holding its keys and recovery phrase, with
+  the app's logo. A made wallet says how it was backed up
+  (`wallets.backup`: "Backed up to Cake Wallet", "Backed up on paper", or
+  "Backup skipped", tinted as a warning). A brought-in one says which app
+  it's in (`wallets.app`, migration 0034, from the optional "Which app is
+  it in?" on Bring your own wallet): "Brought in from Feather", or
+  "Brought in · app not recorded".
+- **Stores**: each store taking payments into it, with its host or "in
+  person" and a "change the wallet" link to its Wallet section; those that
+  did before are muted under "Before".
+- **Details**: the rename, the address (cut in the middle) and its kind.
+- **History**, folded, with a count.
+- **Retire this wallet**, a row at the bottom with the red "Retire
+  wallet…" button. It opens the retire dialog; without JavaScript it is a
+  link to `/account/wallets/{id}/retire`, a page with the same content
+  (one render function draws both).
+
+The retire dialog is a checklist: "No store takes payments into it" and
+"No order on it can still be paid", each ticked or crossed, a crossed one
+with its fix beside it (the store, with a link to change its wallet; until
+about when orders can be paid). When the engine can't say, one row says
+so with "try again". When both are ticked, the name is typed to confirm;
+until then the red button is there but off. A refused retire (the name
+wrong, the engine's 409) shows the retire page again with why.
+
+A retired wallet's bottom row is "Restore this wallet" with a neutral
+"Restore wallet…" button, opening the key form in a dialog (or
+`/account/wallets/{id}/restore` without JavaScript).
+
 ## Changing a store's wallet
 
 A store's settings start with a **Wallet** section:
@@ -273,15 +310,14 @@ The wallets page folds retired ones under "Retired wallets (N)".
     is retired like any other.
 39. **Only a wallet not in use can be retired.** That means no store uses
     it and no order on it can still be paid (open, or closed less than the
-    grace period ago). Until then the Retire button is off and says why,
-    including roughly until when orders can be paid. There is no waiting
+    grace period ago). Until then the retire dialog's checklist says what
+    it waits for, including roughly until when orders can be paid, and its
+    Retire button is off. There is no waiting
     "retiring" state and no "delete the keys now".
-40. **The page says the keys are deleted (design A).** A banner under the
-    title reads "Retired. Its keys are deleted." It says when, what was
-    deleted, that Monokulo no longer sees payments into it and that no store
-    can use it. A "Keys: Deleted (time)" row and a history entry say the
-    same. It doesn't mention backups: whether old copies exist elsewhere
-    depends on the key storage backend.
+40. **The page says the keys are deleted.** Under the name, a "retired"
+    tag and "Keys deleted (date). History kept.", and a history entry says
+    the same. It doesn't mention backups: whether old copies exist
+    elsewhere depends on the key storage backend.
 41. **In the engine**: `POST /api/v1/admin/wallets/{id}/retire` does all of
     this in one transaction:
     - it marks the wallet (`deleted_at_utc`);
