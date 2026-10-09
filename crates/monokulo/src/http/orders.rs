@@ -4629,24 +4629,15 @@ mod tests {
             db.list_wallets(&user.id).unwrap()[0].wallet.id.to_string()
         };
 
-        let response = router
-            .clone()
-            .oneshot(form_post_request(
-                "/dashboard/connect",
-                &session_token,
-                &[
-                    ("site_url", "https://kept-apart.example.com"),
-                    ("wallet_id", wallet_id.as_str()),
-                    ("base_currency", "XMR"),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::FOUND);
-        assert!(response.headers()["location"]
-            .to_str()
-            .unwrap()
-            .ends_with("/setup"));
+        let response = crate::http::test_support::set_up_store_on_wallet(
+            &router,
+            &format!("session={session_token}"),
+            "Kept apart",
+            "kept-apart.example.com",
+            wallet_id.as_str(),
+        )
+        .await;
+        crate::http::test_support::store_made(&response);
         let public_key = {
             let db = state.db.lock();
             let user = db
