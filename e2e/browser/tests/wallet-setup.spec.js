@@ -26,6 +26,26 @@ async function wordsOnTab(page, tab) {
   return page.locator(`[data-app-panel="${tab}"] [data-words] li, [data-app-panel="${tab}"] [data-legacy-words] li`).allTextContents();
 }
 
+/**
+ * The store step's two fields read as one form: side by side, their labels
+ * and boxes line up whatever help or error either has; on a phone they
+ * stack, name first.
+ */
+async function expectFieldsInLine(page) {
+  const box = async (selector) => page.locator(selector).boundingBox();
+  const [name, site] = [await box('input[name="store_name"]'), await box('input[name="store_site"]')];
+  expect(Math.abs(name.y - site.y)).toBeLessThan(1);
+  expect(Math.abs(name.height - site.height)).toBeLessThan(1);
+  const [nameLabel, siteLabel] = [await box('label[for="store-name"]'), await box('label[for="store-site"]')];
+  expect(Math.abs(nameLabel.y - siteLabel.y)).toBeLessThan(1);
+  const size = page.viewportSize();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const [phoneName, phoneSite] = [await box('input[name="store_name"]'), await box('input[name="store_site"]')];
+  expect(phoneSite.y).toBeGreaterThan(phoneName.y + phoneName.height);
+  expect(Math.abs(phoneName.x - phoneSite.x)).toBeLessThan(1);
+  if (size) await page.setViewportSize(size);
+}
+
 /** The wallet step's choice screen, from the store step for `site`. */
 async function toWalletStep(page, name, site) {
   const { monokulo_url: base } = fixture();
@@ -151,6 +171,7 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   await page.getByRole('button', { name: 'Next', exact: true }).click();
   await expect(page.locator('#store-site-error')).toContainText('already uses geomart.example');
   await expect(page.locator('#store-site-error a')).toHaveAttribute('href', store);
+  await expectFieldsInLine(page);
   await captureCoverageStage(page, 'setup-store-site-taken', test.info(), { group: GROUP });
 });
 
@@ -233,6 +254,16 @@ test.describe('with JavaScript off', () => {
     await expect(page.getByRole('heading', { name: 'Saturday market stall is ready' })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Open the till' })).toHaveAttribute('href', /\/pos$/);
     await captureCoverageStage(page, 'setup-done-in-person', test.info(), { group: GROUP });
+
+    // A site already used is refused in place, the two fields still in line.
+    await createStore(page, 'nojs-shop.example');
+    await page.goto(base + '/setup');
+    await page.locator('input[name="store_name"]').fill('Another shop');
+    await page.locator('input[name="store_site"]').fill('https://nojs-shop.example/basket');
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+    await expect(page.locator('#store-site-error')).toContainText('already uses nojs-shop.example');
+    await expectFieldsInLine(page);
+    await captureCoverageStage(page, 'setup-store-site-taken-no-javascript', test.info(), { group: GROUP });
   });
 
   test('bringing your own wallet works and shows where the keys are', async ({ page }) => {

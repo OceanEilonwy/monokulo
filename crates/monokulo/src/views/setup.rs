@@ -266,7 +266,7 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
                 div class="two-fields" {
                     div class="setting-field" {
                         div class="setting-label-row" { label class="setting-label" for="store-name" { "Store name" } }
-                        p class="field-help hint" { "Shown on your dashboard, on the till and to customers on the checkout." }
+                        p class="field-help hint" { "Shown on your dashboard, the till and the checkout." }
                         input id="store-name" type="text" name="store_name" value=(data.name) maxlength=(crate::stores::MAX_NAME_LEN)
                             autocomplete="organization" required aria-invalid=[data.name_error.as_ref().map(|_| "true")]
                             aria-describedby=[data.name_error.as_ref().map(|_| "store-name-error")];
