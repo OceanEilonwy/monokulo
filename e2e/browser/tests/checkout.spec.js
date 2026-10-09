@@ -515,7 +515,7 @@ test('real checkout follows the customer payment from the mempool to confirmed a
   await expect(page.locator('.track .step-now')).toContainText('Confirm');
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   // The payment is listed by a shortened txid, not yet confirmed.
-  await expect(page.locator('.payments-table')).toContainText(`test-pay…`);
+  await expect(page.locator('.payments-table')).toContainText(`test-p…`);
   await expect(page.locator('.progress-fill')).toHaveAttribute('style', /width: 0%/);
   await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/confirm`);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
