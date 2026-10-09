@@ -219,7 +219,7 @@ html:not(.js) .js-only { display: none; }
 .qh-ex .qh-what { grid-area: what; font-size: .85em; color: var(--muted); }
 .qh-ex .qh-use { grid-area: use; margin: 0; padding: .25em .7em; font-size: .85em; }
 .qh-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: .3em 0; }
-.qh-chip { margin: 0; padding: .15em .55em; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-sunken); color: var(--ink); font: .85em var(--font-mono); font-weight: 400; }
+.qh-chip { margin: 0; padding: var(--pill-pad-y) var(--pill-pad-x); border: 1px solid var(--line); border-radius: 999px; background: var(--surface-sunken); color: var(--ink); font: .85em var(--font-mono); font-weight: 400; }
 @media (max-width: 40em) {
   .qh { width: 100%; max-width: none; margin: auto 0 0; border-radius: var(--radius-lg) var(--radius-lg) 0 0; max-height: 85dvh; }
   .logs-search .quick { display: grid; grid-template-columns: 1fr 1fr; }

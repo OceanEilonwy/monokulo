@@ -224,7 +224,7 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .pos-qr-new { position: relative; align-self: center; display: grid; margin: 12px 0 4px; padding: 6px; border: 2px solid var(--state-partial-border); border-radius: 10px; background: var(--qr-bg); animation: pos-qr-new 1.4s ease-out 2; }
   .pos-qr-new .pos-qr { margin: 0; border: 0; padding: 0; }
   .pos-qr-new-tab {
-    position: absolute; top: 0; left: 50%; transform: translate(-50%, -55%); white-space: nowrap; padding: 1px 8px;
+    position: absolute; top: 0; left: 50%; transform: translate(-50%, -55%); white-space: nowrap; padding: var(--pill-pad-y) var(--pill-pad-x);
     border: 1px solid var(--state-partial-border); border-radius: 999px; background: var(--state-partial-bg); color: var(--state-partial-ink); font-size: 10px; font-weight: 800;
   }
   @media (prefers-reduced-motion: reduce) { .pos-qr-new { animation: none; } }

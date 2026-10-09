@@ -129,8 +129,8 @@ fieldset.setting-field > legend.setting-label-row { margin: 0; }
 .card-body > h4 { margin: var(--space-xl) 0 var(--space-lg); padding-top: var(--space-lg); border-top: 1px solid var(--card-border); font-size: 0.75rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
 .card-body > h4:first-child, .card-body > .hint:first-child + h4 { margin-top: 0; padding-top: 0; border-top: 0; }
 .card-body > h4 + .hint { margin: calc(-1 * var(--space-sm)) 0 var(--space-lg); }
-.owner-chip { font-size: 0.72em; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--card-border); border-radius: var(--radius-sm); padding: 0 0.45em; }
-.badge { font-size: 0.75em; font-weight: 700; border-radius: 999px; padding: 0.05em 0.7em; white-space: nowrap; color: var(--ink); }
+.owner-chip { font-size: 0.72em; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--card-border); border-radius: var(--radius-sm); padding: var(--pill-pad-y) var(--pill-pad-x); }
+.badge { font-size: 0.75em; font-weight: 700; border-radius: 999px; padding: var(--pill-pad-y) var(--pill-pad-x); white-space: nowrap; color: var(--ink); }
 .badge-unsaved { background: var(--tint-highlight); }
 .badge-error { background: var(--tint-error); }
 .badge-warning { background: var(--tint-warning); }
@@ -389,7 +389,7 @@ form .field-help { display: block; font-weight: 400; color: var(--muted); margin
    icon of its source (options file, runtime, command line, environment);
    dashed for the default, which nothing has chosen. */
 .setting-label-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5em; }
-.source-chip { display: inline-flex; align-items: center; gap: 0.3em; font-size: 0.8em; font-weight: 400; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0.05em 0.55em 0.05em 0.45em; background: var(--paper); }
+.source-chip { display: inline-flex; align-items: center; gap: var(--pill-gap); font-size: 0.8em; font-weight: 400; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: var(--pill-pad-y-roomy) var(--pill-pad-x-roomy); background: var(--paper); }
 .source-chip.default { border-style: dashed; background: transparent; }
 .src-icon { width: 1.15em; height: 1.15em; flex: none; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
 .src-icon .filled { fill: currentColor; stroke: none; }
@@ -493,7 +493,7 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
   display: inline-block;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
-  padding: 0.05em 0.5em;
+  padding: var(--pill-pad-y) var(--pill-pad-x);
   font-size: 0.8em;
   font-weight: 700;
   text-transform: uppercase;
@@ -843,7 +843,7 @@ a.order-id { display: inline-block; max-width: 11em; }
 .setup-steps .done .n { background: var(--step-done-bg); color: var(--step-done-ink); border-color: var(--step-done-bg); }
 .setup-steps [aria-current] { color: var(--ink); }
 .setup-steps [aria-current] .n { background: var(--step-current-bg); color: var(--step-current-ink); border-color: var(--step-current-bg); }
-.setup-steps li.wallet-group { flex-wrap: wrap; gap: var(--space-sm); padding: 3px var(--space-sm) 3px 3px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper-raised); }
+.setup-steps li.wallet-group { flex-wrap: wrap; gap: var(--space-sm); padding: var(--pill-pad-y-roomy) var(--pill-pad-x-roomy) var(--pill-pad-y-roomy) var(--pill-pad-y-roomy); border: 1px solid var(--line); border-radius: 999px; background: var(--paper-raised); }
 .setup-steps li.wallet-group > .lbl { display: inline-flex; align-items: center; gap: .4rem; }
 .sub-timeline { display: flex; align-items: center; list-style: none; margin: var(--space-md) 0 0; padding: 0; font-size: .92em; color: var(--muted); }
 .setup-steps .sub-timeline { margin: 0; }
@@ -852,7 +852,7 @@ a.order-id { display: inline-block; max-width: 11em; }
 .sub-timeline li { display: flex; align-items: center; gap: 0; }
 .sub-timeline li + li::before { content: ""; display: block; width: 1.3rem; height: 2px; background: var(--line-strong); }
 .sub-timeline li.done::before, .sub-timeline li.done + li::before { background: var(--step-done-ok); }
-.sub-timeline .pill { display: inline-flex; align-items: center; padding: 0 .65em; line-height: 1.55; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--paper-raised); color: var(--muted); font-weight: 600; white-space: nowrap; }
+.sub-timeline .pill { display: inline-flex; align-items: center; padding: var(--pill-pad-y) var(--pill-pad-x); line-height: 1.4; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--paper-raised); color: var(--muted); font-weight: 600; white-space: nowrap; }
 .sub-timeline .done .pill { border-color: var(--step-done-ok); background: var(--step-done-ok-bg); color: var(--ink); }
 .sub-timeline [aria-current] .pill { border-color: var(--step-current-bg); background: var(--step-current-bg); color: var(--step-current-ink); font-weight: 700; }
 /* On a phone the timeline gives way to one line: "Wallet · 2 of 3: back up". */
@@ -1172,7 +1172,7 @@ mk-select[compact] .mk-popup { white-space: nowrap; }
 /* A Monero network (`views::network_badge`): the word always, an icon,
    and an edge that differs as well as the tint, so colour is never the
    only sign. Solid for mainnet (real money), dashed for a test network. */
-.tag-network { display: inline-flex; align-items: center; gap: 0.35em; font-size: 0.8em; font-weight: 700; line-height: 1.5; white-space: nowrap; vertical-align: middle; border: 1px solid var(--network-test-edge); border-radius: 999px; padding: 0.05em 0.65em 0.05em 0.5em; color: var(--network-ink); }
+.tag-network { display: inline-flex; align-items: center; gap: var(--pill-gap); font-size: 0.8em; font-weight: 700; line-height: 1.5; white-space: nowrap; vertical-align: middle; border: 1px solid var(--network-test-edge); border-radius: 999px; padding: var(--pill-pad-y-roomy) var(--pill-pad-x-roomy); color: var(--network-ink); }
 .tag-network svg { width: 1.05em; height: 1.05em; flex: none; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .tag-network.is-main { background: var(--network-main-bg); border-color: var(--network-main-edge); }
 .tag-network.is-test { background: var(--network-test-bg); border-style: dashed; }
