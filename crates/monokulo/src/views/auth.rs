@@ -3,10 +3,10 @@
 //!
 //! Both pages always render with `chrome.logged_in == false` regardless of
 //! any real session (see each struct's own doc comment below) - the nav's
-//! theme toggle only ever shows once logged in, so `chrome.current_path` is
-//! never actually read here; callers pass an empty string rather than
-//! bothering to extract the real request URI for a value that can't affect
-//! the output.
+//! account menu (with its theme switch) only shows once logged in, so
+//! `chrome.current_path` is never actually read here; callers pass an empty
+//! string rather than bothering to extract the real request URI for a
+//! value that can't affect the output.
 
 use maud::{html, Markup};
 

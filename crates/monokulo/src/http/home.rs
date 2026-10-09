@@ -17,23 +17,26 @@ use super::{resolve_authed_user, AppState, AuthedUser};
 /// anyone else.
 ///
 /// Also the one gate for the first-run admin setup wizard
-/// (`http/admin_setup.rs`): a fresh instance (`Db::is_setup_complete` still
-/// false) redirects to `/admin/setup` - "when you open monokulo it should
-/// open to an admin setup flow" is exactly the front door this page is. No
-/// other route is gated on this flag; a direct link to `/dashboard/login`
-/// or the plain `/signup` API still works even pre-setup.
+/// (`http/admin_setup.rs`): on a fresh instance (`Db::is_setup_complete`
+/// still false) a visitor who isn't signed in is sent to `/admin/setup`
+/// instead - "when you open monokulo it should open to an admin setup flow"
+/// is exactly the front door this page is. No other route is gated on this
+/// flag; a direct link to `/dashboard/login` or the plain `/signup` API
+/// still works even pre-setup, and someone signed in that way still gets
+/// their dashboard here.
 pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Some((user, _)) = resolve_authed_user(&state, &headers).await {
+        return dashboard(&state, &user).await;
+    }
     let setup_complete = state
         .db
         .read(|db| Ok::<_, crate::db::DbError>(db.is_setup_complete().unwrap_or(true)))
         .await
         .unwrap_or(true);
-    if !setup_complete {
-        return redirect_302("/admin/setup");
-    }
-    match resolve_authed_user(&state, &headers).await {
-        Some((user, _)) => dashboard(&state, &user).await,
-        None => redirect_302("/dashboard/login"),
+    if setup_complete {
+        redirect_302("/dashboard/login")
+    } else {
+        redirect_302("/admin/setup")
     }
 }
 

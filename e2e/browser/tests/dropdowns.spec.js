@@ -96,10 +96,9 @@ test('the keyboard opens, moves, chooses and closes without leaving the dialog',
 
 test('a long list has a find box, and a script setting the select is followed', async ({ page, context }) => {
   await login(context);
-  await page.goto(fixture.base_url + '/dashboard');
-  await page.locator('#timezone summary').click();
-  const dropdown = page.locator('#timezone mk-select');
-  const button = dropdown.getByRole('combobox', { name: 'Show dates and times in' });
+  await page.goto(fixture.base_url + '/account');
+  const dropdown = page.locator('#card-time mk-select').first();
+  const button = dropdown.getByRole('combobox', { name: 'Time zone' });
   await button.click();
   const find = dropdown.getByRole('combobox', { name: 'Find' });
   await expect(find).toBeFocused();
@@ -119,13 +118,14 @@ test('a long list has a find box, and a script setting the select is followed', 
   await dropdown.locator('select').evaluate(s => { s.value = 'Europe/London'; });
   await expect(button).toContainText('Europe/London');
 
-  await page.locator('#timezone').getByRole('button', { name: 'Save' }).click();
-  await expect(page.locator('.timezone-current')).toContainText('Europe/London');
+  await page.locator('#save-bar').getByRole('button', { name: 'Save' }).click();
+  await expect(page.locator('#timezone')).toHaveValue('Europe/London');
+  await expect(page.locator('.acct-menu')).toContainText('Times in Europe/London');
 });
 
 test('search is shown, hidden or decided by the number of options', async ({ page, context }) => {
   await login(context);
-  await page.goto(fixture.base_url + '/dashboard');
+  await page.goto(fixture.base_url + '/');
   const find = await page.evaluate(async () => {
     const make = (count, search) => {
       const element = document.createElement('mk-select');
@@ -147,7 +147,7 @@ test('search is shown, hidden or decided by the number of options', async ({ pag
 
 test('a required dropdown left on its prompt is refused, and green is only for Current', async ({ page, context }) => {
   await login(context);
-  await page.goto(fixture.base_url + '/dashboard');
+  await page.goto(fixture.base_url + '/');
   await page.evaluate(() => {
     const form = document.createElement('form');
     form.id = 'test-form';

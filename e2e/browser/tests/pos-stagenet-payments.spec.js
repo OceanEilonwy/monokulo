@@ -46,7 +46,7 @@ async function loginAndOpenPos(page) {
   await page.fill('input[name="email"]', fixture.email);
   await page.fill('input[name="password"]', fixture.password);
   await page.click('button[type="submit"]');
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/$/);
 
   await page.goto(`${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}/pos`);
   await expect(page.locator('.pos-keypad')).toBeVisible();

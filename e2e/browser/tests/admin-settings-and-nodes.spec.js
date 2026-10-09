@@ -232,7 +232,7 @@ test('the Monero nodes tab is marked while the only node of a network stores use
   const { monokulo_url: base, fake_monerod: fake } = fixture();
   await signInAsAdmin(page);
   // A store on stagenet (the spec before this one made it, if it ran).
-  await page.goto(base + '/dashboard');
+  await page.goto(base + '/');
   if (!(await page.getByRole('link', { name: 'view →' }).count())) await connectStore(page, 'marker.example.com');
   const marked = async () => {
     await openSettingsTab(page, 'general');

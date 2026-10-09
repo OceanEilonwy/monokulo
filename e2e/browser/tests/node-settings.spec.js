@@ -51,12 +51,12 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
   await saveNodes(page, { stagenet: [] });
   expect(dialogText).toContain('1 store uses the stagenet network');
   await expect(page.getByText(/the stagenet network, which no longer has any reachable nodes/)).toBeVisible();
-  await reloadUntil(page, base + '/dashboard', (html) => html.includes('shop.example.com: payments aren'));
+  await reloadUntil(page, base + '/', (html) => html.includes('shop.example.com: payments aren'));
   await page.goto(`${base}/dashboard/stores/${storeId}/pos`);
   expect(await page.content()).not.toContain('payments aren');
 
   // 8. Restoring the node clears the alert.
   await saveNodes(page, { stagenet: [node] });
   await expectSaved(page);
-  await reloadUntil(page, base + '/dashboard', (html) => !html.includes('payments aren'));
+  await reloadUntil(page, base + '/', (html) => !html.includes('payments aren'));
 });

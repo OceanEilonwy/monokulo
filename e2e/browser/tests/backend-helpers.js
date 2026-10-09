@@ -235,7 +235,7 @@ async function connectStore(page, site) {
   await expectSaved(page);
   await createStore(page, site);
   await finishStoreSetup(page);
-  await page.goto(base + '/dashboard');
+  await page.goto(base + '/');
   return page.locator('tr', { hasText: site }).first().getByRole('link', { name: 'view →' }).getAttribute('href');
 }
 
