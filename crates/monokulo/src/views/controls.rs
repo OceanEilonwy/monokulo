@@ -4,7 +4,7 @@
 //! (`static/mk-select.js`), its options written with [`Choice`]: the
 //! option's text says everything in words, for a browser without
 //! JavaScript, and its data attributes give the component the parts to
-//! draw (a label, a monospace detail, a chip, a note).
+//! draw (a label, a monospace detail, a network badge, a chip, a note).
 
 use maud::{html, Markup, Render};
 
@@ -14,6 +14,7 @@ pub struct Choice {
     value: String,
     label: String,
     detail: Option<String>,
+    network: Option<String>,
     chip: Option<Chip>,
     note: Option<String>,
     selected: bool,
@@ -58,6 +59,13 @@ impl Choice {
         self
     }
 
+    /// A wallet's Monero network (`mainnet`, `stagenet`, `testnet`), drawn
+    /// as the site's network badge (`views::network_badge`).
+    pub fn network(mut self, network: impl AsRef<str>) -> Choice {
+        self.network = Some(network.as_ref().to_owned());
+        self
+    }
+
     pub fn chip(mut self, chip: Chip) -> Choice {
         self.chip = Some(chip);
         self
@@ -88,11 +96,14 @@ impl Choice {
     }
 
     /// The option's text, as a browser without JavaScript shows it:
-    /// `Label (detail) [chip] - note`.
+    /// `Label (detail) [Network] [chip] - note`.
     pub fn text(&self) -> String {
         let mut text = self.label.clone();
         if let Some(detail) = &self.detail {
             text.push_str(&format!(" ({detail})"));
+        }
+        if let Some(network) = &self.network {
+            text.push_str(&format!(" [{}]", super::network_word(network)));
         }
         if let Some(chip) = &self.chip {
             text.push_str(&format!(" [{}]", chip.text()));
@@ -104,7 +115,10 @@ impl Choice {
     }
 
     fn has_parts(&self) -> bool {
-        self.detail.is_some() || self.chip.is_some() || self.note.is_some()
+        self.detail.is_some()
+            || self.network.is_some()
+            || self.chip.is_some()
+            || self.note.is_some()
     }
 }
 
@@ -115,6 +129,7 @@ impl Render for Choice {
             option value=(self.value) selected[self.selected] disabled[self.disabled]
                 data-label=[parts.then_some(&self.label)]
                 data-detail=[self.detail.as_ref()]
+                data-network=[self.network.as_ref()]
                 data-chip=[self.chip.as_ref().map(Chip::text)]
                 data-chip-tone=[matches!(self.chip, Some(Chip::Current)).then_some("current")]
                 data-note=[self.note.as_ref()] {
@@ -164,6 +179,19 @@ mod tests {
         assert_eq!(
             html,
             r#"<option value="w_1" selected data-label="Copper Heron" data-detail="48xQ7…v3Rk" data-chip="Current" data-chip-tone="current" data-note="since 1 Sep 2026">Copper Heron (48xQ7…v3Rk) [Current] - since 1 Sep 2026</option>"#
+        );
+    }
+
+    #[test]
+    fn an_option_names_its_network_in_words_and_for_the_badge() {
+        let html = Choice::new("w_2", "Feather test")
+            .network("stagenet")
+            .note("1 store")
+            .render()
+            .into_string();
+        assert_eq!(
+            html,
+            r#"<option value="w_2" data-label="Feather test" data-network="stagenet" data-note="1 store">Feather test [Stagenet] - 1 store</option>"#
         );
     }
 

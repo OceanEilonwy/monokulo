@@ -1037,8 +1037,11 @@ async fn store_wallet_view(
         .as_ref()
         .and_then(|c| wallets.iter().find(|w| w.wallet.id.as_str() == c.id))
         .map(|w| w.wallet.network.clone());
+    // A store's network can't change (`change_store_wallet` refuses it):
+    // only wallets on its own are offered.
     let mut choices: Vec<views::store_settings::WalletChoice> = wallets
         .iter()
+        .filter(|w| network.as_ref().is_none_or(|n| *n == w.wallet.network))
         .map(|w| {
             let is_current = row.wallet_id.as_ref() == Some(&w.wallet.id);
             views::store_settings::WalletChoice {
@@ -1046,10 +1049,7 @@ async fn store_wallet_view(
                 name: w.wallet.name.clone(),
                 short_address: views::wallets::short_address(&w.wallet.primary_address),
                 current: is_current,
-                other_network: network
-                    .as_ref()
-                    .filter(|n| **n != w.wallet.network)
-                    .map(|_| w.wallet.network.clone()),
+                network: w.wallet.network.clone(),
                 other_stores: w.store_count.saturating_sub(u64::from(is_current)),
             }
         })

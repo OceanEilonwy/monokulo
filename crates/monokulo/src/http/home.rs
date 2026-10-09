@@ -82,12 +82,17 @@ pub async fn woocommerce_instructions(
 /// yet).
 async fn dashboard(state: &AppState, user: &UserRow) -> Response {
     let user_id = user.id.clone();
-    let rows = match state
+    let (rows, wallets) = match state
         .db
-        .read(move |db| db.list_store_connections_for_user(&user_id))
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                db.list_store_connections_for_user(&user_id)?,
+                db.list_wallets(&user_id)?,
+            ))
+        })
         .await
     {
-        Ok(rows) => rows,
+        Ok(read) => read,
         Err(_) => return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
@@ -119,6 +124,10 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
             public_key: row.tenant_public_key.clone(),
             health,
             health_label,
+            wallet: row.wallet_id.as_ref().and_then(|id| {
+                let w = wallets.iter().find(|w| &w.wallet.id == id)?;
+                Some((w.wallet.name.clone(), w.wallet.network.clone()))
+            }),
         });
 
         if let Ok(orders) = state.engine.client.list_orders(&sk).await {
