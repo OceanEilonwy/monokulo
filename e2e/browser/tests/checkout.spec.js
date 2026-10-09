@@ -302,16 +302,29 @@ test('real checkout keeps retrying a refused live stream with backoff and then f
     if (attempts.length <= 2) return route.fulfill({ status: attempts.length === 1 ? 503 : 429, body: '' });
     return route.continue();
   });
+  // The page has handled a refusal once its fx:after has run: that's where
+  // checkout.js starts the retry timer. Counted from the capture phase, so
+  // by the time the count shows, the timer is set; the fake clock only
+  // moves on after that, so the timer starts at the time it should.
+  await page.addInitScript(() => {
+    window.__refused = 0;
+    document.addEventListener('fx:after', event => {
+      const response = event.detail.cfg.response;
+      if (response && !response.ok) window.__refused += 1;
+    }, true);
+  });
+  const refused = () => page.evaluate(() => window.__refused);
   await page.clock.install();
   await page.goto(url);
-  await expect.poll(() => attempts.length).toBe(1);
+  await expect.poll(refused).toBe(1);
   // Each "not yet" check lets a request the fake clock just released reach
   // the route before counting.
   await page.clock.runFor(4000);
   await page.waitForTimeout(500);
   expect(attempts.length, 'waits 5s before the first retry').toBe(1);
   await page.clock.runFor(1500);
-  await expect.poll(() => attempts.length).toBe(2);
+  await expect.poll(refused).toBe(2);
+  expect(attempts.length).toBe(2);
   await page.clock.runFor(9000);
   await page.waitForTimeout(500);
   expect(attempts.length, 'then doubles the wait to 10s').toBe(2);
