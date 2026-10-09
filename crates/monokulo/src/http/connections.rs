@@ -88,8 +88,8 @@ pub struct CreateConnectionResponse {
 }
 
 /// The fields needed to provision a connection, independent of whether they
-/// arrived as a JSON body (`POST /connections`, below) or a form post
-/// (`POST /dashboard/connect`, WBS 1.3.2, `http/dashboard.rs`) - identical
+/// arrived as a JSON body (`POST /connections`, below) or store setup's
+/// forms (`http::setup`) - identical
 /// shape to [`CreateConnectionRequest`], kept as a separate type so the two
 /// HTTP-layer request shapes (JSON vs. form) can evolve independently of the
 /// shared logic's input.
@@ -186,8 +186,7 @@ impl SiteTaken {
 /// The actual connection-creation logic - provisioning a real engine tenant
 /// via [`crate::engine_client::EngineClient::create_tenant`], encrypting the
 /// returned `secret_token`, and storing a `store_connections` row - shared by
-/// `POST /connections` (below) and `POST /dashboard/connect`
-/// (`http/dashboard.rs`), so the two surfaces can never drift apart on what
+/// `POST /connections` (below) and store setup (`http::setup`), so the two surfaces can never drift apart on what
 /// "creating a connection" means. Mirrors `signup::create_account` and
 /// `login::authenticate`'s own extraction for exactly this reason - the only
 /// difference is this one is `async`, since (unlike hashing a password)
