@@ -1029,3 +1029,35 @@ mk-select[compact] .mk-popup { white-space: nowrap; }
 .keys-deleted { display: inline-flex; gap: var(--space-xs); align-items: center; }
 .retired-wallets { margin: var(--space-lg) 0; }
 .retired-wallets summary { cursor: pointer; }
+
+/* A Monero network (`views::network_badge`): the word always, an icon,
+   and an edge that differs as well as the tint, so colour is never the
+   only sign. Solid for mainnet (real money), dashed for a test network. */
+.tag-network { display: inline-flex; align-items: center; gap: 0.35em; font-size: 0.8em; font-weight: 700; line-height: 1.5; white-space: nowrap; vertical-align: middle; border: 1px solid var(--network-test-edge); border-radius: 999px; padding: 0.05em 0.65em 0.05em 0.5em; color: var(--network-ink); }
+.tag-network svg { width: 1.05em; height: 1.05em; flex: none; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tag-network.is-main { background: var(--network-main-bg); border-color: var(--network-main-edge); }
+.tag-network.is-test { background: var(--network-test-bg); border-style: dashed; }
+
+/* The wallets list (`views::wallets::list_section`): mainnet wallets
+   under a head of their own, the test networks' folded in a dashed box,
+   and on a phone each row a card (`.table-cards`). */
+.net-section-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin-top: var(--space-xl); padding-bottom: var(--space-xs); border-bottom: 1px solid var(--line); }
+.net-section-head h2 { margin: 0; border: 0; padding: 0; font-size: 1.05rem; }
+.net-section-head .hint { margin: 0; }
+.test-wallets { margin: var(--space-lg) 0; border: 1px dashed var(--line-strong); border-radius: var(--radius-md); background: var(--paper-raised); }
+.test-wallets > summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); padding: var(--space-sm) var(--space-md); cursor: pointer; border-radius: var(--radius-md); }
+.test-wallets > summary:hover { background: var(--btn-hover-bg); }
+.test-wallets[open] > summary { border-bottom: 1px dashed var(--line-strong); border-radius: var(--radius-md) var(--radius-md) 0 0; }
+.test-wallets > div { padding: 0 var(--space-md) var(--space-sm); }
+.wallets-table .wallet-address { display: inline-block; max-width: 17ch; vertical-align: bottom; }
+.wallets-table .card-unit { display: none; }
+.list-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-sm); margin-top: var(--space-lg); }
+.list-foot p, .list-foot .btn { margin: 0; }
+@media (max-width: 640px) {
+  table.table-cards .card-detail { grid-column: 1; grid-row: 2; }
+  .wallets-table .card-unit { display: inline; }
+  .wallets-table .wallet-address { max-width: 100%; }
+}
+/* A wallet's page: its network beside its name. */
+.wallet-title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-md); margin: var(--space-xs) 0 var(--space-sm); border-bottom: 2px solid var(--line); }
+.wallet-title h1 { margin: 0; border: 0; }

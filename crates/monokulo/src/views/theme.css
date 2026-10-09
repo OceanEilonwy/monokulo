@@ -122,6 +122,15 @@
   --tint-warning: color-mix(in srgb, var(--warning) 14%, var(--paper-raised));
   --tint-neutral: color-mix(in srgb, var(--muted) 12%, var(--paper-raised));
   --tint-highlight: color-mix(in srgb, var(--brand-orange) 20%, var(--paper-raised));
+  /* A Monero network's badge (`views::network_badge`): mainnet, real
+     money, in the brand's orange tint with a solid edge; a test network in
+     a neutral tint with a dashed edge (`site.css`). Not the warning amber
+     or the error red: a test network is play money, not a problem. */
+  --network-ink: var(--ink);
+  --network-main-bg: var(--tint-highlight);
+  --network-main-edge: var(--accent-text);
+  --network-test-bg: var(--tint-neutral);
+  --network-test-edge: var(--line-strong);
   /* A clickable row under the pointer (lighter than `--surface-sunken`, so a
      bar drawn on that track stays readable), and the dim behind a dialog. */
   --tint-hover: color-mix(in srgb, var(--brand-orange) 5%, var(--paper-raised));
