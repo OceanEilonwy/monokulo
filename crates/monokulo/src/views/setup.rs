@@ -340,7 +340,7 @@ fn settings_link(id: &str) -> String {
 
 fn summary(data: &DoneViewModel) -> Markup {
     html! {
-        "Payments will go to " a href="/account?tab=wallets" { strong { (data.wallet_name) } } " (" (data.wallet_network) "), priced in "
+        "Payments will go to " a href="/account?tab=wallets" { strong { (data.wallet_name) } } " " (super::network_badge(&data.wallet_network)) ", priced in "
         (data.base_currency) ". " a href=(settings_link(&data.store_id)) { "Change these in the store's settings." }
     }
 }
