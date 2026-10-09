@@ -1,4 +1,4 @@
-const { test, expect } = require('../coverage-test');
+const { test, expect, pauseClockAt } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
 
@@ -568,16 +568,21 @@ test('store priced in AUD: the merchant keys in dollars and cents and sees both 
   await expect(card.locator('.pos-pay-xmr')).toContainText('0.03125');
 });
 
-test('payment countdown keeps ticking down while the customer finds their wallet', async ({ page }) => {
-  await page.clock.install();
+test('payment countdown keeps ticking down while the customer finds their wallet', async ({ page, request }) => {
+  // The fixture order expires an hour after it was made, moments ago.
+  const order = await (await request.get(`${posUrl()}/orders/${fixture.order_id}`, { headers: { cookie: `session=${fixture.session}` } })).json();
+  // The page's time stands still from the start: only the test moves it.
+  const start = new Date();
+  await pauseClockAt(page, start);
   await page.goto(posUrl());
   // In the stage's message.
   const expiry = page.locator('.pos-stage-msg');
-  // The fixture order expires an hour after it was made.
   await expect(expiry).toContainText(/(59m|1h) left/);
   await page.clock.runFor(20 * 60 * 1000);
   await expect(expiry).toContainText(/(39|40)m left/);
-  await page.clock.runFor(39.5 * 60 * 1000);
+  // To half a minute before it expires. The message follows a clock that
+  // ticks every 15s, so it shows between 30 and 45 seconds left.
+  await page.clock.runFor(order.expires_at * 1000 - 30_000 - (await page.evaluate(() => Date.now())));
   await expect(expiry).toContainText('less than a minute left');
 });
 
