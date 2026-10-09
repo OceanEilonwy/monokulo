@@ -210,6 +210,35 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     {
         tracing::error!(error = %e, "could not import existing stores' domains");
     }
+    // Stores' webhooks: the engine's order events read into deliveries,
+    // and the deliveries sent (docs/DESIGN.md §11).
+    let webhooks = Arc::new(monokulo::webhooks::Webhooks::default());
+    {
+        let (db, engine, webhooks) = (db.clone(), engine_client.clone(), webhooks.clone());
+        shared::supervise::supervise("order-event subscriber", move || {
+            monokulo::webhooks::subscriber::run_subscriber(
+                db.clone(),
+                engine.clone(),
+                webhooks.clone(),
+            )
+        });
+    }
+    {
+        let (db, settings, webhooks, key) = (
+            db.clone(),
+            monokulo_settings.clone(),
+            webhooks.clone(),
+            encryption_key.clone(),
+        );
+        shared::supervise::supervise("webhook delivery", move || {
+            monokulo::webhooks::delivery::run_delivery_loop(
+                db.clone(),
+                key.clone(),
+                settings.clone(),
+                webhooks.clone(),
+            )
+        });
+    }
     let app_state = AppState {
         db,
         encryption_key,
@@ -218,6 +247,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         dns,
         settings: monokulo_settings.clone(),
         log_store,
+        webhooks,
         engine: monokulo::http::Engine::new(engine_client),
     };
     let router = build_router(app_state);

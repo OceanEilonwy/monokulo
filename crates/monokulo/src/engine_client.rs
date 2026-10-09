@@ -537,6 +537,18 @@ impl EngineClient {
             .await
     }
 
+    /// `GET /api/v1/admin/order-events?after=` — the engine's order-event
+    /// log from just after `after`: every kept event since, then each new
+    /// one as it happens, as never-ending server-sent events
+    /// (`crate::webhooks::subscriber` reads it).
+    pub async fn open_order_event_log(&self, after: i64) -> Result<EventStream, EngineClientError> {
+        self.target()
+            .stream(Call::get(format!(
+                "/api/v1/admin/order-events?after={after}"
+            )))
+            .await
+    }
+
     async fn send(&self, call: Call<'_>) -> Result<EngineReply, EngineClientError> {
         self.target().send(call).await
     }

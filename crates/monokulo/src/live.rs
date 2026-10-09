@@ -251,7 +251,7 @@ async fn run_upstream(
                         break;
                     }
                 };
-                for (event, data) in parser.push(&chunk) {
+                for SseEvent { event, data, .. } in parser.push(&chunk) {
                     let Some(hub) = hub.upgrade() else { return };
                     match event.as_str() {
                         // Connected: anything before this was missed. Only
@@ -288,17 +288,28 @@ async fn run_upstream(
     }
 }
 
-/// Just enough of the SSE wire format for the engine's own stream: `event:`
-/// and `data:` fields, blank-line terminated, comments ignored.
+/// One server-sent event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SseEvent {
+    pub event: String,
+    /// Its `id:`; empty when it had none.
+    pub id: String,
+    pub data: String,
+}
+
+/// Just enough of the SSE wire format for the engine's own streams:
+/// `event:`, `id:` and `data:` fields, blank-line terminated, comments
+/// ignored.
 #[derive(Default)]
-struct SseParser {
+pub(crate) struct SseParser {
     buffer: Vec<u8>,
     event: String,
+    id: String,
     data: String,
 }
 
 impl SseParser {
-    fn push(&mut self, chunk: &[u8]) -> Vec<(String, String)> {
+    pub(crate) fn push(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
         self.buffer.extend_from_slice(chunk);
         let mut out = Vec::new();
         while let Some(newline) = self.buffer.iter().position(|b| *b == b'\n') {
@@ -312,10 +323,16 @@ impl SseParser {
                     } else {
                         std::mem::take(&mut self.event)
                     };
-                    out.push((event, std::mem::take(&mut self.data)));
+                    out.push(SseEvent {
+                        event,
+                        id: std::mem::take(&mut self.id),
+                        data: std::mem::take(&mut self.data),
+                    });
                 }
             } else if let Some(value) = line.strip_prefix("event:") {
                 self.event = value.trim_start().to_string();
+            } else if let Some(value) = line.strip_prefix("id:") {
+                self.id = value.trim_start().to_string();
             } else if let Some(value) = line.strip_prefix("data:") {
                 if !self.data.is_empty() {
                     self.data.push('\n');
@@ -522,7 +539,7 @@ pub(crate) async fn next_sse_event(
             .await
             .expect("timed out waiting for an SSE event")?;
         if let Ok(bytes) = frame.unwrap().into_data() {
-            parser_buffer.extend(parser.0.push(&bytes));
+            parser_buffer.extend(parser.0.push(&bytes).into_iter().map(|e| (e.event, e.data)));
         }
     }
 }
@@ -539,13 +556,21 @@ mod tests {
     fn parser_handles_split_chunks_comments_and_crlf() {
         let mut parser = SseParser::default();
         assert!(parser.push(b": keep-alive\n\nevent: ord").is_empty());
-        let events =
-            parser.push(b"er\r\ndata: {\"order_id\":\"o1\"}\r\n\r\nevent: ready\ndata: {}\n\n");
+        let events = parser
+            .push(b"er\r\nid: 7\r\ndata: {\"order_id\":\"o1\"}\r\n\r\nevent: ready\ndata: {}\n\n");
         assert_eq!(
             events,
             vec![
-                ("order".to_string(), "{\"order_id\":\"o1\"}".to_string()),
-                ("ready".to_string(), "{}".to_string())
+                SseEvent {
+                    event: "order".to_string(),
+                    id: "7".to_string(),
+                    data: "{\"order_id\":\"o1\"}".to_string()
+                },
+                SseEvent {
+                    event: "ready".to_string(),
+                    id: String::new(),
+                    data: "{}".to_string()
+                }
             ]
         );
     }
