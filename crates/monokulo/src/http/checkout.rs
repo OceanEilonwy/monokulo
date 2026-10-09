@@ -1027,7 +1027,6 @@ mod tests {
 
     async fn create_connection(router: &Router, session_token: &str) -> String {
         let body = serde_json::json!({
-            "platform": "custom",
             "site_url": "https://shop.example.com",
             "view_key_hex": TEST_VIEW_KEY_HEX,
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,

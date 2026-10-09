@@ -765,7 +765,8 @@ async fn expect_ok(response: reqwest::Response, step: &str) -> Result<(), Connec
 /// Creates a real order through monokulo's `POST /pay/{pk}/orders`
 /// (`monokulo/src/http/pay.rs::create_order`) exactly the way the real
 /// WooCommerce plugin does: from the shop's server, authenticated with the
-/// store's secret key (`Authorization: Bearer sk_...`), with monokulo pricing
+/// store's secret key (`Authorization: Bearer sk_...`) and naming itself
+/// (`Monokulo-Client: woocommerce/...`), with monokulo pricing
 /// the amount into XMR. Builds the checkout redirect target
 /// (`{monokulo_base_url}/pay/{public_key}/orders/{order_id}`, matching
 /// monokulo's own route table for `checkout::checkout_page`) from the real
@@ -785,6 +786,8 @@ pub async fn create_order(
     let response = client
         .post(format!("{monokulo_base_url}/pay/{public_key}/orders"))
         .bearer_auth(secret_token)
+        // As the plugin names itself, so the order shows as WooCommerce's.
+        .header("Monokulo-Client", "woocommerce/mock")
         .json(&serde_json::json!({
             "amount": amount,
             "currency": currency,

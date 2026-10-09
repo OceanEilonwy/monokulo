@@ -2,7 +2,8 @@
 //! settings form (`views::store_settings`), saved with its one save bar.
 //!
 //! The form carries every card's fields; only the cards whose values differ
-//! from what's saved are saved, in the page's order: the base currency, the
+//! from what's saved are saved, in the page's order: the store's name and
+//! site, the base currency, the
 //! confirmation thresholds (the default in the engine, the custom ones
 //! here), the exchange rate providers, diagnostics. Every card is checked
 //! before anything is written, so a value one refuses saves nothing; only a
@@ -44,6 +45,9 @@ type NewThreshold = (u64, String);
 /// What a save changes, once every card's values were checked.
 #[derive(Default)]
 struct Plan {
+    /// The store's name, and its site (empty: none).
+    name: Option<String>,
+    site: Option<String>,
     base_currency: Option<String>,
     default_confirmations: Option<u64>,
     /// Thresholds to delete, and one to add (confirmations, amount).
@@ -54,7 +58,9 @@ struct Plan {
 
 impl Plan {
     fn is_empty(&self) -> bool {
-        self.base_currency.is_none()
+        self.name.is_none()
+            && self.site.is_none()
+            && self.base_currency.is_none()
             && self.default_confirmations.is_none()
             && self.thresholds.is_none()
             && self.fx.is_none()
@@ -164,6 +170,37 @@ async fn plan(
         }
     };
     let mut plan = Plan::default();
+
+    // The store's name and site. A site is optional, kept as its host, and
+    // no other store on this instance may have it.
+    const STORE: StoreSection = StoreSection::Store;
+    if let Some(raw) = form.get("store_name") {
+        let name = crate::stores::clean_name(raw).map_err(|m| (STORE, m.to_owned()))?;
+        if name != row.name {
+            plan.name = Some(name);
+        }
+    }
+    if let Some(raw) = form.get("store_site") {
+        let site = if raw.trim().is_empty() {
+            String::new()
+        } else {
+            crate::stores::normalize_site(raw).map_err(|m| (STORE, m.to_owned()))?
+        };
+        if site != row.site {
+            if !site.is_empty() {
+                let (user_id, wanted) = (row.user_id.clone(), site.clone());
+                let taken = state
+                    .db
+                    .read(move |db| super::connections::SiteTaken::of(db, &user_id, &wanted))
+                    .await
+                    .map_err(|_| (STORE, something_went_wrong()))?;
+                if let Some(taken) = taken {
+                    return Err((STORE, taken.message(&site)));
+                }
+            }
+            plan.site = Some(site);
+        }
+    }
 
     // Base currency.
     if let Some(requested) = form.get("base_currency") {
@@ -373,6 +410,39 @@ async fn apply(
     plan: Plan,
     saved: &mut Vec<StoreSection>,
 ) -> Result<(), Refusal> {
+    if plan.name.is_some() || plan.site.is_some() {
+        let name = plan.name.unwrap_or_else(|| row.name.clone());
+        let site = plan.site.unwrap_or_else(|| row.site.clone());
+        let new_site = site != row.site && !site.is_empty();
+        let (store_id, wanted) = (row.id.clone(), site.clone());
+        let written = state
+            .db
+            .write(move |db| {
+                db.set_store_name_and_site(&store_id, &name, &wanted)?;
+                // A new site's domain waits to be verified, as at setup.
+                if new_site {
+                    crate::embed_domains::suggest_site_domain(
+                        db,
+                        &store_id,
+                        &wanted,
+                        crate::now_unix(),
+                    );
+                }
+                Ok::<_, crate::db::DbError>(())
+            })
+            .await;
+        match written {
+            Ok(()) => saved.push(StoreSection::Store),
+            Err(e) if e.is_unique_violation() => {
+                return Err((
+                    StoreSection::Store,
+                    super::connections::SiteTaken::Someone.message(&site),
+                ))
+            }
+            Err(_) => return Err((StoreSection::Store, something_went_wrong())),
+        }
+    }
+
     if let Some(code) = plan.base_currency {
         let (store_id, proof) = (row.id.clone(), policy.proof());
         state

@@ -1071,11 +1071,10 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
     .await;
 
     let html = body_text(cookie_get(&router, "/setup", &cookie).await).await;
-    assert!(html.contains("Where will you take payments?"), "{html}");
+    assert!(html.contains("<h1>Set up a store</h1>"), "{html}");
     assert!(html.contains(r#"<li aria-current="step"><span class="n">1</span>Store</li>"#));
 
     let store_step = [
-        ("kind", "web"),
         ("store_name", "  Bakery "),
         ("store_site", "https://Bakery.example/checkout?x=1"),
     ];
@@ -1088,7 +1087,7 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
     let wallet_step = response.headers()["location"].to_str().unwrap().to_owned();
     assert_eq!(
         wallet_step,
-        "/setup/wallet?kind=web&store_name=Bakery&store_site=bakery.example"
+        "/setup/wallet?store_name=Bakery&store_site=bakery.example"
     );
 
     let html = body_text(cookie_get(&router, &wallet_step, &cookie).await).await;
@@ -1114,7 +1113,7 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
     let keys = body_text(
         cookie_get(
             &router,
-            "/setup/wallet/keys?kind=web&store_name=Bakery&store_site=bakery.example&name=Bakery%20takings&network=mainnet",
+            "/setup/wallet/keys?store_name=Bakery&store_site=bakery.example&name=Bakery%20takings&network=mainnet",
             &cookie,
         )
         .await,
@@ -1127,7 +1126,6 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
     );
 
     let mut fields = vec![
-        ("kind", "web"),
         ("store_name", "Bakery"),
         ("store_site", "bakery.example"),
         ("name", "Bakery takings"),
@@ -1150,7 +1148,6 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
         .unwrap();
     assert_eq!(row.name, "Bakery");
     assert_eq!(row.site, "bakery.example");
-    assert_eq!(row.platform, "custom");
     assert_eq!(row.base_currency, "XMR", "the default base currency");
     let wallet = state
         .db
@@ -1183,8 +1180,8 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
 
     // The same keys again make no second wallet: they're refused on the
     // keys screen, which says which wallet has them.
-    fields[1] = ("store_name", "Second");
-    fields[2] = ("store_site", "second.example");
+    fields[0] = ("store_name", "Second");
+    fields[1] = ("store_site", "second.example");
     let again = router
         .clone()
         .oneshot(cookie_form_request("/setup/wallet/keys", &cookie, &fields))
@@ -1194,10 +1191,133 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
     assert!(body_text(again).await.contains("already added this wallet"));
 }
 
-/// A store that's in person only has a name and no site; Done opens the
-/// till.
+/// A store's Store card names it and gives it a site, or takes it away: a
+/// new site waits to be verified, and one another store has is refused,
+/// saying which.
 #[tokio::test]
-async fn an_in_person_store_has_a_name_and_no_site() {
+async fn a_stores_name_and_site_are_changed_in_its_settings() {
+    let (state, _engine) = test_state_with_real_engine().await;
+    let router = build_router(state.clone());
+    let cookie = signed_up_and_logged_in_session_cookie(
+        &router,
+        "rename@example.com",
+        "correct horse battery staple",
+    )
+    .await;
+    let made = crate::http::test_support::set_up_store_with_keys(
+        &router,
+        &cookie,
+        &[
+            ("store_name", "Bakery"),
+            ("store_site", "bakery.example"),
+            ("view_key_hex", TEST_VIEW_KEY_HEX),
+            ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+        ],
+    )
+    .await;
+    let bakery = crate::http::test_support::store_made(&made);
+    let wallet = state
+        .db
+        .lock()
+        .get_store_connection_by_id(&shared::ids::ConnectionId::new(bakery.clone()))
+        .unwrap()
+        .unwrap()
+        .wallet_id
+        .unwrap();
+    let stall = crate::http::test_support::store_made(
+        &crate::http::test_support::set_up_store_on_wallet(
+            &router,
+            &cookie,
+            "Market stall",
+            "",
+            wallet.as_str(),
+        )
+        .await,
+    );
+    let settings = format!("/dashboard/stores/{stall}/settings");
+    let page = body_text(cookie_get(&router, &settings, &cookie).await).await;
+    assert!(
+        page.contains(r#"id="store-name" name="store_name" value="Market stall""#),
+        "{page}"
+    );
+    assert!(
+        page.contains(r#"id="store-site" name="store_site" value="" inputmode"#),
+        "{page}"
+    );
+    assert!(page.contains("Your website (optional)"), "{page}");
+
+    let taken = router
+        .clone()
+        .oneshot(cookie_form_request(
+            &settings,
+            &cookie,
+            &[
+                ("store_name", "Market stall"),
+                ("store_site", "https://bakery.example/"),
+            ],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(taken.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let html = body_text(taken).await;
+    assert!(
+        html.contains("Your store Bakery already uses bakery.example."),
+        "{html}"
+    );
+
+    let saved = router
+        .clone()
+        .oneshot(cookie_form_request(
+            &settings,
+            &cookie,
+            &[
+                ("store_name", " Market  stall & café "),
+                ("store_site", "https://Stall.example/menu"),
+            ],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+    assert!(saved.headers()["location"]
+        .to_str()
+        .unwrap()
+        .ends_with("?saved=store"));
+    let row = state
+        .db
+        .lock()
+        .get_store_connection_by_id(&shared::ids::ConnectionId::new(stall.clone()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.name, "Market stall & café");
+    assert_eq!(row.site, "stall.example");
+    let domains = state.db.lock().list_store_domains(&row.id).unwrap();
+    assert_eq!(domains[0].domain, "stall.example", "waits to be verified");
+
+    // And back to none.
+    let cleared = router
+        .clone()
+        .oneshot(cookie_form_request(
+            &settings,
+            &cookie,
+            &[("store_site", "")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(cleared.status(), StatusCode::SEE_OTHER);
+    let row = state
+        .db
+        .lock()
+        .get_store_connection_by_id(&shared::ids::ConnectionId::new(stall))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.site, "");
+}
+
+/// A site is optional: a store with none has a name only. Done still lists
+/// the checkout (add a site first), the plugin and the till, the till its
+/// one primary; the dashboard's Site column is empty for it.
+#[tokio::test]
+async fn a_store_with_no_site_has_a_name_only() {
     let (state, _engine) = test_state_with_real_engine().await;
     let router = build_router(state.clone());
     let cookie = signed_up_and_logged_in_session_cookie(
@@ -1210,9 +1330,8 @@ async fn an_in_person_store_has_a_name_and_no_site() {
         &router,
         &cookie,
         &[
-            ("kind", "pos"),
             ("store_name", "Saturday market stall"),
-            ("store_site", "ignored.example"),
+            ("store_site", "  "),
             ("view_key_hex", TEST_VIEW_KEY_HEX),
             ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
         ],
@@ -1226,7 +1345,15 @@ async fn an_in_person_store_has_a_name_and_no_site() {
         .unwrap()
         .unwrap();
     assert_eq!(row.site, "");
-    assert_eq!(row.platform, "pos");
+    assert!(
+        state
+            .db
+            .lock()
+            .list_store_domains(&row.id)
+            .unwrap()
+            .is_empty(),
+        "no domain to verify"
+    );
     let done = body_text(
         cookie_get(
             &router,
@@ -1236,10 +1363,24 @@ async fn an_in_person_store_has_a_name_and_no_site() {
         .await,
     )
     .await;
-    assert!(done.contains("Saturday market stall is ready"), "{done}");
+    assert!(done.contains("Saturday market stall is set up"), "{done}");
     assert!(done.contains(&format!(
-        r#"href="/dashboard/stores/{store_id}/pos">Open the till"#
-    )));
+        r#"<a class="btn btn-primary" href="/dashboard/stores/{store_id}/pos">Open the till</a>"#
+    )), "{done}");
+    assert!(
+        done.contains("add your site in the store's settings first"),
+        "{done}"
+    );
+    assert!(!done.contains("Not taking payments yet"), "{done}");
+    let dashboard = body_text(cookie_get(&router, "/", &cookie).await).await;
+    assert!(
+        dashboard.contains(r#"<td>Saturday market stall</td>"#),
+        "{dashboard}"
+    );
+    assert!(
+        dashboard.contains(r#"<td class="col-optional"></td>"#),
+        "an empty Site: {dashboard}"
+    );
 }
 
 /// The store step says what's wrong and keeps what was typed; a site any
@@ -1260,11 +1401,7 @@ async fn the_store_step_refuses_a_missing_name_a_bad_site_and_a_site_already_use
         .oneshot(cookie_form_request(
             "/setup",
             &cookie,
-            &[
-                ("kind", "web"),
-                ("store_name", ""),
-                ("store_site", "ftp://x"),
-            ],
+            &[("store_name", ""), ("store_site", "ftp://x")],
         ))
         .await
         .unwrap();
@@ -1277,7 +1414,6 @@ async fn the_store_step_refuses_a_missing_name_a_bad_site_and_a_site_already_use
         &router,
         &cookie,
         &[
-            ("kind", "web"),
             ("store_name", "Corner shop"),
             ("store_site", "shop.example"),
             ("view_key_hex", TEST_VIEW_KEY_HEX),
@@ -1288,7 +1424,6 @@ async fn the_store_step_refuses_a_missing_name_a_bad_site_and_a_site_already_use
     let corner = crate::http::test_support::store_made(&made);
 
     let again = [
-        ("kind", "web"),
         ("store_name", "Another"),
         ("store_site", "https://shop.example/other-page"),
     ];
@@ -1344,7 +1479,6 @@ async fn an_invalid_view_key_is_refused_on_the_keys_screen_and_nothing_is_made()
         &router,
         &cookie,
         &[
-            ("kind", "web"),
             ("store_name", "Shop"),
             ("store_site", "shop.example.com"),
             ("view_key_hex", "0707"),
@@ -1391,7 +1525,7 @@ async fn a_store_can_use_a_wallet_already_added_but_only_your_own() {
     let html = body_text(
         cookie_get(
             &router,
-            "/setup/wallet?kind=web&store_name=Shop&store_site=shop.example.com",
+            "/setup/wallet?store_name=Shop&store_site=shop.example.com",
             &cookie,
         )
         .await,
@@ -1818,7 +1952,6 @@ fn state_with_owner_and_store(
             &db,
             &shared::ids::ConnectionId::new("c1"),
             &shared::ids::UserId::new("u_owner"),
-            "woocommerce",
             "shop.example.com",
             tenant_public_key,
             "enc",
@@ -2058,7 +2191,6 @@ async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
             &db,
             &shared::ids::ConnectionId::new("c1"),
             &shared::ids::UserId::new("u_owner"),
-            "woocommerce",
             "https://shop.example.com",
             "pk_shop",
             &encrypted,

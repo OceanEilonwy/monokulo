@@ -17,7 +17,6 @@ use axum::Form;
 use serde::Deserialize;
 
 use crate::db::{ConnectionId, UserRow, WalletId, WalletRow};
-use crate::stores::StoreKind;
 use crate::views;
 use crate::views::setup::{SetupContext, SiteError, StoreStepViewModel};
 use crate::views::wallets::Flow;
@@ -33,8 +32,6 @@ use super::{AppState, AuthedUser};
 /// the merchant here: what every setup screen carries.
 #[derive(Deserialize, Default, Clone, Debug)]
 pub struct StoreDraft {
-    #[serde(default)]
-    pub kind: String,
     #[serde(default)]
     pub store_name: String,
     #[serde(default)]
@@ -83,7 +80,6 @@ impl StoreDraft {
 
 /// A store step whose answers hold: what the store will be.
 pub(super) struct ValidStore {
-    kind: StoreKind,
     name: String,
     site: String,
     plugin: Option<views::setup::PluginReturn>,
@@ -110,7 +106,6 @@ async fn store_page(
         .has_plugin()
         .then(|| crate::stores::normalize_site(&draft.site_url).unwrap_or_default());
     let data = StoreStepViewModel {
-        kind: StoreKind::parse(&draft.kind).unwrap_or(StoreKind::Website),
         name: draft.store_name.clone(),
         site: plugin_host
             .clone()
@@ -124,9 +119,9 @@ async fn store_page(
     views::setup::store_page(&chrome, &data).into_response()
 }
 
-/// Checks the store step's answers: a kind, a name, a site no other store
-/// has (none for a store that's in person only), and a plugin request that
-/// can be answered. `Err` is the page to show instead: the store step with
+/// Checks the store step's answers: a name, a site no other store has (or
+/// none: a site is optional, except from the plugin, whose shop's host it
+/// is), and a plugin request that can be answered. `Err` is the page to show instead: the store step with
 /// what's wrong, or why the plugin can't connect.
 pub(super) async fn check(
     state: &AppState,
@@ -152,21 +147,16 @@ pub(super) async fn check(
     } else {
         None
     };
-    let kind = if plugin.is_some() {
-        StoreKind::WooCommerce
-    } else {
-        StoreKind::parse(&draft.kind).unwrap_or(StoreKind::Website)
-    };
     let name = crate::stores::clean_name(&draft.store_name);
     let site_input = if plugin.is_some() {
         draft.site_url.as_str()
     } else {
         draft.store_site.as_str()
     };
-    let site = if kind.has_site() {
-        crate::stores::normalize_site(site_input).map_err(|why| SiteError::Invalid(why.to_owned()))
-    } else {
+    let site = if site_input.trim().is_empty() && plugin.is_none() {
         Ok(String::new())
+    } else {
+        crate::stores::normalize_site(site_input).map_err(|why| SiteError::Invalid(why.to_owned()))
     };
     let taken = match &site {
         Ok(site) if !site.is_empty() => {
@@ -187,14 +177,9 @@ pub(super) async fn check(
     };
     match (name, site) {
         (Ok(name), Ok(site)) => {
-            let mut fields = vec![
-                ("kind", kind.key().to_owned()),
-                ("store_name", name.clone()),
-                ("store_site", site.clone()),
-            ];
+            let mut fields = vec![("store_name", name.clone()), ("store_site", site.clone())];
             fields.extend(draft.carried());
             Ok(ValidStore {
-                kind,
                 context: SetupContext {
                     store_name: name.clone(),
                     fields,
@@ -305,11 +290,6 @@ async fn make_store(
     skipped_backup: bool,
 ) -> Response {
     let fields = CreateConnectionFields {
-        platform: store
-            .plugin
-            .as_ref()
-            .map(|p| p.platform.clone())
-            .unwrap_or_else(|| store.kind.platform().to_owned()),
         name: store.name.clone(),
         site: store.site.clone(),
         view_key_hex: String::new(),
@@ -549,10 +529,21 @@ pub async fn done(
             nonce: query.nonce.clone(),
         }
     });
+    // A store with a site isn't said to take payments on it until an order
+    // was made; an engine that can't say leaves that unsaid.
+    let has_orders = match super::orders::decrypt_sk(&state.encryption_key, &row) {
+        Ok(sk) => state
+            .engine
+            .client
+            .list_orders(&sk)
+            .await
+            .map_or(true, |orders| !orders.is_empty()),
+        Err(()) => true,
+    };
     let data = views::setup::DoneViewModel {
         store_id: row.id.to_string(),
-        kind: StoreKind::of_platform(&row.platform),
         site: row.site.clone(),
+        has_orders,
         public_key: row.tenant_public_key.clone(),
         base_currency: row.base_currency.clone(),
         wallet_name: wallet.as_ref().map(|w| w.name.clone()).unwrap_or_default(),

@@ -6,8 +6,8 @@ anything.
 
 ## Key steps
 
-1. **Make a store** in Monokulo: *Add a store*, then *My own website*. Give
-   it a name and your site's address (any page on the site works). Note its
+1. **Make a store** in Monokulo: *Add a store*. Give it a name and your
+   website's address (any page on the site works). Note its
    public key (`pk_…`) on the store's page.
 2. **Add the script tag** to your checkout page, from your Monokulo's own
    address:

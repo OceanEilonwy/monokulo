@@ -125,6 +125,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/0034_store_name_and_site.sql"),
     ),
     (35, include_str!("../migrations/0035_wallet_app.sql")),
+    (
+        36,
+        include_str!("../migrations/0036_drop_store_platform.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -594,38 +598,36 @@ fn store_domain_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreDomai
     })
 }
 
-/// A `store_connections` row, from a query selecting `id, user_id,
-/// platform, site, tenant_public_key, tenant_secret_token_encrypted,
-/// created_at_utc, fx_providers, base_currency, fx_provider_settings,
-/// wallet_id, name` in that order.
+/// A `store_connections` row, from a query selecting `id, user_id, site,
+/// tenant_public_key, tenant_secret_token_encrypted, created_at_utc,
+/// fx_providers, base_currency, fx_provider_settings, wallet_id, name` in
+/// that order.
 fn store_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreConnectionRow> {
     Ok(StoreConnectionRow {
         id: row.get(0)?,
         user_id: row.get(1)?,
-        platform: row.get(2)?,
-        site: row.get(3)?,
-        tenant_public_key: row.get(4)?,
-        tenant_secret_token_encrypted: row.get(5)?,
-        created_at: row.get(6)?,
-        fx_providers: parse_fx_providers(&row.get::<_, String>(7)?),
-        base_currency: row.get(8)?,
-        fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(9)?),
-        wallet_id: row.get(10)?,
-        name: row.get(11)?,
+        site: row.get(2)?,
+        tenant_public_key: row.get(3)?,
+        tenant_secret_token_encrypted: row.get(4)?,
+        created_at: row.get(5)?,
+        fx_providers: parse_fx_providers(&row.get::<_, String>(6)?),
+        base_currency: row.get(7)?,
+        fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(8)?),
+        wallet_id: row.get(9)?,
+        name: row.get(10)?,
     })
 }
 
 pub struct StoreConnectionRow {
     pub id: ConnectionId,
     pub user_id: UserId,
-    pub platform: String,
     /// What the merchant calls the store, shown wherever it's named
     /// (migration 0034).
     pub name: String,
     /// The host its checkout runs on (`shop.example`, `shop.example:8443`
     /// for a port other than the scheme's), never a path; empty for a
-    /// store with no site, one that only takes payments in person. No two
-    /// stores on this instance share one (`crate::stores::normalize_site`).
+    /// store with no site (the till only). No two stores on this instance
+    /// share one (`crate::stores::normalize_site`).
     pub site: String,
     pub tenant_public_key: String,
     pub tenant_secret_token_encrypted: String,
@@ -1195,7 +1197,6 @@ impl Db {
         &self,
         id: &ConnectionId,
         user_id: &UserId,
-        platform: &str,
         name: &str,
         site: &str,
         tenant_public_key: &str,
@@ -1210,12 +1211,11 @@ impl Db {
         )?;
         tx.execute(
             "INSERT INTO store_connections
-                (id, user_id, platform, name, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, wallet_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, json_array('coingecko'), ?9, ?10)",
+                (id, user_id, name, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, wallet_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, json_array('coingecko'), ?8, ?9)",
             params![
                 id,
                 user_id,
-                platform,
                 name,
                 site,
                 tenant_public_key,
@@ -1234,6 +1234,16 @@ impl Db {
             params![id, wallet_id, created_at],
         )?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// A store's name, and its site (a host, or empty for none). Another
+    /// store with the site is a unique violation.
+    pub fn set_store_name_and_site(&self, id: &ConnectionId, name: &str, site: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE store_connections SET name = ?2, site = ?3 WHERE id = ?1",
+            params![id, name, site],
+        )?;
         Ok(())
     }
 
@@ -1618,7 +1628,7 @@ impl Db {
     ) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, platform, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
+                "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
                  FROM store_connections WHERE id = ?1",
                 params![id],
                 |row| {
@@ -1661,7 +1671,7 @@ impl Db {
         user_id: &UserId,
     ) -> Result<Vec<StoreConnectionRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, platform, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
+            "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
              FROM store_connections WHERE user_id = ?1 ORDER BY created_at_utc DESC",
         )?;
         let rows = stmt
@@ -1855,7 +1865,7 @@ impl Db {
     ) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, platform, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
+                "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
                  FROM store_connections WHERE tenant_public_key = ?1",
                 params![tenant_public_key],
                 |row| {
@@ -1875,7 +1885,7 @@ impl Db {
         }
         self.conn
             .query_row(
-                "SELECT id, user_id, platform, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
+                "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
                  FROM store_connections WHERE site = ?1",
                 params![site],
                 store_from_row,
@@ -2234,7 +2244,7 @@ impl Db {
     /// into `store_domains` yet (see migration `0020_embed_restriction.sql`).
     pub fn list_store_connections_awaiting_domain_import(&self) -> Result<Vec<StoreConnectionRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, platform, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
+            "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
              FROM store_connections WHERE domains_imported = 0",
         )?;
         let rows = stmt.query_map([], store_from_row)?;
@@ -2681,7 +2691,6 @@ pub(crate) mod test_rows {
         db: &Db,
         id: &ConnectionId,
         user_id: &UserId,
-        platform: &str,
         site: &str,
         tenant_public_key: &str,
         tenant_secret_token_encrypted: &str,
@@ -2704,7 +2713,6 @@ pub(crate) mod test_rows {
         db.create_store_connection_on_wallet(
             id,
             user_id,
-            platform,
             site,
             site,
             tenant_public_key,
@@ -2801,7 +2809,6 @@ mod tests {
                 &db,
                 &shared::ids::ConnectionId::new(id.to_string()),
                 &shared::ids::UserId::new("merchant"),
-                "custom",
                 &format!("{id}.example"),
                 pk,
                 "encrypted",
@@ -3157,7 +3164,6 @@ mod tests {
             &db,
             &shared::ids::ConnectionId::new("conn-1"),
             &shared::ids::UserId::new("user-1"),
-            "woocommerce",
             "https://shop.example.com",
             "pk_abc",
             "sk_abc",
@@ -3171,7 +3177,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.user_id, shared::ids::UserId::new("user-1"));
-        assert_eq!(row.platform, "woocommerce");
         assert_eq!(row.site, "https://shop.example.com");
         assert_eq!(row.tenant_public_key, "pk_abc");
         assert_eq!(row.tenant_secret_token_encrypted, "sk_abc");
@@ -3198,7 +3203,6 @@ mod tests {
             &db,
             &shared::ids::ConnectionId::new("conn-1"),
             &shared::ids::UserId::new("user-1"),
-            "woocommerce",
             "https://shop.example.com",
             "pk_abc",
             "sk_abc",
@@ -3243,7 +3247,6 @@ mod tests {
             &db,
             &shared::ids::ConnectionId::new("conn-1"),
             &shared::ids::UserId::new("user-1"),
-            "woocommerce",
             "https://shop.example.com",
             "pk_abc",
             "sk_abc",
@@ -3329,7 +3332,6 @@ mod tests {
                 &db,
                 &shared::ids::ConnectionId::new(id.to_string()),
                 &shared::ids::UserId::new(user.to_string()),
-                "woocommerce",
                 &format!("https://{id}.example.com"),
                 pk,
                 "sk",
@@ -3527,7 +3529,6 @@ mod tests {
                 &db,
                 &shared::ids::ConnectionId::new(id),
                 &shared::ids::UserId::new(user),
-                "custom",
                 site,
                 &format!("pk_{id}"),
                 "sk",
@@ -3543,7 +3544,7 @@ mod tests {
         assert!(store("conn-3", "user-1", "shop.example")
             .unwrap_err()
             .is_unique_violation());
-        // Stores that take payments only in person have no site, and many can.
+        // Stores with no site: many can have none.
         store("conn-4", "user-1", "").unwrap();
         store("conn-5", "user-2", "").unwrap();
 
@@ -3569,7 +3570,6 @@ mod tests {
             &db,
             &shared::ids::ConnectionId::new("conn-cl"),
             &shared::ids::UserId::new("user-cl"),
-            "woocommerce",
             "https://shop.example.com",
             "pk_cl",
             "sk_cl",
@@ -3610,7 +3610,6 @@ mod tests {
             &db,
             &shared::ids::ConnectionId::new("conn-2"),
             &shared::ids::UserId::new("user-2"),
-            "woocommerce",
             "https://shop.example.com",
             "pk_xyz",
             "sk_xyz",
@@ -3649,7 +3648,6 @@ mod tests {
             db,
             &shared::ids::ConnectionId::new("conn-ct"),
             &shared::ids::UserId::new("user-ct"),
-            "woocommerce",
             "https://shop.example.com",
             "pk_ct",
             "sk_ct",
@@ -3874,7 +3872,6 @@ mod tests {
             &db,
             &shared::ids::ConnectionId::new("conn-2"),
             &shared::ids::UserId::new("user-2"),
-            "custom",
             "https://other.example.com",
             "pk_other",
             "sk_other",
@@ -4306,7 +4303,6 @@ mod tests {
             &db,
             &shared::ids::ConnectionId::new("conn-b"),
             &shared::ids::UserId::new("user-b"),
-            "custom",
             "https://b.example.com",
             "pk_b",
             "sk_b",
@@ -4404,7 +4400,6 @@ mod tests {
             &db,
             &shared::ids::ConnectionId::new("conn-b"),
             &shared::ids::UserId::new("user-b"),
-            "custom",
             "https://b.example.com",
             "pk_b",
             "sk_b",

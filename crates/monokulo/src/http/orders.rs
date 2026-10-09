@@ -155,7 +155,7 @@ pub(super) async fn order_rows(
             OrderRowViewModel {
                 order_id: o.order_id,
                 reference: o.merchant_order_id,
-                source: source_label(detail.source.as_deref(), &row.platform).to_string(),
+                source: source_label(detail.source.as_deref()).to_string(),
                 status,
                 amount,
                 currency,
@@ -165,12 +165,14 @@ pub(super) async fn order_rows(
         .collect()
 }
 
-/// How an order's source reads in the orders table.
-fn source_label(source: Option<&str>, platform: &str) -> &'static str {
+/// How an order's source reads in the orders table. An order made with
+/// the store's secret key is the WooCommerce plugin's when the plugin said
+/// so (`Monokulo-Client: woocommerce/…`), else the Store API's.
+fn source_label(source: Option<&str>) -> &'static str {
     match source {
         Some("pos") => "POS",
         Some("dashboard") => "Dashboard",
-        Some("api") if platform == "woocommerce" => "WooCommerce",
+        Some("woocommerce") => "WooCommerce",
         Some("api") => "Store API",
         Some("website") => "Website",
         _ => "—",
@@ -865,7 +867,6 @@ async fn render_store_detail_page(
         store: Some(views::store_detail::StoreDetailData {
             connection_id: row.id,
             display_name: row.name.clone(),
-            platform: row.platform,
             site: row.site,
             public_key: row.tenant_public_key,
             base_currency: row.base_currency,
@@ -1204,6 +1205,7 @@ pub(super) async fn render_store_settings_page_with(
             clock: chrome.clock.clone(),
             connection_id: row.id,
             display_name: row.name.clone(),
+            site: row.site.clone(),
             confirmations_required,
             fx_provider_options,
             haveno_settings,
@@ -2019,7 +2021,6 @@ mod tests {
 
     fn create_connection_request(bearer: &str) -> Request<Body> {
         let body = serde_json::json!({
-            "platform": "woocommerce",
             "site_url": "https://shop.example.com",
             "view_key_hex": TEST_VIEW_KEY_HEX,
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
@@ -4145,7 +4146,7 @@ mod tests {
         assert!(!get_page(
             &router,
             &session_token,
-            "/setup/wallet/keys?kind=web&store_name=x&store_site=x.example&name=Other"
+            "/setup/wallet/keys?store_name=x&store_site=x.example&name=Other"
         )
         .await
         .contains("key_custody_backend"));
@@ -5807,7 +5808,8 @@ mod tests {
     /// at the engine's own `http/tests.rs` level.
     /// The store's Orders page is the full history: every order with its
     /// reference and where it came from (POS, dashboard, the WooCommerce
-    /// plugin with the store key, a browser on the website), a POS
+    /// plugin with the store key and its `Monokulo-Client` header, any
+    /// other caller with the key, a browser on the website), a POS
     /// cancellation shown as cancelled, a search by reference or order id,
     /// and pages of 50 newest first.
     #[tokio::test]
@@ -5909,8 +5911,29 @@ mod tests {
             &row.tenant_secret_token_encrypted,
         )
         .unwrap();
-        let plugin = created_id(router.clone().oneshot(json_post(format!("/pay/{pk}/orders"), Some(format!("Bearer {secret}")),
-            serde_json::json!({ "amount": "2.00", "currency": "XMR", "merchant_order_id": "wc-1042" }))).await.unwrap()).await;
+        let mut from_plugin = json_post(
+            format!("/pay/{pk}/orders"),
+            Some(format!("Bearer {secret}")),
+            serde_json::json!({ "amount": "2.00", "currency": "XMR", "merchant_order_id": "wc-1042" }),
+        );
+        from_plugin.headers_mut().insert(
+            crate::http::pay::CLIENT_HEADER,
+            "woocommerce/0.4.0".parse().unwrap(),
+        );
+        let plugin = created_id(router.clone().oneshot(from_plugin).await.unwrap()).await;
+        let api = created_id(router.clone().oneshot(json_post(format!("/pay/{pk}/orders"), Some(format!("Bearer {secret}")),
+            serde_json::json!({ "amount": "2.50", "currency": "XMR", "merchant_order_id": "srv-9" }))).await.unwrap()).await;
+        // The header alone, from a browser, names nothing.
+        let mut claimed = json_post(
+            format!("/pay/{pk}/orders"),
+            None,
+            serde_json::json!({ "amount": "2.75", "currency": "XMR", "merchant_order_id": "web-3" }),
+        );
+        claimed.headers_mut().insert(
+            crate::http::pay::CLIENT_HEADER,
+            "woocommerce/0.4.0".parse().unwrap(),
+        );
+        let claimed = created_id(router.clone().oneshot(claimed).await.unwrap()).await;
         let website = created_id(
             router
                 .clone()
@@ -5958,6 +5981,8 @@ mod tests {
             (&cancelled, "POS", "Table 9", "Cancelled"),
             (&dashboard, "Dashboard", "invoice-7", "Waiting for payment"),
             (&plugin, "WooCommerce", "wc-1042", "Waiting for payment"),
+            (&api, "Store API", "srv-9", "Waiting for payment"),
+            (&claimed, "Website", "web-3", "Waiting for payment"),
             (&website, "Website", "—", "Waiting for payment"),
         ] {
             let row = row_of(&html, order_id);
@@ -5996,8 +6021,8 @@ mod tests {
         let html = page("?q=nothing-like-this").await;
         assert!(html.contains("No orders match “nothing-like-this”."));
 
-        // 5 so far; 46 more make 51: the first page has 50 and an Older link.
-        for i in 0..46 {
+        // 7 so far; 44 more make 51: the first page has 50 and an Older link.
+        for i in 0..44 {
             router
                 .clone()
                 .oneshot(json_post(
@@ -6095,7 +6120,7 @@ mod tests {
             Request::builder().method("POST").uri("/connections")
             .header("content-type", "application/json").header("authorization", format!("Bearer {session_token}"))
             .body(Body::from(serde_json::json!({
-                "platform": "custom", "site_url": "https://recovered.example.com", "view_key_hex": view,
+                "site_url": "https://recovered.example.com", "view_key_hex": view,
                 "spend_pubkey_hex": spend, "network": "mainnet", "domains": [], "base_currency": "XMR",
             }).to_string())).unwrap()
         };

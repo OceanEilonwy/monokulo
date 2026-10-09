@@ -104,6 +104,15 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	const CONNECTION_VERSION = '2';
 
 	/**
+	 * How this plugin names itself to Monokulo when it creates an order, in
+	 * a `Monokulo-Client` header: Monokulo records the order as the
+	 * WooCommerce plugin's (`crates/monokulo/src/http/pay.rs`,
+	 * `order_source`). A store has no platform of its own; the order says
+	 * where it came from. Keep the version with the plugin header's.
+	 */
+	const CLIENT = 'woocommerce/0.1.0';
+
+	/**
 	 * The `admin-post.php` action name this gateway registers as `return_url`
 	 * for the connect flow - see `get_connect_return_url()`'s own doc comment
 	 * for why `admin-post.php`, specifically, is the callback mechanism this
@@ -746,7 +755,8 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	/**
 	 * Creates the order on Monokulo: `POST {endpoint}/pay/{pk}/orders`
 	 * (`crates/monokulo/src/http/pay.rs::create_order`) with
-	 * `Authorization: Bearer {secret key}` and a JSON body of
+	 * `Authorization: Bearer {secret key}`, `Monokulo-Client: woocommerce/…`
+	 * (so the order shows as the plugin's) and a JSON body of
 	 * `{amount, currency, merchant_order_id}`. Monokulo prices the amount into
 	 * XMR with its own exchange rate and returns
 	 * `{order_id, address, xmr_amount_piconero, amount, currency,
@@ -797,9 +807,10 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			$request_url,
 			array(
 				'headers' => array(
-					'Content-Type'  => 'application/json',
-					'Authorization' => 'Bearer ' . $this->secret_token,
-					'traceparent'   => self::traceparent(),
+					'Content-Type'     => 'application/json',
+					'Authorization'    => 'Bearer ' . $this->secret_token,
+					'Monokulo-Client'  => self::CLIENT,
+					'traceparent'      => self::traceparent(),
 				),
 				'body'    => wp_json_encode( $body ),
 				// An ordinary HTTP round trip (Monokulo prices the order and

@@ -868,26 +868,6 @@ input[aria-invalid="true"] { border-color: var(--error); }
   .two-fields > .setting-field + .setting-field { margin-top: var(--space-md); }
 }
 
-/* The store step: where payments are taken, as whole-card choices. The
-   radio is visually hidden inside the label, so the cards work without
-   JavaScript and by keyboard; the chosen card takes the edge and the tint. */
-.kind-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: var(--space-md); margin: var(--space-md) 0 var(--space-lg); border: 0; padding: 0; }
-.kind-card { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "icon title" "desc desc"; gap: var(--space-xs) var(--space-md); align-items: start; margin: 0; padding: var(--space-md) var(--space-lg) var(--space-lg); border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--paper-raised); cursor: pointer; font-weight: 400; }
-.kind-card:hover { border-color: var(--ink); }
-.kind-card:has(input:checked) { border-color: var(--ink); background: var(--tint-highlight); }
-.kind-card:has(input:focus-visible) { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.kind-card .kc-title { grid-area: title; align-self: center; font-weight: 700; font-size: 1.02rem; }
-.kind-card .kind-icon { grid-area: icon; }
-.kind-card .kc-desc { grid-area: desc; color: var(--muted); font-size: .92em; }
-.kind-icon { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 2.5rem; height: 2.5rem; border-radius: var(--radius-md); background: var(--surface-sunken); color: var(--ink); }
-.kind-card:has(input:checked) .kind-icon { background: var(--paper-raised); }
-.kind-icon svg { width: 1.6rem; height: 1.6rem; display: block; }
-.kind-icon svg.woo { width: 2rem; }
-.woo-bubble { fill: currentColor; }
-.woo-text { fill: var(--paper-raised); font: 800 10.5px var(--font-ui); letter-spacing: -.03em; }
-/* In person only: no site to ask for. */
-.store-form:has(input[name="kind"][value="pos"]:checked) :is(.site-field, .site-hint) { display: none; }
-
 /* The wallet step's choice: today's pick cards, after "use a wallet you
    already added" and an "or". */
 .wallet-choice [hidden], [data-wallet-setup] [hidden] { display: none !important; }

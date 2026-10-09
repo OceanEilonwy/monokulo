@@ -140,7 +140,11 @@ Two processes, one public:
 **Order creation** goes through monokulo's `POST /pay/{pk}/orders`, from a browser
 page (the embed library) or a shop's server with `Authorization: Bearer sk_...` (the
 WooCommerce plugin). Monokulo records whether the key was used
-(`order_currency_metadata.created_with_key`; dashboard and POS orders count as keyed).
+(`order_currency_metadata.created_with_key`; dashboard and POS orders count as keyed)
+and where the order came from (`order_currency_metadata.source`: `pos`, `dashboard`,
+`website`, or with the key `woocommerce` when the plugin names itself in a
+`Monokulo-Client: woocommerce/<version>` header, else `api`). A store has no platform
+or kind: it is a name and an optional site, and any store takes orders all these ways.
 
 **Verified embed domains.** A store lists the domains its checkout runs on and proves
 each with a DNS TXT record at `_monokulo.<domain>` (3-day grace when it disappears,

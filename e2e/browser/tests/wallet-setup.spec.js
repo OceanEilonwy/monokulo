@@ -50,7 +50,6 @@ async function expectFieldsInLine(page) {
 async function toWalletStep(page, name, site) {
   const { monokulo_url: base } = fixture();
   await page.goto(base + '/setup');
-  await page.locator('label.kind-card', { hasText: 'My own website' }).click();
   await page.locator('input[name="store_name"]').fill(name);
   await page.locator('input[name="store_site"]').fill(site);
   await page.getByRole('button', { name: 'Next', exact: true }).click();
@@ -74,10 +73,13 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
   await expectSaved(page);
 
-  // Store: whole-card kinds, a name apart from the site.
+  // Store: a name, and a website apart from it, optional. No kinds.
   await page.goto(base + '/setup');
   await expect(page.locator('.setup-steps [aria-current="step"]')).toHaveText('1Store');
-  await expect(page.locator('label.kind-card')).toHaveCount(3);
+  await expect(page.getByRole('heading', { name: 'Set up a store' })).toBeVisible();
+  await expect(page.locator('label.kind-card')).toHaveCount(0);
+  await expect(page.locator('label[for="store-site"]')).toHaveText('Your website');
+  await expect(page.locator('.site-field .setting-label-row .hint')).toHaveText('(optional)');
   await captureCoverageStage(page, 'setup-store', test.info(), { group: GROUP });
   await toWalletStep(page, 'Geomart', 'https://geomart.example/shop?page=2');
 
@@ -147,12 +149,16 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   await captureCoverageStage(page, 'setup-check-right', test.info(), { group: GROUP });
   await go.click();
 
-  // Done: never "taking payments" yet; what's left, with the guide first.
+  // Done: never "taking payments" yet; every way to start, the guide the
+  // one orange button.
   await expect(page.getByRole('heading', { name: 'Geomart is set up' })).toBeVisible();
   await expect(page.locator('.setup-steps [aria-current="step"]')).toHaveText('3Done');
   await expect(page.getByText('Not taking payments yet')).toBeVisible();
-  await expect(page.getByRole('link', { name: /Open the guide/ })).toHaveAttribute('href', /oceaneilonwy\.github\.io\/monokulo\/docs\//);
-  await expect(page.getByText('Verify geomart.example')).toBeVisible();
+  await expect(page.locator('.todo strong')).toHaveText(['Add the checkout to your site', 'Install the WooCommerce plugin', 'Open the till (POS)']);
+  const guide = page.getByRole('link', { name: /Open the guide/ });
+  await expect(guide).toHaveAttribute('href', /oceaneilonwy\.github\.io\/monokulo\/docs\//);
+  await expect(page.locator('.btn-primary')).toHaveCount(1);
+  await expect(guide).toHaveClass(/btn-primary/);
   await captureCoverageStage(page, 'setup-done-website', test.info(), { group: GROUP });
 
   // The store is called by its name; its site is the host; the backup is Feather's.
@@ -229,18 +235,16 @@ test('skipping the backup needs the warning read, the box ticked and "skip" type
 test.describe('with JavaScript off', () => {
   test.use({ javaScriptEnabled: false });
 
-  test('an in-person store is set up on a wallet already added; creating one is shown unavailable', async ({ page }) => {
+  test('a store with no site is set up on a wallet already added; creating one is shown unavailable', async ({ page }) => {
     const { monokulo_url: base } = fixture();
     await signInAsAdmin(page);
     await saveNodes(page, { stagenet: [fakeNodeAddress()] });
     await addWallet(page);
 
     await page.goto(base + '/setup');
-    await page.locator('label.kind-card', { hasText: 'In person only' }).click();
-    // Nothing to ask about a site.
-    await expect(page.locator('input[name="store_site"]')).toBeHidden();
+    // The website is optional: left empty.
     await page.locator('input[name="store_name"]').fill('Saturday market stall');
-    await captureCoverageStage(page, 'setup-store-in-person-no-javascript', test.info(), { group: GROUP });
+    await captureCoverageStage(page, 'setup-store-no-site-no-javascript', test.info(), { group: GROUP });
     await page.getByRole('button', { name: 'Next', exact: true }).click();
 
     await expect(page.getByRole('button', { name: 'Create a new wallet' })).toBeDisabled();
@@ -251,9 +255,15 @@ test.describe('with JavaScript off', () => {
     await page.locator('select[name="wallet_id"]').selectOption(await option.getAttribute('value'));
     await page.getByRole('button', { name: 'Use this wallet' }).click();
 
-    await expect(page.getByRole('heading', { name: 'Saturday market stall is ready' })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Open the till' })).toHaveAttribute('href', /\/pos$/);
-    await captureCoverageStage(page, 'setup-done-in-person', test.info(), { group: GROUP });
+    await expect(page.getByRole('heading', { name: 'Saturday market stall is set up' })).toBeVisible();
+    // No site: the till is the one orange button; the checkout needs a site first.
+    const till = page.getByRole('link', { name: 'Open the till' });
+    await expect(till).toHaveAttribute('href', /\/pos$/);
+    await expect(till).toHaveClass(/btn-primary/);
+    await expect(page.locator('.btn-primary')).toHaveCount(1);
+    await expect(page.getByText("add your site in the store's settings first")).toBeVisible();
+    await expect(page.getByText('Not taking payments yet')).toHaveCount(0);
+    await captureCoverageStage(page, 'setup-done-no-site', test.info(), { group: GROUP });
 
     // A site already used is refused in place, the two fields still in line.
     await createStore(page, 'nojs-shop.example');

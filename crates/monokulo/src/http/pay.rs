@@ -67,6 +67,26 @@ pub struct CreateOrderResponse {
     pub expires_at: i64,
 }
 
+/// The header a client names itself in, `name/version`: the WooCommerce
+/// plugin sends `Monokulo-Client: woocommerce/1.2.3`.
+pub const CLIENT_HEADER: &str = "monokulo-client";
+
+/// Where an order made through `POST /pay/{pk}/orders` came from, for its
+/// page and the orders table: `woocommerce` (the plugin, with the store's
+/// key), `api` (anything else with the key) or `website` (a browser).
+fn order_source(created_with_key: bool, headers: &axum::http::HeaderMap) -> &'static str {
+    let client = headers
+        .get(CLIENT_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split('/').next())
+        .map(str::trim);
+    match (created_with_key, client) {
+        (true, Some(name)) if name.eq_ignore_ascii_case("woocommerce") => "woocommerce",
+        (true, _) => "api",
+        (false, _) => "website",
+    }
+}
+
 /// Longest merchant order reference accepted.
 pub const MAX_MERCHANT_ORDER_ID_CHARS: usize = 120;
 
@@ -75,10 +95,13 @@ pub const MAX_MERCHANT_ORDER_ID_CHARS: usize = 120;
 /// (`super::store_key`, checked before this runs), which is recorded on the
 /// order (`created_with_key`) and is how a restricted store takes orders
 /// from outside a browser (`super::embed_domains::embed_policy_middleware`).
+/// A key-made order's source is the WooCommerce plugin's when the request
+/// says so in [`CLIENT_HEADER`], else the Store API's.
 pub async fn create_order(
     State(state): State<AppState>,
     Path(pk): Path<String>,
     key: Option<Extension<super::store_key::StoreKeyAuthenticated>>,
+    headers: axum::http::HeaderMap,
     Json(mut req): Json<CreateOrderRequest>,
 ) -> Response {
     // The merchant's own order reference, from anyone: trimmed, empty is
@@ -219,7 +242,7 @@ pub async fn create_order(
             // payment address. Losing this one local record is a strictly
             // smaller problem than telling a customer their real order
             // failed when it didn't.
-            let source = if created_with_key { "api" } else { "website" };
+            let source = order_source(created_with_key, &headers);
             let (id, order_id, currency, amount, provider) = (
                 row.id.clone(),
                 order.order_id.clone(),
@@ -394,7 +417,6 @@ mod tests {
         static STORES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = STORES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let body = serde_json::json!({
-            "platform": "custom",
             "site_url": format!("https://shop-{n}.example.com"),
             "view_key_hex": TEST_VIEW_KEY_HEX,
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
@@ -1013,7 +1035,6 @@ mod tests {
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::from(
                         serde_json::json!({
-                            "platform": "custom",
                             "site_url": "https://shop.example.com",
                             "view_key_hex": TEST_VIEW_KEY_HEX,
                             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
@@ -1872,7 +1893,6 @@ mod tests {
         base_currency: &str,
     ) -> String {
         let body = serde_json::json!({
-            "platform": "custom",
             "site_url": "https://shop.example.com",
             "view_key_hex": TEST_VIEW_KEY_HEX,
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,

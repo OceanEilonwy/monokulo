@@ -15,10 +15,11 @@ cargo run -p monokulo          # with an engine and a node for the network you u
 ```
 
 1. Sign up at `/dashboard/signup`: you're logged in and sent to `/setup`.
-2. **Store**: where you take payments (your own website, WooCommerce, or in
-   person only), the store's name, and its site (a host: any page on it
-   works; none for in person). A site another store on the instance has is
-   refused.
+2. **Store**: the store's name, and its website, optional (a host: any
+   page on it works). A store has no kind: any store takes payments at the
+   till, and with a site it can also show the checkout on its pages and
+   connect the WooCommerce plugin. A site another store on the instance has
+   is refused. The store's settings change both later (the Store card).
 3. **Wallet**: use a wallet you already added, or name a new one (the name
    is checked first) and **Create a new wallet** (needs JavaScript) or
    **Bring your own wallet** (paste a private view key and public spend key;
@@ -28,8 +29,12 @@ cargo run -p monokulo          # with an engine and a node for the network you u
    **Make a different phrase** makes another. Then pick two of its words,
    each from four, or go on after 20 seconds. Only the watch-only keys are
    sent, and the store is made with it.
-5. **Done** says what's left. A website's store isn't taking payments yet:
-   add the checkout (the docs), verify the domain, take a test payment.
+5. **Done** lists every way to start: add the checkout to your site (the
+   guide; with no site, add one in the store's settings first), install the
+   WooCommerce plugin, open the till. One orange button: Back to WooCommerce
+   when the plugin sent you, else Open the guide when there's a site, else
+   Open the till. A store with a site and no orders yet says it isn't
+   taking payments yet; nothing claims it is.
 6. The Wallets tab of `/account` lists them: mainnet wallets first, by name,
    then the stagenet and testnet ones folded below (open when there's no
    mainnet wallet), each network shown with one badge
@@ -70,11 +75,11 @@ Each: what was decided, what else was possible, and why.
 3. **Signing up logs the new account in** and goes on to store setup, or
    back to `next` (a plugin's connect page), so someone arriving from
    WooCommerce ends up back at their shop.
-4. **WooCommerce finds the store by its site.** A store is a host and no two
-   stores on an instance share one, so the connect link needs no question:
+4. **WooCommerce finds the store by its site.** A store's site is a host
+   and no two stores on an instance share one, so the connect link needs no question:
    a shop whose site one of the merchant's stores has connects to it with
    one button; another account's is refused; otherwise setup makes the
-   store, with the kind and site fixed to the shop's, and its Done page's
+   store, with its site fixed to the shop's, and its Done page's
    button gives the plugin its key. A link that can't work (no public
    address, a return address on another site) says why before anything
    else.
@@ -192,6 +197,20 @@ Each: what was decided, what else was possible, and why.
     setup steps, with contrast checks in both themes.
 29. **Dead code**: the connect forms' network select helper
     (`templates::network_selected_flags`) went with the key fields.
+
+## Stores have no kind
+
+A store is a name and, optionally, a site (a host). There is no platform
+or kind (migration 0036 dropped `store_connections.platform`): any store
+takes payments at the till, shows the checkout on its site and connects the
+WooCommerce plugin, all at once. The dashboard's stores show their Site; a
+wallet's page lists each store by its name, its site under it when it has
+one. Where an order came from is the order's own: the WooCommerce plugin
+names itself when it creates one (`Monokulo-Client: woocommerce/…`), and
+the order is recorded as `woocommerce` ("WooCommerce"); any other order
+made with the store's secret key is `api` ("Store API"). The header
+counts only with the key. The plugin's connect link (`/connect/{platform}`)
+names the plugin, not the store.
 
 ## A wallet's page
 

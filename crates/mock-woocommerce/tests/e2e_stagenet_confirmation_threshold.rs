@@ -295,7 +295,6 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         .post(format!("{monokulo_base_url}/connections"))
         .header("authorization", &bearer)
         .json(&json!({
-            "platform": "custom",
             "site_url": "https://e2e-threshold.example.com",
             "view_key_hex": merchant.private_view_key_hex.clone(),
             "spend_pubkey_hex": merchant.spend_public_key_hex().unwrap(),

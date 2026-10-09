@@ -34,10 +34,9 @@ use super::{ApiError, AppState, AuthedUser};
 
 #[derive(Deserialize)]
 pub struct CreateConnectionRequest {
-    pub platform: String,
     /// The store's site: a host or any URL on it (only its host is kept,
-    /// `crate::stores::normalize_site`). Optional, for a store that takes
-    /// payments only in person.
+    /// `crate::stores::normalize_site`). Optional: a store with no site
+    /// takes payments at the till.
     #[serde(default)]
     pub site_url: String,
     /// What the store is called; its site when absent.
@@ -94,7 +93,6 @@ pub struct CreateConnectionResponse {
 /// HTTP-layer request shapes (JSON vs. form) can evolve independently of the
 /// shared logic's input.
 pub(super) struct CreateConnectionFields {
-    pub platform: String,
     /// Already tidied (`crate::stores::clean_name`).
     pub name: String,
     /// Already a host (`crate::stores::normalize_site`), or empty for a
@@ -306,7 +304,6 @@ pub(super) async fn create_connection_for_user(
             db.create_store_connection_on_wallet(
                 &connection_id,
                 &user_id,
-                &req.platform,
                 &req.name,
                 &req.site,
                 &public_key,
@@ -376,7 +373,6 @@ pub async fn create_connection(
         }
     };
     let fields = CreateConnectionFields {
-        platform: req.platform,
         name,
         site: site.clone(),
         encrypted_keys: req.encrypted_keys,
@@ -447,7 +443,6 @@ mod tests {
             builder = builder.header("authorization", format!("Bearer {token}"));
         }
         let body = serde_json::json!({
-            "platform": "woocommerce",
             "site_url": "https://shop.example.com",
             "view_key_hex": TEST_VIEW_KEY_HEX,
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
@@ -511,7 +506,6 @@ mod tests {
             .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
             .unwrap()
             .unwrap();
-        assert_eq!(row.platform, "woocommerce");
         assert_eq!(row.site, "shop.example.com", "a site is kept as its host");
         assert_eq!(
             row.name, "shop.example.com",
@@ -595,7 +589,6 @@ mod tests {
         .await;
 
         let body = serde_json::json!({
-            "platform": "woocommerce",
             "site_url": "https://shop.example.com",
             "view_key_hex": TEST_VIEW_KEY_HEX,
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
@@ -659,7 +652,6 @@ mod tests {
         .await;
 
         let body = serde_json::json!({
-            "platform": "woocommerce",
             "site_url": "https://shop.example.com",
             "view_key_hex": TEST_VIEW_KEY_HEX,
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,

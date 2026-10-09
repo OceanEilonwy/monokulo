@@ -623,7 +623,6 @@ async fn main() {
     db.create_store_connection_on_wallet(
         &shared::ids::ConnectionId::new("coverage-store"),
         &shared::ids::UserId::new("coverage-merchant"),
-        "custom",
         "shop.localhost",
         "shop.localhost",
         &tenant.public_key,

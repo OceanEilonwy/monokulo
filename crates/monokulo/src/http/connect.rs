@@ -1,7 +1,7 @@
 //! The plugin connect flow (WBS 1.4.1, `docs/WOOCOMMERCE_ROADMAP.md`
 //! Stage 6): "OAuth-style one-click install" for a platform's plugin,
 //! written once for every platform (WooCommerce first). `platform` is a path
-//! parameter recorded as the store's `platform`.
+//! parameter naming the plugin; the store itself has no platform.
 //!
 //! 1. `GET /connect/{platform}?site_url=...&return_url=...&nonce=...` - the
 //!    plugin sends the merchant's browser here.
@@ -171,8 +171,8 @@ fn encode_query_value(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
-/// The platforms the connect flow takes: anything else in the path is not
-/// stored as a store's platform.
+/// The plugins the connect flow takes (the path names the plugin, not the
+/// store): anything else is not found.
 const PLATFORMS: [&str; 2] = ["woocommerce", "custom"];
 
 /// `GET /connect/{platform}` (WBS 1.4.1, steps 1-3). No valid session:
@@ -708,7 +708,6 @@ mod tests {
         .await;
         let html = body_text(get(&router, &location(&start), &cookie).await).await;
         assert!(html.contains("Connect your WooCommerce shop"), "{html}");
-        assert!(html.contains(r#"<input type="hidden" name="kind" value="woocommerce">"#));
         assert!(
             html.contains(r#"name="store_site" value="shop.example.com""#),
             "{html}"
@@ -750,7 +749,6 @@ mod tests {
         assert_eq!(stores.len(), 1);
         assert_eq!(stores[0].name, "Shop");
         assert_eq!(stores[0].site, "shop.example.com");
-        assert_eq!(stores[0].platform, "woocommerce");
 
         // Step 5: the token at /finish - server-to-server, no session.
         let finish_response = finish(&router, serde_json::json!({ "token": token })).await;
@@ -1020,7 +1018,7 @@ mod tests {
         let html = body_text(
             get(
                 router,
-                &format!("/setup/wallet?kind=web&store_name=x&store_site={site}"),
+                &format!("/setup/wallet?store_name=x&store_site={site}"),
                 cookie,
             )
             .await,

@@ -816,17 +816,13 @@ pub async fn rename(
     }
 }
 
-/// A store as a wallet's page lists it: its name, and under it its site,
-/// or "in person" for a store with no site.
+/// A store as a wallet's page lists it: its name, and under it its site
+/// when it has one.
 fn wallet_store(store: &crate::db::StoreConnectionRow, until: Option<String>) -> WalletStore {
     WalletStore {
         id: store.id.to_string(),
         name: store.name.clone(),
-        place: Some(if store.site.is_empty() {
-            "in person".to_owned()
-        } else {
-            store.site.clone()
-        }),
+        site: (!store.site.is_empty()).then(|| store.site.clone()),
         until,
     }
 }

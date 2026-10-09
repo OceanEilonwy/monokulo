@@ -194,7 +194,7 @@ async function reloadUntil(page, url, check) {
  */
 async function finishStoreSetup(page) {
   if (!/\/dashboard\/stores\/[^/]+$/.test(new URL(page.url()).pathname)) {
-    await expect(page.getByRole('heading', { name: /is set up$|is ready$|is connected$/ })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /is set up$|is connected$/ })).toBeVisible();
     await page.getByRole('link', { name: /^Go to .*'s page$/ }).click();
   }
   await expect(page).toHaveURL(/\/dashboard\/stores\/[^/]+$/);
@@ -221,7 +221,7 @@ async function addWallet(page) {
 }
 
 /**
- * Sets up a website's store named and sited `site` on the dev wallet
+ * Sets up a store named and sited `site` on the dev wallet
  * (adding it first) through `/setup`: the store step, then "Use a wallet you
  * already added". Lands on the Done page, or on the store's page when this
  * account's store already has the site; finishStoreSetup goes on from either.

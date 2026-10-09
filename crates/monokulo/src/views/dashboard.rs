@@ -17,7 +17,8 @@ use super::{layout, PageChrome};
 pub struct DashboardStoreRow {
     pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
-    pub platform: String,
+    /// Its site's host; empty for a store with no site.
+    pub site: String,
     pub public_key: String,
     pub health: String,
     pub health_label: String,
@@ -71,7 +72,7 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                 // On a phone only the name, health and link stay (`.col-optional`).
                 div class="table-scroll" { table {
                     thead {
-                        tr { th { "Store" } th { "Wallet" } th class="col-optional" { "Platform" } th class="col-optional" { "Public key" } th { "Status" } th {} }
+                        tr { th { "Store" } th { "Wallet" } th class="col-optional" { "Site" } th class="col-optional" { "Public key" } th { "Status" } th {} }
                     }
                     tbody {
                         @for store in &data.stores {
@@ -84,7 +85,7 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                                         span class="muted" { "Not linked yet" }
                                     }
                                 }
-                                td class="col-optional" { (store.platform) }
+                                td class="col-optional" { (store.site) }
                                 td class="col-optional" { code { (super::short_id(&store.public_key)) } }
                                 td { span class=(format!("tag tag-{}", store.health)) { (store.health_label) } }
                                 td class="nowrap" { a href=(format!("/dashboard/stores/{}", store.connection_id)) { "view →" } }
@@ -171,7 +172,7 @@ mod tests {
             stores: vec![DashboardStoreRow {
                 connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
                 display_name: "shop.example.com".to_string(),
-                platform: "woocommerce".to_string(),
+                site: "shop.example.com".to_string(),
                 public_key: "pk_abc123".to_string(),
                 health: "ok".to_string(),
                 health_label: "healthy".to_string(),
@@ -213,7 +214,7 @@ mod tests {
             stores: vec![DashboardStoreRow {
                 connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
                 display_name: "shop.example.com".to_string(),
-                platform: "woocommerce".to_string(),
+                site: "shop.example.com".to_string(),
                 public_key: public_key.clone(),
                 health: "ok".to_string(),
                 health_label: "healthy".to_string(),

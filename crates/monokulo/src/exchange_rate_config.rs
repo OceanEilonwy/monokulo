@@ -480,7 +480,6 @@ mod tests {
         StoreConnectionRow {
             id: shared::ids::ConnectionId::new("conn-1".to_string()),
             user_id: shared::ids::UserId::new("user-1".to_string()),
-            platform: "custom".to_string(),
             name: "Shop".to_string(),
             site: "shop.example.com".to_string(),
             tenant_public_key: "pk_test".to_string(),
