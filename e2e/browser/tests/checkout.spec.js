@@ -228,28 +228,11 @@ test('client falls back to status polling when its stream is refused', async ({ 
     polled++;
     return route.fulfill({ json: { status: 'paid', confirmations: 1 } });
   });
-  // The page's own record of the library's following: its EventSource's
-  // error event with the stream closed for good, which is when it schedules
-  // the first poll (a listener added in the constructor runs before the
-  // library's, in the same dispatch), and each poll as it's sent
-  // (synchronously, inside the timer that polls).
-  await page.addInitScript(() => {
-    const following = { refused: 0, polled: 0 };
-    window.following = following;
-    const Native = window.EventSource;
-    window.EventSource = class extends Native {
-      constructor(...args) {
-        super(...args);
-        this.addEventListener('error', () => { if (this.readyState === Native.CLOSED) following.refused++; });
-      }
-    };
-    const fetch_ = window.fetch;
-    window.fetch = function (resource, ...rest) {
-      if (String(resource instanceof Request ? resource.url : resource).endsWith('/status')) following.polled++;
-      return fetch_.call(this, resource, ...rest);
-    };
-  });
-  const following = () => page.evaluate(() => window.following);
+  // The library shows nothing of the refusal until it polls, so its
+  // stream's error event, with the stream closed for good, is recorded
+  // (recordEventSources): once the test sees it, the library has handled
+  // it and set its 3s wait.
+  await recordEventSources(page);
   // The page's time stands still from the start: only the test moves it.
   const start = new Date('2026-01-01T00:00:00Z');
   await pauseClockAt(page, start);
@@ -261,15 +244,17 @@ test('client falls back to status polling when its stream is refused', async ({ 
       onStatusChange: status => { document.querySelector('#mount').dataset.status = status; } });
   }, { base_url: fixture.base_url, public_key: fixture.public_key, order_id: url.split('/').pop() });
   await expect(page.locator('#mount iframe')).toHaveAttribute('src', url);
-  await expect.poll(async () => (await following()).refused, 'the library handles the refused stream').toBe(1);
+  await expect.poll(async () => (await eventSources(page)).map(stream => stream.refused), 'the library handles the refused stream').toEqual([1]);
   expect(refused).toBe(1);
-  // The first poll comes 3s after the refusal: not a millisecond before.
+  // The first poll comes 3s after the refusal: not a millisecond before. A
+  // request of the page's own anchors the count: a poll sent while the
+  // clock moved would have reached the route before it.
   await page.clock.runFor(2999);
-  expect((await following()).polled, 'no poll before 3s').toBe(0);
+  await page.evaluate(() => fetch('/__coverage/ready').then(response => response.status));
+  expect(polled, 'no poll before 3s').toBe(0);
   await page.clock.runFor(1);
-  expect((await following()).polled, 'the poll at 3s').toBe(1);
+  await expect.poll(() => polled, 'the poll at 3s').toBe(1);
   await expect(page.locator('#mount')).toHaveAttribute('data-status', 'paid');
-  expect(polled).toBe(1);
 });
 
 test('real restricted checkout permits its own origin and blocks another origin', async ({ page, request }) => {
