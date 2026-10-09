@@ -427,15 +427,34 @@ test('real checkout saves the address the customer ends with when they change it
 
 test('real checkout saves on Enter without leaving the page', async ({ page, request }) => {
   const url = await checkoutUrl(request);
-  await page.goto(url);
-  const input = page.locator('#refund_address');
   // Without script the form posts and the server redirects back; with it,
   // Enter saves in place, so the page (and a live camera or stream) stays.
+  // The page's own record of what Enter did: the form's submit event, as
+  // the page's handler left it (a listener on the window runs last), and
+  // every save request, with whether it was a navigation (the form posting)
+  // or the script's own fetch.
+  await page.addInitScript(() => {
+    window.__submits = [];
+    window.addEventListener('submit', event => window.__submits.push({ form: event.target.id, prevented: event.defaultPrevented }));
+  });
+  const saves = [];
+  await page.route(`${url}/refund-address*`, route => {
+    saves.push({ navigation: route.request().isNavigationRequest() });
+    return route.continue();
+  });
+  await page.goto(url);
+  const input = page.locator('#refund_address');
   await page.evaluate(() => { window.__samePage = true; });
   await input.fill(address);
+  // Enter's implicit submission dispatches the submit event before the key
+  // press is done: by now the page has either prevented it or let it post.
   await input.press('Enter');
+  expect(await page.evaluate(() => window.__submits), 'the page took over the submit').toEqual([{ form: 'refund-form', prevented: true }]);
   await expect(page.locator('#refund-field')).toHaveClass(/is-saved/);
-  await page.waitForTimeout(500);
+  // Typing alone saves too, after a pause, so there may be one save or
+  // two; none of them is the form posting.
+  expect(saves.length, 'saved').toBeGreaterThan(0);
+  expect(saves.filter(save => save.navigation), 'no save by the form posting').toEqual([]);
   expect(await page.evaluate(() => window.__samePage)).toBe(true);
   expect(page.url()).toBe(url);
 });
