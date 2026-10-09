@@ -302,9 +302,22 @@ test('real checkout keeps retrying a refused live stream with backoff and then f
     if (attempts.length <= 2) return route.fulfill({ status: attempts.length === 1 ? 503 : 429, body: '' });
     return route.continue();
   });
+  // The page schedules each retry when it handles the refusal (fixi's
+  // fx:after), not when the route sees the request. Counting those lets the
+  // test wait for the page before moving the fake clock: on a busy runner a
+  // refusal handled after the clock jumped would schedule its retry late.
+  await page.addInitScript(() => {
+    window.__refusals = 0;
+    document.addEventListener('fx:after', event => {
+      const response = event.detail?.cfg?.response;
+      if (response && !response.ok) window.__refusals++;
+    }, true);
+  });
+  const refusals = () => page.evaluate(() => window.__refusals);
   await page.clock.install();
   await page.goto(url);
   await expect.poll(() => attempts.length).toBe(1);
+  await expect.poll(refusals).toBe(1);
   // Each "not yet" check lets a request the fake clock just released reach
   // the route before counting.
   await page.clock.runFor(4000);
@@ -312,6 +325,7 @@ test('real checkout keeps retrying a refused live stream with backoff and then f
   expect(attempts.length, 'waits 5s before the first retry').toBe(1);
   await page.clock.runFor(1500);
   await expect.poll(() => attempts.length).toBe(2);
+  await expect.poll(refusals).toBe(2);
   await page.clock.runFor(9000);
   await page.waitForTimeout(500);
   expect(attempts.length, 'then doubles the wait to 10s').toBe(2);
