@@ -2676,7 +2676,9 @@ mod tests {
         let custody = crate::views::admin::SettingsTab::Custody;
 
         let html = body_text(get(&router, &custody.href(), Some(&cookie)).await).await;
-        let section = html.find(r#"data-custody-backend="snp""#).expect(&html);
+        let section = html
+            .find(r#"data-shown-by="key_custody.enabled_backends=snp""#)
+            .expect(&html);
         assert!(
             html.find(r#"name="key_custody.snp_entry_id_key""#)
                 .expect(&html)
