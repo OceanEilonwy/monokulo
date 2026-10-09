@@ -225,7 +225,7 @@ source for them.
 which are small). Whether to list `/srv/monokulo/` needs measuring on the
 device. sysupgrade stages its backup in RAM, and the router has 1 GB, so a
 large engine database could make the upgrade fail. If it is too big, the
-LuCI app offers "Back up now" (the existing `scripts/backup-database.sh`,
+LuCI app offers "Back up now" (the existing `deploy/backup/monokulo-backup.sh`,
 via SQLite's online backup) to a USB disk or a download.
 
 The 25.12 tools that rebuild the firmware (Attended Sysupgrade, `owut`) build

@@ -6,12 +6,26 @@ edition = "2021"
 publish = false
 
 [dependencies]
+# The coverage report pages: maud escapes every value it renders.
+maud = "0.27.0"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 hex = "0.4"
 getrandom = "0.4"
 p384 = { version = "0.14.0", features = ["ecdsa"] }
 snp-attest = { path = "../crates/snp-attest", default-features = false }
+# pages build: the screenshot gallery's thumbnails, and the JUnit reports.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+roxmltree = "0.21"
+# Reading fuzzer, test and mutation logs.
+regex = "1"
+# test-timings: the database of how long each test took.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+
+[target.'cfg(unix)'.dependencies]
+# Stopping a timed-out mutation run's whole process group.
+libc = "0.2"
 
 [lints]
 workspace = true

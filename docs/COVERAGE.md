@@ -50,7 +50,7 @@ remain if another component fails. An unavailable metric is labeled
 
 If wp-env downloads time out locally, set
 `NODE_OPTIONS='--dns-result-order=ipv4first --network-family-autoselection-attempt-timeout=5000'`
-for its start/stop commands. The coverage script reports a missing tool,
+for its start/stop commands. `cargo xtask coverage` reports a missing tool,
 dependencies, or test container explicitly and exits nonzero.
 
 ## Reading the artifact
@@ -84,8 +84,35 @@ the real-binaries tests file by file, each spec file with processes of its own.
 with the `tests` jobs, then the `coverage` job joins their outputs with
 `cargo xtask coverage report` and uploads the combined artifact
 (`coverage-<sha>`). Each job's summary has a table of passed, failed and
-skipped tests (`scripts/test-summary.py`, from the JUnit reports) with the
+skipped tests (`cargo xtask test-summary`, from the JUnit reports) with the
 failures listed; the `coverage` job's also has the coverage table.
+
+## On GitHub Pages
+
+Main's results don't need downloading:
+<https://oceaneilonwy.github.io/monokulo/quality/> shows every test, the
+coverage of each crate and file (linked to its annotated source), the
+nightly property and fuzz runs, the stress points and the screenshot
+gallery. `.github/workflows/pages.yml` rebuilds it whenever CI, the engine
+property, fuzz or scale workflows, or the OpenWrt package finish on main:
+`cargo xtask pages fetch target/pages` downloads the newest artifact of
+each and `cargo xtask pages build` (`xtask/src/pages/`) renders a page per
+section from them, plus `badge.json` (the README's coverage badge), shipping
+only the report pages the pages link and the files those need. The pages
+are plain HTML that reads without JavaScript; `web/pages/quality/`
+holds their stylesheet and the script that adds the filters and the
+screenshot viewer. Only the ZMQ build of the property and fuzz runs is
+shown (`--feature` on both commands picks the other).
+
+To see a local run the same way, after `cargo xtask coverage all`:
+
+```sh
+cargo xtask pages build --coverage target/coverage --out target/quality
+cargo xtask serve target/quality   # then open http://127.0.0.1:8000
+```
+
+Opening `target/quality/index.html` from disk works too; the server only
+matches how Pages serves the site.
 
 Rust metrics include production source in Cargo workspace crates, with a
 separate `mock-woocommerce` row. Browser metrics include checked-in
@@ -97,7 +124,7 @@ crate are excluded from product denominators. PHP metrics include only
 from PHPUnit's native Xdebug coverage object, not Clover line totals.
 
 The first complete local report and conservative line floors are recorded in
-`docs/coverage-line-baseline.json`. `scripts/validate-coverage.py` checks the
+`docs/coverage-line-baseline.json`. `cargo xtask coverage validate` checks the
 manifest schema, required source areas, branch denominators, report links,
 screenshot paths, and line floors during `coverage all`. When any recorded
 tool version differs from the baseline, it reports the drift and treats the

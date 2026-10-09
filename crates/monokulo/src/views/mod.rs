@@ -265,7 +265,7 @@ fn page_shell(
 }
 
 /// The Monokulo mark, inline: a monocle whose lens is cut like a stone, its
-/// facets laid out as a curve tree (`scripts/logo.py` draws it and explains
+/// facets laid out as a curve tree (`cargo xtask logo` draws it and explains
 /// the design). Its lines are `currentColor`, so it takes the text colour of
 /// whatever it sits on in either theme; the facets are the `--logo-*` roles.
 /// Below 48px the facet lines would blur into the fill, so the small drawing

@@ -105,6 +105,7 @@ footer{max-width:1040px;margin:0 auto;padding:0 var(--space-lg) var(--space-xl);
     <nav aria-label="Sections">
       <a href="#how">How it works</a>
       <a href="#install">Install</a>
+      <a href="quality/">Quality</a>
       <a href="@REPO_URL@">Source code</a>
     </nav>
   </div>
@@ -239,7 +240,7 @@ $rng.Dispose()
       <h3>Finish setup in your browser</h3>
       <p>Leave the terminal running and open <a href="http://127.0.0.1:8081/" target="_blank" rel="noreferrer"><code>http://127.0.0.1:8081</code></a>. The first-run wizard creates your admin account. On the admin page, add a Monero node for the network you’ll accept payments on, then set up a wallet (make a new one in your browser, or bring your own view key) and add a store that takes payments into it. You can use your own reachable node or a remote node over HTTPS.</p>
       <p style="margin-top:var(--space-md)">Monokulo listens on this computer only by default. To serve customers over the internet, configure its listen address in Server settings, put it behind an HTTPS reverse proxy, and set the public URL customers will use. For a Tor onion service, see <a href="@REPO_URL@/blob/main/docs/TOR.md">the Tor guide</a>.</p>
-      <p style="margin-top:var(--space-md)">Press <strong>Ctrl+C</strong> to stop it. For automatic startup, run it under your system’s service manager with the same encryption key. For data paths, options and building from source, see <a href="@REPO_URL@/blob/main/README.md#from-release-binaries-or-source">the README</a>.</p>
+      <p style="margin-top:var(--space-md)">Press <strong>Ctrl+C</strong> to stop it. For automatic startup, run it under your system’s service manager with the same encryption key. For data paths, options and building from source, see <a href="@REPO_URL@/blob/main/docs/RUNNING.md#from-release-binaries-or-source">Running Monokulo</a>.</p>
     </div>
     <div class="card">
       <h3>Where your config and data live</h3>

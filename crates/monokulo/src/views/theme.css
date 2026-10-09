@@ -122,6 +122,10 @@
   --tint-warning: color-mix(in srgb, var(--warning) 14%, var(--paper-raised));
   --tint-neutral: color-mix(in srgb, var(--muted) 12%, var(--paper-raised));
   --tint-highlight: color-mix(in srgb, var(--brand-orange) 20%, var(--paper-raised));
+  /* A clickable row under the pointer (lighter than `--surface-sunken`, so a
+     bar drawn on that track stays readable), and the dim behind a dialog. */
+  --tint-hover: color-mix(in srgb, var(--brand-orange) 5%, var(--paper-raised));
+  --scrim: color-mix(in srgb, var(--ink) 65%, transparent);
   /* A dropdown's list (`<mk-select>`): the one thing that floats over the
      page, so the one shadow, mixed from the text colour for either theme. */
   --popup-shadow: color-mix(in srgb, var(--ink) 18%, transparent);
@@ -198,6 +202,7 @@
     --viz-tier-settlement: #c98500;
     --viz-tier-upkeep: #d55181;
     --chrome-bg: #181818;
+    --scrim: color-mix(in srgb, var(--chrome-bg) 85%, transparent);
   color-scheme: dark;
     color-scheme: dark;
     --state-pending-bg: #3a3017; --state-pending-border: #c99a2e; --state-pending-ink: #f2d487;
@@ -236,6 +241,7 @@
   --viz-tier-settlement: #c98500;
   --viz-tier-upkeep: #d55181;
   --chrome-bg: #181818;
+  --scrim: color-mix(in srgb, var(--chrome-bg) 85%, transparent);
   color-scheme: dark;
   --state-pending-bg: #3a3017; --state-pending-border: #c99a2e; --state-pending-ink: #f2d487;
   --state-unconfirmed-bg: #272842; --state-unconfirmed-border: #8d8fe0; --state-unconfirmed-ink: #c9caff;

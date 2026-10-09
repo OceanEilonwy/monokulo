@@ -2,7 +2,7 @@
 const { defineConfig } = require('@playwright/test');
 const realBinaries = require('./real-binaries.config.js');
 
-// The browser coverage run (scripts/coverage-browser.sh): the deterministic
+// The browser coverage run (cargo xtask coverage browser): the deterministic
 // browser tests against a fixture server and the real-binaries tests
 // (real-binaries.config.js: the real engine and monokulo with a fake
 // monerod) as two projects of one run, sharing its workers, so neither

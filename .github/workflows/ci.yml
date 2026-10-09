@@ -78,6 +78,10 @@ jobs:
         # compiler's own. Every feature, so the e2e targets (built only with
         # `e2e`) are checked too.
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Test xtask
+        # The workspace tests leave xtask out; its own cover the quality
+        # report the Pages workflow builds from main's artifacts.
+        run: cargo test -p xtask --locked
       - name: Clippy, engine without SEV-SNP
         # --all-features above builds the snp backend in; this is the
         # default build, where it is left out.
@@ -102,7 +106,7 @@ jobs:
           cache-dependency-path: crates/monokulo/pos-ui/package-lock.json
       - name: Install POS app dependencies
         run: npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
-      # The latest nightly and collector, as scripts/coverage-rust-tools.sh
+      # The latest nightly and collector, as `cargo xtask coverage rust`
       # installs locally, but prebuilt.
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -122,7 +126,7 @@ jobs:
       - name: Summarize
         if: always()
         run: |
-          python3 scripts/test-summary.py 'Rust coverage tests' \
+          cargo xtask test-summary 'Rust coverage tests' \
             rust=target/coverage/rust/junit.xml >> "$GITHUB_STEP_SUMMARY"
       - name: Upload Rust coverage
         if: always()
@@ -189,7 +193,7 @@ jobs:
       - name: Summarize
         if: always()
         run: |
-          python3 scripts/test-summary.py 'Browser coverage tests' \
+          cargo xtask test-summary 'Browser coverage tests' \
             browser=target/coverage/browser/junit.xml >> "$GITHUB_STEP_SUMMARY"
       - name: Upload browser coverage
         if: always()
@@ -239,7 +243,7 @@ jobs:
       - name: Summarize
         if: always()
         run: |
-          python3 scripts/test-summary.py 'WooCommerce coverage tests' \
+          cargo xtask test-summary 'WooCommerce coverage tests' \
             woocommerce=target/coverage/woocommerce/junit.xml >> "$GITHUB_STEP_SUMMARY"
       - name: Upload WooCommerce coverage
         if: always()
@@ -306,8 +310,8 @@ jobs:
       - name: Summarize
         if: always()
         run: |
-          python3 scripts/coverage-job-summary.py >> "$GITHUB_STEP_SUMMARY"
-          python3 scripts/test-summary.py 'Coverage tests' \
+          cargo xtask coverage summary >> "$GITHUB_STEP_SUMMARY"
+          cargo xtask test-summary 'Coverage tests' \
             rust=target/coverage/rust/junit.xml \
             browser=target/coverage/browser/junit.xml \
             woocommerce=target/coverage/woocommerce/junit.xml >> "$GITHUB_STEP_SUMMARY"
@@ -396,8 +400,11 @@ jobs:
           name="monokulo-${version}-${{ matrix.target }}"
           bin=monokulo
           if test "$RUNNER_OS" = Windows; then bin=monokulo.exe; fi
-          mkdir -p "dist/$name"
+          # The docs keep their folder, so the README's and their own links
+          # to each other resolve inside the zip.
+          mkdir -p "dist/$name/docs"
           cp "target/${{ matrix.target }}/release/$bin" README.md "dist/$name/"
+          cp docs/RUNNING.md docs/CONFIGURATION.md "dist/$name/docs/"
           cd dist
           # zip keeps the executable bit, for unzip and macOS's Archive Utility.
           if test "$RUNNER_OS" = Windows; then 7z a "$name.zip" "$name" > /dev/null; else zip -qr "$name.zip" "$name"; fi

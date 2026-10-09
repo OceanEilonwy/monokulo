@@ -73,13 +73,8 @@ jobs:
       - name: Summarize
         if: always()
         shell: bash
-        env:
-          # The table's marks aren't in Windows' default code page.
-          PYTHONUTF8: '1'
         run: |
-          # Windows runners name their Python `python`.
-          python=python3; if test "$RUNNER_OS" = Windows; then python=python; fi
-          "$python" scripts/test-summary.py 'Tests (${{ matrix.os }})' \
+          cargo xtask test-summary 'Tests (${{ matrix.os }})' \
             rust=target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY"
           echo "Doctests: ${{ steps.doctest.outcome }}" >> "$GITHUB_STEP_SUMMARY"
           echo "Engine without ZMQ: ${{ steps.nextest_no_zmq.outcome }}" >> "$GITHUB_STEP_SUMMARY"

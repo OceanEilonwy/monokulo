@@ -75,16 +75,34 @@ fn stylesheets() -> Vec<(String, String)> {
             ));
         }
     }
+    // The GitHub Pages site (web/) loads theme.css too: the landing page's
+    // style block and the quality report's stylesheet.
+    let web = crate_dir().join("../../web");
+    let text = read(&web.join("index.html"));
+    for (i, block) in text.split("<style>").skip(1).enumerate() {
+        let end = block.find("</style>").expect("an unterminated <style>");
+        sheets.push((
+            format!("web/index.html (style block {})", i + 1),
+            block[..end].to_string(),
+        ));
+    }
+    sheets.push((
+        "web/pages/quality/quality.css".to_string(),
+        read(&web.join("pages/quality/quality.css")),
+    ));
     sheets
 }
 
-/// Markup that can carry colours of its own: the views and the POS app.
+/// Markup that can carry colours of its own: the views, the POS app and the
+/// quality report's pages (rendered by xtask) and script.
 fn markup_sources() -> Vec<(String, String)> {
     let mut sources = Vec::new();
     for (dir, ext) in [
         ("src/views", "rs"),
         ("pos-ui/src", "tsx"),
         ("pos-ui/src", "ts"),
+        ("../../xtask/src/pages/render", "rs"),
+        ("../../web/pages/quality", "js"),
     ] {
         for path in files_with_extension(&crate_dir().join(dir), ext) {
             sources.push((

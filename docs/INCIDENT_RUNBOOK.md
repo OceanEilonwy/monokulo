@@ -68,8 +68,8 @@ finding, since not every read the attacker got is equally bad.
      credential exists for it per §10.1).
 3. **Do not restart the compromised process against the same box.** Bring the
    service back up on a *clean* box, restored from the most recent verified
-   backup (`scripts/restore-database.sh` — see WBS 2.3.1 and its own written
-   procedure in that script's header) — never by patching and reusing the
+   backup (`deploy/backup/monokulo-restore.sh` — see the procedure in that
+   script's header) — never by patching and reusing the
    compromised one. A box that was compromised once is not trusted to be
    clean just because the immediate foothold was closed.
 4. **Preserve evidence before any cleanup**: process list, open file
@@ -101,7 +101,7 @@ misses affected ones:
    logs and this box's own `journalctl` history for the service — this bounds
    which webhook deliveries, connect-flow tokens, and order data were
    plausibly exposed, not just theoretically reachable.
-4. **Was the backup chain itself touched?** If `scripts/backup-database.sh`'s
+4. **Was the backup chain itself touched?** If `deploy/backup/monokulo-backup.sh`'s
    destination directory was reachable from the compromised box (a local
    `--retain-days`-pruned directory on the same disk, rather than shipped
    off-box), backups made during the exposure window carry the same

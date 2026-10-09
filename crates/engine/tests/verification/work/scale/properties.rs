@@ -268,7 +268,7 @@ proptest! {
 }
 
 #[test]
-#[ignore = "large deterministic scale package; scripts/engine-scale.sh runs it"]
+#[ignore = "large deterministic scale package; `cargo xtask engine scale` runs it"]
 fn thousands_of_tenants_recover_across_group_and_page_boundaries() {
     for count in [257, 513, 1025, 2049] {
         runtime().block_on(many_tenants(count, 16, 8));

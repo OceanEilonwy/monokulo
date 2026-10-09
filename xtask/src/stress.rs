@@ -7,7 +7,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{escape_html, root};
+use crate::support::{escape_html, root, write_json};
+
+pub(crate) const HELP: &str = "\
+        stress ci     One-CPU scanner capacity sweep and fault recovery (docs/engine_stress.md)\n\
+        stress full   The same with larger tenant counts\n\
+        stress scale  Thousands of tenants; observational latency and capacity\n\
+        stress open   Open target/coverage/stress/index.html\n\
+        [driver]      The scanner entry point to measure (default: the production one)";
 
 /// The engine the report measures when no driver is named.
 pub const DEFAULT_DRIVER: &str = "scheduler";
@@ -110,12 +117,6 @@ pub(crate) fn profile(database_dir: &Path) -> Value {
         "storage":storage,"rustc":command("rustc", &["--version"]),
         "revision":revision,"source_dirty":dirty
     })
-}
-
-pub(crate) fn atomic_json(path: &Path, value: &Value) -> io::Result<()> {
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(value)?)?;
-    fs::rename(temporary, path)
 }
 
 fn svg(points: &[Value], field: &str, title: &str) -> String {
@@ -306,7 +307,7 @@ fn report(
                 (r, w) => format!("{}/{} µs", show(r), show(w)),
             }
         };
-        page.push_str(&format!("<tr><td>{n}</td><td class=\"{}\">{}</td><td>{} ms</td><td>{p50}/{p95}/{p99} ms</td><td>{} µs</td><td>{}/{}</td><td>{}</td><td>{}/{} µs</td><td>{}</td><td>{}</td><td>{} µs</td><td>{pending_pages}</td><td>{}</td><td><a href=\"point-{n}.json\">JSON</a> · <a href=\"point-{n}.log\">log</a></td></tr>", if status == "sustainable" {"good"} else {"bad"}, escape_html(status), result["measured_duration_ms"].as_u64().unwrap_or(0), result["timer_max_delay_us"].as_u64().unwrap_or(0), result["fixture"]["background_reads_completed"].as_u64().unwrap_or(0), result["fixture"]["background_writes_completed"].as_u64().unwrap_or(0), result["fixture"]["background_http_reads_completed"].as_u64().unwrap_or(0), result["fixture"]["read_max_latency_us"].as_u64().unwrap_or(0), result["fixture"]["write_max_latency_us"].as_u64().unwrap_or(0), pair("db_read_queue_wait_max_us", "db_write_queue_wait_max_us"), pair("db_read_query_max_us", "db_write_query_max_us"), result["fixture"]["http_max_latency_us"].as_u64().unwrap_or(0), result["final_lagging_tenants"].as_u64().unwrap_or(0)));
+        page.push_str(&format!("<tr><td>{n}</td><td class=\"{}\">{}</td><td>{} ms</td><td>{p50}/{p95}/{p99} ms</td><td>{} µs</td><td>{}/{}</td><td>{}</td><td>{}/{} µs</td><td>{}</td><td>{}</td><td>{} µs</td><td>{pending_pages}</td><td>{}</td><td><a href=\"point-{n}.json\">JSON</a>{}</td></tr>", if status == "sustainable" {"good"} else {"bad"}, escape_html(status), result["measured_duration_ms"].as_u64().unwrap_or(0), result["timer_max_delay_us"].as_u64().unwrap_or(0), result["fixture"]["background_reads_completed"].as_u64().unwrap_or(0), result["fixture"]["background_writes_completed"].as_u64().unwrap_or(0), result["fixture"]["background_http_reads_completed"].as_u64().unwrap_or(0), result["fixture"]["read_max_latency_us"].as_u64().unwrap_or(0), result["fixture"]["write_max_latency_us"].as_u64().unwrap_or(0), pair("db_read_queue_wait_max_us", "db_write_queue_wait_max_us"), pair("db_read_query_max_us", "db_write_query_max_us"), result["fixture"]["http_max_latency_us"].as_u64().unwrap_or(0), result["final_lagging_tenants"].as_u64().unwrap_or(0), log_link(output, &format!("point-{n}"))));
     }
     page.push_str("</tbody></table><h2>Progress timelines</h2><p><span style=\"color:#2358a4\">Blue: network high-water</span>; <span style=\"color:#c3781c\">orange: slowest tenant cursor</span>. The gap is work still to catch up.</p>");
     for result in results {
@@ -321,13 +322,23 @@ fn report(
         let name = fault["name"].as_str().unwrap_or("unknown");
         let status = fault["status"].as_str().unwrap_or("incomplete");
         let file = fault["file"].as_str().unwrap_or("fault-rpc");
-        page.push_str(&format!("<tr><td>{}</td><td class=\"{}\">{}</td><td>{}</td><td>{}</td><td><a href=\"{}.json\">JSON</a> · <a href=\"{}.log\">log</a></td></tr>",
+        page.push_str(&format!("<tr><td>{}</td><td class=\"{}\">{}</td><td>{}</td><td>{}</td><td><a href=\"{}.json\">JSON</a>{}</td></tr>",
             escape_html(name), if status == "recovered" {"good"} else {"bad"},
             escape_html(status), escape_html(fault["detail"].as_str().unwrap_or("")),
-            fault["min_tenant_cursor"].as_u64().unwrap_or(0), escape_html(file), escape_html(file)));
+            fault["min_tenant_cursor"].as_u64().unwrap_or(0), escape_html(file), log_link(output, file)));
     }
     page.push_str("</table><p>The custody fault uses one scan slot with a scripted 5 ms service delay while retaining real plain-custody matching. Actual slow disk commands and process-kill recovery are not measured by this fixture. The RPC fault point uses deterministic transient failures and a drain period; the capacity sweep has no RPC delay.</p><p><a href=\"run.json\">Run metadata</a> · <a href=\"hardware.json\">Hardware JSON</a></p></html>");
     fs::write(output.join("index.html"), page)
+}
+
+/// ` · log`, linking a fixture's log when it wrote one.
+fn log_link(output: &Path, name: &str) -> String {
+    let file = format!("{name}.log");
+    if output.join(&file).is_file() {
+        format!(" · <a href=\"{}\">log</a>", escape_html(&file))
+    } else {
+        String::new()
+    }
 }
 
 /// Where cargo builds: `CARGO_TARGET_DIR` when set.
@@ -371,11 +382,13 @@ fn run_fixture(
         .current_dir(root())
         .stdin(Stdio::null())
         .output()?;
-    let log = String::from_utf8_lossy(&run.stderr);
-    fs::write(
-        output.join(format!("{name}.log")),
-        &log.as_bytes()[..log.len().min(65_536)],
-    )?;
+    // A fixture that said nothing leaves no log, so the report links none.
+    if !run.stderr.is_empty() {
+        fs::write(
+            output.join(format!("{name}.log")),
+            &run.stderr[..run.stderr.len().min(65_536)],
+        )?;
+    }
     let fixture: Value = serde_json::from_slice(&run.stdout).unwrap_or(Value::Null);
     let command = format!(
         "taskset -c {} stress_fixture {}",
@@ -476,7 +489,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
         &root().join("target/debug/stress_fixture").to_string_lossy(),
         &["--version"]
     ));
-    atomic_json(&output.join("hardware.json"), &hardware)?;
+    write_json(&output.join("hardware.json"), &hardware)?;
     let cpu = hardware["selected_cpu"].as_u64();
     if cfg!(target_os = "linux") && cpu.is_none() {
         return Err(io::Error::other("unable to find allowed CPU affinity"));
@@ -495,7 +508,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
         .unwrap_or_default()
         .as_secs();
     let write_run = |results: &[Value], faults: &[Value]| {
-        atomic_json(
+        write_json(
             &output.join("run.json"),
             &json!({"profile":profile_name,"driver":driver,"started_at_utc":started_at,
                 "scenario":scenario,"scenario_checksum":checksum,"hardware":"hardware.json","results":results,"faults":faults}),
@@ -596,7 +609,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
             "timer_max_delay_us":fixture["timer_max_delay_us"],"responsive":responsive,"final_lagging_tenants":final_lagging,
             "final_oldest_lag_blocks":oldest_lag,"min_tenant_cursor":min_cursor,
             "progressed_tenants":progressed_tenants,"fixture":fixture});
-        atomic_json(&output.join(format!("{name}.json")), &result)?;
+        write_json(&output.join(format!("{name}.json")), &result)?;
         results.push(result);
         write_run(&results, &faults)?;
         report(&output, driver, &hardware, &results, &faults)?;
@@ -726,7 +739,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
             "tenants":fault_tenants,"min_tenant_cursor":min_cursor,
             "scenario_version":scenario["schema_version"],"scenario_checksum":checksum,
             "command":command,"fixture":fixture});
-        atomic_json(&output.join(format!("{file}.json")), &fault)?;
+        write_json(&output.join(format!("{file}.json")), &fault)?;
         faults.push(fault);
         write_run(&results, &faults)?;
         report(&output, driver, &hardware, &results, &faults)?;

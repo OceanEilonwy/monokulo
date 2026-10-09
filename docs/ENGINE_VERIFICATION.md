@@ -99,21 +99,21 @@ PROPTEST_CASES=128 ENGINE_PROOF_CASES=16 PROPTEST_RNG_SEED=431 \
   cargo nextest run -p engine -p key-custody --lib --locked --profile ci
 
 # Expensive scale fixtures include explicitly ignored tests.
-scripts/engine-scale.sh default
-scripts/engine-scale.sh zmq
+cargo xtask engine scale default
+cargo xtask engine scale zmq
 
 # Every selected mutation and its healthy baseline, both configurations.
-python3 scripts/test_engine_mutations.py
-python3 scripts/engine-mutations.py --features both --cases 32 --seed 241
+cargo test -p xtask mutations
+cargo xtask engine mutations --features both --cases 32 --seed 241
 
 # Exhaustive serialized policy event orders, both configurations.
 cargo test --manifest-path fuzz/Cargo.toml --locked --test interleavings
 cargo test --manifest-path fuzz/Cargo.toml --locked --features zmq --test interleavings
 
 # Calibrated, instrumented campaign; omit seconds to use the target default.
-RUSTUP_TOOLCHAIN=nightly-2026-10-02 ENGINE_FUZZ_SEED=432 scripts/engine-fuzz.sh portfolio
-RUSTUP_TOOLCHAIN=nightly-2026-10-02 ENGINE_FUZZ_SEED=433 scripts/engine-fuzz.sh portfolio 900 zmq
-python3 scripts/test_engine_exploration_report.py
+RUSTUP_TOOLCHAIN=nightly-2026-10-02 ENGINE_FUZZ_SEED=432 cargo xtask engine fuzz portfolio
+RUSTUP_TOOLCHAIN=nightly-2026-10-02 ENGINE_FUZZ_SEED=433 cargo xtask engine fuzz portfolio 900 zmq
+cargo test -p xtask exploration
 ```
 
 Exploration CI pins `nightly-2026-10-02` and cargo-fuzz `0.13.2`; ordinary repository

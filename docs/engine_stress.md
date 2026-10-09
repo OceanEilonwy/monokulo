@@ -160,4 +160,4 @@ that never fires/recovers still fail. Linux RSS and peak RSS are recorded per ti
 and shown in the capacity report; they include fixture/allocator/database costs
 and are not a cache-byte limit. Scheduled/manual `engine-scale.yml` preserves the
 report. The independent scale correctness suite and exact-money expectations are
-documented in `docs/TESTING.md` and run by `scripts/engine-scale.sh` in both builds.
+documented in `docs/TESTING.md` and run by `cargo xtask engine scale` in both builds.

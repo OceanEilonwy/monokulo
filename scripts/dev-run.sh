@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Start/stop the local Monokulo dev stack: the engine
-# (scanner) and monokulo, running together the same way
-# they do in production - two separate processes, monokulo
-# talking to the engine over its own admin API.
+# Start/stop the local Monokulo dev stack against stagenet: the engine and
+# monokulo as two separate processes, monokulo talking to the engine over
+# its admin API. That is production's hardened setup (the engine on its own,
+# docs/RUNNING.md); the default install runs the engine inside monokulo
+# instead. Two processes here so each can be restarted and debugged alone.
 #
 # USAGE:
 #   scripts/dev-run.sh start [--no-build]

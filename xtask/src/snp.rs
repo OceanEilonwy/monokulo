@@ -12,6 +12,12 @@ use std::{fs, path::Path};
 use p384::ecdsa::SigningKey;
 use snp_attest::id_block::{self, IdBlock};
 
+pub(crate) const HELP: &str = "\
+        snp-id-key    Make the engine image ID key: prints it (for the SNP_ID_KEY secret) and writes its\n\
+                      digest to crates/key-custody; --from-env writes the digest of SNP_ID_KEY's key\n\
+        snp-id-block --measurement HEX --guest-svn N --out DIR [--family-id HEX] [--image-id HEX] [--policy HEX]\n\
+                      Sign an engine image's ID block with SNP_ID_KEY (deploy/sev-snp/README.md)";
+
 /// Where the official digest is built from.
 const DIGEST_FILE: &str = "crates/key-custody/src/official_id_key_digest.txt";
 

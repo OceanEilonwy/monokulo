@@ -2,7 +2,7 @@
 # process of its own (plain `cargo test` finishes one binary before starting
 # the next). The `ci` profile is what CI and `cargo xtask coverage rust` use:
 # it runs everything rather than stopping at the first failure, and writes a
-# JUnit report that scripts/test-summary.py turns into the job summary.
+# JUnit report that `cargo xtask test-summary` turns into the job summary.
 [profile.ci]
 slow-timeout = { period = "120s", terminate-after = 10 }
 fail-fast = false

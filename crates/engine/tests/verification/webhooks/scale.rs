@@ -123,7 +123,7 @@ proptest! {
     }
 }
 #[test]
-#[ignore = "large deterministic scale package; scripts/engine-scale.sh runs it"]
+#[ignore = "large deterministic scale package; `cargo xtask engine scale` runs it"]
 fn thirteen_thousand_webhooks_recover_without_starving_healthy_merchants() {
     runtime().block_on(backlog(1025, 128, 4, 3));
 }

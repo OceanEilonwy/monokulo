@@ -16,8 +16,11 @@ use std::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::stress::{atomic_json, fresh_db, profile, target_dir};
-use crate::{escape_html, root};
+use crate::stress::{fresh_db, profile, target_dir};
+use crate::support::{escape_html, root, write_json};
+
+pub(crate) const HELP: &str =
+    "        stress rounds Round length sweep: throughput, refetches and waits (docs/engine_stress.md)";
 
 /// The columns of each scenario's table: field, heading, decimals.
 const COLUMNS: [(&str, &str, usize); 9] = [
@@ -65,7 +68,7 @@ pub fn run() -> io::Result<bool> {
     }
     let binary = target_dir().join("release/round_sweep");
     let hardware = profile(&output);
-    atomic_json(&output.join("hardware.json"), &hardware)?;
+    write_json(&output.join("hardware.json"), &hardware)?;
     let cpu = hardware["selected_cpu"].as_u64().unwrap_or(0);
     let started_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -129,7 +132,7 @@ pub fn run() -> io::Result<bool> {
                 let _ = fs::remove_file(format!("{}{suffix}", db.display()));
             }
             results.push(json!({"scenario": name, "label": label, "ok": success, "point": point}));
-            atomic_json(
+            write_json(
                 &output.join("run.json"),
                 &json!({"started_at_utc": started_at, "scenario": scenario,
                     "scenario_checksum": checksum, "hardware": hardware, "results": results}),

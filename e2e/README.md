@@ -154,7 +154,7 @@ embedded widget, start the server and demo shop separately:
 # prints a pk_... on first boot - note it
 
 # in another terminal:
-cd demo-shop && python3 -m http.server 8190
+cargo xtask serve demo-shop 8190
 # then open http://127.0.0.1:8190/?endpoint=http://127.0.0.1:8180&pk=pk_...
 # and click "Buy with Monero" - paying that order needs a separate real transfer,
 # e.g. by calling crates/cli-wallet::send_payment directly
