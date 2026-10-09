@@ -95,7 +95,7 @@ async fn build_orders_view_model(
     orders.truncate(ORDERS_PER_PAGE as usize);
     Ok(OrdersViewModel {
         connection_id: row.id.clone(),
-        display_name: display_name_for(&row.site_url),
+        display_name: row.name.clone(),
         orders: order_rows(state, row, orders).await,
         search: search.trim().to_string(),
         page,
@@ -342,7 +342,7 @@ pub async fn order_detail(
         Ok(Some(order)) => {
             let view_model = OrderDetailViewModel {
                 connection_id: id.clone(),
-                display_name: display_name_for(&row.site_url),
+                display_name: row.name.clone(),
                 order: Some(order),
             };
             views::orders::detail_page(&chrome, &view_model).into_response()
@@ -350,7 +350,7 @@ pub async fn order_detail(
         Ok(None) => {
             let view_model = OrderDetailViewModel {
                 connection_id: id.clone(),
-                display_name: display_name_for(&row.site_url),
+                display_name: row.name.clone(),
                 order: None,
             };
             (
@@ -790,20 +790,6 @@ pub async fn webhooks_delete(
     }
 }
 
-/// Derives a human-readable store name from `site_url`, since
-/// `store_connections` has no dedicated display-name column (a real,
-/// deliberate scope decision - see `Db::list_store_connections_for_user`'s
-/// doc comment: adding a migration for a column nothing else needs wasn't
-/// worth it when the URL's own host is already a perfectly good name).
-/// Falls back to the raw `site_url` string if it doesn't parse as a URL at
-/// all, so this never panics or produces an empty name.
-pub(super) fn display_name_for(site_url: &str) -> String {
-    url::Url::parse(site_url)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_string))
-        .unwrap_or_else(|| site_url.to_string())
-}
-
 /// The only store-health signal available without this service also probing
 /// the merchant's own `site_url` (nothing here does that): whether the
 /// engine actually answers `GET /api/v1/admin/tenant` for this connection's
@@ -821,9 +807,7 @@ pub(super) fn health_of_tenant_lookup<T>(
 }
 
 /// `GET /dashboard/stores/{id}` - the store overview page: identity,
-/// health, recent orders, and the same integration-help content
-/// (`_integration_help.html.hbs`) shown right after a successful connect, so
-/// a merchant can always find it again later without re-connecting.
+/// health, recent orders, and a Help link to the docs.
 pub async fn store_detail(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -868,7 +852,6 @@ async fn render_store_detail_page(
 
     let tenant_result = state.engine.client.get_tenant(&sk).await;
     let (health, health_label) = health_of_tenant_lookup(&tenant_result);
-    let public_url = state.settings.public_url();
 
     // A store whose engine is currently unreachable still gets a real page -
     // just with no order data available, rather than a hard error. The
@@ -883,7 +866,6 @@ async fn render_store_detail_page(
         Err(_) => Vec::new(),
     };
 
-    let is_woocommerce = row.platform == "woocommerce";
     let wallet = match row.wallet_id.clone() {
         Some(wallet_id) => {
             let user_id = user.id.clone();
@@ -903,17 +885,15 @@ async fn render_store_detail_page(
     let view_model = views::store_detail::StoreDetailViewModel {
         store: Some(views::store_detail::StoreDetailData {
             connection_id: row.id,
-            display_name: display_name_for(&row.site_url),
+            display_name: row.name.clone(),
             platform: row.platform,
-            site_url: row.site_url,
+            site: row.site,
             public_key: row.tenant_public_key,
-            public_url,
             base_currency: row.base_currency,
             health,
             health_label,
             created_at: row.created_at,
             recent_orders,
-            is_woocommerce,
             lookup_txid_value,
             lookup_message,
             lookup_found_order_id,
@@ -1219,7 +1199,7 @@ async fn render_store_settings_page_with(
         store: Some(views::store_settings::StoreSettingsData {
             clock: chrome.clock.clone(),
             connection_id: row.id,
-            display_name: display_name_for(&row.site_url),
+            display_name: row.name.clone(),
             confirmations_required,
             fx_provider_options,
             haveno_settings,
@@ -1356,7 +1336,7 @@ async fn render_create_order_page(
     };
     let data = views::create_order::CreateOrderData {
         connection_id: row.id.clone(),
-        display_name: display_name_for(&row.site_url),
+        display_name: row.name.clone(),
         order_creation_error,
         order_currency_options,
         order_currency_is_locked_to_xmr,
@@ -2749,109 +2729,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn common_store_setup_validates_then_saves_all_fields_and_can_be_skipped() {
-        let (mut state, _engine) = test_state_with_real_engine().await;
-        state.exchange_rate = std::sync::Arc::new(
-            crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(format!(
-                "http://{}",
-                shared::unreachable::address()
-            )),
-        );
-        let router = build_router(state.clone());
-        let session = signed_up_and_logged_in_session_token(
-            &router,
-            "setup@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (id, _) = create_connection(&router, &session).await;
-        let path = format!("/dashboard/stores/{id}/setup");
-        let invalid = router
-            .clone()
-            .oneshot(form_post_request(
-                &path,
-                &session,
-                &[
-                    ("base_currency", "USD"),
-                    ("provider", "coingecko"),
-                    ("confirmations", "721"),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert!(body_text(invalid)
-            .await
-            .contains("confirmations from 0 to 720"));
-        let store_id = crate::db::ConnectionId::new(id.clone());
-        let row = state
-            .db
-            .lock()
-            .get_store_connection_by_id(&store_id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(row.base_currency, "XMR");
-        let saved = router
-            .clone()
-            .oneshot(form_post_request(
-                &path,
-                &session,
-                &[
-                    ("base_currency", "USD"),
-                    ("provider", "coingecko"),
-                    ("confirmations", "3"),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(saved.status(), StatusCode::FOUND);
-        let row = state
-            .db
-            .lock()
-            .get_store_connection_by_id(&store_id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(row.base_currency, "USD");
-        assert_eq!(row.fx_providers, ["coingecko"]);
-        let sk = super::decrypt_sk(&state.encryption_key, &row).unwrap();
-        assert_eq!(
-            state
-                .engine
-                .client
-                .get_tenant(&sk)
-                .await
-                .unwrap()
-                .confirmations_required,
-            3
-        );
-        let page = get_page(
-            &router,
-            &session,
-            &format!("/dashboard/stores/{id}/orders/new"),
-        )
-        .await;
-        // An unreachable provider must still leave XMR available. The
-        // browser fixture separately checks a supported AUD default.
-        assert!(page.contains(r#"id="currency" name="currency" value="XMR" readonly"#));
-        let skipped = router
-            .clone()
-            .oneshot(form_post_request(&path, &session, &[("skip", "yes")]))
-            .await
-            .unwrap();
-        assert_eq!(skipped.status(), StatusCode::FOUND);
-        let stranger = signed_up_and_logged_in_session_token(
-            &router,
-            "stranger-setup@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let refused = router
-            .oneshot(form_post_request(&path, &stranger, &[("skip", "yes")]))
-            .await
-            .unwrap();
-        assert_eq!(refused.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
     async fn orders_list_shows_a_real_order_seeded_against_the_engines_public_api() {
         let (state, engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
@@ -3272,8 +3149,8 @@ mod tests {
             "expected the store's public key, got: {html}"
         );
         assert!(
-            html.contains("shop.example.com"),
-            "expected a display name derived from site_url, got: {html}"
+            html.contains("<h1>shop.example.com</h1>"),
+            "a store made without a name is named after its site, got: {html}"
         );
         assert!(
             html.contains("tag-ok"),
@@ -3283,11 +3160,10 @@ mod tests {
             html.contains(&order_id),
             "expected the seeded order in the recent-orders list, got: {html}"
         );
-        // The integration-help partial - the same content the WBS asked to
-        // be "accessible from the store page for each connected store".
+        // Help is the docs, which say how to add the checkout.
         assert!(
-            html.contains("Integrate this store"),
-            "expected the integration help section, got: {html}"
+            html.contains(crate::views::DOCS_URL),
+            "expected the Help link to the docs, got: {html}"
         );
     }
 
@@ -4830,9 +4706,13 @@ mod tests {
         )
         .await;
         let (connection_id, _) = create_connection(&router, &session_token).await;
-        assert!(!get_page(&router, &session_token, "/dashboard/connect")
-            .await
-            .contains("key_custody_backend"));
+        assert!(!get_page(
+            &router,
+            &session_token,
+            "/setup/wallet/keys?kind=web&store_name=x&store_site=x.example&name=Other"
+        )
+        .await
+        .contains("key_custody_backend"));
         assert!(!get_page(
             &router,
             &session_token,
@@ -6785,7 +6665,7 @@ mod tests {
             Request::builder().method("POST").uri("/connections")
             .header("content-type", "application/json").header("authorization", format!("Bearer {session_token}"))
             .body(Body::from(serde_json::json!({
-                "platform": "custom", "site_url": "https://shop.example.com", "view_key_hex": view,
+                "platform": "custom", "site_url": "https://recovered.example.com", "view_key_hex": view,
                 "spend_pubkey_hex": spend, "network": "mainnet", "domains": [], "base_currency": "XMR",
             }).to_string())).unwrap()
         };

@@ -1,20 +1,24 @@
 // The wallet pages' script (docs/wallets.md).
 //
-// On "Set up your wallet" it turns on "Create a new wallet", which the
-// server draws unavailable so a browser without JavaScript is told why.
+// On the choice screen it turns on "Create a new wallet", which the server
+// draws unavailable so a browser without JavaScript is told why.
 //
 // On "Create a new wallet" it makes the wallet with the wallet-setup
 // WebAssembly module: 32 random bytes from crypto.getRandomValues become a
 // 16-word polyseed, its watch-only keys and address. Every screen (back up,
 // check, skip) is drawn by the server; this shows one at a time, fills in
-// the words and QR codes, and at the end posts only the private view key,
+// the words and QR codes straight away, makes a different phrase when asked,
+// runs the two-word check, and at the end posts only the private view key,
 // the public spend key, the address and how the phrase was backed up. The
-// phrase never leaves the page.
+// phrase never leaves the page, and nothing is posted before the check
+// passes or is skipped, so leaving the page loses nothing that was made.
 (() => {
   'use strict';
   // Where the page says the module is (its URL carries the file's
   // version), read now: currentScript is only set while this runs.
   const MODULE_URL = (document.currentScript && document.currentScript.dataset.module) || '/static/wallet-setup.wasm';
+  // How long the check waits before it lets you go on without answering.
+  const CHECK_SECONDS = 20;
 
   const supported =
     typeof WebAssembly === 'object' &&
@@ -66,7 +70,6 @@
   let wallet = null;
   let words = [];
   let legacyWords = [];
-  let submitted = false;
   let exports = null;
 
   const call = (fn, bytes) => {
@@ -88,6 +91,20 @@
 
   const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 
+  // A new wallet from fresh randomness.
+  const generate = () => {
+    const entropy = crypto.getRandomValues(new Uint8Array(32));
+    const request = new TextEncoder().encode(
+      JSON.stringify({
+        entropy: hex(entropy),
+        birthday: Math.floor(Date.now() / 1000),
+        network: root.dataset.network,
+      }),
+    );
+    entropy.fill(0);
+    return call('generate', request);
+  };
+
   const fillWords = (list, items) => {
     list.replaceChildren(
       ...items.map((word, i) => {
@@ -101,23 +118,14 @@
 
   // -- Back up ----------------------------------------------------------------
 
-  const method = () => ($('[data-method-choice]:checked') || {}).value || 'app';
   const currentApp = () =>
     ($('[data-app-tab][aria-selected="true"]') || {}).dataset?.appTab || 'cake';
-  const backedUp = $('[data-backed-up]');
+  const currentPanel = () => $(`[data-app-panel="${currentApp()}"]`);
   const next = $('[data-go="check"]');
 
-  const coverQrs = () => {
-    for (const panel of $$('[data-app-panel]')) {
-      const frame = $('[data-qr]', panel);
-      if (!frame) continue;
-      frame.replaceChildren();
-      frame.hidden = true;
-      $('[data-qr-cover]', panel).hidden = false;
-      $('[data-qr-caption]', panel).hidden = true;
-      $('[data-show-qr]', panel).hidden = false;
-      $('[data-hide-qr]', panel).hidden = true;
-    }
+  const updateNext = () => {
+    const box = $('[data-backed-up]', currentPanel());
+    next.disabled = !(box && box.checked);
   };
 
   const qrText = (kind) => {
@@ -129,34 +137,30 @@
     return link;
   };
 
-  const showQr = (panel) => {
-    const frame = $('[data-qr]', panel);
-    const { svg } = call('qr', new TextEncoder().encode(qrText(frame.dataset.qr)));
-    // The module's own drawing of a QR code (no text from the page in it).
-    frame.innerHTML = svg;
-    const drawn = frame.querySelector('svg');
-    if (drawn) {
-      drawn.setAttribute('role', 'img');
-      drawn.setAttribute('aria-label', 'QR code holding the recovery phrase');
+  const drawQrs = () => {
+    for (const frame of $$('[data-qr]')) {
+      const { svg } = call('qr', new TextEncoder().encode(qrText(frame.dataset.qr)));
+      // The module's own drawing of a QR code (no text from the page in it).
+      frame.innerHTML = svg;
+      const drawn = frame.querySelector('svg');
+      if (drawn) {
+        drawn.setAttribute('role', 'img');
+        drawn.setAttribute('aria-label', 'QR code holding the recovery phrase');
+      }
     }
-    frame.hidden = false;
-    $('[data-qr-cover]', panel).hidden = true;
-    $('[data-qr-caption]', panel).hidden = false;
-    $('[data-show-qr]', panel).hidden = true;
-    $('[data-hide-qr]', panel).hidden = false;
   };
 
-  const resetBackedUp = () => {
-    backedUp.checked = false;
-    next.disabled = true;
-  };
-
-  const chooseMethod = (value) => {
-    for (const radio of $$('[data-method-choice]')) radio.checked = radio.value === value;
-    for (const panel of $$('[data-method-panel]')) panel.hidden = panel.dataset.methodPanel !== value;
-    for (const label of $$('[data-backed-up-label]')) label.hidden = label.dataset.backedUpLabel !== value;
-    coverQrs();
-    resetBackedUp();
+  // Shows `made` as the wallet: its words on every tab, its QR codes, and
+  // nothing ticked yet.
+  const useWallet = (made) => {
+    wallet = made;
+    words = wallet.phrase.split(' ');
+    legacyWords = wallet.legacy_phrase.split(' ');
+    for (const list of $$('[data-words]')) fillWords(list, words);
+    for (const list of $$('[data-legacy-words]')) fillWords(list, legacyWords);
+    drawQrs();
+    for (const box of $$('[data-backed-up]')) box.checked = false;
+    updateNext();
   };
 
   const chooseApp = (key) => {
@@ -164,30 +168,23 @@
       tab.setAttribute('aria-selected', tab.dataset.appTab === key ? 'true' : 'false');
     }
     for (const panel of $$('[data-app-panel]')) panel.hidden = panel.dataset.appPanel !== key;
-    coverQrs();
-    resetBackedUp();
+    updateNext();
   };
 
-  for (const radio of $$('[data-method-choice]')) {
-    radio.addEventListener('change', () => chooseMethod(radio.value));
-  }
   for (const tab of $$('[data-app-tab]')) {
     tab.addEventListener('click', () => chooseApp(tab.dataset.appTab));
   }
+  for (const box of $$('[data-backed-up]')) box.addEventListener('change', updateNext);
+
   root.addEventListener('click', (event) => {
     const target = event.target.closest('button');
     if (!target || !root.contains(target)) return;
-    const panel = target.closest('[data-app-panel]');
-    if (target.matches('[data-show-qr]')) showQr(panel);
-    else if (target.matches('[data-hide-qr]')) coverQrs();
-    else if (target.matches('[data-show-paper]')) chooseMethod('paper');
-    else if (target.matches('[data-show-legacy]')) {
-      $('[data-legacy]', panel).hidden = false;
-      target.hidden = true;
-    } else if (target.matches('[data-toggle-words]')) {
-      const list = $('[data-words]');
-      const concealed = list.classList.toggle('concealed');
-      target.textContent = concealed ? 'Show words' : 'Hide words';
+    if (target.matches('[data-regenerate]')) {
+      try {
+        useWallet(generate());
+      } catch (error) {
+        fail(`The wallet couldn't be made: ${error.message}`);
+      }
     } else if (target.matches('[data-print]')) {
       window.print();
     } else if (target.matches('[data-go]')) {
@@ -195,83 +192,138 @@
       if (to === 'check') startCheck();
       else if (to === 'skip') startSkip();
       else {
-        coverQrs();
+        stopCountdown();
         show(to);
       }
-    } else if (target.matches('[data-skip-confirm]')) submit('skipped');
-  });
-  backedUp.addEventListener('change', () => {
-    next.disabled = !backedUp.checked;
+    } else if (target.matches('[data-pick]')) {
+      pickWord(target);
+    } else if (target.matches('[data-check-next]')) {
+      stopCountdown();
+      submit(backup);
+    } else if (target.matches('[data-skip-confirm]')) {
+      submit('skipped');
+    }
   });
 
-  // -- Check --------------------------------------------------------------------
+  // -- Check: two words, each picked from four --------------------------------
 
-  let backup = 'paper';
+  let backup = 'cake';
   let asked = [];
+  let countdown = null;
+  let secondsLeft = CHECK_SECONDS;
+  const checkNext = $('[data-check-next]');
 
-  const backupKey = () => (method() === 'paper' ? 'paper' : currentApp());
+  const randomBelow = (n) => {
+    const random = new Uint32Array(1);
+    crypto.getRandomValues(random);
+    return random[0] % n;
+  };
 
   const pick = (count, from) => {
     const chosen = new Set();
-    const random = new Uint32Array(1);
-    while (chosen.size < count) {
-      crypto.getRandomValues(random);
-      chosen.add(random[0] % from);
-    }
+    while (chosen.size < count) chosen.add(randomBelow(from));
     return Array.from(chosen).sort((a, b) => a - b);
   };
 
+  const shuffle = (items) => {
+    for (let i = items.length - 1; i > 0; i--) {
+      const j = randomBelow(i + 1);
+      [items[i], items[j]] = [items[j], items[i]];
+    }
+    return items;
+  };
+
+  // Words from the same word list that aren't in the phrase: the words of
+  // other wallets made just for this and thrown away.
+  const decoyPool = (legacy, phrase) => {
+    const pool = new Set();
+    for (let tries = 0; tries < 8 && pool.size < 12; tries++) {
+      const other = generate();
+      const otherWords = (legacy ? other.legacy_phrase : other.phrase).split(' ');
+      other.phrase = other.legacy_phrase = '';
+      for (const word of otherWords) if (!phrase.includes(word)) pool.add(word);
+    }
+    return Array.from(pool);
+  };
+
+  const bothRight = () => asked.length > 0 && asked.every((q) => q.right);
+
+  const updateCheckNext = () => {
+    if (bothRight()) {
+      stopCountdown();
+      checkNext.disabled = false;
+      checkNext.textContent = 'Next: add the wallet';
+    } else if (secondsLeft <= 0) {
+      checkNext.disabled = false;
+      checkNext.textContent = 'Continue without checking';
+    } else {
+      checkNext.disabled = true;
+      checkNext.replaceChildren(
+        'Continue anyway in ',
+        Object.assign(document.createElement('span'), {
+          className: 'countdown',
+          textContent: `${secondsLeft} s`,
+        }),
+      );
+    }
+  };
+
+  const stopCountdown = () => {
+    if (countdown) clearInterval(countdown);
+    countdown = null;
+  };
+
   const startCheck = () => {
-    coverQrs();
-    backup = backupKey();
-    const source = backup === 'gui' ? legacyWords : words;
-    asked = pick(3, source.length).map((index) => ({ index, word: source[index] }));
-    for (const box of $$('[data-find]')) box.hidden = box.dataset.find !== backup;
-    $$('[data-word-check]').forEach((label, i) => {
-      label.classList.remove('ok', 'bad');
-      const n = asked[i].index + 1;
-      $('[data-word-label]', label).textContent =
-        backup === 'gui' ? `Word ${n} of 25` : `Word ${n}`;
-      const input = $('input', label);
-      input.value = '';
-      input.removeAttribute('aria-invalid');
-      $('[data-word-message]', label).textContent = '';
-      $('[data-word-message]', label).className = '';
+    backup = currentApp();
+    const legacy = backup === 'gui';
+    const source = legacy ? legacyWords : words;
+    const pool = decoyPool(legacy, source);
+    asked = pick(2, source.length).map((index) => ({ index, word: source[index], right: false }));
+    $$('[data-question]').forEach((box, i) => {
+      const q = asked[i];
+      const decoys = shuffle(pool.slice()).filter((w) => w !== q.word).slice(0, 3);
+      const options = shuffle([q.word, ...decoys]);
+      $('[data-question-label]', box).textContent = `Word ${q.index + 1}`;
+      $$('[data-pick]', box).forEach((button, j) => {
+        button.textContent = options[j];
+        button.className = '';
+        button.disabled = false;
+        button.setAttribute('aria-pressed', 'false');
+      });
+      const note = $('[data-question-note]', box);
+      note.textContent = '';
+      note.className = 'q-note';
     });
+    secondsLeft = CHECK_SECONDS;
+    stopCountdown();
+    countdown = setInterval(() => {
+      secondsLeft -= 1;
+      if (secondsLeft <= 0) stopCountdown();
+      updateCheckNext();
+    }, 1000);
+    updateCheckNext();
     show('check');
   };
 
-  const checkOne = (label, i) => {
-    const input = $('input', label);
-    const typed = input.value.trim().toLowerCase();
-    const message = $('[data-word-message]', label);
-    const right = typed === asked[i].word;
-    label.classList.toggle('ok', right);
-    label.classList.toggle('bad', !right);
-    input.setAttribute('aria-invalid', right ? 'false' : 'true');
-    message.className = right ? 'field-ok' : 'field-error';
-    message.textContent = right
-      ? 'Matches.'
-      : "That doesn't match. A wrong word in your backup means you can't open this wallet later.";
-    return right;
-  };
-
-  $('[data-check-form]').addEventListener('submit', (event) => {
-    event.preventDefault();
-    finishCheck();
-  });
-
-  for (const [i, label] of $$('[data-word-check]').entries()) {
-    $('input', label).addEventListener('change', () => checkOne(label, i));
-  }
-
-  const finishCheck = () => {
-    const results = $$('[data-word-check]').map((label, i) => checkOne(label, i));
-    if (results.every(Boolean)) submit(backup);
-    else {
-      const first = $('[data-word-check].bad input');
-      if (first) first.focus();
+  const pickWord = (button) => {
+    const box = button.closest('[data-question]');
+    const q = asked[Number(box.dataset.question)];
+    if (!q || q.right) return;
+    const note = $('[data-question-note]', box);
+    for (const other of $$('[data-pick]', box)) other.classList.remove('is-wrong');
+    button.setAttribute('aria-pressed', 'true');
+    if (button.textContent === q.word) {
+      q.right = true;
+      button.classList.add('is-right');
+      for (const other of $$('[data-pick]', box)) if (other !== button) other.disabled = true;
+      note.className = 'q-note ok';
+      note.textContent = '✓ Right';
+    } else {
+      button.classList.add('is-wrong');
+      note.className = 'q-note bad';
+      note.textContent = `Not that one. Look at word ${q.index + 1} again.`;
     }
+    updateCheckNext();
   };
 
   // -- Skip ---------------------------------------------------------------------
@@ -285,7 +337,7 @@
   understood.addEventListener('change', updateSkip);
   typedSkip.addEventListener('input', updateSkip);
   const startSkip = () => {
-    coverQrs();
+    stopCountdown();
     understood.checked = false;
     typedSkip.value = '';
     updateSkip();
@@ -300,10 +352,9 @@
     $('[data-field="address"]', form).value = wallet.address;
     $('[data-field="view"]', form).value = wallet.view_key;
     $('[data-field="spend"]', form).value = wallet.spend_public_key;
-    submitted = true;
     // The phrase isn't needed any more: drop every copy the page holds.
-    for (const list of $$('[data-words], [data-legacy-words]')) list.replaceChildren();
-    coverQrs();
+    for (const list of $$('[data-words], [data-legacy-words], [data-qr]')) list.replaceChildren();
+    for (const button of $$('[data-pick]')) button.textContent = '';
     wallet.phrase = wallet.legacy_phrase = '';
     words = [];
     legacyWords = [];
@@ -313,13 +364,6 @@
     form.requestSubmit();
   };
 
-  window.addEventListener('beforeunload', (event) => {
-    if (wallet && !submitted) {
-      event.preventDefault();
-      event.returnValue = '';
-    }
-  });
-
   // -- Make the wallet ------------------------------------------------------------
 
   (async () => {
@@ -328,25 +372,11 @@
       if (!response.ok) throw new Error(`the wallet maker didn't load (${response.status})`);
       const { instance } = await WebAssembly.instantiate(await response.arrayBuffer(), {});
       exports = instance.exports;
-      const entropy = crypto.getRandomValues(new Uint8Array(32));
-      const request = new TextEncoder().encode(
-        JSON.stringify({
-          entropy: hex(entropy),
-          birthday: Math.floor(Date.now() / 1000),
-          network: root.dataset.network,
-        }),
-      );
-      entropy.fill(0);
-      wallet = call('generate', request);
+      useWallet(generate());
     } catch (error) {
       fail(`The wallet couldn't be made: ${error.message}`);
       return;
     }
-    words = wallet.phrase.split(' ');
-    legacyWords = wallet.legacy_phrase.split(' ');
-    fillWords($('[data-words]'), words);
-    for (const list of $$('[data-legacy-words]')) fillWords(list, legacyWords);
-    chooseMethod('app');
     chooseApp('cake');
     show('backup');
   })();

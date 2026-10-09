@@ -92,7 +92,7 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                         }
                     }
                 } }
-                a class="btn btn-secondary" href="/dashboard/stores/new" { "+ add another store" }
+                a class="btn btn-secondary" href="/setup" { "+ add another store" }
 
                 h2 { "Recent orders" }
                 @if data.recent_orders.is_empty() {
@@ -128,7 +128,7 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                         "You don't have any stores connected yet. Adding one takes a couple of minutes - pick the "
                         "guided flow for WooCommerce, or the advanced form if you're integrating something custom."
                     }
-                    a class="btn btn-primary" href="/dashboard/stores/new" { "+ add a store" }
+                    a class="btn btn-primary" href="/setup" { "+ add a store" }
                 }
             }
         }
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn shows_the_add_store_cta_when_the_user_has_no_stores() {
         let html = page(&chrome(), &empty_data()).into_string();
-        assert!(html.contains(r#"href="/dashboard/stores/new""#));
+        assert!(html.contains(r#"href="/setup""#));
         assert!(
             !html.contains("<table"),
             "an empty dashboard shouldn't render a store table at all"

@@ -229,9 +229,15 @@ pub async fn policy_for_public_key(
         })
 }
 
-/// The domain of a store's site URL, when it's one that can be verified.
-pub fn domain_of_site(site_url: &str) -> Option<String> {
-    let host = url::Url::parse(site_url).ok()?.host_str()?.to_string();
+/// The domain of a store's site (a host, `shop.example:8443`) or of a URL,
+/// when it's one that can be verified.
+pub fn domain_of_site(site: &str) -> Option<String> {
+    let url = if site.contains("://") {
+        site.to_owned()
+    } else {
+        format!("https://{site}")
+    };
+    let host = url::Url::parse(&url).ok()?.host_str()?.to_string();
     normalize_domain(&host).ok()
 }
 
@@ -279,7 +285,7 @@ pub fn import_existing_domains(db: &Db) {
         }
     };
     for store in stores {
-        suggest_site_domain(db, &store.id, &store.site_url, crate::now_unix());
+        suggest_site_domain(db, &store.id, &store.site, crate::now_unix());
         if let Err(e) = db.mark_store_domains_imported(&store.id) {
             tracing::warn!(store.id = %store.id, error = %e, "could not mark the store's domains imported");
         }
@@ -571,6 +577,10 @@ mod tests {
     fn a_site_url_suggests_its_domain_when_it_can_be_verified() {
         assert_eq!(
             domain_of_site("https://Shop.Example/wp"),
+            Some("shop.example".to_string())
+        );
+        assert_eq!(
+            domain_of_site("shop.example:8443"),
             Some("shop.example".to_string())
         );
         assert_eq!(domain_of_site("http://abcdefghijklmnop.onion"), None);

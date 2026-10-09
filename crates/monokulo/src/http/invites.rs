@@ -798,10 +798,7 @@ mod tests {
             StatusCode::FOUND,
             "a valid invite token must let a real signup through"
         );
-        assert_eq!(
-            signup.headers().get("location").unwrap(),
-            "/account/wallets/setup"
-        );
+        assert_eq!(signup.headers().get("location").unwrap(), "/setup");
 
         // The real point: it cannot be reused for a second account.
         let second = signed_up_session_cookie(

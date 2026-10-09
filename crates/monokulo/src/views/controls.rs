@@ -270,7 +270,7 @@ mod tests {
             "wrap these in mk-select:\n{}",
             bare.join("\n")
         );
-        assert!(selects().len() >= 16, "the scan finds the selects");
+        assert!(selects().len() >= 12, "the scan finds the selects");
     }
 
     #[test]

@@ -390,9 +390,12 @@ mod tests {
     /// real spawned engine) for the given session, returning its public
     /// key - the identifier this module's own endpoint is addressed by.
     async fn create_connection(router: &Router, session_token: &str) -> String {
+        // No two stores share a site.
+        static STORES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = STORES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let body = serde_json::json!({
             "platform": "custom",
-            "site_url": "https://shop.example.com",
+            "site_url": format!("https://shop-{n}.example.com"),
             "view_key_hex": TEST_VIEW_KEY_HEX,
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
             "network": "mainnet",
@@ -666,8 +669,8 @@ mod tests {
             "/account".into(),
             "/account?tab=wallets".into(),
             "/account?tab=security".into(),
-            "/dashboard/stores/new".into(),
-            "/dashboard/connect".into(),
+            "/setup".into(),
+            "/account/wallets/add".into(),
             format!("/dashboard/stores/{store_id}"),
             format!("/dashboard/stores/{store_id}/settings"),
             format!("/dashboard/stores/{store_id}/orders"),

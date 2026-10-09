@@ -62,18 +62,23 @@ pub fn clean_name(raw: &str) -> Result<Option<String>, String> {
     Ok(Some(name))
 }
 
-/// A wallet app a new wallet's recovery phrase can be saved in, and how.
+/// A wallet app a new wallet's recovery phrase can be saved in, and how:
+/// one tab of the backup screen.
 pub struct WalletApp {
     /// The key a backup is recorded under (`wallets.backup`), and the
     /// suffix of its logo (`/static/wallet-logos/{key}.png`).
     pub key: &'static str,
     pub name: &'static str,
-    pub platforms: &'static str,
+    /// What its tab says, after these logos (`/static/wallet-logos/`).
+    pub tab: &'static str,
+    pub logos: &'static [&'static str],
+    /// The heading over the phrase on its tab.
+    pub title: &'static str,
     pub method: AppMethod,
     /// How to restore the wallet in it, step by step.
     pub restore_steps: &'static [&'static str],
-    /// Where its owner finds the words again, for the check step.
-    pub find_words_steps: &'static [&'static str],
+    /// What its owner ticks once the app has the wallet.
+    pub done_check: &'static str,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -89,115 +94,73 @@ pub enum AppMethod {
 }
 
 impl AppMethod {
-    pub fn label(self) -> &'static str {
+    /// The `data-qr` the page's script draws the code from; `None` for an
+    /// app that has the words typed in.
+    pub fn qr_kind(self) -> Option<&'static str> {
         match self {
-            Self::ScanRestoreLink => "Scan the QR code",
-            Self::ScanWordList => "Scan the QR code (word list)",
-            Self::TypeWords => "Type the 16 words",
-            Self::TypeLegacyWords => "Type the 25-word version",
-        }
-    }
-
-    pub fn is_scanned(self) -> bool {
-        matches!(self, Self::ScanRestoreLink | Self::ScanWordList)
-    }
-
-    /// The `data-qr` the page's script builds the code from.
-    pub fn qr_kind(self) -> &'static str {
-        match self {
-            Self::ScanRestoreLink => "restore-link",
-            Self::ScanWordList => "word-list",
-            Self::TypeWords | Self::TypeLegacyWords => "",
+            Self::ScanRestoreLink => Some("restore-link"),
+            Self::ScanWordList => Some("word-list"),
+            Self::TypeWords | Self::TypeLegacyWords => None,
         }
     }
 }
 
-/// The wallet apps the backup step offers, in the order shown.
+/// The wallet apps the backup screen offers, in the order of its tabs
+/// (writing the words on paper is the last tab, `paper`).
 pub const WALLET_APPS: &[WalletApp] = &[
     WalletApp {
         key: "cake",
         name: "Cake Wallet",
-        platforms: "iPhone, Android, Windows, macOS, Linux",
+        tab: "Cake / Monero.com",
+        logos: &["cake", "monerocom"],
+        title: "Enter into Cake Wallet",
         method: AppMethod::ScanRestoreLink,
         restore_steps: &[
-            "Open Cake Wallet and choose Restore wallet.",
-            "Pick Scan QR code.",
-            "Press Show QR code here and point your phone at it.",
+            "Open Cake Wallet (or Monero.com, by the same team) and choose Restore wallet.",
+            "Pick Scan QR code and point your phone at the code here.",
             "Check the wallet has this wallet's name, then set a PIN.",
         ],
-        find_words_steps: &[
-            "Open Cake Wallet and tap the gear icon, top right.",
-            "Tap Recovery & Keys, then Show my Recovery Phrase & Keys.",
-            "Unlock it. The Recovery Phrase tab lists the numbered words.",
-        ],
-    },
-    WalletApp {
-        key: "monerocom",
-        name: "Monero.com",
-        platforms: "iPhone, Android (by the Cake Wallet team)",
-        method: AppMethod::ScanRestoreLink,
-        restore_steps: &[
-            "Open Monero.com and choose Restore wallet.",
-            "Pick Scan QR code.",
-            "Press Show QR code here and point your phone at it.",
-            "Check the wallet has this wallet's name, then set a PIN.",
-        ],
-        find_words_steps: &[
-            "Open Monero.com and tap the gear icon, top right.",
-            "Tap Recovery & Keys, then Show my Recovery Phrase & Keys.",
-            "Unlock it. The Recovery Phrase tab lists the numbered words.",
-        ],
+        done_check: "Cake Wallet opened the wallet from this QR.",
     },
     WalletApp {
         key: "stack",
         name: "Stack Wallet",
-        platforms: "iPhone, Android, Windows, macOS, Linux",
+        tab: "Stack",
+        logos: &["stack"],
+        title: "Enter into Stack Wallet",
         method: AppMethod::ScanWordList,
         restore_steps: &[
-            "Tap Add wallet, choose Monero, then Restore.",
-            "Choose the 16-word phrase length.",
-            "Tap the QR icon above the word boxes and scan this code.",
+            "Tap Add wallet, choose Monero, then Restore, and the 16-word phrase length.",
+            "Tap the QR icon above the word boxes and scan the code here.",
             "Set the restore date to today: the wallet is new.",
         ],
-        find_words_steps: &[
-            "Open this wallet in Stack Wallet.",
-            "Tap the settings icon, then Wallet backup.",
-            "Enter your PIN to see the numbered words.",
-        ],
+        done_check: "Stack Wallet opened the wallet from this QR.",
     },
     WalletApp {
         key: "feather",
         name: "Feather",
-        platforms: "Windows, macOS, Linux",
+        tab: "Feather",
+        logos: &["feather"],
+        title: "Type these 16 words into Feather",
         method: AppMethod::TypeWords,
         restore_steps: &[
-            "Open Feather and choose Restore wallet from seed.",
-            "Pick Polyseed as the seed type.",
-            "Type the 16 words.",
-            "Feather reads the birthday from the phrase, so no restore height is needed.",
+            "In Feather: File, then New/Restore.",
+            "Choose Restore wallet from seed, seed type Polyseed, and type the 16 words. Feather reads the wallet's birthday from them.",
         ],
-        find_words_steps: &[
-            "Open the Wallet menu and choose Seed.",
-            "Enter your wallet password.",
-            "Read the numbered words of the 16-word phrase.",
-        ],
+        done_check: "Feather opened the wallet with these words.",
     },
     WalletApp {
         key: "gui",
         name: "Monero GUI / CLI",
-        platforms: "Windows, macOS, Linux",
+        tab: "Monero GUI / CLI",
+        logos: &["gui"],
+        title: "25-word phrase",
         method: AppMethod::TypeLegacyWords,
         restore_steps: &[
-            "Press Show the 25-word version. It opens the same wallet in the older format.",
-            "In the Monero GUI choose Restore wallet from keys or mnemonic seed.",
+            "These apps only read 25-word phrases: this is the same wallet in that older format.",
             "Type the 25 words, then the restore height shown with them.",
-            "Keep the 25 words, or the 16, as your backup: either opens this wallet.",
         ],
-        find_words_steps: &[
-            "Open Settings, then Seed & keys.",
-            "Enter your wallet password.",
-            "Read the numbered words of the 25-word phrase.",
-        ],
+        done_check: "The Monero GUI or CLI opened the wallet with these 25 words.",
     },
 ];
 

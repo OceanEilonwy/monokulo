@@ -819,7 +819,6 @@ a.order-id { display: inline-block; max-width: 11em; }
 .settings-dialog { width: min(46rem, calc(100vw - 2rem)); max-height: calc(100dvh - 3rem); box-sizing: border-box; padding: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--paper-raised); color: var(--ink); }
 .settings-dialog::backdrop { background: color-mix(in srgb, var(--ink) 45%, transparent); }
 .settings-dialog > h2 { margin-top: 0; }
-.store-setup { max-width: 32rem; }
 
 .engine-network { display: flex; align-items: center; gap: .5rem; margin: 0; }
 .engine-network label, .tl-modes label { margin: 0; }
@@ -834,18 +833,79 @@ a.order-id { display: inline-block; max-width: 11em; }
 .engine-summary .v { min-height: 1.6em; }
 .engine-page .node .call { min-height: 1.3em; }
 
-/* Wallets (docs/wallets.md): setup steps, the wallet choice, the new
-   wallet's backup and check, and a wallet's page. */
-/* The new wallet page shows one screen, app and button at a time by the
-   hidden attribute; a display set below must not bring them back. */
-[data-wallet-setup] [hidden], .wallet-choice [hidden] { display: none !important; }
-.setup-steps { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; list-style: none; padding: 0; margin: var(--space-lg) 0 0; font-size: .88em; font-weight: 700; color: var(--muted); }
+/* Setup (`views::setup`): Store, Wallet, Done. Done steps are dark, the
+   current one orange. While on Wallet, its own small steps sit beside it as
+   a timeline: done ones green, the current one orange, the rest neutral,
+   joined by lines that touch them. */
+.setup-steps { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem 1.2rem; list-style: none; padding: 0; margin: var(--space-lg) 0 0; font-size: .88em; font-weight: 700; color: var(--muted); }
 .setup-steps li { display: flex; align-items: center; gap: .4rem; }
 .setup-steps .n { display: inline-flex; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem; border-radius: 50%; border: 1px solid var(--line-strong); background: var(--paper-raised); font-size: .8rem; }
 .setup-steps .done .n { background: var(--step-done-bg); color: var(--step-done-ink); border-color: var(--step-done-bg); }
 .setup-steps [aria-current] { color: var(--ink); }
 .setup-steps [aria-current] .n { background: var(--step-current-bg); color: var(--step-current-ink); border-color: var(--step-current-bg); }
+.setup-steps li.wallet-group { flex-wrap: wrap; gap: var(--space-sm); padding: 3px var(--space-sm) 3px 3px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper-raised); }
+.setup-steps li.wallet-group > .lbl { display: inline-flex; align-items: center; gap: .4rem; }
+.sub-timeline { display: flex; align-items: center; list-style: none; margin: var(--space-md) 0 0; padding: 0; font-size: .92em; color: var(--muted); }
+.setup-steps .sub-timeline { margin: 0; }
+/* No gap: `.setup-steps li` matches these items too, and each line must
+   meet the pills on both sides. */
+.sub-timeline li { display: flex; align-items: center; gap: 0; }
+.sub-timeline li + li::before { content: ""; display: block; width: 1.3rem; height: 2px; background: var(--line-strong); }
+.sub-timeline li.done::before, .sub-timeline li.done + li::before { background: var(--step-done-ok); }
+.sub-timeline .pill { display: inline-flex; align-items: center; padding: 0 .65em; line-height: 1.55; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--paper-raised); color: var(--muted); font-weight: 600; white-space: nowrap; }
+.sub-timeline .done .pill { border-color: var(--step-done-ok); background: var(--step-done-ok-bg); color: var(--ink); }
+.sub-timeline [aria-current] .pill { border-color: var(--step-current-bg); background: var(--step-current-bg); color: var(--step-current-ink); font-weight: 700; }
+/* On a phone the timeline gives way to one line: "Wallet · 2 of 3: back up". */
+.sub-crumbs { display: none; margin: var(--space-sm) 0 0; font-size: .9em; font-weight: 700; color: var(--ink); }
+@media (max-width: 640px) {
+  .sub-timeline { display: none; }
+  .sub-crumbs { display: block; }
+}
 
+/* Step footer: Back on the left, the one way on to the right. */
+.step-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin-top: var(--space-lg); padding-top: var(--space-md); border-top: 1px solid var(--line); }
+.step-foot .spacer { flex: 1; }
+.step-foot button, .step-foot .btn, .step-foot form { margin: 0; }
+.inline-form { display: inline; margin: 0; }
+.inline-form button { margin: 0; }
+@media (max-width: 640px) {
+  .step-foot { flex-direction: column-reverse; align-items: stretch; }
+  .step-foot .spacer { display: none; }
+  .step-foot button, .step-foot .btn, .step-foot form button { width: 100%; text-align: center; }
+}
+.btn-primary[disabled], button.btn-primary[disabled]:hover { opacity: .45; cursor: not-allowed; background: var(--btn-primary-bg); border-color: var(--btn-primary-bg); }
+
+/* A field's check, under it: right, wrong, or just a hint. */
+.field-check { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); font-size: .88em; font-weight: 700; margin-top: var(--space-xs); color: var(--muted); }
+.field-check.ok { color: var(--success); }
+.field-check.bad { color: var(--error); }
+.field-check a { color: inherit; }
+input[aria-invalid="true"] { border-color: var(--error); }
+.two-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 0 var(--space-lg); }
+
+/* The store step: where payments are taken, as whole-card choices. The
+   radio is visually hidden inside the label, so the cards work without
+   JavaScript and by keyboard; the chosen card takes the edge and the tint. */
+.kind-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: var(--space-md); margin: var(--space-md) 0 var(--space-lg); border: 0; padding: 0; }
+.kind-card { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "icon title" "desc desc"; gap: var(--space-xs) var(--space-md); align-items: start; margin: 0; padding: var(--space-md) var(--space-lg) var(--space-lg); border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--paper-raised); cursor: pointer; font-weight: 400; }
+.kind-card:hover { border-color: var(--ink); }
+.kind-card:has(input:checked) { border-color: var(--ink); background: var(--tint-highlight); }
+.kind-card:has(input:focus-visible) { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.kind-card .kc-title { grid-area: title; align-self: center; font-weight: 700; font-size: 1.02rem; }
+.kind-card .kind-icon { grid-area: icon; }
+.kind-card .kc-desc { grid-area: desc; color: var(--muted); font-size: .92em; }
+.kind-icon { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 2.5rem; height: 2.5rem; border-radius: var(--radius-md); background: var(--surface-sunken); color: var(--ink); }
+.kind-card:has(input:checked) .kind-icon { background: var(--paper-raised); }
+.kind-icon svg { width: 1.6rem; height: 1.6rem; display: block; }
+.kind-icon svg.woo { width: 2rem; }
+.woo-bubble { fill: currentColor; }
+.woo-text { fill: var(--paper-raised); font: 800 10.5px var(--font-ui); letter-spacing: -.03em; }
+/* In person only: no site to ask for. */
+.store-form:has(input[name="kind"][value="pos"]:checked) :is(.site-field, .site-hint) { display: none; }
+
+/* The wallet step's choice: today's pick cards, after "use a wallet you
+   already added" and an "or". */
+.wallet-choice [hidden], [data-wallet-setup] [hidden] { display: none !important; }
 .pick-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .wallet-choice .pick-card { display: flex; flex-direction: column; gap: var(--space-sm); }
 .wallet-choice .pick-card p { margin: 0; }
@@ -856,11 +916,111 @@ a.order-id { display: inline-block; max-width: 11em; }
 .pick-card.unavailable { background: var(--surface-sunken); border-style: dashed; border-color: var(--line-strong); }
 .wallet-choice .pick-card .faded { display: flex; flex-direction: column; gap: var(--space-sm); flex-grow: 1; }
 .pick-card.unavailable .faded { opacity: .45; filter: grayscale(1); }
+.wallet-name-field { max-width: 28rem; }
+.already { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin: var(--space-md) 0; padding: var(--space-sm) var(--space-md); border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--paper-raised); }
+.already label { margin: 0 auto 0 0; }
+.already mk-select, .already select { width: auto; min-width: 16rem; margin: 0; }
+.already button { margin: 0; }
+.or-divider { display: flex; align-items: center; gap: var(--space-md); margin: var(--space-lg) 0; color: var(--muted); font-size: .8rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.or-divider::before, .or-divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
 .logo-row { display: flex; gap: var(--space-md); align-items: center; }
 .app-logo { display: block; flex: none; border-radius: 22%; object-fit: contain; }
 .hw-logo { display: block; flex: none; color: var(--ink); }
 .icon-tile { display: inline-flex; align-items: center; justify-content: center; width: 2.25rem; height: 2.25rem; border-radius: var(--radius-md); background: var(--tint-highlight); color: var(--ink); }
 
+/* "Where do I find these keys?" and other help that opens in place. */
+details.keys-help, details.more-options { margin: var(--space-md) 0; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
+details.keys-help > summary, details.more-options > summary { cursor: pointer; padding: var(--space-sm) var(--space-md); font-weight: 700; border-radius: var(--radius-md); }
+details.keys-help > summary:hover, details.more-options > summary:hover { background: var(--surface-sunken); color: var(--accent-text); }
+details.keys-help[open] > summary, details.more-options[open] > summary { border-bottom: 1px solid var(--line); border-radius: var(--radius-md) var(--radius-md) 0 0; }
+.keys-help-body, details.more-options > .setting-field { padding: var(--space-md) var(--space-lg); margin: 0; }
+.keys-help-body h4 { margin: var(--space-md) 0 var(--space-xs); font-size: .95rem; }
+.keys-help-body h4:first-child { margin-top: 0; }
+.keys-help-body p { margin: 0; }
+.keys-help-body ol { margin: 0; padding-left: 1.3em; }
+.keys-help-body li { margin: .25em 0; }
+.keys-help-body pre { margin: var(--space-xs) 0 var(--space-sm); font-size: .85em; }
+.keys-help-body .copy-this { background: var(--tint-highlight); border-radius: 2px; padding: 0 .2em; }
+
+/* Back up: each tab shows its words and QR code straight away. The phrase
+   gets the main column (4 columns for 16 words, 5 for 25, 2 on a phone);
+   the QR sits beside it. */
+.app-tabs { display: flex; flex-wrap: wrap; gap: var(--space-xs); border-bottom: 1px solid var(--line); margin: var(--space-lg) 0; }
+.app-tabs button, .app-tabs button:hover { display: inline-flex; align-items: center; gap: var(--space-sm); margin: 0; padding: var(--space-sm) var(--space-md); background: none; border: 0; border-bottom: 3px solid transparent; border-radius: 0; color: var(--muted); }
+.app-tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--tab-current); }
+.phrase-split { display: grid; grid-template-columns: minmax(0, 1fr) 16rem; gap: var(--space-xl); align-items: start; }
+.phrase-box { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-lg); margin: var(--space-md) 0; }
+.phrase-box .seed-words { margin: var(--space-md) 0; }
+.phrase-box .steps { margin: var(--space-sm) 0 0; }
+.phrase-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); }
+.phrase-head h3 { margin: 0; font-size: 1.05rem; }
+.phrase-head .card-spacer { flex: 1; }
+.phrase-head button { margin: 0; }
+button.icon-only { display: inline-flex; align-items: center; justify-content: center; width: 2.1rem; height: 2.1rem; padding: 0; margin: 0; }
+button.icon-only svg { width: 1.1rem; height: 1.1rem; }
+.qr-col { display: grid; justify-items: center; gap: var(--space-xs); margin: var(--space-md) 0; }
+.qr-col .hint { margin: 0; text-align: center; }
+.qr-frame { background: var(--qr-bg); padding: var(--space-md); border-radius: var(--radius-sm); border: 1px solid var(--line); }
+.qr-frame svg { display: block; width: 13rem; height: 13rem; }
+.seed-words { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-sm); list-style: none; padding: 0; margin: 0 0 var(--space-md); }
+.seed-words.legacy { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.seed-words li { display: flex; gap: var(--space-sm); align-items: baseline; padding: var(--space-sm) var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--paper-raised); font-family: var(--font-mono); font-weight: 600; overflow-wrap: anywhere; }
+.seed-words li::before { content: attr(data-n); min-width: 1.3rem; text-align: right; color: var(--muted); font-size: .8rem; }
+.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-xs) var(--space-lg); margin: .6em 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.check-line { display: flex; gap: var(--space-sm); align-items: flex-start; font-weight: 600; }
+.check-line input { width: auto; margin: .25rem 0 0; accent-color: var(--accent-text); }
+
+/* Check: each word picked from four. */
+.word-quiz { display: grid; gap: var(--space-lg); margin: var(--space-md) 0; }
+.word-q h3 { margin: 0 0 var(--space-sm); font-size: 1rem; }
+.word-q .picks { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+.word-q .picks button { margin: 0; min-width: 6.5rem; font-family: var(--font-mono); }
+.word-q .picks button.is-right { border-color: var(--success); background: var(--tint-success); }
+.word-q .picks button.is-wrong { border-color: var(--error); background: var(--tint-error); text-decoration: line-through; }
+.word-q .picks button[disabled]:not(.is-right) { opacity: .45; }
+.word-q .q-note { margin: var(--space-xs) 0 0; font-size: .88em; font-weight: 700; min-height: 1.2em; }
+.word-q .q-note.bad { color: var(--error); }
+.word-q .q-note.ok { color: var(--success); }
+.countdown { font-variant-numeric: tabular-nums; }
+.field-error { display: block; color: var(--error); font-weight: 700; font-size: .88em; margin-top: .15em; }
+.field-ok { display: block; color: var(--success); font-weight: 700; font-size: .88em; margin-top: .15em; }
+.form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--space-md); }
+.form-actions .spacer { flex-grow: 1; }
+.skip-warning { border: 2px solid var(--error); border-radius: var(--radius-md); background: var(--paper-raised); padding: var(--space-xl); margin: 1.2rem 0; }
+.skip-warning h2 { border-bottom: 0; margin-top: var(--space-sm); }
+
+/* Done: never "you can take payments" for a website; what's left, in order. */
+.store-summary { margin: var(--space-md) 0; }
+.not-yet { margin-right: var(--space-xs); }
+.todo { list-style: none; padding: 0; margin: var(--space-md) 0; display: grid; gap: var(--space-sm); }
+.todo li { display: grid; grid-template-columns: 2rem minmax(0, 1fr) auto; gap: var(--space-md); align-items: center; padding: var(--space-md) var(--space-lg); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
+.todo .num { display: inline-flex; align-items: center; justify-content: center; width: 1.8rem; height: 1.8rem; border-radius: 50%; border: 1px solid var(--line-strong); font-weight: 800; font-size: .85em; }
+.todo li p { margin: 0; }
+.todo li .hint { display: block; }
+.todo li .btn { margin: 0; }
+.docs-link, .help-control { display: inline-flex; align-items: center; gap: var(--space-xs); }
+.external-icon { flex: none; }
+
+/* A paper backup, printed: the words and their facts, nothing else. */
+@media print {
+  .site-nav, .context-nav, .setup-steps, .sub-timeline, .sub-crumbs, .app-tabs, .step-foot, .check-line,
+  .phrase-head button, .phrase-box .steps, .qr-col, .no-print, [data-wallet-setup] > section > p,
+  [data-wallet-setup] [hidden] { display: none !important; }
+  .phrase-box { border: 0; padding: 0; }
+  .phrase-split { display: block; }
+  .seed-words, .seed-words.legacy { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .seed-words li { break-inside: avoid; }
+}
+
+@media (max-width: 760px) {
+  .phrase-split { grid-template-columns: 1fr; }
+  .todo li { grid-template-columns: 2rem minmax(0, 1fr); }
+  .todo li > :last-child { grid-column: 2; justify-self: start; }
+}
+
+/* Wallets (docs/wallets.md): radio cards and a wallet's page. */
 .radio-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: var(--space-md); margin: var(--space-sm) 0; border: 0; padding: 0; }
 .radio-card { display: flex; align-items: center; gap: var(--space-md); margin: 0; padding: var(--space-md) var(--space-lg); border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--paper-raised); font-weight: 400; cursor: pointer; }
 .radio-card:has(input:checked) { border-color: var(--ink); background: var(--tint-highlight); }
@@ -887,39 +1047,6 @@ a.order-id { display: inline-block; max-width: 11em; }
 .email-confirm-page { max-width: 34rem; }
 .signup-form .setting-field { margin: var(--space-lg) 0; }
 
-.app-tabs { display: flex; flex-wrap: wrap; gap: var(--space-xs); border-bottom: 1px solid var(--line); margin: var(--space-lg) 0; }
-.app-tabs button, .app-tabs button:hover { display: inline-flex; align-items: center; gap: var(--space-sm); margin: 0; padding: var(--space-sm) var(--space-md); background: none; border: 0; border-bottom: 3px solid transparent; border-radius: 0; color: var(--muted); }
-.app-tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--tab-current); }
-.app-panel { display: flex; flex-wrap: wrap; gap: var(--space-xl); align-items: flex-start; }
-.app-panel > .app-steps { flex: 999 1 22rem; min-width: 0; }
-.qr-panel { flex: 1 1 18rem; max-width: 21rem; display: flex; flex-direction: column; align-items: center; gap: var(--space-md); text-align: center; margin: 0; }
-.qr-panel .btn, .qr-panel button { margin: 0; }
-.qr-frame { background: var(--qr-bg); padding: var(--space-md); border-radius: var(--radius-sm); border: 1px solid var(--line); }
-.qr-frame svg { display: block; width: 15rem; height: 15rem; }
-.qr-hidden { display: flex; align-items: center; justify-content: center; width: 16.5rem; height: 16.5rem; padding: var(--space-lg); border: 1px dashed var(--line-strong); border-radius: var(--radius-sm); background: var(--surface-sunken); font-weight: 600; }
-.backup-methods { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: var(--space-md); margin: var(--space-lg) 0; border: 0; padding: 0; }
-.backup-methods .radio-card { align-items: flex-start; }
-.backup-methods .radio-card input { margin-top: .3rem; }
-
-.seed-words { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-sm); list-style: none; padding: 0; margin: 0 0 var(--space-md); }
-.seed-words.legacy { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-.seed-words li { display: flex; gap: var(--space-sm); align-items: baseline; padding: var(--space-sm) var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--paper-raised); font-family: var(--font-mono); font-weight: 600; }
-.seed-words li::before { content: attr(data-n); min-width: 1.3rem; text-align: right; color: var(--muted); font-size: .8rem; }
-.seed-words.concealed li { filter: blur(6px); }
-.facts { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-xs) var(--space-lg); margin: .6em 0; }
-.facts dt { color: var(--muted); }
-.facts dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
-.check-line { display: flex; gap: var(--space-sm); align-items: flex-start; font-weight: 600; }
-.check-line input { width: auto; margin: .25rem 0 0; accent-color: var(--accent-text); }
-.word-check.ok input { border: 2px solid var(--success); }
-.word-check.bad input { border: 2px solid var(--error); }
-.field-error { display: block; color: var(--error); font-weight: 700; font-size: .88em; margin-top: .15em; }
-.field-ok { display: block; color: var(--success); font-weight: 700; font-size: .88em; margin-top: .15em; }
-.form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--space-md); }
-.form-actions .spacer { flex-grow: 1; }
-.skip-warning { border: 2px solid var(--error); border-radius: var(--radius-md); background: var(--paper-raised); padding: var(--space-xl); margin: 1.2rem 0; }
-.skip-warning h2 { border-bottom: 0; margin-top: var(--space-sm); }
-
 .btn-danger, .btn-danger:hover { color: var(--btn-danger-ink); background: var(--btn-danger-bg); border-color: var(--btn-danger-bg); }
 .btn-danger:hover { border-color: var(--ink); }
 .danger-zone { border: 2px solid var(--error); border-radius: var(--radius-md); padding: var(--space-xl); background: var(--paper-raised); margin: 1.2rem 0; }
@@ -936,9 +1063,6 @@ a.order-id { display: inline-block; max-width: 11em; }
 .rename-form { display: flex; flex-wrap: wrap; gap: var(--space-sm); align-items: flex-end; }
 .rename-form label { flex: 1 1 14rem; margin: 0; }
 .rename-form button { margin-top: 0; }
-.answer-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1.2rem; margin: 1.2rem 0; }
-.answer-grid .btn { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-xs); margin: 0; padding: var(--space-lg) var(--space-xl); border-radius: var(--radius-md); font-weight: 400; text-align: left; background: var(--paper-raised); border-color: var(--line-strong); }
-.answer-grid .btn strong { font-size: 1.1em; }
 @media (max-width: 640px) {
   .pick-grid.three { grid-template-columns: 1fr; }
   .seed-words, .seed-words.legacy { grid-template-columns: repeat(2, minmax(0, 1fr)); }

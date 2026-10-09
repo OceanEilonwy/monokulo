@@ -1,5 +1,4 @@
-//! The dashboard (`/`), and the "add a store" picker + guided-flow
-//! instructional page.
+//! The dashboard (`/`).
 
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -10,8 +9,8 @@ use crate::views;
 use crate::views::dashboard::{DashboardOrderRow, DashboardStoreRow, DashboardViewModel};
 
 use super::dashboard::redirect_302;
-use super::orders::{display_name_for, health_of_tenant_lookup};
-use super::{resolve_authed_user, AppState, AuthedUser};
+use super::orders::health_of_tenant_lookup;
+use super::{resolve_authed_user, AppState};
 
 /// `GET /` - the dashboard for a signed-in merchant, the login page for
 /// anyone else.
@@ -43,33 +42,6 @@ pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response
 /// `GET /dashboard`: the dashboard moved to `/` (308, permanent).
 pub async fn dashboard_moved() -> Redirect {
     Redirect::permanent("/")
-}
-
-/// `GET /dashboard/stores/new` - the picker between the two connect
-/// flows (WBS follow-up: "custom (advanced)" is the existing
-/// `/dashboard/connect` form; "simple -> woocommerce" is the guided page
-/// below). Behind [`AuthedUser`] like every other `/dashboard/*` route.
-pub async fn new_store_picker(
-    State(state): State<AppState>,
-    AuthedUser(user, _): AuthedUser,
-) -> Response {
-    let chrome = super::page_chrome(&state, Some(&user), "/dashboard/stores/new").await;
-    views::connect::new_store_picker_page(&chrome).into_response()
-}
-
-/// `GET /dashboard/stores/new/woocommerce` - a real live connect *form*
-/// can't be rendered here: the generic `/connect/{platform}` flow needs a
-/// `site_url`/`return_url`/`nonce` that only the WooCommerce plugin itself
-/// can supply (see `http/connect.rs`'s own module doc comment) - the
-/// dashboard has no way to manufacture a legitimate `return_url` back into
-/// someone else's WordPress admin. So this is instructions, not a form; see
-/// this page's own template for the reasoning restated for the merchant.
-pub async fn woocommerce_instructions(
-    State(state): State<AppState>,
-    AuthedUser(user, _): AuthedUser,
-) -> Response {
-    let chrome = super::page_chrome(&state, Some(&user), "/dashboard/stores/new/woocommerce").await;
-    views::store_detail::woocommerce_instructions_page(&chrome).into_response()
 }
 
 /// The dashboard (`GET /`, signed in): every store the user has
@@ -115,12 +87,14 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
 
         let tenant_result = state.engine.client.get_tenant(&sk).await;
         let (health, health_label) = health_of_tenant_lookup(&tenant_result);
-        let display_name = display_name_for(&row.site_url);
+        let display_name = row.name.clone();
 
         stores.push(DashboardStoreRow {
             connection_id: row.id.clone(),
             display_name: display_name.clone(),
-            platform: row.platform.clone(),
+            platform: crate::stores::StoreKind::of_platform(&row.platform)
+                .label()
+                .to_owned(),
             public_key: row.tenant_public_key.clone(),
             health,
             health_label,
@@ -388,7 +362,7 @@ mod tests {
             assert_eq!(response.status(), StatusCode::OK);
             let html = body_text(response).await;
             assert!(
-                html.contains(r#"href="/dashboard/stores/new""#),
+                html.contains(r#"href="/setup""#),
                 "expected the add-a-store CTA, got: {html}"
             );
         }
@@ -468,85 +442,6 @@ mod tests {
                 html.contains("Total received"),
                 "expected the total-received summary, got: {html}"
             );
-        }
-
-        #[tokio::test]
-        async fn new_store_picker_requires_auth_and_links_both_connect_flows() {
-            let (state, _engine) = test_state_with_real_engine().await;
-            let router = build_router(state);
-
-            let unauthed = router
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("GET")
-                        .uri("/dashboard/stores/new")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(unauthed.status(), StatusCode::UNAUTHORIZED);
-
-            let session_token = signed_up_and_logged_in_session_token(
-                &router,
-                "picker@example.com",
-                "correct horse battery staple",
-            )
-            .await;
-            let response = router
-                .oneshot(
-                    Request::builder()
-                        .method("GET")
-                        .uri("/dashboard/stores/new")
-                        .header("authorization", format!("Bearer {session_token}"))
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            let html = body_text(response).await;
-            assert!(html.contains(r#"href="/dashboard/stores/new/woocommerce""#));
-            assert!(html.contains(r#"href="/dashboard/connect""#));
-        }
-
-        #[tokio::test]
-        async fn woocommerce_instructions_page_requires_auth() {
-            let (state, _engine) = test_state_with_real_engine().await;
-            let router = build_router(state);
-
-            let unauthed = router
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("GET")
-                        .uri("/dashboard/stores/new/woocommerce")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(unauthed.status(), StatusCode::UNAUTHORIZED);
-
-            let session_token = signed_up_and_logged_in_session_token(
-                &router,
-                "wc-instructions@example.com",
-                "correct horse battery staple",
-            )
-            .await;
-            let response = router
-                .oneshot(
-                    Request::builder()
-                        .method("GET")
-                        .uri("/dashboard/stores/new/woocommerce")
-                        .header("authorization", format!("Bearer {session_token}"))
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
         }
     }
 }

@@ -1,57 +1,79 @@
-//! A merchant's wallets (docs/wallets.md): choosing how to set one up,
-//! bringing one's own, making a new one in the browser (backing up its
-//! recovery phrase and checking the backup), the list, and a wallet's page.
-//! Handlers: `http::wallets`.
+//! A merchant's wallets (docs/wallets.md): choosing how to add one, bringing
+//! one's own, making a new one in the browser (backing up its recovery
+//! phrase and checking the backup), the list, and a wallet's page.
+//!
+//! The screens for adding a wallet are the same in setup's Wallet step
+//! (`/setup/wallet/...`) and on the Account page (`/account/wallets/...`):
+//! a [`Flow`] says which. Handlers: `http::setup`, `http::wallets`.
 
 use maud::{html, Markup};
 
 use super::controls::Choice;
+use super::setup::{SetupContext, WalletAt, WalletPath};
 use super::{layout, layout_with_head, PageChrome};
 use crate::wallets::{AppMethod, WalletApp, WALLET_APPS};
 
-/// Where a merchant setting up their first wallet is: the steps shown above
-/// the page.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum SetupStep {
+/// Where a wallet is being added: in setup's Wallet step, on the way to
+/// making a store, or from the Account page.
+#[derive(Clone, Copy)]
+pub enum Flow<'a> {
+    Setup(&'a SetupContext),
     Account,
-    Wallet,
-    Ready,
 }
 
-pub fn setup_steps(current: SetupStep) -> Markup {
-    let steps = [
-        (SetupStep::Account, "Account"),
-        (SetupStep::Wallet, "Wallet"),
-        (SetupStep::Ready, "Ready"),
-    ];
-    let at = steps.iter().position(|(s, _)| *s == current).unwrap_or(0);
-    html! {
-        ol class="setup-steps" aria-label="Setup progress" {
-            @for (i, (_, label)) in steps.iter().enumerate() {
-                @if i == at {
-                    li aria-current="step" { span class="n" { (i + 1) } (label) }
-                } @else if i < at {
-                    li class="done" { span class="n" { (i + 1) } (label) }
-                } @else {
-                    li { span class="n" { (i + 1) } (label) }
-                }
+impl Flow<'_> {
+    /// The choice screen, with the name and network kept.
+    pub fn choice_href(&self, name: &str, network: &str) -> String {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        if let Flow::Setup(setup) = self {
+            for (key, value) in &setup.fields {
+                query.append_pair(key, value);
             }
         }
+        query
+            .append_pair("name", name)
+            .append_pair("network", network);
+        let base = match self {
+            Flow::Setup(_) => "/setup/wallet",
+            Flow::Account => "/account/wallets/add",
+        };
+        format!("{base}?{}", query.finish())
     }
-}
 
-fn backup_steps(at: usize) -> Markup {
-    html! {
-        ol class="setup-steps" aria-label="New wallet progress" {
-            @for (i, label) in ["Back up", "Check"].iter().enumerate() {
-                @if i == at {
-                    li aria-current="step" { span class="n" { (i + 1) } (label) }
-                } @else if i < at {
-                    li class="done" { span class="n" { (i + 1) } (label) }
-                } @else {
-                    li { span class="n" { (i + 1) } (label) }
-                }
-            }
+    fn keys_action(&self) -> &'static str {
+        match self {
+            Flow::Setup(_) => "/setup/wallet/keys",
+            Flow::Account => "/account/wallets/import",
+        }
+    }
+
+    fn new_action(&self) -> &'static str {
+        match self {
+            Flow::Setup(_) => "/setup/wallet/new",
+            Flow::Account => "/account/wallets/new",
+        }
+    }
+
+    fn hidden(&self) -> Markup {
+        match self {
+            Flow::Setup(setup) => setup.hidden(),
+            Flow::Account => html! {},
+        }
+    }
+
+    fn steps(&self, path: WalletPath, at: usize) -> Markup {
+        let wallet = WalletAt { path, at };
+        match self {
+            Flow::Setup(_) => super::setup::steps(super::setup::Step::Wallet, Some(wallet)),
+            Flow::Account => super::setup::wallet_steps(wallet),
+        }
+    }
+
+    /// The button that adds the wallet (and, in setup, makes the store).
+    fn add_label(&self) -> &'static str {
+        match self {
+            Flow::Setup(_) => "Add the wallet and make the store",
+            Flow::Account => "Add wallet",
         }
     }
 }
@@ -90,10 +112,12 @@ fn lock_icon() -> Markup {
     }
 }
 
-fn back_arrow() -> Markup {
+/// The refresh arrow of "Make a different phrase".
+fn regenerate_icon() -> Markup {
     html! {
-        svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" {
-            path d="M19 12H5M11 18l-6-6 6-6" {}
+        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" {
+            path d="M20 11a8 8 0 1 0-2.3 5.7" {}
+            path d="M20 4v7h-7" {}
         }
     }
 }
@@ -104,6 +128,7 @@ fn network_select(selected: &str) -> Markup {
             select name="network" {
                 @for network in ["mainnet", "stagenet", "testnet"] {
                     (Choice::new(network, network)
+                        .network(network)
                         .note(if network == "mainnet" { "real payments" } else { "test network" })
                         .selected(network == selected))
                 }
@@ -112,59 +137,129 @@ fn network_select(selected: &str) -> Markup {
     }
 }
 
-// -- Choosing how to set up a wallet ---------------------------------------
-
-pub struct ChoiceViewModel {
-    /// The first wallet of a new account: the setup steps are shown.
-    pub onboarding: bool,
-    /// The plugin's site, when setting up a wallet on the way to
-    /// connecting a shop.
-    pub connecting_site: Option<String>,
-    /// The name it will get if none is typed.
-    pub suggested_name: String,
-    pub name: String,
-    pub network: String,
-    /// Where to go once the wallet is added (`?next=`).
-    pub next: Option<String>,
+/// "Where do I find these keys?": where each app shows a wallet's private
+/// view key and public spend key, on the forms that ask for them.
+pub fn keys_help() -> Markup {
+    html! {
+        details class="keys-help" {
+            summary { "Where do I find these keys?" }
+            div class="keys-help-body" {
+                h4 { span class="logo-row" { (app_logo("cake", 20, None)) "Cake Wallet" } }
+                p { "Settings (the gear icon), Recovery & Keys, Show my Recovery Phrase & Keys, then the Keys tab." }
+                h4 { span class="logo-row" { (app_logo("feather", 20, None)) "Feather" } }
+                p { "The Wallet menu, then Keys." }
+                h4 { span class="logo-row" { (app_logo("gui", 20, None)) "Monero GUI" } }
+                p { "Settings, then Seed & keys." }
+                h4 { span class="logo-row" { (app_logo("gui", 20, None)) "Monero CLI (monero-wallet-cli)" } }
+                ol {
+                    li {
+                        code { "viewkey" } " shows two lines. Copy the " strong { "secret" } " one: that's the private view key."
+                        pre { span class="copy-this" { "secret: 6a1b…e04d" } "\npublic: 9c2e…71aa" }
+                    }
+                    li {
+                        code { "spendkey" } " shows two lines too. Copy the " strong { "public" } " one only. Never enter the secret spend key anywhere."
+                        pre { "secret: (never share this)\n" span class="copy-this" { "public: 3f9a…c21e" } }
+                    }
+                    li { code { "address" } " shows the wallet's main address, to check against the one Monokulo shows once it's added." }
+                    li { code { "restore_height" } " shows where the wallet's history starts. Monokulo doesn't need it: it watches for payments from now on." }
+                }
+            }
+        }
+    }
 }
 
-/// `GET /account/wallets/setup`: create a new wallet, bring your own, or
-/// (coming soon) a hardware wallet. Creating one needs JavaScript: the card
-/// is drawn unavailable, and `wallet-setup.js` turns it on.
-pub fn choice_page(chrome: &PageChrome, data: &ChoiceViewModel) -> Markup {
+// -- Choosing how to add a wallet ----------------------------------------------
+
+pub struct ChoiceViewModel {
+    /// The account's wallets, to use one already added (in setup only).
+    pub wallets: Vec<crate::db::WalletSummary>,
+    pub name: String,
+    /// Why the name can't be used, when it can't.
+    pub name_problem: Option<String>,
+    pub network: String,
+    pub error: Option<String>,
+}
+
+/// Whether a wallet name is free, checked before anything is made: drawn
+/// with the field, and again by `GET /account/wallets/name-check` as the
+/// name is changed.
+pub fn name_check(name: &str, problem: Option<&str>) -> Markup {
+    html! {
+        @if let Some(problem) = problem {
+            span class="field-check bad" id="wallet-name-check" role="status" { "✕ " (problem) }
+        } @else if name.trim().is_empty() {
+            span class="field-check" id="wallet-name-check" role="status" { "Leave it blank and a name is picked for you." }
+        } @else {
+            span class="field-check ok" id="wallet-name-check" role="status" { "✓ Free to use. Checked now, before anything is made." }
+        }
+    }
+}
+
+/// `GET /setup/wallet` and `GET /account/wallets/add`: use a wallet already
+/// added (in setup), or name a new one and say where it comes from: made in
+/// the browser, brought in with its keys, or (coming soon) a hardware
+/// wallet. Making one needs JavaScript: that card is drawn unavailable, and
+/// `wallet-setup.js` turns it on.
+pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) -> Markup {
     let body = html! {
         div class="wrap wallet-choice" {
-            @if data.onboarding {
-                (setup_steps(SetupStep::Wallet))
-            } @else {
-                nav class="context-nav" aria-label="Breadcrumb" { a href="/account?tab=wallets" { "Wallets" } }
+            @match flow {
+                Flow::Setup(setup) => {
+                    nav class="context-nav" aria-label="Breadcrumb" { a href=(format!("/setup?{}", setup.query())) { "Store" } }
+                }
+                Flow::Account => {
+                    nav class="context-nav" aria-label="Breadcrumb" { a href="/account?tab=wallets" { "Wallets" } }
+                }
             }
-            h1 { @if data.onboarding { "Set up your wallet" } @else { "Add a wallet" } }
-            @if let Some(site) = &data.connecting_site {
-                p class="notice" { "This is the wallet " strong { (site) } "'s Monero payments will go to." }
+            (flow.steps(WalletPath::New, 0))
+            h1 {
+                @match flow {
+                    Flow::Setup(setup) => { "Where should " (setup.store_name) "'s money go?" }
+                    Flow::Account => "Add a wallet",
+                }
             }
             p {
                 "Payments go straight to your own Monero wallet. Monokulo only gets watch-only keys: it sees "
                 "payments arrive and can never spend them."
             }
-            form method="get" action="/account/wallets/import" data-wallet-choice {
-                @if let Some(next) = &data.next {
-                    input type="hidden" name="next" value=(next);
-                }
-                label {
-                    "Wallet name " span class="hint" { "(optional)" }
-                    input type="text" name="name" value=(data.name) placeholder=(data.suggested_name) maxlength=(crate::wallets::MAX_NAME_LEN) autocomplete="off";
-                    span class="field-help" {
-                        "Leave it blank and we'll call it " strong { (data.suggested_name) } ". You can rename it any time."
+            @if let Some(error) = &data.error {
+                p class="error" role="alert" { (error) }
+            }
+            @if let (Flow::Setup(_), false) = (flow, data.wallets.is_empty()) {
+                form method="post" action="/setup/wallet/existing" class="already" {
+                    (flow.hidden())
+                    label for="existing-wallet" { strong { "Use a wallet you already added" } }
+                    mk-select {
+                        select id="existing-wallet" name="wallet_id" required {
+                            @for w in &data.wallets {
+                                (Choice::new(&w.wallet.id, &w.wallet.name)
+                                    .detail(short_address(&w.wallet.primary_address))
+                                    .network(&w.wallet.network)
+                                    .note(stores_label(w.store_count)))
+                            }
+                        }
                     }
+                    button type="submit" { "Use this wallet" }
                 }
-                input type="hidden" name="suggested" value=(data.suggested_name);
-                details {
+                p class="or-divider" role="separator" { "or" }
+            }
+            form method="get" action=(flow.keys_action()) data-wallet-choice {
+                (flow.hidden())
+                div class="setting-field wallet-name-field" {
+                    div class="setting-label-row" { label class="setting-label" for="wallet-name" { "Wallet name" } }
+                    p class="field-help hint" { "Shown when you pick a wallet for a store. You can rename it any time." }
+                    input id="wallet-name" type="text" name="name" value=(data.name) maxlength=(crate::wallets::MAX_NAME_LEN)
+                        autocomplete="off" aria-describedby="wallet-name-check"
+                        aria-invalid=[data.name_problem.as_ref().map(|_| "true")]
+                        fx-action="/account/wallets/name-check" fx-target="#wallet-name-check" fx-swap="outerHTML";
+                    (name_check(&data.name, data.name_problem.as_deref()))
+                }
+                details class="more-options" {
                     summary { "More options" }
-                    label {
-                        "Network"
+                    div class="setting-field" {
+                        div class="setting-label-row" { label class="setting-label" for="wallet-network" { "Network" } }
+                        p class="field-help hint" { "Leave on mainnet unless this is a test wallet." }
                         (network_select(&data.network))
-                        span class="field-help" { "Leave on mainnet unless this is a test wallet." }
                     }
                 }
                 div class="pick-grid three" {
@@ -174,7 +269,7 @@ pub fn choice_page(chrome: &PageChrome, data: &ChoiceViewModel) -> Markup {
                                 span class="icon-tile" aria-hidden="true" {
                                     svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true" { path d="M12 5v14M5 12h14" {} }
                                 }
-                                span class="tag" data-js-tag { "Unavailable" }
+                                span class="tag" data-js-tag { "Needs JavaScript" }
                             }
                             h3 { "Create a new wallet" }
                             p class="grow" {
@@ -182,7 +277,7 @@ pub fn choice_page(chrome: &PageChrome, data: &ChoiceViewModel) -> Markup {
                                 "Stack Wallet, or write it down, then we check it."
                             }
                             p class="hint" { (lock_icon()) " The phrase is made and kept on this page. It is never sent to Monokulo." }
-                            button type="submit" class="btn-primary" formaction="/account/wallets/new" disabled data-create-wallet { "Create a new wallet" }
+                            button type="submit" class="btn-primary" formaction=(flow.new_action()) disabled data-create-wallet { "Create a new wallet" }
                         }
                     }
                     section class="pick-card" {
@@ -200,7 +295,7 @@ pub fn choice_page(chrome: &PageChrome, data: &ChoiceViewModel) -> Markup {
                             "Paste its private view key and public spend key."
                         }
                         p class="hint" { "Works without JavaScript." }
-                        button type="submit" formaction="/account/wallets/import" { "Bring your own wallet" }
+                        button type="submit" formaction=(flow.keys_action()) { "Bring your own wallet" }
                     }
                     section class="pick-card unavailable" {
                         div class="faded" {
@@ -217,61 +312,60 @@ pub fn choice_page(chrome: &PageChrome, data: &ChoiceViewModel) -> Markup {
                         }
                     }
                 }
-                div class="warning" id="create-needs-js" data-needs-js-reason {
+                p class="warning" id="create-needs-js" data-needs-js-reason {
                     "Creating a new wallet needs JavaScript: its recovery phrase is made inside your browser so it "
                     "never reaches our server. Turn JavaScript on for this site and reload, or bring your own wallet."
                 }
             }
-            @if !data.onboarding {
-                p class="hint" { "Need separate wallets for different shops? Add as many as you like, and pick one per store." }
+            div class="step-foot" {
+                @match flow {
+                    Flow::Setup(setup) => { a class="btn" href=(format!("/setup?{}", setup.query())) { "Back" } }
+                    Flow::Account => { a class="btn" href="/account?tab=wallets" { "Back" } }
+                }
             }
         }
         // The script fetches its module from where the page says.
         script src=(crate::assets::url("wallet-setup.js")) data-module=(crate::assets::url("wallet-setup.wasm")) defer {}
     };
-    layout(chrome, "Set up your wallet - Monokulo", body)
+    let title = match flow {
+        Flow::Setup(_) => "Choose a wallet - Monokulo",
+        Flow::Account => "Add a wallet - Monokulo",
+    };
+    layout(chrome, title, body)
 }
 
 // -- Bringing your own wallet ----------------------------------------------
 
 pub struct ImportViewModel {
-    pub onboarding: bool,
     pub error: Option<String>,
+    /// Decided on the choice screen, shown here and sent on.
     pub name: String,
-    pub suggested_name: String,
-    pub spend_pubkey_hex: String,
     pub network: String,
-    pub next: Option<String>,
+    pub spend_pubkey_hex: String,
     pub custody_choices: Vec<super::connect::CustodyChoice>,
     pub snp_entry: Option<super::key_entry::SnpKeyEntry>,
 }
 
-/// `GET`/`POST /account/wallets/import`: "Bring your own wallet".
-pub fn import_page(chrome: &PageChrome, data: &ImportViewModel) -> Markup {
+/// `GET`/`POST /setup/wallet/keys` and `/account/wallets/import`: "Bring
+/// your own wallet". Works without JavaScript.
+pub fn import_page(chrome: &PageChrome, flow: Flow<'_>, data: &ImportViewModel) -> Markup {
+    let back = flow.choice_href(&data.name, &data.network);
     let body = html! {
         div class="wrap" {
-            @if data.onboarding { (setup_steps(SetupStep::Wallet)) }
-            nav class="context-nav" aria-label="Breadcrumb" {
-                a href=(setup_link(data.next.as_deref())) { "Set up your wallet" }
-            }
+            nav class="context-nav" aria-label="Breadcrumb" { a href=(back) { "Wallet kind" } }
+            (flow.steps(WalletPath::Keys, 1))
             h1 { "Bring your own wallet" }
             p {
-                "Connect a Monero wallet you already have. Monokulo asks for two watch-only keys and never your "
-                "recovery phrase or private spend key."
+                "Connect a Monero wallet you already have as " strong { (if data.name.is_empty() { "a new wallet" } else { &data.name }) }
+                " on " (data.network) ". Monokulo asks for two watch-only keys and never your recovery phrase or private spend key."
             }
             @if let Some(error) = &data.error {
                 p class="error" role="alert" { (error) }
             }
-            form method="post" action="/account/wallets/import" {
-                @if let Some(next) = &data.next {
-                    input type="hidden" name="next" value=(next);
-                }
-                label {
-                    "Wallet name " span class="hint" { "(optional)" }
-                    input type="text" name="name" value=(data.name) placeholder=(data.suggested_name) maxlength=(crate::wallets::MAX_NAME_LEN) autocomplete="off";
-                    span class="field-help" { "Shown when you pick a wallet for a store. Blank: we'll call it " strong { (data.suggested_name) } "." }
-                }
-                input type="hidden" name="suggested" value=(data.suggested_name);
+            form method="post" action=(flow.keys_action()) {
+                (flow.hidden())
+                input type="hidden" name="name" value=(data.name);
+                input type="hidden" name="network" value=(data.network);
                 (super::key_entry::key_fields(
                     "",
                     &data.spend_pubkey_hex,
@@ -279,31 +373,15 @@ pub fn import_page(chrome: &PageChrome, data: &ImportViewModel) -> Markup {
                     html! { "Lets Monokulo see payments arriving. It cannot spend." },
                     html! { "The " em { "public" } " half of your spend key. Never enter the private spend key anywhere." },
                 ))
-                details {
-                    summary { "Where do I find these keys?" }
-                    dl class="facts" {
-                        dt { span class="logo-row" { (app_logo("cake", 20, None)) "Cake Wallet" } }
-                        dd { "Settings (gear icon), Recovery & Keys, Show my Recovery Phrase & Keys, Keys tab" }
-                        dt { span class="logo-row" { (app_logo("feather", 20, None)) "Feather" } }
-                        dd { "Wallet menu, Keys" }
-                        dt { span class="logo-row" { (app_logo("gui", 20, None)) "Monero GUI" } }
-                        dd { "Settings, Seed & keys" }
-                        dt { span class="logo-row" { (app_logo("gui", 20, None)) "Monero CLI" } }
-                        dd { code { "viewkey" } " and " code { "spendkey" } " (copy the public line only)" }
-                    }
-                }
-                label {
-                    "Network"
-                    (network_select(&data.network))
-                    span class="field-help" { "Leave on mainnet unless this is a test wallet." }
-                }
+                (keys_help())
                 (super::connect::custody_select(&data.custody_choices))
                 @if let Some(entry) = &data.snp_entry {
                     (super::key_entry::snp_section(entry, (!data.custody_choices.is_empty()).then_some("key_custody_backend")))
                 }
-                div class="form-actions" {
-                    button type="submit" class="btn-primary" { "Add wallet" }
-                    a class="btn" href=(setup_link(data.next.as_deref())) { "Back" }
+                div class="step-foot" {
+                    a class="btn" href=(back) { "Back" }
+                    span class="spacer" {}
+                    button type="submit" class="btn-primary" { (flow.add_label()) }
                 }
             }
         }
@@ -311,46 +389,41 @@ pub fn import_page(chrome: &PageChrome, data: &ImportViewModel) -> Markup {
     layout(chrome, "Bring your own wallet - Monokulo", body)
 }
 
-fn setup_link(next: Option<&str>) -> String {
-    match next {
-        Some(next) => format!("/account/wallets/setup?next={}", url_encode(next)),
-        None => "/account/wallets/setup".to_owned(),
-    }
-}
-
 // -- Making a new wallet ---------------------------------------------------
 
 pub struct CreateViewModel {
-    pub onboarding: bool,
-    /// The name the wallet gets: typed, or picked now so the restore link
-    /// and the pages can use it.
+    /// The name the wallet gets: typed on the choice screen, or picked for
+    /// it, so the restore link and the pages can use it.
     pub name: String,
     pub network: String,
     /// The chain's height now, for restoring from the 25-word phrase.
     pub restore_height: Option<u64>,
-    pub next: Option<String>,
     /// Set when the keys go to SEV-SNP key storage, encrypted in the page.
     pub snp_entry: Option<super::key_entry::SnpKeyEntry>,
     pub error: Option<String>,
 }
 
-/// `GET /account/wallets/new`: the recovery phrase is made, backed up and
-/// checked on this page (`static/wallet-setup.js` with the `wallet-setup`
-/// WebAssembly module); only the watch-only keys are posted. Every screen is
-/// drawn here and shown by the script.
-pub fn create_page(chrome: &PageChrome, data: &CreateViewModel) -> Markup {
+/// `GET /setup/wallet/new` and `/account/wallets/new`: the recovery phrase
+/// is made, backed up and checked on this page (`static/wallet-setup.js`
+/// with the `wallet-setup` WebAssembly module); only the watch-only keys
+/// are posted, and only once the check passes or is skipped, so nothing is
+/// made before then and Back is always safe. Every screen is drawn here and
+/// shown by the script.
+pub fn create_page(chrome: &PageChrome, flow: Flow<'_>, data: &CreateViewModel) -> Markup {
     let height = data
         .restore_height
         .map(|h| h.to_string())
         .unwrap_or_default();
+    let back = flow.choice_href(&data.name, &data.network);
     let body = html! {
         div class="wrap" {
+            nav class="context-nav" aria-label="Breadcrumb" { a href=(back) { "Wallet kind" } }
             noscript {
                 h1 { "Create a new wallet" }
                 div class="error" role="alert" {
                     "Creating a wallet needs JavaScript: its recovery phrase is made inside your browser so it never "
-                    "reaches our server. Turn JavaScript on for this site and reload, or "
-                    a href=(format!("/account/wallets/import{}", next_query(data.next.as_deref()))) { "bring your own wallet" } "."
+                    "reaches our server. Turn JavaScript on for this site and reload, or go "
+                    a href=(back) { "back and bring your own wallet" } "."
                 }
             }
             @if let Some(error) = &data.error {
@@ -362,99 +435,53 @@ pub fn create_page(chrome: &PageChrome, data: &CreateViewModel) -> Markup {
                     p role="status" data-loading-status { "Your browser is making the recovery phrase." }
                 }
                 section data-screen="backup" hidden {
-                    (backup_steps(0))
+                    (flow.steps(WalletPath::New, 1))
                     h1 { "Back up " (data.name) }
                     p {
-                        "Its 16-word recovery phrase is the wallet. Save it one of these ways: either is enough, both "
-                        "is safest. Monokulo never sees it and can't show it again later."
+                        "These words are the wallet. Anyone with them can spend from it; without them, nobody can get it "
+                        "back, not even us. Save them one of these ways."
                     }
-                    fieldset class="backup-methods" {
-                        legend class="visually-hidden" { "Backup method" }
-                        label class="radio-card" {
-                            input type="radio" name="backup-method" value="app" checked data-method-choice;
-                            span {
-                                strong { "Save it in a wallet app" } br;
-                                span class="hint" { "Scan a QR code with your phone. The app keeps the phrase for you." }
-                            }
-                        }
-                        label class="radio-card" {
-                            input type="radio" name="backup-method" value="paper" data-method-choice;
-                            span {
-                                strong { "Write it down" } br;
-                                span class="hint" { "16 words on paper, kept somewhere safe." }
-                            }
-                        }
-                    }
-                    div class="warning" {
-                        "Anyone with this phrase or QR code can spend your money. Show it only where no one can see your "
-                        "screen. Don't photograph it or store it online."
-                    }
-                    div data-method-panel="app" {
-                        div class="app-tabs" role="tablist" aria-label="Wallet app" {
-                            @for (i, app) in WALLET_APPS.iter().enumerate() {
-                                button type="button" role="tab" id=(format!("tab-{}", app.key)) aria-controls=(format!("app-{}", app.key)) aria-selected=(if i == 0 { "true" } else { "false" }) data-app-tab=(app.key) {
-                                    (app_logo(app.key, 22, None)) (app.name)
-                                }
-                            }
-                        }
+                    div class="app-tabs" role="tablist" aria-label="Where to save it" {
                         @for (i, app) in WALLET_APPS.iter().enumerate() {
-                            (app_panel(app, i == 0, &height))
-                        }
-                    }
-                    div data-method-panel="paper" hidden {
-                        div class="box" {
-                            ol class="seed-words" data-words aria-label="Recovery phrase" {}
-                            dl class="facts" {
-                                dt { "Phrase type" } dd { "Polyseed, 16 words" }
-                                dt { "Wallet birthday" } dd { "Today " span class="hint" { "(kept in the phrase, so apps restore quickly)" } }
-                            }
-                            div class="form-actions" {
-                                button type="button" data-toggle-words { "Hide words" }
-                                button type="button" data-print { "Print a backup sheet" }
-                                span class="hint" { "No copy button on purpose: other apps can read your clipboard." }
+                            button type="button" role="tab" id=(format!("tab-{}", app.key)) aria-controls=(format!("app-{}", app.key)) aria-selected=(if i == 0 { "true" } else { "false" }) data-app-tab=(app.key) {
+                                @for logo in app.logos { (app_logo(logo, 22, None)) }
+                                (app.tab)
                             }
                         }
+                        button type="button" role="tab" id="tab-paper" aria-controls="app-paper" aria-selected="false" data-app-tab="paper" { "On paper" }
                     }
-                    div class="form-actions" {
-                        label class="check-line" {
-                            input type="checkbox" data-backed-up;
-                            span data-backed-up-label="app" { "It's open in my wallet app." }
-                            span data-backed-up-label="paper" hidden { "I've written all 16 words down, in order, and put them somewhere safe." }
-                        }
+                    @for (i, app) in WALLET_APPS.iter().enumerate() {
+                        (app_panel(app, i == 0, &height))
                     }
-                    div class="form-actions" {
-                        button type="button" class="btn-primary" data-go="check" disabled { "Next: check my backup" }
+                    (paper_panel())
+                    div class="step-foot" {
+                        a class="btn" href=(back) { "Back" }
+                        button type="button" data-go="skip" { "Skip backup…" }
                         span class="spacer" {}
-                        button type="button" data-go="skip" { "Skip backup" }
+                        button type="button" class="btn-primary" data-go="check" disabled { "Next: check two words" }
                     }
                 }
                 section data-screen="check" hidden {
-                    (backup_steps(1))
-                    h1 { "Check your backup" }
-                    @for app in WALLET_APPS {
-                        div class="box find-words" data-find=(app.key) hidden {
-                            div class="logo-row" { (app_logo(app.key, 36, None)) strong { "Find the words in " (app.name) ":" } }
-                            ol class="steps" { @for step in app.find_words_steps { li { (step) } } }
-                        }
-                    }
-                    div class="box find-words" data-find="paper" hidden {
-                        strong { "Get your paper copy." }
-                        p { "Read each word asked for below from it." }
-                    }
-                    form class="box" data-check-form novalidate {
-                        p { "Type these three words. This page no longer shows them, so it checks what you saved." }
-                        @for i in 0..3 {
-                            label class="word-check" data-word-check=(i) {
-                                span data-word-label { "Word" }
-                                input type="text" autocomplete="off" autocapitalize="off" spellcheck="false" class="mono";
-                                span data-word-message aria-live="polite" {}
+                    (flow.steps(WalletPath::New, 2))
+                    h1 { "Check two words" }
+                    p data-check-intro { "Pick each word from your backup. This checks that what you saved is right." }
+                    div class="word-quiz" {
+                        @for i in 0..2 {
+                            div class="word-q" data-question=(i) {
+                                h3 data-question-label { "Word" }
+                                div class="picks" role="group" {
+                                    @for _ in 0..4 { button type="button" data-pick {} }
+                                }
+                                p class="q-note" data-question-note aria-live="polite" {}
                             }
                         }
-                        p class="hint" { (lock_icon()) " When all three match, your browser works out the wallet's watch-only keys and sends only those to Monokulo." }
-                        div class="form-actions" {
-                            button type="button" data-go="backup" { (back_arrow()) " Back to my backup" }
-                            span class="spacer" {}
-                            button type="submit" class="btn-primary" { "Check and add wallet" }
+                    }
+                    p class="hint" { (lock_icon()) " Then your browser works out the wallet's watch-only keys and sends only those to Monokulo." }
+                    div class="step-foot" {
+                        button type="button" data-go="backup" { "Back" }
+                        span class="spacer" {}
+                        button type="button" class="btn-primary" data-check-next disabled {
+                            "Continue anyway in " span class="countdown" data-countdown { "20 s" }
                         }
                     }
                 }
@@ -471,7 +498,7 @@ pub fn create_page(chrome: &PageChrome, data: &CreateViewModel) -> Markup {
                                 strong { "nobody can ever spend that money." } " It's lost for good."
                             }
                         }
-                        button type="button" class="btn-primary" data-go="backup" { (back_arrow()) " Go back and back up" }
+                        button type="button" class="btn-primary" data-go="backup" { "Go back and back up" }
                         hr class="rule";
                         label class="check-line" {
                             input type="checkbox" data-skip-understood;
@@ -488,18 +515,16 @@ pub fn create_page(chrome: &PageChrome, data: &CreateViewModel) -> Markup {
                 section data-screen="failed" hidden {
                     h1 { "This browser can't make a wallet" }
                     p class="error" role="alert" data-failed-reason {}
-                    p { a href=(format!("/account/wallets/import{}", next_query(data.next.as_deref()))) { "Bring your own wallet" } " instead." }
+                    p { a href=(back) { "Bring your own wallet" } " instead." }
                 }
-                form method="post" action="/account/wallets/new" data-register hidden {
+                form method="post" action=(flow.new_action()) data-register hidden {
+                    (flow.hidden())
                     input type="hidden" name="name" value=(data.name);
                     input type="hidden" name="network" value=(data.network);
                     input type="hidden" name="backup" data-field="backup";
                     input type="hidden" name="primary_address" data-field="address";
                     input type="hidden" name="view_key_hex" data-field="view" data-key-custody="view";
                     input type="hidden" name="spend_pubkey_hex" data-field="spend" data-key-custody="spend";
-                    @if let Some(next) = &data.next {
-                        input type="hidden" name="next" value=(next);
-                    }
                     @if let Some(entry) = &data.snp_entry {
                         (super::key_entry::snp_bundle(entry))
                     }
@@ -511,94 +536,97 @@ pub fn create_page(chrome: &PageChrome, data: &CreateViewModel) -> Markup {
     layout_with_head(chrome, "Create a new wallet - Monokulo", html! {}, body)
 }
 
-fn next_query(next: Option<&str>) -> String {
-    next.map(|n| format!("?next={}", url_encode(n)))
-        .unwrap_or_default()
+/// The phrase's heading line: its title, the button that makes a different
+/// phrase, and anything else the tab adds.
+fn phrase_head(title: &str, extra: Markup) -> Markup {
+    html! {
+        div class="phrase-head" {
+            h3 { (title) }
+            button type="button" class="icon-only regen" data-regenerate aria-label="Make a different phrase" title="Make a different phrase" {
+                (regenerate_icon())
+            }
+            (extra)
+        }
+    }
 }
 
+fn print_button() -> Markup {
+    html! {
+        span class="card-spacer" {}
+        button type="button" data-print { "Print" }
+    }
+}
+
+/// One wallet app's tab: the words (and its QR code, for an app that scans
+/// one) shown straight away, how to restore the wallet in it, and the box
+/// its owner ticks once it has.
 fn app_panel(app: &WalletApp, shown: bool, height: &str) -> Markup {
+    let legacy = app.method == AppMethod::TypeLegacyWords;
+    let phrase = html! {
+        div class="phrase-box" {
+            @if legacy {
+                (phrase_head(app.title, html! { span class="tag tag-unknown" { "older wallets" } (print_button()) }))
+                ol class="seed-words legacy" data-legacy-words aria-label="25-word phrase" {}
+                dl class="facts" {
+                    dt { "Restore height" }
+                    dd { @if height.is_empty() { "the block height on the wallet's birthday" } @else { (height) } }
+                    dt { "Restore with" }
+                    dd { code { "monero-wallet-cli --restore-deterministic-wallet" } ", or the GUI's Restore wallet from keys or mnemonic seed" }
+                }
+            } @else {
+                (phrase_head(app.title, html! {}))
+                ol class="seed-words" data-words aria-label="Recovery phrase" {}
+            }
+            ol class="steps" { @for step in app.restore_steps { li { (step) } } }
+        }
+    };
     html! {
         div class="app-panel" id=(format!("app-{}", app.key)) role="tabpanel" aria-labelledby=(format!("tab-{}", app.key)) data-app-panel=(app.key) hidden[!shown] {
-            div class="app-steps" {
-                p { span class=(if app.method.is_scanned() { "tag tag-ok" } else if app.method == AppMethod::TypeWords { "tag tag-unknown" } else { "tag tag-slow" }) { (app.method.label()) } }
-                p class="hint" { (app.platforms) }
-                ol class="steps" { @for step in app.restore_steps { li { (step) } } }
-            }
-            aside class="box qr-panel" {
-                @match app.method {
-                    AppMethod::ScanRestoreLink | AppMethod::ScanWordList => {
-                        div class="qr-hidden" data-qr-cover { "This code holds your whole recovery phrase." }
-                        div class="qr-frame" data-qr=(app.method.qr_kind()) hidden {}
-                        p class="hint" data-qr-caption hidden {
-                            @if app.method == AppMethod::ScanRestoreLink {
-                                "Restore link: the phrase, its birthday and the wallet's name."
-                            } @else {
-                                "The 16 words, in the format Stack Wallet reads."
+            @match app.method.qr_kind() {
+                Some(kind) => {
+                    div class="phrase-split" {
+                        (phrase)
+                        div class="qr-col" {
+                            div class="qr-frame" data-qr=(kind) {}
+                            p class="hint" {
+                                @if kind == "restore-link" {
+                                    "Restore link: the phrase, its birthday and the wallet's name."
+                                } @else {
+                                    "The 16 words, in the format Stack Wallet reads."
+                                }
                             }
                         }
-                        button type="button" class="btn-primary" data-show-qr { "Show QR code" }
-                        button type="button" data-hide-qr hidden { "Hide QR code" }
-                    }
-                    AppMethod::TypeWords => {
-                        p { strong { "Feather has no QR restore for a full wallet. Type the words in." } }
-                        button type="button" data-show-paper { "Show the 16 words" }
-                    }
-                    AppMethod::TypeLegacyWords => {
-                        p { strong { "These apps only read 25-word phrases. The same wallet can be shown in that older format." } }
-                        div data-legacy hidden {
-                            ol class="seed-words legacy" data-legacy-words aria-label="25-word phrase" {}
-                            dl class="facts" {
-                                dt { "Restore height" }
-                                dd { @if height.is_empty() { "the block height on the wallet's birthday" } @else { (height) } }
-                            }
-                        }
-                        button type="button" data-show-legacy { "Show the 25-word version" }
                     }
                 }
+                None => (phrase),
+            }
+            label class="check-line" {
+                input type="checkbox" data-backed-up;
+                " " (app.done_check)
             }
         }
     }
 }
 
-// -- Added -----------------------------------------------------------------
-
-pub struct ReadyViewModel {
-    pub onboarding: bool,
-    pub wallet: crate::db::WalletRow,
-    /// Where the merchant was going (`?next=`), and what it is, for the button.
-    pub next: Option<(String, String)>,
-    pub skipped_backup: bool,
-}
-
-pub fn ready_page(chrome: &PageChrome, data: &ReadyViewModel) -> Markup {
-    let w = &data.wallet;
-    let body = html! {
-        div class="wrap" {
-            @if data.onboarding { (setup_steps(SetupStep::Ready)) }
-            h1 { @if data.onboarding { "You're ready to take payments" } @else { (w.name) " is added" } }
-            @if data.skipped_backup {
-                p class="warning" { "This wallet's recovery phrase was not backed up. Payments to it can't be spent unless you have it." }
-            }
-            div class="box" {
-                h2 { (w.name) }
+/// The "On paper" tab: the 16 words to write down or print.
+fn paper_panel() -> Markup {
+    html! {
+        div class="app-panel" id="app-paper" role="tabpanel" aria-labelledby="tab-paper" data-app-panel="paper" hidden {
+            div class="phrase-box print-sheet" {
+                (phrase_head("Write these 16 words down", print_button()))
+                ol class="seed-words" data-words aria-label="Recovery phrase" {}
                 dl class="facts" {
-                    dt { "Address" } dd { code { (short_address(&w.primary_address)) } }
-                    dt { "Network" } dd { (super::network_badge(&w.network)) }
-                    dt { "Kind" } dd { (origin_label(w)) }
+                    dt { "Phrase type" } dd { "Polyseed, 16 words" }
+                    dt { "Wallet birthday" } dd { "Today " span class="hint" { "(kept in the phrase, so apps restore quickly)" } }
                 }
+                p class="hint no-print" { "No copy button on purpose: other apps can read your clipboard." }
             }
-            @match &data.next {
-                Some((path, label)) => {
-                    p { a class="btn btn-primary" href=(path) { (label) } }
-                }
-                None => {
-                    p { "Connect a store to it next." }
-                    p { a class="btn btn-primary" href="/dashboard/stores/new" { "Add a store" } }
-                }
+            label class="check-line" {
+                input type="checkbox" data-backed-up;
+                " I've written all 16 words down, in order, and put them somewhere safe."
             }
         }
-    };
-    layout(chrome, "Wallet added - Monokulo", body)
+    }
 }
 
 pub fn short_address(address: &str) -> String {
@@ -706,7 +734,7 @@ pub fn list_section(wallets: &[WalletListItem], retired: &[RetiredListItem]) -> 
                 @if !wallets.is_empty() {
                     p class="hint" { "Open a wallet to rename it, see its history or retire it." }
                 }
-                a class="btn btn-primary" href="/account/wallets/setup" { "+ add a wallet" }
+                a class="btn btn-primary" href="/account/wallets/add" { "+ add a wallet" }
             }
     }
 }
@@ -953,42 +981,12 @@ fn restore_section(w: &crate::db::WalletRow, restore: &RestoreForm) -> Markup {
                     html! { "Lets Monokulo see payments arriving. It cannot spend." },
                     html! { "The " em { "public" } " half of your spend key." },
                 ))
+                (keys_help())
                 (super::connect::custody_select(&restore.custody_choices))
                 @if let Some(entry) = &restore.snp_entry {
                     (super::key_entry::snp_section(entry, (!restore.custody_choices.is_empty()).then_some("key_custody_backend")))
                 }
                 button type="submit" { "Bring back " (w.name) }
-            }
-        }
-    }
-}
-
-pub fn wallet_select(wallets: &[crate::db::WalletSummary], selected: Option<&str>) -> Markup {
-    let only = (wallets.len() == 1).then(|| wallets[0].wallet.id.as_str());
-    let selected = selected.or(only);
-    html! {
-        label {
-            "Wallet"
-            mk-select {
-                select name="wallet_id" required {
-                    @if selected.is_none() {
-                        (Choice::prompt("Choose a wallet…", true))
-                    }
-                    @for w in wallets {
-                        (Choice::new(&w.wallet.id, &w.wallet.name)
-                            .detail(short_address(&w.wallet.primary_address))
-                            .network(&w.wallet.network)
-                            .note(stores_label(w.store_count))
-                            .selected(selected == Some(w.wallet.id.as_str())))
-                    }
-                }
-            }
-            span class="field-help" {
-                @if wallets.len() == 1 {
-                    "Your only wallet, picked for you. The store uses its network."
-                } @else {
-                    "You have " (wallets.len()) " wallets, so pick one. The store uses its network."
-                }
             }
         }
     }
@@ -1001,23 +999,6 @@ fn stores_label(count: u64) -> String {
         1 => "1 store".to_owned(),
         n => format!("{n} stores"),
     }
-}
-
-/// The links under a wallet picker, to add one on the way.
-pub fn add_wallet_links(next: &str) -> Markup {
-    let next = url_encode(next);
-    html! {
-        p class="hint" {
-            "Or " a href=(format!("/account/wallets/new?next={next}")) { "create a new wallet" }
-            " or " a href=(format!("/account/wallets/import?next={next}")) { "bring your own" }
-            ". You'll come back here with it ready to pick."
-        }
-    }
-}
-
-/// `text` as a query string value.
-fn url_encode(text: &str) -> String {
-    url::form_urlencoded::byte_serialize(text.as_bytes()).collect()
 }
 
 #[cfg(test)]
@@ -1153,7 +1134,7 @@ mod tests {
             !html.contains("test-wallets") && !html.contains("net-section-head"),
             "{html}"
         );
-        assert!(html.contains(r#"href="/account/wallets/setup""#), "{html}");
+        assert!(html.contains(r#"href="/account/wallets/add""#), "{html}");
     }
 
     fn summary(name: &str, network: &str, stores: u64) -> crate::db::WalletSummary {
@@ -1174,16 +1155,27 @@ mod tests {
         }
     }
 
-    /// A store's wallet picker names each wallet's network as the badge,
-    /// and in words without JavaScript.
+    /// Setup's picker of wallets already added names each wallet's network
+    /// as the badge, and in words without JavaScript.
     #[test]
-    fn the_store_wallet_picker_shows_each_wallets_network() {
-        let html = wallet_select(
-            &[
-                summary("Cake", "mainnet", 2),
-                summary("Feather", "stagenet", 1),
-            ],
-            None,
+    fn the_wallets_already_added_show_each_wallets_network() {
+        let setup = SetupContext {
+            store_name: "Bakery".into(),
+            fields: vec![("kind", "web".into())],
+        };
+        let html = choice_page(
+            &PageChrome::from_user(None, "/setup/wallet"),
+            Flow::Setup(&setup),
+            &ChoiceViewModel {
+                wallets: vec![
+                    summary("Cake", "mainnet", 2),
+                    summary("Feather", "stagenet", 1),
+                ],
+                name: "Bakery takings".into(),
+                name_problem: None,
+                network: "mainnet".into(),
+                error: None,
+            },
         )
         .into_string();
         assert!(html.contains(r#"data-network="mainnet" data-note="2 stores">Cake (5B8s3…unGS) [Mainnet] - 2 stores</option>"#), "{html}");

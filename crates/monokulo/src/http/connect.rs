@@ -1,29 +1,25 @@
-//! The generic, platform-agnostic connect flow (WBS 1.4.1,
-//! `docs/WOOCOMMERCE_ROADMAP.md` Stage 6) - "OAuth-style one-click install"
-//! for any platform's plugin, written once and shared by every platform
-//! (WooCommerce first, per the WBS; nothing here is WooCommerce-specific -
-//! `platform` is just a path parameter threaded straight through into
-//! `store_connections.platform`, exactly like `connections::create_connection_for_user`
-//! already treats it for the JSON/dashboard-form surfaces).
+//! The plugin connect flow (WBS 1.4.1, `docs/WOOCOMMERCE_ROADMAP.md`
+//! Stage 6): "OAuth-style one-click install" for a platform's plugin,
+//! written once for every platform (WooCommerce first). `platform` is a path
+//! parameter recorded as the store's `platform`.
 //!
-//! The five steps (see the roadmap doc for the full narrative):
 //! 1. `GET /connect/{platform}?site_url=...&return_url=...&nonce=...` - the
 //!    plugin sends the merchant's browser here.
-//! 2. No session yet: redirect to `/dashboard/login?next=<this same URL>` -
-//!    `next` is validated as a safe, same-origin relative path before ever
-//!    being used as a redirect target (`dashboard::is_safe_redirect_path`);
-//!    a real session logging in there redirects back here automatically
-//!    (`dashboard::login_submit`).
-//! 3. A valid session: render a confirm screen with the same
-//!    wallet-connection fields `/dashboard/connect` has, as a
-//!    `POST /connect/{platform}` form (same path, not a `/confirm`
-//!    sub-path) - `return_url`/`nonce` ride along as hidden fields.
-//! 4. `POST /connect/{platform}` (behind [`AuthedUser`]): calls the exact
-//!    same [`connections::create_connection_for_user`] every other surface
-//!    uses, mints a single-use connect token, and redirects to `return_url`
-//!    with `token`/`nonce` appended as query parameters (via the `url`
-//!    crate, so an existing query string on `return_url` is preserved
-//!    correctly rather than string-concatenated).
+//! 2. No session yet: redirect to `/dashboard/login?next=<this same URL>`
+//!    (`next` is checked to be a path on this site before it's followed,
+//!    `dashboard::SafePath`); signing up or logging in comes back here.
+//! 3. A session. A store is a host and no two stores share one
+//!    (`crate::stores`), so the shop's host decides what happens:
+//!    - one of the merchant's stores has it: a page to connect the plugin
+//!      to that store, with one button;
+//!    - another account's store has it: a page saying so, and no form;
+//!    - no store has it: store setup (`/setup`, `http::setup`), with the
+//!      plugin's request carried through, ending on a Done page whose
+//!      button goes back to the plugin.
+//! 4. `POST /connect/{platform}` (behind [`AuthedUser`]): a store of the
+//!    merchant's whose site is the shop's; mints a single-use connect token
+//!    and redirects to `return_url` with `token`/`nonce` appended (via the
+//!    `url` crate, so `return_url`'s own query string is kept).
 //! 5. `POST /connect/{platform}/finish` - deliberately *not* behind
 //!    [`AuthedUser`]: the plugin calls this server-to-server, with no
 //!    monokulo session at all. Redeems the token exactly once (see
@@ -39,14 +35,12 @@ use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::db::UserRow;
 use crate::now_unix;
-use crate::views::connect::{ConnectMode, ExistingStoreOption, PlatformConnectViewModel};
+use crate::views::connect::PluginRequestView;
 
-use super::connections::{self, CreateConnectionError, CreateConnectionFields};
 use super::dashboard::redirect_302;
-use super::orders::display_name_for;
-use super::{AppState, AuthedUser};
+use super::AppState;
+use super::AuthedUser;
 
 /// How long a connect token remains redeemable after issuance. It only
 /// needs to survive the redirect round trip out to the plugin's
@@ -62,21 +56,6 @@ pub struct ConnectQuery {
     pub site_url: String,
     pub return_url: String,
     pub nonce: String,
-    /// Which screen: none for the question ("is this shop already a
-    /// store?"), `new` or `existing` for its answers.
-    #[serde(default)]
-    pub mode: Option<String>,
-}
-
-/// The plugin's connect request, carried through every render of the confirm
-/// form, whether it came from the first `GET` or a resubmitted `POST`, and
-/// which screen of the flow it is on.
-#[derive(Clone, Copy)]
-struct ConnectRequest<'a> {
-    site_url: &'a str,
-    return_url: &'a str,
-    nonce: &'a str,
-    mode: Option<&'a str>,
 }
 
 /// Where a connecting plugin's store credentials may be sent: its
@@ -146,94 +125,6 @@ fn plain_http_allowed(url: &Url) -> bool {
     }
 }
 
-impl ConnectQuery {
-    fn request(&self) -> ConnectRequest<'_> {
-        ConnectRequest {
-            site_url: &self.site_url,
-            return_url: &self.return_url,
-            nonce: &self.nonce,
-            mode: self.mode.as_deref(),
-        }
-    }
-}
-
-/// `resubmit` is `None` on a plain `GET` (empty key/origin fields, mainnet
-/// selected) or `Some(&form)` re-rendering after a rejected `POST` - see
-/// `ConnectViewModel`'s doc comment (`templates.rs`) for why every submitted
-/// field, including the two key hex fields, gets echoed back rather than
-/// lost.
-///
-/// Looks up `user_id`'s existing `store_connections` on every render so the
-/// "use an existing store" picker (`PlatformConnectViewModel::existing_stores`)
-/// is never stale - cheap, and consistent with `home::dashboard_home`
-/// already doing one query per connected store on every dashboard load.
-async fn render_confirm_form(
-    state: &AppState,
-    platform: &str,
-    request: ConnectRequest<'_>,
-    error: Option<&str>,
-    resubmit: Option<&ConfirmForm>,
-    user: &UserRow,
-) -> Response {
-    let ConnectRequest {
-        site_url,
-        return_url,
-        nonce,
-        mode,
-    } = request;
-    let selected_currency = resubmit
-        .and_then(|f| f.base_currency.as_deref())
-        .unwrap_or("XMR");
-    let (selected, user_id) = (selected_currency.to_string(), user.id.clone());
-    let (currency_options, stores, wallets) = state
-        .db
-        .read(move |db| {
-            Ok::<_, crate::db::DbError>((
-                crate::currencies::currency_options(db, &selected).unwrap_or_default(),
-                db.list_store_connections_for_user(&user_id)
-                    .unwrap_or_default(),
-                db.list_wallets(&user_id).unwrap_or_default(),
-            ))
-        })
-        .await
-        .unwrap_or_default();
-    let existing_stores: Vec<ExistingStoreOption> = stores
-        .into_iter()
-        .map(|row| ExistingStoreOption {
-            connection_id: row.id,
-            display_name: display_name_for(&row.site_url),
-            platform: row.platform,
-        })
-        .collect();
-    // No store to add it to: there's no question to ask.
-    let mode = match mode {
-        Some("existing") if !existing_stores.is_empty() => ConnectMode::Existing,
-        Some("new") => ConnectMode::New,
-        _ if existing_stores.is_empty() => ConnectMode::New,
-        _ => ConnectMode::Ask,
-    };
-    // A link whose return address isn't the shop's shows why, and no form.
-    let unavailable = match ConnectTarget::parse(site_url, return_url) {
-        Err(reason) => Some(reason.to_string()),
-        Ok(_) => public_url_for_plugins(state).await.err(),
-    };
-    let chrome = super::page_chrome(state, Some(user), format!("/connect/{platform}")).await;
-    let data = PlatformConnectViewModel {
-        platform: platform.to_string(),
-        site_url: site_url.to_string(),
-        return_url: return_url.to_string(),
-        nonce: nonce.to_string(),
-        error: error.map(str::to_string),
-        mode,
-        currency_options,
-        wallets,
-        selected_wallet: resubmit.and_then(|f| f.wallet_id.clone()),
-        existing_stores,
-        unavailable,
-    };
-    crate::views::connect::platform_page(&chrome, &data).into_response()
-}
-
 /// Why plugins can't connect while this instance has no public address.
 const NO_PUBLIC_URL: &str = "This Monokulo instance can't connect plugins yet: its operator hasn't set its public \
      address (the public URL setting on the admin settings page). Plugins need it to create orders and send \
@@ -241,9 +132,9 @@ const NO_PUBLIC_URL: &str = "This Monokulo instance can't connect plugins yet: i
 
 /// This instance's public address, which is what a plugin is given as its
 /// `endpoint` - or, while it isn't set, the message explaining that
-/// connecting can't work yet. Checked on the confirm screen (so the merchant
-/// sees it before typing anything), again when it is submitted, and in
-/// `/finish`, so a plugin is never handed a wrong address.
+/// connecting can't work yet. Checked before any form is shown, again when
+/// the plugin's key is minted, and in `/finish`, so a plugin is never
+/// handed a wrong address.
 async fn public_url_for_plugins(state: &AppState) -> Result<String, String> {
     state
         .settings
@@ -251,26 +142,43 @@ async fn public_url_for_plugins(state: &AppState) -> Result<String, String> {
         .ok_or_else(|| NO_PUBLIC_URL.to_string())
 }
 
+/// Why a plugin's request can't be answered, if it can't: a return address
+/// that isn't the shop's, or no public address to give it.
+pub(super) async fn plugin_problem(
+    state: &AppState,
+    site_url: &str,
+    return_url: &str,
+) -> Option<String> {
+    match ConnectTarget::parse(site_url, return_url) {
+        Err(reason) => Some(reason.to_string()),
+        Ok(_) => public_url_for_plugins(state).await.err(),
+    }
+}
+
+/// The plugin's shop, when `next` is a plugin's connect page (the merchant
+/// is logging in on the way to connecting a shop): its host.
+pub(crate) fn connecting_site(next: Option<&str>) -> Option<String> {
+    let query = next?.strip_prefix("/connect/")?.split_once('?')?.1;
+    url::form_urlencoded::parse(query.as_bytes())
+        .find(|(k, _)| k == "site_url")
+        .and_then(|(_, v)| crate::stores::normalize_site(&v).ok())
+}
+
 /// Percent-encodes `s` for safe embedding as one query-string value - the
 /// same encoding a browser's own `application/x-www-form-urlencoded`
-/// submission uses. Used here to build the `next` URL handed to
-/// `/dashboard/login`, not to build `return_url`'s own query string (that
-/// one goes through the `url` crate's `query_pairs_mut`, which encodes
-/// correctly on its own).
+/// submission uses.
 fn encode_query_value(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
-/// `GET /connect/{platform}` (WBS 1.4.1, step 1-3). No valid session:
-/// redirect to `/dashboard/login` carrying a `next` that reconstructs this
-/// exact URL (see `dashboard::login_submit`/`is_safe_redirect_path` - this
-/// value is always a same-origin relative path built entirely from this
-/// route's own known shape, so it always passes that validation on the way
-/// back). A valid session: render the confirm form.
 /// The platforms the connect flow takes: anything else in the path is not
 /// stored as a store's platform.
 const PLATFORMS: [&str; 2] = ["woocommerce", "custom"];
 
+/// `GET /connect/{platform}` (WBS 1.4.1, steps 1-3). No valid session:
+/// redirect to `/dashboard/login` carrying a `next` that reconstructs this
+/// exact URL. A valid session: the store with the shop's host decides (see
+/// the module doc comment).
 pub async fn start(
     State(state): State<AppState>,
     Path(platform): Path<String>,
@@ -293,125 +201,76 @@ pub async fn start(
             encode_query_value(&this_url)
         ));
     };
-
-    // A store needs a wallet: a new account sets one up first and comes
-    // back here (stores made before wallets are matched to theirs).
-    super::wallet_service::adopt_unlinked_stores(&state, &user).await;
-    let user_id = user.id.clone();
-    let has_wallet = state
-        .db
-        .read(move |db| db.list_wallets(&user_id))
-        .await
-        .map(|w| !w.is_empty())
-        .unwrap_or(true);
-    // A link that can't work says why first, before any wallet setup.
-    let connectable = ConnectTarget::parse(&query.site_url, &query.return_url).is_ok()
-        && public_url_for_plugins(&state).await.is_ok();
-    if connectable && !has_wallet && query.mode.as_deref() != Some("existing") {
-        let this_url = format!(
-            "/connect/{}?site_url={}&return_url={}&nonce={}",
-            platform,
-            encode_query_value(&query.site_url),
-            encode_query_value(&query.return_url),
-            encode_query_value(&query.nonce),
-        );
-        return redirect_302(&format!(
-            "/account/wallets/setup?next={}",
-            encode_query_value(&this_url)
-        ));
+    let chrome = super::page_chrome(&state, Some(&user), format!("/connect/{platform}")).await;
+    let host = crate::stores::normalize_site(&query.site_url).ok();
+    // A link that can't work says why first.
+    if let Some(why) = plugin_problem(&state, &query.site_url, &query.return_url).await {
+        return crate::views::connect::cannot_connect_page(&chrome, host.as_deref(), &why)
+            .into_response();
     }
-    render_confirm_form(&state, &platform, query.request(), None, None, &user).await
+    let Some(host) = host else {
+        return crate::views::connect::cannot_connect_page(
+            &chrome,
+            None,
+            "The shop's address isn't a valid web address.",
+        )
+        .into_response();
+    };
+    let site = host.clone();
+    let store = state.db.read(move |db| db.find_store_by_site(&site)).await;
+    match store {
+        Ok(Some(store)) if store.user_id == user.id => {
+            let request = PluginRequestView {
+                platform,
+                site_url: query.site_url,
+                return_url: query.return_url,
+                nonce: query.nonce,
+                host,
+            };
+            crate::views::connect::existing_store_page(
+                &chrome,
+                &request,
+                store.id.as_str(),
+                &store.name,
+            )
+            .into_response()
+        }
+        Ok(Some(_)) => crate::views::connect::cannot_connect_page(
+            &chrome,
+            Some(&host),
+            &super::connections::SiteTaken::Someone.message(&host),
+        )
+        .into_response(),
+        Ok(None) => {
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("plugin", &platform)
+                .append_pair("site_url", &query.site_url)
+                .append_pair("return_url", &query.return_url)
+                .append_pair("nonce", &query.nonce)
+                .finish();
+            redirect_302(&format!("/setup?{query}"))
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
-/// `POST /connect/{platform}`'s form fields (WBS 1.4.1, step 4) - the same
-/// wallet-connection fields `dashboard::ConnectForm` has, plus `site_url`
-/// (shown, not editable, on the confirm screen) and the `return_url`/`nonce`
-/// hidden fields carried through from `GET /connect/{platform}`'s query
-/// string so they survive the round trip.
-fn default_confirm_mode() -> String {
-    "new".to_string()
-}
-
+/// `POST /connect/{platform}`'s fields: the plugin's request, carried
+/// through, and the merchant's store whose site is the shop's.
 #[derive(Deserialize)]
 pub struct ConfirmForm {
     pub site_url: String,
     pub return_url: String,
     pub nonce: String,
-    /// `"new"` (provision a fresh tenant from the key fields below - the
-    /// only mode that ever existed before the "use an existing store"
-    /// picker) or `"existing"` (skip provisioning entirely and reuse
-    /// `connection_id`, an already-owned `store_connections` row).
-    /// `#[serde(default)]` to `"new"` keeps every pre-existing caller/test
-    /// that never sent this field parsing exactly as it always has.
-    #[serde(default = "default_confirm_mode")]
-    pub mode: String,
-    /// Required when `mode == "existing"`, ignored otherwise. Ownership is
-    /// verified against the authenticated user in `confirm_existing_store`
-    /// before it's ever trusted for anything - this is untrusted input, not
-    /// a capability.
     #[serde(default)]
-    pub connection_id: Option<String>,
-    /// `Option`, not `String`: absent entirely on an "existing"-mode
-    /// submission, since the confirm screen's "use an existing store" form
-    /// never renders these fields at all - there is nothing to parse there.
-    #[serde(default)]
-    pub view_key_hex: Option<String>,
-    #[serde(default)]
-    pub spend_pubkey_hex: Option<String>,
-    /// The keys encrypted for SEV-SNP key storage (`key_entry`), instead of
-    /// the two above.
-    #[serde(default)]
-    pub encrypted_keys: Option<String>,
-    #[serde(default)]
-    pub network: Option<String>,
-    /// Not shown on the confirm screen (no UI field for it yet) — carried purely so
-    /// a caller who needs a non-default tenant `order_expiry_seconds` (e.g. WBS
-    /// 1.4.4's forced-expiry test) has a real way to set it through this flow rather
-    /// than only via the JSON `POST /connections` surface. `#[serde(default)]` keeps
-    /// every existing form submission (none of which send this field) parsing
-    /// exactly as before, defaulting to the engine's own default.
-    #[serde(default)]
-    pub order_expiry_seconds: Option<i64>,
-    /// Same reasoning as `order_expiry_seconds` immediately above: not shown on the
-    /// confirm screen (no UI field for it yet), carried purely so a caller who needs a
-    /// non-default `confirmations_required` (WBS 1.4.5's real stagenet connect-flow
-    /// test wants `0` - native 0-conf, since real stagenet blocks land roughly every
-    /// ~2 minutes and the engine's own default of 10 would make a test wait ~20
-    /// minutes) has a real way to set it through this flow. `#[serde(default)]` keeps
-    /// every existing form submission parsing exactly as before, defaulting to the
-    /// engine's own default (10).
-    #[serde(default)]
-    pub confirmations_required: Option<u64>,
-    /// Required when `mode == "new"`, ignored for `"existing"` (an existing
-    /// store already has its own base currency). Validated against
-    /// `crate::currencies` in `connections::create_connection_for_user`.
-    #[serde(default)]
-    pub base_currency: Option<String>,
-    /// Only sent when the form offered a choice (part 5).
-    #[serde(default)]
-    pub key_custody_backend: Option<String>,
-    /// The merchant's wallet the new store takes payments into
-    /// (docs/wallets.md). A caller sending keys instead gets them added as
-    /// a wallet.
-    #[serde(default)]
-    pub wallet_id: Option<String>,
+    pub connection_id: String,
 }
 
-impl ConfirmForm {
-    fn request(&self) -> ConnectRequest<'_> {
-        ConnectRequest {
-            site_url: &self.site_url,
-            return_url: &self.return_url,
-            nonce: &self.nonce,
-            mode: Some(&self.mode),
-        }
-    }
-}
-
-/// `POST /connect/{platform}` (behind [`AuthedUser`], WBS 1.4.1 step 4): the
-/// confirm-form submission - either mode (see [`ConfirmForm::mode`]) ends the
-/// same way, minting a single-use connect token and redirecting to
-/// `return_url` (`mint_token_and_redirect`).
+/// `POST /connect/{platform}` (behind [`AuthedUser`], WBS 1.4.1 step 4):
+/// gives the plugin its store's key. The store must be the merchant's, and
+/// its site the shop's: without both, a signed-in attacker could have any
+/// store's `sk_...` delivered to a `return_url` of their own via
+/// `/connect/{platform}/finish`. A store that isn't theirs and one that
+/// doesn't exist look the same.
 pub async fn confirm_submit(
     State(state): State<AppState>,
     AuthedUser(user, _token_hash): AuthedUser,
@@ -421,229 +280,62 @@ pub async fn confirm_submit(
     if !PLATFORMS.contains(&platform.as_str()) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let target = ConnectTarget::parse(&form.site_url, &form.return_url);
-    let target = match target {
-        Ok(target) if public_url_for_plugins(&state).await.is_ok() => target,
-        // `render_confirm_form` shows the reason instead of the form.
-        _ => {
-            return render_confirm_form(&state, &platform, form.request(), None, Some(&form), &user)
-                .await
-        }
+    let chrome = super::page_chrome(&state, Some(&user), format!("/connect/{platform}")).await;
+    let host = crate::stores::normalize_site(&form.site_url).ok();
+    let refuse = |why: &str| {
+        crate::views::connect::cannot_connect_page(&chrome, host.as_deref(), why).into_response()
     };
-    if form.mode == "existing" {
-        confirm_existing_store(&state, &user, &platform, &form, &target).await
-    } else {
-        confirm_new_store(&state, &user, &platform, &form, &target).await
+    let target = match ConnectTarget::parse(&form.site_url, &form.return_url) {
+        Ok(target) => target,
+        Err(why) => return refuse(why),
+    };
+    if let Err(why) = public_url_for_plugins(&state).await {
+        return refuse(&why);
     }
-}
-
-/// `mode == "new"` (the only mode that existed before the "use an existing
-/// store" picker): provisions a brand-new tenant via the exact same
-/// [`connections::create_connection_for_user`] every other surface uses. On
-/// an engine rejection or internal error, re-renders the confirm form with a
-/// visible error - same pattern as `dashboard::connect_submit`.
-async fn confirm_new_store(
-    state: &AppState,
-    user: &UserRow,
-    platform: &str,
-    form: &ConfirmForm,
-    target: &ConnectTarget,
-) -> Response {
-    let fields = CreateConnectionFields {
-        platform: platform.to_string(),
-        site_url: form.site_url.clone(),
-        view_key_hex: form.view_key_hex.clone().unwrap_or_default(),
-        spend_pubkey_hex: form.spend_pubkey_hex.clone().unwrap_or_default(),
-        encrypted_keys: form.encrypted_keys.clone(),
-        network: form.network.clone(),
-        domains: Vec::new(),
-        confirmations_required: form.confirmations_required,
-        order_expiry_seconds: form.order_expiry_seconds,
-        base_currency: form.base_currency.clone().unwrap_or_default(),
-        key_custody_backend: form.key_custody_backend.clone().filter(|b| !b.is_empty()),
-        wallet_id: form
-            .wallet_id
-            .clone()
-            .filter(|w| !w.is_empty())
-            .map(crate::db::WalletId::new),
-    };
-
-    let outcome = match connections::create_connection_for_user(state, user, fields).await {
-        Ok(outcome) => outcome,
-        Err(CreateConnectionError::BadRequest(message)) => {
-            return render_confirm_form(
-                state,
-                platform,
-                form.request(),
-                Some(&message),
-                Some(form),
-                user,
-            )
-            .await;
-        }
-        Err(CreateConnectionError::Internal) => {
-            return render_confirm_form(
-                state,
-                platform,
-                form.request(),
-                Some("Something went wrong. Please try again."),
-                Some(form),
-                user,
-            )
-            .await;
-        }
-    };
-
-    let query = url::form_urlencoded::Serializer::new(String::new())
-        .append_pair("return_url", target.return_to.as_str())
-        .append_pair("nonce", &form.nonce)
-        .finish();
-    redirect_302(&format!(
-        "/dashboard/stores/{}/setup?{query}",
-        outcome.connection_id
-    ))
-}
-
-/// `mode == "existing"`: no new tenant is provisioned at all - the plugin is
-/// handed credentials for a `store_connections` row the user already has,
-/// selected via `form.connection_id`. The ownership check below is a real
-/// security boundary, not a courtesy: without it, a signed-in attacker could
-/// submit *any* connection id (not just their own) and have that store's
-/// genuine `sk_...` secret token delivered to their own attacker-controlled
-/// `return_url` via `/connect/{platform}/finish` - exactly the kind of IDOR
-/// `orders.rs`'s own `load_owned_connection` already guards against
-/// elsewhere in this crate, applied here to the one place that grants a
-/// *credential*, not just a read.
-async fn confirm_existing_store(
-    state: &AppState,
-    user: &UserRow,
-    platform: &str,
-    form: &ConfirmForm,
-    target: &ConnectTarget,
-) -> Response {
-    let connection_id = match form.connection_id.as_deref().filter(|id| !id.is_empty()) {
-        Some(id) => &crate::db::ConnectionId::new(id),
-        None => {
-            return render_confirm_form(
-                state,
-                platform,
-                form.request(),
-                Some("Choose a store to connect."),
-                Some(form),
-                user,
-            )
-            .await;
-        }
-    };
-
-    /// What attaching the site to an existing store found.
-    enum Attach {
-        Attached,
-        NotFound,
-    }
-    // Ownership check, domain suggestion and site URL update in one write
-    // job, so the store can't change hands in between.
-    let (id, user_id, site_url) = (
-        connection_id.clone(),
+    let (id, user_id) = (
+        crate::db::ConnectionId::new(form.connection_id.as_str()),
         user.id.clone(),
-        form.site_url.clone(),
     );
-    let attached = state
+    let store = state
         .db
-        .write(move |db| {
-            // Same enumeration-defense convention `orders.rs` documents for
-            // its own ownership check: a nonexistent id and someone else's id
-            // must be indistinguishable to the caller.
-            let owned = db
-                .get_store_connection_by_id(&id)?
-                .and_then(|row| super::OwnedStore::check(row, &user_id));
-            if owned.is_none() {
-                return Ok(Attach::NotFound);
-            }
-            // Attaching this WordPress site to an already-existing store: its
-            // domain joins the store's domains, waiting for the merchant to
-            // verify it (`crate::embed_domains`), and the row's `site_url` is
-            // updated so the dashboard reflects the most recent site this
-            // store is actually serving.
-            crate::embed_domains::suggest_site_domain(db, &id, &site_url, now_unix());
-            db.update_store_connection_site_url(&id, &site_url)?;
-            Ok::<_, crate::db::DbError>(Attach::Attached)
-        })
-        .await;
-    match attached {
-        Ok(Attach::Attached) => {}
-        Ok(Attach::NotFound) => {
-            return render_confirm_form(
-                state,
-                platform,
-                form.request(),
-                Some("That store could not be found."),
-                Some(form),
-                user,
-            )
-            .await;
-        }
-        Err(_) => {
-            return render_confirm_form(
-                state,
-                platform,
-                form.request(),
-                Some("Something went wrong. Please try again."),
-                Some(form),
-                user,
-            )
-            .await;
-        }
-    }
-
-    mint_token_and_redirect(state, connection_id, platform, form, user, target).await
+        .read(move |db| db.get_store_connection_by_id(&id))
+        .await
+        .ok()
+        .flatten()
+        .and_then(|row| super::OwnedStore::check(row, &user_id));
+    let Some(store) = store.filter(|s| Some(&s.site) == host.as_ref()) else {
+        return refuse("That store could not be found, or isn't the shop's.");
+    };
+    mint_token_and_redirect(&state, &store.id, &form.nonce, &target)
+        .await
+        .unwrap_or_else(|| refuse("Something went wrong. Please try again."))
 }
 
-/// The step common to both modes once a connection id is settled on
-/// (freshly created, or an existing one the ownership check above already
-/// approved): mint a single-use connect token and redirect to `return_url`
-/// with `token`/`nonce` appended (parsed and re-serialized via the `url`
-/// crate, so a `return_url` that already carries its own query string is
-/// handled correctly - never a naive string-concatenated `?`).
+/// Mints a single-use connect token for `connection_id` and redirects to
+/// the plugin's `return_url` with `token`/`nonce` appended (parsed and
+/// re-serialized via the `url` crate, so a `return_url` that already
+/// carries its own query string is handled correctly). `None` when the
+/// token couldn't be stored.
 async fn mint_token_and_redirect(
     state: &AppState,
     connection_id: &crate::db::ConnectionId,
-    platform: &str,
-    form: &ConfirmForm,
-    user: &UserRow,
+    nonce: &str,
     target: &ConnectTarget,
-) -> Response {
+) -> Option<Response> {
     let raw_token = shared::auth::generate_connect_token();
     let token_hash = raw_token.hash();
-    let (id, nonce) = (connection_id.clone(), form.nonce.clone());
-    let stored = state
+    let (id, stored_nonce) = (connection_id.clone(), nonce.to_owned());
+    state
         .db
-        .write(move |db| db.create_connect_token(&token_hash, &id, &nonce, now_unix()))
-        .await;
-    if stored.is_err() {
-        return render_confirm_form(
-            state,
-            platform,
-            form.request(),
-            Some("Something went wrong. Please try again."),
-            Some(form),
-            user,
-        )
-        .await;
-    }
-
+        .write(move |db| db.create_connect_token(&token_hash, &id, &stored_nonce, now_unix()))
+        .await
+        .ok()?;
     let mut redirect_url = target.return_to.clone();
-    // `query_pairs_mut` appends to whatever query string `return_url`
-    // already has (parsing it properly first, per the `url` crate's own
-    // model) rather than string-concatenating a `?`/`&`, which would
-    // produce a broken URL for a `return_url` that already has its own
-    // query parameters.
     redirect_url
         .query_pairs_mut()
         .append_pair("token", raw_token.expose())
-        .append_pair("nonce", &form.nonce);
-
-    redirect_302(redirect_url.as_str())
+        .append_pair("nonce", nonce);
+    Some(redirect_302(redirect_url.as_str()))
 }
 
 #[derive(Deserialize)]
@@ -785,6 +477,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::engine_client::EngineClient;
+    use crate::http::test_support::{body_json, body_text, form_post as form_request};
 
     use super::super::{build_router, AppState};
 
@@ -797,6 +490,7 @@ mod tests {
     /// This test instance's configured public address - what `/finish`
     /// must hand plugins as `endpoint`.
     const TEST_PUBLIC_URL: &str = "https://pay.example.test";
+    const PASSWORD: &str = "correct horse battery staple";
 
     async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
         let engine =
@@ -813,77 +507,52 @@ mod tests {
         (state, engine)
     }
 
-    fn form_body(fields: &[(&str, &str)]) -> String {
-        fields
-            .iter()
-            .map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v)))
-            .collect::<Vec<_>>()
-            .join("&")
+    async fn get(router: &Router, uri: &str, cookie: &str) -> axum::response::Response {
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("cookie", cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
     }
 
-    use crate::http::test_support::urlencoding_encode;
-
-    fn form_request(uri: &str, cookie: Option<&str>, fields: &[(&str, &str)]) -> Request<Body> {
-        let mut builder = Request::builder()
-            .method("POST")
-            .uri(uri)
-            .header("content-type", "application/x-www-form-urlencoded");
-        if let Some(cookie) = cookie {
-            builder = builder.header("cookie", cookie);
-        }
-        builder.body(Body::from(form_body(fields))).unwrap()
+    fn location(response: &axum::response::Response) -> String {
+        response.headers()["location"].to_str().unwrap().to_owned()
     }
 
-    use crate::http::test_support::body_json;
-
-    use crate::http::test_support::body_text;
-
-    /// Signs up and logs in a fresh user through the browser form flow,
-    /// returning the `session=<value>` pair a browser would send back as a
-    /// `Cookie` header - same helper `http/tests.rs` uses for its own
-    /// WBS 1.3.2 tests.
-    async fn signed_up_and_logged_in_session_cookie(
-        router: &Router,
-        email: &str,
-        password: &str,
-    ) -> String {
+    /// Signs up through the browser form and returns the `session=<value>`
+    /// cookie, with a wallet brought in with the test keys, as a merchant
+    /// would have before connecting a shop.
+    async fn signed_up_and_logged_in_session_cookie(router: &Router, email: &str) -> String {
         let signup = router
             .clone()
             .oneshot(form_request(
                 "/dashboard/signup",
                 None,
-                &[("email", email), ("password", password)],
+                &[("email", email), ("password", PASSWORD)],
             ))
             .await
             .unwrap();
         assert_eq!(signup.status(), StatusCode::FOUND);
-
-        let login = router
-            .clone()
-            .oneshot(form_request(
-                "/dashboard/login",
-                None,
-                &[("email", email), ("password", password)],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(login.status(), StatusCode::FOUND);
-        let set_cookie = login
-            .headers()
-            .get("set-cookie")
-            .unwrap()
+        let cookie = signup.headers()["set-cookie"]
             .to_str()
             .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
             .to_string();
-        let cookie = set_cookie.split(';').next().unwrap().to_string();
-        // Signing up sets up a wallet next (docs/wallets.md): one brought
-        // in with the test keys, as a merchant would.
         let added = router
             .clone()
             .oneshot(form_request(
                 "/account/wallets/import",
                 Some(&cookie),
                 &[
+                    ("name", "Shop takings"),
                     ("view_key_hex", TEST_VIEW_KEY_HEX),
                     ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
                     ("network", "mainnet"),
@@ -895,49 +564,99 @@ mod tests {
         cookie
     }
 
-    async fn complete_store_setup(
+    fn connect_uri(site_url: &str, return_url: &str, nonce: &str) -> String {
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("site_url", site_url)
+            .append_pair("return_url", return_url)
+            .append_pair("nonce", nonce)
+            .finish();
+        format!("/connect/woocommerce?{query}")
+    }
+
+    fn query_of(location: &str) -> Vec<(String, String)> {
+        let query = location.split_once('?').map(|(_, q)| q).unwrap_or("");
+        url::form_urlencoded::parse(query.as_bytes())
+            .into_owned()
+            .collect()
+    }
+
+    /// The whole plugin flow for a shop with no store yet, as a browser
+    /// without JavaScript walks it: the connect link sends the merchant to
+    /// setup with the plugin's request; the store step (named "Shop", with
+    /// `extra` fields such as the harness's `order_expiry_seconds`); the
+    /// wallet already added; Done; and Done's button back to the plugin. The
+    /// last response: a `302` to the plugin's `return_url` with its token.
+    async fn connect_through_setup(
         router: &Router,
         cookie: &str,
-        response: axum::response::Response,
+        site_url: &str,
+        return_url: &str,
+        nonce: &str,
+        extra: &[(&str, &str)],
     ) -> axum::response::Response {
-        let location = response
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if !location.starts_with("/dashboard/stores/") || !location.contains("/setup") {
-            return response;
-        }
-        let url = url::Url::parse(&format!("https://pay.example.test{location}")).unwrap();
-        let fields: std::collections::HashMap<String, String> = url
-            .query_pairs()
-            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        let start = get(router, &connect_uri(site_url, return_url, nonce), cookie).await;
+        assert_eq!(
+            start.status(),
+            StatusCode::FOUND,
+            "a shop with no store goes to setup"
+        );
+        let to_setup = location(&start);
+        assert!(to_setup.starts_with("/setup?"), "{to_setup}");
+        let mut draft = query_of(&to_setup);
+        draft.push(("store_name".into(), "Shop".into()));
+        draft.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        let fields: Vec<(&str, &str)> = draft
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
-        let page = router
+        let store = router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(location)
-                    .header("cookie", cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(form_request("/setup", Some(cookie), &fields))
             .await
             .unwrap();
-        let html = body_text(page).await;
-        assert!(
-            html.contains("Save and continue"),
-            "the connected store must offer common settings"
+        assert_eq!(
+            store.status(),
+            StatusCode::SEE_OTHER,
+            "{}",
+            body_text(store).await
         );
+        let wallet_step = location(&store);
+        let html = body_text(get(router, &wallet_step, cookie).await).await;
+        let wallet_id = html
+            .split(r#"<option value=""#)
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .unwrap_or_else(|| panic!("the wallet already added is offered: {html}"))
+            .to_owned();
+        let mut existing: Vec<(String, String)> = query_of(&wallet_step);
+        existing.push(("wallet_id".into(), wallet_id));
+        let fields: Vec<(&str, &str)> = existing
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let made = router
+            .clone()
+            .oneshot(form_request(
+                "/setup/wallet/existing",
+                Some(cookie),
+                &fields,
+            ))
+            .await
+            .unwrap();
+        let store_id = crate::http::test_support::store_made(&made);
+        let done = body_text(get(router, &location(&made), cookie).await).await;
+        assert!(done.contains("Back to WooCommerce"), "{done}");
+        assert!(done.contains(r#"<li aria-current="step"><span class="n">3</span>Done</li>"#));
         router
             .clone()
             .oneshot(form_request(
-                url.path(),
+                "/connect/woocommerce",
                 Some(cookie),
                 &[
-                    ("return_url", &fields["return_url"]),
-                    ("nonce", &fields["nonce"]),
-                    ("skip", "yes"),
+                    ("connection_id", &store_id),
+                    ("site_url", site_url),
+                    ("return_url", return_url),
+                    ("nonce", nonce),
                 ],
             ))
             .await
@@ -945,127 +664,97 @@ mod tests {
     }
 
     fn parse_query_params(url: &str) -> std::collections::HashMap<String, String> {
-        let parsed = url::Url::parse(url).unwrap();
-        parsed
+        url::Url::parse(url)
+            .unwrap()
             .query_pairs()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
     }
 
-    #[tokio::test]
-    async fn full_round_trip_confirm_then_redirect_then_finish_yields_real_working_credentials() {
-        let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
-
-        let cookie = signed_up_and_logged_in_session_cookie(
-            &router,
-            "connect-flow@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-
-        // Step 1-3: GET the connect start URL with a valid session - expect
-        // the confirm form, not a login redirect.
-        let get_response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fsettings%3Fpage%3Dmonero&nonce=nonce-xyz")
-                    .header("cookie", &cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            get_response.status(),
-            StatusCode::OK,
-            "expected the confirm form, not a redirect"
-        );
-        let html = body_text(get_response).await;
-        assert!(
-            html.contains("shop.example.com"),
-            "expected the site_url shown on the confirm page, got: {html}"
-        );
-        assert!(
-            html.contains(r#"action="/connect/woocommerce""#),
-            "expected the confirm form to post back to /connect/woocommerce, got: {html}"
-        );
-
-        // Step 4: POST the confirm form with valid wallet fields.
-        let post_response = router
-            .clone()
-            .oneshot(form_request(
-                "/connect/woocommerce",
-                Some(&cookie),
-                &[
-                    ("site_url", "https://shop.example.com"),
-                    (
-                        "return_url",
-                        "https://shop.example.com/settings?page=monero",
-                    ),
-                    ("nonce", "nonce-xyz"),
-                    ("view_key_hex", TEST_VIEW_KEY_HEX),
-                    ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
-                    ("network", "mainnet"),
-                    ("allowed_origins", ""),
-                    ("base_currency", "XMR"),
-                ],
-            ))
-            .await
-            .unwrap();
-        let post_response = complete_store_setup(&router, &cookie, post_response).await;
-        assert_eq!(
-            post_response.status(),
-            StatusCode::FOUND,
-            "expected a 302 redirect to return_url"
-        );
-        let location = post_response
-            .headers()
-            .get("location")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-
-        // The existing `page=monero` query param must survive alongside the
-        // newly appended ones - proof the redirect is built by parsing and
-        // re-serializing `return_url`, not by naively concatenating a `?`.
-        let params = parse_query_params(&location);
-        assert_eq!(params.get("page").map(String::as_str), Some("monero"));
-        let token = params
-            .get("token")
-            .expect("expected a token query param")
-            .clone();
-        assert!(!token.is_empty());
-        assert_eq!(
-            params.get("nonce").map(String::as_str),
-            Some("nonce-xyz"),
-            "the nonce must round-trip unchanged"
-        );
-
-        // Step 5: POST the token to /finish - server-to-server, no session
-        // at all.
-        let finish_response = router
+    async fn finish(router: &Router, body: serde_json::Value) -> axum::response::Response {
+        router
             .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/connect/woocommerce/finish")
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "token": token }).to_string(),
-                    ))
+                    .body(Body::from(body.to_string()))
                     .unwrap(),
             )
             .await
-            .unwrap();
-        assert_eq!(
-            finish_response.status(),
-            StatusCode::OK,
-            "expected the first finish call to succeed"
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn full_round_trip_through_setup_then_redirect_then_finish_yields_real_working_credentials(
+    ) {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let cookie =
+            signed_up_and_logged_in_session_cookie(&router, "connect-flow@example.com").await;
+
+        // The store step knows the plugin: the kind and the site are the
+        // shop's, and the request rides along.
+        let start = get(
+            &router,
+            &connect_uri(
+                "https://shop.example.com",
+                "https://shop.example.com/settings?page=monero",
+                "nonce-xyz",
+            ),
+            &cookie,
+        )
+        .await;
+        let html = body_text(get(&router, &location(&start), &cookie).await).await;
+        assert!(html.contains("Connect your WooCommerce shop"), "{html}");
+        assert!(html.contains(r#"<input type="hidden" name="kind" value="woocommerce">"#));
+        assert!(
+            html.contains(r#"name="store_site" value="shop.example.com""#),
+            "{html}"
         );
+        assert!(html.contains(r#"name="nonce" value="nonce-xyz""#));
+
+        let post_response = connect_through_setup(
+            &router,
+            &cookie,
+            "https://shop.example.com",
+            "https://shop.example.com/settings?page=monero",
+            "nonce-xyz",
+            &[],
+        )
+        .await;
+        assert_eq!(post_response.status(), StatusCode::FOUND);
+        let location = location(&post_response);
+        // The existing `page=monero` query param survives alongside the
+        // newly appended ones: the redirect is built by parsing and
+        // re-serializing `return_url`, not by concatenating a `?`.
+        let params = parse_query_params(&location);
+        assert_eq!(params.get("page").map(String::as_str), Some("monero"));
+        let token = params.get("token").expect("a token").clone();
+        assert_eq!(params.get("nonce").map(String::as_str), Some("nonce-xyz"));
+
+        // The store is the shop's: named as the merchant named it, its site
+        // the shop's host, made by the WooCommerce plugin.
+        let user = state
+            .db
+            .lock()
+            .get_user_by_email("connect-flow@example.com")
+            .unwrap()
+            .unwrap();
+        let stores = state
+            .db
+            .lock()
+            .list_store_connections_for_user(&user.id)
+            .unwrap();
+        assert_eq!(stores.len(), 1);
+        assert_eq!(stores[0].name, "Shop");
+        assert_eq!(stores[0].site, "shop.example.com");
+        assert_eq!(stores[0].platform, "woocommerce");
+
+        // Step 5: the token at /finish - server-to-server, no session.
+        let finish_response = finish(&router, serde_json::json!({ "token": token })).await;
+        assert_eq!(finish_response.status(), StatusCode::OK);
         let finish_body = body_json(finish_response).await;
         let obj = finish_body.as_object().unwrap();
         let public_key = obj.get("public_key").unwrap().as_str().unwrap();
@@ -1082,16 +771,14 @@ mod tests {
             format!("http://{}", engine.addr),
             "never the engine's"
         );
-        // No webhook was asked for, so no signing secret comes back.
         assert!(!obj.contains_key("webhook_signing_secret"));
 
-        // Strong proof: `secret_token` is the tenant's real, working `sk_`
-        // credential, not just a string that happens to start with `sk_` -
-        // same pattern 1.2.3/1.3.2 already established.
+        // The secret token is the tenant's real, working credential.
         let engine_client = EngineClient::embedded_for_tests(engine.router());
-        let tenant_view = engine_client.get_tenant(&shared::auth::RawToken::presented(secret_token)).await.expect(
-            "the returned secret_token should be the tenant's genuine, functioning sk_ credential",
-        );
+        let tenant_view = engine_client
+            .get_tenant(&shared::auth::RawToken::presented(secret_token))
+            .await
+            .expect("the tenant's genuine sk_ credential");
         assert_eq!(tenant_view.public_key, public_key);
     }
 
@@ -1099,69 +786,29 @@ mod tests {
     async fn finishing_the_same_token_twice_only_succeeds_once() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
-
-        let cookie = signed_up_and_logged_in_session_cookie(
+        let cookie =
+            signed_up_and_logged_in_session_cookie(&router, "connect-single-use@example.com").await;
+        let post_response = connect_through_setup(
             &router,
-            "connect-single-use@example.com",
-            "correct horse battery staple",
+            &cookie,
+            "https://shop.example.com",
+            "https://shop.example.com/settings",
+            "nonce-single-use",
+            &[],
         )
         .await;
-
-        let post_response = router
-            .clone()
-            .oneshot(form_request(
-                "/connect/woocommerce",
-                Some(&cookie),
-                &[
-                    ("site_url", "https://shop.example.com"),
-                    ("return_url", "https://shop.example.com/settings"),
-                    ("nonce", "nonce-single-use"),
-                    ("view_key_hex", TEST_VIEW_KEY_HEX),
-                    ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
-                    ("network", "mainnet"),
-                    ("allowed_origins", ""),
-                    ("base_currency", "XMR"),
-                ],
-            ))
-            .await
-            .unwrap();
-        let post_response = complete_store_setup(&router, &cookie, post_response).await;
-        assert_eq!(post_response.status(), StatusCode::FOUND);
-        let location = post_response
-            .headers()
-            .get("location")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-        let token = parse_query_params(&location).get("token").unwrap().clone();
-
-        let finish_request = || {
-            Request::builder()
-                .method("POST")
-                .uri("/connect/woocommerce/finish")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({ "token": token }).to_string(),
-                ))
-                .unwrap()
-        };
-
-        // Prove the first call actually succeeds before asserting the
-        // second fails - otherwise a second-call 401 could just mean the
-        // token never worked at all.
-        let first = router.clone().oneshot(finish_request()).await.unwrap();
+        let token = parse_query_params(&location(&post_response))["token"].clone();
+        let first = finish(&router, serde_json::json!({ "token": token })).await;
         assert_eq!(
             first.status(),
             StatusCode::OK,
-            "the first finish call must actually succeed"
+            "the first finish call succeeds"
         );
-
-        let second = router.oneshot(finish_request()).await.unwrap();
+        let second = finish(&router, serde_json::json!({ "token": token })).await;
         assert_eq!(
             second.status(),
             StatusCode::UNAUTHORIZED,
-            "reusing an already-consumed token must fail"
+            "a spent token fails"
         );
     }
 
@@ -1169,185 +816,81 @@ mod tests {
     async fn finish_with_a_garbage_token_returns_unauthorized() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connect/woocommerce/finish")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "token": "conn_nobody_ever_issued_this" }).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = finish(
+            &router,
+            serde_json::json!({ "token": "conn_nobody_ever_issued_this" }),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
-    /// WBS 1.4.4: a `webhook_url` supplied to `/finish` genuinely registers a
-    /// webhook against the real engine - not just a plausibly-shaped response.
-    /// Also exercises this task's other addition, `ConfirmForm::order_expiry_seconds`
-    /// (threaded all the way to `CreateTenantRequest`), in the same round trip: the
-    /// created tenant's `order_expiry_seconds` is fetched back via `get_tenant` and
-    /// must match exactly what the confirm form sent, proving the field genuinely
-    /// reaches the engine rather than being silently dropped.
+    /// WBS 1.4.4: a `webhook_url` supplied to `/finish` registers a webhook
+    /// against the real engine. Also carries a harness's
+    /// `order_expiry_seconds` through setup to the engine's tenant.
     #[tokio::test]
     async fn finish_with_a_webhook_url_registers_a_real_webhook_and_carries_the_signing_secret() {
         let (state, engine) = test_state_with_real_engine().await;
         let router = build_router(state);
-
-        let cookie = signed_up_and_logged_in_session_cookie(
+        let cookie =
+            signed_up_and_logged_in_session_cookie(&router, "webhook-register@example.com").await;
+        let post_response = connect_through_setup(
             &router,
-            "webhook-register@example.com",
-            "correct horse battery staple",
+            &cookie,
+            "https://shop.example.com",
+            "https://shop.example.com/settings",
+            "nonce-webhook",
+            &[("order_expiry_seconds", "1")],
         )
         .await;
-
-        let post_response = router
-            .clone()
-            .oneshot(form_request(
-                "/connect/woocommerce",
-                Some(&cookie),
-                &[
-                    ("site_url", "https://shop.example.com"),
-                    ("return_url", "https://shop.example.com/settings"),
-                    ("nonce", "nonce-webhook"),
-                    ("view_key_hex", TEST_VIEW_KEY_HEX),
-                    ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
-                    ("network", "mainnet"),
-                    ("allowed_origins", ""),
-                    ("order_expiry_seconds", "1"),
-                    ("base_currency", "XMR"),
-                ],
-            ))
-            .await
-            .unwrap();
-        let post_response = complete_store_setup(&router, &cookie, post_response).await;
-        assert_eq!(post_response.status(), StatusCode::FOUND);
-        let location = post_response
-            .headers()
-            .get("location")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-        let token = parse_query_params(&location).get("token").unwrap().clone();
-
-        let finish_response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connect/woocommerce/finish")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "token": token, "webhook_url": "https://merchant.example/hook" }).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let token = parse_query_params(&location(&post_response))["token"].clone();
+        let finish_response = finish(
+            &router,
+            serde_json::json!({ "token": token, "webhook_url": "https://merchant.example/hook" }),
+        )
+        .await;
         assert_eq!(finish_response.status(), StatusCode::OK);
         let body = body_json(finish_response).await;
-        let obj = body.as_object().unwrap();
-        let secret_token = obj
-            .get("secret_token")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string();
-        let signing_secret = obj
-            .get("webhook_signing_secret")
-            .expect("expected webhook_signing_secret in the response")
-            .as_str()
-            .unwrap();
-        assert!(!signing_secret.is_empty());
+        let secret_token = body["secret_token"].as_str().unwrap().to_string();
+        assert!(!body["webhook_signing_secret"].as_str().unwrap().is_empty());
 
-        // Strong proof, not just a well-shaped response: the webhook genuinely
-        // exists on the real engine, under this tenant, with the exact URL
-        // submitted - and the tenant's order_expiry_seconds genuinely reached the
-        // engine too.
         let engine_client = EngineClient::embedded_for_tests(engine.router());
         let webhooks = engine_client
             .list_webhooks(&shared::auth::RawToken::presented(&secret_token))
             .await
-            .expect("list_webhooks against the real engine should succeed");
+            .unwrap();
         assert_eq!(webhooks.len(), 1);
         assert_eq!(webhooks[0].url, "https://merchant.example/hook");
-
         let tenant_view = engine_client
             .get_tenant(&shared::auth::RawToken::presented(&secret_token))
             .await
-            .expect("get_tenant against the real engine should succeed");
-        assert_eq!(
-            tenant_view.order_expiry_seconds, 1,
-            "order_expiry_seconds must have reached the engine's real tenant record"
-        );
+            .unwrap();
+        assert_eq!(tenant_view.order_expiry_seconds, 1);
     }
 
-    /// A `webhook_url` the engine rejects (WBS 1.4.4's collapse-to-401 policy, see
-    /// `finish`'s own doc comment) fails the *entire* `/finish` call, not just the
-    /// webhook part - the caller never sees `public_key`/`secret_token` at all, and
-    /// (since the token was already consumed by this point) can't simply retry the
-    /// same token once it supplies a valid URL.
+    /// A `webhook_url` the engine rejects fails the whole `/finish` call
+    /// (WBS 1.4.4's collapse-to-401 policy, see `finish`).
     #[tokio::test]
     async fn finish_with_a_rejected_webhook_url_fails_the_whole_call() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
-
-        let cookie = signed_up_and_logged_in_session_cookie(
+        let cookie =
+            signed_up_and_logged_in_session_cookie(&router, "webhook-reject@example.com").await;
+        let post_response = connect_through_setup(
             &router,
-            "webhook-reject@example.com",
-            "correct horse battery staple",
+            &cookie,
+            "https://shop.example.com",
+            "https://shop.example.com/settings",
+            "nonce-webhook-reject",
+            &[],
         )
         .await;
-
-        let post_response = router
-            .clone()
-            .oneshot(form_request(
-                "/connect/woocommerce",
-                Some(&cookie),
-                &[
-                    ("site_url", "https://shop.example.com"),
-                    ("return_url", "https://shop.example.com/settings"),
-                    ("nonce", "nonce-webhook-reject"),
-                    ("view_key_hex", TEST_VIEW_KEY_HEX),
-                    ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
-                    ("network", "mainnet"),
-                    ("allowed_origins", ""),
-                    ("base_currency", "XMR"),
-                ],
-            ))
-            .await
-            .unwrap();
-        let post_response = complete_store_setup(&router, &cookie, post_response).await;
-        assert_eq!(post_response.status(), StatusCode::FOUND);
-        let location = post_response
-            .headers()
-            .get("location")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-        let token = parse_query_params(&location).get("token").unwrap().clone();
-
-        // `ftp://` is neither `http` nor `https` - the engine's own
-        // `create_webhook` rejects it with a real `400`, which `EngineClient`
-        // surfaces as an `Err`, which this handler collapses to `401`.
-        let finish_response = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connect/woocommerce/finish")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::json!({ "token": token, "webhook_url": "ftp://not-http.example/hook" }).to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(finish_response.status(), StatusCode::UNAUTHORIZED);
+        let token = parse_query_params(&location(&post_response))["token"].clone();
+        let response = finish(
+            &router,
+            serde_json::json!({ "token": token, "webhook_url": "ftp://not-http.example/hook" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -1355,708 +898,353 @@ mod tests {
     {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
-
         let original_uri = "/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fsettings&nonce=detour-nonce";
-
         let get_response = router
             .clone()
             .oneshot(
                 Request::builder()
-                    .method("GET")
                     .uri(original_uri)
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(
-            get_response.status(),
-            StatusCode::FOUND,
-            "expected a redirect to the login page"
-        );
-        let login_location = get_response
-            .headers()
-            .get("location")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-        assert!(
-            login_location.starts_with("/dashboard/login?next="),
-            "expected a next-carrying login redirect, got: {login_location}"
-        );
-
-        // Extract the (still percent-encoded) `next` value exactly as a
-        // browser would receive it in the `Location` header, then sign up
-        // and log in, submitting that same value back as the login form's
-        // hidden `next` field - the real end-to-end detour, not just a call
-        // to the validator function in isolation.
+        assert_eq!(get_response.status(), StatusCode::FOUND);
+        let login_location = location(&get_response);
         let next_value = login_location
             .strip_prefix("/dashboard/login?next=")
-            .unwrap();
+            .expect("a next-carrying login redirect");
         let decoded_next = url::form_urlencoded::parse(format!("x={next_value}").as_bytes())
             .next()
             .map(|(_, v)| v.into_owned())
             .unwrap();
-        assert_eq!(
-            decoded_next, original_uri,
-            "the next value must reconstruct the exact original connect URL"
-        );
+        assert_eq!(decoded_next, original_uri);
 
-        let email = "connect-detour@example.com";
-        let password = "correct horse battery staple";
+        // The login page says which shop wants to connect, and sign-up keeps
+        // where they were going.
+        let html = body_text(
+            router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(&login_location)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(html.contains("shop.example.com wants to connect"), "{html}");
+        assert!(html.contains("/dashboard/signup?next="), "{html}");
+
+        // Signing up with `next` goes straight back to the connect link,
+        // which sends a merchant with no store to setup.
         let signup = router
             .clone()
             .oneshot(form_request(
                 "/dashboard/signup",
                 None,
-                &[("email", email), ("password", password)],
+                &[
+                    ("email", "connect-detour@example.com"),
+                    ("password", PASSWORD),
+                    ("next", &decoded_next),
+                ],
             ))
             .await
             .unwrap();
-        assert_eq!(signup.status(), StatusCode::FOUND);
+        assert_eq!(location(&signup), original_uri);
+        let cookie = signup.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let start = get(&router, original_uri, &cookie).await;
+        assert!(
+            location(&start).starts_with("/setup?plugin=woocommerce&"),
+            "{}",
+            location(&start)
+        );
 
+        // Logging in with `next` lands back on the connect link too.
         let login_response = router
             .clone()
             .oneshot(form_request(
                 "/dashboard/login",
                 None,
                 &[
-                    ("email", email),
-                    ("password", password),
+                    ("email", "connect-detour@example.com"),
+                    ("password", PASSWORD),
                     ("next", &decoded_next),
                 ],
             ))
             .await
             .unwrap();
-        assert_eq!(
-            login_response.status(),
-            StatusCode::FOUND,
-            "a successful login with a valid next must redirect"
-        );
-        let final_location = login_response
-            .headers()
-            .get("location")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-        assert_eq!(
-            final_location, original_uri,
-            "must land back on the exact original connect URL, query params intact"
-        );
+        assert_eq!(location(&login_response), original_uri);
     }
 
-    /// Same real UX bug `http/tests.rs`'s
-    /// `a_rejected_connect_submission_re_fills_what_the_merchant_typed_but_the_view_key`
-    /// covers for `/dashboard/connect`, here for the plugin-driven
-    /// `/connect/{platform}` confirm form: a rejected submission must not
-    /// throw away the site_url/view key/spend key/network/allowed_origins
-    /// the merchant already typed in.
-    /// A new-store submission naming a wallet that isn't the merchant's is
-    /// refused with a reason, on the same page, the plugin's request kept.
+    /// The store step from the plugin keeps the plugin's request when it
+    /// refuses an answer.
     #[tokio::test]
-    async fn a_refused_new_store_submission_shows_why_and_keeps_the_plugins_request() {
+    async fn a_refused_store_step_from_the_plugin_shows_why_and_keeps_the_plugins_request() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
-
-        let cookie = signed_up_and_logged_in_session_cookie(
-            &router,
-            "keep-my-confirm-inputs@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-
+        let cookie =
+            signed_up_and_logged_in_session_cookie(&router, "keep-the-request@example.com").await;
         let response = router
             .oneshot(form_request(
-                "/connect/woocommerce",
+                "/setup",
                 Some(&cookie),
                 &[
+                    ("plugin", "woocommerce"),
                     ("site_url", "https://shop.example.com"),
                     ("return_url", "https://shop.example.com/settings"),
                     ("nonce", "nonce-abc"),
-                    ("mode", "new"),
-                    ("wallet_id", "w_not_mine"),
-                    ("base_currency", "XMR"),
+                    ("store_name", "  "),
                 ],
             ))
             .await
             .unwrap();
-
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
-        assert!(html.contains("Choose one of your wallets."), "{html}");
+        assert!(html.contains("Give the store a name."), "{html}");
         assert!(html.contains(r#"name="nonce" value="nonce-abc""#));
-        assert!(
-            html.contains(r#"name="mode" value="new""#),
-            "still on the new-store form: {html}"
-        );
+        assert!(html.contains(r#"name="return_url" value="https://shop.example.com/settings""#));
     }
 
-    #[tokio::test]
-    async fn an_unknown_base_currency_on_the_generic_connect_flow_is_rejected_before_provisioning_a_tenant(
-    ) {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
-
-        let cookie = signed_up_and_logged_in_session_cookie(
-            &router,
-            "bad-currency-generic-flow@example.com",
-            "correct horse battery staple",
+    /// Makes a website's store on the merchant's wallet, named after its
+    /// site; its id.
+    async fn create_a_store(router: &Router, cookie: &str, site: &str) -> String {
+        let html = body_text(
+            get(
+                router,
+                &format!("/setup/wallet?kind=web&store_name=x&store_site={site}"),
+                cookie,
+            )
+            .await,
         )
         .await;
+        let wallet_id = html
+            .split(r#"<option value=""#)
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .unwrap()
+            .to_owned();
+        let response = crate::http::test_support::set_up_store_on_wallet(
+            router, cookie, site, site, &wallet_id,
+        )
+        .await;
+        crate::http::test_support::store_made(&response)
+    }
 
-        let response = router
+    /// A shop whose site one of the merchant's stores already has connects
+    /// to that store, with one button: no second store, the same key.
+    #[tokio::test]
+    async fn a_shop_your_store_already_has_connects_to_it_instead_of_making_another() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let cookie =
+            signed_up_and_logged_in_session_cookie(&router, "reuse-existing@example.com").await;
+        let connection_id = create_a_store(&router, &cookie, "shop.example.com").await;
+
+        let html = body_text(
+            get(
+                &router,
+                &connect_uri(
+                    "https://shop.example.com/",
+                    "https://shop.example.com/settings",
+                    "nonce-existing",
+                ),
+                &cookie,
+            )
+            .await,
+        )
+        .await;
+        assert!(html.contains("already uses that site"), "{html}");
+        assert!(html.contains(&format!(r#"name="connection_id" value="{connection_id}""#)));
+
+        let post_response = router
+            .clone()
             .oneshot(form_request(
                 "/connect/woocommerce",
                 Some(&cookie),
                 &[
-                    ("site_url", "https://shop.example.com"),
+                    ("site_url", "https://shop.example.com/"),
                     ("return_url", "https://shop.example.com/settings"),
-                    ("nonce", "nonce-bad-currency"),
-                    ("view_key_hex", TEST_VIEW_KEY_HEX),
-                    ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
-                    ("network", "mainnet"),
-                    ("allowed_origins", ""),
-                    ("base_currency", "NOTREAL"),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::OK,
-            "a rejected submission re-renders the confirm form, not a redirect"
-        );
-        let html = body_text(response).await;
-        assert!(
-            html.contains("class=\"error\""),
-            "expected a visible error, got: {html}"
-        );
-    }
-
-    /// Creates a real `store_connections` row for the given session cookie
-    /// via the JSON `/connections` API (which accepts a session cookie the
-    /// same way it accepts a bearer token - `AuthedUser` takes either),
-    /// returning `(connection_id, public_key)`. Test-only setup for the
-    /// "use an existing store" tests below - a store to actually pick.
-    async fn create_a_store(router: &Router, cookie: &str, site_url: &str) -> (String, String) {
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connections")
-                    .header("content-type", "application/json")
-                    .header("cookie", cookie)
-                    .body(Body::from(
-                        serde_json::json!({
-                            "platform": "custom",
-                            "site_url": site_url,
-                            "view_key_hex": TEST_VIEW_KEY_HEX,
-                            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
-                            "network": "mainnet",
-                            "domains": [],
-                            "base_currency": "XMR",
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
-        let body = body_json(response).await;
-        let obj = body.as_object().unwrap();
-        (
-            obj.get("connection_id")
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_string(),
-            obj.get("public_key").unwrap().as_str().unwrap().to_string(),
-        )
-    }
-
-    #[tokio::test]
-    async fn the_confirm_screen_offers_no_existing_store_picker_for_a_user_with_no_stores_yet() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
-
-        let cookie = signed_up_and_logged_in_session_cookie(
-            &router,
-            "no-stores-yet@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fsettings&nonce=n")
-                    .header("cookie", &cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(!html.contains("Use an existing store"), "a user with nothing connected yet shouldn't be offered a picker with nothing in it, got: {html}");
-    }
-
-    #[tokio::test]
-    async fn the_confirm_screen_offers_an_existing_store_picker_once_the_user_has_one() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
-
-        let cookie = signed_up_and_logged_in_session_cookie(
-            &router,
-            "has-a-store-already@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, public_key) =
-            create_a_store(&router, &cookie, "https://my-existing-shop.example.com").await;
-
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/connect/woocommerce?site_url=https%3A%2F%2Fnew-wp-site.example.com&return_url=https%3A%2F%2Fnew-wp-site.example.com%2Fsettings&nonce=n")
-                    .header("cookie", &cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(
-            html.contains("Is this shop already a store in Monokulo?")
-                && html.contains("mode=existing"),
-            "with a store to add it to, the page asks first: {html}"
-        );
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/connect/woocommerce?site_url=https%3A%2F%2Fnew-wp-site.example.com&return_url=https%3A%2F%2Fnew-wp-site.example.com%2Fsettings&nonce=n&mode=existing")
-                    .header("cookie", &cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(
-            html.contains("Existing store"),
-            "expected the picker, got: {html}"
-        );
-        assert!(
-            html.contains(&format!(r#"value="{connection_id}""#)),
-            "expected the store's connection id as an option, got: {html}"
-        );
-        assert!(
-            html.contains("my-existing-shop.example.com"),
-            "expected the store's derived display name, got: {html}"
-        );
-        assert!(!html.contains(&public_key), "the picker only needs to identify the store by name, not expose its public key on this page");
-    }
-
-    /// The actual feature: choosing "use an existing store" must not
-    /// provision a second tenant - it hands the plugin credentials for the
-    /// *same* store, and the store's own order history (a real signal that
-    /// no fresh tenant was minted) must be unaffected.
-    #[tokio::test]
-    async fn connecting_with_an_existing_store_reuses_it_instead_of_creating_a_new_one() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let cookie = signed_up_and_logged_in_session_cookie(
-            &router,
-            "reuse-existing@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, public_key) =
-            create_a_store(&router, &cookie, "https://my-existing-shop.example.com").await;
-
-        let user_id = state
-            .db
-            .lock()
-            .get_user_by_email("reuse-existing@example.com")
-            .unwrap()
-            .unwrap()
-            .id;
-        let connections_before = state
-            .db
-            .lock()
-            .list_store_connections_for_user(&user_id)
-            .unwrap()
-            .len();
-        assert_eq!(connections_before, 1);
-
-        let post_response = router
-            .clone()
-            .oneshot(form_request(
-                "/connect/woocommerce",
-                Some(&cookie),
-                &[
-                    ("site_url", "https://new-wp-site.example.com"),
-                    ("return_url", "https://new-wp-site.example.com/settings"),
                     ("nonce", "nonce-existing"),
-                    ("mode", "existing"),
-                    ("connection_id", &connection_id),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            post_response.status(),
-            StatusCode::FOUND,
-            "expected a redirect to return_url"
-        );
-        let location = post_response
-            .headers()
-            .get("location")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-        let params = parse_query_params(&location);
-        let token = params
-            .get("token")
-            .expect("expected a real connect token")
-            .clone();
-        assert_eq!(
-            params.get("nonce").map(String::as_str),
-            Some("nonce-existing")
-        );
-
-        // No second store_connections row was created for this "existing"-mode
-        // submission.
-        let connections_after = state
-            .db
-            .lock()
-            .list_store_connections_for_user(&user_id)
-            .unwrap()
-            .len();
-        assert_eq!(
-            connections_after, 1,
-            "using an existing store must not provision a second one"
-        );
-
-        // /finish hands back credentials for the *same* store - same
-        // public_key as the one already created, not a fresh one.
-        let finish_response = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connect/woocommerce/finish")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "token": token }).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(finish_response.status(), StatusCode::OK);
-        let finish_body = body_json(finish_response).await;
-        assert_eq!(
-            finish_body["public_key"].as_str().unwrap(),
-            public_key,
-            "expected credentials for the same, already-existing store"
-        );
-
-        // The two real side effects of attaching a second site to an
-        // existing store: the row's site_url reflects the new site...
-        let row = state
-            .db
-            .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            row.site_url, "https://new-wp-site.example.com",
-            "expected the row's site_url to move to the newly-attached site"
-        );
-
-        // ...and the new site's domain joins the store's domains, waiting
-        // for the merchant to verify it.
-        let domains = state
-            .db
-            .lock()
-            .list_store_domains(&shared::ids::ConnectionId::new(connection_id.to_string()))
-            .unwrap();
-        assert!(
-            domains
-                .iter()
-                .any(|d| d.domain == "new-wp-site.example.com" && d.verified_at.is_none()),
-            "expected the new site's domain added, got: {domains:?}"
-        );
-    }
-
-    /// The "added alongside, not replacing" half of the same behavior: a
-    /// store whose first site's domain is already on its list keeps it
-    /// after a second site attaches.
-    #[tokio::test]
-    async fn attaching_a_second_site_adds_its_domain_alongside_the_first() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let cookie = signed_up_and_logged_in_session_cookie(
-            &router,
-            "preserve-origin@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-
-        // Create the store directly through the JSON API, so it starts with
-        // its first site's domain already present.
-        let create_response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connections")
-                    .header("content-type", "application/json")
-                    .header("cookie", &cookie)
-                    .body(Body::from(
-                        serde_json::json!({
-                            "platform": "custom",
-                            "site_url": "https://original-site.example.com",
-                            "view_key_hex": TEST_VIEW_KEY_HEX,
-                            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
-                            "network": "mainnet",
-                            "domains": ["https://original-site.example.com"],
-                            "base_currency": "XMR",
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(create_response.status(), StatusCode::CREATED);
-        let created = body_json(create_response).await;
-        let connection_id = created["connection_id"].as_str().unwrap().to_string();
-
-        let post_response = router
-            .clone()
-            .oneshot(form_request(
-                "/connect/woocommerce",
-                Some(&cookie),
-                &[
-                    ("site_url", "https://second-site.example.com"),
-                    ("return_url", "https://second-site.example.com/settings"),
-                    ("nonce", "nonce-preserve"),
-                    ("mode", "existing"),
                     ("connection_id", &connection_id),
                 ],
             ))
             .await
             .unwrap();
         assert_eq!(post_response.status(), StatusCode::FOUND);
+        let params = parse_query_params(&location(&post_response));
+        let token = params.get("token").expect("a real connect token").clone();
+        assert_eq!(
+            params.get("nonce").map(String::as_str),
+            Some("nonce-existing")
+        );
 
-        let domains: Vec<String> = state
+        let user = state
             .db
             .lock()
-            .list_store_domains(&shared::ids::ConnectionId::new(connection_id.to_string()))
+            .get_user_by_email("reuse-existing@example.com")
             .unwrap()
-            .into_iter()
-            .map(|d| d.domain)
-            .collect();
-        assert_eq!(
-            domains,
-            vec![
-                "original-site.example.com".to_string(),
-                "second-site.example.com".to_string()
-            ]
-        );
-    }
-
-    /// The real security boundary: a signed-in user must not be able to
-    /// attach *someone else's* store by guessing/copying its connection id -
-    /// that would hand its genuine `sk_...` secret token to their own
-    /// `return_url` via `/finish`.
-    #[tokio::test]
-    async fn connecting_with_a_connection_id_owned_by_a_different_user_is_rejected() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let victim_cookie = signed_up_and_logged_in_session_cookie(
-            &router,
-            "victim@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (victim_connection_id, _victim_public_key) =
-            create_a_store(&router, &victim_cookie, "https://victims-shop.example.com").await;
-
-        let attacker_cookie = signed_up_and_logged_in_session_cookie(
-            &router,
-            "attacker@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-
-        let post_response = router
-            .clone()
-            .oneshot(form_request(
-                "/connect/woocommerce",
-                Some(&attacker_cookie),
-                &[
-                    ("site_url", "https://attacker-site.example.com"),
-                    ("return_url", "https://attacker-site.example.com/settings"),
-                    ("nonce", "nonce-attack"),
-                    ("mode", "existing"),
-                    ("connection_id", &victim_connection_id),
-                ],
-            ))
-            .await
             .unwrap();
-
-        // Not a redirect - never hand out a token for a store the caller
-        // doesn't own.
         assert_eq!(
-            post_response.status(),
-            StatusCode::OK,
-            "expected the confirm form re-rendered with an error, not a redirect"
+            state
+                .db
+                .lock()
+                .list_store_connections_for_user(&user.id)
+                .unwrap()
+                .len(),
+            1,
+            "no second store"
         );
-        let html = body_text(post_response).await;
-        assert!(
-            html.contains("class=\"error\""),
-            "expected a visible error, got: {html}"
-        );
-        assert!(
-            !html.contains("token="),
-            "must never leak a token for a store the caller doesn't own"
+        let row = state
+            .db
+            .lock()
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.clone()))
+            .unwrap()
+            .unwrap();
+        let finish_body =
+            body_json(finish(&router, serde_json::json!({ "token": token })).await).await;
+        assert_eq!(
+            finish_body["public_key"].as_str().unwrap(),
+            row.tenant_public_key
         );
     }
 
+    /// Another account's store has the shop's site: the page says so, and
+    /// offers nothing to submit.
     #[tokio::test]
-    async fn submitting_existing_mode_with_no_connection_id_chosen_shows_a_clear_error() {
+    async fn a_shop_another_account_has_is_refused_with_no_form() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let cookie = signed_up_and_logged_in_session_cookie(
+        let router = build_router(state);
+        let owner = signed_up_and_logged_in_session_cookie(&router, "owner@example.com").await;
+        create_a_store(&router, &owner, "shop.example.com").await;
+        let other = signed_up_and_logged_in_session_cookie(&router, "other@example.com").await;
+        let response = get(
             &router,
-            "forgot-to-pick@example.com",
-            "correct horse battery staple",
+            &connect_uri(
+                "https://shop.example.com",
+                "https://shop.example.com/cb",
+                "n",
+            ),
+            &other,
         )
         .await;
-        let _ = create_a_store(&router, &cookie, "https://shop.example.com").await;
-
-        let post_response = router
-            .oneshot(form_request(
-                "/connect/woocommerce",
-                Some(&cookie),
-                &[
-                    ("site_url", "https://shop.example.com"),
-                    ("return_url", "https://shop.example.com/settings"),
-                    ("nonce", "nonce-nochoice"),
-                    ("mode", "existing"),
-                    ("connection_id", ""),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(post_response.status(), StatusCode::OK);
-        let html = body_text(post_response).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
         assert!(
-            html.contains("Choose a store to connect."),
-            "expected a clear error, got: {html}"
+            html.contains("shop.example.com is already connected to Monokulo here"),
+            "{html}"
         );
+        assert!(!html.contains(r#"action="/connect/woocommerce""#), "{html}");
     }
 
-    /// While no public address is set, the confirm screen explains why
-    /// connecting can't work (no form), submitting it does nothing, and
-    /// `/finish` answers `503` with a JSON error *without* spending the
-    /// token - which then works once the operator sets the address.
+    /// The real security boundary: a signed-in user must not be able to get
+    /// someone else's store's key by sending its id, nor one of their own
+    /// stores' keys to another site.
+    #[tokio::test]
+    async fn a_store_that_isnt_yours_or_isnt_the_shops_gets_no_token() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let victim = signed_up_and_logged_in_session_cookie(&router, "victim@example.com").await;
+        let victims_store = create_a_store(&router, &victim, "victims-shop.example.com").await;
+        let attacker =
+            signed_up_and_logged_in_session_cookie(&router, "attacker@example.com").await;
+        let attackers_store = create_a_store(&router, &attacker, "attacker-shop.example.com").await;
+        for (store, site) in [
+            (victims_store.as_str(), "https://victims-shop.example.com"),
+            (
+                attackers_store.as_str(),
+                "https://attacker-site.example.com",
+            ),
+            ("", "https://attacker-shop.example.com"),
+        ] {
+            let return_url = format!("{site}/settings");
+            let response = router
+                .clone()
+                .oneshot(form_request(
+                    "/connect/woocommerce",
+                    Some(&attacker),
+                    &[
+                        ("site_url", site),
+                        ("return_url", &return_url),
+                        ("nonce", "nonce-attack"),
+                        ("connection_id", store),
+                    ],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{store} {site}");
+            let html = body_text(response).await;
+            assert!(html.contains("class=\"error\""), "{html}");
+            assert!(!html.contains("token="), "never a token");
+        }
+    }
+
+    /// While no public address is set, the connect link explains why it
+    /// can't work (no form), setup refuses the plugin's request, and
+    /// `/finish` answers `503` *without* spending the token - which then
+    /// works once the operator sets the address.
     #[tokio::test]
     async fn plugins_cannot_connect_until_the_public_url_is_set_and_are_told_why() {
         let (state, engine) = test_state_with_real_engine().await;
-        state.save_setting("public_url", "").await;
         let router = build_router(state.clone());
-        let cookie = signed_up_and_logged_in_session_cookie(
+        let cookie =
+            signed_up_and_logged_in_session_cookie(&router, "no-public-url@example.com").await;
+
+        // Get a real token with the address set, then unset it.
+        let submit = connect_through_setup(
             &router,
-            "no-public-url@example.com",
-            "correct horse battery staple",
+            &cookie,
+            "https://shop.example.com",
+            "https://shop.example.com/cb",
+            "n1",
+            &[],
         )
         .await;
+        let token = parse_query_params(&location(&submit))["token"].clone();
+        state.save_setting("public_url", "").await;
 
-        let start = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fcb&nonce=n1")
-                    .header("cookie", &cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let start = get(
+            &router,
+            &connect_uri(
+                "https://other.example.com",
+                "https://other.example.com/cb",
+                "n2",
+            ),
+            &cookie,
+        )
+        .await;
         let html = body_text(start).await;
         assert!(html.contains("hasn't set its public"), "got: {html}");
         assert!(
-            !html.contains("<form method=\"post\" action=\"/connect/woocommerce\""),
-            "no confirm form, got: {html}"
+            !html.contains(r#"action="/connect/woocommerce""#),
+            "no form, got: {html}"
         );
-
-        let fields = [
-            ("site_url", "https://shop.example.com"),
-            ("return_url", "https://shop.example.com/cb"),
-            ("nonce", "n1"),
-            ("view_key_hex", TEST_VIEW_KEY_HEX),
-            ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
-            ("network", "mainnet"),
-            ("base_currency", "XMR"),
-        ];
-        let submit = router
+        let setup = router
             .clone()
-            .oneshot(form_request("/connect/woocommerce", Some(&cookie), &fields))
+            .oneshot(form_request(
+                "/setup",
+                Some(&cookie),
+                &[
+                    ("plugin", "woocommerce"),
+                    ("site_url", "https://other.example.com"),
+                    ("return_url", "https://other.example.com/cb"),
+                    ("nonce", "n2"),
+                    ("store_name", "Other"),
+                ],
+            ))
             .await
             .unwrap();
-        assert_eq!(submit.status(), StatusCode::OK, "no redirect, no token");
-        let user_id = signed_in_user_id(&state, "no-public-url@example.com");
-        assert!(state
-            .db
-            .lock()
-            .list_store_connections_for_user(&shared::ids::UserId::new(user_id.to_string()))
-            .unwrap()
-            .is_empty());
+        assert!(body_text(setup).await.contains("hasn't set its public"));
 
-        // Get a real token with the address set, then unset it again.
-        state.save_setting("public_url", TEST_PUBLIC_URL).await;
-        let submit = router
-            .clone()
-            .oneshot(form_request("/connect/woocommerce", Some(&cookie), &fields))
-            .await
-            .unwrap();
-        assert_eq!(submit.status(), StatusCode::FOUND);
-        let submit = complete_store_setup(&router, &cookie, submit).await;
-        let token =
-            parse_query_params(submit.headers()["location"].to_str().unwrap())["token"].clone();
-        state.save_setting("public_url", "").await;
-
-        let finish = |token: String| {
-            router.clone().oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connect/woocommerce/finish")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "token": token }).to_string(),
-                    ))
-                    .unwrap(),
-            )
-        };
-        let response = finish(token.clone()).await.unwrap();
+        let response = finish(&router, serde_json::json!({ "token": token })).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = body_json(response).await;
         assert!(
@@ -2065,29 +1253,11 @@ mod tests {
         );
 
         state.save_setting("public_url", TEST_PUBLIC_URL).await;
-        let response = finish(token).await.unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::OK,
-            "the token was not spent by the refused call"
-        );
+        let response = finish(&router, serde_json::json!({ "token": token })).await;
+        assert_eq!(response.status(), StatusCode::OK, "the token was not spent");
         let body = body_json(response).await;
         assert_eq!(body["endpoint"], TEST_PUBLIC_URL);
-        assert!(
-            !body.to_string().contains(&engine.addr.to_string()),
-            "nothing in the response names the engine: {body}"
-        );
-    }
-
-    fn signed_in_user_id(state: &AppState, email: &str) -> String {
-        state
-            .db
-            .lock()
-            .get_user_by_email(email)
-            .unwrap()
-            .unwrap()
-            .id
-            .into_string()
+        assert!(!body.to_string().contains(&engine.addr.to_string()));
     }
 
     #[test]
@@ -2117,7 +1287,6 @@ mod tests {
             ok("http://abc.onion/", "http://abc.onion/cb"),
             "plain http for an onion service"
         );
-
         assert!(
             !ok("https://shop.example.com/", "https://evil.example.com/cb"),
             "another host"
@@ -2136,92 +1305,74 @@ mod tests {
             ),
             "credentials in the address"
         );
-        assert!(
-            !ok("https://shop.example.com/", "http://shop.example.com/cb"),
-            "plain http on the internet"
-        );
-        assert!(
-            !ok("http://shop.example.com/", "http://shop.example.com/cb"),
-            "plain http on the internet"
-        );
+        assert!(!ok(
+            "https://shop.example.com/",
+            "http://shop.example.com/cb"
+        ));
+        assert!(!ok(
+            "http://shop.example.com/",
+            "http://shop.example.com/cb"
+        ));
         assert!(!ok("https://shop.example.com/", "javascript:alert(1)"));
         assert!(!ok("https://shop.example.com/", "/relative/path"));
         assert!(!ok("not a url", "https://shop.example.com/cb"));
     }
 
-    /// A crafted link naming the merchant's real shop but a return address
-    /// elsewhere: the confirm screen says why and offers no form.
-    #[tokio::test]
-    async fn a_connect_link_returning_to_another_site_shows_why_and_no_form() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
-        let cookie = signed_up_and_logged_in_session_cookie(
-            &router,
-            "phished@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fevil.example.com%2Fsteal&nonce=n")
-                    .header("cookie", &cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let html = body_text(response).await;
-        assert!(html.contains("a different website than the shop"), "{html}");
-        assert!(
-            !html.contains("name=\"view_key_hex\""),
-            "no form to submit: {html}"
+    #[test]
+    fn the_connecting_site_is_read_from_a_connect_link_only() {
+        let next =
+            "/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com%2F&return_url=x&nonce=n";
+        assert_eq!(
+            super::connecting_site(Some(next)).as_deref(),
+            Some("shop.example.com")
         );
+        assert_eq!(super::connecting_site(Some("/setup")), None);
+        assert_eq!(super::connecting_site(None), None);
     }
 
-    /// Submitting the confirm form anyway (it was never shown, but a forged
-    /// POST could carry it), in either mode, mints no token and redirects
-    /// nowhere - an existing store's credentials included.
+    /// A crafted link naming the merchant's real shop but a return address
+    /// elsewhere: the page says why and offers no form, and a forged post
+    /// of the form mints no token.
     #[tokio::test]
-    async fn a_forged_confirm_to_another_site_sends_no_credentials_anywhere() {
+    async fn a_connect_link_returning_to_another_site_sends_no_credentials_anywhere() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
-        let cookie = signed_up_and_logged_in_session_cookie(
-            &router,
-            "forged@example.com",
-            "correct horse battery staple",
+        let cookie = signed_up_and_logged_in_session_cookie(&router, "phished@example.com").await;
+        let connection_id = create_a_store(&router, &cookie, "shop.example.com").await;
+        let html = body_text(
+            get(
+                &router,
+                &connect_uri(
+                    "https://shop.example.com",
+                    "https://evil.example.com/steal",
+                    "n",
+                ),
+                &cookie,
+            )
+            .await,
         )
         .await;
-        let (connection_id, _) = create_a_store(&router, &cookie, "https://shop.example.com").await;
-        for fields in [
-            vec![
-                ("mode", "existing"),
-                ("connection_id", connection_id.as_str()),
-            ],
-            vec![
-                ("mode", "new"),
-                ("view_key_hex", TEST_VIEW_KEY_HEX),
-                ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
-                ("network", "mainnet"),
-                ("base_currency", "XMR"),
-            ],
-        ] {
-            let mut fields = fields;
-            fields.extend([
-                ("site_url", "https://shop.example.com"),
-                ("return_url", "https://evil.example.com/steal"),
-                ("nonce", "n"),
-            ]);
-            let response = router
-                .clone()
-                .oneshot(form_request("/connect/woocommerce", Some(&cookie), &fields))
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK, "{fields:?}");
-            assert!(response.headers().get("location").is_none());
-            let html = body_text(response).await;
-            assert!(html.contains("a different website than the shop"), "{html}");
-        }
+        assert!(html.contains("a different website than the shop"), "{html}");
+        assert!(!html.contains(r#"action="/connect/woocommerce""#), "{html}");
+
+        let response = router
+            .clone()
+            .oneshot(form_request(
+                "/connect/woocommerce",
+                Some(&cookie),
+                &[
+                    ("connection_id", &connection_id),
+                    ("site_url", "https://shop.example.com"),
+                    ("return_url", "https://evil.example.com/steal"),
+                    ("nonce", "n"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("location").is_none());
+        assert!(body_text(response)
+            .await
+            .contains("a different website than the shop"));
     }
 }

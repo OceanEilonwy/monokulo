@@ -22,10 +22,9 @@ use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 
-use crate::db::{Theme, UserRow};
+use crate::db::Theme;
 use crate::views;
 
-use super::connections::{self, CreateConnectionError, CreateConnectionFields};
 use super::login::{self, LoginError};
 use super::signup::{self, CreateAccountError};
 use super::AppState;
@@ -142,48 +141,6 @@ pub(crate) fn redirect_to(path: &SafePath) -> Response {
     redirect_302(path.as_str())
 }
 
-/// `POST /dashboard/connect`'s form fields (WBS 1.3.2) - the browser
-/// equivalent of `POST /connections`'s JSON body, minus `platform` (hardcoded
-/// to `"woocommerce"` below - a real "choose a platform" UI is a later, fuller
-/// dashboard concern) and `order_expiry_seconds` (left `None` here so the
-/// engine's own default applies - no UI field for it yet).
-/// `confirmations_required` *is* carried (same `#[serde(default)]`-to-`None`,
-/// no-UI-field-yet treatment `connect.rs::ConfirmForm` already gives it, for
-/// the identical reason: a caller that needs a non-default value - most
-/// concretely, a real stagenet e2e test that wants `0` (native 0-conf)
-/// rather than waiting on real block times - has a real way to set it
-/// through this flow instead of only the JSON `POST /connections` surface.
-/// There's no allowed-origins field: which websites may show a store's
-/// checkout is now the store's verified domains (`crate::embed_domains`),
-/// and the site URL's domain is added there for the merchant to verify.
-#[derive(Deserialize)]
-pub struct ConnectForm {
-    pub site_url: String,
-    #[serde(default)]
-    pub view_key_hex: String,
-    #[serde(default)]
-    pub spend_pubkey_hex: String,
-    /// The keys encrypted for SEV-SNP key storage (`key_entry`), instead of
-    /// the two above.
-    #[serde(default)]
-    pub encrypted_keys: Option<String>,
-    #[serde(default)]
-    pub network: String,
-    /// Validated against `crate::currencies` in `connect_submit` - see
-    /// that module's own doc comment.
-    #[serde(default)]
-    pub base_currency: String,
-    #[serde(default)]
-    pub confirmations_required: Option<u64>,
-    /// Only sent when the form offered a choice (part 5).
-    #[serde(default)]
-    pub key_custody_backend: Option<String>,
-    /// The merchant's wallet the store takes payments into (docs/wallets.md).
-    /// A caller that sends keys instead gets them added as a wallet.
-    #[serde(default)]
-    pub wallet_id: Option<String>,
-}
-
 /// `chrome.logged_in` is always `false` here, not a real per-request
 /// session check - this page's whole purpose is establishing a *new*
 /// session, so showing the sign-up/log-in links regardless of any existing
@@ -215,49 +172,10 @@ async fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>)
     let chrome = super::page_chrome(state, None, "").await;
     let data = views::auth::LoginViewModel {
         error: error.map(str::to_string),
-        connecting_site: super::wallets::connecting_site(next),
+        connecting_site: super::connect::connecting_site(next),
         next: next.map(str::to_string),
     };
     views::auth::login_page(&chrome, &data).into_response()
-}
-
-/// `resubmit` is `None` on a plain `GET` (empty form, mainnet selected by
-/// default) or `Some(&form)` when re-rendering after a rejected `POST` - in
-/// which case every field the merchant typed, including the two key hex
-/// fields, is echoed straight back rather than lost. See
-/// `ConnectViewModel`'s own doc comment for why that's the right call here
-/// (these are plain-text inputs already, not password fields - echoing
-/// doesn't change what was ever visible on the merchant's own screen).
-async fn render_connect_form(
-    state: &AppState,
-    error: Option<&str>,
-    resubmit: Option<&ConnectForm>,
-    user: &UserRow,
-) -> Response {
-    let selected_currency = resubmit.map(|f| f.base_currency.as_str()).unwrap_or("XMR");
-    let (selected, user_id) = (selected_currency.to_string(), user.id.clone());
-    let (currency_options, wallets) = state
-        .db
-        .read(move |db| {
-            Ok::<_, crate::db::DbError>((
-                crate::currencies::currency_options(db, &selected).unwrap_or_default(),
-                db.list_wallets(&user_id).unwrap_or_default(),
-            ))
-        })
-        .await
-        .unwrap_or_default();
-    let chrome = super::page_chrome(state, Some(user), "/dashboard/connect").await;
-    let data = views::connect::ConnectViewModel {
-        error: error.map(str::to_string),
-        public_key: None,
-        connection_id: None,
-        public_url: None,
-        site_url: resubmit.map(|f| f.site_url.clone()).unwrap_or_default(),
-        currency_options,
-        wallets,
-        selected_wallet: resubmit.and_then(|f| f.wallet_id.clone()),
-    };
-    views::connect::page(&chrome, &data).into_response()
 }
 
 /// `303`-free, deliberate `302 Found` redirect (axum's own `Redirect::to`
@@ -313,9 +231,9 @@ pub async fn signup_submit(
     )
     .await
     {
-        // Logged in straight away, and on to setting up the first wallet:
-        // a store needs one. Where they were going (a plugin's connect
-        // page) comes after it.
+        // Logged in straight away, and on to setting up a store (`/setup`),
+        // or back to where they were going (a plugin's connect page, which
+        // sets one up too).
         Ok(user_id) => {
             let user_id = crate::db::UserId::new(user_id);
             if theme != Theme::System {
@@ -335,12 +253,8 @@ pub async fn signup_submit(
             let cookie = super::session_cookie(&headers, raw_token.expose().to_string());
             let jar = CookieJar::new().add(cookie);
             let setup = match form.next.as_deref().and_then(SafePath::parse) {
-                Some(next) => format!(
-                    "/account/wallets/setup?next={}",
-                    url::form_urlencoded::byte_serialize(next.as_str().as_bytes())
-                        .collect::<String>()
-                ),
-                None => "/account/wallets/setup".to_owned(),
+                Some(next) => next.as_str().to_owned(),
+                None => "/setup".to_owned(),
             };
             return (jar, redirect_302(&setup)).into_response();
         }
@@ -519,77 +433,6 @@ pub async fn login_submit(
                 &state,
                 Some("Something went wrong. Please try again."),
                 form.next.as_deref(),
-            )
-            .await
-        }
-    }
-}
-
-/// `GET /dashboard/connect` (WBS 1.3.2) - behind [`AuthedUser`], which
-/// sends a browser without a session to log in, as on every other page.
-pub async fn connect_form(
-    State(state): State<AppState>,
-    AuthedUser(user, _token_hash): AuthedUser,
-) -> Response {
-    render_connect_form(&state, None, None, &user).await
-}
-
-/// `POST /dashboard/connect` (WBS 1.3.2) - the form equivalent of
-/// `POST /connections`, calling the exact same
-/// [`connections::create_connection_for_user`] both surfaces share.
-/// `platform` isn't a visible field yet (hardcoded to `"woocommerce"` below -
-/// a real "choose a platform" UI is a later, fuller dashboard concern per the
-/// WBS's own Stage 4/dashboard notes); `confirmations_required`/
-/// `order_expiry_seconds` aren't visible fields either and are left `None` so
-/// the engine's own defaults apply, consistent with the JSON API already
-/// treating them as optional.
-pub async fn connect_submit(
-    State(state): State<AppState>,
-    AuthedUser(user, _token_hash): AuthedUser,
-    Form(form): Form<ConnectForm>,
-) -> Response {
-    let fields = CreateConnectionFields {
-        // "custom", not "woocommerce" - this is the advanced/direct-API
-        // form (WBS follow-up UI work's own "custom (advanced)" picker
-        // option, distinct from the real `/connect/{platform}` flow a
-        // WooCommerce plugin drives). Was wrongly hardcoded to
-        // "woocommerce" (a copy-paste leftover from before that picker
-        // existed) - real user-reported bug: a store connected here showed
-        // "woocommerce" as its platform on the dashboard and got shown
-        // WooCommerce-specific integration instructions on its store page,
-        // neither of which is true for a store connected this way.
-        platform: "custom".to_string(),
-        site_url: form.site_url.clone(),
-        view_key_hex: form.view_key_hex.clone(),
-        spend_pubkey_hex: form.spend_pubkey_hex.clone(),
-        encrypted_keys: form.encrypted_keys.clone(),
-        network: Some(form.network.clone()).filter(|n| !n.is_empty()),
-        domains: Vec::new(),
-        confirmations_required: form.confirmations_required,
-        order_expiry_seconds: None,
-        base_currency: form.base_currency.clone(),
-        key_custody_backend: form.key_custody_backend.clone().filter(|b| !b.is_empty()),
-        wallet_id: form
-            .wallet_id
-            .clone()
-            .filter(|w| !w.is_empty())
-            .map(crate::db::WalletId::new),
-    };
-
-    match connections::create_connection_for_user(&state, &user, fields).await {
-        Ok(outcome) => redirect_302(&format!(
-            "/dashboard/stores/{}/setup",
-            outcome.connection_id
-        )),
-        Err(CreateConnectionError::BadRequest(message)) => {
-            render_connect_form(&state, Some(&message), Some(&form), &user).await
-        }
-        Err(CreateConnectionError::Internal) => {
-            render_connect_form(
-                &state,
-                Some("Something went wrong. Please try again."),
-                Some(&form),
-                &user,
             )
             .await
         }

@@ -21,6 +21,25 @@ pub use shared::order_status::OrderStatus;
 use crate::assets;
 use crate::db::{Theme, UserRow};
 
+/// Where the docs are: the guides for adding Monokulo to a site, built and
+/// published with the GitHub Pages site (`cargo xtask pages docs`).
+pub const DOCS_URL: &str = "https://oceaneilonwy.github.io/monokulo/docs/";
+
+/// A docs page, by its file under [`DOCS_URL`] (`js-library/`).
+pub fn docs_url(page: &str) -> String {
+    format!("{DOCS_URL}{page}")
+}
+
+/// The small "opens elsewhere" arrow after a link to another site.
+pub fn external_link_icon() -> Markup {
+    html! {
+        svg class="external-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" {
+            path d="M14 4h6v6M20 4l-9 9M18 14v6H4V6h6" {}
+        }
+    }
+}
+
 /// How a page loads a script: as the parser reaches it, once the page is
 /// parsed (`defer`), or as a module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,13 +93,14 @@ pub mod controls;
 pub mod create_order;
 pub mod dashboard;
 pub mod engine;
-pub mod integration_help;
+
 pub mod key_entry;
 mod logo_art;
 pub mod logs;
 pub mod orders;
 pub mod pos;
 pub mod scaling;
+pub mod setup;
 pub mod status;
 pub mod store_detail;
 pub mod store_settings;

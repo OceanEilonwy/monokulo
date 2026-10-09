@@ -471,54 +471,62 @@ async fn main() {
         .to_owned();
     let session_cookie = set_cookie.split(';').next().unwrap().to_owned();
 
-    let site_url = "https://pos-e2e-test.example.com";
+    // Store setup (`/setup`) as a browser without JavaScript walks it: the
+    // store step, then the wallet brought in with its keys, which makes the
+    // store. The first Playwright payment settles at the mempool sighting
+    // (`confirmations_required` 0); the second test changes this default to
+    // 1 before creating its order and waits for a real block.
+    let setup_fields = [
+        ("kind", "web"),
+        ("store_name", "POS e2e test"),
+        ("store_site", "pos-e2e-test.example.com"),
+        ("confirmations_required", "0"),
+        ("name", "POS e2e wallet"),
+        ("network", "stagenet"),
+        ("view_key_hex", WALLET_PRIVATE_VIEW_KEY),
+        ("spend_pubkey_hex", WALLET_PUBLIC_SPEND_KEY),
+    ];
+    let mut done_path = String::new();
+    for step in ["/setup", "/setup/wallet/keys"] {
+        let response = cp_router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(step)
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("cookie", &session_cookie)
+                    .body(Body::from(form_body(&setup_fields)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::SEE_OTHER,
+            "expected {step} to go on, not a refused form"
+        );
+        done_path = response.headers()["location"].to_str().unwrap().to_owned();
+    }
     let connect_response = cp_router
         .clone()
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri("/dashboard/connect")
-                .header("content-type", "application/x-www-form-urlencoded")
+                .uri(&done_path)
                 .header("cookie", &session_cookie)
-                .body(Body::from(form_body(&[
-                    ("site_url", site_url),
-                    ("view_key_hex", WALLET_PRIVATE_VIEW_KEY),
-                    ("spend_pubkey_hex", WALLET_PUBLIC_SPEND_KEY),
-                    ("network", "stagenet"),
-                    // `ConnectForm::base_currency` (`http::dashboard`) has no
-                    // real default despite its `#[serde(default)]` (that
-                    // only covers a missing form field, not what the
-                    // engine/currency validation accepts - an empty string
-                    // fails `crate::currencies::is_known_currency` outright)
-                    // - added after `tests/e2e_dashboard_stagenet.rs`'s own
-                    // identical connect call was written, which is why that
-                    // test's own field list doesn't have this either. `"XMR"`
-                    // matches every real amount this harness ever sends
-                    // (spec point 2: the POS screen always prices in the
-                    // store's own base currency).
-                    ("base_currency", "XMR"),
-                    // The first Playwright payment settles at the mempool
-                    // sighting. The second test changes this default to 1
-                    // before creating its order and waits for a real block.
-                    ("confirmations_required", "0"),
-                ])))
+                .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(
-        connect_response.status(),
-        StatusCode::OK,
-        "expected the connect success page, not a re-rendered form"
-    );
     let connect_html = body_text(connect_response).await;
     assert!(
-        connect_html.contains("Store connected"),
-        "expected a real successful connect, got: {connect_html}"
+        connect_html.contains("POS e2e test is set up"),
+        "expected the store to be made, got: {connect_html}"
     );
     let pk_start = connect_html
         .find("pk_")
-        .expect("expected a real pk_ value in the connect success page");
+        .expect("expected a real pk_ value on the Done page");
     let public_key: String = connect_html[pk_start..]
         .chars()
         .take_while(|c| c.is_alphanumeric() || *c == '_')

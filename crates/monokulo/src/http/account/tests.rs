@@ -400,7 +400,7 @@ async fn the_wallets_tab_lists_the_merchants_wallets_and_a_way_to_add_one() {
         "{html}"
     );
     assert!(html.contains("No wallets yet."), "{html}");
-    assert!(html.contains(r#"href="/account/wallets/setup""#), "{html}");
+    assert!(html.contains(r#"href="/account/wallets/add""#), "{html}");
 }
 
 #[tokio::test]

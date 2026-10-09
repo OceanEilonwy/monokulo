@@ -317,7 +317,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
             spend_pubkey_hex: merchant.spend_public_key_hex().unwrap(),
             network: "stagenet".to_string(),
             confirmations_required: Some(0),
-            base_currency: "XMR".to_string(),
+
         },
     )
     .await

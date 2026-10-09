@@ -26,6 +26,7 @@ pub mod live;
 pub mod logs;
 pub mod qr;
 pub mod settings;
+pub mod stores;
 pub mod templates;
 pub mod views;
 pub mod wallets;
