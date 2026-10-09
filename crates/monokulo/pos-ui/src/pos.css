@@ -140,8 +140,11 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
     box-shadow: 2px 2px 0 var(--state-border); scroll-snap-align: start; white-space: nowrap;
   }
   .pos-stack-card.state-offline { box-shadow: none; border-style: dashed; }
-  /* Wide enough for a shortened order ID (`#a8723b…b0d44e`), cut only when it's a long reference. */
-  .pos-stack-ref { font-size: 11px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 15ch; }
+  /* A long reference is cut to fit; an order ID, already shortened by the
+     server (`#a8723b…b0d44e`), never is: its card grows to hold it. */
+  .pos-stack-ref { font-size: 11px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 12ch; }
+  .pos-stack-ref.is-id { flex: none; max-width: none; overflow: visible; }
+  .pos-stack-card:has(.is-id) { max-width: none; }
   .pos-stack-amount { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .pos-keypad.has-stack { gap: 9px; padding-top: 12px; }
   .pos-keypad.has-stack .pos-amount { font-size: 40px; }

@@ -38,6 +38,8 @@ const terminal = (o: Order) => Boolean(o.cancelled_at) || ['paid', 'overpaid', '
 /** `#a8723b…b0d44e` - the order ID as the server shortened it, marked with `#`. */
 const shortId = (o: Order) => `#${o.order_id_short}`;
 const label = (o: Order) => o.merchant_order_id || shortId(o);
+/** An order's name in full: its reference, or else its whole ID (for a title or a screen reader). */
+const fullLabel = (o: Order) => o.merchant_order_id || o.order_id;
 /** A value as the server shortened it, in the site's own markup
  * (`views::short_id`, site.css `.short-value`): the short text on screen,
  * the whole over it to double-click and copy, and for a screen reader. */
@@ -608,9 +610,9 @@ function App() {
         <div class="pos-stack-heading"><strong>Background orders · {background().length}</strong><button type="button" onClick={showList}>View all →</button></div>
         <div class="pos-stack-scroll" tabindex="0" aria-label="Background orders, scroll sideways" onWheel={event => { const el = event.currentTarget; if (el.scrollWidth > el.clientWidth && Math.abs(event.deltaY) > Math.abs(event.deltaX)) { el.scrollLeft += event.deltaY; event.preventDefault(); } }}>
           <For each={background()} keyed={o => o.order_id}>{order => <button type="button" class={['pos-stack-card', `state-${stateOf(order(), offline())}`]}
-            title={`${label(order())} · ${statusName[stateOf(order(), offline())]} · ${shownAmount(order())} ${order().currency}`}
-            aria-label={`Open ${label(order())}, ${statusName[stateOf(order(), offline())]}, ${shownAmount(order())} ${order().currency}`} onClick={() => void openOrder(order())}>
-            <StatusIcon order={order()} offline={offline()}/><span class="pos-stack-ref">{label(order())}</span><span class="pos-stack-amount">{shownAmount(order())}</span>
+            title={`${fullLabel(order())} · ${statusName[stateOf(order(), offline())]} · ${shownAmount(order())} ${order().currency}`}
+            aria-label={`Open ${fullLabel(order())}, ${statusName[stateOf(order(), offline())]}, ${shownAmount(order())} ${order().currency}`} onClick={() => void openOrder(order())}>
+            <StatusIcon order={order()} offline={offline()}/><span class={order().merchant_order_id ? 'pos-stack-ref' : 'pos-stack-ref is-id'}>{label(order())}</span><span class="pos-stack-amount">{shownAmount(order())}</span>
           </button>}</For>
         </div>
       </section>
