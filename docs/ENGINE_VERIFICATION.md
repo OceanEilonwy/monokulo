@@ -94,7 +94,8 @@ being invented from instrumentation counters.
 Run from the repository root. Saved regressions replay before fresh property cases.
 
 ```sh
-# Ordinary properties and scenarios; repeat with --features engine/zmq,key-custody/snp.
+# Ordinary properties and scenarios (zmq is on by default); repeat with
+# --features monokulo/snp for the snp key custody backend.
 PROPTEST_CASES=128 ENGINE_PROOF_CASES=16 PROPTEST_RNG_SEED=431 \
   cargo nextest run -p engine -p key-custody --lib --locked --profile ci
 
@@ -106,9 +107,8 @@ cargo xtask engine scale zmq
 cargo test -p xtask mutations
 cargo xtask engine mutations --features both --cases 32 --seed 241
 
-# Exhaustive serialized policy event orders, both configurations.
+# Exhaustive serialized policy event orders.
 cargo test --manifest-path fuzz/Cargo.toml --locked --test interleavings
-cargo test --manifest-path fuzz/Cargo.toml --locked --features zmq --test interleavings
 
 # Calibrated, instrumented campaign; omit seconds to use the target default.
 RUSTUP_TOOLCHAIN=nightly-2026-10-02 ENGINE_FUZZ_SEED=432 cargo xtask engine fuzz portfolio
@@ -121,8 +121,8 @@ builds retain the project's nightly policy. The fuzz runner explicitly selects
 rustc's native host triple for build, calibration and execution: a musl-built
 cargo-fuzz installer otherwise defaults to musl, whose static libc is incompatible
 with AddressSanitizer. Use the versions recorded in a run's
-`replay.json` for reproduction. Run `cargo fuzz build --fuzz-dir fuzz` (and repeat
-with `--features zmq`) to build all nine AddressSanitizer targets. Their binaries
+`replay.json` for reproduction. Run `cargo fuzz build --fuzz-dir fuzz` to build all nine AddressSanitizer
+targets. Their binaries
 can replay reviewed seeds with `-runs=0`; this is a replay check, not sustained
 exploration. Scheduled/manual property and fuzz workflows upload regressions,
 logs and reports. PR CI runs ordinary tests and both scale configurations;

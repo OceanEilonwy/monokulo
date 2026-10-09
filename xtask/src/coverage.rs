@@ -329,6 +329,11 @@ fn collect_rust(log: &Log) -> io::Result<Exit> {
             "xtask",
             "--profile",
             "ci",
+            // Every feature a build can ship, as every test build has:
+            // monokulo/snp is the snp key custody backend and its tests (zmq
+            // is on by default).
+            "--features",
+            "monokulo/snp",
         ],
         None,
         &[],
@@ -815,7 +820,7 @@ fn summarize_rust(output: &Path) -> io::Result<()> {
         "tools": {"rustc":version("rustc", &["+nightly", "--version"])?,
             "cargo":version("cargo", &["+nightly", "--version"])?,
             "collector":version("cargo", &["llvm-cov", "--version"])?},
-        "test":{"status":"passed", "command":"cargo +nightly llvm-cov nextest --workspace --locked --branch --html --exclude xtask --profile ci",
+        "test":{"status":"passed", "command":"cargo +nightly llvm-cov nextest --workspace --locked --branch --html --exclude xtask --profile ci --features monokulo/snp",
             "exit_code":0,"log":"rust/test.log"},
         "lines": lines, "branches": branches,
         "report":"rust/index.html", "unavailable":[]

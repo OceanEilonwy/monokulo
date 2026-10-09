@@ -2659,6 +2659,7 @@ mod tests {
     /// section, and are checked against the engine's before they're saved:
     /// a value the engine doesn't share is refused, named beside its field,
     /// and nothing changes; matching values save and apply at once.
+    #[cfg(feature = "snp")]
     #[tokio::test]
     async fn sev_snp_key_entry_settings_are_saved_only_when_they_match_the_engines() {
         let engine = engine_test_support::TestEngineConfig::new()
@@ -2738,6 +2739,7 @@ mod tests {
     /// Settings that disagree with the engine's from the start (the options
     /// file): a red alert on the status page naming what differs, for the
     /// operator, and SEV-SNP key storage isn't a choice on the forms.
+    #[cfg(feature = "snp")]
     #[tokio::test]
     async fn a_mismatch_from_the_options_file_is_a_red_alert_and_snp_is_not_offered() {
         let engine = engine_test_support::TestEngineConfig::new()

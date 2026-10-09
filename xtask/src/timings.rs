@@ -9,7 +9,7 @@
 //!
 //! Suites run:
 //!   rust     cargo nextest run --workspace --exclude xtask --profile ci
-//!            --features engine/zmq, as CI runs it.
+//!            --features monokulo/snp, as CI runs it.
 //!   browser  The offline Playwright run, coverage-browser (its fixture
 //!            and real-binaries projects, without instrumenting, so no
 //!            coverage overhead). Needs `npm ci` in e2e/browser and
@@ -355,7 +355,7 @@ fn run_rust(db: &mut Connection) -> io::Result<()> {
         "--profile",
         "ci",
         "--features",
-        "engine/zmq",
+        "monokulo/snp",
     ];
     let root = root();
     // Build first, so the recorded wall time is the tests' alone.

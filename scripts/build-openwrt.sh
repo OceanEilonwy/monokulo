@@ -108,11 +108,11 @@ rustup target add "$TARGET"
 	# (the static link resolves left to right).
 	export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-L native=$static_cxx -C link-arg=-lgcc -C link-arg=-lc"
 	export CARGO_PROFILE_RELEASE_STRIP=symbols
-	# The engine's `zmq` feature, as in the Docker image: a node's ZMQ
-	# announcements wake the scan at once (docs/monero_zmq.md).
 	# The engine is built into monokulo (its default `embedded-engine`
-	# feature), so there is one binary to ship.
-	cargo build --release --locked --target "$TARGET" --features engine/zmq \
+	# feature), so there is one binary to ship, with the engine's default
+	# `zmq` feature: a node's ZMQ announcements wake the scan at once
+	# (docs/monero_zmq.md).
+	cargo build --release --locked --target "$TARGET" \
 		-p monokulo --bin monokulo
 )
 if ! file "target/$TARGET/release/monokulo" | grep -q 'statically linked'; then

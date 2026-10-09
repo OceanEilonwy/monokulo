@@ -79,7 +79,7 @@ feature; release binaries and the Docker image leave it out, and refuse
 
 ```sh
 cargo build --release --locked -p engine --bin monokulo-engine --features snp
-# with ZMQ notifications too: --features snp,zmq
+# (ZMQ notifications come with it: zmq is a default feature)
 ```
 
 Building the image is outside this repository (it depends on your

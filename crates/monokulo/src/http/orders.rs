@@ -4467,6 +4467,7 @@ mod tests {
     /// A real engine offering two key custody backends, with monokulo's
     /// status cache already holding its status (as it would after any page
     /// load), so forms know the choices.
+    #[cfg(feature = "snp")]
     async fn test_state_with_two_custody_backends(
     ) -> (AppState, engine_test_support::TestEngineHandle) {
         test_state_with_two_custody_backends_trusting(engine_test_support::snp_test_trust()).await
@@ -4474,6 +4475,7 @@ mod tests {
 
     /// The same, with this site's key entry trusting `trust`, which may
     /// not be what the engine trusts.
+    #[cfg(feature = "snp")]
     async fn test_state_with_two_custody_backends_trusting(
         trust: key_custody::transport::TrustPolicy,
     ) -> (AppState, engine_test_support::TestEngineHandle) {
@@ -4528,6 +4530,7 @@ mod tests {
         .unwrap()
     }
 
+    #[cfg(feature = "snp")]
     async fn engine_backend_of(state: &AppState, public_key: &str) -> Option<String> {
         let row = state
             .db
@@ -4553,6 +4556,7 @@ mod tests {
     /// What `key-custody-cli` does on the merchant's computer, with the
     /// test engine's stand-in for AMD: fetches the bundle the page links,
     /// checks it and encrypts the keys. Returns what it would print.
+    #[cfg(feature = "snp")]
     async fn cli_seal(
         router: &Router,
         engine: &engine_test_support::TestEngineHandle,
@@ -4580,6 +4584,7 @@ mod tests {
     /// in the clear for it are refused and not sent on; another wallet's
     /// keys are refused by the engine; nothing moves until the right ones
     /// come.
+    #[cfg(feature = "snp")]
     #[tokio::test]
     async fn a_store_can_move_its_keys_to_snp_from_its_settings_page_without_js() {
         let (state, engine) = test_state_with_two_custody_backends().await;
@@ -4694,6 +4699,7 @@ mod tests {
     /// The key storage choice is made when a wallet is added (its keys are
     /// registered once, for every store on it), and a store on that wallet
     /// keeps its keys there.
+    #[cfg(feature = "snp")]
     #[tokio::test]
     async fn a_new_wallet_can_choose_where_its_keys_are_kept_when_there_is_a_choice() {
         let (state, engine) = test_state_with_two_custody_backends().await;
