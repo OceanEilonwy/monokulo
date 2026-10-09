@@ -1,4 +1,4 @@
-const { test, expect, pauseClockAt } = require('../coverage-test');
+const { test, expect, pauseClockAt, recordEventSources, eventSources } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
 
@@ -342,20 +342,10 @@ test('counter loses its connection: the order shows connection lost, then recove
   // The Wi-Fi is down: every attempt to (re)open the update stream fails.
   await page.route('**/pos/events?*', route => (online ? route.continue() : route.abort('internetdisconnected')));
   online = false;
-  // The page's own record of the stream failing: its EventSource's error
-  // events. A listener added in the constructor runs before the app's, in
-  // the same dispatch, so once the test sees a failure the app has handled
-  // it (and started its 6s count).
-  await page.addInitScript(() => {
-    const Native = window.EventSource;
-    window.__streamFailures = 0;
-    window.EventSource = class extends Native {
-      constructor(...args) {
-        super(...args);
-        this.addEventListener('error', () => { window.__streamFailures++; });
-      }
-    };
-  });
+  // The POS shows nothing of the stream failing until its 6s are up, so
+  // the stream's own error events are recorded (recordEventSources): once
+  // the test sees one, the POS has handled it and started its count.
+  await recordEventSources(page);
   // The page's time stands still from the start: only the test moves it.
   // The browser retries the stream on its own clock, which is real; the
   // 6s after which the merchant is told is the page's.
@@ -364,7 +354,7 @@ test('counter loses its connection: the order shows connection lost, then recove
   await page.goto(posUrl());
   const badge = page.locator('.pos-order-heading .pos-badge');
   await expect(page.locator('.pos-pay-card')).toBeVisible();
-  await expect.poll(() => page.evaluate(() => window.__streamFailures), 'the app sees the stream fail').toBeGreaterThan(0);
+  await expect.poll(async () => (await eventSources(page)).some(stream => stream.errors > 0), 'the POS handles the stream failing').toBe(true);
   // Retries fail every few seconds; once 6s have passed without a
   // connection the merchant is told, however many retries that took: not a
   // millisecond before.
