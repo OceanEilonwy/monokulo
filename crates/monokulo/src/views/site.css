@@ -1154,7 +1154,6 @@ mk-select[compact] .mk-popup { white-space: nowrap; }
 .store-rows.past li, .store-rows.past a { color: var(--muted); }
 .store-rows.past .sr-name { font-weight: 400; }
 .wallet-page .facts { margin: var(--space-lg) 0 0; }
-.wallet-page .facts dd > code { display: block; max-width: 100%; overflow: hidden; }
 .history-fold { margin: 0 0 var(--space-lg); }
 .history-fold > summary { cursor: pointer; font-weight: 700; padding: var(--space-xs) 0; }
 .history-fold .timeline { margin-top: var(--space-sm); }
