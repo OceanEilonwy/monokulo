@@ -1814,7 +1814,8 @@ fn state_with_owner_and_store(
             1,
         )
         .unwrap();
-        db.create_store_connection(
+        crate::db::test_rows::store_on_wallet(
+            &db,
             &shared::ids::ConnectionId::new("c1"),
             &shared::ids::UserId::new("u_owner"),
             "woocommerce",
@@ -2053,7 +2054,8 @@ async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
             crate::crypto::Binding::StoreSecret("c1"),
             "sk_shop",
         );
-        db.create_store_connection(
+        crate::db::test_rows::store_on_wallet(
+            &db,
             &shared::ids::ConnectionId::new("c1"),
             &shared::ids::UserId::new("u_owner"),
             "woocommerce",

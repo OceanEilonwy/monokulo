@@ -347,11 +347,30 @@ async fn start_monokulo(
         0,
     )
     .unwrap();
-    db.create_store_connection(
+    // The store takes payments into its tenant's wallet, as setup makes it.
+    let view = engine_client
+        .get_tenant(&tenant.secret_token)
+        .await
+        .expect("reading the test tenant");
+    let wallet = monokulo::db::WalletId::new("w_tor");
+    db.create_wallet(&monokulo::db::NewWalletRow {
+        id: &wallet,
+        user_id: &shared::ids::UserId::new("u1"),
+        name: "Tor test wallet",
+        network: &view.network,
+        primary_address: &view.primary_address,
+        engine_wallet_id: view.wallet_id.as_ref().expect("the tenant's wallet"),
+        origin: monokulo::db::WalletOrigin::Imported,
+        backup: None,
+        created_at: 0,
+    })
+    .unwrap();
+    db.create_store_connection_on_wallet(
         &shared::ids::ConnectionId::new("store-1"),
         &shared::ids::UserId::new("u1"),
         "custom",
-        "https://shop.example",
+        "Tor shop",
+        "shop.example",
         &tenant.public_key,
         &monokulo::crypto::encrypt(
             &ENCRYPTION_KEY,
@@ -360,6 +379,7 @@ async fn start_monokulo(
         ),
         0,
         "XMR",
+        &wallet,
     )
     .unwrap();
     let config = AbuseConfig {
