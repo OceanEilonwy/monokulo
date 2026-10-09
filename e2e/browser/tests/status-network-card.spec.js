@@ -28,6 +28,32 @@ async function story(name) {
 
 const card = (page) => page.locator('#network-mainnet');
 
+/**
+ * The settled block's ring (its box grown by the outline and its offset)
+ * stays clear of the blocks either side, and every block is one width.
+ */
+async function expectRingClear(page) {
+  const found = await card(page).locator('.pips').evaluate((pips) => {
+    const settles = pips.querySelector('.pip[data-settles]');
+    const style = getComputedStyle(settles);
+    const reach = parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset);
+    const box = settles.getBoundingClientRect();
+    const ring = { left: box.left - reach, right: box.right + reach, top: box.top - reach, bottom: box.bottom + reach };
+    const side = (el) => el && el.getBoundingClientRect();
+    const before = side(settles.previousElementSibling);
+    const after = side(settles.nextElementSibling);
+    const widths = [...pips.querySelectorAll('.pip')].map((pip) => Math.round(pip.getBoundingClientRect().width * 100) / 100);
+    return { reach, ring, before: before && { right: before.right }, after: after && { left: after.left }, widths };
+  });
+  expect(found.reach).toBeGreaterThan(0);
+  expect(found.before, 'a block before the settled one').toBeTruthy();
+  expect(found.after, 'a block or the tip after the settled one').toBeTruthy();
+  expect(found.ring.left).toBeGreaterThan(found.before.right);
+  expect(found.ring.right).toBeLessThan(found.after.left);
+  // One width, give or take the layout's sub-pixel rounding.
+  expect(Math.max(...found.widths) - Math.min(...found.widths), found.widths.join(' ')).toBeLessThan(0.1);
+}
+
 test('an admin sees the card titled Mainnet, its nodes and proof of work 3 behind the tip', async ({ page, context }) => {
   await story('following');
   await login(context);
@@ -60,6 +86,7 @@ test('an admin sees the card titled Mainnet, its nodes and proof of work 3 behin
   await expect(card(page).locator('.pips .pip')).toHaveCount(30);
   await expect(card(page).locator('.pips .pip.seen')).toHaveCount(3);
   await expect(card(page).locator('.pip-anchor')).toHaveText('Anchored at block 3,412,160, 2d ago: every block since then is checked.');
+  await expectRingClear(page);
   await captureCoverageStage(page, 'status-network-card-following', test.info(), { group: GROUP, shapes: SHAPES });
 
   const facts = card(page).locator('details.proof-facts');
@@ -69,14 +96,15 @@ test('an admin sees the card titled Mainnet, its nodes and proof of work 3 behin
   await captureCoverageStage(page, 'status-network-card-how-its-checked', test.info(), { group: GROUP, shapes: SHAPES });
 });
 
-test('fourteen blocks behind, the chip turns amber', async ({ page, context }) => {
+test('fourteen blocks behind, the chip stays the same neutral tag', async ({ page, context }) => {
   await story('lagging');
   await login(context);
   await page.goto(fixture.base_url + '/status');
   const chip = card(page).locator('.pline .tag');
   await expect(chip).toHaveText('14 behind the tip');
-  await expect(chip).toHaveClass(/tag-slow/);
+  await expect(chip).toHaveClass('tag tag-unknown');
   await expect(card(page).locator('.pips .pip.seen')).toHaveCount(14);
+  await expectRingClear(page);
   await captureCoverageStage(page, 'status-network-card-lagging', test.info(), { group: GROUP, shapes: SHAPES });
 });
 
@@ -127,6 +155,7 @@ test('on a phone each node is a card and the window still reads', async ({ page,
   const tip = await box(card(page).locator('.pips .pip-tip'));
   const cardBox = await box(card(page));
   expect(tip.x + tip.width).toBeLessThanOrEqual(cardBox.x + cardBox.width);
+  await expectRingClear(page);
   await captureCoverageStage(page, 'status-network-card-phone', test.info(), { group: GROUP, asIs: true });
 });
 

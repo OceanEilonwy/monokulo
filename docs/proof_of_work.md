@@ -222,8 +222,8 @@ on the status page (`views::status`):
   is, over a window of the last 30 blocks at a fixed scale: proven blocks
   filled, ones only seen outlined, the block orders settle up to ringed
   and the tip marked. The tip is the highest a node on the proven chain or
-  past it reports, never a caught node's claim. The chip turns amber past
-  5 behind;
+  past it reports, never a caught node's claim. The chip is the same
+  neutral tag at every count;
 - while held, the engine's reason and the "Take a new anchor" button in
   one box, in place of the window;
 - the anchor, blocks checked, hashing, keys and last check folded under
