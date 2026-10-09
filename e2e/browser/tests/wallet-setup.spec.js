@@ -293,10 +293,12 @@ test('a wallet lists its stores and is renamed on its page', async ({ page }) =>
   await captureCoverageStage(page, 'wallets-list', test.info(), { group: 'wallets' });
   await page.getByRole('link', { name: WALLET_NAME }).click();
   await expect(page.getByRole('link', { name: 'wallet-shop.example.com' }).first()).toBeVisible();
-  await expect(page.getByText(/still uses? this wallet/)).toBeVisible();
+  await expect(page.locator('section[aria-labelledby="stores-title"] .card-meta')).toHaveText('1 takes payments into this wallet');
   await page.locator('#card-details input[name="name"]').fill('Dev stagenet till');
   await page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Dev stagenet till' })).toBeVisible();
+  // History is folded until opened.
+  await page.locator('details.history-fold summary').click();
   await expect(page.getByText(/Renamed from/)).toBeVisible();
   await captureCoverageStage(page, 'wallets-detail', test.info(), { group: 'wallets' });
   // Put the name back for the specs' helpers.
@@ -352,6 +354,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   // leaves the helpers' wallet in use again.
   await page.goto(base + '/account?tab=wallets');
   await page.getByRole('link', { name: WALLET_NAME }).click();
+  await page.locator('details.history-fold summary').click();
   await expect(page.getByText('changed to another wallet')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Before' })).toBeVisible();
   await page.goto(base + store + '/settings');
@@ -364,14 +367,15 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   // the top of its page; then brought back with its keys.
   await page.goto(base + '/account?tab=wallets');
   await page.getByRole('link', { name: 'Cafe till' }).click();
-  const retire = page.locator('.danger-zone');
-  await expect(retire.getByRole('heading', { name: 'Retire wallet' })).toBeVisible();
-  await retire.locator('input[name="confirm"]').fill('Cafe till');
+  await page.getByRole('link', { name: 'Retire wallet…' }).click();
+  const retire = page.getByRole('dialog', { name: 'Retire “Cafe till”?' });
+  await expect(retire.locator('.checks li.ok')).toHaveCount(2);
+  await retire.getByLabel('Type “Cafe till” to confirm').fill('Cafe till');
   await retire.getByRole('button', { name: 'Retire wallet' }).click();
-  const banner = page.locator('.keys-gone-banner');
-  await expect(banner).toContainText('Retired. Its keys are deleted.');
-  await expect(banner).toContainText("private view key and public spend key");
-  await expect(page.locator('dl.facts')).toContainText('Keys');
+  const meta = page.locator('.wallet-meta');
+  await expect(meta.locator('.tag')).toHaveText('retired');
+  await expect(meta).toContainText('Keys deleted');
+  await expect(page.getByText('Retired: its keys were deleted from key storage')).toBeAttached();
   await captureCoverageStage(page, 'wallets-retired', test.info(), { group: 'wallets' });
   await page.goto(base + '/account?tab=wallets');
   await expect(page.getByText('Retired wallets (1)')).toBeVisible();
@@ -385,11 +389,13 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await page.goto(base + '/account?tab=wallets');
   await page.locator('.retired-wallets summary').click();
   await page.getByRole('link', { name: 'Cafe till' }).click();
+  await page.getByRole('link', { name: 'Restore wallet…' }).click();
+  const restore = page.getByRole('dialog', { name: 'Restore “Cafe till”' });
   // The CLI key help is on the restore form too.
-  await expect(page.getByText('Where do I find these keys?')).toBeVisible();
-  await page.locator('input[name="view_key_hex"]').fill('0707070707070707070707070707070707070707070707070707070707070707');
-  await page.locator('input[name="spend_pubkey_hex"]').fill('8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90');
-  await page.getByRole('button', { name: 'Bring back Cafe till' }).click();
+  await expect(restore.getByText('Where do I find these keys?')).toBeVisible();
+  await restore.locator('input[name="view_key_hex"]').fill('0707070707070707070707070707070707070707070707070707070707070707');
+  await restore.locator('input[name="spend_pubkey_hex"]').fill('8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90');
+  await restore.getByRole('button', { name: 'Restore wallet' }).click();
   await expect(page.getByText('Cafe till is back.')).toBeVisible();
-  await expect(page.locator('.keys-gone-banner')).toHaveCount(0);
+  await expect(page.locator('.wallet-meta')).toHaveCount(0);
 });

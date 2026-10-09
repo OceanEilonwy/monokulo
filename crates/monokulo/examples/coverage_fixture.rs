@@ -419,14 +419,33 @@ async fn unrestrict_embed(State(control): State<Controls>) -> StatusCode {
 /// networks (`seed_wallets`).
 const TESTER_SESSION: &str = "coverage-tester-session-token";
 
-/// Wallets for the wallets list's screenshots (wallets-networks.spec.js):
-/// the merchant gets mainnet, stagenet and testnet wallets and a retired
-/// one, its store taking payments into the first; a second merchant only
-/// test-network ones. Answers the second merchant's session.
+/// Wallets for the wallets list's and a wallet page's screenshots
+/// (wallets-networks.spec.js, wallet-page.spec.js): the merchant gets
+/// mainnet, stagenet and testnet wallets and a retired one, its store
+/// taking payments into the first, each backed up or brought in from an
+/// app another way; a second merchant only test-network ones. "Savings"
+/// has keys in the engine and nothing on it, so it can be retired and
+/// restored. Answers the second merchant's session and Savings' keys.
 async fn seed_wallets(
     State(control): State<Controls>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     use monokulo::db::{EngineWalletId, NewWalletRow, UserId, WalletId, WalletOrigin};
+    let savings_keys =
+        wallet_setup::generate([50; 32], 1_791_400_000, wallet_setup::Network::Mainnet)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let savings = control
+        .client
+        .create_wallet(monokulo::engine_client::CreateWalletRequest {
+            keys: monokulo::engine_client::StoreKeys {
+                view_key_hex: savings_keys.view_key_hex.to_string(),
+                spend_pubkey_hex: savings_keys.spend_pubkey_hex.clone(),
+                encrypted_keys: None,
+            },
+            network: "mainnet".to_owned(),
+            key_custody_backend: None,
+        })
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
     let db = control.db.lock();
     let (merchant, tester) = (
         UserId::new("coverage-merchant"),
@@ -444,18 +463,32 @@ async fn seed_wallets(
     let pos = "56heRv2ANffW1Py2kBkJDy8xnWqZsSrgjLygwjua2xc8Wbksead1NK1ehaYpjQhymGK4S8NPL9eLuJ16CuEJDag8Hq3RbPV";
     let lab = "9wviCeWe2D8XS82k2ovp5EUYLzBt9pYNW2LXUFsZiv8S3Mt21FZ5qQaAroko1enzw3eGr9qC7X1D7Geoo2RrAotYPwq9Gm8";
     // The store's own wallet, w_cake, is made with the store.
-    let wallets: [(&UserId, &str, &str, &str, String, WalletOrigin); 8] = [
-        (&merchant, "w_savings", "Savings", "mainnet", "48edfHu7V9Z84YzzMa6fUueoELZ9ZRXq9VetWzYGzKt52XU5xvqgzYnDK9URnRoJMk1j8nLwEVsaSWJ4fhdUyZijBGUicoD".to_owned(), WalletOrigin::Created),
-        (&merchant, "w_pos", "POS trial", "stagenet", pos.to_owned(), WalletOrigin::Created),
-        (&merchant, "w_feather", "Feather test", "stagenet", feather.to_owned(), WalletOrigin::Imported),
-        (&merchant, "w_lab", "Lab", "testnet", lab.to_owned(), WalletOrigin::Imported),
-        (&merchant, "w_old", "Old till", "mainnet", "47Vmj6BXSRPax69cVdqVP5APVLkcxxjjXdcP9fJWZdNc5mEpn3fXQY1CFmJDvyUXzj2Fy9XafvUgMbW91ZoqwqmQ6RjbVtp".to_owned(), WalletOrigin::Imported),
-        (&tester, "w_t_pos", "POS trial", "stagenet", pos.to_owned(), WalletOrigin::Created),
-        (&tester, "w_t_feather", "Feather test", "stagenet", feather.to_owned(), WalletOrigin::Imported),
-        (&tester, "w_t_lab", "Lab", "testnet", lab.to_owned(), WalletOrigin::Imported),
+    // Who, id, name, network, address, origin, backup, app.
+    type Seeded<'a> = (
+        &'a UserId,
+        &'a str,
+        &'a str,
+        &'a str,
+        String,
+        WalletOrigin,
+        Option<&'a str>,
+        Option<&'a str>,
+    );
+    let wallets: [Seeded; 8] = [
+        (&merchant, "w_savings", "Savings", "mainnet", savings.primary_address.clone(), WalletOrigin::Created, Some("paper"), None),
+        (&merchant, "w_pos", "POS trial", "stagenet", pos.to_owned(), WalletOrigin::Created, Some("skipped"), None),
+        (&merchant, "w_feather", "Feather test", "stagenet", feather.to_owned(), WalletOrigin::Imported, None, Some("feather")),
+        (&merchant, "w_lab", "Lab", "testnet", lab.to_owned(), WalletOrigin::Imported, None, None),
+        (&merchant, "w_old", "Old till", "mainnet", "47Vmj6BXSRPax69cVdqVP5APVLkcxxjjXdcP9fJWZdNc5mEpn3fXQY1CFmJDvyUXzj2Fy9XafvUgMbW91ZoqwqmQ6RjbVtp".to_owned(), WalletOrigin::Created, Some("stack"), None),
+        (&tester, "w_t_pos", "POS trial", "stagenet", pos.to_owned(), WalletOrigin::Created, Some("cake"), None),
+        (&tester, "w_t_feather", "Feather test", "stagenet", feather.to_owned(), WalletOrigin::Imported, None, Some("feather")),
+        (&tester, "w_t_lab", "Lab", "testnet", lab.to_owned(), WalletOrigin::Imported, None, None),
     ];
-    for (user, id, name, network, address, origin) in &wallets {
-        let engine_id = EngineWalletId::new(format!("wl_{id}"));
+    for (user, id, name, network, address, origin, backup, app) in &wallets {
+        let engine_id = match *id {
+            "w_savings" => savings.wallet_id.clone(),
+            _ => EngineWalletId::new(format!("wl_{id}")),
+        };
         db.create_wallet(&NewWalletRow {
             id: &WalletId::new(*id),
             user_id: user,
@@ -464,17 +497,21 @@ async fn seed_wallets(
             primary_address: address,
             engine_wallet_id: &engine_id,
             origin: *origin,
-            backup: None,
-            app: None,
+            backup: *backup,
+            app: *app,
             created_at: 1,
         })
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
     db.retire_wallet(&merchant, &WalletId::new("w_old"), 2)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(
-        serde_json::json!({ "tester_session": TESTER_SESSION }),
-    ))
+    Ok(Json(serde_json::json!({
+        "tester_session": TESTER_SESSION,
+        "savings_keys": {
+            "view_key_hex": savings_keys.view_key_hex.to_string(),
+            "spend_pubkey_hex": savings_keys.spend_pubkey_hex,
+        },
+    })))
 }
 
 async fn mark_browser_created(
@@ -579,7 +616,7 @@ async fn main() {
         engine_wallet_id: view.wallet_id.as_ref().expect("fixture tenant's wallet"),
         origin: monokulo::db::WalletOrigin::Imported,
         backup: None,
-        app: None,
+        app: Some("cake"),
         created_at: 1,
     })
     .expect("create fixture wallet");

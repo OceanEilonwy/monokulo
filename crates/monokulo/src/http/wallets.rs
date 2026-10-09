@@ -56,7 +56,7 @@ async fn wallet_names(state: &AppState, user: &UserRow) -> Vec<String> {
 pub(super) fn already_added(existing: &WalletRow) -> String {
     if existing.retired_at.is_some() {
         format!(
-            "You retired this wallet, \u{201c}{}\u{201d}. Bring it back on its page to use it again.",
+            "You retired this wallet, \u{201c}{}\u{201d}. Restore it on its page to use it again.",
             existing.name
         )
     } else {
