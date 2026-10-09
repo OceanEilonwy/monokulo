@@ -436,8 +436,6 @@ pub struct NodeStatusView {
     pub resting: bool,
     /// How many blocks it is behind the highest of its network's nodes.
     pub behind: Option<u64>,
-    /// What the engine measured of its link.
-    pub link: Option<super::scaling::NodeLinkView>,
 }
 
 /// One node row on the Monero nodes tab.
@@ -475,8 +473,6 @@ pub struct AdminNetworkFieldView {
     /// Why the engine refused this network's nodes (a node on another
     /// network), shown at the top of its block.
     pub error: Option<String>,
-    /// How its block scan is going, from the engine's `/status`.
-    pub scaling: Option<shared::scaling::NetworkScaling>,
     /// How many nodes it has saved, which `rows` can differ from after a
     /// refused save: the confirmation before clearing a network asks only
     /// when it had some.
@@ -954,8 +950,6 @@ pub struct AdminSettingsViewModel {
     /// Networks stores use that no node answers for, as far as monokulo
     /// knows (the engine's `/status`): the Monero nodes tab is marked.
     pub unreachable_networks: Vec<String>,
-    /// Both processes' CPU and memory, on the Monero nodes tab only.
-    pub resources: Option<super::scaling::ResourcesView>,
     /// monokulo's options file, then the engine's (when it answered).
     pub options_files: Vec<OptionsFileView>,
 }
@@ -1430,7 +1424,6 @@ fn node_status(status: &NodeStatusView) -> Markup {
         @if !words.is_empty() {
             p class=(if problem { "node-status is-problem" } else { "node-status" }) { (words) "." }
         }
-        @if let Some(link) = &status.link { (super::scaling::link_figures(link)) }
     }
 }
 
@@ -1555,21 +1548,6 @@ fn capitalized(word: &str) -> String {
         .next()
         .map(|first| first.to_uppercase().chain(chars).collect())
         .unwrap_or_default()
-}
-
-/// The node a network's scan reads from, with its measured rate.
-fn active_node(network: &AdminNetworkFieldView) -> Option<super::scaling::ActiveNode<'_>> {
-    network.rows.iter().find_map(|row| {
-        let status = row.status.as_ref().filter(|status| status.in_use)?;
-        Some(super::scaling::ActiveNode {
-            label: &row.label,
-            rate_bytes_per_sec: status
-                .link
-                .as_ref()
-                .filter(|link| link.link.measured)
-                .map(|link| link.link.rate_bytes_per_sec),
-        })
-    })
 }
 
 /// Who owns a card's settings, for the chip beside its heading.
@@ -1733,11 +1711,13 @@ fn network_card(
         .data("data-network", n)
         .data("data-tenant-count", network.tenant_count)
         .data("data-saved-count", network.saved_count)
+        // How the network's scan and its node in use are doing is on the
+        // engine page (docs/engine_scaling.md section 6).
+        .link(html! {
+            a class="engine-link" href=(format!("/status/engine?network={n}")) { "See it on the engine page" }
+        })
         .render(html! {
             @if open {
-                @if let Some(scaling) = &network.scaling {
-                    (super::scaling::scanning_panel(n, scaling, active_node(network)))
-                }
                 (rows)
             } @else {
                 details class="node-network-closed" {
@@ -1827,9 +1807,6 @@ pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
             @if tab.engine_only() && !engine_available(data) {
                 (engine_unavailable(data))
             } @else {
-                @if let (SettingsTab::Nodes, Some(resources)) = (tab, &data.resources) {
-                    (super::scaling::resources_panel(resources, &tab.href()))
-                }
                 (super::settings::form("/dashboard/admin/settings", Save::Fixi { target: "#settings-panel" }, tab.label(), html! {
                     input type="hidden" name="tab" value=(tab.id());
                     @if tab == SettingsTab::Nodes {
@@ -2293,7 +2270,6 @@ mod tests {
                     example_address: Some("node.example.com:18089".to_string()),
                     tenant_count: 0,
                     error: None,
-                    scaling: None,
                     saved_count: 1,
                 })
                 .collect(),
@@ -2757,96 +2733,46 @@ mod tests {
         assert!(form.find(r#"<button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true">Save</button>"#).unwrap() < form.find(r#"name="node_action""#).unwrap());
     }
 
-    /// The Monero nodes tab shows how the engine performs beside the
-    /// settings each figure describes (docs/engine_scaling.md section 6):
-    /// Resources at the top, a Scanning panel per network, and each node's
-    /// lag and link.
+    /// The Monero nodes tab keeps the node settings and each node's
+    /// one-line status; how the engine performs (its machine, the link to
+    /// the node in use, the scan) is on the engine page, which each
+    /// network's card links to (docs/engine_scaling.md section 6).
     #[test]
-    fn the_nodes_tab_shows_resources_scanning_and_each_nodes_link() {
+    fn the_nodes_tab_keeps_each_nodes_status_and_links_to_the_engine_page() {
         let mut data = full_view(SettingsTab::Nodes);
-        let report = shared::resources::ResourceReport {
-            host_id: "boot".into(),
-            cpu_count: 2,
-            machine_memory_bytes: Some(4_000_000_000),
-            cgroup_memory_bytes: None,
-            samples: vec![],
-        };
-        data.resources = Some(crate::views::scaling::ResourcesView {
-            engine: Some(report.clone()),
-            monokulo: report,
-            now_unix: 1_800_000_000,
-            one_process: false,
-        });
-        let network = &mut data.engine_networks[0];
-        network.scaling = Some(shared::scaling::NetworkScaling {
-            scan: shared::scaling::ScanReport {
-                avg_block_bytes: 0,
-                block_size_trend: shared::scaling::Trend::Steady,
-                last_chunk: None,
-                blocks_per_minute: 0.0,
-                fetch_secs_recent: 0.0,
-                scan_secs_recent: 0.0,
-                largest_recent: None,
-                in_progress: None,
-                in_progress_secs: None,
-                peak_cache_bytes: None,
-                discarded_cache_bytes_recent: 0,
-                round_budget_secs: None,
-                headers_first: None,
-            },
-            blocks_behind: 3,
-            catch_up_secs: None,
-            pace: shared::scaling::Pace::Link,
-            budget_mb: 256,
-            max_budget_mb: None,
-            round_deadline_secs: 10,
-            round_base_secs: 10,
-            slow: None,
-        });
-        network.rows[0].status = Some(NodeStatusView {
+        data.engine_networks[0].rows[0].status = Some(NodeStatusView {
             height: Some(1_000),
             behind: Some(2),
             in_use: true,
-            link: Some(crate::views::scaling::NodeLinkView {
-                link: shared::scaling::LinkSnapshot {
-                    measured: true,
-                    rtt_ms: 80,
-                    ttfb_per_block_ms: 20,
-                    rate_bytes_per_sec: 1_250_000,
-                    bytes_per_block: 50_000,
-                    last_measured_unix: Some(1_800_000_000),
-                    timeouts_last_hour: 0,
-                    failures_last_hour: 0,
-                    history: vec![],
-                },
-                now_unix: 1_800_000_000,
-            }),
             ..Default::default()
         });
         let html = page(&data);
-        let resources = html.find(r#"<h3 id="resources-title">Resources</h3>"#);
-        let form = html.find(r#"id="settings-form""#);
         assert!(
-            resources.is_some() && resources < form,
-            "Resources comes first: {html}"
-        );
-        assert!(
-            html.contains("Reachable, height 1,000 (2 behind). In use."),
+            html.contains(
+                r#"<p class="node-status">Reachable, height 1,000 (2 behind). In use.</p>"#
+            ),
             "{html}"
         );
+        let mainnet = card(&html, "network-mainnet");
         assert!(
-            html.contains("Transfer <strong>10.0 Mbit/s</strong>"),
-            "{html}"
+            mainnet.contains(r#"<span class="card-spacer"></span><a class="engine-link" href="/status/engine?network=mainnet">See it on the engine page</a>"#),
+            "{mainnet}"
         );
-        assert!(html.contains(r#"data-scanning="mainnet""#), "{html}");
         assert!(
-            html.contains("Link speed: node.example.com:18081 at 10.0 Mbit/s."),
-            "the pace names the node in use: {html}"
+            card(&html, "network-stagenet").contains(r#"href="/status/engine?network=stagenet""#)
         );
-
-        // Other tabs don't carry it.
-        data.tab = SettingsTab::Server;
-        assert!(!page(&data).contains("resources-title"));
+        for gone in [
+            "resources-title",
+            "resource-chart",
+            "data-scanning",
+            "node-link",
+            "Transfer",
+        ] {
+            assert!(
+                !html.contains(gone),
+                "{gone} is on the engine page now: {html}"
+            );
+        }
     }
 
     #[test]

@@ -1,8 +1,9 @@
 //! How the engine is performing and scaling, as people read it
 //! (docs/engine_scaling.md section 6): the figures' formatting here, and
-//! the admin page's performance panels.
+//! what the engine page's "Machine and links" strip and Scanning panel
+//! show, worked out once for the page and for its live `machine` event.
 
-use maud::{html, Markup};
+use serde::Serialize;
 use shared::resources::{ResourceReport, ResourceSample};
 use shared::scaling::{
     ChunkLimit, HeadersFirstReason, LinkPoint, LinkSnapshot, NetworkScaling, Pace, SlowBlock, Trend,
@@ -134,8 +135,6 @@ fn ago(secs: i64) -> String {
 pub const SLOT_SECS: i64 = 10;
 /// An hour of slots: what the charts show.
 pub const SLOTS: usize = 360;
-/// Slots a chart's hover detail covers at a time: a minute.
-const SLOTS_PER_MINUTE: usize = 6;
 
 /// The start of the chart's first slot, so its last one holds `now`.
 fn first_slot(now: i64) -> i64 {
@@ -160,8 +159,8 @@ pub fn on_slots(
     slots
 }
 
-/// The admin's Resources panel: both processes' CPU and memory
-/// (docs/engine_scaling.md section 6).
+/// Both processes' CPU and memory (docs/engine_scaling.md section 6), for
+/// the engine page's "Machine and links" strip.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResourcesView {
     /// `None` when the engine didn't report its own (or didn't answer).
@@ -193,7 +192,7 @@ struct Limit {
 /// so `max` is the top. A slot is drawn only where every layer has a
 /// sample: a total with a part missing would understate it.
 struct Chart {
-    what: &'static str,
+    what: String,
     layers: Vec<Layer>,
     max: f64,
     format: fn(f64) -> String,
@@ -289,66 +288,125 @@ impl Chart {
         Some((current, peak, self.now - peak_unix))
     }
 
-    fn render(&self, capacity: &str) -> Markup {
+    /// The chart as a tile: the total now, what it is of and the hour's
+    /// peak, and the stacked bands with any limit dashed across them. The
+    /// split between the processes, and when the peak was, are in its
+    /// title.
+    fn tile(&self, key: &str, capacity: &str) -> Tile {
         let stacks = self.stacks();
-        let figures = self.now_and_peak(&stacks);
-        let minutes: Vec<(usize, String)> = (0..SLOTS / SLOTS_PER_MINUTE)
-            .filter_map(|minute| {
-                let slots = &stacks[minute * SLOTS_PER_MINUTE..(minute + 1) * SLOTS_PER_MINUTE];
-                let drawn: Vec<&Vec<f64>> = slots.iter().flatten().collect();
-                if drawn.is_empty() {
-                    return None;
-                }
-                let average: Vec<f64> = (0..self.layers.len())
-                    .map(|k| drawn.iter().map(|v| v[k]).sum::<f64>() / drawn.len() as f64)
-                    .collect();
-                let end =
-                    first_slot(self.now) + ((minute + 1) * SLOTS_PER_MINUTE) as i64 * SLOT_SECS;
-                let when = ago(self.now - end + SLOT_SECS);
-                Some((
-                    minute * SLOTS_PER_MINUTE,
-                    format!("{when}: {}", self.split(&average)),
-                ))
-            })
-            .collect();
-        let label = match &figures {
-            Some((current, _, _)) => format!(
-                "{} over the last hour, now {} {capacity}",
-                self.what,
-                self.split(current)
-            ),
-            None => format!("{}: no samples yet", self.what),
-        };
-        html! {
-            div class="resource" {
-                p class="resource-figure" {
-                    strong { (self.what) }
-                    @match &figures {
-                        Some((current, peak, peak_ago)) => {
-                            " " (self.split(current)) " " (capacity)
-                            span class="muted" { " · peak " ((self.format)(*peak)) " " (ago(*peak_ago)) }
-                        }
-                        None => { " " span class="muted" { "no samples yet" } }
-                    }
-                }
-                svg class="resource-chart" viewBox=(format!("0 0 {SLOTS} 100")) preserveAspectRatio="none" role="img" aria-label=(label) {
-                    @for (k, layer) in self.layers.iter().enumerate() {
-                        path class=(format!("chart-layer {}", layer.class)) d=(self.path(&stacks, k)) {}
-                    }
-                    @for limit in &self.limits {
-                        @let y = format!("{:.1}", self.y(limit.value));
-                        line class=(format!("chart-limit {}", limit.class)) x1="0" x2=(SLOTS) y1=(y) y2=(y) vector-effect="non-scaling-stroke" {
-                            title { (limit.label) }
-                        }
-                    }
-                    @for (x, text) in &minutes {
-                        rect class="chart-hover" x=(x) y="0" width=(SLOTS_PER_MINUTE) height="100" { title { (text) } }
-                    }
-                }
-                div class="chart-axis" aria-hidden="true" { span { "an hour ago" } span { "now" } }
+        let (value, note, mut title) = match self.now_and_peak(&stacks) {
+            Some((current, peak, peak_ago)) => {
+                let total: f64 = current.iter().sum();
+                let peak_text = format!("peak {}", (self.format)(peak));
+                (
+                    (self.format)(total),
+                    if capacity.is_empty() {
+                        peak_text
+                    } else {
+                        format!("{capacity} · {peak_text}")
+                    },
+                    format!(
+                        "{} over the last hour, now {}{}; peak {} {}",
+                        self.what,
+                        self.split(&current),
+                        if capacity.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" {capacity}")
+                        },
+                        (self.format)(peak),
+                        ago(peak_ago)
+                    ),
+                )
             }
+            None => (
+                "–".to_owned(),
+                "no samples yet".to_owned(),
+                format!("{}: no samples yet", self.what),
+            ),
+        };
+        for limit in &self.limits {
+            title.push_str(&format!(". {} (dashed)", limit.label));
+        }
+        Tile {
+            key: key.to_owned(),
+            label: self.what.clone(),
+            value,
+            note,
+            title,
+            chart: TileChart::Stack {
+                layers: self
+                    .layers
+                    .iter()
+                    .enumerate()
+                    .map(|(k, layer)| ChartLayer {
+                        class: layer.class,
+                        d: self.path(&stacks, k),
+                    })
+                    .collect(),
+                limits: self
+                    .limits
+                    .iter()
+                    .map(|limit| ChartLimit {
+                        class: limit.class,
+                        y: format!("{:.1}", self.y(limit.value)),
+                        label: limit.label.clone(),
+                    })
+                    .collect(),
+            },
         }
     }
+}
+
+/// One small multiple of the engine page's "Machine and links" strip: a
+/// figure, a line under it and a small chart. Worked out here; the page
+/// draws it (`views::engine`), and its script draws the same fields again
+/// from each `machine` event.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Tile {
+    /// Which tile: `cpu`, `memory`, `transfer`, `round-trip`,
+    /// `first-byte`, `block-size` (with `engine-` or `monokulo-` before
+    /// the first two when the processes are on different machines).
+    pub key: String,
+    pub label: String,
+    pub value: String,
+    pub note: String,
+    /// The tile in a sentence, for its tooltip and screen readers.
+    pub title: String,
+    pub chart: TileChart,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TileChart {
+    None,
+    /// Bands stacked over an hour of 10-second slots, the first at the
+    /// bottom (`viewBox="0 0 360 100"`), and limits dashed across.
+    Stack {
+        layers: Vec<ChartLayer>,
+        limits: Vec<ChartLimit>,
+    },
+    /// An hour at a point a minute (`viewBox="0 0 59 16"`): a line per run
+    /// of measured minutes, a dot for a run of one.
+    Spark {
+        runs: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ChartLayer {
+    /// `chart-engine` or `chart-monokulo`.
+    pub class: &'static str,
+    /// The band's SVG path.
+    pub d: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ChartLimit {
+    pub class: &'static str,
+    /// Where it crosses, on the chart's 0 to 100.
+    pub y: String,
+    pub label: String,
 }
 
 fn percent(value: f64) -> String {
@@ -359,16 +417,35 @@ fn memory(value: f64) -> String {
     bytes(value.max(0.0) as u64)
 }
 
-/// The CPU and memory charts for `processes` stacked (first at the
-/// bottom), all on `machine`. With `shared_memory`, the processes are one
+const ENGINE: (&str, &str) = ("engine", "chart-engine");
+const MONOKULO: (&str, &str) = ("monokulo", "chart-monokulo");
+
+/// The CPU and memory tiles for `processes` stacked (first at the bottom),
+/// all on one machine, their labels and keys after `who` ("Engine" when
+/// the processes are apart). With `shared_memory`, the processes are one
 /// process: memory is the last one's, under that name.
-fn charts(
+fn machine_tiles(
     processes: &[(&'static str, &'static str, &ResourceReport)],
     now: i64,
     shared_memory: Option<&'static str>,
-) -> Markup {
+    who: Option<&str>,
+) -> Vec<Tile> {
     let Some((_, _, machine)) = processes.first() else {
-        return html! {};
+        return Vec::new();
+    };
+    let (cpu_label, memory_label, cpu_key, memory_key) = match who {
+        Some(who) => (
+            format!("{who} CPU"),
+            format!("{who} memory"),
+            format!("{}-cpu", who.to_ascii_lowercase()),
+            format!("{}-memory", who.to_ascii_lowercase()),
+        ),
+        None => (
+            "CPU".to_owned(),
+            "Memory".to_owned(),
+            "cpu".to_owned(),
+            "memory".to_owned(),
+        ),
     };
     let cores = if machine.cpu_count == 1 {
         "of 1 core".to_string()
@@ -376,7 +453,7 @@ fn charts(
         format!("of {} cores", machine.cpu_count)
     };
     let cpu = Chart {
-        what: "CPU",
+        what: cpu_label,
         layers: processes
             .iter()
             .map(|(name, class, report)| Layer {
@@ -400,7 +477,7 @@ fn charts(
         None => processes.to_vec(),
     };
     let ram = Chart {
-        what: "Memory",
+        what: memory_label,
         layers: memory_of
             .iter()
             .map(|(name, class, report)| Layer {
@@ -428,80 +505,43 @@ fn charts(
         Some(total) => format!("of {}", bytes(total)),
         None => String::new(),
     };
-    html! {
-        (cpu.render(&cores))
-        (ram.render(&of_ram))
-        @if !ram.limits.is_empty() {
-            p class="hint" { "A dashed line marks a container's memory limit: a process near it is stopped before the machine fills." }
-        }
-    }
+    vec![cpu.tile(&cpu_key, &cores), ram.tile(&memory_key, &of_ram)]
 }
 
-fn legend(processes: &[(&'static str, &'static str)]) -> Markup {
-    html! {
-        ul class="chart-legend" {
-            @for (name, class) in processes {
-                li { span class=(format!("chart-swatch {class}")) {} (name) }
-            }
-        }
-    }
-}
-
-/// The Resources panel at the top of the Monero nodes tab: CPU and memory
-/// for monokulo and the engine together, each a band of one stacked chart,
-/// when they share a machine; apart when they don't.
-pub fn resources_panel(view: &ResourcesView, refresh_href: &str) -> Markup {
+/// The strip's CPU and memory tiles: monokulo and the engine together,
+/// each a band of one stacked chart, when they share a machine; a pair of
+/// tiles each when they don't.
+pub fn resource_tiles(view: &ResourcesView) -> Vec<Tile> {
     let now = view.now_unix;
-    const ENGINE: (&str, &str) = ("engine", "chart-engine");
-    const MONOKULO: (&str, &str) = ("monokulo", "chart-monokulo");
-    html! {
-        section class="resources" aria-labelledby="resources-title" {
-            h3 id="resources-title" { "Resources" }
-            p class="hint" {
-                "CPU and memory over the last hour, sampled every 10 seconds. Hover over a chart for a minute's figures. "
-                a href=(refresh_href) fx-action=(refresh_href) fx-target="#settings-panel" { "Refresh" }
-                " (unsaved changes on this tab are lost)."
-            }
-            @match &view.engine {
-                Some(engine) if view.one_process => {
-                    p class="hint" { "The engine runs inside monokulo: CPU is split by their threads, and memory, which they share, is shown once." }
-                    (legend(&[ENGINE, MONOKULO]))
-                    (charts(&[(ENGINE.0, ENGINE.1, engine), (MONOKULO.0, MONOKULO.1, &view.monokulo)], now, Some("monokulo and the engine")))
-                }
-                Some(engine) if engine.host_id == view.monokulo.host_id => {
-                    (legend(&[ENGINE, MONOKULO]))
-                    (charts(&[(ENGINE.0, ENGINE.1, engine), (MONOKULO.0, MONOKULO.1, &view.monokulo)], now, None))
-                }
-                Some(engine) => {
-                    p class="hint" { "The engine and monokulo run on different machines, so each is shown against its own." }
-                    h4 { "Engine" }
-                    (charts(&[(ENGINE.0, ENGINE.1, engine)], now, None))
-                    h4 { "Monokulo" }
-                    (charts(&[(MONOKULO.0, MONOKULO.1, &view.monokulo)], now, None))
-                }
-                None => {
-                    p class="hint" { "The engine didn't report its CPU and memory; monokulo's own are below." }
-                    (charts(&[(MONOKULO.0, MONOKULO.1, &view.monokulo)], now, None))
-                }
-            }
+    let monokulo = (MONOKULO.0, MONOKULO.1, &view.monokulo);
+    match &view.engine {
+        Some(engine) if view.one_process => machine_tiles(
+            &[(ENGINE.0, ENGINE.1, engine), monokulo],
+            now,
+            Some("monokulo and the engine"),
+            None,
+        ),
+        Some(engine) if engine.host_id == view.monokulo.host_id => {
+            machine_tiles(&[(ENGINE.0, ENGINE.1, engine), monokulo], now, None, None)
         }
+        Some(engine) => {
+            let mut tiles =
+                machine_tiles(&[(ENGINE.0, ENGINE.1, engine)], now, None, Some("Engine"));
+            tiles.extend(machine_tiles(&[monokulo], now, None, Some("Monokulo")));
+            tiles
+        }
+        // The engine didn't report its own: monokulo's alone.
+        None => machine_tiles(&[monokulo], now, None, Some("Monokulo")),
     }
 }
 
-/// A node's link measurements for its row on the Monero nodes tab.
-#[derive(Debug, Clone, PartialEq)]
-pub struct NodeLinkView {
-    pub link: LinkSnapshot,
-    pub now_unix: i64,
-}
-
-/// A one-hour sparkline of one of a node's figures, a point per minute,
-/// with gaps where it wasn't measured.
-fn sparkline(view: &NodeLinkView, value: fn(&LinkPoint) -> u64) -> Markup {
+/// An hour of one of a node's figures, a point a minute, as runs of
+/// measured minutes ("x,y x,y …"); a run of one minute is one point.
+fn spark_runs(history: &[LinkPoint], now: i64, value: fn(&LinkPoint) -> u64) -> Vec<String> {
     const MINUTES: i64 = 60;
-    let this_minute = view.now_unix.div_euclid(60) * 60;
+    let this_minute = now.div_euclid(60) * 60;
     let mut points: Vec<Option<u64>> = vec![None; MINUTES as usize];
-    for point in &view.link.history {
+    for point in history {
         let back = (this_minute - point.minute_unix).div_euclid(60);
         if (0..MINUTES).contains(&back) {
             points[(MINUTES - 1 - back) as usize] = Some(value(point));
@@ -520,17 +560,7 @@ fn sparkline(view: &NodeLinkView, value: fn(&LinkPoint) -> u64) -> Markup {
     if !run.is_empty() {
         runs.push(run.join(" "));
     }
-    html! {
-        svg class="sparkline" viewBox="0 0 59 16" preserveAspectRatio="none" aria-hidden="true" {
-            @for points in &runs {
-                @if points.contains(' ') {
-                    polyline points=(points) {}
-                } @else {
-                    circle cx=(points.split(',').next().unwrap_or("0")) cy=(points.split(',').nth(1).unwrap_or("8")) r="1" {}
-                }
-            }
-        }
-    }
+    runs
 }
 
 fn count(n: u32, one: &str, many: &str) -> String {
@@ -541,43 +571,146 @@ fn count(n: u32, one: &str, many: &str) -> String {
     }
 }
 
-/// What the engine measured of a node's link: its transfer rate, round
-/// trip and time to a block's first byte, each with its last hour, then
-/// when and what went wrong lately (docs/engine_scaling.md section 6).
-pub fn link_figures(view: &NodeLinkView) -> Markup {
-    let link = &view.link;
-    let trouble = match (link.timeouts_last_hour, link.failures_last_hour) {
-        (0, 0) => "no timeouts or failures in the last hour".to_string(),
-        (timeouts, failures) => format!(
-            "{} and {} in the last hour",
-            count(timeouts, "timeout", "timeouts"),
-            count(failures, "failure", "failures")
+/// The node the engine reads a network's chain from right now, for the
+/// strip's link tiles.
+#[derive(Debug, Clone, Copy)]
+pub struct InUseNode<'a> {
+    /// The engine's label for it (`host:port`).
+    pub label: &'a str,
+    /// Not the network's primary: the engine fell back to it.
+    pub fallback: bool,
+    pub link: Option<&'a LinkSnapshot>,
+}
+
+/// The Transfer, Round trip and First byte tiles: what the engine measured
+/// of the link to the node it is using now, each with its last hour, the
+/// tile naming the node. With no node in use there is nothing to measure.
+pub fn link_tiles(node: Option<InUseNode<'_>>, now: i64) -> Vec<Tile> {
+    type Figure = (
+        &'static str,
+        &'static str,
+        fn(&LinkPoint) -> u64,
+        fn(u64) -> String,
+    );
+    let figures: [Figure; 3] = [
+        ("transfer", "Transfer", |p| p.rate_bytes_per_sec, rate),
+        (
+            "round-trip",
+            "Round trip",
+            |p| p.rtt_ms,
+            |ms| format!("{ms} ms"),
+        ),
+        (
+            "first-byte",
+            "First byte",
+            |p| p.ttfb_per_block_ms,
+            |ms| format!("{ms} ms"),
+        ),
+    ];
+    let now_of = |link: &LinkSnapshot| LinkPoint {
+        minute_unix: now,
+        rate_bytes_per_sec: link.rate_bytes_per_sec,
+        rtt_ms: link.rtt_ms,
+        ttfb_per_block_ms: link.ttfb_per_block_ms,
+    };
+    figures
+        .iter()
+        .map(|(key, label, value, format)| {
+            let Some(node) = node else {
+                return Tile {
+                    key: (*key).to_owned(),
+                    label: (*label).to_owned(),
+                    value: "–".to_owned(),
+                    note: "no node in use".to_owned(),
+                    title: format!("{label}: the engine isn't using a node on this network right now."),
+                    chart: TileChart::None,
+                };
+            };
+            let name = if node.fallback {
+                format!("{} · fallback", node.label)
+            } else {
+                node.label.to_owned()
+            };
+            match node.link {
+                Some(link) if link.measured => {
+                    let trouble = match (link.timeouts_last_hour, link.failures_last_hour) {
+                        (0, 0) => "no timeouts or failures in the last hour".to_string(),
+                        (timeouts, failures) => format!(
+                            "{} and {} in the last hour",
+                            count(timeouts, "timeout", "timeouts"),
+                            count(failures, "failure", "failures")
+                        ),
+                    };
+                    let measured = link
+                        .last_measured_unix
+                        .map(|at| format!("measured {}; ", ago(now - at)))
+                        .unwrap_or_default();
+                    let what = if *key == "first-byte" { "First byte of a block" } else { label };
+                    Tile {
+                        key: (*key).to_owned(),
+                        label: (*label).to_owned(),
+                        value: format(value(&now_of(link))),
+                        note: name.clone(),
+                        title: format!(
+                            "{what} from {name}: {} now, the last hour drawn; {measured}{trouble}.",
+                            format(value(&now_of(link)))
+                        ),
+                        chart: TileChart::Spark {
+                            runs: spark_runs(&link.history, now, *value),
+                        },
+                    }
+                }
+                _ => Tile {
+                    key: (*key).to_owned(),
+                    label: (*label).to_owned(),
+                    value: "–".to_owned(),
+                    note: name.clone(),
+                    title: format!(
+                        "{label} from {name}: not measured yet. The engine assumes {} until its first block request.",
+                        rate(node.link.map_or(0, |link| link.rate_bytes_per_sec))
+                    ),
+                    chart: TileChart::None,
+                },
+            }
+        })
+        .collect()
+}
+
+/// The Block size tile: the average of recent blocks and which way it's
+/// going.
+pub fn block_size_tile(scaling: Option<&NetworkScaling>) -> Tile {
+    let (value, note, title) = match scaling {
+        Some(scaling) => {
+            let trend = trend(scaling.scan.block_size_trend);
+            let average = bytes(scaling.scan.avg_block_bytes);
+            (
+                average.clone(),
+                format!("average, {trend}"),
+                format!("Recent blocks average {average}, {trend}."),
+            )
+        }
+        None => (
+            "–".to_owned(),
+            "not reported".to_owned(),
+            "The engine hasn't reported its block sizes.".to_owned(),
         ),
     };
-    html! {
-        @if link.measured {
-            ul class="node-link" {
-                li { "Transfer " strong { (rate(link.rate_bytes_per_sec)) } " " (sparkline(view, |p| p.rate_bytes_per_sec)) }
-                li { "Round trip " strong { (link.rtt_ms) " ms" } " " (sparkline(view, |p| p.rtt_ms)) }
-                li { "First byte " strong { (link.ttfb_per_block_ms) " ms" } " a block " (sparkline(view, |p| p.ttfb_per_block_ms)) }
-            }
-            p class="node-status" {
-                @if let Some(at) = link.last_measured_unix {
-                    "Measured " (ago(view.now_unix - at)) "; "
-                }
-                (trouble) "."
-            }
-        } @else {
-            p class="node-status" {
-                "Link not measured yet: the engine assumes " (rate(link.rate_bytes_per_sec))
-                " until its first block request. " (capitalize_first(&trouble)) "."
-            }
-        }
+    Tile {
+        key: "block-size".to_owned(),
+        label: "Block size".to_owned(),
+        value,
+        note,
+        title,
+        chart: TileChart::None,
     }
 }
 
-fn capitalize_first(text: &str) -> String {
-    network_name(text)
+fn trend(trend: Trend) -> &'static str {
+    match trend {
+        Trend::Rising => "rising ↗",
+        Trend::Falling => "falling ↘",
+        Trend::Steady => "steady",
+    }
 }
 
 /// Why headers come first and for how long: "for about 50 minutes more: a
@@ -618,21 +751,45 @@ fn blocks(n: u64) -> String {
     }
 }
 
-/// One network's Scanning panel: how far behind, what sets the pace, the
-/// requests, block sizes, memory and round, and a slow block if there is
-/// one (docs/engine_scaling.md section 6).
-pub fn scanning_panel(
+/// One network's Scanning panel on the engine page: a short line for its
+/// summary, a slow block if there is one, and its figures: how far
+/// behind, what sets the pace, the requests, block sizes, memory and
+/// round (docs/engine_scaling.md section 6).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ScanningView {
+    /// "at the tip · pace: link speed", "14 behind · pace: memory budget".
+    pub preview: String,
+    pub slow: Option<String>,
+    pub rows: Vec<(&'static str, String)>,
+}
+
+pub fn scanning(
     network: &str,
     scaling: &NetworkScaling,
     active: Option<ActiveNode<'_>>,
-) -> Markup {
+) -> ScanningView {
     let scan = &scaling.scan;
-    let (tag_class, tag) = if scaling.slow.is_some() {
-        ("tag-slow", "slow")
-    } else if scaling.blocks_behind == 0 {
-        ("tag-ok", "caught up")
-    } else {
-        ("tag-syncing", "catching up")
+    let preview = {
+        let progress = if scaling.blocks_behind == 0 {
+            "at the tip".to_owned()
+        } else {
+            format!("{} behind", thousands(scaling.blocks_behind))
+        };
+        let pace = if scaling.slow.is_some() {
+            Some("a slow block")
+        } else {
+            match scaling.pace {
+                Pace::CaughtUp => None,
+                Pace::Memory => Some("pace: memory budget"),
+                Pace::Link => Some("pace: link speed"),
+                Pace::Cpu => Some("pace: CPU"),
+                Pace::Round => Some("pace: round time"),
+            }
+        };
+        match pace {
+            Some(pace) => format!("{progress} · {pace}"),
+            None => progress,
+        }
     };
     let progress = if scaling.blocks_behind == 0 {
         "At the node's tip.".to_string()
@@ -696,12 +853,11 @@ pub fn scanning_panel(
         text
     };
     let block_size = {
-        let trend = match scan.block_size_trend {
-            Trend::Rising => "rising ↗",
-            Trend::Falling => "falling ↘",
-            Trend::Steady => "steady",
-        };
-        let mut text = format!("Average {} ({trend})", bytes(scan.avg_block_bytes));
+        let mut text = format!(
+            "Average {} ({})",
+            bytes(scan.avg_block_bytes),
+            trend(scan.block_size_trend)
+        );
         if let Some(largest) = &scan.largest_recent {
             text.push_str(&format!(
                 " · largest recent {} (block {}), took {}",
@@ -753,24 +909,38 @@ pub fn scanning_panel(
         duration(scan.fetch_secs_recent.round() as i64),
         duration(scan.scan_secs_recent.round() as i64)
     );
-    html! {
-        div class="scanning" data-scanning=(network) {
-            h4 { "Scanning " span class=(format!("tag {tag_class}")) { (tag) } }
-            @if let Some(slow) = &scaling.slow {
-                p class="notice slow-block" role="status" { (slow_block_message(network, slow, true)) }
-            }
-            dl class="scan-figures" {
-                dt { "Progress" } dd { (progress) }
-                dt { "Pace set by" } dd { (pace) }
-                dt { "Requests" } dd { (request) }
-                dt { "Block size" } dd { (block_size) }
-                dt { "Memory" } dd { (memory_line) }
-                dt { "Round" } dd { (round) }
-                dt { "Headers first" } dd { (headers_first) }
-                dt { "Last 10 minutes" } dd { (time) }
-            }
-        }
+    ScanningView {
+        preview,
+        slow: scaling
+            .slow
+            .as_ref()
+            .map(|slow| slow_block_message(network, slow, true)),
+        rows: vec![
+            ("Progress", progress),
+            ("Pace set by", pace),
+            ("Requests", request),
+            ("Block size", block_size),
+            ("Memory", memory_line),
+            ("Round", round),
+            ("Headers first", headers_first),
+            ("Last 10 minutes", time),
+        ],
     }
+}
+
+/// What the engine page's "Machine and links" strip and Scanning panel
+/// show, from monokulo's cached copy of the engine's `/status`: drawn
+/// with the page, and sent again to its script as the `machine` event.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MachineView {
+    /// CPU, Memory, Transfer, Round trip, First byte, Block size.
+    pub tiles: Vec<Tile>,
+    /// The engine and monokulo are stacked in a chart: the strip's head
+    /// says which colour is which.
+    pub stacked: bool,
+    pub scanning: Option<ScanningView>,
+    /// When the engine wrote the `/status` this is from (its clock).
+    pub at_unix: i64,
 }
 
 #[cfg(test)]
@@ -821,8 +991,16 @@ mod tests {
         );
     }
 
+    fn stack(tile: &Tile) -> (&[ChartLayer], &[ChartLimit]) {
+        match &tile.chart {
+            TileChart::Stack { layers, limits } => (layers, limits),
+            other => panic!("not a stacked chart: {other:?}"),
+        }
+    }
+
     /// On one machine the two processes stack: one figure for the total,
-    /// its split, and a band each (docs/engine_scaling.md section 6).
+    /// its split in the title, and a band each (docs/engine_scaling.md
+    /// section 6).
     #[test]
     fn one_machine_stacks_engine_under_monokulo_with_the_total_and_split() {
         let view = ResourcesView {
@@ -844,51 +1022,49 @@ mod tests {
             now_unix: NOW,
             one_process: false,
         };
-        let html = resources_panel(&view, "/dashboard/admin/settings?tab=nodes").into_string();
-        assert!(
-            html.contains("CPU</strong> 25 % (engine 23 %, monokulo 2 %) of 4 cores"),
-            "{html}"
+        let tiles = resource_tiles(&view);
+        let keys: Vec<&str> = tiles.iter().map(|t| t.key.as_str()).collect();
+        assert_eq!(keys, ["cpu", "memory"]);
+        let (cpu, ram) = (&tiles[0], &tiles[1]);
+        assert_eq!((cpu.label.as_str(), cpu.value.as_str()), ("CPU", "25 %"));
+        assert_eq!(cpu.note, "of 4 cores · peak 63 %");
+        assert_eq!(
+            cpu.title,
+            "CPU over the last hour, now 25 % (engine 23 %, monokulo 2 %) of 4 cores; peak 63 % 70 seconds ago"
         );
+        assert_eq!(ram.value, "508 MB");
+        assert_eq!(ram.note, "of 8.0 GB · peak 590 MB");
         assert!(
-            html.contains("Memory</strong> 508 MB (engine 412 MB, monokulo 96.0 MB) of 8.0 GB"),
-            "{html}"
+            ram.title.starts_with(
+                "Memory over the last hour, now 508 MB (engine 412 MB, monokulo 96.0 MB) of 8.0 GB"
+            ),
+            "{}",
+            ram.title
         );
-        assert!(html.contains("peak 63 % 70 seconds ago"), "{html}");
+        // The engine's container limit is a dashed line on the memory chart.
         assert!(
-            html.contains(r#"class="chart-layer chart-engine""#),
-            "{html}"
+            ram.title
+                .ends_with("The engine's container limit: 2.0 GB (dashed)"),
+            "{}",
+            ram.title
         );
-        assert!(
-            html.contains(r#"class="chart-layer chart-monokulo""#),
-            "{html}"
+        let (layers, limits) = stack(ram);
+        assert_eq!(limits.len(), 1);
+        assert_eq!(
+            (limits[0].class, limits[0].y.as_str()),
+            ("chart-engine", "75.0")
         );
-        assert!(
-            html.find("chart-layer chart-engine") < html.find("chart-layer chart-monokulo"),
+        let classes: Vec<&str> = layers.iter().map(|l| l.class).collect();
+        assert_eq!(
+            classes,
+            ["chart-engine", "chart-monokulo"],
             "the engine is drawn first, at the bottom"
         );
-        assert!(
-            html.contains(r#"<span class="chart-swatch chart-engine"></span>engine"#),
-            "{html}"
-        );
-        // The engine's container limit is a line on the memory chart.
-        assert!(
-            html.contains("The engine&#39;s container limit: 2.0 GB")
-                || html.contains("The engine's container limit: 2.0 GB"),
-            "{html}"
-        );
-        // A minute's hover detail.
-        assert!(
-            html.contains("<title>just now: 25 % (engine 23 %, monokulo 2 %)</title>"),
-            "{html}"
-        );
-        // Two runs (seven slots back, then the last two), so each band's path has two parts.
-        let engine_path = html
-            .split(r#"class="chart-layer chart-engine" d=""#)
-            .nth(1)
-            .and_then(|rest| rest.split('"').next())
-            .unwrap_or_default();
-        assert_eq!(engine_path.matches('M').count(), 2, "{engine_path}");
-        assert!(!html.contains("different machines"));
+        // Two runs (seven slots back, then the last two), so each band's
+        // path has two parts.
+        let (layers, limits) = stack(cpu);
+        assert!(limits.is_empty());
+        assert_eq!(layers[0].d.matches('M').count(), 2, "{}", layers[0].d);
     }
 
     /// The engine inside monokulo: one process, sampled once. CPU is split
@@ -915,21 +1091,16 @@ mod tests {
             now_unix: NOW,
             one_process: true,
         };
-        let html = resources_panel(&view, "/x").into_string();
-        assert!(html.contains("The engine runs inside monokulo"), "{html}");
+        let tiles = resource_tiles(&view);
         assert!(
-            html.contains("CPU</strong> 25 % (engine 20 %, monokulo 5 %) of 4 cores"),
-            "{html}"
+            tiles[0]
+                .title
+                .contains("now 25 % (engine 20 %, monokulo 5 %) of 4 cores"),
+            "{}",
+            tiles[0].title
         );
-        assert!(
-            html.contains("Memory</strong> 300 MB of 8.0 GB"),
-            "once, not 600 MB: {html}"
-        );
-        assert!(
-            html.contains("<title>just now: 300 MB</title>")
-                || html.contains("monokulo and the engine"),
-            "{html}"
-        );
+        assert_eq!(tiles[1].value, "300 MB", "once, not 600 MB");
+        assert_eq!(stack(&tiles[1]).0.len(), 1, "one band for memory");
     }
 
     #[test]
@@ -940,17 +1111,20 @@ mod tests {
             now_unix: NOW,
             one_process: false,
         };
-        let html = resources_panel(&apart, "/x").into_string();
-        assert!(html.contains("run on different machines"), "{html}");
-        assert!(
-            html.contains("<h4>Engine</h4>") && html.contains("<h4>Monokulo</h4>"),
-            "{html}"
+        let tiles = resource_tiles(&apart);
+        let labels: Vec<&str> = tiles.iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Engine CPU",
+                "Engine memory",
+                "Monokulo CPU",
+                "Monokulo memory"
+            ]
         );
-        assert!(html.contains("CPU</strong> 23 % of 4 cores"), "{html}");
-        assert!(
-            !html.contains("chart-legend"),
-            "nothing is stacked, so no legend"
-        );
+        assert_eq!(tiles[0].value, "23 %");
+        assert_eq!(tiles[0].key, "engine-cpu");
+        assert!(stack(&tiles[0]).0.len() == 1, "nothing is stacked");
 
         let silent = ResourcesView {
             engine: None,
@@ -958,80 +1132,114 @@ mod tests {
             now_unix: NOW,
             one_process: false,
         };
-        let html = resources_panel(&silent, "/x").into_string();
-        assert!(
-            html.contains("The engine didn&#39;t report")
-                || html.contains("The engine didn't report"),
-            "{html}"
-        );
-        assert!(html.contains("no samples yet"), "{html}");
+        let tiles = resource_tiles(&silent);
+        assert_eq!(tiles[0].label, "Monokulo CPU");
+        assert_eq!(tiles[0].note, "no samples yet");
     }
 
-    fn link(measured: bool) -> NodeLinkView {
-        NodeLinkView {
-            link: LinkSnapshot {
-                measured,
-                rtt_ms: 120,
-                ttfb_per_block_ms: 45,
-                rate_bytes_per_sec: 387_500,
-                bytes_per_block: 50_000,
-                last_measured_unix: measured.then_some(NOW - 12),
-                timeouts_last_hour: 2,
-                failures_last_hour: 1,
-                history: vec![
-                    LinkPoint {
-                        minute_unix: NOW / 60 * 60,
-                        rate_bytes_per_sec: 387_500,
-                        rtt_ms: 120,
-                        ttfb_per_block_ms: 45,
-                    },
-                    LinkPoint {
-                        minute_unix: NOW / 60 * 60 - 60,
-                        rate_bytes_per_sec: 300_000,
-                        rtt_ms: 110,
-                        ttfb_per_block_ms: 40,
-                    },
-                    LinkPoint {
-                        minute_unix: NOW / 60 * 60 - 600,
-                        rate_bytes_per_sec: 100_000,
-                        rtt_ms: 90,
-                        ttfb_per_block_ms: 30,
-                    },
-                ],
-            },
-            now_unix: NOW,
+    fn link(measured: bool) -> LinkSnapshot {
+        LinkSnapshot {
+            measured,
+            rtt_ms: 120,
+            ttfb_per_block_ms: 45,
+            rate_bytes_per_sec: 387_500,
+            bytes_per_block: 50_000,
+            last_measured_unix: measured.then_some(NOW - 12),
+            timeouts_last_hour: 2,
+            failures_last_hour: 1,
+            history: vec![
+                LinkPoint {
+                    minute_unix: NOW / 60 * 60,
+                    rate_bytes_per_sec: 387_500,
+                    rtt_ms: 120,
+                    ttfb_per_block_ms: 45,
+                },
+                LinkPoint {
+                    minute_unix: NOW / 60 * 60 - 60,
+                    rate_bytes_per_sec: 300_000,
+                    rtt_ms: 110,
+                    ttfb_per_block_ms: 40,
+                },
+                LinkPoint {
+                    minute_unix: NOW / 60 * 60 - 600,
+                    rate_bytes_per_sec: 100_000,
+                    rtt_ms: 90,
+                    ttfb_per_block_ms: 30,
+                },
+            ],
         }
     }
 
+    /// The link tiles follow the node in use, naming it, a fallback said
+    /// so; each figure has its hour.
     #[test]
-    fn a_node_shows_its_link_with_an_hour_of_each_figure() {
-        let html = link_figures(&link(true)).into_string();
-        assert!(
-            html.contains("Transfer <strong>3.1 Mbit/s</strong>"),
-            "{html}"
+    fn the_link_tiles_follow_the_node_in_use() {
+        let measured = link(true);
+        let tiles = link_tiles(
+            Some(InUseNode {
+                label: "node.example.com:18081",
+                fallback: false,
+                link: Some(&measured),
+            }),
+            NOW,
         );
-        assert!(
-            html.contains("Round trip <strong>120 ms</strong>"),
-            "{html}"
+        let figures: Vec<(&str, &str, &str)> = tiles
+            .iter()
+            .map(|t| (t.label.as_str(), t.value.as_str(), t.note.as_str()))
+            .collect();
+        assert_eq!(
+            figures,
+            [
+                ("Transfer", "3.1 Mbit/s", "node.example.com:18081"),
+                ("Round trip", "120 ms", "node.example.com:18081"),
+                ("First byte", "45 ms", "node.example.com:18081"),
+            ]
         );
-        assert!(
-            html.contains("First byte <strong>45 ms</strong> a block"),
-            "{html}"
-        );
-        assert!(
-            html.contains("Measured 12 seconds ago; 2 timeouts and 1 failure in the last hour."),
-            "{html}"
+        assert_eq!(
+            tiles[0].title,
+            "Transfer from node.example.com:18081: 3.1 Mbit/s now, the last hour drawn; measured 12 seconds ago; 2 timeouts and 1 failure in the last hour."
         );
         // The two latest minutes are a line; ten minutes back, alone, a dot.
-        assert_eq!(html.matches("<polyline").count(), 3, "{html}");
-        assert_eq!(html.matches("<circle").count(), 3, "{html}");
+        match &tiles[1].chart {
+            TileChart::Spark { runs } => {
+                assert_eq!(runs.len(), 2, "{runs:?}");
+                assert!(!runs[0].contains(' ') && runs[1].contains(' '), "{runs:?}");
+            }
+            other => panic!("{other:?}"),
+        }
 
-        let html = link_figures(&link(false)).into_string();
-        assert!(
-            html.contains("Link not measured yet: the engine assumes 3.1 Mbit/s"),
-            "{html}"
+        let fallback = link_tiles(
+            Some(InUseNode {
+                label: "backup.example.org:18089",
+                fallback: true,
+                link: Some(&measured),
+            }),
+            NOW,
         );
-        assert!(!html.contains("<svg"), "{html}");
+        assert_eq!(fallback[0].note, "backup.example.org:18089 · fallback");
+
+        let unmeasured = link(false);
+        let tiles = link_tiles(
+            Some(InUseNode {
+                label: "node.example.com:18081",
+                fallback: false,
+                link: Some(&unmeasured),
+            }),
+            NOW,
+        );
+        assert_eq!(tiles[0].value, "–");
+        assert!(
+            tiles[0]
+                .title
+                .contains("not measured yet. The engine assumes 3.1 Mbit/s"),
+            "{}",
+            tiles[0].title
+        );
+        assert_eq!(tiles[0].chart, TileChart::None);
+
+        let none = link_tiles(None, NOW);
+        assert_eq!(none.len(), 3);
+        assert!(none.iter().all(|t| t.note == "no node in use"));
     }
 
     fn scaling(pace: Pace) -> NetworkScaling {
@@ -1075,6 +1283,14 @@ mod tests {
         }
     }
 
+    fn row<'a>(view: &'a ScanningView, label: &str) -> &'a str {
+        view.rows
+            .iter()
+            .find(|(l, _)| *l == label)
+            .map(|(_, v)| v.as_str())
+            .unwrap_or_else(|| panic!("no {label} in {view:?}"))
+    }
+
     #[test]
     fn the_scanning_panel_says_what_sets_the_pace_and_why() {
         let node = || {
@@ -1083,66 +1299,55 @@ mod tests {
                 rate_bytes_per_sec: Some(387_500),
             })
         };
-        let html = scanning_panel("mainnet", &scaling(Pace::Link), node()).into_string();
-        assert!(
-            html.contains(r#"<span class="tag tag-syncing">catching up</span>"#),
-            "{html}"
+        let view = scanning("mainnet", &scaling(Pace::Link), node());
+        assert_eq!(view.preview, "14 behind · pace: link speed");
+        assert_eq!(
+            row(&view, "Progress"),
+            "14 blocks behind · 3.2 blocks a minute · caught up in about 4 minutes"
         );
-        assert!(
-            html.contains("14 blocks behind · 3.2 blocks a minute · caught up in about 4 minutes"),
-            "{html}"
+        assert_eq!(
+            row(&view, "Pace set by"),
+            "Link speed: node.example:18089 at 3.1 Mbit/s. A faster node would speed it up."
         );
-        assert!(
-            html.contains(
-                "Link speed: node.example:18089 at 3.1 Mbit/s. A faster node would speed it up."
-            ),
-            "{html}"
+        assert_eq!(
+            row(&view, "Requests"),
+            "1 block a request, set by the link's speed · block 3,412,001 in progress for 2 m 10 s"
         );
-        assert!(
-            html.contains("1 block a request, set by the link&#39;s speed")
-                || html.contains("1 block a request, set by the link's speed"),
-            "{html}"
+        assert_eq!(
+            row(&view, "Block size"),
+            "Average 1.8 MB (rising ↗) · largest recent 412 MB (block 3,411,990), took 18 m 0 s"
         );
-        assert!(
-            html.contains("block 3,412,001 in progress for 2 m 10 s"),
-            "{html}"
-        );
-        assert!(html.contains("Average 1.8 MB (rising ↗) · largest recent 412 MB (block 3,411,990), took 18 m 0 s"), "{html}");
-        assert!(html.contains("Budget 256 MB · block cache peak 301 MB in the last hour · this machine allows up to 1,536 MB<"), "{html}");
-        assert!(
-            !html.contains("let go of"),
-            "nothing discarded: nothing said"
-        );
+        assert_eq!(row(&view, "Memory"), "Budget 256 MB · block cache peak 301 MB in the last hour · this machine allows up to 1,536 MB");
         let mut discarding = scaling(Pace::Memory);
         discarding.scan.discarded_cache_bytes_recent = 9_400_000;
-        let html = scanning_panel("mainnet", &discarding, node()).into_string();
-        assert!(html.contains("this machine allows up to 1,536 MB · 9.4 MB fetched ahead was let go of unscanned in the last ten minutes, to be fetched again (a larger budget keeps more)"), "{html}");
-        assert!(html.contains("Deadline 10 s (the base)"), "{html}");
-        assert!(
-            html.contains("Off: blocks are fetched whole without asking their size first"),
-            "{html}"
+        let view = scanning("mainnet", &discarding, node());
+        assert_eq!(view.preview, "14 behind · pace: memory budget");
+        assert!(row(&view, "Memory").ends_with("this machine allows up to 1,536 MB · 9.4 MB fetched ahead was let go of unscanned in the last ten minutes, to be fetched again (a larger budget keeps more)"));
+        assert_eq!(row(&view, "Round"), "Deadline 10 s (the base)");
+        assert_eq!(
+            row(&view, "Headers first"),
+            "Off: blocks are fetched whole without asking their size first"
         );
-        assert!(html.contains("Fetching 6 m 40 s, scanning 12 s"), "{html}");
-
-        let html = scanning_panel("mainnet", &scaling(Pace::Memory), node()).into_string();
-        assert!(
-            html.contains("The scan memory budget, which caps each request."),
-            "{html}"
+        assert_eq!(
+            row(&view, "Last 10 minutes"),
+            "Fetching 6 m 40 s, scanning 12 s"
         );
+        assert!(row(&view, "Pace set by")
+            .starts_with("The scan memory budget, which caps each request."));
 
         let mut caught_up = scaling(Pace::CaughtUp);
         caught_up.blocks_behind = 0;
         caught_up.round_deadline_secs = 45;
-        let html = scanning_panel("mainnet", &caught_up, None).into_string();
-        assert!(
-            html.contains(r#"<span class="tag tag-ok">caught up</span>"#),
-            "{html}"
+        let view = scanning("mainnet", &caught_up, None);
+        assert_eq!(view.preview, "at the tip");
+        assert_eq!(row(&view, "Progress"), "At the node's tip.");
+        assert!(row(&view, "Round").starts_with("Deadline 45 s, raised from 10 s"));
+        let mut tip_by_link = scaling(Pace::Link);
+        tip_by_link.blocks_behind = 0;
+        assert_eq!(
+            scanning("mainnet", &tip_by_link, None).preview,
+            "at the tip · pace: link speed"
         );
-        assert!(
-            html.contains("At the node&#39;s tip.") || html.contains("At the node's tip."),
-            "{html}"
-        );
-        assert!(html.contains("Deadline 45 s, raised from 10 s"), "{html}");
 
         // A large block scanned a page at a time says how far it has got,
         // and why headers come first.
@@ -1158,15 +1363,12 @@ mod tests {
                 page_txs: 100,
             });
         }
-        let html = scanning_panel("mainnet", &paged, None).into_string();
-        assert!(
-            html.contains("in pages: 41,000 of 97,000 transactions scanned, 100 a page"),
-            "{html}"
-        );
-        assert!(
-            html.contains("On for about 50 minutes more: a block request ran out of time or came back too large"),
-            "{html}"
-        );
+        let view = scanning("mainnet", &paged, None);
+        assert!(row(&view, "Requests")
+            .contains("in pages: 41,000 of 97,000 transactions scanned, 100 a page"));
+        assert!(row(&view, "Headers first").starts_with(
+            "On for about 50 minutes more: a block request ran out of time or came back too large"
+        ));
 
         let mut slow = scaling(Pace::Link);
         slow.slow = Some(SlowBlock {
@@ -1177,12 +1379,19 @@ mod tests {
             rate_bytes_per_sec: Some(387_500),
             remaining_secs: Some(1_080),
         });
-        let html = scanning_panel("mainnet", &slow, node()).into_string();
-        assert!(
-            html.contains(r#"<span class="tag tag-slow">slow</span>"#),
-            "{html}"
+        let view = scanning("mainnet", &slow, node());
+        assert_eq!(view.preview, "14 behind · a slow block");
+        assert!(view.slow.as_deref().is_some_and(|m| m.starts_with("Mainnet: block 3,412,001 (412 MB) has taken 2 m 10 s so far, at 3.1 Mbit/s from node.example:18089.")), "{view:?}");
+    }
+
+    #[test]
+    fn the_block_size_tile_gives_the_average_and_its_trend() {
+        let tile = block_size_tile(Some(&scaling(Pace::Link)));
+        assert_eq!(
+            (tile.value.as_str(), tile.note.as_str()),
+            ("1.8 MB", "average, rising ↗")
         );
-        assert!(html.contains("Mainnet: block 3,412,001 (412 MB) has taken 2 m 10 s so far, at 3.1 Mbit/s from node.example:18089."), "{html}");
+        assert_eq!(block_size_tile(None).note, "not reported");
     }
 
     #[test]

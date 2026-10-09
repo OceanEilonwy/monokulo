@@ -1,7 +1,9 @@
 //! The engine page (`docs/engine_visualizer.md`): the engine's scanner, for
 //! admins. Rendered here whole, so without JavaScript it is a point-in-time
 //! page with a Reload button; `static/engine-view.js` then follows the
-//! network live, drawing each frame's [`Presented`] into the same elements.
+//! network live, drawing each frame's [`Presented`] into the same elements,
+//! and each `machine` event's [`MachineView`] into the "Machine and links"
+//! strip and the Scanning panel.
 
 use maud::{html, Markup, PreEscaped};
 
@@ -10,16 +12,21 @@ use super::{layout_with_head, reload_button, script, Load, PageChrome};
 use crate::engine_view::present::{
     Bar, ChainView, Lane, MarkView, Panel, Presented, RibbonMark, RoundView,
 };
-use crate::views::scaling::thousands;
+use crate::views::scaling::{thousands, MachineView, ScanningView, Tile, TileChart};
 
-/// Blocks drawn without JavaScript (the script fits the strip's width).
-const CELLS: u64 = 40;
+/// Blocks drawn without JavaScript: enough for the widest strip. Those
+/// that don't fit whole wrap out of sight; the script draws as many as fit.
+const CELLS: u64 = 72;
 /// Blocks kept around the lowest group when the span is cut.
 const LOW_CELLS: u64 = 7;
 /// One cell and its gap, in pixels: what the script lays out with too.
 const CELL_PX: u64 = 26;
-/// The strip's left padding, in pixels.
-const STRIP_PAD_PX: u64 = 14;
+/// The next block's cell, wider, in pixels.
+const NEXT_PX: u64 = 32;
+/// The cut between the lowest group and the newest blocks, and its gap.
+const CUT_PX: u64 = 64;
+/// The strip's right padding, in pixels.
+const STRIP_PAD_RIGHT_PX: u64 = 8;
 /// Events listed without JavaScript.
 pub const MARKS_SHOWN: usize = 60;
 
@@ -28,6 +35,9 @@ pub struct EnginePage {
     pub networks: Vec<String>,
     pub network: String,
     pub view: Option<Presented>,
+    /// The "Machine and links" strip and the Scanning panel, from
+    /// `/status`; `None` while it can't be read.
+    pub machine: Option<MachineView>,
     /// A past round chosen from the recent rounds, shown in the round card
     /// in place of the live one.
     pub pinned: Option<RoundView>,
@@ -42,7 +52,10 @@ const ENGINE_STYLE: &str = r#"
 .wrap.engine-page { max-width: 1880px; display: grid; gap: var(--space-sm); padding-bottom: var(--space-xl); }
 .engine-page h1 { border: 0; margin: 0; padding: 0; font-size: 1.3rem; }
 .engine-page h2 { border: 0; margin: 0; padding: 0; font-size: 0.85rem; font-weight: 800; }
-.engine-top { position: relative; display: flex; flex-wrap: wrap; gap: var(--space-sm) var(--space-md); align-items: center; margin-top: var(--space-sm); }
+.wrap.engine-page > .context-nav { margin: var(--space-sm) 0 0; }
+.engine-titlebar { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); }
+.titlebar-spacer { flex: 1; }
+.engine-titlebar .reload { margin: 0; }
 .engine-tabs { display: inline-flex; height: 26px; border: 1px solid var(--btn-border); border-radius: var(--radius-sm); overflow: hidden; }
 .engine-tabs a, .engine-tabs span { display: flex; align-items: center; padding: 0 11px; font-weight: 700; font-size: 0.8rem; color: var(--btn-ink); background: var(--btn-bg); text-decoration: none; }
 .engine-tabs > * + * { border-left: 1px solid var(--btn-border); }
@@ -111,8 +124,20 @@ const ENGINE_STYLE: &str = r#"
 .t-other { --tier: var(--line-strong); }
 .tierchip { display: inline-flex; align-items: center; gap: 5px; font-size: 0.7rem; font-weight: 700; white-space: nowrap; }
 .tierchip::before { content: ""; width: 9px; height: 9px; border-radius: 3px; background: var(--tier); flex: none; }
-.engine-main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: var(--space-sm); align-items: start; }
-.engine-left { display: grid; gap: var(--space-sm); min-width: 0; }
+.tiles-card { padding: 0; }
+.tiles-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-md); padding: var(--space-xs) var(--space-md); border-bottom: 1px solid var(--line); }
+.tiles-head .chart-legend { margin: 0; gap: var(--space-sm); font-size: 0.7rem; color: var(--muted); }
+.live-chip { display: inline-flex; align-items: center; gap: var(--space-xs); margin-left: auto; padding: var(--pill-pad-y) var(--pill-pad-x); border: 1px solid var(--line); border-radius: 999px; font-size: 0.7rem; color: var(--muted); white-space: nowrap; }
+.live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+.tiles { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.tile { display: grid; align-content: start; padding: var(--space-xs) var(--space-md) var(--space-sm); border-left: 1px solid var(--line); min-width: 0; }
+.tile:nth-child(6n+1) { border-left: 0; }
+.tile:nth-child(n+7) { border-top: 1px solid var(--line); }
+.tile .k { font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.tile .v { font-size: 1.05rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.tile .s { font-size: 0.7rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile-chart, .tile-spark { display: block; width: 100%; height: 2.2rem; margin-top: var(--space-xs); }
+.tile-spark { background: var(--surface-sunken); border-radius: var(--radius-sm); }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 0.66rem; color: var(--muted); }
 .legend span { display: inline-flex; align-items: center; gap: 4px; }
 .legend .cell { width: 11px; height: 13px; border-radius: 3px; }
@@ -124,8 +149,15 @@ const ENGINE_STYLE: &str = r#"
 .rpair i:last-child { height: 12px; background: var(--viz-tier-chain); }
 .chain-row { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 10px; align-items: start; }
 .strip-scroll { overflow: hidden; }
+/* The chain strip shows more blocks as it gets wider, never wider blocks:
+   every cell keeps its size (22px, the next block 32px, 4px apart). The
+   newest block is at the right edge. The cells are in the page newest
+   first and laid out right to left, wrapping: a block that doesn't fit
+   whole goes to a second line, which is out of sight, so the strip never
+   shows part of one. engine-view.js measures the strip and draws as many
+   blocks as fit, again when it is resized. */
 .strip { position: relative; padding-inline: 14px 8px; padding-top: 26px; height: 128px; }
-.cells { display: flex; gap: 4px; align-items: flex-end; height: 28px; }
+.cells { display: flex; flex-direction: row-reverse; flex-wrap: wrap; align-content: flex-start; gap: 4px; align-items: flex-end; height: 28px; overflow: hidden; }
 .cell { position: relative; width: 22px; height: 26px; border-radius: 4px; border: 1.5px solid var(--viz-cell-edge); background: var(--viz-cell-recorded); overflow: hidden; flex: none; transition: background 0.3s, border-color 0.3s, opacity 0.3s; }
 .cell .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--viz-tier-blocks); opacity: 0.85; transition: width 0.2s linear; }
 .cell.new { background: var(--paper-raised); border-style: dashed; }
@@ -173,7 +205,7 @@ const ENGINE_STYLE: &str = r#"
 @keyframes node-spark { 30% { box-shadow: 0 0 0 4px var(--tint-highlight); } }
 .round-head { flex-wrap: nowrap !important; }
 .round-head .round-state { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.lanes { display: grid; grid-template-columns: 112px minmax(0, 1fr) 250px; grid-auto-rows: 18px; gap: 2px 10px; align-items: center; }
+.lanes { display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; grid-auto-rows: 18px; gap: 2px 10px; align-items: center; }
 .lane-label { font-size: 0.7rem; font-weight: 700; display: flex; justify-content: space-between; }
 .lane-label small { color: var(--muted); font-weight: 600; }
 .track { position: relative; height: 15px; background: var(--surface-sunken); border-radius: 3px; overflow: hidden; }
@@ -188,11 +220,13 @@ const ENGINE_STYLE: &str = r#"
 .bar.p2 { background: repeating-linear-gradient(135deg, var(--tier) 0 4px, color-mix(in srgb, var(--tier) 40%, var(--paper-raised)) 4px 7px); }
 .share { position: absolute; top: 0; bottom: 0; border: 1.5px dashed var(--line-strong); border-radius: 3px; transition: left 0.3s, width 0.3s; }
 .bar.last::after { content: ""; position: absolute; right: -1px; top: -2px; bottom: -2px; width: 1px; background: var(--ink); }
-.outcome { font-size: 0.7rem; height: 18px; display: flex; align-items: center; overflow: hidden; white-space: nowrap; min-width: 0; }
+/* The outcome chip sits on its lane's own row, flush with the card's
+   right edge, at every width. */
+.outcome { font-size: 0.7rem; height: 18px; display: flex; align-items: center; justify-content: flex-end; overflow: hidden; white-space: nowrap; min-width: 0; max-width: 18rem; }
 .outcome .engine-chip { line-height: 14px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .ruler { position: relative; height: 18px; }
 .ruler-label { position: absolute; top: 3px; transform: translateX(-50%); font: 700 0.62rem/14px var(--font-mono); background: var(--ink); color: var(--paper-raised); padding: 0 5px; border-radius: 3px; white-space: nowrap; transition: left 0.3s; }
-.ribbon-row { display: grid; grid-template-columns: 112px minmax(0, 1fr) 250px; gap: 10px; align-items: end; margin-top: 6px; }
+.ribbon-row { display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 6px; }
 .ribbon { display: flex; justify-content: flex-end; align-items: flex-end; height: 30px; overflow: hidden; border-bottom: 1px solid var(--line); }
 .rbar { width: 8px; display: flex; flex-direction: column-reverse; flex: none; border-radius: 2px 2px 0 0; overflow: hidden; }
 .rbar i { display: block; background: var(--tier); }
@@ -200,10 +234,16 @@ const ENGINE_STYLE: &str = r#"
 .rgap::before { content: ""; position: absolute; left: 2px; right: 2px; bottom: 1px; border-bottom: 2px dotted var(--muted); }
 .rgap.woken::before { right: 8px; }
 .rgap.woken::after { content: ""; position: absolute; right: 1px; bottom: 0; width: 5px; height: 7px; border: 1.5px solid var(--viz-tier-chain); border-radius: 1.5px; background: var(--paper-raised); }
-.engine-side { display: grid; gap: 5px; }
-details.mini { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-md); }
-details.mini > summary { display: grid; grid-template-columns: 96px minmax(0, 1fr) 12px; gap: var(--space-sm); align-items: center; padding: 5px 10px; min-height: 32px; border-radius: var(--radius-md); }
-details.mini > summary:hover { background: var(--surface-sunken); }
+/* The panels under the round: as many across as fit at 18rem, one a row
+   on a phone; an open one takes the whole row. */
+.engine-panels { display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: var(--space-sm); align-items: start; }
+.engine-panels details.mini[open] { grid-column: 1 / -1; }
+details.mini { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-md); min-width: 0; }
+details.mini > summary { display: grid; grid-template-columns: 96px minmax(0, 1fr) 12px; gap: var(--space-sm); align-items: center; padding: 5px 10px; min-height: 32px; border-radius: var(--radius-md); cursor: pointer; }
+details.mini > summary:hover { background: var(--tint-hover); }
+details.mini > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+details.mini .body .scan-figures { padding-top: 6px; }
+details.mini .body .slow-block { margin: 6px 0 0; }
 details.mini > summary::after { content: ""; width: 6px; height: 6px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); transition: transform 0.2s; }
 details.mini[open] > summary::after { transform: rotate(45deg); }
 details.mini .sum { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 0.75rem; overflow: hidden; white-space: nowrap; }
@@ -242,17 +282,34 @@ details.mini.alert { border-color: var(--error); }
 .ghostcell { position: absolute; z-index: 15; pointer-events: none; }
 #engine-stage { position: relative; }
 @media (max-width: 1150px) {
-  .engine-main { grid-template-columns: minmax(0, 1fr); }
-  .engine-side { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
   .engine-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .lanes, .ribbon-row { grid-template-columns: 96px minmax(0, 1fr); }
-  .lanes .outcome { grid-column: 2; }
+  .engine-summary > div:nth-child(3n+1) { border-left: 0; }
+  .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .tile:nth-child(n) { border-left: 1px solid var(--line); border-top: 0; }
+  .tile:nth-child(3n+1) { border-left: 0; }
+  .tile:nth-child(n+4) { border-top: 1px solid var(--line); }
+  .lanes { grid-template-columns: 96px minmax(0, 1fr) auto; }
+  .ribbon-row { grid-template-columns: 96px minmax(0, 1fr); }
   .ribbon-row > :last-child { display: none; }
 }
+/* A phone: the summary and the strip two across, the panels one a row.
+   The bars keep a mini form beside a narrow label, the chip on their row.
+   The chain strip is the cells alone, a --space-md gap above the nodes. */
 @media (max-width: 640px) {
-  .engine-side { grid-template-columns: minmax(0, 1fr); }
   .engine-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .chain-row { grid-template-columns: minmax(0, 1fr); }
+  .engine-summary > div:nth-child(n) { border-left: 1px solid var(--line); }
+  .engine-summary > div:nth-child(2n+1) { border-left: 0; }
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tile:nth-child(n) { border-left: 1px solid var(--line); border-top: 0; }
+  .tile:nth-child(2n+1) { border-left: 0; }
+  .tile:nth-child(n+3) { border-top: 1px solid var(--line); }
+  .engine-panels { grid-template-columns: minmax(0, 1fr); }
+  .chain-row { grid-template-columns: minmax(0, 1fr); gap: var(--space-md); }
+  .strip { height: auto; padding-top: var(--space-xs); }
+  .strip .marks, .strip .axis, .strip .pills { display: none; }
+  .lanes { grid-template-columns: 64px minmax(0, 1fr) auto; gap: 2px var(--space-xs); }
+  .lane-label .tierchip { font-size: 0.65rem; }
+  .lane-label small { display: none; }
   .engine-timeline { grid-template-columns: minmax(0, 1fr); }
   .help-body { grid-template-columns: minmax(0, 1fr); }
 }
@@ -280,24 +337,27 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
     let body = html! {
         div id="engine-stage" {
         main class="wrap engine-page" data-network=(page.network) {
-            div class="engine-top" {
-                nav class="context-nav" aria-label="Breadcrumb" { a href="/status" { "Status" } }
+            nav class="context-nav" aria-label="Breadcrumb" { a href="/status" { "Status" } }
+            div class="engine-titlebar" {
                 h1 { "Engine" }
                 (help())
+                span class="titlebar-spacer" {}
+                // With JavaScript, picking a network goes there; without,
+                // Go does.
                 form class="engine-network" method="get" action="/status/engine" {
-                    label for="engine-network" { "Network" }
+                    label for="engine-network" class="visually-hidden" { "Network" }
                     mk-select compact {
                         select id="engine-network" name="network" {
                             @for network in NETWORKS {
                                 @let configured = page.networks.iter().any(|n| n == network);
-                                @let choice = Choice::new(network, network).selected(*network == page.network).disabled(!configured);
+                                @let choice = Choice::new(network, capitalized(network)).selected(*network == page.network).disabled(!configured);
                                 (if configured { choice } else { choice.note("no node configured") })
                             }
                         }
                     }
-                    button type="submit" class="network-go" { "Go" }
+                    button type="submit" class="network-go no-js-only" { "Go" }
                 }
-                span class="engine-right" { (reload_button(&format!("/status/engine?network={}", page.network))) }
+                (reload_button(&format!("/status/engine?network={}", page.network)))
             }
             @if let Some(error) = &page.error {
                 p class="error" role="alert" { "The engine's activity could not be read: " (error) }
@@ -306,19 +366,90 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
                 (timeline())
                 p class="sync-motion-note engine-hint" role="status" { "Catching up: showing progress with reduced animation." }
                 (summary(view))
-                div class="engine-main" {
-                    div class="engine-left" {
-                        (chain(&view.chain))
-                        (round(view, page.pinned.as_ref(), &page.network))
-                    }
-                    (side(view))
-                }
+            }
+            @if let Some(machine) = &page.machine {
+                (machine_strip(machine))
+            }
+            @if let Some(view) = &page.view {
+                (chain(&view.chain))
+                (round(view, page.pinned.as_ref(), &page.network))
+                (panels(view, page.machine.as_ref().and_then(|m| m.scanning.as_ref())))
             }
             (events(&page.marks))
         }
         }
     };
     layout_with_head(chrome, "Engine - Monokulo", head, body)
+}
+
+/// `mainnet` as `Mainnet`, for the picker.
+fn capitalized(network: &str) -> String {
+    let mut chars = network.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// The "Machine and links" strip: small multiples of the machine's CPU and
+/// memory, the link to the node in use and the blocks' size. Without
+/// JavaScript it is as the page was loaded; with it, each `machine` event
+/// draws it again and the chip says how fresh it is.
+fn machine_strip(machine: &MachineView) -> Markup {
+    html! {
+        section class="engine-card tiles-card" id="engine-machine" aria-labelledby="h-machine" {
+            header class="tiles-head" {
+                h2 id="h-machine" { "Machine and links" }
+                ul class="chart-legend" id="machine-legend" hidden[!machine.stacked] {
+                    li { span class="chart-swatch chart-engine" {} "engine" }
+                    li { span class="chart-swatch chart-monokulo" {} "monokulo" }
+                }
+                span class="live-chip" id="machine-live" title="As the page was loaded: reload for newer figures" {
+                    span class="live-dot" hidden {}
+                    span id="machine-age" { "as loaded" }
+                }
+            }
+            div class="tiles" id="machine-tiles" {
+                @for tile in &machine.tiles { (tile_markup(tile)) }
+            }
+        }
+    }
+}
+
+/// One small multiple: what it is, the figure, a line under it and its
+/// last hour.
+pub fn tile_markup(tile: &Tile) -> Markup {
+    html! {
+        div class="tile" data-tile=(tile.key) title=(tile.title) {
+            span class="k" { (tile.label) }
+            span class="v" { (tile.value) }
+            span class="s" { (tile.note) }
+            span class="visually-hidden" { (tile.title) }
+            @match &tile.chart {
+                TileChart::Stack { layers, limits } => {
+                    svg class="resource-chart tile-chart" viewBox="0 0 360 100" preserveAspectRatio="none" aria-hidden="true" {
+                        @for layer in layers { path class=(format!("chart-layer {}", layer.class)) d=(layer.d) {} }
+                        @for limit in limits {
+                            line class=(format!("chart-limit {}", limit.class)) x1="0" x2="360" y1=(limit.y) y2=(limit.y) vector-effect="non-scaling-stroke" { title { (limit.label) } }
+                        }
+                    }
+                }
+                TileChart::Spark { runs } => {
+                    svg class="sparkline tile-spark" viewBox="0 0 59 16" preserveAspectRatio="none" aria-hidden="true" {
+                        @for points in runs {
+                            @if points.contains(' ') {
+                                polyline points=(points) {}
+                            } @else {
+                                @let (x, y) = points.split_once(',').unwrap_or(("0", "8"));
+                                circle cx=(x) cy=(y) r="1" {}
+                            }
+                        }
+                    }
+                }
+                TileChart::None => {}
+            }
+        }
+    }
 }
 
 /// The timeline: drawn by the script, so hidden until it runs.
@@ -385,19 +516,22 @@ pub fn visible_blocks(chain: &ChainView, cells: u64) -> Vec<Option<u64>> {
 
 fn chain(chain: &ChainView) -> Markup {
     let blocks = visible_blocks(chain, CELLS);
-    // Each cell's centre, in the strip's pixels; the cut is three cells
-    // wide (`.brk`, 60 px with its gap).
+    let next = |height: u64| chain.next_block.is_some() && Some(height) == chain.tip.map(|t| t + 1);
+    // Each cell's centre, in pixels from the strip's right edge: the
+    // newest is at the right, and what doesn't fit is off the left.
     let mut centres = Vec::with_capacity(blocks.len());
-    let mut x = STRIP_PAD_PX + 11;
-    for block in &blocks {
+    let mut x = STRIP_PAD_RIGHT_PX;
+    for block in blocks.iter().rev() {
         match block {
             Some(height) => {
-                centres.push((*height, x));
-                x += CELL_PX;
+                let width = if next(*height) { NEXT_PX } else { CELL_PX - 4 };
+                centres.push((*height, x + width / 2));
+                x += width + 4;
             }
-            None => x += 64,
+            None => x += CUT_PX,
         }
     }
+    centres.reverse();
     let centre = |height: u64| {
         centres
             .iter()
@@ -405,6 +539,7 @@ fn chain(chain: &ChainView) -> Markup {
             .or_else(|| centres.iter().rev().find(|(h, _)| *h < height))
             .map_or(0, |(_, x)| *x)
     };
+    let left = |x: u64| format!("left:calc(100% - {x}px)");
     let tip = chain.tip.unwrap_or(0);
     let high_water = chain.high_water.unwrap_or(0);
     html! {
@@ -426,14 +561,15 @@ fn chain(chain: &ChainView) -> Markup {
                     div class="strip" id="strip" {
                         div class="marks" id="chain-marks" {
                             @if chain.tip.is_some() {
-                                span class="m-tip" style=(format!("left:{}px", centre(tip))) { "node tip" }
+                                span class="m-tip" style=(left(centre(tip))) { "node tip" }
                             }
                             @if high_water < tip {
-                                span class="m-hw" style=(format!("left:{}px", centre(high_water))) { "scanned to" }
+                                span class="m-hw" style=(left(centre(high_water))) { "scanned to" }
                             }
                         }
+                        // Newest first: laid out from the right.
                         div class="cells" id="cells" {
-                            @for block in &blocks {
+                            @for block in blocks.iter().rev() {
                                 @match block {
                                     Some(height) => (cell(chain, *height)),
                                     None => div class="brk" { "…" },
@@ -442,14 +578,14 @@ fn chain(chain: &ChainView) -> Markup {
                         }
                         div class="axis" id="chain-axis" {
                             @for (height, x) in centres.iter().filter(|(h, _)| h % 5 == 0 && *h <= tip) {
-                                span style=(format!("left:{x}px")) { (thousands(*height)) }
+                                span style=(left(*x)) { (thousands(*height)) }
                             }
                         }
                         div class="pills" id="pills" {
                             @for group in &chain.groups {
                                 div class=(format!("pill {}{}{}", if group.frontier { "frontier" } else { "catchup" }, if group.busy { " busy" } else { "" }, if group.waiting { " waiting" } else { "" }))
                                     data-id=(group.id) title=(group.title)
-                                    style=(format!("left:{}px", centre(group.cursor))) { (group.label) }
+                                    style=(left(centre(group.cursor))) { (group.label) }
                             }
                         }
                     }
@@ -538,6 +674,9 @@ fn help() -> Markup {
                 h3 { "Summary" }
                 p class="wide" { b { "Node tip" } ": the newest block the node has. " b { "Scanned to" } ": the high-water mark, the newest block the engine has recorded. " b { "Behind" } ": blocks between the node's tip and the store furthest behind. " b { "Last round" } ": how long the last round took, of its 10s budget. " b { "Chain" } ": whether the recorded chain still agrees with the node's." }
 
+                h3 { "Machine and links" }
+                p class="wide" { b { "CPU" } " and " b { "Memory" } ": the machine's last hour, the engine's share under monokulo's; a dashed line is a container's memory limit. " b { "Transfer" } ", " b { "Round trip" } " and " b { "First byte" } ": the link to the node the engine is reading from right now, named under the figure (a fallback says so). " b { "Block size" } ": the average of recent blocks. With JavaScript they are updated every few seconds; the chip says how long ago." }
+
                 h3 { "Chain" }
                 dl {
                     dt { i class="cell" aria-hidden="true" style="width:11px;height:13px" {} }
@@ -613,7 +752,7 @@ fn help() -> Markup {
                     dt { span class="saved-glyph" aria-hidden="true" {} }
                     dd { "Something saved to disk. A restart carries on from there." }
                 }
-                p class="wide" { "The panels on the right sum up the reorg check, the pool, orders, upkeep, the database worker and what a restart would lose. Click one for its figures." }
+                p class="wide" { "The panels under the round sum up the scan's pace, the reorg check, the pool, orders, upkeep, the database worker and what a restart would lose. Click one for its figures." }
             }
         }
     }
@@ -736,10 +875,19 @@ fn span_style(start: u64, ms: u64, scale_ms: u64) -> String {
     )
 }
 
-fn side(view: &Presented) -> Markup {
+/// The panels under the round, each a line until opened. Scanning comes
+/// first, open.
+fn panels(view: &Presented, scanning: Option<&ScanningView>) -> Markup {
     let side = &view.side;
     html! {
-        aside class="engine-side" id="engine-side" aria-label="Details" {
+        section class="engine-panels" id="engine-panels" aria-label="More about this network" {
+            details class="mini t-blocks" id="d-scanning" open {
+                summary {
+                    span class="tierchip t-blocks" { "Scanning" }
+                    span class="sum" id="scan-sum" { span { (scanning.map_or("not reported", |s| s.preview.as_str())) } }
+                }
+                div class="body" id="scan-body" { (scanning_body(scanning)) }
+            }
             details class=(if side.reorg.alert { "mini t-chain alert" } else { "mini t-chain" }) id="d-reorg" open[side.reorg.alert] {
                 summary { span class="tierchip t-chain" { "Reorg" } span class="sum" { span { (side.reorg.summary) } } }
                 (panel_body(&side.reorg, "Opens by itself while the node's chain differs from the recorded one. Blocks wait, and no order is settled as paid, until the rewind."))
@@ -799,6 +947,24 @@ fn side(view: &Presented) -> Markup {
                 summary { span class="tierchip t-other" { "Restart safety" } span class="sum" { span class="saved-glyph" aria-hidden="true" {} span { (side.restart.summary) } } }
                 (panel_body(&side.restart, "A dark square marks each save on the thing saved. A restart loses only what is in memory, at the cost of some repeated work."))
             }
+        }
+    }
+}
+
+/// The Scanning panel's figures: how far behind, what sets the pace, and
+/// the rest (docs/engine_scaling.md section 6).
+fn scanning_body(scanning: Option<&ScanningView>) -> Markup {
+    html! {
+        @match scanning {
+            Some(scanning) => {
+                @if let Some(slow) = &scanning.slow {
+                    p class="notice slow-block" role="status" { (slow) }
+                }
+                dl class="scan-figures" {
+                    @for (label, value) in &scanning.rows { dt { (label) } dd { (value) } }
+                }
+            }
+            None => p class="explain" { "The engine hasn't reported how its scan of this network is going." },
         }
     }
 }
