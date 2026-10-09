@@ -835,6 +835,34 @@ fn migrated_template() -> Result<&'static [u8]> {
     Ok(TEMPLATE.get_or_init(|| bytes))
 }
 
+/// Writes `image`, a serialized database, to a new file at `path`, marked
+/// as a WAL database so the first [`configure_connection`] finds it already
+/// in WAL mode. Tests create thousands of files, and both other ways of
+/// getting there (`VACUUM INTO`, then switching the copy to WAL) write and
+/// sync a rollback journal: about ten file syncs and a journal created and
+/// deleted per file, which is most of what a short property case spends
+/// on disk, and far more on Windows. A plain write gives the same pages.
+/// Fails rather than overwrite a file already at `path`.
+#[cfg(any(test, feature = "test-support", feature = "fuzzing"))]
+pub(crate) fn write_database_file(path: &str, image: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    let mut image = image.to_vec();
+    // The file format's write and read versions: 2 means WAL.
+    image[18] = 2;
+    image[19] = 2;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(&image))
+        .map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                Some(format!("{path}: {e}")),
+            ))
+        })
+}
+
 fn new_id(prefix: &str) -> String {
     format!("{prefix}_{}", Uuid::new_v4().simple())
 }
@@ -888,11 +916,7 @@ impl Store {
     /// than overwrite a database already at `path`.
     #[cfg(any(test, feature = "test-support", feature = "fuzzing"))]
     pub fn create_file(path: &str) -> Result<Self> {
-        let template = migrated_template()?;
-        let mut conn = Connection::open_in_memory()?;
-        conn.deserialize_read_exact(rusqlite::MAIN_DB, template, template.len(), true)?;
-        conn.execute("VACUUM INTO ?1", [path])?;
-        drop(conn);
+        write_database_file(path, migrated_template()?)?;
         Self::open_file(path)
     }
 
@@ -3979,6 +4003,11 @@ mod tests {
         let store = Store::create_file(created).unwrap();
         assert_eq!(schema(&store), expected);
         assert_eq!(expected.1.len(), MIGRATIONS.len());
+        let integrity: String = store
+            .conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(integrity, "ok");
         let tenant = new_tenant(&store);
         drop(store);
 
