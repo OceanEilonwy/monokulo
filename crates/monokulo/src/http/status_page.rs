@@ -541,14 +541,14 @@ async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPage
     };
     // Node addresses and the raw text of node and scanner errors (which
     // can name internal hosts) are for operators only: anyone else sees
-    // each node's place in the list and whether it answers.
+    // each node's place in the list, its use and whether it answers.
     if !admin {
         for network in &mut view_model.networks {
             for (i, node) in network.nodes.iter_mut().enumerate() {
                 node.label = format!("node {}", i + 1);
-                if node.error.is_some() {
-                    node.error = Some("not answering".to_string());
-                }
+                // What proof-of-work checking found, and what went wrong.
+                node.verdict = None;
+                node.detail = None;
             }
             if network.scanner.last_error.is_some() {
                 network.scanner.last_error = Some("the last scan failed".to_string());
@@ -622,35 +622,53 @@ fn build_view_model(status: EngineStatusResponse) -> views::status::StatusPageVi
 }
 
 fn build_network_view(network: NetworkStatus, now: i64) -> views::status::StatusNetworkView {
+    use views::status::NodeUse;
     let headers_first = network
         .scaling
         .as_ref()
         .and_then(|scaling| scaling.scan.headers_first.as_ref())
         .map(views::scaling::headers_first_sentence);
+    let proof_nodes = network
+        .proof
+        .as_ref()
+        .map(|proof| proof.nodes.as_slice())
+        .unwrap_or_default();
+    // One row a node: what proof-of-work checking found of it beside its
+    // own reachability, matched by its label.
     let nodes = network
         .nodes
         .into_iter()
-        .map(|node| views::status::StatusNodeView {
-            label: node.label,
-            is_active: node.is_active,
-            is_reachable: node.error.is_none(),
-            height_display: node
-                .height
-                .map(|h| h.to_string())
-                .unwrap_or_else(|| "-".to_string()),
-            error: node.error,
+        .map(|node| {
+            let proof = proof_nodes.iter().find(|p| p.node == node.label);
+            views::status::StatusNodeView {
+                node_use: if proof.is_some_and(|p| p.excluded) {
+                    NodeUse::LeftOut
+                } else if node.is_active {
+                    NodeUse::InUse
+                } else {
+                    NodeUse::Standby
+                },
+                is_reachable: node.error.is_none(),
+                height_display: node
+                    .height
+                    .map(views::scaling::thousands)
+                    .unwrap_or_else(|| "-".to_string()),
+                verdict: proof.map(|p| p.verdict),
+                detail: proof.and_then(|p| p.detail.clone()).or(node.error),
+                label: node.label,
+            }
         })
         .collect();
 
     let scanner = network.scanner;
     let (status_label, status_tag_class) = if !scanner.ever_ticked {
-        ("has not been scanned yet", "tag-unknown")
+        ("not scanned yet", "tag-unknown")
     } else if scanner.is_stale {
         ("stale", "tag-error")
     } else if !scanner.last_tick_ok {
         ("tick failing", "tag-error")
     } else {
-        ("healthy", "tag-ok")
+        ("scanning", "tag-ok")
     };
 
     views::status::StatusNetworkView {
@@ -677,72 +695,81 @@ fn build_network_view(network: NetworkStatus, now: i64) -> views::status::Status
 }
 
 /// A network's proof-of-work checking as shown to an admin
-/// (docs/proof_of_work.md).
+/// (docs/proof_of_work.md): the recent window while following, and the
+/// facts behind it. Each node's verdict goes on its own row
+/// ([`build_network_view`]).
 fn proof_view(proof: shared::proof::ProofStatus, now: i64) -> views::status::ProofView {
     use shared::proof::{NodeVerdict, ProofState};
-    let (tag_label, tag_class) = match proof.state {
-        ProofState::Following => ("checking", "tag-ok"),
-        ProofState::Anchoring => ("anchoring", "tag-unknown"),
-        ProofState::Held => ("settlement held", "tag-error"),
-    };
+    use views::scaling::thousands;
+    let plural = |n: u64, one: &'static str, many: &'static str| if n == 1 { one } else { many };
     let mut facts = Vec::new();
     if let Some(anchor) = &proof.anchor {
-        facts.push(format!(
-            "Anchored at block {} ({} of {} node{} agreed), {}.",
-            anchor.height,
-            anchor.agreed,
-            anchor.nodes,
-            if anchor.nodes == 1 { "" } else { "s" },
-            relative_time(now, anchor.anchored_at)
+        facts.push((
+            "Anchor",
+            format!(
+                "Block {}, {} of {} {} agreed, {}",
+                thousands(anchor.height),
+                anchor.agreed,
+                anchor.nodes,
+                plural(anchor.nodes.into(), "node", "nodes"),
+                relative_time(now, anchor.anchored_at)
+            ),
         ));
     }
+    let checked = format!(
+        "{} {} since the engine started",
+        thousands(proof.blocks_checked),
+        plural(proof.blocks_checked, "block", "blocks")
+    );
     if let Some(hashing) = &proof.hashing {
-        facts.push(format!(
-            "{} blocks checked since the engine started, {:.0} ms each ({}); {} RandomX key{} held, 256 MiB each.",
-            proof.blocks_checked,
-            hashing.mean_hash_ms,
-            if hashing.jit {
-                "compiled"
-            } else {
-                "interpreted: RandomX's compiler can't run here"
-            },
-            hashing.keys_held,
-            if hashing.keys_held == 1 { "" } else { "s" },
+        facts.push((
+            "Checked",
+            format!(
+                "{checked}, {:.0} ms each ({})",
+                hashing.mean_hash_ms,
+                if hashing.jit {
+                    "compiled"
+                } else {
+                    "interpreted: RandomX's compiler can't run here"
+                },
+            ),
         ));
+        facts.push((
+            "RandomX keys",
+            format!("{} held, 256 MiB each", hashing.keys_held),
+        ));
+    } else {
+        facts.push(("Checked", checked));
     }
     if let Some(at) = proof.checked_at {
-        facts.push(format!("Last checked {}.", relative_time(now, at)));
+        facts.push(("Last checked", relative_time(now, at)));
     }
-    let nodes = proof
+    // The tip being followed: the highest a node on the proven chain, or
+    // going on past it, reports. Not a caught node's or another chain's:
+    // one far ahead, real or not, would push the window off what matters.
+    let tip = proof
         .nodes
-        .into_iter()
-        .map(|node| views::status::ProofNodeView {
-            verdict: match node.verdict {
-                NodeVerdict::Unknown => "not looked at yet",
-                NodeVerdict::OnChain => "on the proven chain",
-                NodeVerdict::Ahead => "ahead, being checked",
-                NodeVerdict::Lighter => "on a chain with less work",
-                NodeVerdict::Diverged => "left the proven chain too far back",
-                NodeVerdict::Caught => "served a block that breaks the rules",
-                NodeVerdict::Unreachable => "not answering",
-            }
-            .to_string(),
-            height: node
-                .height
-                .map(|h| h.to_string())
-                .unwrap_or_else(|| "-".to_string()),
-            node: node.node,
-            detail: node.detail,
-            excluded: node.excluded,
-        })
-        .collect();
+        .iter()
+        .filter(|node| matches!(node.verdict, NodeVerdict::OnChain | NodeVerdict::Ahead))
+        .filter_map(|node| node.height)
+        .max();
+    let window = match (proof.state, proof.ceiling, proof.proven_height) {
+        (ProofState::Following, Some(ceiling), Some(proven)) => Some(views::status::ProofWindow {
+            ceiling,
+            proven,
+            tip: tip.unwrap_or(proven),
+            anchor: proof
+                .anchor
+                .as_ref()
+                .map(|anchor| (anchor.height, relative_time(now, anchor.anchored_at))),
+        }),
+        _ => None,
+    };
     views::status::ProofView {
-        tag_label: tag_label.to_string(),
-        tag_class: tag_class.to_string(),
+        state: proof.state,
         summary: proof.summary,
+        window,
         facts,
-        nodes,
-        can_take_new_anchor: proof.state == ProofState::Held,
     }
 }
 
@@ -1262,7 +1289,7 @@ mod tests {
                     .unwrap(),
             )
             .await;
-            assert!(html.contains("mainnet"), "got: {html}");
+            assert!(html.contains("<h2>Mainnet</h2>"), "got: {html}");
             // An anonymous visitor sees the node's place in the list, not
             // its address (`status_view`).
             assert!(html.contains("node 1"), "the node is listed: {html}");
@@ -1270,7 +1297,7 @@ mod tests {
                 !html.contains("lookup-test-daemon"),
                 "its label is for operators only: {html}"
             );
-            assert!(html.contains("has not been scanned yet"), "got: {html}");
+            assert!(html.contains("not scanned yet"), "got: {html}");
             let summary = body_json(
                 router
                     .oneshot(
@@ -1366,7 +1393,7 @@ mod tests {
             assert_eq!(
                 labels,
                 vec![
-                    ("healthy", "tag-ok"),
+                    ("scanning", "tag-ok"),
                     ("stale", "tag-error"),
                     ("tick failing", "tag-error")
                 ]
@@ -1386,7 +1413,7 @@ mod tests {
             .into_string();
             assert!(
                 html.contains("connection refused")
-                    && html.contains("3700000")
+                    && html.contains("3,700,000")
                     && html.contains("daemon request failed: timed out"),
                 "got: {html}"
             );
@@ -1507,34 +1534,62 @@ mod tests {
                     mean_key_build_ms: 250.0,
                     keys_held: 1,
                 }),
-                checked_at: Some(now - 5),
+                checked_at: Some(now - 150),
             });
+            // The caught node is the network's second, a fallback.
+            let mut fallback = status.networks[0].nodes[0].clone();
+            fallback.label = "10.0.0.5:18081".into();
+            fallback.is_active = false;
+            fallback.height = Some(125);
+            status.networks[0].nodes.push(fallback);
             let state = state_with_engine(EngineClient::for_tests("http://127.0.0.1:1"));
             super::super::seed_status_for_tests(&state.engine, status.clone());
 
             let anonymous = super::super::status_view(&state, false).await;
             assert!(anonymous.networks[0].proof.is_none());
+            assert!(anonymous.networks[0]
+                .nodes
+                .iter()
+                .all(|node| node.verdict.is_none() && node.detail.is_none()));
             let html = crate::views::status::live_fragment(&anonymous).into_string();
             assert!(
-                !html.contains("10.0.0.5") && !html.contains("Proof of work"),
+                !html.contains("10.0.0.5")
+                    && !html.contains("Proof of work")
+                    && !html.contains("block 121"),
                 "{html}"
             );
 
             let admin = super::super::status_view(&state, true).await;
+            // One row a node, its verdict beside its use; the caught one
+            // left out, with what it was caught on.
+            let nodes = &admin.networks[0].nodes;
+            assert_eq!(nodes[0].verdict, Some(NodeVerdict::OnChain));
+            assert_eq!(nodes[0].node_use, crate::views::status::NodeUse::InUse);
+            assert_eq!(nodes[1].verdict, Some(NodeVerdict::Caught));
+            assert_eq!(nodes[1].node_use, crate::views::status::NodeUse::LeftOut);
+            // The window runs up to the highest node on the proven chain,
+            // not the caught one's claim.
+            let proof = admin.networks[0].proof.as_ref().unwrap();
+            let window = proof.window.as_ref().unwrap();
+            assert_eq!((window.ceiling, window.proven, window.tip), (118, 120, 120));
+            assert_eq!(window.behind(), 2);
             let html = crate::views::status::live_fragment(&admin).into_string();
             for expected in [
-                "Proof of work",
-                r#"<span class="tag tag-ok">checking</span>"#,
-                "Proven up to block 120; orders settle on blocks up to 118.",
-                "Anchored at block 100 (2 of 3 nodes agreed), 2h ago.",
-                "20 blocks checked since the engine started, 16 ms each (compiled); 1 RandomX key held, 256 MiB each.",
+                r#"<span class="tag tag-ok">proof checked</span>"#,
+                "Orders settle on blocks up to <strong>118</strong>, proven by the engine itself.",
+                r#"<span class="tag tag-unknown">2 behind the tip</span>"#,
+                "<dt>Anchor</dt><dd>Block 100, 2 of 3 nodes agreed, 2h ago</dd>",
+                "<dt>Checked</dt><dd>20 blocks since the engine started, 16 ms each (compiled)</dd>",
+                "<dt>RandomX keys</dt><dd>1 held, 256 MiB each</dd>",
+                "<dt>Last checked</dt><dd>2m ago</dd>",
                 "<code>10.0.0.5:18081</code>",
-                "served a block that breaks the rules",
+                r#"<span class="verdict is-bad">served a block that breaks the rules</span><span class="sub">block 121's proof of work doesn't meet its difficulty 7</span>"#,
                 r#"<span class="tag tag-error">left out</span>"#,
-                "on the proven chain",
+                r#"<span class="verdict is-ok">on the proven chain</span>"#,
             ] {
                 assert!(html.contains(expected), "{expected} in {html}");
             }
+            assert!(!html.contains("Proven up to block 120"), "{html}");
             assert!(!html.contains("Take a new anchor"), "only while held");
 
             let mut held = status;
@@ -1544,9 +1599,16 @@ mod tests {
             let admin = super::super::status_view(&state, true).await;
             let html = crate::views::status::live_fragment(&admin).into_string();
             assert!(html.contains(r#"<span class="tag tag-error">settlement held</span>"#));
+            assert!(admin.networks[0].proof.as_ref().unwrap().window.is_none());
             assert!(
                 html.contains(
-                    r#"<a class="hint" href="/status/engine?network=mainnet">Watch it live</a>"#
+                    r#"<div class="proof-held"><p>Proven up to block 120; orders settle on blocks up to 118.</p>"#
+                ),
+                "the engine's reason in the held box: {html}"
+            );
+            assert!(
+                html.contains(
+                    r#"<a class="btn net-head-action" href="/status/engine?network=mainnet">Watch it live</a>"#
                 ),
                 "an admin is linked to the engine page: {html}"
             );

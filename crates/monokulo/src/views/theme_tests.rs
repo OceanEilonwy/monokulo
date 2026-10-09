@@ -551,6 +551,15 @@ fn text_and_controls_are_legible_in_both_themes() {
         // The resource charts' layers are graphics (WCAG 1.4.11).
         ("--chart-engine", "--paper-raised", 3.0),
         ("--chart-monokulo", "--paper-raised", 3.0),
+        // The status page's proof-of-work window and verdict dots, on the
+        // card (graphics, WCAG 1.4.11); the words beside them carry it too.
+        ("--pow-proven", "--paper-raised", 3.0),
+        ("--pow-seen-edge", "--paper-raised", 3.0),
+        ("--pow-mark", "--paper-raised", 3.0),
+        ("--pow-verdict-ok", "--paper-raised", 3.0),
+        ("--pow-verdict-watch", "--paper-raised", 3.0),
+        ("--pow-verdict-bad", "--paper-raised", 3.0),
+        ("--pow-verdict-quiet", "--paper-raised", 3.0),
     ]
     .iter()
     .map(|(fg, bg, min)| (fg.to_string(), bg.to_string(), *min))

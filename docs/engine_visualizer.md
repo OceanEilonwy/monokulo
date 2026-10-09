@@ -351,7 +351,7 @@ everything from the oldest snapshot, flagged as a `gap`; the record's
 ### Monokulo: the page
 
 - `GET /status/engine?network=` (admins only; the status page links admins
-  to it, "Watch it live", beside each network's Chain scanner heading):
+  to it with "Watch it live", a button in each network card's header):
   the whole page rendered in Rust from the live `Presented`, and the last
   60 marks. Without JavaScript that is the page, with a Reload button.
 - `GET /status/engine/events?network=`: a `history` event (the live frame,
