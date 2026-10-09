@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use super::AppState;
@@ -549,24 +549,6 @@ pub async fn bundle(State(state): State<AppState>, Path(id): Path<String>) -> Re
         )
             .into_response(),
     }
-}
-
-pub async fn script(headers: HeaderMap) -> Response {
-    super::pay::static_asset(
-        &headers,
-        "text/javascript; charset=utf-8",
-        super::pay::REVALIDATE,
-        include_str!("../../static/key-custody.js").as_bytes(),
-    )
-}
-
-pub async fn module(headers: HeaderMap) -> Response {
-    super::pay::static_asset(
-        &headers,
-        "application/wasm",
-        super::pay::REVALIDATE,
-        include_bytes!(concat!(env!("OUT_DIR"), "/key_custody.wasm")),
-    )
 }
 
 #[cfg(test)]

@@ -4,7 +4,10 @@
 
 use maud::{html, Markup};
 
-use super::{layout_bare_with_head, logo_mark, status_indicator, theme_toggle, PageChrome};
+use super::{
+    layout_bare_with_head, logo_mark, script, status_indicator, stylesheet, theme_toggle, Load,
+    PageChrome,
+};
 
 pub struct PosViewModel {
     pub connection_id: crate::db::ConnectionId,
@@ -19,7 +22,7 @@ pub struct PosViewModel {
 
 pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
     let title = format!("POS - {} - Monokulo", data.display_name);
-    let head = html! { link rel="stylesheet" href="/static/pos-app.css"; };
+    let head = stylesheet("pos-app.css");
     let body = html! {
         div id="pos-root"
             data-connection-id=(data.connection_id)
@@ -27,7 +30,10 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
             data-store-name=(data.display_name)
             data-currency=(data.base_currency)
             data-decimals=(data.base_currency_decimals)
-            data-client-logging=(data.client_logging) {}
+            data-client-logging=(data.client_logging)
+            // The QR decoder the app loads for refund addresses, from
+            // where the page says (its URL carries the file's version).
+            data-qr-decoder=(crate::assets::url("jsQR.js")) {}
         // The site's logo, status indicator and theme toggle, rendered here
         // so the POS's top bar carries exactly what the site nav does; the
         // POS app moves them into its top bar.
@@ -42,7 +48,7 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
             (status_indicator(chrome.health, "pos-status-link"))
         }
         noscript { p class="error" { "POS requires JavaScript. Use Create an order on the store page instead." } }
-        script type="module" src="/static/pos-app.js" {}
+        (script("pos-app.js", Load::Module))
     };
     layout_bare_with_head(
         chrome,
@@ -72,8 +78,12 @@ mod tests {
         assert!(html.contains("data-connection-id=\"conn-1\""));
         assert!(html.contains("data-decimals=\"12\""));
         assert!(html.contains("data-client-logging=\"false\""));
-        assert!(html.contains("/static/pos-app.js"));
-        assert!(html.contains("/static/pos-app.css"));
+        assert!(html.contains(&crate::assets::url("pos-app.js")));
+        assert!(html.contains(&crate::assets::url("pos-app.css")));
+        assert!(html.contains(&format!(
+            "data-qr-decoder=\"{}\"",
+            crate::assets::url("jsQR.js")
+        )));
         assert!(!html.contains("<nav class=\"site-nav\""));
         assert!(
             html.contains(

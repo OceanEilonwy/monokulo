@@ -1833,7 +1833,10 @@ async fn browser_reports_are_accepted_up_to_a_small_size_and_only_the_sites_own_
 
     let chrome = crate::views::PageChrome::from_user(None, "/");
     let page = crate::views::layout(&chrome, "t", maud::html! {}).into_string();
-    assert!(page.contains(r#"src="/static/telemetry.js""#), "{page}");
+    assert!(
+        page.contains(&format!(r#"src="{}""#, crate::assets::url("telemetry.js"))),
+        "{page}"
+    );
     let bare = crate::views::layout_bare(&chrome, "t", maud::html! {}).into_string();
     assert!(
         !bare.contains("telemetry.js"),
@@ -1848,7 +1851,7 @@ async fn store_pages_load_browser_reports_only_once_the_store_opted_in_but_admin
         let chrome = super::page_chrome(&state, Some(&owner), path).await;
         crate::views::layout(&chrome, "t", maud::html! {})
             .into_string()
-            .contains("/static/telemetry.js")
+            .contains(&crate::assets::url("telemetry.js"))
     };
     assert!(with_script("/dashboard/admin/logs").await);
     assert!(with_script("/dashboard").await);

@@ -13,6 +13,9 @@
 (() => {
   if (window.monokuloKeyCustody || !window.WebAssembly) return;
   window.monokuloKeyCustody = true;
+  // Where the page says the module is (its URL carries the file's
+  // version), read now: currentScript is only set while this runs.
+  const MODULE_URL = (document.currentScript && document.currentScript.dataset.module) || '/static/key-custody.wasm';
 
   let loading;
   // The module, instantiated once. Its only import is randomness.
@@ -26,7 +29,7 @@
           },
         },
       };
-      const response = await fetch('/static/key-custody.wasm');
+      const response = await fetch(MODULE_URL);
       if (!response.ok) throw new Error(`the key checker didn't load (${response.status})`);
       const { instance } = await WebAssembly.instantiate(await response.arrayBuffer(), imports);
       memory = instance.exports.memory;
