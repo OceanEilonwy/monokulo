@@ -175,6 +175,16 @@
   --space-md: 12px;
   --space-lg: 16px;
   --space-xl: 24px;
+  /* Inside a pill or chip (`.tag`, `.badge`, the wallet step's pills, the
+     network badge, ...): the padding for one holding only words, and a
+     roomier step for one holding an icon, a number circle, a badge or a logo
+     beside its words. In em, so a pill keeps its shape at any text size.
+     `views::theme_tests` fails on a pill or chip padded any other way. */
+  --pill-pad-y: 0.15em;
+  --pill-pad-x: 0.7em;
+  --pill-pad-y-roomy: 0.25em;
+  --pill-pad-x-roomy: 0.85em;
+  --pill-gap: 0.35em;
   --radius-sm: 5px;
   --radius-md: 9px;
   --radius-lg: 16px;

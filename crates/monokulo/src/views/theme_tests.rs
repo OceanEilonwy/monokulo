@@ -277,6 +277,63 @@ fn custom_properties_used(text: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// `(selector, body)` for every rule, inner rules of an `@media` block
+/// included (its own selector line is dropped with the block's opening).
+fn rules(css: &str) -> Vec<(String, String)> {
+    strip_comments(css)
+        .split('}')
+        .filter_map(|chunk| {
+            let (selector, body) = chunk.rsplit_once('{')?;
+            let selector = selector.rsplit(['{', ';']).next().unwrap_or(selector);
+            Some((selector.trim().to_string(), body.trim().to_string()))
+        })
+        .collect()
+}
+
+/// Whether a rule draws a pill or chip: a fully rounded box, or a class
+/// named as one (`.tag`, `.badge`, `.pill`, `.source-chip`).
+fn is_pill(selector: &str, body: &str) -> bool {
+    let rounded = body
+        .split(';')
+        .filter_map(|d| d.split_once(':'))
+        .any(|(p, v)| {
+            p.trim() == "border-radius" && matches!(v.trim(), "999px" | "99px" | "9999px")
+        });
+    let named = selector
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.'))
+        .flat_map(|part| part.split('.').skip(1))
+        .any(|class| {
+            matches!(class, "tag" | "badge" | "pill") || class.ends_with("-chip") || class == "chip"
+        });
+    rounded || named
+}
+
+#[test]
+fn every_pill_and_chip_is_padded_with_the_pill_tokens() {
+    let mut drift = Vec::new();
+    for (name, css) in stylesheets() {
+        for (selector, body) in rules(&css) {
+            if !is_pill(&selector, &body) {
+                continue;
+            }
+            for (property, value) in body
+                .split(';')
+                .filter_map(|d| d.split_once(':'))
+                .map(|(p, v)| (p.trim(), v.trim()))
+            {
+                if property.starts_with("padding") && !value.contains("var(--pill-pad-") {
+                    drift.push(format!("{name}: {selector} {{ {property}: {value} }}"));
+                }
+            }
+        }
+    }
+    assert!(
+        drift.is_empty(),
+        "pad pills and chips with --pill-pad-* (theme.css), not their own values:\n{}",
+        drift.join("\n")
+    );
+}
+
 #[test]
 fn every_token_a_page_uses_is_declared() {
     let mut texts = vec![("views/theme.css".to_string(), strip_comments(THEME_CSS))];
@@ -537,6 +594,12 @@ fn text_and_controls_are_legible_in_both_themes() {
 
 #[test]
 fn the_checks_catch_what_they_are_for() {
+    // A pill is a fully rounded box or a class named as one, inside @media too.
+    let found = rules("@media (max-width: 640px) { .x { border-radius: 999px; padding: 2px } }\n.y-chip { padding: 0 }\n.tag-ok { color: red }");
+    assert!(is_pill(&found[0].0, &found[0].1), "{found:?}");
+    assert!(is_pill(&found[1].0, &found[1].1));
+    assert!(!is_pill(".tag-ok", "background: x"));
+    assert!(is_pill(".tag", ""));
     assert_eq!(colour_literals("1px solid #111"), vec!["#111"]);
     assert_eq!(colour_literals("var(--warn, #9a6700)"), vec!["#9a6700"]);
     assert_eq!(colour_literals("rgba(0, 0, 0, .2)"), vec!["rgba("]);
