@@ -127,27 +127,48 @@ test('with JavaScript a change shows the save bar, and a new email is confirmed 
 test('the account menu closes on a click outside it, and its items join the phone menu', async ({ page, context }) => {
   await login(context);
   await page.goto(fixture.base_url + '/');
-  await page.locator('.acct > summary').click();
+  // The account button is a person icon only, named for what it opens.
+  const button = page.locator('.acct > summary');
+  await expect(button).toHaveAttribute('aria-label', 'Account menu');
+  await expect(button).toHaveAttribute('title', EMAIL);
+  await expect(button).toHaveText('');
+  expect((await button.boundingBox()).height).toBeLessThanOrEqual(40);
+  // On a wide screen the status dot sits between the links and the button.
+  const dot = page.locator('#status-indicator');
+  expect((await dot.boundingBox()).x).toBeLessThan((await button.boundingBox()).x);
+  await button.click();
   const menu = page.locator('.acct-menu');
   await expect(menu).toBeVisible();
   await expect(menu.getByRole('link', { name: /^Wallets/ })).toHaveAttribute('href', '/account?tab=wallets');
   await captureCoverageStage(page, 'account-menu', test.info(), { group: 'site' });
   await page.locator('h1').click();
   await expect(menu).not.toBeVisible();
-  await page.locator('.acct > summary').click();
+  await button.click();
   await page.keyboard.press('Escape');
   await expect(menu).not.toBeVisible();
 
-  // On a phone the items are rows of the hamburger list, each a 44px target.
+  // On a phone the status dot stays in the bar, left of the hamburger, with
+  // the menu closed or open, never inside the menu.
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.locator('.nav-toggle-label').click();
+  const hamburger = page.locator('.nav-toggle-label');
+  const inBar = async () => {
+    await expect(dot).toBeVisible();
+    const [d, h] = [await dot.boundingBox(), await hamburger.boundingBox()];
+    expect(d.x + d.width).toBeLessThanOrEqual(h.x);
+    expect(Math.abs((d.y + d.height / 2) - (h.y + h.height / 2))).toBeLessThan(8);
+  };
+  await inBar();
+  await expect(page.locator('.site-nav-links #status-indicator')).toHaveCount(0);
+  await hamburger.click();
+  await inBar();
+  // Its items are rows of the hamburger list, each a 44px target.
   for (const name of ['Account', /^Wallets/, 'Log out']) {
     const item = page.locator('.site-nav').getByRole(name === 'Log out' ? 'button' : 'link', { name });
     await expect(item).toBeVisible();
     expect((await item.boundingBox()).height).toBeGreaterThanOrEqual(44);
   }
-  // The status dot is a 44px target too.
-  const hit = await page.locator('#status-indicator').evaluate(el => {
+  // The status dot is a 44px target.
+  const hit = await dot.evaluate(el => {
     const before = getComputedStyle(el, '::before');
     const box = el.getBoundingClientRect();
     return { width: box.width - 2 * parseFloat(before.left), height: box.height - 2 * parseFloat(before.top) };
