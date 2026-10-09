@@ -147,15 +147,18 @@ test('real POS uses the site theme toggle, applies it in place and remembers it'
   await expect(toggle).toHaveClass(/theme-toggle-light/);
   // Applied in place: the terminal is not reloaded, so the order on screen stays.
   await expect(page.locator('.pos-pay-card')).toBeVisible();
-  // Remembered: the choice is saved to the account, and a reload shows it.
-  const saved = page.waitForResponse(response => response.url().endsWith('/dashboard/theme')
-    && response.request().method() === 'POST' && new URLSearchParams(response.request().postData()).get('theme') === 'dark');
   await page.getByRole('button', { name: 'Dark theme' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect(page.getByRole('button', { name: 'Dark theme' })).toHaveAttribute('aria-pressed', 'true');
   const paper = await page.evaluate(() => getComputedStyle(document.getElementById('pos-root')).backgroundColor);
   expect(paper).toBe('rgb(30, 30, 30)');
-  expect((await saved).status(), 'the theme is saved').toBeLessThan(400);
+  // Remembered: the choice is saved to the account, and a reload shows it.
+  // The POS saves with a fetch that doesn't follow the redirect, and once a
+  // route is installed (the coverage run's instrumented assets) Playwright
+  // reports that fetch as aborted, with no response to wait for. So wait for
+  // the account itself: the page the server renders now says dark.
+  await expect.poll(async () => (await page.request.get(posUrl())).text(), { message: 'the theme is saved' })
+    .toMatch(/<html[^>]* data-theme="dark"/);
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect(toggle).toHaveClass(/theme-toggle-dark/);
