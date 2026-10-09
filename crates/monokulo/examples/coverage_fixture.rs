@@ -415,6 +415,83 @@ async fn unrestrict_embed(State(control): State<Controls>) -> StatusCode {
     }
 }
 
+/// The session of a second merchant, whose wallets are all on test
+/// networks (`seed_wallets`).
+const TESTER_SESSION: &str = "coverage-tester-session-token";
+
+/// Wallets for the wallets list's screenshots (wallets-networks.spec.js):
+/// the merchant gets mainnet, stagenet and testnet wallets and a retired
+/// one, its store taking payments into the first; a second merchant only
+/// test-network ones. Answers the second merchant's session.
+async fn seed_wallets(
+    State(control): State<Controls>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    use monokulo::db::{EngineWalletId, NewWalletRow, UserId, WalletId, WalletOrigin};
+    let tenant = control
+        .client
+        .get_tenant(&shared::auth::RawToken::presented(&control.token))
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let store_wallet = tenant.wallet_id.ok_or(StatusCode::BAD_GATEWAY)?;
+    let db = control.db.lock();
+    let (merchant, tester) = (
+        UserId::new("coverage-merchant"),
+        UserId::new("coverage-tester"),
+    );
+    db.create_user(&tester, "tester@example.test", "unused", false, 0)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    db.create_session(
+        &shared::auth::RawToken::presented(TESTER_SESSION).hash(),
+        &tester,
+        monokulo::now_unix(),
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let feather = "5B8s3obCY2ETeQB3GNAGPK2zRGen5UeW1WzegSizVsmf6z5NvM2GLoN6zzk1vHyzGAAfA8pGhuYAeCFZjHAp59jRVQkunGS";
+    let pos = "56heRv2ANffW1Py2kBkJDy8xnWqZsSrgjLygwjua2xc8Wbksead1NK1ehaYpjQhymGK4S8NPL9eLuJ16CuEJDag8Hq3RbPV";
+    let lab = "9wviCeWe2D8XS82k2ovp5EUYLzBt9pYNW2LXUFsZiv8S3Mt21FZ5qQaAroko1enzw3eGr9qC7X1D7Geoo2RrAotYPwq9Gm8";
+    let wallets: [(&UserId, &str, &str, &str, String, WalletOrigin); 9] = [
+        (&merchant, "w_cake", "Cake – shop takings", "mainnet", tenant.primary_address.clone(), WalletOrigin::Imported),
+        (&merchant, "w_savings", "Savings", "mainnet", "48edfHu7V9Z84YzzMa6fUueoELZ9ZRXq9VetWzYGzKt52XU5xvqgzYnDK9URnRoJMk1j8nLwEVsaSWJ4fhdUyZijBGUicoD".to_owned(), WalletOrigin::Created),
+        (&merchant, "w_pos", "POS trial", "stagenet", pos.to_owned(), WalletOrigin::Created),
+        (&merchant, "w_feather", "Feather test", "stagenet", feather.to_owned(), WalletOrigin::Imported),
+        (&merchant, "w_lab", "Lab", "testnet", lab.to_owned(), WalletOrigin::Imported),
+        (&merchant, "w_old", "Old till", "mainnet", "47Vmj6BXSRPax69cVdqVP5APVLkcxxjjXdcP9fJWZdNc5mEpn3fXQY1CFmJDvyUXzj2Fy9XafvUgMbW91ZoqwqmQ6RjbVtp".to_owned(), WalletOrigin::Imported),
+        (&tester, "w_t_pos", "POS trial", "stagenet", pos.to_owned(), WalletOrigin::Created),
+        (&tester, "w_t_feather", "Feather test", "stagenet", feather.to_owned(), WalletOrigin::Imported),
+        (&tester, "w_t_lab", "Lab", "testnet", lab.to_owned(), WalletOrigin::Imported),
+    ];
+    for (user, id, name, network, address, origin) in &wallets {
+        let engine_id = if *id == "w_cake" {
+            EngineWalletId::new(store_wallet.as_str())
+        } else {
+            EngineWalletId::new(format!("wl_{id}"))
+        };
+        db.create_wallet(&NewWalletRow {
+            id: &WalletId::new(*id),
+            user_id: user,
+            name,
+            network,
+            primary_address: address,
+            engine_wallet_id: &engine_id,
+            origin: *origin,
+            backup: None,
+            created_at: 1,
+        })
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+    db.retire_wallet(&merchant, &WalletId::new("w_old"), 2)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    db.adopt_store_wallet(
+        &shared::ids::ConnectionId::new("coverage-store"),
+        &WalletId::new("w_cake"),
+        1,
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(
+        serde_json::json!({ "tester_session": TESTER_SESSION }),
+    ))
+}
+
 async fn mark_browser_created(
     State(control): State<Controls>,
     Path(id): Path<String>,
@@ -568,6 +645,7 @@ async fn main() {
             post(mark_browser_created),
         )
         .route("/__coverage/engine/story", post(engine_story))
+        .route("/__coverage/wallets", post(seed_wallets))
         .with_state(Controls {
             engine,
             client: state.engine.client.clone(),
