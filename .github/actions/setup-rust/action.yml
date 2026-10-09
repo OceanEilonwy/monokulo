@@ -1,0 +1,44 @@
+name: Set up Rust
+description: >
+  The latest nightly, as rust-toolchain.toml names it, with the WebAssembly
+  target monokulo's build script builds key custody's browser module for;
+  the Rust cache; and the POS app's npm dependencies, which monokulo's build
+  script builds the POS app from.
+
+inputs:
+  targets:
+    description: More targets, comma separated
+    default: ''
+  components:
+    description: More toolchain components, comma separated
+    default: ''
+  cache-key:
+    description: Separates this job's Rust cache from others the same job id makes
+    default: ''
+  pos-app:
+    description: Install the POS app's npm dependencies (only builds of monokulo need them)
+    default: 'true'
+  npm-lockfiles:
+    description: The lock files setup-node's npm cache is keyed on
+    default: crates/monokulo/pos-ui/package-lock.json
+
+runs:
+  using: composite
+  steps:
+    - if: inputs.pos-app == 'true'
+      uses: actions/setup-node@v7
+      with:
+        node-version: '24'
+        cache: npm
+        cache-dependency-path: ${{ inputs.npm-lockfiles }}
+    - if: inputs.pos-app == 'true'
+      name: Install POS app dependencies
+      shell: bash
+      run: npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
+    - uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: ${{ inputs.components }}
+        targets: wasm32-unknown-unknown${{ inputs.targets != '' && format(', {0}', inputs.targets) || '' }}
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ inputs.cache-key }}

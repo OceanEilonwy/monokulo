@@ -3,7 +3,9 @@
 # .apk, a signed apk repository, and the landing page with install
 # instructions (scripts/build-openwrt.sh does all of it).
 #
-# Every push to main and every pull request: build, and upload as artifacts
+# release.yml runs it on main and version tags, after every test passed; a
+# pull request runs it only when it changes the package itself. Each run
+# builds and uploads as artifacts
 #   monokulo-openwrt-25.12-aarch64_cortex-a53   the .apk, the repository index
 #                                               (packages.adb), the public key
 #                                               (monokulo.pem) and SHA256SUMS
@@ -22,32 +24,18 @@
 name: OpenWrt package
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'crates/**'
-      - 'openwrt/**'
-      - 'web/**'
-      - 'scripts/build-openwrt.sh'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - '.github/workflows/openwrt.yml'
   pull_request:
     paths:
-      - 'crates/**'
       - 'openwrt/**'
       - 'web/**'
       - 'scripts/build-openwrt.sh'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
       - '.github/workflows/openwrt.yml'
+  workflow_call:
   workflow_dispatch:
 
 # A newer push to the same pull request replaces its run still going.
 concurrency:
-  group: openwrt-${{ github.event.pull_request.number || github.ref }}
+  group: openwrt-${{ github.event.pull_request.number || github.ref }}-${{ github.workflow }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -58,6 +46,7 @@ env:
 
 jobs:
   build:
+    name: Build the OpenWrt package
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -65,22 +54,10 @@ jobs:
         with:
           # The package's release number is the commit count.
           fetch-depth: 0
-      - uses: actions/setup-node@v7
+      - uses: ./.github/actions/setup-rust
         with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: crates/monokulo/pos-ui/package-lock.json
-      - name: Install POS app dependencies
-        # monokulo's build script builds the POS app from them.
-        run: npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
-      # The latest nightly, as rust-toolchain.toml names it.
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          # wasm32: monokulo's build script builds key custody's browser module.
-          targets: aarch64-unknown-linux-musl, wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: openwrt-aarch64
+          targets: aarch64-unknown-linux-musl
+          cache-key: openwrt-aarch64
       - name: Build the package, repository and site
         env:
           APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}

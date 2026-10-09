@@ -1,0 +1,337 @@
+name: Tests
+
+# One platform's test suites, called by checks.yml (pull requests) and
+# release.yml (main, version tags). Each suite is a job of its own, run when
+# `suites` names it. With `coverage` (Linux only), each runs through its
+# coverage collector (`cargo xtask coverage <suite>`) and uploads what it
+# collected; `report` then joins those into one artifact and checks it, as
+# `cargo xtask coverage all` does locally. Every job writes a summary table
+# and lists its failures.
+#
+# Test builds have every feature a build can ship: the engine's default zmq
+# and, through monokulo/snp, the snp key custody backend.
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: The GitHub-hosted runner label to run on
+        required: true
+        type: string
+      coverage:
+        description: Collect coverage (Linux only)
+        type: boolean
+        default: false
+      suites:
+        description: JSON list of the suites to run - rust, browser, woocommerce, stress, scale
+        type: string
+        default: '["rust"]'
+      report:
+        description: Join the suites' coverage into one checked report (with coverage)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Debug and test builds keep file and line numbers for backtraces but
+  # none of the rest of the debug info, which CI never reads: our own crates
+  # (which the Rust cache does not keep) compile and link faster.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+jobs:
+  rust:
+    name: Rust tests${{ inputs.coverage && ' (coverage)' || '' }}
+    if: contains(fromJSON(inputs.suites), 'rust')
+    runs-on: ${{ inputs.os }}
+    # Windows runners build the workspace about twice as slowly.
+    timeout-minutes: ${{ inputs.os == 'windows-latest' && 60 || 30 }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: ${{ inputs.coverage && 'llvm-tools-preview' || '' }}
+          # An instrumented build shares nothing with a plain one.
+          cache-key: ${{ inputs.coverage && 'coverage' || 'tests' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: ${{ inputs.coverage && 'cargo-llvm-cov,cargo-nextest' || 'cargo-nextest' }}
+      - name: Run tests
+        id: tests
+        continue-on-error: true
+        shell: bash
+        env:
+          COVERAGE_TOOLS_PREINSTALLED: '1'
+        run: |
+          if ${{ inputs.coverage }}; then
+            cargo xtask coverage rust
+          else
+            cargo nextest run --workspace --locked --exclude xtask --profile ci --features monokulo/snp
+          fi
+      - name: Run doctests
+        id: doctests
+        continue-on-error: true
+        # nextest does not run doctests.
+        run: cargo test --workspace --locked --exclude xtask --doc --features monokulo/snp
+      - name: Summarize
+        if: always()
+        shell: bash
+        run: |
+          cargo xtask test-summary 'Rust tests (${{ runner.os }})' \
+            rust=${{ inputs.coverage && 'target/coverage/rust/junit.xml' || 'target/nextest/ci/junit.xml' }} >> "$GITHUB_STEP_SUMMARY"
+          echo "Doctests: ${{ steps.doctests.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Rust coverage
+        if: always() && inputs.coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-rust-${{ github.sha }}
+          # raw.json was only read to write rust.json and rust-crates.json.
+          path: |
+            target/coverage/
+            !target/coverage/rust/raw.json
+          if-no-files-found: warn
+      - name: Fail on test failure
+        if: always()
+        shell: bash
+        run: test '${{ steps.tests.outcome }}' = success && test '${{ steps.doctests.outcome }}' = success
+      - name: Preserve property test regressions
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proptest-regressions-${{ runner.os }}${{ inputs.coverage && '-coverage' || '' }}-${{ github.sha }}
+          path: crates/*/proptest-regressions/
+          if-no-files-found: ignore
+
+  browser:
+    name: Browser tests${{ inputs.coverage && ' (coverage)' || '' }}
+    if: contains(fromJSON(inputs.suites), 'browser')
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: ${{ inputs.coverage && 'coverage' || 'tests' }}
+          npm-lockfiles: |
+            e2e/browser/package-lock.json
+            crates/monokulo/pos-ui/package-lock.json
+      - name: Install the browser tests' dependencies
+        run: npm ci --prefix e2e/browser --no-audit --no-fund
+      - name: Cache Playwright's Chromium
+        id: chromium
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/browser/package-lock.json') }}
+      - name: Install Chromium
+        working-directory: e2e/browser
+        run: |
+          if test '${{ steps.chromium.outputs.cache-hit }}' = true; then
+            npx playwright install-deps chromium
+          else
+            npx playwright install --with-deps chromium
+          fi
+      - name: Run tests
+        id: tests
+        continue-on-error: true
+        # The fixture tests and the real-binaries tests, as one Playwright
+        # run (coverage-browser.config.js). Its global setup builds every
+        # binary they need; the collector adds instrumentation and the
+        # screenshot gallery.
+        run: |
+          if ${{ inputs.coverage }}; then
+            cargo xtask coverage browser
+          else
+            cd e2e/browser && ./node_modules/.bin/playwright test -c coverage-browser.config.js
+          fi
+      - name: Summarize
+        if: always()
+        run: |
+          cargo xtask test-summary 'Browser tests' \
+            browser=target/coverage/browser/junit.xml >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload browser coverage
+        if: always() && inputs.coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-browser-${{ github.sha }}
+          # raw/ holds the per-test frame coverage collect-browser-report.js
+          # already merged into the report.
+          path: |
+            target/coverage/
+            !target/coverage/browser/raw
+          if-no-files-found: warn
+      - name: Upload the Playwright report
+        if: failure() && !inputs.coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-tests-${{ github.sha }}
+          path: target/coverage/browser/playwright-report/
+          if-no-files-found: ignore
+      - name: Fail on test failure
+        if: always()
+        run: test '${{ steps.tests.outcome }}' = success
+
+  woocommerce:
+    name: WooCommerce tests${{ inputs.coverage && ' (coverage)' || '' }}
+    if: contains(fromJSON(inputs.suites), 'woocommerce')
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      # For `cargo xtask`; the plugin's tests build no Rust.
+      - uses: ./.github/actions/setup-rust
+        with:
+          pos-app: 'false'
+      - name: Install PHP and Composer
+        uses: shivammathur/setup-php@v2
+        with:
+          # Matches the wp-env test container (`phpVersion` in
+          # plugins/woocommerce/.wp-env*.json) and composer.json's platform
+          # pin, so the lock file always suits the PHP the tests run on.
+          php-version: '8.5'
+          tools: composer:v2
+      - name: Start WordPress with WooCommerce and the plugin
+        env:
+          NODE_OPTIONS: --dns-result-order=ipv4first --network-family-autoselection-attempt-timeout=5000
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y ripgrep
+          composer install --working-dir=plugins/woocommerce --no-interaction --prefer-dist
+          npm install --global @wordpress/env@latest
+          cd plugins/woocommerce
+          wp-env start --config=.wp-env.coverage.json
+      - name: Run tests
+        id: tests
+        continue-on-error: true
+        run: |
+          if ${{ inputs.coverage }}; then
+            cargo xtask coverage woocommerce
+          else
+            mkdir -p target/coverage/woocommerce
+            cd plugins/woocommerce
+            wp-env run tests-cli --env-cwd=wp-content/plugins/monokulo \
+              vendor/bin/phpunit --log-junit junit.xml
+            mv junit.xml ../../target/coverage/woocommerce/junit.xml
+          fi
+      - name: Summarize
+        if: always()
+        run: |
+          cargo xtask test-summary 'WooCommerce tests' \
+            woocommerce=target/coverage/woocommerce/junit.xml >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload WooCommerce coverage
+        if: always() && inputs.coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-woocommerce-${{ github.sha }}
+          path: target/coverage/
+          if-no-files-found: warn
+      - name: Fail on test failure
+        if: always()
+        run: test '${{ steps.tests.outcome }}' = success
+
+  stress:
+    # The engine's one-CPU scanner capacity sweep and fault recovery
+    # (docs/engine_stress.md). With coverage, its report joins the coverage
+    # artifact.
+    name: 'Stress: engine scanner (one CPU)'
+    if: contains(fromJSON(inputs.suites), 'stress')
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          pos-app: 'false'
+      - name: Measure engine scanner progress on one CPU
+        id: stress
+        continue-on-error: true
+        run: cargo xtask stress ci
+      - name: Upload stress report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.coverage && 'coverage-stress' || 'stress' }}-${{ github.sha }}
+          # From target/coverage/, so the files keep their stress/ folder
+          # when the report job merges the artifacts.
+          path: |
+            target/coverage/
+            !target/coverage/stress/*.db*
+          if-no-files-found: warn
+      - name: Fail on a failed point or fault
+        if: always()
+        run: test '${{ steps.stress.outcome }}' = success
+
+  scale:
+    # Every scale scenario, the ignored large fixtures included, one test at
+    # a time (`cargo xtask engine scale`), at 32 cases and a seed per run.
+    name: Engine scale tests
+    if: contains(fromJSON(inputs.suites), 'scale')
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 60
+    env:
+      PROPTEST_CASES: '32'
+      PROPTEST_RNG_SEED: ${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          pos-app: 'false'
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run the scale scenarios
+        run: cargo xtask engine scale
+      - name: Preserve replay settings, failures and reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: engine-scale-${{ github.run_id }}-${{ github.run_attempt }}${{ inputs.coverage && '-coverage' || '' }}
+          path: |
+            target/engine-scale/
+            crates/engine/proptest-regressions/
+
+  report:
+    # One artifact and index from the collectors, checked as
+    # `cargo xtask coverage all` checks a local run.
+    name: Coverage report
+    needs: [rust, browser, woocommerce, stress]
+    if: always() && inputs.report
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          pos-app: 'false'
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-*-${{ github.sha }}
+          path: target/coverage
+          merge-multiple: true
+      - name: Combine and check the coverage report
+        id: report
+        continue-on-error: true
+        run: cargo xtask coverage report
+      - name: Summarize
+        if: always()
+        run: |
+          cargo xtask coverage summary >> "$GITHUB_STEP_SUMMARY"
+          cargo xtask test-summary 'Coverage tests' \
+            rust=target/coverage/rust/junit.xml \
+            browser=target/coverage/browser/junit.xml \
+            woocommerce=target/coverage/woocommerce/junit.xml >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ github.sha }}
+          path: target/coverage/
+          if-no-files-found: warn
+      - name: Fail on collector, test or report failure
+        if: always()
+        run: test '${{ steps.report.outcome }}' = success

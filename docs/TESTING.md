@@ -27,23 +27,43 @@ implement it. Organized by component, in roughly the order a component would be 
   mitigation, and webhook signature verification each get dedicated adversarial tests,
   not incidental coverage from happy-path tests.
 
-### PR approval and platform checks
+### CI: pull request checks and releases
 
-Every PR update runs Linux tests, lint and the Linux coverage collectors. An
-approving review of the current head commit by a repository writer starts the
-macOS and Windows suites in `approved-platform-tests.yml`. Comments, change
-requests, self-reviews, dismissed approvals and reviews of older revisions do
-not start those suites. Both paths call `rust-tests.yml`, so their test commands,
-feature checks, timeouts and reports remain identical.
+Two workflows run the tests, both through two reusable ones: `lint.yml`
+(rustfmt, clippy and the checks below) and `tests.yml` (one platform's
+suites, each a job of its own: `rust`, `browser`, `woocommerce`, `stress`,
+`scale`; with `coverage`, each through its coverage collector, and with
+`report`, joined into the one coverage artifact).
 
-The `main` branch requires one approval, dismisses stale approvals after a push,
-and requires `lint`, `coverage`, `tests / tests (ubuntu-latest)`,
-`approved platforms / tests (macos-latest)` and
-`approved platforms / tests (windows-latest)`. The approval workflow's caller
-has a separate name: skipping it cannot emit successful checks under the required
-platform names. New commits need new approval and platform results; cancelled,
-failed or missing platform checks block merging. Main, version tags and manual
-CI runs still test all three platforms before publishing.
+- `checks.yml`, on every pull request update: Lint, and every Linux suite
+  without coverage. A manual run (Actions > Checks > Run workflow) can add
+  coverage, or the macOS and Windows Rust tests, for any branch.
+- `release.yml`, on main, version tags and manual runs: Lint and Linux again
+  on the merged commit, Coverage (every Linux suite instrumented, and the
+  report), the macOS and Windows Rust tests, then the builds and releases
+  once all of them pass. Linux's plain run there also keeps the Rust cache
+  pull requests start from warm: an instrumented build shares nothing with
+  a plain one.
+
+The `main` branch requires one approval, dismisses stale approvals after a
+push, and requires `Lint / rustfmt and clippy`, `Linux / Rust tests`,
+`Linux / Browser tests`, `Linux / WooCommerce tests`,
+`Linux / Stress: engine scanner (one CPU)` and `Linux / Engine scale tests`.
+macOS, Windows and coverage problems show on main, before anything is
+released.
+
+Every test build has every feature a build can ship: the engine's `zmq` is
+on by default, and `--features monokulo/snp` adds the snp key custody
+backend (and `engine-test-support`'s stand-in for it). Nothing tests an
+engine built without them; Lint's clippy of `-p engine
+--no-default-features` keeps the code that takes their place compiling.
+
+`test-support` features (engine, monokulo, shared, snp-attest) only add code
+that tests call: constructors, fixtures, stand-ins. They never change what
+shipped code does, since Cargo turns them on in every binary a test build
+makes, the browser suites' real engine and monokulo among them. Lint fails
+on any `cfg(not(...))` naming `test-support`, the shape a replaced
+behaviour takes.
 
 ### Generated engine tests
 
@@ -700,9 +720,9 @@ primitive tests remain in `shared`; these properties exercise their delivery wir
 # Local default budget, including fixed regressions and complete fault/crash sweeps.
 cargo nextest run -p engine --lib --locked -E 'test(/^webhook_delivery::/)'
 
-# Larger, reproducible exploration with the optional ZMQ engine configuration.
+# Larger, reproducible exploration.
 PROPTEST_CASES=128 PROPTEST_RNG_SEED=83 cargo nextest run -p engine --lib --locked \
-  --features zmq -E 'test(/^webhook_delivery::/)'
+  -E 'test(/^webhook_delivery::/)'
 
 # All three new target suites together.
 cargo nextest run -p engine --lib --locked -E \
@@ -745,7 +765,7 @@ these suites through `::properties::`. Run the new surfaces or the complete suit
 ```sh
 PROPTEST_CASES=128 PROPTEST_RNG_SEED=47 ENGINE_PROOF_CASES=16 \
   cargo nextest run -p engine --lib --locked -E 'test(::properties::)'
-cargo nextest run -p engine -p shared --lib --locked --features zmq
+cargo nextest run -p engine -p shared --lib --locked
 ```
 
 Coverage-guided fuzzing lives in the isolated `fuzz/` Cargo workspace. Its lockfile
@@ -780,7 +800,6 @@ cargo fuzz run --fuzz-dir fuzz inputs fuzz/artifacts/inputs/crash-HASH
 
 # Enumerate every serialized policy event ordering.
 cargo test --manifest-path fuzz/Cargo.toml --locked --test interleavings
-cargo test --manifest-path fuzz/Cargo.toml --locked --features zmq --test interleavings
 ```
 
 The fuzz runner copies reviewed `fuzz/seeds/` into ignored mutable corpora, supplies
@@ -941,9 +960,9 @@ panics, stop signals and configuration saves. Notifications never substitute for
 money evidence. Transport histories use bounded real deadlines; they do not enumerate
 all OS/socket interleavings.
 
-Run `cargo test -p engine --lib node_events::` and add `--features zmq` for transport
-properties; `ENGINE_FUZZ_SEED=167 cargo xtask engine fuzz notifications 60` runs the
-shared wait oracle (append `zmq` for that build). Both daily matrices discover it.
+Run `cargo test -p engine --lib node_events::` (the default build has `zmq`, so the
+transport properties run too); `ENGINE_FUZZ_SEED=167 cargo xtask engine fuzz notifications 60`
+runs the shared wait oracle. The daily jobs discover it.
 
 
 ## Engine authorization properties
@@ -980,8 +999,8 @@ requests, not retroactive cancellation of an already authenticated stream/job.
 Primitive token hashing remains tested in `shared`, outside this engine package.
 
 Run `PROPTEST_CASES=128 PROPTEST_RNG_SEED=181 cargo test -p engine --lib
-http::tests::properties::authorization` (append `--features zmq` before the filter).
-The existing daily default/ZMQ property filter includes all new families.
+http::tests::properties::authorization`.
+The existing daily property filter includes all new families.
 
 ## Combined production-worker concurrency histories
 
@@ -997,7 +1016,7 @@ recompute work, and exactly one paid webhook. Reopening preserves the payment.
 The scan gate covers both batched engine scans and single HTTP lookup scans.
 
 Run `PROPTEST_CASES=128 cargo test -p engine --lib
-work::tests::properties::concurrency` with default and `--features zmq` builds.
+work::tests::properties::concurrency`.
 These properties use explicit barriers, not sleeps to guess whether work started;
 they cover these controlled interleavings rather than every OS thread schedule.
 
@@ -1052,9 +1071,8 @@ partial payments and the recorded sweep);
 `REGENERATE_PORTFOLIO_SEEDS=1` rewrites them. `portfolio` is the ninth default/ZMQ
 daily fuzz target; its corpus and failures use the existing runner/artifact workflow.
 
-Run `PROPTEST_CASES=64 cargo test -p engine --lib portfolio_histories`, adding
-`--features zmq` for that build. Run `ENGINE_FUZZ_SEED=229 cargo xtask engine fuzz
-portfolio 900` and append `zmq` for fuzzing that configuration.
+Run `PROPTEST_CASES=64 cargo test -p engine --lib portfolio_histories`. Run
+`ENGINE_FUZZ_SEED=229 cargo xtask engine fuzz portfolio 900` to fuzz it.
 
 ## Named mutation checks: testing the tests
 
@@ -1097,9 +1115,7 @@ Tracked local edits and new engine modules are snapshotted for pre-commit checks
 
 ```sh
 cargo test -p xtask mutations
-cargo xtask engine mutations --cases 32 --seed 241
-# Optional single configuration:
-cargo xtask engine mutations --features zmq --cases 64
+cargo xtask engine mutations --features default --cases 32 --seed 241
 ```
 
 JSON and logs live in ignored `target/engine-mutations/`, with compiled artifacts
@@ -1133,7 +1149,7 @@ webhook, delivery fails once through actual HTTP, retries preserve exact event
 bytes, and every expected event eventually reaches its tenant's destination.
 
 Run `cargo test -p engine --lib portfolio_histories` and `cargo test -p engine --lib
-combined_portfolio`; append `--features zmq` for that build. The existing portfolio
+combined_portfolio`. The existing portfolio
 fuzzer and daily matrix automatically run this same expanded harness; reviewed
 `combined-worker-0`/`combined-worker-1` seeds force the combined interactions.
 
@@ -1161,9 +1177,9 @@ and proof holds must produce no paid webhook; subsequent canonical proof catch-u
 must settle once, enqueue exactly one paid event, drain recomputes, and survive a
 DB reopen. This is controlled generation replacement, not an OS scheduling proof.
 
-Run the `concurrency` and `mempool` engine tests (both feature builds), and
-`cargo test --manifest-path fuzz/Cargo.toml --locked --test interleavings` (append
-`--features zmq`). Existing daily property and event-order jobs discover the expansions.
+Run the `concurrency` and `mempool` engine tests, and
+`cargo test --manifest-path fuzz/Cargo.toml --locked --test interleavings`. Existing
+daily property and event-order jobs discover the expansions.
 
 ## Recorded and generated paying RingCT histories
 

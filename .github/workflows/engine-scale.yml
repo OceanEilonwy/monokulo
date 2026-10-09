@@ -1,55 +1,15 @@
-name: Engine scale correctness
+name: Engine scale measurements
 on:
   schedule:
     - cron: '0 18 * * 6'
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'crates/engine/**'
-      - 'crates/key-custody/**'
-      - 'crates/shared/**'
-      - 'Cargo.lock'
-      - 'Cargo.toml'
-      - '.config/nextest.toml'
-      - 'xtask/src/exploration.rs'
-      - '.github/workflows/engine-scale.yml'
-      - 'xtask/src/stress.rs'
-      - 'xtask/stress/scenario_scale_v1.json'
 permissions:
   contents: read
 jobs:
-  scale:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        features: [default, zmq]
-    env:
-      PROPTEST_CASES: '32'
-      PROPTEST_RNG_SEED: ${{ github.run_id }}
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
-      - name: Generated cases and all large fixtures
-        run: cargo xtask engine scale '${{ matrix.features }}'
-      - name: Preserve replay settings, failures and reports
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: engine-scale-${{ matrix.features }}-${{ github.run_id }}
-          path: |
-            target/engine-scale/
-            crates/engine/proptest-regressions/
   measurements:
     # Capacity and latency depend on hardware. They are recorded for review;
-    # the correctness matrix above is the machine-independent merge check.
-    if: github.event_name != 'pull_request'
+    # the scale tests (tests.yml's Engine scale tests) are the
+    # machine-independent merge check.
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

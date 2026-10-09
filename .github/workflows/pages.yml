@@ -1,9 +1,9 @@
 # The GitHub Pages site, deployed from one place:
 #   /           the landing page and the signed apk repository, as the
-#               OpenWrt workflow last built them on main (its site artifact)
+#               Release workflow last built them on main (its site artifact)
 #   /quality/   the quality report: tests, coverage, property tests, fuzzing,
 #               load and screenshots (`cargo xtask pages build`), from the newest
-#               runs on main of CI, the nightly engine property and fuzz
+#               runs on main of Release, the nightly engine property and fuzz
 #               explorations, and the weekly engine scale measurements
 #
 # Runs whenever one of those finishes on main, when the report itself changes
@@ -12,20 +12,19 @@
 # the OpenWrt workflow no longer deploys: this workflow republishes its site
 # beside the report.
 #
-# If the OpenWrt site artifact has expired (90 days without a run on main),
-# the build stops rather than take the package repository offline: run the
-# OpenWrt package workflow on main, which brings this one round again.
+# If the OpenWrt site artifact has expired (90 days without a release run on
+# main), the build stops rather than take the package repository offline:
+# run the Release workflow on main, which brings this one round again.
 
 name: Pages
 
 on:
   workflow_run:
     workflows:
-      - CI
-      - OpenWrt package
+      - Release
       - Engine property exploration
       - Engine fuzz exploration
-      - Engine scale correctness
+      - Engine scale measurements
     types: [completed]
     branches: [main]
   # A change to the report itself publishes it with the data already there.

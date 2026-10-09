@@ -1,0 +1,59 @@
+name: Checks
+
+# What a pull request must pass: lint, and every Linux test suite, without
+# coverage (release.yml collects it on main). macOS and Windows run on main
+# before a release; a manual run (Actions > Checks > Run workflow) can add
+# them, or coverage, for any branch.
+#
+# Required checks: Lint / rustfmt and clippy, and each Linux / ... suite.
+
+on:
+  # Every PR, including documentation changes: path-filtered workflows would
+  # leave required checks pending forever.
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      coverage:
+        description: Collect coverage and check the report, as main does
+        type: boolean
+        default: false
+      platforms:
+        description: Also run the Rust tests on macOS and Windows
+        type: boolean
+        default: false
+
+# A newer push to the same pull request replaces its run still going.
+concurrency:
+  group: checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    uses: ./.github/workflows/lint.yml
+
+  linux:
+    name: Linux
+    uses: ./.github/workflows/tests.yml
+    with:
+      os: ubuntu-latest
+      coverage: ${{ inputs.coverage || false }}
+      suites: '["rust", "browser", "woocommerce", "stress", "scale"]'
+      report: ${{ inputs.coverage || false }}
+
+  macos:
+    name: macOS
+    if: inputs.platforms
+    uses: ./.github/workflows/tests.yml
+    with:
+      os: macos-latest
+
+  windows:
+    name: Windows
+    if: inputs.platforms
+    uses: ./.github/workflows/tests.yml
+    with:
+      os: windows-latest
