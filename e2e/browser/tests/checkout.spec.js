@@ -1,5 +1,5 @@
 const path = require('node:path');
-const { test, expect } = require('../coverage-test');
+const { test, expect, pauseClockAt } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
 
@@ -320,8 +320,7 @@ test('real checkout keeps retrying a refused live stream with backoff and then f
   const pageNow = () => page.evaluate(() => Date.now());
   // The page's time stands still from the start: only the test moves it.
   const start = new Date('2026-01-01T00:00:00Z');
-  await page.clock.install({ time: start });
-  await page.clock.pauseAt(start);
+  await pauseClockAt(page, start);
   await page.goto(url);
 
   // Refusal n is retried exactly `delay` ms after the page handled it: not a

@@ -64,4 +64,17 @@ const test = base.test.extend({
   },
 });
 
-module.exports = { ...base, test, installCoverageContext, collectCoverageContext };
+/**
+ * Stops the page's time at `time`, before the page is opened: its timers
+ * fire and its Date moves only when the test moves them (page.clock.runFor).
+ * The clock is installed a minute earlier and paused at `time`: it flows
+ * between the two calls, and pausing at a moment it has already passed
+ * fails ("Cannot fast-forward to the past"), which installing and pausing
+ * at the same moment does under load.
+ */
+async function pauseClockAt(page, time) {
+  await page.clock.install({ time: new Date(time.getTime() - 60_000) });
+  await page.clock.pauseAt(time);
+}
+
+module.exports = { ...base, test, installCoverageContext, collectCoverageContext, pauseClockAt };
