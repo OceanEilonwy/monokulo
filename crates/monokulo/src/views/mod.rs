@@ -593,6 +593,10 @@ pub fn status_indicator(health: Option<Health>, class: &str) -> Markup {
 /// switch is in it: an anonymous visitor has no account to keep a choice
 /// against, and gets `prefers-color-scheme`), or Log in and Sign up. The
 /// row is one height either way (`site.css`, `.site-nav-row`).
+///
+/// The status dot sits in the bar itself, not in the link list, so on a
+/// phone it stays in sight beside the hamburger; on a wider screen CSS
+/// orders it between the links and the account menu.
 fn nav(chrome: &PageChrome) -> Markup {
     html! {
         nav class="site-nav" {
@@ -601,6 +605,7 @@ fn nav(chrome: &PageChrome) -> Markup {
                     (logo_mark(24, "site-nav-logo"))
                     "Monokulo"
                 }
+                (status_indicator(chrome.health, "nav-status-link"))
                 input type="checkbox" id="nav-toggle" class="nav-toggle-checkbox";
                 label for="nav-toggle" class="nav-toggle-label" aria-label="Menu" { "☰" }
                 div class="site-nav-links" {
@@ -613,7 +618,6 @@ fn nav(chrome: &PageChrome) -> Markup {
                         a href="/dashboard/login" { "Log in" }
                         a href="/dashboard/signup" { "Sign up" }
                     }
-                    (status_indicator(chrome.health, "nav-status-link"))
                     @if chrome.logged_in {
                         (account_menu(chrome))
                     }
@@ -623,21 +627,15 @@ fn nav(chrome: &PageChrome) -> Markup {
     }
 }
 
-/// The name the account button shows: the email's part before the `@`.
-fn account_name(email: &str) -> &str {
-    email.split('@').next().unwrap_or(email)
-}
-
-/// Up to two letters for the account button's circle: the first letter of
-/// the first two words of the email's name part (`rachel.dz` is `RD`), or
-/// its first letter alone.
-fn account_initials(email: &str) -> String {
-    account_name(email)
-        .split(['.', '_', '-', '+'])
-        .filter_map(|word| word.chars().find(|c| c.is_alphanumeric()))
-        .take(2)
-        .flat_map(char::to_uppercase)
-        .collect()
+/// A generic person, for the account button: its lines are `currentColor`.
+fn account_icon() -> Markup {
+    html! {
+        svg class="acct-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" {
+            circle cx="12" cy="8" r="4" {}
+            path d="M4 21a8 8 0 0 1 16 0" {}
+        }
+    }
 }
 
 /// Closes an open account menu on a click outside it, or on Escape. Only
@@ -653,10 +651,11 @@ const ACCOUNT_MENU_SCRIPT: &str = r#"(function () {
   });
 })();"#;
 
-/// The account menu: a button with the user's initials and name, opening
-/// a `<details>` (no JavaScript needed) with who they are, Account, their
-/// wallets, the theme switch, the zone times are shown in, and Log out. On
-/// a phone its items sit in the hamburger list instead (`site.css`).
+/// The account menu: a person icon button (named "Account menu", its title
+/// the user's email) opening a `<details>` (no JavaScript needed) with who
+/// they are, Account, their wallets, the theme switch, the zone times are
+/// shown in, and Log out. On a phone its items sit in the hamburger list
+/// instead (`site.css`).
 fn account_menu(chrome: &PageChrome) -> Markup {
     let role = if chrome.is_admin { "Admin" } else { "Merchant" };
     let zone = chrome.clock.name();
@@ -667,10 +666,8 @@ fn account_menu(chrome: &PageChrome) -> Markup {
     };
     html! {
         details class="acct" {
-            summary class="acct-button" aria-label=(format!("Account menu for {}", chrome.email)) {
-                span class="avatar" aria-hidden="true" { (account_initials(&chrome.email)) }
-                span class="acct-name" { (account_name(&chrome.email)) }
-                span class="mk-caret" aria-hidden="true" {}
+            summary class="acct-button" aria-label="Account menu" title=(chrome.email) {
+                (account_icon())
             }
             div class="acct-menu" {
                 div class="acct-who" { strong { (chrome.email) } small { (role) } }
@@ -800,19 +797,29 @@ mod tests {
     }
 
     #[test]
-    fn an_admin_sees_admin_links_then_the_status_dot_then_their_account_menu() {
+    fn an_admin_sees_the_status_dot_in_the_bar_then_admin_links_then_their_account_menu() {
         let html = nav(&signed_in("rachel.dz@example.org", true, Theme::Dark)).into_string();
         let at = |needle: &str| {
             html.find(needle)
                 .unwrap_or_else(|| panic!("{needle} in {html}"))
         };
+        // The dot is in the bar itself, before the hamburger and the link
+        // list, so a phone shows it beside the hamburger; site.css orders
+        // it after the links on a wider screen.
+        let status = at(r#"<a href="/status" class="nav-status-link""#);
+        let hamburger = at(r#"<label for="nav-toggle""#);
+        let links = at(r#"<div class="site-nav-links">"#);
         let admin = at(r#"href="/dashboard/admin/settings">Admin<"#);
         let invites = at(r#"href="/dashboard/admin/invites">Invites<"#);
         let logs = at(r#"href="/dashboard/admin/logs">Logs<"#);
-        let status = at(r#"href="/status""#);
         let menu = at(r#"<details class="acct">"#);
         assert!(
-            admin < invites && invites < logs && logs < status && status < menu,
+            status < hamburger
+                && hamburger < links
+                && links < admin
+                && admin < invites
+                && invites < logs
+                && logs < menu,
             "{html}"
         );
         // The brand is the way to the dashboard: no separate link, and no
@@ -829,10 +836,14 @@ mod tests {
     fn the_account_menu_holds_who_account_wallets_theme_times_and_log_out_in_that_order() {
         let html = nav(&signed_in("rachel.dz@example.org", true, Theme::Dark)).into_string();
         let menu = &html[html.find(r#"<div class="acct-menu">"#).expect(&html)..];
+        // The button is a person icon only: named for what it opens, the
+        // email in its title.
+        let button = &html[html.find("<summary").expect(&html)..html.find("</summary>").unwrap()];
         assert!(
-            html.contains(r#"<span class="avatar" aria-hidden="true">RD</span><span class="acct-name">rachel.dz</span>"#),
-            "{html}"
+            button.starts_with(r#"<summary class="acct-button" aria-label="Account menu" title="rachel.dz@example.org"><svg class="acct-icon""#),
+            "{button}"
         );
+        assert!(!button.contains("rachel.dz<"), "no name shown: {button}");
         let at = |needle: &str| {
             menu.find(needle)
                 .unwrap_or_else(|| panic!("{needle} in {menu}"))
@@ -862,10 +873,6 @@ mod tests {
 
         let merchant = nav(&signed_in("ann@example.org", false, Theme::System)).into_string();
         assert!(merchant.contains("<small>Merchant</small>"), "{merchant}");
-        assert!(
-            merchant.contains(r#"<span class="avatar" aria-hidden="true">A</span>"#),
-            "{merchant}"
-        );
         assert!(!merchant.contains("/dashboard/admin"), "{merchant}");
     }
 
@@ -890,33 +897,20 @@ mod tests {
     /// #1: the bar is one height whatever it holds, so a signed-out page's
     /// is as tall as a signed-in one's (its tallest control, 2em, plus the
     /// row's padding). #9: the status dot's link is a 2em box whose
-    /// `::before` makes a 44px target.
+    /// `::before` makes a 44px target. The account button is 2em too.
     #[test]
     fn the_nav_row_keeps_one_height_and_the_status_dot_is_a_44px_target() {
         let css = include_str!("site.css");
-        let row = &css[css.find(".site-nav-row {").expect("the nav row's rule")..];
-        assert!(
-            row[..row.find('}').unwrap()].contains("min-height: calc(2em + 1.4rem);"),
-            "{row}"
-        );
-        let status = &css[css
-            .find(".nav-status-link {")
-            .expect("the status link's rule")..];
-        assert!(
-            status[..status.find('}').unwrap()].contains("width: 2em; height: 2em;"),
-            "{status}"
-        );
+        let rule = |selector: &str| {
+            let at = &css[css.find(selector).unwrap_or_else(|| panic!("{selector}"))..];
+            at[..at.find('}').unwrap()].to_string()
+        };
+        assert!(rule(".site-nav-row {").contains("min-height: calc(2em + 1.4rem);"));
+        assert!(rule(".nav-status-link {").contains("width: 2em; height: 2em;"));
+        assert!(rule(".acct > summary {").contains("width: 2em; height: 2em;"));
         assert!(css.contains(
             r#".nav-status-link::before { content: ""; position: absolute; inset: min(0px, calc((2em - 44px) / 2)); }"#
         ));
-    }
-
-    #[test]
-    fn initials_come_from_the_first_two_words_of_the_email() {
-        assert_eq!(account_initials("rachel.dz@example.org"), "RD");
-        assert_eq!(account_initials("ann@example.org"), "A");
-        assert_eq!(account_initials("j_smith+shop@example.org"), "JS");
-        assert_eq!(account_initials("4ever@example.org"), "4");
     }
 
     #[test]

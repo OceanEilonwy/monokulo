@@ -580,7 +580,6 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 .site-nav-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   padding-top: 0.7rem;
   padding-bottom: 0.7rem;
   /* One height signed in or out, whatever the bar holds: its tallest
@@ -589,7 +588,8 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
   flex-wrap: wrap;
   position: relative;
 }
-.site-nav-brand { color: var(--chrome-ink); text-decoration: none; font-weight: 700; letter-spacing: -0.02em; display: inline-flex; align-items: center; gap: 0.45em; }
+/* The brand on the left; everything after it on the right. */
+.site-nav-brand { margin-right: auto; color: var(--chrome-ink); text-decoration: none; font-weight: 700; letter-spacing: -0.02em; display: inline-flex; align-items: center; gap: 0.45em; }
 /* The logo mark (`views::logo_mark`): its lines are `currentColor`, so the
    one inline SVG suits either theme's bar; its facets are the `--logo-*` roles. */
 .site-nav-logo { display: block; }
@@ -613,17 +613,26 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 .nav-status-link { position: relative; display: inline-flex; align-items: center; justify-content: center; align-self: center; width: 2em; height: 2em; border-radius: 50%; text-decoration: none !important; }
 .nav-status-link::before { content: ""; position: absolute; inset: min(0px, calc((2em - 44px) / 2)); }
 .nav-status-link:hover { background: var(--surface-sunken); }
+/* The dot is in the bar itself, not the link list, so a phone shows it
+   beside the hamburger. On a wider screen the list's items join the bar,
+   and the dot goes between the links and the account menu. */
+@media (min-width: 641px) {
+  .site-nav-links { display: contents; }
+  .site-nav-links > * { order: 1; }
+  .site-nav-row > .nav-status-link { order: 2; margin-left: 1.2em; }
+  .site-nav-links > .acct { order: 3; }
+}
 /* The account menu (`views::account_menu`): a <details>, so it opens
    without JavaScript. */
 .acct { position: relative; margin-left: 1.2em; }
-.acct > summary { list-style: none; display: inline-flex; align-items: center; gap: var(--space-sm); height: 2em; max-width: 14em; padding: 0 var(--space-sm) 0 2px; border: 1px solid var(--line-strong); border-radius: 999px; cursor: pointer; font-weight: 600; }
+/* The account button: a person icon in a 2em circle (the bar's height
+   stays the same), with a 44px target like the status dot's. */
+.acct > summary { position: relative; list-style: none; display: flex; align-items: center; justify-content: center; width: 2em; height: 2em; padding: 0; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--chrome-ink); cursor: pointer; }
+.acct > summary::before { content: ""; position: absolute; inset: min(0px, calc((2em - 44px) / 2)); }
 .acct > summary::-webkit-details-marker { display: none; }
-.acct > summary:hover { border-color: var(--ink); background: var(--btn-hover-bg); }
+.acct > summary:hover, .acct[open] > summary { border-color: var(--ink); background: var(--btn-hover-bg); }
 .acct > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.acct-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.acct > summary .mk-caret { margin-left: var(--space-xs); }
-.acct[open] > summary .mk-caret { transform: translateY(25%) rotate(-135deg); }
-.avatar { display: inline-flex; align-items: center; justify-content: center; flex: none; width: calc(2em - 6px); height: calc(2em - 6px); border-radius: 50%; background: var(--tint-highlight); color: var(--ink); font-size: 0.75em; font-weight: 800; }
+.acct-icon { width: 1.15em; height: 1.15em; display: block; }
 .acct-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 25; width: 17rem; padding: var(--space-xs); background: var(--paper-raised); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius-md); box-shadow: 0 6px 24px var(--popup-shadow); }
 .acct-who { padding: var(--space-sm) var(--space-md); border-bottom: 1px solid var(--line); margin-bottom: var(--space-xs); overflow-wrap: anywhere; }
 .acct-who small { display: block; color: var(--muted); }
@@ -764,7 +773,8 @@ a.order-id { display: inline-block; max-width: 11em; }
   .site-nav-links { align-items: stretch; gap: 0; border-top: 1px solid var(--line); }
   .site-nav-links > a, .site-nav-links .acct-menu a, .acct-menu .menu-item, .site-nav-links .acct-menu .nav-link-button { display: flex; align-items: center; min-height: 44px; }
   .site-nav-links > a { border-bottom: 1px solid var(--line); }
-  .site-nav-links .nav-status-link { align-self: flex-start; margin: var(--space-xs) 0; }
+  /* The status dot stays in the bar, left of the hamburger. */
+  .site-nav-row > .nav-status-link { margin-right: var(--space-sm); }
   .acct { margin-left: 0; }
   .acct > summary { margin: var(--space-sm) 0; }
   .acct-menu { position: static; width: auto; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: none; color: inherit; }
