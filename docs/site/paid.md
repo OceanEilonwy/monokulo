@@ -20,21 +20,17 @@ then sends a `POST` for every change of an order's status
   "event": "order.paid",
   "event_id": "evt_6f1c…",
   "order_id": "pay_91b2…",
-  "merchant_order_id": "gm-1042",
   "status": "paid",
-  "amount": "0.041200000000",
-  "currency": "XMR",
   "created_at": 1791400000
 }
 ```
 
-- `merchant_order_id` is your own id from `createOrder` (absent when the
-  order was made without one).
-- `amount` and `currency` are what the order asks for in XMR: Monokulo's
-  engine prices every order in XMR, so `currency` is always `"XMR"` and
-  `amount` has 12 decimals.
+- `order_id` is Monokulo's id for the order: `createOrder` gave it to your
+  page as `orderId`. Keep it with your own order when you make one, so the
+  webhook can find it.
 - A double-spend later gets its own `order.double_spend_detected` event (and
-  `order.double_spend_reversed` if it was wrong), with the `txid`.
+  `order.double_spend_reversed`, with the `txid`, if it was wrong).
+- Richer fields (the shop's own order id, the fiat price with its exchange-rate source and rate, the store) arrive when Monokulo takes over webhook delivery from the engine, which is planned.
 
 Before trusting a delivery:
 

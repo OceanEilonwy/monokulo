@@ -2669,15 +2669,6 @@ async fn every_webhook_payload_carries_a_stable_event_id_and_a_timestamp() {
         first_payload["created_at"].as_i64().is_some(),
         "and a timestamp to bound replays with"
     );
-    // The order as the merchant knows it: its amount and currency (the
-    // engine prices in XMR only), and no merchant order id, since this order
-    // was made without one.
-    assert_eq!(first_payload["amount"], serde_json::json!("0.000000000001"));
-    assert_eq!(first_payload["currency"], serde_json::json!("XMR"));
-    assert!(
-        first_payload.get("merchant_order_id").is_none(),
-        "an order made without a merchant order id has none: {first_payload}"
-    );
 
     // A retry of the same delivery re-sends the identical, identically-signed
     // body - the id must identify the *event*, not the attempt.
