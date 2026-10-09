@@ -433,21 +433,16 @@
 
   if (!window.customElements) return;
 
-  define("mk-setting", class extends HTMLElement {
-    get changed() { return settingChanged(this); }
-  });
-  define("mk-settings-card", class extends HTMLElement {
-    get changes() { return this.hidden ? 0 : cardChanges(this); }
-    discard() { touched = true; discardCard(this); update(); }
-  });
+  // A setting, a card and the bar are marked by the form; defined, the bar
+  // hides until there is something to save (site.css, mk-save-bar:defined).
+  define("mk-setting", class extends HTMLElement {});
+  define("mk-settings-card", class extends HTMLElement {});
   define("mk-save-bar", class extends HTMLElement {});
   define("mk-settings-form", class extends HTMLElement {
     connectedCallback() {
       var self = this;
       setTimeout(function () { if (self.isConnected) settle(); }, 0);
     }
-    get changes() { return update(); }
-    discardAll() { discardAll(); }
     // A page script changed something a setting doesn't hold (a node row
     // moved).
     changed() { changedNow(); }
