@@ -25,7 +25,7 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
   await expectSaved(page);
 
   // 3. The status page shows stagenet, reachable, with no restart.
-  await reloadUntil(page, base + '/status', (html) => html.includes('<h2>stagenet</h2>') && html.includes('reachable'));
+  await reloadUntil(page, base + '/status', (html) => html.includes('<h2>Stagenet</h2>') && html.includes('reachable'));
 
   // 4. A stagenet store can be connected.
   await createStore(page, 'shop.example.com');

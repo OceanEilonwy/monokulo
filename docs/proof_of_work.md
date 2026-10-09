@@ -210,8 +210,24 @@ The exclusions are in memory and found again in the first round.
 (`anchoring`, `following`, `held`), a sentence, the anchor and how many
 nodes agreed, the proven tip, the ceiling, each node's verdict, height and
 whether it is excluded, blocks checked, and the hashing (JIT or not, mean
-times, keys held). Monokulo shows it to admins only, under the network on
-the status page, with the "Take a new anchor" button while held.
+times, keys held). Monokulo shows it to admins only, in the network's card
+on the status page (`views::status`):
+
+- the state as a tag beside the network's name ("proof checked", "finding
+  an anchor", "settlement held");
+- each node's verdict in the Nodes table's Proof of work column, what it
+  was caught on under it, and "left out" in its Use column;
+- while following, one sentence ("Orders settle on blocks up to …, proven
+  by the engine itself.") with a chip saying how far behind the tip that
+  is, over a window of the last 30 blocks at a fixed scale: proven blocks
+  filled, ones only seen outlined, the block orders settle up to ringed
+  and the tip marked. The tip is the highest a node on the proven chain or
+  past it reports, never a caught node's claim. The chip turns amber past
+  5 behind;
+- while held, the engine's reason and the "Take a new anchor" button in
+  one box, in place of the window;
+- the anchor, blocks checked, hashing, keys and last check folded under
+  "How it's checked".
 
 ## Edge cases
 
