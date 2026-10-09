@@ -452,11 +452,72 @@ pub fn state_badge(status: impl Into<DisplayStatus> + Copy) -> Markup {
 /// whole id stays in the page, for find-in-page, and in `title`.
 pub fn order_id_short(order_id: &str) -> Markup {
     let id = order_id.strip_prefix("order_").unwrap_or(order_id);
-    let split = id.char_indices().rev().nth(5).map_or(0, |(i, _)| i);
+    mid_ellipsis(id, 6, order_id)
+}
+
+/// A wallet address as [`order_id_short`] shows an id: its start, an
+/// ellipsis in the middle when it doesn't fit, and its last seven
+/// characters whole. The whole address stays in the page and in `title`.
+pub fn address_short(address: &str) -> Markup {
+    mid_ellipsis(address, 7, address)
+}
+
+/// `text` cut in the middle when it doesn't fit (`.mid-ellipsis`), its
+/// last `tail` characters always shown.
+fn mid_ellipsis(text: &str, tail: usize, title: &str) -> Markup {
+    let split = text
+        .char_indices()
+        .rev()
+        .nth(tail - 1)
+        .map_or(0, |(i, _)| i);
     html! {
-        span class="mid-ellipsis" title=(order_id) {
-            span class="mid-head" { (&id[..split]) }
-            span class="mid-tail" { (&id[split..]) }
+        span class="mid-ellipsis" title=(title) {
+            span class="mid-head" { (&text[..split]) }
+            span class="mid-tail" { (&text[split..]) }
+        }
+    }
+}
+
+/// A Monero network as a badge (`.tag-network`), the same wherever a
+/// network is shown: the word always, with an icon and an edge to back it
+/// up. Mainnet (real money) has the brand's orange tint and a solid edge;
+/// a test network a neutral tint and a dashed edge.
+pub fn network_badge(network: &str) -> Markup {
+    if network == "mainnet" {
+        network_tag(true, "Mainnet")
+    } else {
+        network_tag(false, &network_word(network))
+    }
+}
+
+/// The badge for the test networks together: the wallets list's fold.
+pub fn test_networks_badge() -> Markup {
+    network_tag(false, "Test networks")
+}
+
+/// A network's name as a word: "Stagenet".
+fn network_word(network: &str) -> String {
+    let mut chars = network.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// The icons of [`network_badge`]: a coin marked M for mainnet, a flask
+/// for a test network. `static/mk-select.js` draws the same two.
+fn network_tag(main: bool, word: &str) -> Markup {
+    html! {
+        span class=(if main { "tag-network is-main" } else { "tag-network is-test" }) {
+            svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" {
+                @if main {
+                    circle cx="12" cy="12" r="9" {}
+                    path d="M7 15V9l5 5 5-5v6" {}
+                } @else {
+                    path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3" {}
+                    path d="M7.5 15h9" {}
+                }
+            }
+            (word)
         }
     }
 }
@@ -748,6 +809,40 @@ mod tests {
         assert!(order_id_short("abc")
             .into_string()
             .contains(r#"<span class="mid-head"></span><span class="mid-tail">abc</span>"#));
+    }
+
+    #[test]
+    fn an_address_keeps_its_last_seven_characters_whole_and_all_of_it_in_the_page() {
+        let address = "4AdUndXHHZ6cfufTMvppY6JwXNouMBzSkbLYfpAV5Usx3skxNgYeYTRj5UzqtReoS44qo9mtmXCqY45DJ852K5Jv2684Rge";
+        let html = address_short(address).into_string();
+        assert_eq!(
+            html,
+            format!(
+                r#"<span class="mid-ellipsis" title="{address}"><span class="mid-head">{}</span><span class="mid-tail">2684Rge</span></span>"#,
+                &address[..address.len() - 7]
+            )
+        );
+    }
+
+    #[test]
+    fn a_network_badge_always_says_the_network_and_marks_mainnet_apart() {
+        let main = network_badge("mainnet").into_string();
+        assert!(
+            main.starts_with(r#"<span class="tag-network is-main"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">"#),
+            "{main}"
+        );
+        assert!(main.ends_with("</svg>Mainnet</span>"), "{main}");
+        for (network, word) in [("stagenet", "Stagenet"), ("testnet", "Testnet")] {
+            let test = network_badge(network).into_string();
+            assert!(
+                test.starts_with(r#"<span class="tag-network is-test">"#),
+                "{test}"
+            );
+            assert!(test.ends_with(&format!("</svg>{word}</span>")), "{test}");
+        }
+        assert!(test_networks_badge()
+            .into_string()
+            .ends_with(r#"</svg>Test networks</span>"#));
     }
 
     #[test]

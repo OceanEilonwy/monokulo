@@ -371,9 +371,17 @@ fn both_dark_blocks_agree_and_only_override_light_tokens() {
     );
 }
 
+/// A token's colour as a 6-digit hex: `var()` followed, and a tint's
+/// `color-mix(in srgb, A P%, B)` mixed as the browser mixes it.
 fn resolve(tokens: &BTreeMap<String, String>, value: &str) -> String {
     let mut value = value.trim().to_string();
     for _ in 0..10 {
+        if let Some(args) = value
+            .strip_prefix("color-mix(in srgb,")
+            .and_then(|v| v.strip_suffix(')'))
+        {
+            return mix(tokens, args);
+        }
         match value.strip_prefix("var(").and_then(|v| v.strip_suffix(')')) {
             Some(name) => {
                 value = tokens
@@ -386,6 +394,34 @@ fn resolve(tokens: &BTreeMap<String, String>, value: &str) -> String {
         }
     }
     panic!("{value}: too many var() hops")
+}
+
+/// `A P%, B` of a `color-mix(in srgb, ...)`: P% of A and the rest of B.
+fn mix(tokens: &BTreeMap<String, String>, args: &str) -> String {
+    let (first, second) = args
+        .split_once(',')
+        .unwrap_or_else(|| panic!("color-mix({args}) needs two colours"));
+    let (first, percent) = first
+        .trim()
+        .rsplit_once(' ')
+        .unwrap_or_else(|| panic!("color-mix({args}) needs a percentage on its first colour"));
+    let share = percent
+        .trim_end_matches('%')
+        .parse::<f64>()
+        .unwrap_or_else(|_| panic!("color-mix({args}): {percent} isn't a percentage"))
+        / 100.0;
+    let (a, b) = (resolve(tokens, first), resolve(tokens, second));
+    let channel = |hex: &str, i: usize| {
+        u8::from_str_radix(&hex.trim_start_matches('#')[i..i + 2], 16).unwrap() as f64
+    };
+    let mixed: String = [0, 2, 4]
+        .iter()
+        .map(|&i| {
+            let value = channel(&a, i) * share + channel(&b, i) * (1.0 - share);
+            format!("{:02x}", value.round() as u8)
+        })
+        .collect();
+    format!("#{mixed}")
 }
 
 fn luminance(hex: &str) -> f64 {
@@ -439,6 +475,13 @@ fn text_and_controls_are_legible_in_both_themes() {
         ("--control-border", "--paper", 3.0),
         ("--btn-border", "--btn-bg", 3.0),
         ("--focus-ring", "--paper", 3.0),
+        // A network's badge: its word on its tint, its edge on the page.
+        ("--network-ink", "--network-main-bg", 4.5),
+        ("--network-ink", "--network-test-bg", 4.5),
+        ("--network-main-edge", "--paper", 3.0),
+        ("--network-main-edge", "--paper-raised", 3.0),
+        ("--network-test-edge", "--paper", 3.0),
+        ("--network-test-edge", "--paper-raised", 3.0),
         // The resource charts' layers are graphics (WCAG 1.4.11).
         ("--chart-engine", "--paper-raised", 3.0),
         ("--chart-monokulo", "--paper-raised", 3.0),
@@ -503,4 +546,13 @@ fn the_checks_catch_what_they_are_for() {
     assert!(!custom_properties_declared(":root { --warning: #7d5e00; }").contains("--warn"));
     assert!(custom_properties_declared("style={{ '--progress': x }}").contains("--progress"));
     assert!((contrast("#000000", "#ffffff") - 21.0).abs() < 0.01);
+    let tokens: BTreeMap<String, String> = [
+        ("--a", "#ff6600"),
+        ("--b", "#ffffff"),
+        ("--tint", "color-mix(in srgb, var(--a) 20%, var(--b))"),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    assert_eq!(resolve(&tokens, "var(--tint)"), "#ffe0cc");
 }
