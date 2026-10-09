@@ -223,7 +223,7 @@ async fn times_follow_the_zone_a_merchant_picks_or_else_their_browsers() {
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(
-        html.contains(r#"<section id="card-time" class="settings-card is-failed""#),
+        html.contains(r#"<mk-settings-card id="card-time" class="settings-card is-failed""#),
         "{html}"
     );
     assert!(html.contains("Pick a time zone from the list."), "{html}");
@@ -344,7 +344,7 @@ async fn a_password_change_needs_the_current_one_and_logs_out_every_other_sessio
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(html.contains("That isn't your current password."), "{html}");
     assert!(
-        html.contains(r#"<section id="card-password" class="settings-card is-failed""#),
+        html.contains(r#"<mk-settings-card id="card-password" class="settings-card is-failed""#),
         "{html}"
     );
 

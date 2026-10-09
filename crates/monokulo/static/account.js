@@ -4,18 +4,20 @@
 // address and the old, and the new one typed again. Once they match, the
 // form is sent with it, and the save goes straight through.
 //
-// Loaded before admin-settings.js: a save this holds back never reaches
-// that script, so the page still guards the unsaved change.
+// Loaded before the settings components (static/settings-form.js): a save
+// this holds back never reaches them, so the page still guards the unsaved
+// change.
 (function () {
   "use strict";
 
   function norm(value) { return value.trim().toLowerCase(); }
 
-  // Whether the profile form's email differs from the one saved.
+  // Whether the profile form's email differs from the one saved (the
+  // box's data-saved after a refused save, its default value otherwise).
   function newEmail(form) {
     var box = form.querySelector("[data-email-input]");
     if (!box) return null;
-    var saved = form.getAttribute("data-saved-email") || "";
+    var saved = box.hasAttribute("data-saved") ? box.getAttribute("data-saved") : box.defaultValue;
     return norm(box.value) !== norm(saved) ? norm(box.value) : null;
   }
 

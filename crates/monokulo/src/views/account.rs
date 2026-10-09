@@ -1,19 +1,17 @@
 //! `GET /account` - the Account page (`http::account`): a tab each for the
 //! profile (email, theme, time zone, language), wallets and security.
 //!
-//! Its settings are cards with one bottom save bar and a toast, as on the
-//! admin settings page (`views::admin`, `static/admin-settings.js`, which
-//! marks unsaved changes and offers Discard here too): the same classes and
-//! data attributes, so the two can become one set of components later.
-//! Saving posts the tab's form and reloads the page (the theme, the email
-//! and the zone are in the nav too), so it works the same with or without
-//! JavaScript. An email change asks first: a dialog with JavaScript
-//! (`static/account.js`), a page of its own without ([`email_confirm_page`]).
+//! Its settings are the settings components (`views::settings`): cards in
+//! one form, one bottom save bar and a toast. Saving posts the tab's form
+//! and reloads the page (the theme, the email and the zone are in the nav
+//! too), so it works the same with or without JavaScript. An email change
+//! asks first: a dialog with JavaScript (`static/account.js`), a page of its
+//! own without ([`email_confirm_page`]).
 
 use maud::{html, Markup};
 
-use super::admin::{save_bar_frame, toast_region, Toast, ToastKind};
 use super::controls::Choice;
+use super::settings::{toast_region, Field, Save, Toast, ToastKind};
 use super::wallets::{RetiredListItem, WalletListItem};
 use super::{layout, script, Load, PageChrome};
 use crate::db::Theme;
@@ -94,7 +92,7 @@ impl Card {
 
     /// Its element id: the account menu links to `card-time`.
     pub fn card_id(self) -> String {
-        format!("card-{}", self.id())
+        super::settings::card_id(self.id())
     }
 
     fn title(self) -> &'static str {
@@ -164,10 +162,8 @@ impl AccountViewModel {
     /// The toast the save leaves.
     fn toast(&self) -> Option<Toast> {
         let toast = |kind, title: &str, lines: Vec<String>| Toast {
-            kind,
-            title: title.to_string(),
             lines,
-            show: None,
+            ..Toast::new(kind, title)
         };
         Some(match self.outcome.as_ref()? {
             Outcome::Unchanged => toast(
@@ -200,13 +196,9 @@ impl AccountViewModel {
 /// Appearance card's, and the sign-up form's. `saved` is the theme as
 /// saved, for a form that marks unsaved changes.
 pub fn theme_choice(selected: Theme, saved: Option<Theme>, help: &str) -> Markup {
-    html! {
-        fieldset class="setting-field" {
-            legend class="setting-label-row" {
-                span class="setting-label" { "Theme" }
-                span class="changed-mark" { "changed" }
-            }
-            p class="field-help" { (help) }
+    Field::group("Theme", "theme-label")
+        .help(None, html! { (help) })
+        .render(html! {
             div class="themes" {
                 @for (theme, label) in [(Theme::System, "System"), (Theme::Light, "Light"), (Theme::Dark, "Dark")] {
                     label class="radio-card" {
@@ -217,47 +209,17 @@ pub fn theme_choice(selected: Theme, saved: Option<Theme>, help: &str) -> Markup
                     }
                 }
             }
-        }
-    }
+        })
 }
 
-/// A card's heading row and body, as the admin page draws one: its name,
-/// "Not saved" after a refused save, "Saved" after a save, and (with
-/// JavaScript) its unsaved changes and a Discard button.
+/// A card as the last save left it: "Not saved" and why after a refused
+/// save, "Saved" after a save.
 fn card(data: &AccountViewModel, card: Card, body: Markup) -> Markup {
     let failure = data.failure(card);
-    html! {
-        section id=(card.card_id()) class={ "settings-card" @if failure.is_some() { " is-failed" } }
-            data-card=(card.id()) aria-labelledby=(format!("{}-title", card.card_id())) {
-            header class="card-head" {
-                h3 id=(format!("{}-title", card.card_id())) { (card.title()) }
-                span class="card-state" data-card-state {
-                    @if failure.is_some() { span class="badge badge-error" { "Not saved" } }
-                }
-                span class="card-spacer" {}
-                @if data.was_saved(card) {
-                    span class="card-meta card-saved" data-card-saved { "Saved" }
-                }
-                button type="button" class="card-discard js-only" data-card-discard hidden { "Discard" }
-            }
-            div class="card-body" {
-                @if let Some(message) = failure {
-                    p class="error" role="alert" { (message) }
-                }
-                (body)
-            }
-        }
-    }
-}
-
-/// A field's label row: its name and the mark an unsaved change shows.
-fn label_row(id: &str, label: &str) -> Markup {
-    html! {
-        div class="setting-label-row" {
-            label class="setting-label" for=(id) { (label) }
-            span class="changed-mark" { "changed" }
-        }
-    }
+    super::settings::Card::new(card.id(), card.title())
+        .failed(failure.is_some(), failure)
+        .saved(data.was_saved(card).then_some(""), false)
+        .render(body)
 }
 
 /// The save bar: what saving does, or why the last save didn't.
@@ -271,7 +233,7 @@ fn save_bar(data: &AccountViewModel, about: &str) -> Markup {
             _ => (about),
         }
     };
-    save_bar_frame(data.refused(), false, message, &data.tab.href())
+    super::settings::save_bar(data.refused(), false, message, &data.tab.href())
 }
 
 fn profile_panel(data: &AccountViewModel) -> Markup {
@@ -281,44 +243,45 @@ fn profile_panel(data: &AccountViewModel) -> Markup {
         Some(zone) => Choice::new("", "Automatic").note(format!("this browser: {zone}")),
         None => Choice::new("", "Automatic").note("this browser's zone, UTC until it's known"),
     };
-    html! {
-        form method="post" action="/account/profile" id="settings-form" data-saved-email=(saved.email) {
+    super::settings::form(
+        "/account/profile",
+        Save::Reload,
+        "Profile",
+        html! {
             input type="hidden" name="tab" value="profile";
-            (card(data, Card::Email, html! {
-                div class="setting-field" {
-                    (label_row("email", "Email"))
-                    p class="field-help" { "What you log in with." }
+            (card(data, Card::Email, Field::new("Email", "email")
+                .help(None, html! { "What you log in with." })
+                .render(html! {
                     input type="email" id="email" name="email" value=(shown.email) required autocomplete="email"
                         data-email-input data-saved=[refused.then_some(&saved.email)];
-                }
-            }))
+                })))
             (card(data, Card::Appearance, theme_choice(shown.theme, refused.then_some(saved.theme), "The account menu changes it too.")))
             (card(data, Card::Time, html! {
-                div class="setting-field" {
-                    (label_row("timezone", "Time zone"))
-                    p class="field-help" { "Every date and time on the site is shown in this zone. Automatic follows this browser." }
-                    mk-select {
-                        select id="timezone" name="timezone" data-saved=[refused.then(|| saved.timezone.clone().unwrap_or_default())] {
-                            (automatic.selected(shown.timezone.is_none()))
-                            @for name in super::time::zone_names() {
-                                @let selected = shown.timezone.as_deref() == Some(name.as_str());
-                                (Choice::new(&name, &name).selected(selected))
+                (Field::new("Time zone", "timezone")
+                    .help(None, html! { "Every date and time on the site is shown in this zone. Automatic follows this browser." })
+                    .render(html! {
+                        mk-select {
+                            select id="timezone" name="timezone" data-saved=[refused.then(|| saved.timezone.clone().unwrap_or_default())] {
+                                (automatic.selected(shown.timezone.is_none()))
+                                @for name in super::time::zone_names() {
+                                    @let selected = shown.timezone.as_deref() == Some(name.as_str());
+                                    (Choice::new(&name, &name).selected(selected))
+                                }
                             }
                         }
-                    }
-                }
-                div class="setting-field" {
-                    div class="setting-label-row" { label class="setting-label" for="language" { "Language" } }
-                    p class="field-help" { "Only English for now: more languages come with translation." }
-                    mk-select {
-                        select id="language" disabled { (Choice::new("en", "English").selected(true)) }
-                    }
-                }
+                    }))
+                (Field::new("Language", "language")
+                    .help(None, html! { "Only English for now: more languages come with translation." })
+                    .render(html! {
+                        mk-select {
+                            select id="language" disabled { (Choice::new("en", "English").selected(true)) }
+                        }
+                    }))
             }))
             (email_confirm_dialog(saved))
             (save_bar(data, "Saving changes your profile straight away."))
-        }
-    }
+        },
+    )
 }
 
 /// The question an email change asks before it's saved, with JavaScript
@@ -346,23 +309,25 @@ fn email_confirm_dialog(saved: &Profile) -> Markup {
 
 fn security_panel(data: &AccountViewModel) -> Markup {
     let min = crate::http::MIN_PASSWORD_LEN;
-    html! {
-        form method="post" action="/account/password" id="settings-form" {
+    super::settings::form(
+        "/account/password",
+        Save::Reload,
+        "Security",
+        html! {
             input type="hidden" name="tab" value="security";
             (card(data, Card::Password, html! {
-                div class="setting-field" {
-                    (label_row("current-password", "Current password"))
+                (Field::new("Current password", "current-password").render(html! {
                     input type="password" id="current-password" name="current_password" autocomplete="current-password";
-                }
-                div class="setting-field" {
-                    (label_row("new-password", "New password"))
-                    p class="field-help" { "At least " (min) " characters. Changing it logs you out everywhere else." }
-                    input type="password" id="new-password" name="new_password" minlength=(min) autocomplete="new-password";
-                }
+                }))
+                (Field::new("New password", "new-password")
+                    .help(None, html! { "At least " (min) " characters. Changing it logs you out everywhere else." })
+                    .render(html! {
+                        input type="password" id="new-password" name="new_password" minlength=(min) autocomplete="new-password";
+                    }))
             }))
             (save_bar(data, "Saving changes your password."))
-        }
-    }
+        },
+    )
 }
 
 pub fn account_page(chrome: &PageChrome, data: &AccountViewModel) -> Markup {
@@ -385,10 +350,9 @@ pub fn account_page(chrome: &PageChrome, data: &AccountViewModel) -> Markup {
                 }
             }
             (toast_region(toast.as_ref(), false))
-            // The email question first: it holds back a save before the
-            // settings script counts it as sent.
+            // The email question: it holds back a save before the settings
+            // components (loaded by every page) count it as sent.
             (script("account.js", Load::Now))
-            (script("admin-settings.js", Load::Now))
         }
     };
     layout(
@@ -490,8 +454,8 @@ mod tests {
         );
     }
 
-    /// The profile's cards, as the admin page's: each a `data-card` the
-    /// settings script marks, in one form with one save bar.
+    /// The profile's cards, as the admin page's: each a settings card in
+    /// one settings form with one save bar.
     #[test]
     fn the_profile_tab_has_email_appearance_and_language_and_time_cards_and_one_save_bar() {
         let html = account_page(&chrome(), &view(AccountTab::Profile, None)).into_string();
@@ -499,11 +463,13 @@ mod tests {
             html.find(needle)
                 .unwrap_or_else(|| panic!("{needle} in {html}"))
         };
-        let form = at(r#"<form method="post" action="/account/profile" id="settings-form""#);
-        let email = at(r#"data-card="email""#);
-        let appearance = at(r#"data-card="appearance""#);
-        let time = at(r#"<section id="card-time""#);
-        let bar = at(r#"<div id="save-bar" class="save-bar""#);
+        let form = at(
+            r#"<mk-settings-form label="Profile"><form method="post" action="/account/profile" id="settings-form">"#,
+        );
+        let email = at(r#"name="email" role="region""#);
+        let appearance = at(r#"name="appearance" role="region""#);
+        let time = at(r#"<mk-settings-card id="card-time""#);
+        let bar = at(r#"<mk-save-bar id="save-bar" class="save-bar""#);
         assert!(
             form < email && email < appearance && appearance < time && time < bar,
             "{html}"
@@ -532,9 +498,20 @@ mod tests {
             "{html}"
         );
         assert!(html.contains(r#"<dialog id="email-confirm""#), "{html}");
-        // The settings script, after the email question's.
+        // The email question runs as it's reached; the settings
+        // components, deferred, after it.
         assert!(
-            at("/static/account.") < at("/static/admin-settings."),
+            html.contains(&format!(
+                r#"<script src="{}"></script>"#,
+                crate::assets::url("account.js")
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<script src="{}" defer></script>"#,
+                crate::assets::url("settings-form.js")
+            )),
             "{html}"
         );
     }
@@ -552,7 +529,7 @@ mod tests {
         let html = account_page(&chrome(), &data).into_string();
         assert!(
             html.contains(
-                r#"<section id="card-email" class="settings-card is-failed" data-card="email""#
+                r#"<mk-settings-card id="card-email" class="settings-card is-failed" name="email""#
             ),
             "{html}"
         );
@@ -568,7 +545,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"<div id="save-bar" class="save-bar is-failed""#),
+            html.contains(r#"<mk-save-bar id="save-bar" class="save-bar is-failed""#),
             "{html}"
         );
         assert!(html.contains(r##"<strong>Nothing saved.</strong> That email is already used by another account. <a href="#card-email" data-show-card="email">Show</a>"##), "{html}");
