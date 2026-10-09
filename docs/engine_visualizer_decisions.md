@@ -104,6 +104,10 @@ until the next snapshot.
 
 ## D11. "Chain" replaces "Pace set by" in the summary
 
+*Reversed in part by D38: the pace, the machine and the link are on the
+page again, in the "Machine and links" strip and the Scanning panel, kept
+live from monokulo's cached `/status`. The summary keeps "Chain".*
+
 The pace comes from `/status`'s scaling figures, which the activity record
 doesn't carry. Fetching `/status` too would cost a second request per poll
 (it asks every node for its height). The sixth summary figure is the chain
@@ -524,6 +528,54 @@ and performance. Acted on:
 Not taken: the chain check's state (`chain_agrees`) could be one enum with
 the reorg's; groups could be a newtype guarding their order; the webhook
 buckets could be counted in SQL. Each is small and none is wrong as it is.
+
+## D38. The machine, the link and the scan on the engine page, live
+
+Issue #26 (design: `docs/design/user-testing/engine-page.html`). How the
+engine performs (CPU and memory, the link to its node, the scan's pace)
+was on the admin's Monero nodes tab, a settings form, while the engine
+page showed only the scan's activity; D11 had kept the pace off the page
+to avoid asking `/status` on every poll. Now:
+
+- **One column.** The page reads top down: the back link above the title,
+  the title row with the help, the network picker and Reload; the summary;
+  a "Machine and links" strip of small multiples (CPU and Memory as the
+  engine's band under monokulo's with a container limit dashed, Transfer,
+  Round trip and First byte with their hour, the blocks' average size);
+  Chain; Round; then the panels as a grid, Scanning first and open. The
+  380px rail is gone. (The Webhooks panel went with the engine's
+  webhooks: monokulo delivers them now, D5.)
+- **The link follows the node in use.** The three link tiles are the node
+  `/status` reports `is_active`, a fallback said so ("backup.example.org ·
+  fallback"); a standby node has no figures.
+- **Live, bounded (reverses D11).** `/status/engine/events` also sends a
+  `machine` event: at once after the history, then every 5 s at most
+  (`MACHINE_EVERY`), built from `get_status_cached`, which asks the engine
+  at most once every ten seconds whoever is watching. It is a timer beside
+  the frames, not one per frame, so a busy scan adds nothing. Its fields are
+  worked out in Rust (`views::scaling`: each tile's figure, line, title and
+  SVG paths, the Scanning panel's rows); the script only puts them in
+  place, and its chip says how long ago the engine reported them. Without
+  JavaScript the strip is as the page was loaded ("as loaded"), and Reload
+  refreshes it.
+- **The chain strip's blocks keep their size.** 22px cells, the next block
+  32px, 4px apart: a wider window shows more blocks, never wider ones. The
+  newest is at the right edge. The script measures the strip (a
+  `ResizeObserver`) and draws as many whole cells as fit, again on resize;
+  the count needs no request parameter, as a frame carries the chain's
+  heights and states, not a list of cells. The server draws 72, newest
+  first and laid out right to left with wrapping, so without JavaScript a
+  block that doesn't fit whole wraps out of sight rather than showing in
+  part. Under 20 cells (a phone) the strip shows the newest blocks without
+  the cut back to the lowest group.
+- **Phone.** The strip is the cells alone, a `--space-md` gap above the
+  node list: the marks, the axis and the groups' pills are hidden there
+  (the summary has the stores' counts). The round's bars keep a mini form
+  beside a 64px label, the chip on their row.
+
+The Monero nodes tab keeps each node's settings and one-line status, and
+each network's card links to the engine page ("See it on the engine
+page").
 
 ## What differs from the design, and what is left
 

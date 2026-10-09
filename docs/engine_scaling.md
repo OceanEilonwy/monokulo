@@ -217,16 +217,27 @@ had to approach the whole budget, and segmenting (section 4) avoids that.
 
 ## 6. What the admin sees
 
-On the **Monero nodes** tab, next to the settings each number describes.
-Everything is rendered on the server (works without JavaScript) and
-refreshes in place with fixi. Charts are small inline SVG with a text
-summary beside them, and use theme roles only.
+On the **engine page** (`/status/engine?network=…`, issue #26), beside the
+scan's live activity: a "Machine and links" strip of small multiples under
+the summary, and a Scanning panel, the first of the panels under the round
+(decision D38 in `engine_visualizer_decisions.md`). Everything is worked
+out and rendered on the server (`views::scaling`); without JavaScript the
+page is as loaded, with a Reload button, and with it the page's event
+stream sends the same figures again every few seconds (its `machine`
+event, from monokulo's cached `/status`). Charts are small inline SVG with
+the figures in words beside them, and use theme roles only.
 
-### Resources (top of the tab)
+The **Monero nodes** tab of the admin settings keeps each node's settings
+and its one-line status (reachable, its height and how far behind, in
+use, resting); each network's card links to the engine page ("See it on
+the engine page").
+
+### CPU and Memory (the strip's first tiles)
 
 One figure each for CPU and memory, for monokulo and the engine together,
 with a stacked chart that shows the total and each process's share on the
-same scale:
+same scale (drawn here at the size of the old panel; a tile is the same
+chart, small):
 
 ```
 CPU      25 % of 4 cores   (engine 23 %, monokulo 2 %)      peak 63 % at 14:02
@@ -246,15 +257,13 @@ Memory   508 MB of 7.6 GB  (engine 412 MB, monokulo 96 MB)  peak 551 MB
   CPU as a share of all cores, memory against total RAM.
 - **Stacked layers:** each process is its own coloured layer, engine at the
   bottom and monokulo on top, so the outline is the total and each band is
-  one process's share. A legend names the colours, and the figure line
-  repeats the current split in numbers.
+  one process's share. The strip's head names the colours, and the tile's
+  title gives the current split in numbers.
 - **Colours** are two new chart roles in `theme.css` (`--chart-engine`,
   `--chart-monokulo`), defined for both themes and distinguishable for the
   common colour-vision deficiencies. No colour is written in the markup.
-- **Peak** is the total's peak in the last hour, with when it was.
-- **Hover detail** (with JavaScript): each 10-second slot shows its total
-  and split. Without JavaScript the page shows the current figures and the
-  peak, and the chart is still drawn.
+- **Peak** is the total's peak in the last hour, under the figure; the
+  tile's title says when it was.
 - **Container limits:** when either process runs under a cgroup memory
   limit, a thin line marks it on the memory chart, so an admin can see a
   process nearing its own limit before the machine fills.
@@ -270,19 +279,27 @@ How it's gathered:
   process reports the host's `boot_id` (`/proc/sys/kernel/random/boot_id`,
   which containers on one host share; on macOS the host name and total
   memory). When the two match, they stack as above. When they don't, the
-  panel shows the two processes as separate charts and says they run on
-  different machines.
+  strip shows each process's CPU and memory as tiles of their own
+  ("Engine CPU", "Monokulo memory").
 
-### Each node row
+### The node in use (Transfer, Round trip, First byte)
 
-- Status, the node's height, and how far it is behind the network.
-- Transfer rate, RTT and TTFB, each with a one-hour sparkline.
-- When last measured, and failures and timeouts in the last hour.
+- The link to the node the engine reads the network from right now
+  (`/status`'s `is_active`), a fallback said so on the tile
+  ("backup.example.org · fallback"). Standby nodes get no figures; a switch
+  shows with the next update.
+- Transfer rate, RTT and TTFB, each with a one-hour sparkline; when last
+  measured, and failures and timeouts in the last hour, in the tile's
+  title.
+- Block size: the recent blocks' average and which way it is going.
 
-### One "Scanning" panel per network
+### The Scanning panel (one network's, on its engine page)
+
+Its summary is one short line ("at the tip · pace: link speed", "14 behind
+· pace: memory budget"); opened, the figures:
 
 ```
-Mainnet scanning                                          ● slow
+Scanning   14 behind · a slow block
   Progress      14 blocks behind · 3.2 blocks/min · caught up in ~4 min
   Pace set by   link speed (node.example:18089, 3.1 Mbit/s)
   Chunk         1 block (segmented: page 41 of 97, 4.2 MB pages)
