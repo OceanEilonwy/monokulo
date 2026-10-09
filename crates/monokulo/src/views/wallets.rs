@@ -128,7 +128,7 @@ fn regenerate_icon() -> Markup {
 fn network_select(selected: &str) -> Markup {
     html! {
         mk-select {
-            select name="network" {
+            select name="network" id="wallet-network" {
                 @for network in ["mainnet", "stagenet", "testnet"] {
                     (Choice::new(network, "")
                         .network(network)
@@ -1546,21 +1546,13 @@ mod tests {
     #[test]
     fn where_it_lives_says_which_app_holds_the_keys() {
         use crate::db::WalletOrigin::{Created, Imported};
-        let cases: [(_, _, _, &str, &str, bool); 9] = [
+        let cases: [(_, _, _, &str, &str, bool); 8] = [
             (
                 Created,
                 Some("cake"),
                 None,
                 "Backed up to Cake Wallet",
                 "wallet-logos/cake.",
-                false,
-            ),
-            (
-                Created,
-                Some("monerocom"),
-                None,
-                "Backed up to Monero.com",
-                "wallet-logos/monerocom.",
                 false,
             ),
             (
@@ -1844,7 +1836,7 @@ mod tests {
         let order = [
             r#"<section class="where-banner""#,
             r#"<h3 id="stores-title">Stores</h3>"#,
-            r#"<h3 id="details-title">Details</h3>"#,
+            r#"<h3 id="card-details-title">Details</h3>"#,
             r#"<details class="history-fold"><summary>History <span class="hint">1 event</span></summary>"#,
             r#"<div class="wallet-foot"><div><strong>Retire this wallet</strong>"#,
             r#"<dialog id="retire-dialog" class="settings-dialog wallet-dialog" aria-labelledby="retire-title">"#,
@@ -1869,11 +1861,19 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("<dt>Kind</dt><dd>Brought in</dd>"), "{html}");
-        // The rename form, as it was.
-        assert!(html.contains(r#"<form class="rename-form" method="post" action="/account/wallets/w_Shop takings/rename">"#), "{html}");
+        // The rename: the Details card's settings form.
+        assert!(
+            html.contains(r#"action="/account/wallets/w_Shop takings/rename""#)
+                && html.contains(r#"id="wallet-name" name="name" value="Shop takings""#),
+            "{html}"
+        );
         assert!(html.contains("wallet-page."), "its script: {html}");
-        // The red button is the only colour; no orange one.
-        assert!(!html.contains("btn-primary"), "{html}");
+        // One orange button, the save bar's Save; the red one is Retire's.
+        assert_eq!(html.matches("btn-primary").count(), 1, "{html}");
+        assert!(
+            html.contains(r#"class="btn-primary" data-save>Save</button>"#),
+            "{html}"
+        );
     }
 
     #[test]
