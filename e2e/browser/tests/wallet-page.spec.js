@@ -49,7 +49,7 @@ test("a wallet's page is one column: where it lives, stores, details, history, t
   // Flush: no list indent.
   await expect(stores.locator('.store-rows')).toHaveCSS('padding-left', '0px');
 
-  const details = page.locator('section[aria-labelledby="details-title"]');
+  const details = page.locator('#card-details');
   await expect(details.locator('dl.facts dt')).toHaveText(['Address', 'Kind']);
   await expect(details.locator('.mid-ellipsis')).toBeVisible();
   const history = page.locator('details.history-fold');
@@ -186,6 +186,9 @@ test('without JavaScript the dialogs are pages', async ({ browser }) => {
 
   // The retired wallet's restore form, on its own page.
   await page.goto(page_of('w_old'));
+  // Without JavaScript the save bar is always shown, fixed at the bottom;
+  // the page scrolls far enough to bring the row out from under it.
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
   await page.getByRole('link', { name: 'Restore wallet…' }).click();
   await expect(page).toHaveURL(`${page_of('w_old')}/restore`);
   await expect(page.getByRole('heading', { level: 1, name: 'Restore “Old till”' })).toBeVisible();
@@ -208,7 +211,8 @@ test("on a phone a wallet's page stays one column", async ({ page, context }) =>
 
 test("the setup flow's network dropdown shows each network as its badge", async ({ page, context }) => {
   await login(context);
-  await page.goto(fixture.base_url + '/account/wallets/import');
+  await page.goto(fixture.base_url + '/account/wallets/add');
+  await page.locator('details.more-options summary').click();
   const network = page.getByRole('combobox', { name: 'Network' });
   await expect(network.locator('.tag-network.is-main')).toHaveText('Mainnet');
   await network.click();
@@ -218,10 +222,11 @@ test("the setup flow's network dropdown shows each network as its badge", async 
   await page.getByRole('option', { name: 'Stagenet' }).click();
   await expect(page.locator('select[name="network"]')).toHaveValue('stagenet');
 
-  // "Which app is it in?": each app with its logo.
+  // "Which app is it in?" on Bring your own wallet: each app with its logo.
+  await page.goto(fixture.base_url + '/account/wallets/import?name=Market+till&network=mainnet');
   const app = page.getByRole('combobox', { name: 'Which app is it in? (optional)' });
   await app.click();
-  await expect(page.locator('.mk-option img.mk-logo')).toHaveCount(5);
+  await expect(page.locator('.mk-option img.mk-logo')).toHaveCount(4);
   await expect(page.getByRole('option', { name: 'Other' })).toBeVisible();
   await captureCoverageStage(page, 'wallets-import-app', test.info(), { group: GROUP, shapes: ['desktop'] });
   await page.getByRole('option', { name: 'Feather' }).click();

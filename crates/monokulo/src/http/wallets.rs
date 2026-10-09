@@ -1641,8 +1641,10 @@ mod tests {
 
         let html =
             body_text(get(&router, &format!("/account/wallets/{wallet_id}"), &cookie).await).await;
+        // Each store by its name, its site under it.
         assert!(
-            html.contains("one.example.com") && html.contains("two.example.com"),
+            html.contains(r#">One</a><span class="sr-host">one.example.com</span>"#)
+                && html.contains(r#">Two</a><span class="sr-host">two.example.com</span>"#),
             "{html}"
         );
         assert!(html.contains("2 take payments into this wallet"), "{html}");
@@ -1657,8 +1659,7 @@ mod tests {
         )
         .await;
         assert!(
-            retire.contains("one.example.com does · ")
-                && retire.contains("two.example.com does · "),
+            retire.contains("One does · ") && retire.contains("Two does · "),
             "{retire}"
         );
         assert!(
