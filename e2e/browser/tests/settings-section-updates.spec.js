@@ -125,16 +125,20 @@ test('leaving a tab with unsaved changes asks first, and Save and go saves then 
 
   // Save and go with a value the save refuses: it stays, and says why.
   await openSettingsTab(page, 'server');
+  const leaving = [];
+  page.on('request', (request) => { if (request.url().includes('tab=logging')) leaving.push(request.url()); });
   await page.locator('input[name="server.cpus"]').fill('abc');
   await page.locator('#settings-tabs a', { hasText: 'Logging' }).click();
   await bar.getByRole('button', { name: 'Save and go' }).click();
   await expect(bar).toHaveClass(/is-failed/);
   await expect(bar).toContainText('Nothing saved.');
-  await page.waitForTimeout(500);
   await expect(page.locator('#settings-panel h2')).toHaveText('Server');
   await expect(page.locator('input[name="server.cpus"]')).toHaveValue('abc');
   await page.locator('#card-server-engine').getByRole('button', { name: 'Discard' }).click();
   await openSettingsTab(page, 'abuse');
+  // It never went: the page asked for Logging neither before the refusal
+  // nor after it, or that request would have gone out before this page's.
+  expect(leaving).toEqual([]);
 
   // Discard and go: nothing saved.
   await page.locator('input[name="abuse.stream_cap"]').fill('18');

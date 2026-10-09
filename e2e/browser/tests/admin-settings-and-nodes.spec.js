@@ -215,12 +215,16 @@ test('saving without the last node of a network stores use asks first', async ({
   page.once('dialog', async (dialog) => { asked = dialog.message(); await dialog.dismiss(); });
   await pressSave(page);
   expect(asked).toMatch(/stores? uses? the stagenet network/);
-  await page.waitForTimeout(500);
-  expect(posts).toBe(0);
   // Still unsaved; Discard brings the node back.
   await page.locator('#card-network-stagenet').getByRole('button', { name: 'Discard' }).click();
-  expect(await rowAddresses(page, 'stagenet')).toEqual([fakeNodeAddress(), '']);
+  await expect.poll(() => rowAddresses(page, 'stagenet')).toEqual([fakeNodeAddress(), '']);
   await expect(page.locator('#save-bar')).toBeHidden();
+  // The dismissed question sent nothing: a save with nothing changed is
+  // the first post the page makes, and one the question had sent would
+  // have gone out before it.
+  await pressSave(page);
+  await expectSaved(page);
+  expect(posts).toBe(1);
 });
 
 test('the Monero nodes tab is marked while the only node of a network stores use is down', async ({ page }) => {

@@ -23,7 +23,7 @@ test('settings dialogs save, cancel, preserve focus and keep errors in the edito
   await page.keyboard.press('Escape');
   await expect(edit).toBeFocused();
   await edit.click();
-  expect(await section.locator('select').inputValue()).not.toBe('USD');
+  await expect(section.locator('select')).not.toHaveValue('USD');
   await section.locator('select').selectOption('USD');
   await section.getByRole('button', { name: 'Update', exact: true }).click();
   await expect(section.locator('dialog')).not.toBeVisible();

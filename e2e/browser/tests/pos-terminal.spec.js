@@ -1,4 +1,4 @@
-const { test, expect } = require('../coverage-test');
+const { test, expect, pauseClockAt, recordEventSources, eventSources } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
 
@@ -144,12 +144,15 @@ test('real POS uses the site theme toggle, applies it in place and remembers it'
   await expect(toggle).toHaveClass(/theme-toggle-light/);
   // Applied in place: the terminal is not reloaded, so the order on screen stays.
   await expect(page.locator('.pos-pay-card')).toBeVisible();
+  // Remembered: the choice is saved to the account, and a reload shows it.
+  const saved = page.waitForResponse(response => response.url().endsWith('/dashboard/theme')
+    && response.request().method() === 'POST' && new URLSearchParams(response.request().postData()).get('theme') === 'dark');
   await page.getByRole('button', { name: 'Dark theme' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect(page.getByRole('button', { name: 'Dark theme' })).toHaveAttribute('aria-pressed', 'true');
   const paper = await page.evaluate(() => getComputedStyle(document.getElementById('pos-root')).backgroundColor);
   expect(paper).toBe('rgb(30, 30, 30)');
-  await page.waitForTimeout(300);
+  expect((await saved).status(), 'the theme is saved').toBeLessThan(400);
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect(toggle).toHaveClass(/theme-toggle-dark/);
@@ -167,7 +170,7 @@ test('real POS header is the site app bar: the mark, the store, a POS label and 
   await expect(top.locator('.pos-brand svg.logo-mark')).toBeVisible();
   await expect(top.locator('.pos-store')).toHaveAttribute('href', `/dashboard/stores/${fixture.connection_id}`);
   await expect(top.locator('.pos-mode')).toHaveText('POS');
-  expect(await page.locator('#pos-site-brand').count()).toBe(0);
+  await expect(page.locator('#pos-site-brand')).toHaveCount(0);
   const status = top.locator('#status-indicator');
   await expect(status).toHaveAttribute('href', '/status');
   // Rightmost in the bar, after the theme toggle, as on every page.
@@ -339,35 +342,53 @@ test('counter loses its connection: the order shows connection lost, then recove
   // The Wi-Fi is down: every attempt to (re)open the update stream fails.
   await page.route('**/pos/events?*', route => (online ? route.continue() : route.abort('internetdisconnected')));
   online = false;
+  // The POS shows nothing of the stream failing until its 6s are up, so
+  // the stream's own error events are recorded (recordEventSources): once
+  // the test sees one, the POS has handled it and started its count.
+  await recordEventSources(page);
+  // The page's time stands still from the start: only the test moves it.
+  // The browser retries the stream on its own clock, which is real; the
+  // 6s after which the merchant is told is the page's.
+  const start = new Date('2026-01-01T00:00:00Z');
+  await pauseClockAt(page, start);
   await page.goto(posUrl());
   const badge = page.locator('.pos-order-heading .pos-badge');
   await expect(page.locator('.pos-pay-card')).toBeVisible();
+  await expect.poll(async () => (await eventSources(page)).some(stream => stream.errors > 0), 'the POS handles the stream failing').toBe(true);
   // Retries fail every few seconds; once 6s have passed without a
-  // connection the merchant is told, however many retries that took.
-  await page.waitForTimeout(3000);
+  // connection the merchant is told, however many retries that took: not a
+  // millisecond before.
+  await page.clock.runFor(5999);
   await expect(badge).toContainText('Awaiting payment');
-  await expect(badge).toContainText('Connection lost', { timeout: 8000 });
+  await page.clock.runFor(1);
+  await expect(badge).toContainText('Connection lost');
   await captureCoverageStage(page, 'pos-connection-lost', test.info());
-  // The customer pays meanwhile; back online, the stream reconnects and
-  // brings the missed payment in without a reload.
+  // The customer pays meanwhile; back online, the stream reconnects (the
+  // browser's own retry, a few real seconds) and brings the missed payment
+  // in without a reload.
   await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/payment?fraction=1`);
   online = true;
-  await expect(badge).toContainText('Unconfirmed', { timeout: 10000 });
+  await expect(badge).toContainText('Unconfirmed', { timeout: 15000 });
   await expect(page.locator('.pos-stage-msg')).toContainText('Payment seen. Waiting for its first confirmation.');
 });
 
-test('merchant opens Cancel order then changes their mind: nothing happens', async ({ page }) => {
+test('merchant opens Cancel order then changes their mind: nothing happens until they confirm', async ({ page }) => {
   const writes = [];
   page.on('request', sent => { if (sent.method() !== 'GET') writes.push(sent.url()); });
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   page.once('dialog', dialog => dialog.dismiss());
   await page.getByRole('button', { name: 'Cancel order' }).click();
-  await page.waitForTimeout(1000);
-  expect(writes).toEqual([]);
   await expect(page.locator('.pos-error')).toHaveCount(0);
   await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Awaiting payment');
   await expect(page.getByRole('button', { name: 'Cancel order' })).toBeEnabled();
+  // Confirmed the second time: the one write the server gets is that one.
+  // A write the dismissed question had sent would have gone out first, so
+  // this proves it sent none without waiting for nothing to happen.
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: 'Cancel order' }).click();
+  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Cancelled');
+  expect(writes).toEqual([`${posUrl()}/orders/${fixture.order_id}/cancel`]);
 });
 
 test('payment lands just before the merchant confirms a cancel: the server refuses and says why', async ({ page, request }) => {
@@ -565,16 +586,21 @@ test('store priced in AUD: the merchant keys in dollars and cents and sees both 
   await expect(card.locator('.pos-pay-xmr')).toContainText('0.03125');
 });
 
-test('payment countdown keeps ticking down while the customer finds their wallet', async ({ page }) => {
-  await page.clock.install();
+test('payment countdown keeps ticking down while the customer finds their wallet', async ({ page, request }) => {
+  // The fixture order expires an hour after it was made, moments ago.
+  const order = await (await request.get(`${posUrl()}/orders/${fixture.order_id}`, { headers: { cookie: `session=${fixture.session}` } })).json();
+  // The page's time stands still from the start: only the test moves it.
+  const start = new Date();
+  await pauseClockAt(page, start);
   await page.goto(posUrl());
   // In the stage's message.
   const expiry = page.locator('.pos-stage-msg');
-  // The fixture order expires an hour after it was made.
   await expect(expiry).toContainText(/(59m|1h) left/);
   await page.clock.runFor(20 * 60 * 1000);
   await expect(expiry).toContainText(/(39|40)m left/);
-  await page.clock.runFor(39.5 * 60 * 1000);
+  // To half a minute before it expires. The message follows a clock that
+  // ticks every 15s, so it shows between 30 and 45 seconds left.
+  await page.clock.runFor(order.expires_at * 1000 - 30_000 - (await page.evaluate(() => Date.now())));
   await expect(expiry).toContainText('less than a minute left');
 });
 
@@ -671,7 +697,9 @@ test('a backgrounded order that is paid while the merchant serves someone else m
 });
 
 test('finished orders drop off the tab 24 hours after they finished', async ({ page, request }) => {
-  await page.clock.install();
+  // The page's time stands still from the start: only the test moves it,
+  // so the order finishes at a moment the test knows exactly.
+  await pauseClockAt(page, new Date());
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/paid`);
