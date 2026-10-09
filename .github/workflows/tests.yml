@@ -36,8 +36,11 @@ env:
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
+  # Job names are fixed text: GitHub lists a skipped job (a Linux-only suite
+  # on macOS or Windows) under its name unevaluated. The caller's job name
+  # says which run it is: tests (linux), coverage.
   rust:
-    name: Rust tests${{ inputs.coverage && ' (coverage)' || '' }}
+    name: Rust tests
     runs-on: ${{ format('{0}-latest', inputs.platform == 'linux' && 'ubuntu' || inputs.platform) }}
     # Windows runners build the workspace about twice as slowly.
     timeout-minutes: ${{ inputs.platform == 'windows' && 60 || 30 }}
@@ -101,7 +104,7 @@ jobs:
           if-no-files-found: ignore
 
   browser:
-    name: Browser tests${{ inputs.coverage && ' (coverage)' || '' }}
+    name: Browser tests
     if: inputs.platform == 'linux'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -170,7 +173,7 @@ jobs:
         run: test '${{ steps.tests.outcome }}' = success
 
   woocommerce:
-    name: WooCommerce tests${{ inputs.coverage && ' (coverage)' || '' }}
+    name: WooCommerce tests
     if: inputs.platform == 'linux'
     runs-on: ubuntu-latest
     timeout-minutes: 30
