@@ -583,7 +583,7 @@ pub fn ready_page(chrome: &PageChrome, data: &ReadyViewModel) -> Markup {
                 h2 { (w.name) }
                 dl class="facts" {
                     dt { "Address" } dd { code { (short_address(&w.primary_address)) } }
-                    dt { "Network" } dd { (w.network) }
+                    dt { "Network" } dd { (super::network_badge(&w.network)) }
                     dt { "Kind" } dd { (origin_label(w)) }
                 }
             }
@@ -654,29 +654,34 @@ pub fn key_gone_icon(size: u32) -> Markup {
 }
 
 /// The wallets list: the Account page's Wallets tab (`views::account`).
+/// `wallets` come mainnet first, then stagenet, then testnet, each by name
+/// (`Db::list_wallets`). Mainnet wallets are the list; the test networks'
+/// are folded below it, the fold open when there's no mainnet wallet.
 pub fn list_section(wallets: &[WalletListItem], retired: &[RetiredListItem]) -> Markup {
+    let (main, test): (Vec<&WalletListItem>, Vec<&WalletListItem>) =
+        wallets.iter().partition(|w| w.network == "mainnet");
     html! {
             p { "Where your stores' payments go. Monokulo holds watch-only keys for each." }
             @if wallets.is_empty() {
                 p class="notice" { "No wallets yet." }
+            } @else if main.is_empty() {
+                p class="hint" { "No mainnet wallets yet. Add one when you're ready to take real payments." }
             } @else {
-                div class="table-scroll" {
-                    table {
-                        thead { tr { th { "Name" } th { "Kind" } th { "Address" } th { "Network" } th { "Stores" } } }
-                        tbody {
-                            @for w in wallets {
-                                tr {
-                                    td { a href=(format!("/account/wallets/{}", w.id)) { (w.name) } }
-                                    td { (w.kind) }
-                                    td { code { (w.address) } }
-                                    td { @if w.network == "mainnet" { (w.network) } @else { span class="tag tag-slow" { (w.network) } } }
-                                    td { (w.stores) }
-                                }
-                            }
-                        }
-                    }
+                div class="net-section-head" {
+                    h2 { (super::network_badge("mainnet")) }
+                    p class="hint" { "Real money · " (wallets_count(main.len())) }
                 }
-                p class="hint" { "Open a wallet to rename it, see its history or retire it." }
+                (wallets_table(&main, false))
+            }
+            @if !test.is_empty() {
+                details class="test-wallets" open[main.is_empty()] {
+                    summary {
+                        (super::test_networks_badge())
+                        strong { (wallets_count(test.len())) }
+                        span class="hint" { "no real value" }
+                    }
+                    div { (wallets_table(&test, true)) }
+                }
             }
             @if !retired.is_empty() {
                 details class="retired-wallets" {
@@ -697,7 +702,50 @@ pub fn list_section(wallets: &[WalletListItem], retired: &[RetiredListItem]) -> 
                     }
                 }
             }
-            p { a class="btn btn-primary" href="/account/wallets/setup" { "+ add a wallet" } }
+            div class="list-foot" {
+                @if !wallets.is_empty() {
+                    p class="hint" { "Open a wallet to rename it, see its history or retire it." }
+                }
+                a class="btn btn-primary" href="/account/wallets/setup" { "+ add a wallet" }
+            }
+    }
+}
+
+/// One network group's table. The test networks' carries each row's
+/// network, since stagenet and testnet wallets share it. On a phone each
+/// row is a card: name and stores, then address and kind.
+fn wallets_table(wallets: &[&WalletListItem], with_network: bool) -> Markup {
+    html! {
+        div class="table-scroll" {
+            table class="wallets-table table-cards" {
+                thead { tr {
+                    @if with_network { th { "Network" } }
+                    th { "Name" } th { "Kind" } th { "Address" } th { "Stores" }
+                } }
+                tbody {
+                    @for w in wallets {
+                        tr {
+                            @if with_network { td class="card-meta" { (super::network_badge(&w.network)) } }
+                            td class="card-title" { a href=(format!("/account/wallets/{}", w.id)) { (w.name) } }
+                            td class="card-when" { (w.kind) }
+                            td class="card-detail" { code class="wallet-address" { (super::address_short(&w.address)) } }
+                            td class="card-status" {
+                                (w.stores)
+                                span class="card-unit" { @if w.stores == 1 { " store" } @else { " stores" } }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn wallets_count(n: usize) -> String {
+    if n == 1 {
+        "1 wallet".to_owned()
+    } else {
+        format!("{n} wallets")
     }
 }
 
@@ -757,8 +805,11 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
             nav class="context-nav" aria-label="Breadcrumb" { a href="/account?tab=wallets" { "Wallets" } }
-            h1 { (w.name) }
-            p class="hint" { (origin_label(w)) " · " (w.network) }
+            div class="wallet-title" { h1 { (w.name) } (super::network_badge(&w.network)) }
+            p class="hint" {
+                (origin_label(w))
+                @if w.network == "mainnet" { " · real money" } @else { " · test network, no real value" }
+            }
             @if let Some(notice) = &data.notice { p class="success" role="status" { (notice) } }
             @if let Some(error) = &data.error { p class="error" role="alert" { (error) } }
             @if let Some(at) = w.retired_at {
@@ -784,7 +835,7 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
                         }
                         dl class="facts" {
                             dt { "Address" } dd { code { (w.primary_address) } }
-                            dt { "Network" } dd { (w.network) }
+                            dt { "Network" } dd { (super::network_badge(&w.network)) }
                             dt { "Kind" } dd { (origin_label(w)) }
                             @if let Some(at) = w.retired_at {
                                 dt { "Keys" } dd { "Deleted " (chrome.clock.time(at)) }
@@ -926,7 +977,8 @@ pub fn wallet_select(wallets: &[crate::db::WalletSummary], selected: Option<&str
                     @for w in wallets {
                         (Choice::new(&w.wallet.id, &w.wallet.name)
                             .detail(short_address(&w.wallet.primary_address))
-                            .note(wallet_note(w))
+                            .network(&w.wallet.network)
+                            .note(stores_label(w.store_count))
                             .selected(selected == Some(w.wallet.id.as_str())))
                     }
                 }
@@ -942,16 +994,7 @@ pub fn wallet_select(wallets: &[crate::db::WalletSummary], selected: Option<&str
     }
 }
 
-/// Under a wallet in a picker: how many stores use it, and its network
-/// when that isn't mainnet.
-fn wallet_note(w: &crate::db::WalletSummary) -> String {
-    if w.wallet.network == "mainnet" {
-        stores_label(w.store_count)
-    } else {
-        format!("{} · {}", w.wallet.network, stores_label(w.store_count))
-    }
-}
-
+/// After a wallet in a picker: how many stores use it.
 fn stores_label(count: u64) -> String {
     match count {
         0 => "no stores".to_owned(),
@@ -975,4 +1018,179 @@ pub fn add_wallet_links(next: &str) -> Markup {
 /// `text` as a query string value.
 fn url_encode(text: &str) -> String {
     url::form_urlencoded::byte_serialize(text.as_bytes()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wallet(name: &str, network: &str, stores: u64) -> WalletListItem {
+        WalletListItem {
+            id: format!("w_{}", name.to_lowercase().replace(' ', "_")),
+            name: name.to_owned(),
+            kind: "Brought in",
+            address: format!("{name}-address-0123456789abcdef"),
+            network: network.to_owned(),
+            stores,
+        }
+    }
+
+    /// The part of `html` from `from` on, to `to`.
+    fn between<'a>(html: &'a str, from: &str, to: &str) -> &'a str {
+        let start = html
+            .find(from)
+            .unwrap_or_else(|| panic!("{from} in {html}"));
+        let rest = &html[start..];
+        &rest[..rest.find(to).map_or(rest.len(), |end| end + to.len())]
+    }
+
+    #[test]
+    fn mainnet_wallets_are_the_list_with_no_fold() {
+        let html = list_section(
+            &[
+                wallet("Cake", "mainnet", 2),
+                wallet("Savings", "mainnet", 1),
+            ],
+            &[],
+        )
+        .into_string();
+        let head = between(&html, r#"<div class="net-section-head">"#, "</div>");
+        assert!(
+            head.contains(r#"<h2><span class="tag-network is-main">"#),
+            "{head}"
+        );
+        assert!(head.contains("Real money · 2 wallets"), "{head}");
+        assert!(
+            html.contains(
+                "<thead><tr><th>Name</th><th>Kind</th><th>Address</th><th>Stores</th></tr></thead>"
+            ),
+            "{html}"
+        );
+        assert!(!html.contains("test-wallets"), "{html}");
+        assert!(!html.contains("No mainnet wallets yet"), "{html}");
+        // The address cut in the middle, all of it in the page.
+        assert!(html.contains(r#"<code class="wallet-address"><span class="mid-ellipsis" title="Cake-address-0123456789abcdef">"#), "{html}");
+        // On a phone, "2 stores" and "1 store".
+        assert!(
+            html.contains(r#"2<span class="card-unit"> stores</span>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"1<span class="card-unit"> store</span>"#),
+            "{html}"
+        );
+        // The one orange button.
+        assert_eq!(html.matches("btn-primary").count(), 1, "{html}");
+    }
+
+    #[test]
+    fn with_only_test_wallets_the_fold_starts_open_and_says_why() {
+        let html = list_section(
+            &[
+                wallet("Feather test", "stagenet", 1),
+                wallet("Lab", "testnet", 0),
+            ],
+            &[],
+        )
+        .into_string();
+        assert!(html.contains(r#"<p class="hint">No mainnet wallets yet. Add one when you're ready to take real payments.</p>"#), "{html}");
+        assert!(!html.contains("net-section-head"), "{html}");
+        let fold = between(&html, r#"<details class="test-wallets""#, "</details>");
+        assert!(
+            fold.starts_with(
+                r#"<details class="test-wallets" open><summary><span class="tag-network is-test">"#
+            ),
+            "{fold}"
+        );
+        assert!(fold.contains("Test networks</span><strong>2 wallets</strong><span class=\"hint\">no real value</span></summary>"), "{fold}");
+        assert!(fold.contains("<th>Network</th><th>Name</th>"), "{fold}");
+        // Each row carries its own network's badge.
+        assert!(
+            fold.contains(r#"<td class="card-meta"><span class="tag-network is-test">"#),
+            "{fold}"
+        );
+        assert!(fold.contains("</svg>Stagenet</span>"), "{fold}");
+        assert!(fold.contains("</svg>Testnet</span>"), "{fold}");
+        assert!(!html.contains("tag-slow"), "{html}");
+    }
+
+    #[test]
+    fn mixed_wallets_put_mainnet_first_and_fold_the_test_ones_shut() {
+        let html = list_section(
+            &[
+                wallet("Cake", "mainnet", 2),
+                wallet("Feather test", "stagenet", 1),
+            ],
+            &[RetiredListItem {
+                id: "w_old".to_owned(),
+                name: "Old till".to_owned(),
+                retired: "1 Sep 2026".to_owned(),
+            }],
+        )
+        .into_string();
+        let main_at = html.find("net-section-head").unwrap();
+        let fold_at = html.find(r#"<details class="test-wallets">"#).unwrap();
+        let retired_at = html.find(r#"<details class="retired-wallets">"#).unwrap();
+        assert!(main_at < fold_at && fold_at < retired_at, "{html}");
+        assert!(html.contains("Real money · 1 wallet<"), "{html}");
+        assert!(html.contains("<strong>1 wallet</strong>"), "{html}");
+        let main = &html[main_at..fold_at];
+        assert!(
+            main.contains("Cake") && !main.contains("Feather test"),
+            "{main}"
+        );
+        assert!(html[fold_at..retired_at].contains("Feather test"), "{html}");
+    }
+
+    #[test]
+    fn no_wallets_says_so_and_offers_to_add_one() {
+        let html = list_section(&[], &[]).into_string();
+        assert!(
+            html.contains(r#"<p class="notice">No wallets yet.</p>"#),
+            "{html}"
+        );
+        assert!(
+            !html.contains("test-wallets") && !html.contains("net-section-head"),
+            "{html}"
+        );
+        assert!(html.contains(r#"href="/account/wallets/setup""#), "{html}");
+    }
+
+    fn summary(name: &str, network: &str, stores: u64) -> crate::db::WalletSummary {
+        crate::db::WalletSummary {
+            wallet: crate::db::WalletRow {
+                id: crate::db::WalletId::new(format!("w_{name}")),
+                user_id: crate::db::UserId::new("u1"),
+                name: name.to_owned(),
+                network: network.to_owned(),
+                primary_address: "5B8s3obCY2ETeQB3GNAGPK2zRGen5UeW1WzegSizVsmf6z5NvM2GLoN6zzk1vHyzGAAfA8pGhuYAeCFZjHAp59jRVQkunGS".to_owned(),
+                engine_wallet_id: crate::db::EngineWalletId::new("e"),
+                origin: crate::db::WalletOrigin::Imported,
+                backup: None,
+                created_at: 0,
+                retired_at: None,
+            },
+            store_count: stores,
+        }
+    }
+
+    /// A store's wallet picker names each wallet's network as the badge,
+    /// and in words without JavaScript.
+    #[test]
+    fn the_store_wallet_picker_shows_each_wallets_network() {
+        let html = wallet_select(
+            &[
+                summary("Cake", "mainnet", 2),
+                summary("Feather", "stagenet", 1),
+            ],
+            None,
+        )
+        .into_string();
+        assert!(html.contains(r#"data-network="mainnet" data-note="2 stores">Cake (5B8s3…unGS) [Mainnet] - 2 stores</option>"#), "{html}");
+        assert!(
+            html.contains(r#"data-network="stagenet" data-note="1 store">"#),
+            "{html}"
+        );
+        assert!(html.contains("[Stagenet] - 1 store</option>"), "{html}");
+    }
 }

@@ -1293,14 +1293,16 @@ impl Db {
         })
     }
 
-    /// `user_id`'s wallets in use, oldest first, each with how many stores
-    /// use it: what pickers offer. Retired ones are left out
+    /// `user_id`'s wallets in use, each with how many stores use it: what
+    /// the wallets list and pickers show. Mainnet first, then stagenet,
+    /// then testnet, each by name. Retired ones are left out
     /// ([`Self::list_retired_wallets`]).
     pub fn list_wallets(&self, user_id: &UserId) -> Result<Vec<WalletSummary>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT w.*, (SELECT COUNT(*) FROM store_connections s WHERE s.wallet_id = w.id) AS stores
              FROM wallets w WHERE w.user_id = ?1 AND w.retired_at_utc IS NULL
-             ORDER BY w.created_at_utc, w.name",
+             ORDER BY CASE w.network WHEN 'mainnet' THEN 0 WHEN 'stagenet' THEN 1 ELSE 2 END,
+                      w.name COLLATE NOCASE, w.created_at_utc",
         )?;
         let rows = stmt
             .query_map(params![user_id], |row| {
@@ -4893,5 +4895,48 @@ mod tests {
             .unwrap()
             .expect("a soft-deleted request must still be individually fetchable");
         assert_eq!(row.email, "a@example.com");
+    }
+
+    /// The wallets list and pickers: mainnet first, then stagenet, then
+    /// testnet, each by name whatever its case or age.
+    #[test]
+    fn wallets_list_mainnet_first_then_each_test_network_by_name() {
+        let db = Db::open_in_memory().unwrap();
+        let user = UserId::new("u1");
+        db.create_user(&user, "a@example.com", "h", false, 0)
+            .unwrap();
+        for (i, (name, network)) in [
+            ("POS trial", "stagenet"),
+            ("savings", "mainnet"),
+            ("Lab", "testnet"),
+            ("Cake", "mainnet"),
+            ("Feather test", "stagenet"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            db.create_wallet(&NewWalletRow {
+                id: &WalletId::new(format!("w_{i}")),
+                user_id: &user,
+                name,
+                network,
+                primary_address: &format!("addr{i}"),
+                engine_wallet_id: &EngineWalletId::new(format!("e_{i}")),
+                origin: WalletOrigin::Imported,
+                backup: None,
+                created_at: i as i64,
+            })
+            .unwrap();
+        }
+        let names: Vec<String> = db
+            .list_wallets(&user)
+            .unwrap()
+            .into_iter()
+            .map(|w| w.wallet.name)
+            .collect();
+        assert_eq!(
+            names,
+            ["Cake", "savings", "Feather test", "POS trial", "Lab"]
+        );
     }
 }
