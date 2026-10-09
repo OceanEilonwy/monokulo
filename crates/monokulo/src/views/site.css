@@ -106,8 +106,8 @@ pre { padding: var(--space-md); overflow-x: auto; white-space: pre-wrap; word-br
 .net-card > .net-head + h3.caps { margin-top: 0; }
 .net-card .line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm); margin: var(--space-xs) 0; }
 /* A node's proof-of-work verdict: a dot of its tone, then the words. */
-.verdict { display: inline-flex; align-items: center; gap: var(--space-xs); }
-.verdict::before { content: ""; flex: none; width: 0.55em; height: 0.55em; border-radius: 50%; background: var(--pow-verdict-quiet); }
+.verdict { display: inline-flex; align-items: flex-start; gap: var(--space-xs); }
+.verdict::before { content: ""; flex: none; margin-top: 0.45em; width: 0.55em; height: 0.55em; border-radius: 50%; background: var(--pow-verdict-quiet); }
 .verdict.is-ok::before { background: var(--pow-verdict-ok); }
 .verdict.is-watch::before { background: var(--pow-verdict-watch); }
 .verdict.is-bad::before { background: var(--pow-verdict-bad); }
@@ -127,10 +127,12 @@ pre { padding: var(--space-md); overflow-x: auto; white-space: pre-wrap; word-br
 .pip-legend > span { display: inline-flex; align-items: center; gap: var(--space-xs); }
 .pip-legend .pip { flex: none; width: 10px; height: 10px; }
 .pip-legend .pip-tip { height: 12px; margin: 0; }
-.pip-legend .pip-figures { margin-left: auto; font-variant-numeric: tabular-nums; }
+.pip-legend .pip[data-settles] { margin: 0 3px; }
+.pip-figures { margin: var(--space-xs) 0 0; font-size: 0.8em; color: var(--muted); font-variant-numeric: tabular-nums; }
 .pip-anchor { margin: var(--space-xs) 0 0; }
-/* Settlement held: the reason and the way out, in one box. */
-.proof-held { border: 1px solid var(--error); border-radius: var(--radius-md); background: var(--tint-error); padding: var(--space-sm) var(--space-md); margin: var(--space-sm) 0; }
+/* Settlement held: the reason and the way out, in one calm box; the
+   header's tag says it in red. */
+.proof-held { border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--surface-sunken); padding: var(--space-sm) var(--space-md); margin: var(--space-sm) 0; }
 .proof-held p { margin: var(--space-xs) 0; }
 .proof-held form { margin: var(--space-sm) 0 0; }
 .proof-held button { margin: 0; }
@@ -368,8 +370,8 @@ tr:nth-child(even) td { background: color-mix(in srgb, var(--ink) 5%, transparen
   table.table-cards .card-meta:empty { display: none; }
   /* The status page's nodes: the verdict beside the height, then what
      went wrong across the card; reachability only when it's a problem. */
-  table.node-table td.card-amount { display: contents; }
-  table.node-table td.card-amount > .verdict { grid-column: 1; grid-row: 2; font-weight: 400; }
+  table.node-table td.card-amount { display: contents; font-weight: 400; }
+  table.node-table td.card-amount > .verdict { grid-column: 1; grid-row: 2; }
   table.node-table td.card-amount > .sub { grid-column: 1 / -1; }
   table.node-table .card-meta.is-quiet { display: none; }
 }
