@@ -85,7 +85,7 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                                     }
                                 }
                                 td class="col-optional" { (store.platform) }
-                                td class="col-optional" { code class="ellipsis" { (store.public_key) } }
+                                td class="col-optional" { code { (super::short_id(&store.public_key)) } }
                                 td { span class=(format!("tag tag-{}", store.health)) { (store.health_label) } }
                                 td class="nowrap" { a href=(format!("/dashboard/stores/{}", store.connection_id)) { "view →" } }
                             }
@@ -108,8 +108,8 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                                 tr {
                                     td class="col-optional" { (order.display_name) }
                                     td {
-                                        a class="order-id" href=(format!("/dashboard/stores/{}/orders/{}", order.connection_id, order.order_id)) {
-                                            (super::order_id_short(order.order_id.as_str()))
+                                        a href=(format!("/dashboard/stores/{}/orders/{}", order.connection_id, order.order_id)) {
+                                            (super::short_id(order.order_id.as_str()))
                                         }
                                     }
                                     td { (super::state_badge(order.status)) }
@@ -199,6 +199,45 @@ mod tests {
         assert!(html.contains(r#"href="/dashboard/stores/conn_1""#));
         assert!(html.contains("pay_xyz"));
         assert!(html.contains(r#"href="/dashboard/stores/conn_1/orders/pay_xyz""#));
+    }
+
+    /// A real public key and order id are long: each shows as
+    /// `views::short_id` writes it, the whole in reach, the order id a
+    /// plain link.
+    #[test]
+    fn a_long_public_key_and_order_id_are_shortened_with_the_whole_in_reach() {
+        let public_key = format!("pk_b4c4e8{}3fa21c", "0".repeat(36));
+        let order_id = "order_a8723b2e45b0d44ea8723b2e45b0d44e";
+        let data = DashboardViewModel {
+            has_stores: true,
+            stores: vec![DashboardStoreRow {
+                connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+                display_name: "shop.example.com".to_string(),
+                platform: "woocommerce".to_string(),
+                public_key: public_key.clone(),
+                health: "ok".to_string(),
+                health_label: "healthy".to_string(),
+                wallet: None,
+            }],
+            recent_orders: vec![DashboardOrderRow {
+                connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+                display_name: "shop.example.com".to_string(),
+                order_id: shared::ids::OrderId::new(order_id.to_string()),
+                status: shared::order_status::OrderStatus::Paid.into(),
+                amount: "25.00".to_string(),
+                currency: "USD".to_string(),
+                created_at: 1000,
+            }],
+            total_received_xmr: "0".to_string(),
+        };
+        let html = page(&chrome(), &data).into_string();
+        assert!(html.contains(&format!(
+            r#"<td class="col-optional"><code><span title="{public_key}"><span aria-hidden="true">pk_b4c4e8…3fa21c</span><span class="sr-only">{public_key}</span></span></code></td>"#
+        )), "{html}");
+        assert!(html.contains(&format!(
+            r#"<a href="/dashboard/stores/conn_1/orders/{order_id}"><span title="{order_id}"><span aria-hidden="true">a8723b…b0d44e</span><span class="sr-only">{order_id}</span></span></a>"#
+        )), "{html}");
+        assert!(!html.contains("..."), "{html}");
     }
 
     #[test]

@@ -36,13 +36,6 @@ use crate::views::checkout::{CheckoutPaymentViewModel, CheckoutShareViewModel, C
 use super::dashboard::redirect_302;
 use super::{ApiError, AppState};
 
-fn short_txid(txid: &str) -> String {
-    if txid.len() <= 16 {
-        return txid.to_string();
-    }
-    format!("{}…{}", &txid[..8], &txid[txid.len() - 6..])
-}
-
 /// Customer-facing amount guidance; POS keeps its own merchant-facing alerts.
 fn checkout_payment_message(order: &OrderView) -> Option<String> {
     if order.double_spend_detected_at.is_some() {
@@ -507,7 +500,7 @@ async fn build_checkout_view(
             .payments
             .iter()
             .map(|p| CheckoutPaymentViewModel {
-                txid_short: short_txid(&p.txid),
+                txid: p.txid.clone(),
                 amount_xmr: shared::exchange_rate::format_piconero_as_xmr(p.amount_piconero),
                 confirmations: match p.block_height {
                     Some(_) => detail.order.confirmations,

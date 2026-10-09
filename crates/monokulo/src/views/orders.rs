@@ -51,7 +51,7 @@ pub fn orders_table(
             tbody {
                 @for order in orders {
                     tr {
-                        td class="card-title" { a class="order-id" href=(format!("/dashboard/stores/{connection_id}/orders/{}", order.order_id)) { (super::order_id_short(order.order_id.as_str())) } }
+                        td class="card-title" { a href=(format!("/dashboard/stores/{connection_id}/orders/{}", order.order_id)) { (super::short_id(order.order_id.as_str())) } }
                         td class="card-meta" { @if let Some(reference) = &order.reference { (reference) } @else { span class="muted" { "—" } } }
                         td class="card-meta" { (order.source) }
                         td class="card-status" { (super::state_badge(order.status)) }
@@ -369,7 +369,7 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
             @if let Some(order) = &data.order {
                 h1 class="order-title" {
                     (super::reload_button(&chrome.current_path))
-                    span { span class="order-title-label" { "Order · " } code class="order-title-id" { (super::order_id_short(order.order_id.as_str())) } }
+                    span { span class="order-title-label" { "Order · " } code class="order-title-id" { (super::short_id(order.order_id.as_str())) } }
                     a class="share-btn" id="share-payment-link" href=(order.payment_link) target="_blank" rel="noopener"
                        aria-label="Share payment link" title="Share payment link" {
                         svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
@@ -454,6 +454,34 @@ mod tests {
         );
     }
 
+    /// A real order id is long: the list shows it as `views::short_id`
+    /// writes it, inside a plain link, the whole id in reach.
+    #[test]
+    fn list_page_shortens_a_long_order_id_inside_a_plain_link() {
+        let order_id = "order_a8723b2e45b0d44ea8723b2e45b0d44e";
+        let data = OrdersViewModel {
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+            display_name: "shop.example.com".to_string(),
+            orders: vec![OrderRowViewModel {
+                order_id: shared::ids::OrderId::new(order_id.to_string()),
+                reference: None,
+                source: "WooCommerce".to_string(),
+                status: shared::order_status::OrderStatus::Paid.into(),
+                amount: "25.00".to_string(),
+                currency: "USD".to_string(),
+                created_at: 1000,
+            }],
+            search: String::new(),
+            page: 0,
+            has_more: false,
+        };
+        let html = list_page(&chrome(), &data).into_string();
+        assert!(html.contains(&format!(
+            r#"<td class="card-title"><a href="/dashboard/stores/conn_1/orders/{order_id}"><span title="{order_id}"><span aria-hidden="true">a8723b…b0d44e</span><span class="sr-only">{order_id}</span></span></a></td>"#
+        )), "{html}");
+        assert!(!html.contains("..."), "{html}");
+    }
+
     fn test_order_detail_data(double_spend_detected_at: Option<i64>) -> OrderDetailData {
         OrderDetailData {
             from_pos: false,
@@ -508,7 +536,7 @@ mod tests {
         };
         let html = detail_page(&chrome(), &data).into_string();
         assert!(html.contains(r#"<nav class="context-nav" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a><span class="breadcrumb-sep" aria-hidden="true">›</span><a href="/dashboard/stores/conn_1/orders">Orders</a></nav>"#));
-        assert!(html.contains(r#"<span class="order-title-label">Order · </span><code class="order-title-id"><span class="mid-ellipsis" title="pay_abc123"><span class="mid-head">pay_</span><span class="mid-tail">abc123</span></span></code>"#), "{html}");
+        assert!(html.contains(r#"<span class="order-title-label">Order · </span><code class="order-title-id">pay_abc123</code>"#), "{html}");
     }
 
     #[test]

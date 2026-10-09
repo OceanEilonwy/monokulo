@@ -102,11 +102,14 @@ pub mod pos;
 pub mod scaling;
 pub mod settings;
 pub mod setup;
+mod shorten;
 pub mod status;
 pub mod store_detail;
 pub mod store_settings;
 pub mod time;
 pub mod wallets;
+
+pub use shorten::{short_address, short_address_text, short_id, short_id_text};
 
 /// Every colour, and the spacing, radius and type tokens: the only place a
 /// colour is defined (`theme_tests`).
@@ -469,38 +472,6 @@ pub fn state_badge(status: impl Into<DisplayStatus> + Copy) -> Markup {
     }
 }
 
-/// An order id as people read it: without the `order_` every id starts
-/// with, cut in the middle when it doesn't fit (as the macOS Finder cuts a
-/// long file name), so its start and its last characters both show. The
-/// whole id stays in the page, for find-in-page, and in `title`.
-pub fn order_id_short(order_id: &str) -> Markup {
-    let id = order_id.strip_prefix("order_").unwrap_or(order_id);
-    mid_ellipsis(id, 6, order_id)
-}
-
-/// A wallet address as [`order_id_short`] shows an id: its start, an
-/// ellipsis in the middle when it doesn't fit, and its last seven
-/// characters whole. The whole address stays in the page and in `title`.
-pub fn address_short(address: &str) -> Markup {
-    mid_ellipsis(address, 7, address)
-}
-
-/// `text` cut in the middle when it doesn't fit (`.mid-ellipsis`), its
-/// last `tail` characters always shown.
-fn mid_ellipsis(text: &str, tail: usize, title: &str) -> Markup {
-    let split = text
-        .char_indices()
-        .rev()
-        .nth(tail - 1)
-        .map_or(0, |(i, _)| i);
-    html! {
-        span class="mid-ellipsis" title=(title) {
-            span class="mid-head" { (&text[..split]) }
-            span class="mid-tail" { (&text[split..]) }
-        }
-    }
-}
-
 /// A Monero network as a badge (`.tag-network`), the same wherever a
 /// network is shown: the word always, with an icon and an edge to back it
 /// up. Mainnet (real money) has the brand's orange tint and a solid edge;
@@ -821,31 +792,6 @@ mod theme_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_order_id_drops_its_prefix_and_keeps_its_last_six_characters_whole() {
-        let html = order_id_short("order_a8723b2e45b0d44e").into_string();
-        assert_eq!(
-            html,
-            r#"<span class="mid-ellipsis" title="order_a8723b2e45b0d44e"><span class="mid-head">a8723b2e45</span><span class="mid-tail">b0d44e</span></span>"#
-        );
-        assert!(order_id_short("abc")
-            .into_string()
-            .contains(r#"<span class="mid-head"></span><span class="mid-tail">abc</span>"#));
-    }
-
-    #[test]
-    fn an_address_keeps_its_last_seven_characters_whole_and_all_of_it_in_the_page() {
-        let address = "4AdUndXHHZ6cfufTMvppY6JwXNouMBzSkbLYfpAV5Usx3skxNgYeYTRj5UzqtReoS44qo9mtmXCqY45DJ852K5Jv2684Rge";
-        let html = address_short(address).into_string();
-        assert_eq!(
-            html,
-            format!(
-                r#"<span class="mid-ellipsis" title="{address}"><span class="mid-head">{}</span><span class="mid-tail">2684Rge</span></span>"#,
-                &address[..address.len() - 7]
-            )
-        );
-    }
 
     #[test]
     fn a_network_badge_always_says_the_network_and_marks_mainnet_apart() {

@@ -1028,7 +1028,7 @@ async fn store_wallet_view(
             views::store_settings::WalletChoice {
                 id: w.wallet.id.to_string(),
                 name: w.wallet.name.clone(),
-                short_address: views::wallets::short_address(&w.wallet.primary_address),
+                short_address: views::short_address_text(&w.wallet.primary_address),
                 current: is_current,
                 network: w.wallet.network.clone(),
                 other_stores: w.store_count.saturating_sub(u64::from(is_current)),
@@ -2404,8 +2404,10 @@ mod tests {
             "expected the title banner to carry the share button, got: {html}"
         );
         assert!(
-            html.contains(r#"<code class="order-title-id"><span class="mid-ellipsis""#)
-                && html.contains(&format!(r#"title="{order_id}""#)),
+            html.contains(&format!(
+                r#"<code class="order-title-id"><span title="{order_id}"><span aria-hidden="true">{}</span>"#,
+                views::short_id_text(order_id.as_str())
+            )),
             "expected the order id inside the title banner, got: {html}"
         );
         assert!(
