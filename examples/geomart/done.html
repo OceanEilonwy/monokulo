@@ -98,6 +98,16 @@ const fakeApi = (() => {
       save();
       return Promise.resolve(orders[id]);
     },
+    // Keeps Monokulo's order id with Geomart's own, for the webhook.
+    linkPayment(id, monokuloOrderId) {
+      if (orders[id]) orders[id].monokuloOrderId = monokuloOrderId;
+      save();
+      return Promise.resolve();
+    },
+    // Geomart's order for Monokulo's order id.
+    orderFor(monokuloOrderId) {
+      return Object.values(orders).find((o) => o.monokuloOrderId === monokuloOrderId)?.id;
+    },
     // Ships an order once Monokulo's signed webhook says it's paid.
     markPaid(id) {
       if (orders[id]) orders[id].paid = true;
@@ -111,7 +121,7 @@ const fakeApi = (() => {
       const event = JSON.parse(body);
       if (seen.has(event.event_id)) return 200;          // deliveries can repeat
       seen.add(event.event_id);
-      if (event.event === "order.paid") this.markPaid(event.merchant_order_id);
+      if (event.event === "order.paid") this.markPaid(this.orderFor(event.order_id));
       return 200;
     },
   };
@@ -197,6 +207,7 @@ async function checkout() {
       currency: "EUR",
       merchantOrderId: receipt.id,    // "gm-1042"
     });
+    await fakeApi.linkPayment(receipt.id, order.orderId);
     Monokulo.mount("#pay", order, {
       theme: "light",
       onStatusChange: (status) => setBanner(status),

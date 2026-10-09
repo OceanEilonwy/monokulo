@@ -12,7 +12,7 @@ you pass `endpoint`.
 | `publicKey` | string, required | The store's `pk_…`. |
 | `amount` | number or string, required | The price, in `currency`. |
 | `currency` | string, required | `"XMR"`, or a currency the store's exchange rate provider prices (`"EUR"`). |
-| `merchantOrderId` | string, optional | Your own order or cart id, kept with the order and sent back in its webhooks. |
+| `merchantOrderId` | string, optional | Your own order or cart id, kept with the order and shown on its page in the dashboard. |
 | `endpoint` | string, optional | Monokulo's address, if it can't be read from the script tag. |
 
 Resolves to `{ orderId, address, xmrAmountPiconero, amount, currency,

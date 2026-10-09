@@ -1178,13 +1178,9 @@ in front of customers.
   id, a retry of a lost-ack delivery is byte-identical to a genuine second transition
   to the same status, and `created_at` tells the merchant when the event happened
   (the signed `t` tells them when this attempt was sent).
-- Every order event also names the order as the merchant knows it:
-  `merchant_order_id` (only when the order was created with one), `amount` and
-  `currency`. The engine prices orders in XMR only, so `amount` is the order's
-  XMR amount as a fixed 12-decimal string (`"0.041200000000"`) and `currency` is
-  always `"XMR"`; an order's fiat price lives in monokulo. A receiver can act on
-  `order.paid` without a lookup. The public guide to all of this is
-  `docs/site/paid.md`.
+- A status event's own fields are `order_id` and `status`; the double-spend
+  events carry `order_id` (and `txid` when one is reversed). Richer fields (the shop's own order id, the fiat price with its exchange-rate source and rate, the store) arrive when Monokulo takes over webhook delivery from the engine, which is planned.
+  The public guide is `docs/site/paid.md`.
 - Failure handling: short timeout (a few seconds), exponential backoff via
   `attempt_count`/`next_attempt_at`, giving up after a bounded number of attempts (row
   stays for inspection via the admin API, retries just stop).

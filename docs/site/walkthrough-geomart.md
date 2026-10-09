@@ -42,7 +42,11 @@ Monokulo's address from its own URL.
 +      currency: "EUR",
 +      merchantOrderId: receipt.id,    // "gm-1042"
 +    });
++    await fakeApi.linkPayment(receipt.id, order.orderId);   // for step 5
 ```
+
+Geomart keeps Monokulo's `orderId` with its own order: the webhook in step 5
+names Monokulo's order, and this is how the shop finds its own.
 
 ### Step 4 · Show the checkout
 
@@ -67,25 +71,22 @@ Geomart's fake API shows the handler a real server needs:
 ```diff
 # examples/geomart/index.html · fakeApi (stands in for your server)
 +  // POST /hooks/monokulo   X-Monokulo-Signature: t=…,v1=…
-+  // body: {"event":"order.paid","order_id":"…","merchant_order_id":"gm-1042",
-+  //        "amount":"0.041200000000","currency":"XMR","status":"paid",
++  // body: {"event":"order.paid","order_id":"pay_…","status":"paid",
 +  //        "event_id":"evt_…","created_at":…}
 +  async onMonokuloWebhook(headers, body) {
 +    if (!(await signatureOk(headers["x-monokulo-signature"], body, WEBHOOK_SECRET))) return 400;
 +    const event = JSON.parse(body);
 +    if (seen.has(event.event_id)) return 200;          // deliveries can repeat
 +    seen.add(event.event_id);
-+    if (event.event === "order.paid") this.markPaid(event.merchant_order_id);
++    if (event.event === "order.paid") this.markPaid(this.orderFor(event.order_id));
 +    return 200;
 +  },
 ```
 
 The signature is HMAC-SHA256 of `"<t>.<body>"` with the signing secret;
-accept it only within five minutes of `t`. The body names your own
-`merchant_order_id` (from step 3), so the handler needs no lookup table. It
-also carries the order's `amount` and `currency`: Monokulo's engine prices
-every order in XMR, so these are the XMR amount (`"0.041200000000"`) and
-`"XMR"`, not the euro price your page asked for.
+accept it only within five minutes of `t`. The body names Monokulo's
+`order_id`; the handler finds Geomart's own order from the link it kept in
+step 3. Richer fields (the shop's own order id, the fiat price with its exchange-rate source and rate, the store) arrive when Monokulo takes over webhook delivery from the engine, which is planned.
 
 > **No server? (Geomart is one HTML file.)** A webhook needs somewhere to
 > arrive, and `onPaid` runs in the customer's browser, so it can be faked. A

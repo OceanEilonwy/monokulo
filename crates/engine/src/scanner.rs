@@ -583,12 +583,6 @@ pub(crate) async fn check_vanished_candidates(
 /// timestamp being inside the signed body (rather than only an unsigned header) is
 /// what stops a captured delivery from being replayable against the merchant
 /// indefinitely.
-///
-/// Every event also names the order the way the merchant knows it: its
-/// `merchant_order_id` (when the order was created with one), and its `amount`
-/// and `currency`. The engine prices orders only in XMR, so `amount` is the
-/// order's XMR amount as a fixed 12-decimal string (`"0.041200000000"`) and
-/// `currency` is always `"XMR"`; an order's fiat price lives in monokulo.
 fn enqueue_webhook_event(
     store: &Store,
     order_id: &crate::store::OrderId,
@@ -608,27 +602,11 @@ fn enqueue_webhook_event(
     if webhooks.is_empty() {
         return Ok(());
     }
-    let order = store
-        .get_order(&tenant_id, order_id)?
-        .ok_or(StoreError::NotFound)?;
 
     let mut envelope: serde_json::Map<String, serde_json::Value> = fields
         .iter()
         .map(|(name, value)| ((*name).to_owned(), serde_json::Value::from(*value)))
         .collect();
-    if let Some(merchant_order_id) = &order.merchant_order_id {
-        envelope.insert(
-            "merchant_order_id".into(),
-            serde_json::json!(merchant_order_id),
-        );
-    }
-    envelope.insert(
-        "amount".into(),
-        serde_json::json!(shared::xmr_amount::format_piconero_as_xmr(
-            order.xmr_amount_piconero
-        )),
-    );
-    envelope.insert("currency".into(), serde_json::json!("XMR"));
     envelope.insert("event_id".into(), serde_json::json!(new_event_id()));
     envelope.insert("event".into(), serde_json::json!(event_type));
     envelope.insert("created_at".into(), serde_json::json!(now));
