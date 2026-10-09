@@ -2405,7 +2405,7 @@ mod tests {
         );
         assert!(
             html.contains(&format!(
-                r#"<code class="order-title-id"><span title="{order_id}"><span aria-hidden="true">{}</span>"#,
+                r#"<code class="order-title-id"><span class="short-value" title="{order_id}"><span class="short-value-text" aria-hidden="true">{}</span>"#,
                 views::short_id_text(order_id.as_str())
             )),
             "expected the order id inside the title banner, got: {html}"

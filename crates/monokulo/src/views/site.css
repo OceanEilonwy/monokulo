@@ -636,6 +636,17 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
   white-space: nowrap;
   border: 0;
 }
+/* A shortened value (`views::short_id`): the short text shows; the whole
+   value lies over it, transparent and clipped to the short text's box. An
+   id is one word, so a double-click selects it all and a copy takes exactly
+   the whole value; a screen reader reads it (the short text is
+   `aria-hidden`); find-in-page matches it. `user-select: text`, not `all`:
+   Firefox's double-click on a `user-select: all` element selects nothing. Inside a link it keeps the link's underline
+   (`text-decoration: inherit`: an inline-block doesn't get it otherwise). */
+.short-value { position: relative; display: inline-block; text-decoration: inherit; }
+.short-value-text { user-select: none; }
+.short-value-full { position: absolute; inset: 0; overflow: hidden; white-space: nowrap; color: transparent; user-select: text; }
+.short-value-full::selection { color: transparent; }
 /* Three form buttons make each theme a direct target. Their sibling hover
    rules preview the indicator position without JavaScript. */
 .theme-toggle {

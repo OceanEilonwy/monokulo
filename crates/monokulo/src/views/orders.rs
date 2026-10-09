@@ -477,7 +477,7 @@ mod tests {
         };
         let html = list_page(&chrome(), &data).into_string();
         assert!(html.contains(&format!(
-            r#"<td class="card-title"><a href="/dashboard/stores/conn_1/orders/{order_id}"><span title="{order_id}"><span aria-hidden="true">a8723b…b0d44e</span><span class="sr-only">{order_id}</span></span></a></td>"#
+            r#"<td class="card-title"><a href="/dashboard/stores/conn_1/orders/{order_id}"><span class="short-value" title="{order_id}"><span class="short-value-text" aria-hidden="true">a8723b…b0d44e</span><span class="short-value-full">{order_id}</span></span></a></td>"#
         )), "{html}");
         assert!(!html.contains("..."), "{html}");
     }

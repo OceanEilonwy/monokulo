@@ -232,10 +232,10 @@ mod tests {
         };
         let html = page(&chrome(), &data).into_string();
         assert!(html.contains(&format!(
-            r#"<td class="col-optional"><code><span title="{public_key}"><span aria-hidden="true">pk_b4c4e8…3fa21c</span><span class="sr-only">{public_key}</span></span></code></td>"#
+            r#"<td class="col-optional"><code><span class="short-value" title="{public_key}"><span class="short-value-text" aria-hidden="true">pk_b4c4e8…3fa21c</span><span class="short-value-full">{public_key}</span></span></code></td>"#
         )), "{html}");
         assert!(html.contains(&format!(
-            r#"<a href="/dashboard/stores/conn_1/orders/{order_id}"><span title="{order_id}"><span aria-hidden="true">a8723b…b0d44e</span><span class="sr-only">{order_id}</span></span></a>"#
+            r#"<a href="/dashboard/stores/conn_1/orders/{order_id}"><span class="short-value" title="{order_id}"><span class="short-value-text" aria-hidden="true">a8723b…b0d44e</span><span class="short-value-full">{order_id}</span></span></a>"#
         )), "{html}");
         assert!(!html.contains("..."), "{html}");
     }

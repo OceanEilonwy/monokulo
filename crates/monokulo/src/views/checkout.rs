@@ -1214,7 +1214,7 @@ mod tests {
         let html = checkout_page(&chrome(), &data).into_string();
         // Each txid as `views::short_id` shows it, the whole in reach.
         assert!(html.contains(&format!(
-            r#"<td><span title="3f9a1c{0}e21b07"><span aria-hidden="true">3f9a1c…e21b07</span><span class="sr-only">3f9a1c{0}e21b07</span></span></td>"#,
+            r#"<td><span class="short-value" title="3f9a1c{0}e21b07"><span class="short-value-text" aria-hidden="true">3f9a1c…e21b07</span><span class="short-value-full">3f9a1c{0}e21b07</span></span></td>"#,
             "9".repeat(52)
         )), "{html}");
         assert!(html.contains("<td>short-txid</td>"), "{html}");

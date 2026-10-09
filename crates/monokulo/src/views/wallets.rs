@@ -1094,7 +1094,7 @@ mod tests {
         assert!(!html.contains("test-wallets"), "{html}");
         assert!(!html.contains("No mainnet wallets yet"), "{html}");
         // The address shortened by `views::short_address`, all of it in reach.
-        assert!(html.contains(r#"<code><span title="Cake-address-0123456789abcdef"><span aria-hidden="true">Cake-a…s-0123…abcdef</span><span class="sr-only">Cake-address-0123456789abcdef</span></span></code>"#), "{html}");
+        assert!(html.contains(r#"<code><span class="short-value" title="Cake-address-0123456789abcdef"><span class="short-value-text" aria-hidden="true">Cake-a…s-0123…abcdef</span><span class="short-value-full">Cake-address-0123456789abcdef</span></span></code>"#), "{html}");
         assert!(!html.contains("..."), "{html}");
         // On a phone, "2 stores" and "1 store".
         assert!(
