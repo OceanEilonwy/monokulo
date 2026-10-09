@@ -1840,7 +1840,7 @@ mod tests {
         assert!(!html.contains("<dt>Network</dt>"), "{html}");
         assert!(!html.to_lowercase().contains("real money"), "{html}");
         assert!(
-            html.contains(r#"<dt>Address</dt><dd><code><span class="mid-ellipsis""#),
+            html.contains(r#"<dt>Address</dt><dd><code><span class="short-value""#),
             "{html}"
         );
         assert!(html.contains("<dt>Kind</dt><dd>Brought in</dd>"), "{html}");
