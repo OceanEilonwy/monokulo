@@ -104,7 +104,7 @@ test('a new wallet is made in the browser, saved, checked with three of its word
   await page.goto(base + '/account?tab=wallets');
   const row = page.locator('tr', { hasText: 'Copper Heron' });
   await expect(row).toContainText('Made in Monokulo');
-  await expect(row).toContainText('stagenet');
+  await expect(row).toContainText('Stagenet');
 });
 
 test('skipping the backup needs the warning read, the box ticked and "skip" typed', async ({ page }) => {
