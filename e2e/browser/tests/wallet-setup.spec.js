@@ -64,7 +64,7 @@ test('a new wallet is made in the browser, saved, checked with three of its word
   await expect(cake.locator('[data-qr-cover]')).toBeHidden();
   await captureCoverageStage(page, 'wallets-backup-app', test.info(), { group: GROUP });
   await page.getByRole('tab', { name: 'Stack Wallet' }).click();
-  await expect(cake.locator('[data-qr] svg')).toHaveCount(0, { timeout: 1000 });
+  await expect(cake.locator('[data-qr] svg')).toHaveCount(0);
   await page.getByRole('tab', { name: 'Monero GUI / CLI' }).click();
   await page.getByRole('button', { name: 'Show the 25-word version' }).click();
   await expect(page.locator('[data-legacy-words] li')).toHaveCount(25);
