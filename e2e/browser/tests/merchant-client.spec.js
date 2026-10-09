@@ -1,7 +1,7 @@
 // The embed library as a merchant's static site uses it: a page on the
 // merchant's own origin loads monokulo-client.js with a <script src>,
 // creates an order, mounts the checkout, and reacts to the customer paying.
-const { test, expect, pauseClockAt } = require('../coverage-test');
+const { test, expect, pauseClockAt, recordEventSources, eventSources, EVENT_SOURCE_CLOSED, recordFetches, fetches } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
 
 let fixture;
@@ -17,21 +17,9 @@ test.beforeEach(async ({ context }) => {
 });
 
 async function openShop(page) {
-  // The shop page's own record of the library's streams: each EventSource
-  // it opens, and (a listener added in the constructor runs before the
-  // library's, in the same dispatch) each refusal the library has handled.
-  await page.addInitScript(() => {
-    const Native = window.EventSource;
-    window.streams = [];
-    window.EventSource = class extends Native {
-      constructor(...args) {
-        super(...args);
-        const record = { url: String(args[0]), refused: 0, source: this };
-        window.streams.push(record);
-        this.addEventListener('error', () => { if (this.readyState === Native.CLOSED) record.refused++; });
-      }
-    };
-  });
+  // The library tells the merchant about the order, nothing about how it
+  // follows it; its streams are recorded (recordEventSources) for that.
+  await recordEventSources(page);
   await page.goto(`${shopOrigin}/__coverage/ready`);
   await page.setContent(`<!doctype html><div id="pay"></div><p id="log"></p>
     <script src="${fixture.base_url}/static/monokulo-client.js"></script>`);
@@ -41,11 +29,6 @@ async function openShop(page) {
     window.track = name => (status, data) => window.events.push([name, typeof status === 'string' ? status : status.status]);
   });
 }
-
-/** The shop page's streams: each one's `readyState` and the refusals it handled. */
-const streams = page => page.evaluate(() => window.streams.map(({ source, refused }) => ({ readyState: source.readyState, refused })));
-/** `EventSource.CLOSED`: the stream is over for good, by the server's refusal or the library's close(). */
-const CLOSED = 2;
 
 test('merchant site creates an order, mounts the checkout, and is told once when it is paid', async ({ page, request }) => {
   await openShop(page);
@@ -68,7 +51,7 @@ test('merchant site creates an order, mounts the checkout, and is told once when
   // Nothing fires twice for the same state: a final order's stream is
   // closed for good (the browser would otherwise reopen it and get the
   // state again), so the merchant hears no more.
-  await expect.poll(() => streams(page), 'the library closed its one stream').toEqual([{ readyState: CLOSED, refused: 0 }]);
+  await expect.poll(() => eventSources(page), 'the library closed its one stream').toEqual([expect.objectContaining({ readyState: EVENT_SOURCE_CLOSED, refused: 0 })]);
   expect(await page.evaluate(() => window.events)).toHaveLength(3);
 });
 
