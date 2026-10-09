@@ -876,12 +876,24 @@ a.order-id { display: inline-block; max-width: 11em; }
 .btn-primary[disabled], button.btn-primary[disabled]:hover { opacity: .45; cursor: not-allowed; background: var(--btn-primary-bg); border-color: var(--btn-primary-bg); }
 
 /* A field's check, under it: right, wrong, or just a hint. */
-.field-check { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); font-size: .88em; font-weight: 700; margin-top: var(--space-xs); color: var(--muted); }
+.field-check { display: block; font-size: .88em; font-weight: 700; margin-top: var(--space-xs); color: var(--muted); }
 .field-check.ok { color: var(--success); }
 .field-check.bad { color: var(--error); }
 .field-check a { color: inherit; }
 input[aria-invalid="true"] { border-color: var(--error); }
-.two-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 0 var(--space-lg); }
+/* Two fields side by side read as one form: the labels, the help, the
+   boxes and any error each share a row across both columns (subgrid), so a
+   longer help text or one field's error never pushes the other out of line.
+   One column on a phone. */
+.two-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--space-xl); row-gap: var(--space-xs); margin: 0 0 var(--space-lg); }
+.two-fields > .setting-field { display: grid; grid-row: span 4; grid-template-rows: subgrid; align-content: start; margin: 0; min-width: 0; }
+.two-fields > .setting-field > * { margin: 0; }
+.two-fields > .setting-field > .setting-label-row { align-self: end; }
+.two-fields > .setting-field > input { width: 100%; }
+@media (max-width: 640px) {
+  .two-fields { grid-template-columns: minmax(0, 1fr); }
+  .two-fields > .setting-field + .setting-field { margin-top: var(--space-md); }
+}
 
 /* The store step: where payments are taken, as whole-card choices. The
    radio is visually hidden inside the label, so the cards work without
