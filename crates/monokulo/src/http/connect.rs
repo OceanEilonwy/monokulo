@@ -474,6 +474,28 @@ pub async fn finish(
         None => (None, None),
     };
 
+    // Connecting again while still connected: the earlier connection's
+    // webhook goes, so the shop isn't sent each event twice.
+    let (store_id, kind) = (row.id.clone(), platform.clone());
+    let earlier = state
+        .db
+        .read(move |db| db.active_integration(&store_id))
+        .await
+        .ok()
+        .flatten()
+        .filter(|i| i.kind == kind)
+        .and_then(|i| i.webhook_id);
+    if let Some(earlier) = earlier {
+        if let Err(e) = state
+            .engine
+            .client
+            .delete_webhook(&secret_token, &earlier)
+            .await
+        {
+            tracing::warn!(store.id = %row.id, error = %e, "the earlier connection's webhook could not be removed");
+        }
+    }
+
     let version = super::pay::client_version(&headers, &platform).unwrap_or_default();
     let (store_id, site, webhook_url) = (row.id.clone(), row.site.clone(), req.webhook_url.clone());
     let recorded = state
@@ -1104,6 +1126,32 @@ mod tests {
         let rows = state.db.lock().list_integrations(&id).unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows[0].disconnected_at.is_none() && rows[1].disconnected_at.is_some());
+        assert_eq!(engine_client.list_webhooks(&new_sk).await.unwrap().len(), 1);
+        // And again while connected: the earlier row closes and its webhook
+        // goes, so there's still one.
+        let once_more = router
+            .clone()
+            .oneshot(form_request(
+                "/connect/woocommerce",
+                Some(&cookie),
+                &[
+                    ("site_url", "https://shop.example.com/"),
+                    ("return_url", "https://shop.example.com/settings"),
+                    ("nonce", "nonce-once-more"),
+                    ("connection_id", id.as_str()),
+                ],
+            ))
+            .await
+            .unwrap();
+        let token = parse_query_params(&location(&once_more))["token"].clone();
+        finish_as_plugin(&router, &token, "0.4.0").await;
+        let rows = state.db.lock().list_integrations(&id).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows.iter().filter(|r| r.disconnected_at.is_none()).count(),
+            1
+        );
+        assert_eq!(engine_client.list_webhooks(&new_sk).await.unwrap().len(), 1);
 
         // An order from the plugin: seen now, at its new version; and while
         // it can be paid, disconnecting waits.

@@ -441,6 +441,16 @@ async fn connect_plugin(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let sk = store_secret(&control)?;
     let url = "https://shop.localhost/?wc-api=monokulo";
+    // As connecting again does: the earlier connection's webhook goes.
+    let earlier = control
+        .db
+        .lock()
+        .active_integration(&shared::ids::ConnectionId::new("coverage-store"))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .and_then(|i| i.webhook_id);
+    if let Some(earlier) = earlier {
+        let _ = control.client.delete_webhook(&sk, &earlier).await;
+    }
     let (webhook_id, _) = control
         .client
         .create_webhook(&sk, url, &Default::default())
