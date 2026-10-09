@@ -8,7 +8,7 @@
 
 use maud::{html, Markup};
 
-use super::{layout_with_head, PageChrome};
+use super::{layout_with_head, script, Load, PageChrome};
 
 pub struct CreateOrderData {
     pub connection_id: crate::db::ConnectionId,
@@ -76,19 +76,7 @@ pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
             }
         }
     };
-    let head = html! { script { (maud::PreEscaped(r#"window.addEventListener('pageshow', function (event) {
-        var navigation = performance.getEntriesByType('navigation')[0];
-        if (event.persisted || (navigation && navigation.type === 'back_forward')) {
-            var key = document.querySelector('input[name=request_key]');
-            if (key) {
-                if (crypto.randomUUID) key.value = crypto.randomUUID();
-                else {
-                    var bytes = crypto.getRandomValues(new Uint8Array(16));
-                    key.value = Array.from(bytes, function (b) { return b.toString(16).padStart(2, '0'); }).join('');
-                }
-            }
-        }
-    });"#)) } };
+    let head = script("create-order.js", Load::Now);
     layout_with_head(
         chrome,
         &format!("Create order - {} - Monokulo", data.display_name),

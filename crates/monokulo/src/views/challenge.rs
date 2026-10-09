@@ -10,7 +10,7 @@
 
 use maud::{html, Markup};
 
-use super::{layout_bare, layout_bare_with_head, PageChrome};
+use super::{layout_bare, layout_bare_with_head, script, Load, PageChrome};
 
 pub struct ChallengePageView {
     /// The signed proof-of-work challenge.
@@ -74,7 +74,7 @@ pub fn challenge_page(chrome: &PageChrome, view: &ChallengePageView) -> Markup {
                 "before continuing. Nothing is stored on your device, and you won't be asked again for a while."
             }
         }
-        script src="/static/challenge.js" {}
+        (script("challenge.js", Load::Now))
     };
     layout_bare_with_head(
         chrome,
@@ -126,6 +126,6 @@ mod tests {
         );
         assert!(html.contains(r#"role="status""#));
         assert!(html.contains(r#"data-challenge="abc.def""#));
-        assert!(html.contains(r#"src="/static/challenge.js""#));
+        assert!(html.contains(&format!(r#"src="{}""#, crate::assets::url("challenge.js"))));
     }
 }

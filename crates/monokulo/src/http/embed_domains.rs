@@ -1159,7 +1159,9 @@ mod tests {
             .unwrap()
         };
         assert!(
-            !checkout_html().await.contains("/static/telemetry.js"),
+            !checkout_html()
+                .await
+                .contains(&crate::assets::url("telemetry.js")),
             "off by default (D8)"
         );
         let (_, settings) = send(
@@ -1175,7 +1177,7 @@ mod tests {
             "{settings}"
         );
         assert!(
-            !settings.contains("/static/telemetry.js"),
+            !settings.contains(&crate::assets::url("telemetry.js")),
             "the store's own pages don't report either"
         );
 
@@ -1192,7 +1194,9 @@ mod tests {
             .lock()
             .client_logging(&shared::ids::ConnectionId::new(id.to_string()))
             .unwrap());
-        assert!(checkout_html().await.contains("/static/telemetry.js"));
+        assert!(checkout_html()
+            .await
+            .contains(&crate::assets::url("telemetry.js")));
         let (_, settings) = send(
             &router,
             "GET",
@@ -1201,7 +1205,7 @@ mod tests {
             None,
         )
         .await;
-        assert!(settings.contains("/static/telemetry.js"));
+        assert!(settings.contains(&crate::assets::url("telemetry.js")));
 
         // With fixi: just the section comes back.
         let request = Request::builder()

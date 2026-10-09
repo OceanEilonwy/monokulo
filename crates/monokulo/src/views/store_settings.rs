@@ -10,7 +10,7 @@
 
 use maud::{html, Markup};
 
-use super::{layout_with_head, PageChrome};
+use super::{layout_with_head, script, Load, PageChrome};
 
 /// One row of the FX-provider settings dropdown.
 pub struct FxProviderOption {
@@ -802,8 +802,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
         Some(store) => format!("Settings - {} - Monokulo", store.display_name),
         None => "Store not found - Monokulo".to_string(),
     };
-    let head =
-        html! { script { (maud::PreEscaped(include_str!("../../static/settings-dialogs.js"))) } };
+    let head = script("settings-dialogs.js", Load::Now);
     layout_with_head(chrome, &title, head, body)
 }
 

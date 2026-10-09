@@ -716,76 +716,12 @@ pub fn build_router(state: AppState) -> Router {
         "/static/monokulo-client.js",
         axum::routing::get(pay::client_library).layer(any_origin_cors_layer()),
     );
+    // Every other file baked into the binary (`crate::assets`): scripts and
+    // styles at URLs carrying their digest, fonts, marks and modules by name.
+    let router = router.route("/static/{*file}", axum::routing::get(crate::assets::serve));
     let router = router.route(
-        "/static/checkout.js",
-        axum::routing::get(pay::checkout_script),
-    );
-    let router = router.route(
-        "/static/challenge.js",
-        axum::routing::get(pay::challenge_script),
-    );
-    let router = router.route("/static/pos-app.js", axum::routing::get(pay::pos_script));
-    let router = router.route("/static/pos-app.css", axum::routing::get(pay::pos_style));
-    let router = router.route(
-        "/static/jsQR.js",
-        axum::routing::get(pay::qr_decoder_script),
-    );
-    let router = router.route(
-        "/static/telemetry.js",
-        axum::routing::get(pay::telemetry_script),
-    );
-    let router = router.route("/static/fixi.js", axum::routing::get(pay::fixi_script));
-    let router = router.route(
-        "/static/engine-view.js",
-        axum::routing::get(pay::engine_view_script),
-    );
-    let router = router
-        .route(
-            "/static/key-custody.js",
-            axum::routing::get(key_entry::script),
-        )
-        .route(
-            "/static/key-custody.wasm",
-            axum::routing::get(key_entry::module),
-        )
-        .route(
-            "/static/wallet-setup.js",
-            axum::routing::get(wallets::script),
-        )
-        .route(
-            "/static/wallet-setup.wasm",
-            axum::routing::get(wallets::module),
-        )
-        .route(
-            "/static/wallet-logos/{file}",
-            axum::routing::get(wallets::logo),
-        )
-        .route(
-            "/key-custody/bundles/{id}",
-            axum::routing::get(key_entry::bundle),
-        );
-    let router = router.route("/static/ssexi.js", axum::routing::get(pay::ssexi_script));
-    let router = router.route(
-        "/static/fx-glue.js",
-        axum::routing::get(pay::fx_glue_script),
-    );
-    let router = router.route(
-        "/static/mk-select.js",
-        axum::routing::get(pay::mk_select_script),
-    );
-    let router = router.route("/static/logo.svg", axum::routing::get(pay::logo_svg));
-    let router = router.route("/static/favicon.svg", axum::routing::get(pay::favicon_svg));
-    let router = router.route(
-        "/static/manrope-500.woff2",
-        axum::routing::get(pay::manrope_500_woff2),
-    );
-    let router = router.route(
-        "/static/manrope-700.woff2",
-        axum::routing::get(pay::manrope_700_woff2),
-    );
-    let router = router.route(
-        "/static/manrope-800.woff2",
-        axum::routing::get(pay::manrope_800_woff2),
+        "/key-custody/bundles/{id}",
+        axum::routing::get(key_entry::bundle),
     );
 
     // Test-only route exercising `AuthedUser` - see its doc comment.

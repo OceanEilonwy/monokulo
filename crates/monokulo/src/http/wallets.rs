@@ -962,38 +962,6 @@ pub async fn restore(
     redirect_303(&format!("/dashboard/wallets/{}?restored=1", wallet.id))
 }
 
-// -- The page's script, its module and the wallet app icons -----------------
-
-pub async fn script(headers: axum::http::HeaderMap) -> Response {
-    super::pay::static_asset(
-        &headers,
-        "text/javascript; charset=utf-8",
-        super::pay::REVALIDATE,
-        include_bytes!("../../static/wallet-setup.js"),
-    )
-}
-
-pub async fn module(headers: axum::http::HeaderMap) -> Response {
-    super::pay::static_asset(
-        &headers,
-        "application/wasm",
-        super::pay::REVALIDATE,
-        include_bytes!(concat!(env!("OUT_DIR"), "/wallet_setup.wasm")),
-    )
-}
-
-pub async fn logo(headers: axum::http::HeaderMap, Path(file): Path<String>) -> Response {
-    let bytes: &'static [u8] = match file.as_str() {
-        "cake.png" => include_bytes!("../../static/wallet-logos/cake.png"),
-        "monerocom.png" => include_bytes!("../../static/wallet-logos/monerocom.png"),
-        "stack.png" => include_bytes!("../../static/wallet-logos/stack.png"),
-        "feather.png" => include_bytes!("../../static/wallet-logos/feather.png"),
-        "gui.png" => include_bytes!("../../static/wallet-logos/gui.png"),
-        _ => return StatusCode::NOT_FOUND.into_response(),
-    };
-    super::pay::static_asset(&headers, "image/png", super::pay::REVALIDATE, bytes)
-}
-
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
@@ -1219,7 +1187,7 @@ mod tests {
             html.contains(r#"data-wallet-setup"#) && html.contains(r#"data-name="Copper Heron""#)
         );
         assert!(html.contains("Back up Copper Heron"));
-        assert!(html.contains("/static/wallet-logos/cake.png"));
+        assert!(html.contains(&crate::assets::url("wallet-logos/cake.png")));
         assert!(
             !html.contains(r#"name="phrase""#) && !html.contains(r#"name="seed""#),
             "the form posts no phrase field at all: {html}"

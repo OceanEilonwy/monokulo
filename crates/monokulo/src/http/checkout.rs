@@ -1183,7 +1183,7 @@ mod tests {
             "the checkout page must not depend on JS to format any timestamp, got: {html}"
         );
         // The server-rendered page remains meaningful without JavaScript.
-        assert!(html.contains("/static/checkout.js"));
+        assert!(html.contains(&crate::assets::url("checkout.js")));
         assert!(html.contains("Auto Refresh: ON"));
         assert!(html.contains(r#"<noscript><meta http-equiv="refresh" content="60""#));
         assert!(
@@ -1516,11 +1516,12 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"fx-trigger="refund:save""#) && html.contains("/static/ssexi.js"),
+            html.contains(r#"fx-trigger="refund:save""#)
+                && html.contains(&crate::assets::url("ssexi.js")),
             "{html}"
         );
         assert!(
-            !html.contains("/static/telemetry.js"),
+            !html.contains(&crate::assets::url("telemetry.js")),
             "no browser reports from the checkout (D8)"
         );
 

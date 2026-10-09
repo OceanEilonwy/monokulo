@@ -25,7 +25,8 @@ function loadJsQr(): Promise<JsQr> {
   if (window.jsQR) return Promise.resolve(window.jsQR);
   loading ??= new Promise((resolve, reject) => {
     const script = document.createElement('script');
-    script.src = '/static/jsQR.js';
+    // The page says where the decoder is: its URL carries the file's version.
+    script.src = document.getElementById('pos-root')?.dataset.qrDecoder || '/static/jsQR.js';
     script.onload = () => window.jsQR ? resolve(window.jsQR) : reject(new Error('QR decoder unavailable'));
     script.onerror = () => { loading = null; reject(new Error('QR decoder unavailable')); };
     document.head.appendChild(script);

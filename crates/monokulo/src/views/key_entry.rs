@@ -102,7 +102,8 @@ pub fn snp_bundle(entry: &SnpKeyEntry) -> Markup {
             div data-key-custody-bundle=(ready.bundle_json) data-key-custody-id-key=[ready.id_key_digest.as_deref()] data-key-custody-min-svn=(ready.min_guest_svn) data-key-custody-min-tcb=(ready.min_tcb) {
                 p class="notice" role="status" data-key-custody-status hidden {}
             }
-            script src="/static/key-custody.js" defer {}
+            // The script fetches its module from where the page says.
+            script src=(crate::assets::url("key-custody.js")) data-module=(crate::assets::url("key-custody.wasm")) defer {}
         },
         other => snp_section(other, None),
     }
@@ -177,7 +178,7 @@ fn ready_section(ready: &SnpReady, backend_field: Option<&str>) -> Markup {
                     }
                 }
             }
-            script src="/static/key-custody.js" defer {}
+            script src=(crate::assets::url("key-custody.js")) data-module=(crate::assets::url("key-custody.wasm")) defer {}
         }
     }
 }
@@ -235,7 +236,14 @@ mod tests {
             html.contains(r#"data-key-custody-backend-field="key_custody_backend""#),
             "{html}"
         );
-        assert!(html.contains("/static/key-custody.js"), "{html}");
+        assert!(
+            html.contains(&crate::assets::url("key-custody.js")),
+            "{html}"
+        );
+        assert!(
+            html.contains(&crate::assets::url("key-custody.wasm")),
+            "{html}"
+        );
         assert!(!html.contains("not signed by the official"), "{html}");
     }
 

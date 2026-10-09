@@ -401,7 +401,6 @@ mod tests {
             "Round 7",
             "Block 3,412,881 scanned for 41 stores and committed, 1 payment found in it.",
             "The node has a new block: 3,412,881.",
-            "/static/engine-view.js",
             "id=\"tl\"",
             "Refresh page",
             "data-network=\"stagenet\"",

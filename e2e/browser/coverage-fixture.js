@@ -53,7 +53,8 @@ module.exports = { startCoverageFixture, stopCoverageFixture };
 
 async function serveInstrumentedAssets(context) {
   await context.route('**/static/*', async route => {
-    const name = path.basename(new URL(route.request().url()).pathname);
+    // A script's URL carries its digest (crate::assets); the file is named without it.
+    const name = path.basename(new URL(route.request().url()).pathname).replace(/\.[0-9a-f]{16}(?=\.(js|css)$)/, '');
     if (!['checkout.js', 'challenge.js', 'monokulo-client.js', 'engine-view.js', 'pos-app.js', 'pos-app.css'].includes(name)) {
       return route.continue();
     }
