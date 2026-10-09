@@ -23,8 +23,12 @@ cargo run -p monokulo          # with an engine and a node for the network you u
    are sent.
 4. **Add a store**: the custom store form and the WooCommerce connect page
    pick the wallet.
-5. The Wallets tab of `/account` lists them; a wallet's page renames it, shows its
-   stores and history, and deletes it once no store uses it.
+5. The Wallets tab of `/account` lists them: mainnet wallets first, by name,
+   then the stagenet and testnet ones folded below (open when there's no
+   mainnet wallet), each network shown with one badge
+   (`views::network_badge`), as on a wallet's page, the dashboard and the
+   wallet dropdowns. A wallet's page renames it, shows its stores and
+   history, and deletes it once no store uses it.
 
 Tests: `cargo test -p engine -p wallet-setup -p monokulo`, and in
 `e2e/browser`, `npx playwright test -c real-binaries.config.js
@@ -191,9 +195,9 @@ confirms.
 30. **Changing is allowed while orders are open.** Orders keep their
     addresses on the old wallet and go on being watched with its keys, open
     or closed within the grace period, so a late payment is still seen.
-31. **Only to a wallet on the same network.** Wallets on another network are
-    in the dropdown, unavailable, saying why. A form that sends one anyway
-    is refused, by monokulo and again by the engine.
+31. **Only to a wallet on the same network.** The dropdown offers only
+    wallets on the store's network, and its help says so. A form that sends
+    another anyway is refused, by monokulo and again by the engine.
 32. **The history lives in monokulo** (`store_wallet_periods`, migration
     0032). Each store has one open period, its current wallet; a change
     closes it and opens the next at the same moment. Existing stores got a
