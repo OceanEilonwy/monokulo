@@ -3924,7 +3924,7 @@ mod tests {
         let settings_uri = format!("/dashboard/stores/{connection_id}/settings");
         let html = get_page(&router, &session_token, &settings_uri).await;
         assert!(
-            html.contains(r#"<section id="key-storage"><h2>Key storage</h2>"#),
+            html.contains(r#"<section id="card-key-storage" class="settings-card" aria-labelledby="card-key-storage-title"><header class="card-head"><h3 id="card-key-storage-title">Key storage</h3>"#),
             "{html}"
         );
         assert!(
@@ -3973,7 +3973,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let html = body_text(response).await;
         assert!(html.contains("different wallet"), "{html}");
         assert_eq!(
@@ -3992,10 +3992,10 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
         assert_eq!(
             response.headers().get("location").unwrap(),
-            &format!("{settings_uri}?saved=key-storage")
+            &format!("{settings_uri}?saved=key-storage#card-key-storage")
         );
         assert_eq!(
             engine_backend_of(&state, &public_key).await.as_deref(),
