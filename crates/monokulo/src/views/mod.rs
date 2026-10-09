@@ -481,21 +481,13 @@ pub fn network_badge(network: &str) -> Markup {
     if network == "mainnet" {
         network_tag(true, "Mainnet")
     } else {
-        network_tag(false, &network_word(network))
+        network_tag(false, &scaling::network_name(network))
     }
 }
 
 /// The badge for the test networks together: the wallets list's fold.
 pub fn test_networks_badge() -> Markup {
     network_tag(false, "Test networks")
-}
-
-/// A network's name as a word: "Stagenet".
-fn network_word(network: &str) -> String {
-    let mut chars = network.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
 }
 
 /// The icons of [`network_badge`]: a coin marked M for mainnet, a flask

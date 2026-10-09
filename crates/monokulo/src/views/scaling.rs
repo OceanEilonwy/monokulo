@@ -79,8 +79,9 @@ pub fn thousands(n: u64) -> String {
     out
 }
 
-/// A network's name for the start of a sentence: "Mainnet".
-fn network_name(network: &str) -> String {
+/// A network's name as a word, for a title or the start of a sentence:
+/// "Mainnet". The status page's network cards and the network badge use it.
+pub fn network_name(network: &str) -> String {
     let mut name = network.to_string();
     if let Some(first) = name.get_mut(..1) {
         first.make_ascii_uppercase();
