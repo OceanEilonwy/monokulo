@@ -168,7 +168,7 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   await expect(page.getByRole('link', { name: /Help/ })).toHaveAttribute('href', /\/monokulo\/docs\//);
   await page.goto(base + '/account?tab=wallets');
   await page.getByRole('link', { name: 'Geomart takings' }).click();
-  await expect(page.getByText('Made in Monokulo, saved in feather').first()).toBeVisible();
+  await expect(page.locator('.where-banner strong')).toHaveText('Backed up to Feather');
 
   // The same site again is refused, linking to the store.
   await page.goto(base + '/setup');
@@ -208,7 +208,7 @@ test('the check lets you go on without answering after 20 seconds', async ({ pag
   await captureCoverageStage(page, 'setup-check-timed-out', test.info(), { group: GROUP });
   await go.click();
   await expect(page.getByText('Patient Wren is added')).toBeVisible();
-  await expect(page.getByText('Written down').first()).toBeVisible();
+  await expect(page.locator('.where-banner strong')).toHaveText('Backed up on paper');
 });
 
 test('skipping the backup needs the warning read, the box ticked and "skip" typed', async ({ page }) => {
@@ -230,6 +230,7 @@ test('skipping the backup needs the warning read, the box ticked and "skip" type
   await skip.click();
   await expect(page.getByText('Skipped Wren is added')).toBeVisible();
   await expect(page.getByText('was not backed up')).toBeVisible();
+  await expect(page.locator('.where-banner.is-warn strong')).toHaveText('Backup skipped');
 });
 
 test.describe('with JavaScript off', () => {
@@ -303,7 +304,8 @@ test('a wallet lists its stores and is renamed on its page', async ({ page }) =>
   await captureCoverageStage(page, 'wallets-list', test.info(), { group: 'wallets' });
   await page.getByRole('link', { name: WALLET_NAME }).click();
   await expect(page.getByRole('link', { name: 'wallet-shop.example.com' }).first()).toBeVisible();
-  await expect(page.locator('section[aria-labelledby="stores-title"] .card-meta')).toHaveText('1 takes payments into this wallet');
+  // Other specs' stores share the dev wallet: count only that this one is listed.
+  await expect(page.locator('section[aria-labelledby="stores-title"] .card-meta')).toHaveText(/^\d+ takes? payments into this wallet$/);
   await page.locator('#card-details input[name="name"]').fill('Dev stagenet till');
   await page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Dev stagenet till' })).toBeVisible();
