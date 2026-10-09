@@ -108,7 +108,8 @@ mod tests {
             0,
         )
         .unwrap();
-        db.create_store_connection(
+        crate::db::test_rows::store_on_wallet(
+            &db,
             &shared::ids::ConnectionId::new("c1"),
             &shared::ids::UserId::new("u1"),
             "woocommerce",

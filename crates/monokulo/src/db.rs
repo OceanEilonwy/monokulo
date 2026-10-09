@@ -1172,61 +1172,19 @@ impl Db {
     }
 
     /// Inserts a new `store_connections` row linking `user_id` to a tenant
-    /// already provisioned on a real engine instance (WBS 1.2.2).
+    /// already provisioned on a real engine instance (WBS 1.2.2), taking
+    /// payments into `wallet_id` (migration 0031), with its name. A `site`
+    /// another store already has is a unique violation
+    /// (`DbError::is_unique_violation`).
     ///
     /// `tenant_secret_token_encrypted` is stored exactly as given, with no
     /// crypto awareness at this layer (WBS 1.2.3) - the caller
     /// (`http/connections.rs`) is responsible for passing an already
     /// `crate::crypto::encrypt`-ed value, never the engine's raw `sk_...`
-    /// secret token.
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_store_connection(
-        &self,
-        id: &ConnectionId,
-        user_id: &UserId,
-        platform: &str,
-        site: &str,
-        tenant_public_key: &str,
-        tenant_secret_token_encrypted: &str,
-        created_at: i64,
-        base_currency: &str,
-    ) -> Result<()> {
-        // `fx_providers` explicit here (`["coingecko"]`), not left to the
-        // column's own `DEFAULT` - SQLite can't cheaply change a column
-        // `DEFAULT` in place, so after `"fixed"`'s removal this is the one
-        // real place a new store's initial provider is decided. Harmless
-        // even on an instance that never enables Coingecko: an XMR-priced
-        // order never reads this column at all (see `StoreConnectionRow::
-        // fx_providers`'s own doc comment), and a merchant can still pick a
-        // different available provider from their store's settings page
-        // the moment one exists. `base_currency` is *not* similarly
-        // defaulted here - the caller (`http::connections::create_connection_for_user`)
-        // is responsible for having already validated it via
-        // `crate::currencies::resolve_currency` before ever reaching this
-        // call, since (unlike `fx_providers`) there is no single safe
-        // implicit choice for it.
-        self.conn.execute(
-            "INSERT INTO store_connections
-                (id, user_id, platform, site, name, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency)
-             VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, json_array('coingecko'), ?8)",
-            params![
-                id,
-                user_id,
-                platform,
-                site,
-                tenant_public_key,
-                tenant_secret_token_encrypted,
-                created_at,
-                base_currency,
-            ],
-        )?;
-        Ok(())
-    }
-
-    /// A store taking payments into `wallet_id` (migration 0031): the row
-    /// `create_store_connection` makes, with its name and wallet. A `site`
-    /// another store already has is a unique violation
-    /// (`DbError::is_unique_violation`).
+    /// secret token. `fx_providers` starts as `["coingecko"]`: harmless on
+    /// an instance without it (an XMR-priced order never reads it), and the
+    /// store's settings change it. `base_currency` is the caller's to have
+    /// checked (`crate::currencies::resolve_currency`).
     #[allow(clippy::too_many_arguments)]
     pub fn create_store_connection_on_wallet(
         &self,
@@ -2702,6 +2660,52 @@ impl Db {
     }
 }
 
+/// Rows for tests that need a store, made the way the app makes one.
+#[cfg(test)]
+pub(crate) mod test_rows {
+    use super::*;
+
+    /// A store named after its `site`, on a wallet of its own (made here),
+    /// as `Db::create_store_connection_on_wallet` records one.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn store_on_wallet(
+        db: &Db,
+        id: &ConnectionId,
+        user_id: &UserId,
+        platform: &str,
+        site: &str,
+        tenant_public_key: &str,
+        tenant_secret_token_encrypted: &str,
+        created_at: i64,
+        base_currency: &str,
+    ) -> Result<()> {
+        let wallet = WalletId::new(format!("w_{}", id.as_str()));
+        db.create_wallet(&NewWalletRow {
+            id: &wallet,
+            user_id,
+            name: &format!("Wallet for {}", id.as_str()),
+            network: "mainnet",
+            primary_address: &format!("4address-of-{}", id.as_str()),
+            engine_wallet_id: &EngineWalletId::new(format!("wl_{}", id.as_str())),
+            origin: WalletOrigin::Imported,
+            backup: None,
+            created_at,
+        })?;
+        db.create_store_connection_on_wallet(
+            id,
+            user_id,
+            platform,
+            site,
+            site,
+            tenant_public_key,
+            tenant_secret_token_encrypted,
+            created_at,
+            base_currency,
+            &wallet,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2783,7 +2787,8 @@ mod tests {
         )
         .unwrap();
         for (id, pk) in [("store-a", "pk_a"), ("store-b", "pk_b")] {
-            db.create_store_connection(
+            crate::db::test_rows::store_on_wallet(
+                &db,
                 &shared::ids::ConnectionId::new(id.to_string()),
                 &shared::ids::UserId::new("merchant"),
                 "custom",
@@ -3138,7 +3143,8 @@ mod tests {
             1000,
         )
         .unwrap();
-        db.create_store_connection(
+        crate::db::test_rows::store_on_wallet(
+            &db,
             &shared::ids::ConnectionId::new("conn-1"),
             &shared::ids::UserId::new("user-1"),
             "woocommerce",
@@ -3178,7 +3184,8 @@ mod tests {
             1000,
         )
         .unwrap();
-        db.create_store_connection(
+        crate::db::test_rows::store_on_wallet(
+            &db,
             &shared::ids::ConnectionId::new("conn-1"),
             &shared::ids::UserId::new("user-1"),
             "woocommerce",
@@ -3222,7 +3229,8 @@ mod tests {
             1000,
         )
         .unwrap();
-        db.create_store_connection(
+        crate::db::test_rows::store_on_wallet(
+            &db,
             &shared::ids::ConnectionId::new("conn-1"),
             &shared::ids::UserId::new("user-1"),
             "woocommerce",
@@ -3307,7 +3315,8 @@ mod tests {
             ("conn-b", "user-b", "pk_b"),
             ("conn-a2", "user-a", "pk_a2"),
         ] {
-            db.create_store_connection(
+            crate::db::test_rows::store_on_wallet(
+                &db,
                 &shared::ids::ConnectionId::new(id.to_string()),
                 &shared::ids::UserId::new(user.to_string()),
                 "woocommerce",
@@ -3504,7 +3513,8 @@ mod tests {
             .unwrap();
         }
         let store = |id: &str, user: &str, site: &str| {
-            db.create_store_connection(
+            crate::db::test_rows::store_on_wallet(
+                &db,
                 &shared::ids::ConnectionId::new(id),
                 &shared::ids::UserId::new(user),
                 "custom",
@@ -3545,7 +3555,8 @@ mod tests {
             1000,
         )
         .unwrap();
-        db.create_store_connection(
+        crate::db::test_rows::store_on_wallet(
+            &db,
             &shared::ids::ConnectionId::new("conn-cl"),
             &shared::ids::UserId::new("user-cl"),
             "woocommerce",
@@ -3585,7 +3596,8 @@ mod tests {
             1000,
         )
         .unwrap();
-        db.create_store_connection(
+        crate::db::test_rows::store_on_wallet(
+            &db,
             &shared::ids::ConnectionId::new("conn-2"),
             &shared::ids::UserId::new("user-2"),
             "woocommerce",
@@ -3623,7 +3635,8 @@ mod tests {
             1000,
         )
         .unwrap();
-        db.create_store_connection(
+        crate::db::test_rows::store_on_wallet(
+            db,
             &shared::ids::ConnectionId::new("conn-ct"),
             &shared::ids::UserId::new("user-ct"),
             "woocommerce",
@@ -3847,7 +3860,8 @@ mod tests {
             1000,
         )
         .unwrap();
-        db.create_store_connection(
+        crate::db::test_rows::store_on_wallet(
+            &db,
             &shared::ids::ConnectionId::new("conn-2"),
             &shared::ids::UserId::new("user-2"),
             "custom",
@@ -4278,7 +4292,8 @@ mod tests {
             1000,
         )
         .unwrap();
-        db.create_store_connection(
+        crate::db::test_rows::store_on_wallet(
+            &db,
             &shared::ids::ConnectionId::new("conn-b"),
             &shared::ids::UserId::new("user-b"),
             "custom",
@@ -4375,7 +4390,8 @@ mod tests {
             1000,
         )
         .unwrap();
-        db.create_store_connection(
+        crate::db::test_rows::store_on_wallet(
+            &db,
             &shared::ids::ConnectionId::new("conn-b"),
             &shared::ids::UserId::new("user-b"),
             "custom",

@@ -799,7 +799,8 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
         .unwrap();
     {
         let db = s.state.db.lock();
-        db.create_store_connection(
+        crate::db::test_rows::store_on_wallet(
+            &db,
             &shared::ids::ConnectionId::new("c_pos"),
             &admin.id,
             "woocommerce",
@@ -965,20 +966,18 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
         .get_user_by_email(TEST_ADMIN_EMAIL)
         .unwrap()
         .unwrap();
-    s.state
-        .db
-        .lock()
-        .create_store_connection(
-            &shared::ids::ConnectionId::new("c_who"),
-            &admin.id,
-            "woocommerce",
-            "who-shop.example.com",
-            "pk_who",
-            "enc",
-            1,
-            "XMR",
-        )
-        .unwrap();
+    crate::db::test_rows::store_on_wallet(
+        &s.state.db.lock(),
+        &shared::ids::ConnectionId::new("c_who"),
+        &admin.id,
+        "woocommerce",
+        "who-shop.example.com",
+        "pk_who",
+        "enc",
+        1,
+        "XMR",
+    )
+    .unwrap();
     let call = |uri: &str, cookie: Option<&str>| {
         let mut builder = Request::get(uri);
         if let Some(cookie) = cookie {
