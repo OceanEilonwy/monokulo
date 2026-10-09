@@ -14,7 +14,13 @@ use shared::xmr_amount::Piconero;
 use std::sync::Arc;
 
 use crate::fx_provider_settings::FxProviderSettings;
+
+mod webhooks;
 use rusqlite::{params, Connection, OptionalExtension};
+pub use webhooks::{
+    Attempt, AttemptOutcome, DeliveryRow, DeliveryState, DueDelivery, LoggedEvent, NewWebhook,
+    WebhookHealth, WebhookRow, KEPT_ATTEMPTS,
+};
 
 /// Reads a `store_connections.fx_providers` cell: a JSON array of provider
 /// names (migration 0027). A bare name is tolerated as a one-element list, so
@@ -133,6 +139,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         37,
         include_str!("../migrations/0037_store_integrations.sql"),
     ),
+    (38, include_str!("../migrations/0038_webhooks.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {

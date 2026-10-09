@@ -74,7 +74,7 @@ mod store_settings;
 mod store_site;
 mod telemetry_client;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 mod wallet_service;
@@ -233,6 +233,9 @@ pub struct AppState {
     /// This process's log store, for the Logs page (structured_logging.md
     /// part 5). `None` in tests and when it couldn't be opened.
     pub log_store: Option<telemetry::store::LogStore>,
+    /// Wakes the webhook delivery worker (`crate::webhooks`) when a
+    /// merchant sends a delivery again.
+    pub webhooks: Arc<crate::webhooks::Webhooks>,
 }
 
 /// The encryption key [`AppState::for_tests`] uses.
@@ -270,6 +273,7 @@ impl AppState {
             )),
             settings: Self::test_settings(None),
             log_store: None,
+            webhooks: Arc::default(),
             engine: crate::http::Engine::new(EngineClient::for_tests(format!(
                 "http://{}",
                 shared::unreachable::address()

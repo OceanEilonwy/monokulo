@@ -321,6 +321,26 @@ settings! {
         description: "A loopback address:port for tor's onion service to connect to, with HiddenServiceExportCircuitID haproxy set in torrc, so each Tor circuit is its own client. Empty turns it off. Only loopback is accepted.",
         example: "127.0.0.1:8082",
     },
+    WEBHOOKS_ALLOW_PRIVATE_URLS: bool {
+        key: "webhooks.allow_private_urls",
+        default: false,
+        description: "Whether webhooks may be sent to private or loopback addresses. Only for testing against your own network.",
+        example: "false",
+    },
+    WEBHOOKS_DELIVERY_TIMEOUT_MS: u64 {
+        key: "webhooks.delivery_timeout_ms",
+        default: 5000,
+        check: range(100, 300_000),
+        description: "Milliseconds a store's webhook endpoint has to answer before the attempt counts as failed.",
+        example: "5000",
+    },
+    WEBHOOKS_MAX_ATTEMPTS: u32 {
+        key: "webhooks.max_attempts",
+        default: 8,
+        check: range(1, 64),
+        description: "Attempts per webhook delivery before giving up, with the wait doubling from 1 minute up to 64 minutes between them.",
+        example: "8",
+    },
     ABUSE_STREAM_CAP: usize {
         key: "abuse.stream_cap",
         default: 16,
@@ -604,6 +624,47 @@ impl Section for SnpBundleLimits {
         Ok(SnpBundleLimits {
             per_user: snapshot.get(&KEY_CUSTODY_SNP_BUNDLES_PER_USER),
             per_user_per_min: snapshot.get(&KEY_CUSTODY_SNP_BUNDLES_PER_USER_PER_MIN),
+        })
+    }
+}
+
+/// How webhooks are delivered (`crate::webhooks::delivery`), read before
+/// each batch, so a save applies to the next attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebhookConfig {
+    pub allow_private_urls: bool,
+    pub delivery_timeout: std::time::Duration,
+    pub max_attempts: u32,
+}
+
+impl Default for WebhookConfig {
+    fn default() -> Self {
+        WebhookConfig {
+            allow_private_urls: WEBHOOKS_ALLOW_PRIVATE_URLS.default_value(),
+            delivery_timeout: std::time::Duration::from_millis(
+                WEBHOOKS_DELIVERY_TIMEOUT_MS.default_value(),
+            ),
+            max_attempts: WEBHOOKS_MAX_ATTEMPTS.default_value(),
+        }
+    }
+}
+
+impl Section for WebhookConfig {
+    const NAME: &'static str = "webhooks";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[
+            &WEBHOOKS_ALLOW_PRIVATE_URLS,
+            &WEBHOOKS_DELIVERY_TIMEOUT_MS,
+            &WEBHOOKS_MAX_ATTEMPTS,
+        ]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(WebhookConfig {
+            allow_private_urls: snapshot.get(&WEBHOOKS_ALLOW_PRIVATE_URLS),
+            delivery_timeout: std::time::Duration::from_millis(
+                snapshot.get(&WEBHOOKS_DELIVERY_TIMEOUT_MS),
+            ),
+            max_attempts: snapshot.get(&WEBHOOKS_MAX_ATTEMPTS),
         })
     }
 }
@@ -1110,6 +1171,8 @@ pub struct MonokuloSettings {
     pub snp_entry: live_settings::Live<SnpEntryPolicy>,
     /// How many key entry forms one account may hold and open.
     pub snp_bundle_limits: live_settings::Live<SnpBundleLimits>,
+    /// How webhooks are delivered: read before each batch.
+    pub webhooks: live_settings::Live<WebhookConfig>,
 }
 
 impl MonokuloSettings {
@@ -1156,6 +1219,7 @@ impl MonokuloSettings {
             }),
             snp_entry: live_settings::Live::new(snp_entry),
             snp_bundle_limits: live_settings::Live::new(SnpBundleLimits::default()),
+            webhooks: live_settings::Live::new(WebhookConfig::default()),
         })
     }
 
@@ -1209,6 +1273,7 @@ impl MonokuloSettings {
         let cli_links = builder.section::<CliLinks>();
         let snp_entry = builder.section::<SnpEntryPolicy>();
         let snp_bundle_limits = builder.section::<SnpBundleLimits>();
+        let webhooks = builder.section::<WebhookConfig>();
         // Read once at start, before the registry exists (`main.rs`).
         builder.section::<DatabaseConfig>();
         builder.section::<BootConfig>();
@@ -1233,6 +1298,7 @@ impl MonokuloSettings {
             cli_links,
             snp_entry,
             snp_bundle_limits,
+            webhooks,
         }))
     }
 }
