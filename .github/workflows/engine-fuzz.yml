@@ -27,7 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         target: [scheduler, resources, inputs, queue, mempool, status, history, notifications, portfolio]
-        features: ['', 'zmq']
+        features: ['']
     env:
       RUSTUP_TOOLCHAIN: nightly-2026-10-02
       ENGINE_FUZZ_SEED: ${{ github.run_id }}
@@ -78,7 +78,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        features: ['', 'zmq']
+        features: ['']
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master

@@ -88,14 +88,16 @@ struct Source {
 const SOURCES: [Source; 5] = [
     Source {
         key: Key::Site,
-        workflow: "openwrt.yml",
+        // release.yml builds the OpenWrt package (openwrt.yml) once every
+        // test passed on main.
+        workflow: "release.yml",
         wanted: |n, _| n == "monokulo-openwrt-site",
         required: true,
         needs_success: true,
     },
     Source {
         key: Key::Coverage,
-        workflow: "ci.yml",
+        workflow: "release.yml",
         wanted: |n, _| {
             n.strip_prefix("coverage-")
                 .is_some_and(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -187,7 +189,8 @@ fn parse(args: &[&str]) -> io::Result<FetchArgs> {
         ));
     };
     let mut repo = env::var("GITHUB_REPOSITORY").ok();
-    let mut build = Build::Zmq;
+    // The default build is the one that ships: zmq is a default feature.
+    let mut build = Build::Default;
     let mut rest = options.iter();
     while let Some(flag) = rest.next() {
         let value = rest

@@ -1,10 +1,6 @@
 name: Engine verification tooling
 
 on:
-  pull_request:
-    paths:
-      - 'xtask/src/exploration.rs'
-      - '.github/workflows/engine-*.yml'
   workflow_call:
 
 permissions:
@@ -12,12 +8,13 @@ permissions:
 
 jobs:
   evidence-tests:
+    name: Campaign evidence tooling
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      # The latest nightly, as rust-toolchain.toml names it, for xtask.
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
+        with:
+          pos-app: 'false'
       - name: Check evidence validation and campaign lifecycle
         run: cargo test -p xtask --locked exploration

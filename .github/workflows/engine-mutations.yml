@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        features: [default, zmq]
+        features: [default]
     env:
       ENGINE_MUTATION_FEATURES: ${{ matrix.features }}
       ENGINE_MUTATION_CASES: ${{ inputs.cases || '32' }}

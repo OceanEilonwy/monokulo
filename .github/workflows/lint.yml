@@ -1,0 +1,48 @@
+name: Lint
+
+# Formatting, clippy (every warning an error) and the checks that keep test
+# code out of what ships. Called by checks.yml (pull requests) and
+# release.yml (main, version tags).
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+jobs:
+  lint:
+    name: rustfmt and clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: rustfmt, clippy
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Clippy, every feature
+        # Clippy's lints are denied in Cargo.toml; -D warnings adds the
+        # compiler's own. Every feature, so the e2e and fuzzing targets
+        # (built only with them) are checked too.
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Clippy, engine without its optional features
+        # The code an engine built without zmq or snp has in their place
+        # (refusing settings that need them), which no test build compiles.
+        run: cargo clippy -p engine --all-targets --locked --no-default-features -- -D warnings
+      - name: Check test-support only adds code
+        # A feature that only tests turn on may add helpers, never change
+        # what shipped code does: test builds (the browser suites' real
+        # binaries among them) must run what merchants run. Replacing
+        # behaviour needs a `cfg(not(... "test-support" ...))` for the
+        # production side, so there must be none (docs/TESTING.md).
+        run: |
+          if grep -rnE --include='*.rs' 'not\([^)]*"test-support"' crates xtask fuzz; then
+            echo '::error::test-support may only add code; the lines above replace shipped behaviour under it.'
+            exit 1
+          fi

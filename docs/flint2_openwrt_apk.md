@@ -620,7 +620,7 @@ Each line gives what was decided, the alternatives, and why.
   GitHub Actions** in the repository's settings. Pull requests upload the
   site as an artifact to review instead.
 - **No GitHub release step yet.** Version tags already make a release in
-  `ci.yml`. Attaching the `.apk` to it is a small follow-up, best done once
+  `release.yml`. Attaching the `.apk` to it is a small follow-up, best done once
   versions are tagged.
 - **Not done yet from the proposal:** the LuCI logs tab and backup
   download. (Token rotation is moot: there is no engine token any more.) The LuCI page shows how to back up the secrets with

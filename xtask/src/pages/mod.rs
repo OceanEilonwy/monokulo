@@ -115,7 +115,8 @@ fn parse(args: &[&str]) -> io::Result<SiteArgs> {
     let bad = |what: String| io::Error::new(io::ErrorKind::InvalidInput, what);
     let (mut out, mut coverage, mut properties, mut fuzz, mut scale, mut sources) =
         (None, None, None, None, None, None);
-    let mut build = Build::Zmq;
+    // The default build is the one that ships: zmq is a default feature.
+    let mut build = Build::Default;
     let mut repo_url = DEFAULT_REPO_URL.to_string();
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {

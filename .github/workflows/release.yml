@@ -1,0 +1,376 @@
+name: Release
+
+# Main, version tags and manual runs: every test on every platform, then the
+# downloads.
+#   Lint, Linux        what a pull request passed (checks.yml), again on the
+#                      merged commit; Linux's plain run also keeps the Rust
+#                      cache pull requests start from warm
+#   Coverage           every Linux suite through its coverage collector, and
+#                      the one report and artifact (coverage-<sha>) they make
+#   macOS, Windows     the Rust tests
+#   Build ...          monokulo zips for Linux, macOS and Windows,
+#                      key-custody-cli for every computer merchants use, the
+#                      Docker image and the OpenWrt package, once everything
+#                      above passed
+#   GitHub release     a version tag's release (with build provenance for the
+#                      CLI); main updates the latest-main prerelease instead
+# pages.yml then publishes the OpenWrt package site and the quality report
+# from this run's artifacts.
+# A version tag must name the workspace's version: monokulo links the CLI
+# release by it, and pushes the image to ghcr.io.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'crates/**'
+      - 'plugins/woocommerce/**'
+      - 'e2e/**'
+      - 'scripts/**'
+      - 'xtask/**'
+      - 'openwrt/**'
+      - 'web/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'rustfmt.toml'
+      - '.config/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/**'
+  workflow_dispatch:
+
+# One run per ref at a time; a newer push waits for the one before it.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: Lint
+    uses: ./.github/workflows/lint.yml
+
+  linux:
+    name: Linux
+    uses: ./.github/workflows/tests.yml
+    with:
+      os: ubuntu-latest
+      suites: '["rust", "browser", "woocommerce", "stress", "scale"]'
+
+  coverage:
+    name: Coverage
+    uses: ./.github/workflows/tests.yml
+    with:
+      os: ubuntu-latest
+      coverage: true
+      suites: '["rust", "browser", "woocommerce", "stress"]'
+      report: true
+
+  macos:
+    name: macOS
+    uses: ./.github/workflows/tests.yml
+    with:
+      os: macos-latest
+
+  windows:
+    name: Windows
+    uses: ./.github/workflows/tests.yml
+    with:
+      os: windows-latest
+
+  monokulo:
+    # monokulo (the engine inside it: one executable) for every computer a
+    # merchant might run it on, as monokulo-{version}-{target}.zip with its
+    # SHA-256. The release jobs below put the files on the repository's
+    # Releases page; a manual run of any branch (Actions > Release > Run
+    # workflow) keeps them as the run's artifacts only.
+    name: Build monokulo (${{ matrix.target }})
+    needs: [lint, linux, coverage, macos, windows]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04's glibc, so the binaries run on older distributions too.
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          # Built on Intel, not cross-built on Apple silicon: RandomX's CMake
+          # picks its JIT sources from the machine it builds on.
+          - { os: macos-15-intel, target: x86_64-apple-darwin }
+          # Needs the Microsoft Visual C++ runtime (vcruntime140.dll), which
+          # RandomX links and nearly every Windows machine has.
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 30 }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: ${{ matrix.target }}
+          cache-key: release-${{ matrix.target }}
+      - name: Check the tag names this version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          # The workspace version (no Python on every runner).
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          test "$GITHUB_REF_NAME" = "v$version" || { echo "tag $GITHUB_REF_NAME doesn't match the workspace version $version"; exit 1; }
+      - name: Build monokulo
+        env:
+          # Which key-custody-cli release monokulo's key entry links.
+          MONOKULO_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          MONOKULO_GIT_COMMIT: ${{ github.sha }}
+        # With the engine's default features (zmq), as the Docker image and
+        # the OpenWrt package are built.
+        run: cargo build --release --locked -p monokulo --bin monokulo --target ${{ matrix.target }}
+      - name: Check it runs
+        shell: bash
+        run: target/${{ matrix.target }}/release/monokulo --version
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          # A version tag's files are named for it; main's keep one name, so
+          # the latest-main release's links never change.
+          if test "$GITHUB_REF_TYPE" = tag; then version="${GITHUB_REF_NAME#v}"
+          elif test "$GITHUB_REF" = refs/heads/main; then version=main
+          else version="dev-${GITHUB_SHA::7}"; fi
+          name="monokulo-${version}-${{ matrix.target }}"
+          bin=monokulo
+          if test "$RUNNER_OS" = Windows; then bin=monokulo.exe; fi
+          # The docs keep their folder, so the README's and their own links
+          # to each other resolve inside the zip.
+          mkdir -p "dist/$name/docs"
+          cp "target/${{ matrix.target }}/release/$bin" README.md "dist/$name/"
+          cp docs/RUNNING.md docs/CONFIGURATION.md "dist/$name/docs/"
+          cd dist
+          # zip keeps the executable bit, for unzip and macOS's Archive Utility.
+          if test "$RUNNER_OS" = Windows; then 7z a "$name.zip" "$name" > /dev/null; else zip -qr "$name.zip" "$name"; fi
+          if command -v sha256sum > /dev/null; then sha256sum "$name.zip" > "$name.zip.sha256"; else shasum -a 256 "$name.zip" > "$name.zip.sha256"; fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          {
+            echo "## monokulo (${{ matrix.target }})"
+            echo
+            echo "| File | Size |"
+            echo "| --- | ---: |"
+            echo "| \`$bin\` | $(du -h "$name/$bin" | cut -f1) |"
+            echo "| \`$name.zip\` | $(du -h "$name.zip" | cut -f1) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  key-custody-cli:
+    # key-custody-cli, for every computer a merchant might run it on: the
+    # files monokulo's key entry forms link
+    # (key-custody-cli-{version}-{target}.tar.gz, .zip on Windows), each with
+    # its SHA-256 and, on a version tag, GitHub build provenance
+    # (`gh attestation verify`).
+    name: Build key-custody-cli (${{ matrix.target }})
+    needs: [lint, linux, coverage, macos, windows]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: ${{ matrix.target }}
+          cache-key: cli-${{ matrix.target }}
+          pos-app: 'false'
+      - name: Build key-custody-cli
+        run: cargo build --release --locked -p key-custody-cli --target ${{ matrix.target }}
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if test "$GITHUB_REF_TYPE" != tag; then
+            # The workspace version (no Python on every runner).
+            version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          fi
+          name="key-custody-cli-${version}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          bin=key-custody-cli
+          if test "${{ runner.os }}" = Windows; then bin=key-custody-cli.exe; fi
+          cp "target/${{ matrix.target }}/release/$bin" "dist/$name/"
+          cd dist
+          if test "${{ runner.os }}" = Windows; then
+            7z a "$name.zip" "$name" > /dev/null
+            file="$name.zip"
+          else
+            tar -czf "$name.tar.gz" "$name"
+            file="$name.tar.gz"
+          fi
+          if command -v sha256sum > /dev/null; then sha256sum "$file" > "$file.sha256"; else shasum -a 256 "$file" > "$file.sha256"; fi
+          echo "file=dist/$file" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          subject-path: ${{ steps.package.outputs.file }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  docker:
+    # The production image (Dockerfile): built on main, and on a version tag
+    # also pushed to ghcr.io/<owner>/monokulo as that version and latest.
+    name: Build the Docker image
+    needs: [lint, linux, coverage, macos, windows]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/monokulo
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=sha
+      - uses: docker/login-action@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Which key-custody-cli release monokulo's key entry links.
+          build-args: |
+            MONOKULO_RELEASE_TAG=${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+            MONOKULO_GIT_COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  openwrt:
+    # The OpenWrt package, its repository and landing page (openwrt.yml);
+    # on main, the site is deployed to GitHub Pages too.
+    name: OpenWrt
+    needs: [lint, linux, coverage, macos, windows]
+    uses: ./.github/workflows/openwrt.yml
+    secrets: inherit
+
+  github-release:
+    # A version tag's binaries as a GitHub release, for merchants to download
+    # (the repository's Releases page, and releases/latest).
+    name: GitHub release
+    needs: [monokulo, key-custody-cli]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: monokulo-*
+          path: dist
+          merge-multiple: true
+      # Never removed once released: every monokulo of this version links
+      # these files.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: key-custody-cli-*
+          path: dist
+          merge-multiple: true
+      - name: Write the download notes
+        run: scripts/release-notes.sh "$GITHUB_REF_NAME" "${GITHUB_REF_NAME#v}" > notes.md
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          body_path: notes.md
+          generate_release_notes: true
+
+  latest-main:
+    # main's latest binaries as one prerelease, latest-main, brought up to
+    # date on every push to main: the same file names every time, so its
+    # download links never change. A prerelease, so releases/latest stays
+    # the newest version tag.
+    name: Update the latest-main prerelease
+    needs: [monokulo, key-custody-cli]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # One update at a time; a newer push waits for the one before it.
+    concurrency:
+      group: release-main
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: latest-main
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: monokulo-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: key-custody-cli-*
+          path: dist
+          merge-multiple: true
+      - name: Update the latest-main release
+        run: |
+          title="main (${GITHUB_SHA::7})"
+          {
+            scripts/release-notes.sh "$TAG" main
+            echo
+            echo "Built from $GITHUB_SHA, the newest commit on main that passed CI. For a released version, see the [latest release](https://github.com/$GITHUB_REPOSITORY/releases/latest)."
+          } > notes.md
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            # Move the tag to this commit, replace the files in place, and
+            # drop any this build no longer makes (an older key-custody-cli
+            # version's).
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+            gh release upload "$TAG" dist/* --clobber
+            gh release view "$TAG" --json assets -q '.assets[].name' | while read -r asset; do
+              test -e "dist/$asset" || gh release delete-asset "$TAG" "$asset" --yes
+            done
+            gh release edit "$TAG" --title "$title" --notes-file notes.md --prerelease
+          else
+            gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "$title" --notes-file notes.md --prerelease
+          fi
+          echo "Updated [$TAG](https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG) to ${GITHUB_SHA::7}." >> "$GITHUB_STEP_SUMMARY"
