@@ -120,6 +120,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/0032_store_wallet_periods.sql"),
     ),
     (33, include_str!("../migrations/0033_retired_wallets.sql")),
+    (
+        34,
+        include_str!("../migrations/0034_store_name_and_site.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -589,11 +593,39 @@ fn store_domain_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreDomai
     })
 }
 
+/// A `store_connections` row, from a query selecting `id, user_id,
+/// platform, site, tenant_public_key, tenant_secret_token_encrypted,
+/// created_at_utc, fx_providers, base_currency, fx_provider_settings,
+/// wallet_id, name` in that order.
+fn store_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreConnectionRow> {
+    Ok(StoreConnectionRow {
+        id: row.get(0)?,
+        user_id: row.get(1)?,
+        platform: row.get(2)?,
+        site: row.get(3)?,
+        tenant_public_key: row.get(4)?,
+        tenant_secret_token_encrypted: row.get(5)?,
+        created_at: row.get(6)?,
+        fx_providers: parse_fx_providers(&row.get::<_, String>(7)?),
+        base_currency: row.get(8)?,
+        fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(9)?),
+        wallet_id: row.get(10)?,
+        name: row.get(11)?,
+    })
+}
+
 pub struct StoreConnectionRow {
     pub id: ConnectionId,
     pub user_id: UserId,
     pub platform: String,
-    pub site_url: String,
+    /// What the merchant calls the store, shown wherever it's named
+    /// (migration 0034).
+    pub name: String,
+    /// The host its checkout runs on (`shop.example`, `shop.example:8443`
+    /// for a port other than the scheme's), never a path; empty for a
+    /// store with no site, one that only takes payments in person. No two
+    /// stores on this instance share one (`crate::stores::normalize_site`).
+    pub site: String,
     pub tenant_public_key: String,
     pub tenant_secret_token_encrypted: String,
     pub created_at: i64,
@@ -1153,7 +1185,7 @@ impl Db {
         id: &ConnectionId,
         user_id: &UserId,
         platform: &str,
-        site_url: &str,
+        site: &str,
         tenant_public_key: &str,
         tenant_secret_token_encrypted: &str,
         created_at: i64,
@@ -1175,13 +1207,13 @@ impl Db {
         // implicit choice for it.
         self.conn.execute(
             "INSERT INTO store_connections
-                (id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, json_array('coingecko'), ?8)",
+                (id, user_id, platform, site, name, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency)
+             VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, json_array('coingecko'), ?8)",
             params![
                 id,
                 user_id,
                 platform,
-                site_url,
+                site,
                 tenant_public_key,
                 tenant_secret_token_encrypted,
                 created_at,
@@ -1192,14 +1224,17 @@ impl Db {
     }
 
     /// A store taking payments into `wallet_id` (migration 0031): the row
-    /// `create_store_connection` makes, with its wallet.
+    /// `create_store_connection` makes, with its name and wallet. A `site`
+    /// another store already has is a unique violation
+    /// (`DbError::is_unique_violation`).
     #[allow(clippy::too_many_arguments)]
     pub fn create_store_connection_on_wallet(
         &self,
         id: &ConnectionId,
         user_id: &UserId,
         platform: &str,
-        site_url: &str,
+        name: &str,
+        site: &str,
         tenant_public_key: &str,
         tenant_secret_token_encrypted: &str,
         created_at: i64,
@@ -1212,13 +1247,14 @@ impl Db {
         )?;
         tx.execute(
             "INSERT INTO store_connections
-                (id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, wallet_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, json_array('coingecko'), ?8, ?9)",
+                (id, user_id, platform, name, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, wallet_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, json_array('coingecko'), ?9, ?10)",
             params![
                 id,
                 user_id,
                 platform,
-                site_url,
+                name,
+                site,
                 tenant_public_key,
                 tenant_secret_token_encrypted,
                 created_at,
@@ -1615,23 +1651,11 @@ impl Db {
     ) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id
+                "SELECT id, user_id, platform, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
                  FROM store_connections WHERE id = ?1",
                 params![id],
                 |row| {
-                    Ok(StoreConnectionRow {
-                        id: row.get(0)?,
-                        user_id: row.get(1)?,
-                        platform: row.get(2)?,
-                        site_url: row.get(3)?,
-                        tenant_public_key: row.get(4)?,
-                        tenant_secret_token_encrypted: row.get(5)?,
-                        created_at: row.get(6)?,
-                        fx_providers: parse_fx_providers(&row.get::<_, String>(7)?),
-                    base_currency: row.get(8)?,
-                    fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(9)?),
-                    wallet_id: row.get(10)?,
-                    })
+                    store_from_row(row)
                 },
             )
             .optional()
@@ -1664,34 +1688,17 @@ impl Db {
     }
 
     /// Every `store_connections` row belonging to `user_id`, newest first -
-    /// the dashboard home page's own data source. Deliberately no "display
-    /// name" column exists on this table (only `site_url`) - the dashboard
-    /// derives a display name from `site_url` itself rather than this query
-    /// growing a field nothing else needs; see `http/home.rs::display_name`.
+    /// the dashboard home page's own data source.
     pub fn list_store_connections_for_user(
         &self,
         user_id: &UserId,
     ) -> Result<Vec<StoreConnectionRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id
+            "SELECT id, user_id, platform, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
              FROM store_connections WHERE user_id = ?1 ORDER BY created_at_utc DESC",
         )?;
         let rows = stmt
-            .query_map(params![user_id], |row| {
-                Ok(StoreConnectionRow {
-                    id: row.get(0)?,
-                    user_id: row.get(1)?,
-                    platform: row.get(2)?,
-                    site_url: row.get(3)?,
-                    tenant_public_key: row.get(4)?,
-                    tenant_secret_token_encrypted: row.get(5)?,
-                    created_at: row.get(6)?,
-                    fx_providers: parse_fx_providers(&row.get::<_, String>(7)?),
-                    base_currency: row.get(8)?,
-                    fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(9)?),
-                    wallet_id: row.get(10)?,
-                })
-            })?
+            .query_map(params![user_id], store_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1881,46 +1888,33 @@ impl Db {
     ) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id
+                "SELECT id, user_id, platform, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
                  FROM store_connections WHERE tenant_public_key = ?1",
                 params![tenant_public_key],
                 |row| {
-                    Ok(StoreConnectionRow {
-                        id: row.get(0)?,
-                        user_id: row.get(1)?,
-                        platform: row.get(2)?,
-                        site_url: row.get(3)?,
-                        tenant_public_key: row.get(4)?,
-                        tenant_secret_token_encrypted: row.get(5)?,
-                        created_at: row.get(6)?,
-                        fx_providers: parse_fx_providers(&row.get::<_, String>(7)?),
-                    base_currency: row.get(8)?,
-                    fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(9)?),
-                    wallet_id: row.get(10)?,
-                    })
+                    store_from_row(row)
                 },
             )
             .optional()
             .map_err(DbError::from)
     }
 
-    /// Updates `site_url` on an existing `store_connections` row - used when
-    /// a merchant attaches a second (or replacement) storefront to a store
-    /// they already have (`connect::confirm_existing_store`), so the
-    /// dashboard reflects the most recent site this store was actually
-    /// connected from rather than only ever showing wherever it was first
-    /// created. Does not touch `platform` - a store's platform still names
-    /// how it was first connected, not necessarily its most recent one.
-    pub fn update_store_connection_site_url(
-        &self,
-        id: &ConnectionId,
-        site_url: &str,
-    ) -> Result<()> {
-        self.conn.execute(
-            "UPDATE store_connections SET site_url = ?2 WHERE id = ?1",
-            params![id, site_url],
-        )?;
-        Ok(())
+    /// The store on this instance, of any account, whose site is `site` (as
+    /// `crate::stores::normalize_site` writes it): there is at most one.
+    /// `None` for an empty `site`, which a store without a site has.
+    pub fn find_store_by_site(&self, site: &str) -> Result<Option<StoreConnectionRow>> {
+        if site.is_empty() {
+            return Ok(None);
+        }
+        self.conn
+            .query_row(
+                "SELECT id, user_id, platform, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
+                 FROM store_connections WHERE site = ?1",
+                params![site],
+                store_from_row,
+            )
+            .optional()
+            .map_err(DbError::from)
     }
 
     /// Every row of the static `currencies` reference table, ordered by
@@ -2273,24 +2267,10 @@ impl Db {
     /// into `store_domains` yet (see migration `0020_embed_restriction.sql`).
     pub fn list_store_connections_awaiting_domain_import(&self) -> Result<Vec<StoreConnectionRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id
+            "SELECT id, user_id, platform, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
              FROM store_connections WHERE domains_imported = 0",
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(StoreConnectionRow {
-                id: row.get(0)?,
-                user_id: row.get(1)?,
-                platform: row.get(2)?,
-                site_url: row.get(3)?,
-                tenant_public_key: row.get(4)?,
-                tenant_secret_token_encrypted: row.get(5)?,
-                created_at: row.get(6)?,
-                fx_providers: parse_fx_providers(&row.get::<_, String>(7)?),
-                base_currency: row.get(8)?,
-                fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(9)?),
-                wallet_id: row.get(10)?,
-            })
-        })?;
+        let rows = stmt.query_map([], store_from_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(DbError::from)
     }
@@ -2807,7 +2787,7 @@ mod tests {
                 &shared::ids::ConnectionId::new(id.to_string()),
                 &shared::ids::UserId::new("merchant"),
                 "custom",
-                "https://example.com",
+                &format!("{id}.example"),
                 pk,
                 "encrypted",
                 1,
@@ -3176,7 +3156,7 @@ mod tests {
             .unwrap();
         assert_eq!(row.user_id, shared::ids::UserId::new("user-1"));
         assert_eq!(row.platform, "woocommerce");
-        assert_eq!(row.site_url, "https://shop.example.com");
+        assert_eq!(row.site, "https://shop.example.com");
         assert_eq!(row.tenant_public_key, "pk_abc");
         assert_eq!(row.tenant_secret_token_encrypted, "sk_abc");
         assert_eq!(row.created_at, 3000);
@@ -3228,7 +3208,7 @@ mod tests {
             "the saved order is the order read back"
         );
         // Nothing else changed.
-        assert_eq!(row.site_url, "https://shop.example.com");
+        assert_eq!(row.site, "https://shop.example.com");
         assert_eq!(row.tenant_public_key, "pk_abc");
     }
 
@@ -3511,43 +3491,47 @@ mod tests {
     }
 
     #[test]
-    fn updating_a_store_connections_site_url_only_touches_that_field() {
+    fn a_site_belongs_to_one_store_on_the_instance_and_stores_without_one_are_many() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user(
-            &shared::ids::UserId::new("user-1"),
-            "a@example.com",
-            "hash",
-            false,
-            1000,
-        )
-        .unwrap();
-        db.create_store_connection(
-            &shared::ids::ConnectionId::new("conn-1"),
-            &shared::ids::UserId::new("user-1"),
-            "woocommerce",
-            "https://old-site.example.com",
-            "pk_abc",
-            "sk_abc",
-            3000,
-            "XMR",
-        )
-        .unwrap();
-
-        db.update_store_connection_site_url(
-            &shared::ids::ConnectionId::new("conn-1"),
-            "https://new-site.example.com",
-        )
-        .unwrap();
-
-        let row = db
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
-            .unwrap()
+        for user in ["user-1", "user-2"] {
+            db.create_user(
+                &shared::ids::UserId::new(user),
+                &format!("{user}@example.com"),
+                "hash",
+                false,
+                1000,
+            )
             .unwrap();
-        assert_eq!(row.site_url, "https://new-site.example.com");
-        // Nothing else changed.
-        assert_eq!(row.platform, "woocommerce");
-        assert_eq!(row.tenant_public_key, "pk_abc");
-        assert_eq!(row.tenant_secret_token_encrypted, "sk_abc");
+        }
+        let store = |id: &str, user: &str, site: &str| {
+            db.create_store_connection(
+                &shared::ids::ConnectionId::new(id),
+                &shared::ids::UserId::new(user),
+                "custom",
+                site,
+                &format!("pk_{id}"),
+                "sk",
+                3000,
+                "XMR",
+            )
+        };
+        store("conn-1", "user-1", "shop.example").unwrap();
+        // Another account can't have it, nor can the same one twice.
+        assert!(store("conn-2", "user-2", "shop.example")
+            .unwrap_err()
+            .is_unique_violation());
+        assert!(store("conn-3", "user-1", "shop.example")
+            .unwrap_err()
+            .is_unique_violation());
+        // Stores that take payments only in person have no site, and many can.
+        store("conn-4", "user-1", "").unwrap();
+        store("conn-5", "user-2", "").unwrap();
+
+        let found = db.find_store_by_site("shop.example").unwrap().unwrap();
+        assert_eq!(found.id.as_str(), "conn-1");
+        assert_eq!(found.site, "shop.example");
+        assert!(db.find_store_by_site("other.example").unwrap().is_none());
+        assert!(db.find_store_by_site("").unwrap().is_none());
     }
 
     #[test]

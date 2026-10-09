@@ -35,7 +35,14 @@ use super::{ApiError, AppState, AuthedUser};
 #[derive(Deserialize)]
 pub struct CreateConnectionRequest {
     pub platform: String,
+    /// The store's site: a host or any URL on it (only its host is kept,
+    /// `crate::stores::normalize_site`). Optional, for a store that takes
+    /// payments only in person.
+    #[serde(default)]
     pub site_url: String,
+    /// What the store is called; its site when absent.
+    #[serde(default)]
+    pub name: Option<String>,
     /// The store's keys in the clear, for a backend that takes them that
     /// way; empty when `encrypted_keys` carries them.
     #[serde(default)]
@@ -88,7 +95,11 @@ pub struct CreateConnectionResponse {
 /// shared logic's input.
 pub(super) struct CreateConnectionFields {
     pub platform: String,
-    pub site_url: String,
+    /// Already tidied (`crate::stores::clean_name`).
+    pub name: String,
+    /// Already a host (`crate::stores::normalize_site`), or empty for a
+    /// store with no site.
+    pub site: String,
     pub view_key_hex: String,
     pub spend_pubkey_hex: String,
     /// The keys encrypted to the engine's SEV-SNP key storage, instead of
@@ -123,7 +134,53 @@ pub(super) struct CreateConnectionOutcome {
 /// existing `ApiError::BadRequest`/`ApiError::Internal` shape.
 pub(super) enum CreateConnectionError {
     BadRequest(String),
+    /// Another store on this instance already has the site.
+    SiteTaken(SiteTaken),
     Internal,
+}
+
+/// Whose store already has a site: no two stores on an instance share one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SiteTaken {
+    /// The merchant's own store: the error links to it.
+    Yours {
+        id: crate::db::ConnectionId,
+        name: String,
+    },
+    /// Another account's, which is all it says.
+    Someone,
+}
+
+impl SiteTaken {
+    /// Who has `site`, from `user_id`'s point of view, if anyone does.
+    pub(crate) fn of(
+        db: &crate::db::Db,
+        user_id: &crate::db::UserId,
+        site: &str,
+    ) -> Result<Option<Self>, crate::db::DbError> {
+        Ok(db.find_store_by_site(site)?.map(|store| {
+            if &store.user_id == user_id {
+                SiteTaken::Yours {
+                    id: store.id,
+                    name: store.name,
+                }
+            } else {
+                SiteTaken::Someone
+            }
+        }))
+    }
+
+    /// What the merchant is told, in plain text (the API's error).
+    pub(crate) fn message(&self, site: &str) -> String {
+        match self {
+            SiteTaken::Yours { name, .. } => format!(
+                "Your store {name} already uses {site}. Open it, or use a different site."
+            ),
+            SiteTaken::Someone => format!(
+                "{site} is already connected to Monokulo here. If it's yours, ask the person who connected it."
+            ),
+        }
+    }
 }
 
 /// The actual connection-creation logic - provisioning a real engine tenant
@@ -156,6 +213,17 @@ pub(super) async fn create_connection_for_user(
                 req.base_currency
             ))
         })?;
+
+    // A site another store has is refused before anything is made.
+    let (user_id, site) = (user.id.clone(), req.site.clone());
+    if let Some(taken) = state
+        .db
+        .read(move |db| SiteTaken::of(db, &user_id, &site))
+        .await
+        .map_err(|_| CreateConnectionError::Internal)?
+    {
+        return Err(CreateConnectionError::SiteTaken(taken));
+    }
 
     // The wallet the store takes payments into: the one picked, or the
     // keys sent made into one (docs/wallets.md).
@@ -239,7 +307,8 @@ pub(super) async fn create_connection_for_user(
                 &connection_id,
                 &user_id,
                 &req.platform,
-                &req.site_url,
+                &req.name,
+                &req.site,
                 &public_key,
                 &encrypted_secret_token,
                 now_unix(),
@@ -249,12 +318,7 @@ pub(super) async fn create_connection_for_user(
             // The site's domain, and any extra domains an API caller passed,
             // join the store's domains waiting for DNS
             // (`crate::embed_domains`).
-            crate::embed_domains::suggest_site_domain(
-                db,
-                &connection_id,
-                &req.site_url,
-                now_unix(),
-            );
+            crate::embed_domains::suggest_site_domain(db, &connection_id, &req.site, now_unix());
             for domain in &req.domains {
                 crate::embed_domains::suggest_domain(db, &connection_id, domain, now_unix());
             }
@@ -263,6 +327,7 @@ pub(super) async fn create_connection_for_user(
         })
         .await;
     if let Err(e) = saved {
+        let taken = e.is_unique_violation();
         // The tenant exists but nothing owns it: its secret would be lost
         // with this request, and the engine would scan for it forever. Give
         // it back; if that fails too, name it for an operator to clean up.
@@ -274,6 +339,10 @@ pub(super) async fn create_connection_for_user(
             .await
         {
             tracing::error!(error = %e, public_key = %created.public_key, "the engine tenant could not be removed either; it is orphaned");
+        }
+        // Another store took the site while this one was being made.
+        if taken {
+            return Err(CreateConnectionError::SiteTaken(SiteTaken::Someone));
         }
         return Err(CreateConnectionError::Internal);
     }
@@ -289,9 +358,27 @@ pub async fn create_connection(
     AuthedUser(user, _token_hash): AuthedUser,
     Json(req): Json<CreateConnectionRequest>,
 ) -> Result<(StatusCode, Json<CreateConnectionResponse>), ApiError> {
+    let site = if req.site_url.trim().is_empty() {
+        String::new()
+    } else {
+        crate::stores::normalize_site(&req.site_url)
+            .map_err(|why| ApiError::BadRequest(why.to_owned()))?
+    };
+    let name = match req.name.as_deref() {
+        Some(name) => {
+            crate::stores::clean_name(name).map_err(|why| ApiError::BadRequest(why.to_owned()))?
+        }
+        None if !site.is_empty() => site.clone(),
+        None => {
+            return Err(ApiError::BadRequest(
+                "A store with no site needs a name.".to_owned(),
+            ))
+        }
+    };
     let fields = CreateConnectionFields {
         platform: req.platform,
-        site_url: req.site_url,
+        name,
+        site: site.clone(),
         encrypted_keys: req.encrypted_keys,
         view_key_hex: req.view_key_hex,
         spend_pubkey_hex: req.spend_pubkey_hex,
@@ -308,6 +395,7 @@ pub async fn create_connection(
         .await
         .map_err(|e| match e {
             CreateConnectionError::BadRequest(message) => ApiError::BadRequest(message),
+            CreateConnectionError::SiteTaken(taken) => ApiError::BadRequest(taken.message(&site)),
             CreateConnectionError::Internal => ApiError::Internal,
         })?;
 
@@ -424,7 +512,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.platform, "woocommerce");
-        assert_eq!(row.site_url, "https://shop.example.com");
+        assert_eq!(row.site, "shop.example.com", "a site is kept as its host");
+        assert_eq!(
+            row.name, "shop.example.com",
+            "named after its site when no name is given"
+        );
         assert_eq!(row.tenant_public_key, public_key);
 
         // WBS 1.2.3: the stored value must be genuinely encrypted now, not

@@ -1,6 +1,6 @@
 //! Real end-to-end test spanning the *whole* hosted stack, not just the
 //! engine: signs up a real monokulo account, connects a store through
-//! the real "advanced" connect form (`POST /dashboard/connect`) using the
+//! store setup (`POST /setup`, then `POST /setup/wallet/keys`) using the
 //! same reusable merchant watch-only wallet `tests/e2e_stagenet.rs` and
 //! `mock-woocommerce/tests/e2e_stagenet_connect_flow.rs` already use, pays a
 //! real order with a genuine, signed, broadcast stagenet transaction (via
@@ -288,41 +288,60 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         .to_owned();
     let session_cookie = set_cookie.split(';').next().unwrap().to_owned();
 
-    // ---- 2. connect a store via the real "advanced" connect form, using the
-    // same reusable merchant watch-only wallet the engine-only e2e test uses ----
-    let site_url = "https://e2e-dashboard-test.example.com";
+    // ---- 2. set up a store through `/setup` as a browser without
+    // JavaScript does (the store step, then the wallet brought in with its
+    // keys), using the same reusable merchant watch-only wallet the
+    // engine-only e2e test uses ----
+    let setup_fields = [
+        ("kind", "web"),
+        ("store_name", "E2E dashboard test"),
+        ("store_site", "e2e-dashboard-test.example.com"),
+        ("name", "E2E wallet"),
+        ("network", "stagenet"),
+        ("view_key_hex", e2e_fixture::WALLET_PRIVATE_VIEW_KEY),
+        ("spend_pubkey_hex", e2e_fixture::WALLET_PUBLIC_SPEND_KEY),
+    ];
+    let mut done_path = String::new();
+    for step in ["/setup", "/setup/wallet/keys"] {
+        let response = cp_router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(step)
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("cookie", &session_cookie)
+                    .body(Body::from(form_body(&setup_fields)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::SEE_OTHER,
+            "expected {step} to go on, not a refused form"
+        );
+        done_path = response.headers()["location"].to_str().unwrap().to_owned();
+    }
     let connect_response = cp_router
         .clone()
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri("/dashboard/connect")
-                .header("content-type", "application/x-www-form-urlencoded")
+                .uri(&done_path)
                 .header("cookie", &session_cookie)
-                .body(Body::from(form_body(&[
-                    ("site_url", site_url),
-                    ("view_key_hex", e2e_fixture::WALLET_PRIVATE_VIEW_KEY),
-                    ("spend_pubkey_hex", e2e_fixture::WALLET_PUBLIC_SPEND_KEY),
-                    ("network", "stagenet"),
-                    ("base_currency", "XMR"),
-                ])))
+                .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(
-        connect_response.status(),
-        StatusCode::OK,
-        "expected the connect success page, not a re-rendered form"
-    );
     let connect_html = body_text(connect_response).await;
     assert!(
-        connect_html.contains("Store connected"),
-        "expected a real successful connect, got: {connect_html}"
+        connect_html.contains("E2E dashboard test is set up"),
+        "expected the store to be made, got: {connect_html}"
     );
     let pk_start = connect_html
         .find("pk_")
-        .expect("expected a real pk_ value in the connect success page");
+        .expect("expected a real pk_ value on the Done page");
     let public_key: String = connect_html[pk_start..]
         .chars()
         .take_while(|c| c.is_alphanumeric() || *c == '_')

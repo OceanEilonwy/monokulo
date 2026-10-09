@@ -27,20 +27,19 @@
 //! `session` cookie (the browser flow) — same hash-and-look-up logic either
 //! way, so this stays one auth system, not two.
 //!
-//! `/dashboard/connect` (`dashboard` module, WBS 1.3.2) is the same idea
-//! applied to `/connections`: a form-post wrapper, behind [`AuthedUser`],
-//! over `connections::create_connection_for_user` — the exact logic
-//! `/connections` itself calls, not a reimplementation of it.
+//! `/setup` (`setup` module) makes a store in three steps (Store, Wallet,
+//! Done) on top of `connections::create_connection_for_user`, the same
+//! logic `/connections` itself calls.
 //!
 //! `/connect/{platform}` and `/connect/{platform}/finish` (`connect` module,
 //! WBS 1.4.1) are the generic, platform-agnostic "one-click install" flow
 //! (`docs/WOOCOMMERCE_ROADMAP.md` Stage 6): a plugin sends the merchant's
 //! browser to `GET /connect/{platform}`, which redirects to
 //! `/dashboard/login` (carrying a validated `next`, see
-//! `dashboard::login_submit`) if there's no session yet, or a confirm form
-//! if there is; confirming calls the same `connections::create_connection_for_user`
-//! every other surface uses, then redirects to the plugin's `return_url`
-//! with a short-lived, single-use connect token instead of a raw `sk_...`.
+//! `dashboard::login_submit`) if there's no session yet; with one, the
+//! store with the shop's site gets the plugin, or setup makes one, and
+//! the plugin's `return_url` gets a short-lived, single-use connect token
+//! instead of a raw `sk_...`.
 //! `POST /connect/{platform}/finish` is deliberately *not* behind
 //! [`AuthedUser`] — it's called server-to-server by the plugin, which has no
 //! monokulo session at all — and redeems that token exactly once.
@@ -67,10 +66,10 @@ mod orders;
 mod pay;
 mod pos;
 mod pos_logs;
+mod setup;
 mod signup;
 pub mod status_page;
 pub mod store_key;
-mod store_setup;
 mod telemetry_client;
 #[cfg(test)]
 mod test_support;
@@ -438,17 +437,28 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(dashboard::theme_submit),
         )
         .route(
-            "/dashboard/connect",
-            axum::routing::get(dashboard::connect_form).post(dashboard::connect_submit),
+            "/setup",
+            axum::routing::get(setup::store_form).post(setup::store_submit),
+        )
+        .route("/setup/wallet", axum::routing::get(setup::wallet_form))
+        .route("/setup/wallet/existing", post(setup::use_existing))
+        .route(
+            "/setup/wallet/keys",
+            axum::routing::get(setup::keys_form).post(setup::keys_submit),
         )
         .route(
-            "/dashboard/stores/new",
-            axum::routing::get(home::new_store_picker),
+            "/setup/wallet/new",
+            axum::routing::get(setup::new_form).post(setup::new_submit),
         )
+        .route("/setup/done/{id}", axum::routing::get(setup::done))
         .route("/account", axum::routing::get(account::page))
         .route("/account/profile", post(account::save_profile))
         .route("/account/password", post(account::change_password))
-        .route("/account/wallets/setup", axum::routing::get(wallets::setup))
+        .route("/account/wallets/add", axum::routing::get(wallets::add))
+        .route(
+            "/account/wallets/name-check",
+            axum::routing::get(wallets::name_check),
+        )
         .route(
             "/account/wallets/import",
             axum::routing::get(wallets::import_form).post(wallets::import_submit),
@@ -458,10 +468,6 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::get(wallets::create_form).post(wallets::create_submit),
         )
         .route("/account/wallets/{id}", axum::routing::get(wallets::detail))
-        .route(
-            "/account/wallets/{id}/ready",
-            axum::routing::get(wallets::ready),
-        )
         .route(
             "/account/wallets/{id}/rename",
             axum::routing::post(wallets::rename),
@@ -475,16 +481,8 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(wallets::restore),
         )
         .route(
-            "/dashboard/stores/new/woocommerce",
-            axum::routing::get(home::woocommerce_instructions),
-        )
-        .route(
             "/dashboard/stores/{id}",
             axum::routing::get(orders::store_detail),
-        )
-        .route(
-            "/dashboard/stores/{id}/setup",
-            axum::routing::get(store_setup::page).post(store_setup::save),
         )
         .route(
             "/dashboard/stores/{id}/settings",
@@ -948,7 +946,7 @@ pub(crate) fn store_of_path(path: &str) -> Option<&str> {
     let path = path.split(['?', '#']).next().unwrap_or(path);
     let mut segments = path.trim_start_matches('/').split('/');
     match (segments.next(), segments.next(), segments.next()) {
-        (Some("dashboard"), Some("stores"), Some(id)) if !id.is_empty() && id != "new" => Some(id),
+        (Some("dashboard"), Some("stores"), Some(id)) if !id.is_empty() => Some(id),
         _ => None,
     }
 }
@@ -961,11 +959,7 @@ fn store_alerts(
 ) -> Vec<String> {
     let mut alerts = Vec::new();
     for store in stores {
-        let name = store
-            .site_url
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .trim_end_matches('/');
+        let name = &store.name;
         for problem in unserved
             .iter()
             .filter(|u| u.public_key == store.tenant_public_key)

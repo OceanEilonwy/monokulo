@@ -1,8 +1,12 @@
 //! A merchant's wallets (docs/wallets.md): `/account?tab=wallets` and its
-//! pages. Choosing how to set one up, bringing one's own (keys pasted in,
-//! works without JavaScript), making a new one in the browser (the phrase
-//! never leaves the page; only watch-only keys are posted), the list, and a
-//! wallet's page where it is renamed or deleted.
+//! pages. Adding one from the Account page (`/account/wallets/add`):
+//! bringing one's own (keys pasted in, works without JavaScript) or making
+//! a new one in the browser (the phrase never leaves the page; only
+//! watch-only keys are posted). The list, and a wallet's page where it is
+//! renamed or retired.
+//!
+//! The screens for adding a wallet are shared with setup's Wallet step
+//! (`http::setup`): the helpers here take the [`Flow`] they're in.
 
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
@@ -14,48 +18,30 @@ use serde::Deserialize;
 use crate::db::{UserRow, WalletId, WalletOrigin, WalletRow};
 use crate::views;
 use crate::views::wallets::{
-    CreateViewModel, DetailViewModel, ImportViewModel, ReadyViewModel, WalletEvent, WalletListItem,
-    WalletStore,
+    ChoiceViewModel, CreateViewModel, DetailViewModel, Flow, ImportViewModel, WalletEvent,
+    WalletListItem, WalletStore,
 };
 use crate::wallets::{clean_name, friendly_name};
 
-use super::dashboard::{redirect_303, SafePath};
+use super::dashboard::redirect_303;
 use super::wallet_service::{add_wallet, adopt_unlinked_stores, AddWallet, AddWalletError};
 use super::{AppState, AuthedUser};
 
+/// The name and network chosen on the choice screen, as the next screen
+/// gets them.
 #[derive(Deserialize, Default)]
-pub struct SetupQuery {
+pub struct NameQuery {
     #[serde(default)]
-    next: Option<String>,
+    pub name: Option<String>,
     #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    suggested: Option<String>,
-    #[serde(default)]
-    network: Option<String>,
+    pub network: Option<String>,
 }
 
-/// `?next=`, kept only if it's a path on this site.
-fn safe_next(next: Option<&str>) -> Option<String> {
-    next.and_then(SafePath::parse)
-        .map(|p| p.as_str().to_owned())
-}
-
-fn network_or_mainnet(network: Option<&str>) -> String {
+pub(super) fn network_or_mainnet(network: Option<&str>) -> String {
     match network {
         Some(n @ ("stagenet" | "testnet")) => n.to_owned(),
         _ => "mainnet".to_owned(),
     }
-}
-
-/// The plugin's site, when `next` is the WooCommerce connect page (the
-/// merchant is setting up a wallet on the way to connecting a shop).
-pub(crate) fn connecting_site(next: Option<&str>) -> Option<String> {
-    let next = next?;
-    let query = next.strip_prefix("/connect/")?.split_once('?')?.1;
-    url::form_urlencoded::parse(query.as_bytes())
-        .find(|(k, _)| k == "site_url")
-        .map(|(_, v)| super::orders::display_name_for(&v))
 }
 
 async fn wallet_names(state: &AppState, user: &UserRow) -> Vec<String> {
@@ -67,7 +53,7 @@ async fn wallet_names(state: &AppState, user: &UserRow) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn already_added(existing: &WalletRow) -> String {
+pub(super) fn already_added(existing: &WalletRow) -> String {
     if existing.retired_at.is_some() {
         format!(
             "You retired this wallet, \u{201c}{}\u{201d}. Bring it back on its page to use it again.",
@@ -81,51 +67,126 @@ fn already_added(existing: &WalletRow) -> String {
     }
 }
 
-/// The name a wallet will get: the one typed, else the one the form
-/// already suggested if it's still free, else a fresh friendly one.
-fn chosen_name(typed: Option<&str>, suggested: Option<&str>, taken: &[String]) -> String {
-    if let Ok(Some(name)) = clean_name(typed.unwrap_or("")) {
-        return name;
-    }
-    match suggested.and_then(|s| clean_name(s).ok().flatten()) {
-        Some(s) if !taken.iter().any(|t| t.eq_ignore_ascii_case(&s)) => s,
-        _ => friendly_name(taken),
+/// Why `name` can't be a new wallet's name for `user`, if it can't: too
+/// long, or one of their wallets has it. Blank is fine: one is picked.
+pub(super) async fn name_problem(state: &AppState, user: &UserRow, name: &str) -> Option<String> {
+    let name = match clean_name(name) {
+        Ok(Some(name)) => name,
+        Ok(None) => return None,
+        Err(why) => return Some(why),
+    };
+    let taken = wallet_names(state, user).await;
+    taken
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case(&name))
+        .then(|| format!("You already have a wallet called {name}. Pick another name."))
+}
+
+/// The name a new wallet gets: the one typed, else a friendly one. One
+/// taken in the meantime gets a number, so a phrase already backed up is
+/// never refused for its name.
+async fn final_name(state: &AppState, user: &UserRow, typed: &str) -> String {
+    let taken = wallet_names(state, user).await;
+    let is_free = |name: &str| !taken.iter().any(|t| t.eq_ignore_ascii_case(name));
+    match clean_name(typed) {
+        Ok(Some(name)) if is_free(&name) => name,
+        Ok(Some(name)) => (2..)
+            .map(|n| format!("{name} ({n})"))
+            .find(|candidate| is_free(candidate))
+            .unwrap_or(name),
+        _ => friendly_name(&taken),
     }
 }
 
-/// A first wallet: the setup steps (Account, Wallet, Ready) are shown.
-async fn is_onboarding(state: &AppState, user: &UserRow) -> bool {
-    let user_id = user.id.clone();
-    state
-        .db
-        .read(move |db| {
-            Ok::<_, crate::db::DbError>(
-                db.list_wallets(&user_id)?.is_empty()
-                    && db.list_store_connections_for_user(&user_id)?.is_empty(),
-            )
-        })
-        .await
-        .unwrap_or(false)
+/// The name offered on the choice screen: `wanted` (the store's own idea,
+/// "Bakery takings") if it's free, else a friendly one.
+pub(super) async fn suggested_name(
+    state: &AppState,
+    user: &UserRow,
+    wanted: Option<&str>,
+) -> String {
+    let taken = wallet_names(state, user).await;
+    match wanted.and_then(|w| clean_name(w).ok().flatten()) {
+        Some(name) if !taken.iter().any(|t| t.eq_ignore_ascii_case(&name)) => name,
+        _ => friendly_name(&taken),
+    }
 }
 
-/// `GET /account/wallets/setup`.
-pub async fn setup(
+/// The choice screen: use a wallet already added (in setup), or name a new
+/// one and pick where it comes from.
+pub(super) async fn render_choice(
+    state: &AppState,
+    user: &UserRow,
+    flow: Flow<'_>,
+    name: String,
+    name_problem: Option<String>,
+    network: String,
+    error: Option<String>,
+) -> Response {
+    let wallets = match flow {
+        Flow::Setup(_) => {
+            let user_id = user.id.clone();
+            state
+                .db
+                .read(move |db| db.list_wallets(&user_id))
+                .await
+                .unwrap_or_default()
+        }
+        Flow::Account => Vec::new(),
+    };
+    let data = ChoiceViewModel {
+        wallets,
+        name,
+        name_problem,
+        network,
+        error,
+    };
+    let path = match flow {
+        Flow::Setup(_) => "/setup/wallet",
+        Flow::Account => "/account/wallets/add",
+    };
+    let chrome = super::page_chrome(state, Some(user), path).await;
+    views::wallets::choice_page(&chrome, flow, &data).into_response()
+}
+
+/// `GET /account/wallets/add`.
+pub async fn add(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Query(query): Query<SetupQuery>,
+    Query(query): Query<NameQuery>,
 ) -> Response {
-    let next = safe_next(query.next.as_deref());
-    let taken = wallet_names(&state, &user).await;
-    let data = views::wallets::ChoiceViewModel {
-        onboarding: is_onboarding(&state, &user).await,
-        connecting_site: connecting_site(next.as_deref()),
-        suggested_name: chosen_name(None, query.suggested.as_deref(), &taken),
-        name: query.name.unwrap_or_default(),
-        network: network_or_mainnet(query.network.as_deref()),
-        next,
+    let name = match query.name {
+        Some(name) => name,
+        None => suggested_name(&state, &user, None).await,
     };
-    let chrome = super::page_chrome(&state, Some(&user), "/account/wallets/setup").await;
-    views::wallets::choice_page(&chrome, &data).into_response()
+    let problem = name_problem(&state, &user, &name).await;
+    render_choice(
+        &state,
+        &user,
+        Flow::Account,
+        name,
+        problem,
+        network_or_mainnet(query.network.as_deref()),
+        None,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct NameCheckQuery {
+    #[serde(default)]
+    name: String,
+}
+
+/// `GET /account/wallets/name-check?name=`: whether the name is free, as
+/// the line under the field (fixi swaps it in as the name changes).
+pub async fn name_check(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Query(query): Query<NameCheckQuery>,
+) -> Response {
+    let problem = name_problem(&state, &user, &query.name).await;
+    views::wallets::name_check(&query.name, problem.as_deref()).into_response()
 }
 
 // -- Bring your own wallet ---------------------------------------------------
@@ -133,31 +194,28 @@ pub async fn setup(
 #[derive(Deserialize)]
 pub struct ImportForm {
     #[serde(default)]
-    name: String,
+    pub name: String,
     #[serde(default)]
-    suggested: Option<String>,
+    pub view_key_hex: String,
     #[serde(default)]
-    view_key_hex: String,
+    pub spend_pubkey_hex: String,
     #[serde(default)]
-    spend_pubkey_hex: String,
+    pub encrypted_keys: Option<String>,
     #[serde(default)]
-    encrypted_keys: Option<String>,
+    pub network: String,
     #[serde(default)]
-    network: String,
-    #[serde(default)]
-    key_custody_backend: Option<String>,
-    #[serde(default)]
-    next: Option<String>,
+    pub key_custody_backend: Option<String>,
 }
 
-async fn render_import(
+pub(super) async fn render_import(
     state: &AppState,
     user: &UserRow,
+    flow: Flow<'_>,
+    name: String,
+    network: String,
     error: Option<String>,
     form: Option<&ImportForm>,
-    query: &SetupQuery,
 ) -> Response {
-    let taken = wallet_names(state, user).await;
     let custody_choices = super::status_page::custody_choice_views(
         state,
         form.and_then(|f| f.key_custody_backend.as_deref()),
@@ -170,41 +228,92 @@ async fn render_import(
     )
     .await;
     let data = ImportViewModel {
-        onboarding: is_onboarding(state, user).await,
         error,
-        name: form
-            .map(|f| f.name.clone())
-            .or_else(|| query.name.clone())
-            .unwrap_or_default(),
-        suggested_name: chosen_name(
-            None,
-            form.and_then(|f| f.suggested.as_deref())
-                .or(query.suggested.as_deref()),
-            &taken,
-        ),
+        name,
+        network,
         spend_pubkey_hex: form.map(|f| f.spend_pubkey_hex.clone()).unwrap_or_default(),
-        network: network_or_mainnet(
-            form.map(|f| f.network.as_str())
-                .or(query.network.as_deref()),
-        ),
-        next: safe_next(
-            form.and_then(|f| f.next.as_deref())
-                .or(query.next.as_deref()),
-        ),
         custody_choices,
         snp_entry,
     };
-    let chrome = super::page_chrome(state, Some(user), "/account/wallets/import").await;
-    views::wallets::import_page(&chrome, &data).into_response()
+    let path = match flow {
+        Flow::Setup(_) => "/setup/wallet/keys",
+        Flow::Account => "/account/wallets/import",
+    };
+    let chrome = super::page_chrome(state, Some(user), path).await;
+    views::wallets::import_page(&chrome, flow, &data).into_response()
+}
+
+/// The keys screen, unless the name chosen can't be used: then the choice
+/// screen again, saying why. Nothing is made before the name is checked.
+pub(super) async fn keys_screen(
+    state: &AppState,
+    user: &UserRow,
+    flow: Flow<'_>,
+    query: NameQuery,
+) -> Response {
+    let name = query.name.unwrap_or_default();
+    let network = network_or_mainnet(query.network.as_deref());
+    if let Some(problem) = name_problem(state, user, &name).await {
+        return render_choice(state, user, flow, name, Some(problem), network, None).await;
+    }
+    render_import(state, user, flow, name, network, None, None).await
 }
 
 /// `GET /account/wallets/import`.
 pub async fn import_form(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Query(query): Query<SetupQuery>,
+    Query(query): Query<NameQuery>,
 ) -> Response {
-    render_import(&state, &user, None, None, &query).await
+    keys_screen(&state, &user, Flow::Account, query).await
+}
+
+/// Adds the wallet whose keys were pasted in, or the keys screen again
+/// saying why it couldn't.
+pub(super) async fn add_imported(
+    state: &AppState,
+    user: &UserRow,
+    flow: Flow<'_>,
+    form: &ImportForm,
+) -> Result<WalletRow, Box<Response>> {
+    let name = final_name(state, user, &form.name).await;
+    let network = network_or_mainnet(Some(&form.network));
+    let added = add_wallet(
+        state,
+        user,
+        AddWallet {
+            name: name.clone(),
+            view_key_hex: form.view_key_hex.clone(),
+            spend_pubkey_hex: form.spend_pubkey_hex.clone(),
+            encrypted_keys: form.encrypted_keys.clone(),
+            network: network.clone(),
+            key_custody_backend: form.key_custody_backend.clone(),
+            origin: WalletOrigin::Imported,
+            backup: None,
+            expected_address: None,
+        },
+    )
+    .await;
+    let message = match added {
+        Ok(wallet) => return Ok(wallet),
+        Err(AddWalletError::AlreadyAdded(existing)) => already_added(&existing),
+        Err(AddWalletError::Invalid(message)) => message,
+        Err(AddWalletError::Internal) => {
+            "The wallet couldn't be added right now. Try again in a minute.".to_owned()
+        }
+    };
+    Err(Box::new(
+        render_import(
+            state,
+            user,
+            flow,
+            form.name.clone(),
+            network,
+            Some(message),
+            Some(form),
+        )
+        .await,
+    ))
 }
 
 /// `POST /account/wallets/import`.
@@ -213,74 +322,9 @@ pub async fn import_submit(
     AuthedUser(user, _): AuthedUser,
     Form(form): Form<ImportForm>,
 ) -> Response {
-    let taken = wallet_names(&state, &user).await;
-    let name = chosen_name(Some(&form.name), form.suggested.as_deref(), &taken);
-    let added = add_wallet(
-        &state,
-        &user,
-        AddWallet {
-            name,
-            view_key_hex: form.view_key_hex.clone(),
-            spend_pubkey_hex: form.spend_pubkey_hex.clone(),
-            encrypted_keys: form.encrypted_keys.clone(),
-            network: network_or_mainnet(Some(&form.network)),
-            key_custody_backend: form.key_custody_backend.clone(),
-            origin: WalletOrigin::Imported,
-            backup: None,
-            expected_address: None,
-        },
-    )
-    .await;
-    let next = safe_next(form.next.as_deref());
-    match added {
-        Ok(wallet) => redirect_303(&ready_path(&wallet, next.as_deref(), false)),
-        Err(AddWalletError::AlreadyAdded(existing)) => {
-            let message = already_added(&existing);
-            render_import(
-                &state,
-                &user,
-                Some(message),
-                Some(&form),
-                &SetupQuery::default(),
-            )
-            .await
-        }
-        Err(AddWalletError::Invalid(message)) => {
-            render_import(
-                &state,
-                &user,
-                Some(message),
-                Some(&form),
-                &SetupQuery::default(),
-            )
-            .await
-        }
-        Err(AddWalletError::Internal) => {
-            render_import(
-                &state,
-                &user,
-                Some("The wallet couldn't be added right now. Try again in a minute.".to_owned()),
-                Some(&form),
-                &SetupQuery::default(),
-            )
-            .await
-        }
-    }
-}
-
-fn ready_path(wallet: &WalletRow, next: Option<&str>, skipped: bool) -> String {
-    let mut query = url::form_urlencoded::Serializer::new(String::new());
-    if let Some(next) = next {
-        query.append_pair("next", next);
-    }
-    if skipped {
-        query.append_pair("skipped", "1");
-    }
-    let query = query.finish();
-    if query.is_empty() {
-        format!("/account/wallets/{}/ready", wallet.id)
-    } else {
-        format!("/account/wallets/{}/ready?{query}", wallet.id)
+    match add_imported(&state, &user, Flow::Account, &form).await {
+        Ok(wallet) => redirect_303(&format!("/account/wallets/{}?added=1", wallet.id)),
+        Err(page) => *page,
     }
 }
 
@@ -330,124 +374,144 @@ async fn snp_for_new_wallet(
 async fn render_create(
     state: &AppState,
     user: &UserRow,
+    flow: Flow<'_>,
     name: String,
     network: String,
-    next: Option<String>,
-    error: Option<String>,
 ) -> Response {
     let data = CreateViewModel {
-        onboarding: is_onboarding(state, user).await,
         restore_height: current_height(state, &network).await,
         snp_entry: snp_for_new_wallet(state, user).await,
         name,
         network,
-        next,
-        error,
+        error: None,
     };
-    let chrome = super::page_chrome(state, Some(user), "/account/wallets/new").await;
+    let path = match flow {
+        Flow::Setup(_) => "/setup/wallet/new",
+        Flow::Account => "/account/wallets/new",
+    };
+    let chrome = super::page_chrome(state, Some(user), path).await;
     (
         // Never kept: a reload makes a different wallet.
         [(header::CACHE_CONTROL, "no-store")],
-        views::wallets::create_page(&chrome, &data),
+        views::wallets::create_page(&chrome, flow, &data),
     )
         .into_response()
+}
+
+/// The create screens, unless the name chosen can't be used: then the
+/// choice screen again, saying why, before any phrase is made.
+pub(super) async fn create_screen(
+    state: &AppState,
+    user: &UserRow,
+    flow: Flow<'_>,
+    query: NameQuery,
+) -> Response {
+    let typed = query.name.unwrap_or_default();
+    let network = network_or_mainnet(query.network.as_deref());
+    if let Some(problem) = name_problem(state, user, &typed).await {
+        return render_choice(state, user, flow, typed, Some(problem), network, None).await;
+    }
+    // A blank name is picked now, so the restore link carries it.
+    let name = final_name(state, user, &typed).await;
+    render_create(state, user, flow, name, network).await
 }
 
 /// `GET /account/wallets/new`.
 pub async fn create_form(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Query(query): Query<SetupQuery>,
+    Query(query): Query<NameQuery>,
 ) -> Response {
-    let taken = wallet_names(&state, &user).await;
-    let name = chosen_name(query.name.as_deref(), query.suggested.as_deref(), &taken);
-    render_create(
-        &state,
-        &user,
-        name,
-        network_or_mainnet(query.network.as_deref()),
-        safe_next(query.next.as_deref()),
-        None,
-    )
-    .await
+    create_screen(&state, &user, Flow::Account, query).await
 }
 
 #[derive(Deserialize)]
 pub struct CreateForm {
-    name: String,
-    network: String,
-    backup: String,
-    primary_address: String,
     #[serde(default)]
-    view_key_hex: String,
+    pub name: String,
     #[serde(default)]
-    spend_pubkey_hex: String,
+    pub network: String,
     #[serde(default)]
-    encrypted_keys: Option<String>,
+    pub backup: String,
     #[serde(default)]
-    next: Option<String>,
+    pub primary_address: String,
+    #[serde(default)]
+    pub view_key_hex: String,
+    #[serde(default)]
+    pub spend_pubkey_hex: String,
+    #[serde(default)]
+    pub encrypted_keys: Option<String>,
 }
 
-/// `POST /account/wallets/new`: the watch-only keys of the wallet the page
-/// made, and how its phrase was backed up. The page's address is checked
-/// against the one the engine works out from the keys.
+/// Adds the wallet the page made, from its watch-only keys and how its
+/// phrase was backed up; the page's address is checked against the one
+/// the engine works out from the keys. `Err` is the choice screen again,
+/// saying what went wrong.
+pub(super) async fn add_created(
+    state: &AppState,
+    user: &UserRow,
+    flow: Flow<'_>,
+    form: &CreateForm,
+) -> Result<WalletRow, Box<Response>> {
+    let network = network_or_mainnet(Some(&form.network));
+    let added = add_wallet(
+        state,
+        user,
+        AddWallet {
+            name: final_name(state, user, &form.name).await,
+            view_key_hex: form.view_key_hex.clone(),
+            spend_pubkey_hex: form.spend_pubkey_hex.clone(),
+            encrypted_keys: form.encrypted_keys.clone(),
+            network: network.clone(),
+            key_custody_backend: None,
+            origin: WalletOrigin::Created,
+            backup: Some(form.backup.clone()),
+            expected_address: Some(form.primary_address.clone()),
+        },
+    )
+    .await;
+    let message = match added {
+        Ok(wallet) => return Ok(wallet),
+        Err(AddWalletError::Invalid(message)) => message,
+        Err(AddWalletError::AlreadyAdded(existing)) => already_added(&existing),
+        Err(AddWalletError::Internal) => "The wallet couldn't be added right now.".to_owned(),
+    };
+    // The phrase backed up on that page is registered nowhere: say so
+    // plainly, rather than showing a new phrase as if nothing happened.
+    let message = format!(
+        "{message} Nothing was saved, so the recovery phrase you backed up isn't connected to Monokulo. Start again below."
+    );
+    Err(Box::new(
+        render_choice(
+            state,
+            user,
+            flow,
+            form.name.clone(),
+            None,
+            network,
+            Some(message),
+        )
+        .await,
+    ))
+}
+
+/// `POST /account/wallets/new`.
 pub async fn create_submit(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     Form(form): Form<CreateForm>,
 ) -> Response {
-    let next = safe_next(form.next.as_deref());
-    let skipped = form.backup == "skipped";
-    let added = add_wallet(
-        &state,
-        &user,
-        AddWallet {
-            name: form.name.clone(),
-            view_key_hex: form.view_key_hex,
-            spend_pubkey_hex: form.spend_pubkey_hex,
-            encrypted_keys: form.encrypted_keys,
-            network: network_or_mainnet(Some(&form.network)),
-            key_custody_backend: None,
-            origin: WalletOrigin::Created,
-            backup: Some(form.backup),
-            expected_address: Some(form.primary_address),
-        },
-    )
-    .await;
-    match added {
-        Ok(wallet) => redirect_303(&ready_path(&wallet, next.as_deref(), skipped)),
-        Err(error) => {
-            let message = match error {
-                AddWalletError::Invalid(message) => message,
-                AddWalletError::AlreadyAdded(existing) => already_added(&existing),
-                AddWalletError::Internal => "The wallet couldn't be added right now.".to_owned(),
+    match add_created(&state, &user, Flow::Account, &form).await {
+        Ok(wallet) => {
+            let skipped = if form.backup == "skipped" {
+                "&skipped=1"
+            } else {
+                ""
             };
-            // The phrase backed up on that page is not registered anywhere,
-            // and this page makes a different one: say so plainly.
-            let message = format!(
-                "{message} Nothing was saved, so the recovery phrase you just backed up isn't connected to Monokulo: below is a new wallet to back up instead."
-            );
-            render_create(
-                &state,
-                &user,
-                form.name,
-                network_or_mainnet(Some(&form.network)),
-                next,
-                Some(message),
-            )
-            .await
+            redirect_303(&format!("/account/wallets/{}?added=1{skipped}", wallet.id))
         }
+        Err(page) => *page,
     }
-}
-
-// -- Added -------------------------------------------------------------------
-
-#[derive(Deserialize)]
-pub struct ReadyQuery {
-    #[serde(default)]
-    next: Option<String>,
-    #[serde(default)]
-    skipped: Option<String>,
 }
 
 async fn load_wallet(state: &AppState, user: &UserRow, id: &str) -> Option<WalletRow> {
@@ -458,52 +522,6 @@ async fn load_wallet(state: &AppState, user: &UserRow, id: &str) -> Option<Walle
         .await
         .ok()
         .flatten()
-}
-
-/// `GET /account/wallets/{id}/ready`.
-pub async fn ready(
-    State(state): State<AppState>,
-    AuthedUser(user, _): AuthedUser,
-    Path(id): Path<String>,
-    Query(query): Query<ReadyQuery>,
-) -> Response {
-    let Some(wallet) = load_wallet(&state, &user, &id).await else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let user_id = user.id.clone();
-    let (wallets, stores) = state
-        .db
-        .read(move |db| {
-            Ok::<_, crate::db::DbError>((
-                db.list_wallets(&user_id)?.len(),
-                db.list_store_connections_for_user(&user_id)?.len(),
-            ))
-        })
-        .await
-        .unwrap_or((0, 0));
-    let next = safe_next(query.next.as_deref()).map(|path| {
-        let label = match connecting_site(Some(&path)) {
-            Some(site) => format!("Continue connecting {site}"),
-            None if path.starts_with("/dashboard/connect") => {
-                "Back to adding your store".to_owned()
-            }
-            None => "Continue".to_owned(),
-        };
-        (path, label)
-    });
-    let data = ReadyViewModel {
-        onboarding: wallets == 1 && stores == 0,
-        skipped_backup: query.skipped.is_some() && wallet.backup.as_deref() == Some("skipped"),
-        wallet,
-        next,
-    };
-    let chrome = super::page_chrome(
-        &state,
-        Some(&user),
-        format!("/account/wallets/{}/ready", data.wallet.id),
-    )
-    .await;
-    views::wallets::ready_page(&chrome, &data).into_response()
 }
 
 // -- The list and a wallet's page --------------------------------------------
@@ -559,6 +577,12 @@ pub struct DetailQuery {
     renamed: Option<String>,
     #[serde(default)]
     restored: Option<String>,
+    /// Just added (`POST /account/wallets/import` or `/new`).
+    #[serde(default)]
+    added: Option<String>,
+    /// Added without backing up its phrase.
+    #[serde(default)]
+    skipped: Option<String>,
 }
 
 async fn render_detail(
@@ -591,12 +615,10 @@ async fn render_detail(
         .await
         .unwrap_or_default();
     let store_name = |id: &str| {
-        stores.iter().find(|s| s.id == id).map(|s| {
-            (
-                s.id.to_string(),
-                super::orders::display_name_for(&s.site_url),
-            )
-        })
+        stores
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| (s.id.to_string(), s.name.clone()))
     };
 
     let mut history: Vec<(i64, WalletEvent)> = events
@@ -644,7 +666,7 @@ async fn render_detail(
         let Ok(orders) = state.engine.client.list_orders(&sk).await else {
             continue;
         };
-        let name = super::orders::display_name_for(&store.site_url);
+        let name = store.name.clone();
         for order in orders
             .into_iter()
             .filter(|o| o.amount_received_piconero > 0 && on_this_wallet(o.created_at))
@@ -679,7 +701,7 @@ async fn render_detail(
             .filter(|s| s.wallet_id.as_ref() == Some(&wallet.id))
             .map(|s| WalletStore {
                 id: s.id.to_string(),
-                name: super::orders::display_name_for(&s.site_url),
+                name: s.name.clone(),
                 until: None,
             })
             .collect(),
@@ -692,7 +714,7 @@ async fn render_detail(
                 })?;
                 Some(WalletStore {
                     id: store.id.to_string(),
-                    name: super::orders::display_name_for(&store.site_url),
+                    name: store.name.clone(),
                     until: Some(chrome.clock.text(until)),
                 })
             })
@@ -721,12 +743,20 @@ pub async fn detail(
     let Some(wallet) = load_wallet(&state, &user, &id).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let notice = match (query.renamed, query.restored) {
-        (Some(_), _) => Some("Renamed.".to_owned()),
-        (None, Some(_)) => Some(format!("{} is back. Stores can use it again.", wallet.name)),
-        (None, None) => None,
+    let notice = match (query.renamed, query.restored, query.added) {
+        (Some(_), _, _) => Some("Renamed.".to_owned()),
+        (None, Some(_), _) => Some(format!("{} is back. Stores can use it again.", wallet.name)),
+        (None, None, Some(_)) => Some(format!(
+            "{} is added. Pick it for a store in the store's settings, or when you set one up.",
+            wallet.name
+        )),
+        (None, None, None) => None,
     };
-    render_detail(&state, &user, wallet, None, notice, None).await
+    let error = (query.skipped.is_some() && wallet.backup.as_deref() == Some("skipped")).then(|| {
+        "This wallet's recovery phrase was not backed up. Payments to it can't be spent unless you have it."
+            .to_owned()
+    });
+    render_detail(&state, &user, wallet, error, notice, None).await
 }
 
 #[derive(Deserialize)]
@@ -1084,18 +1114,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn signing_up_leads_to_setting_up_a_wallet_where_creating_one_waits_for_javascript() {
+    async fn adding_a_wallet_names_it_first_and_creating_one_waits_for_javascript() {
         let (state, _engine) = real_engine_state().await;
         let router = build_router(state);
-        let (cookie, to) = sign_up(&router, "first@example.com", None).await;
-        assert_eq!(to, "/account/wallets/setup");
+        let (cookie, _) = sign_up(&router, "first@example.com", None).await;
 
-        let html = body_text(get(&router, &to, &cookie).await).await;
-        assert!(html.contains("Set up your wallet"));
+        let html = body_text(get(&router, "/account/wallets/add", &cookie).await).await;
+        assert!(html.contains("<h1>Add a wallet</h1>"), "{html}");
+        // The wallet's own small steps, without setup's.
         assert!(
-            html.contains(r#"aria-current="step""#),
-            "the setup steps: {html}"
+            html.contains(r#"<li aria-current="step"><span class="pill">Kind</span></li>"#),
+            "{html}"
         );
+        assert!(!html.contains("Setup progress"));
+        // The name comes first, already a free one, checked.
+        let name_at = html.find(r#"name="name""#).unwrap();
+        assert!(name_at < html.find("Create a new wallet").unwrap());
+        assert!(html.contains("Free to use"), "{html}");
         // Drawn unavailable, with the reason, until the script turns it on.
         assert!(html.contains("pick-card recommended unavailable"));
         assert!(
@@ -1111,6 +1146,128 @@ mod tests {
             html.contains(r#"formaction="/account/wallets/import""#),
             "bring your own works without it"
         );
+        assert!(
+            !html.contains("Use a wallet you already added"),
+            "only setup offers one already added"
+        );
+    }
+
+    /// The name is checked before anything is made: a name in use sends the
+    /// merchant back to the choice screen, before any phrase exists.
+    #[tokio::test]
+    async fn a_name_in_use_is_refused_before_any_phrase_is_made() {
+        let (state, _engine) = real_engine_state().await;
+        let router = build_router(state.clone());
+        let (cookie, _) = sign_up(&router, "names@example.com", None).await;
+        bring_in(&router, &cookie, "Till").await;
+
+        let check =
+            body_text(get(&router, "/account/wallets/name-check?name=till", &cookie).await).await;
+        assert!(check.contains(r#"class="field-check bad""#), "{check}");
+        assert!(
+            check.contains("You already have a wallet called till"),
+            "{check}"
+        );
+        let check =
+            body_text(get(&router, "/account/wallets/name-check?name=Market", &cookie).await).await;
+        assert!(check.contains("Free to use"), "{check}");
+
+        for screen in ["/account/wallets/new", "/account/wallets/import"] {
+            let html = body_text(
+                get(
+                    &router,
+                    &format!("{screen}?name=Till&network=mainnet"),
+                    &cookie,
+                )
+                .await,
+            )
+            .await;
+            assert!(html.contains("<h1>Add a wallet</h1>"), "{screen}: {html}");
+            assert!(
+                html.contains("You already have a wallet called Till"),
+                "{html}"
+            );
+            assert!(
+                !html.contains("data-wallet-setup"),
+                "no phrase is made: {html}"
+            );
+        }
+        // A free name goes on, and isn't asked again.
+        let html = body_text(
+            get(
+                &router,
+                "/account/wallets/import?name=Market&network=stagenet",
+                &cookie,
+            )
+            .await,
+        )
+        .await;
+        assert!(html.contains("<h1>Bring your own wallet</h1>"));
+        assert!(
+            html.contains(r#"<input type="hidden" name="name" value="Market">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="hidden" name="network" value="stagenet">"#),
+            "{html}"
+        );
+        assert!(
+            !html.contains(r#"<select name="network""#),
+            "the network isn't asked twice"
+        );
+        // The CLI help names the secret view key line and the public spend key line.
+        assert!(
+            html.contains("Copy the <strong>secret</strong> one"),
+            "{html}"
+        );
+        assert!(
+            html.contains("Copy the <strong>public</strong> one only"),
+            "{html}"
+        );
+        assert!(html.contains("restore_height"));
+    }
+
+    /// A name taken between checking it and adding the wallet gets a number,
+    /// so a phrase already backed up is never refused for its name.
+    #[tokio::test]
+    async fn a_name_taken_meanwhile_gets_a_number_instead_of_losing_the_backup() {
+        let (state, _engine) = real_engine_state().await;
+        let router = build_router(state.clone());
+        let (cookie, _) = sign_up(&router, "race@example.com", None).await;
+        bring_in(&router, &cookie, "Till").await;
+        let wallet = made_in_the_browser(40);
+        let added = router
+            .clone()
+            .oneshot(post(
+                "/account/wallets/new",
+                Some(&cookie),
+                &[
+                    ("name", "Till"),
+                    ("network", "mainnet"),
+                    ("backup", "feather"),
+                    ("primary_address", &wallet.address),
+                    ("view_key_hex", &wallet.view_key_hex),
+                    ("spend_pubkey_hex", &wallet.spend_pubkey_hex),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(added.status(), StatusCode::SEE_OTHER);
+        let names: Vec<String> = wallets_of(&state, "race@example.com")
+            .into_iter()
+            .map(|w| w.wallet.name)
+            .collect();
+        assert!(names.contains(&"Till (2)".to_owned()), "{names:?}");
+        let made = wallets_of(&state, "race@example.com")
+            .into_iter()
+            .find(|w| w.wallet.name == "Till (2)")
+            .unwrap()
+            .wallet;
+        assert_eq!(
+            made.backup.as_deref(),
+            Some("feather"),
+            "Feather is recorded as Feather"
+        );
     }
 
     #[tokio::test]
@@ -1121,8 +1278,8 @@ mod tests {
 
         let added = bring_in(&router, &cookie, "  Market   stall ").await;
         assert_eq!(added.status(), StatusCode::SEE_OTHER);
-        let ready = location(&added);
-        assert!(ready.ends_with("/ready"), "{ready}");
+        let page = location(&added);
+        assert!(page.ends_with("?added=1"), "{page}");
 
         let wallets = wallets_of(&state, "byo@example.com");
         assert_eq!(wallets.len(), 1);
@@ -1131,12 +1288,8 @@ mod tests {
         assert_eq!(wallet.origin, crate::db::WalletOrigin::Imported);
         assert!(wallet.primary_address.starts_with('4'));
 
-        let html = body_text(get(&router, &ready, &cookie).await).await;
-        assert!(html.contains("You're ready to take payments"), "{html}");
-        assert!(
-            html.contains(r#"href="/dashboard/stores/new""#),
-            "one button to add a store"
-        );
+        let html = body_text(get(&router, &page, &cookie).await).await;
+        assert!(html.contains("Market stall is added"), "{html}");
 
         let list = body_text(get(&router, "/account?tab=wallets", &cookie).await).await;
         assert!(
@@ -1265,21 +1418,12 @@ mod tests {
             .id
             .to_string();
 
-        for site in ["https://one.example.com", "https://two.example.com"] {
-            let response = router
-                .clone()
-                .oneshot(post(
-                    "/dashboard/connect",
-                    Some(&cookie),
-                    &[
-                        ("site_url", site),
-                        ("wallet_id", &wallet_id),
-                        ("base_currency", "XMR"),
-                    ],
-                ))
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::FOUND, "{site}");
+        for (name, site) in [("One", "one.example.com"), ("Two", "two.example.com")] {
+            let response = crate::http::test_support::set_up_store_on_wallet(
+                &router, &cookie, name, site, &wallet_id,
+            )
+            .await;
+            crate::http::test_support::store_made(&response);
         }
         let stores = {
             let db = state.db.lock();
@@ -1324,55 +1468,10 @@ mod tests {
 
         let html =
             body_text(get(&router, &format!("/account/wallets/{wallet_id}"), &cookie).await).await;
-        assert!(
-            html.contains("one.example.com") && html.contains("two.example.com"),
-            "{html}"
-        );
+        assert!(html.contains(">One<") && html.contains(">Two<"), "{html}");
         assert!(
             html.contains("2 stores still use this wallet"),
             "it can't be retired yet: {html}"
-        );
-    }
-
-    #[tokio::test]
-    async fn the_store_form_picks_your_only_wallet_but_never_one_of_several() {
-        let (state, _engine) = real_engine_state().await;
-        let router = build_router(state.clone());
-        let (cookie, _) = sign_up(&router, "picker@example.com", None).await;
-        bring_in(&router, &cookie, "Only one").await;
-        let id = wallets_of(&state, "picker@example.com")[0]
-            .wallet
-            .id
-            .to_string();
-        let html = body_text(get(&router, "/dashboard/connect", &cookie).await).await;
-        assert!(
-            html.contains(&format!(r#"value="{id}" selected"#)),
-            "{html}"
-        );
-
-        let made = made_in_the_browser(21);
-        router
-            .clone()
-            .oneshot(post(
-                "/account/wallets/new",
-                Some(&cookie),
-                &[
-                    ("name", "Second"),
-                    ("network", "mainnet"),
-                    ("backup", "paper"),
-                    ("primary_address", &made.address),
-                    ("view_key_hex", &made.view_key_hex),
-                    ("spend_pubkey_hex", &made.spend_pubkey_hex),
-                ],
-            ))
-            .await
-            .unwrap();
-        let html = body_text(get(&router, "/dashboard/connect", &cookie).await).await;
-        assert!(html.contains("Choose a wallet…"), "{html}");
-        assert!(!html.contains(" selected>Only one") && !html.contains(" selected>Second"));
-        assert!(
-            !html.contains(&format!(r#"value="{id}" selected"#)),
-            "{html}"
         );
     }
 
@@ -1541,89 +1640,6 @@ mod tests {
         assert_eq!(wallets_of(&state, "owner@example.com").len(), 1);
     }
 
-    /// From the WooCommerce plugin with no account: sign up, set up a wallet,
-    /// and back to connecting the shop with that wallet picked.
-    #[tokio::test]
-    async fn a_new_merchant_from_woocommerce_comes_back_to_connect_the_shop_after_wallet_setup() {
-        let (state, _engine) = real_engine_state().await;
-        let router = build_router(state.clone());
-        let connect = "/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fwp-admin&nonce=n1";
-
-        let login = router
-            .clone()
-            .oneshot(Request::builder().uri(connect).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        let login_page = location(&login);
-        assert!(
-            login_page.starts_with("/dashboard/login?next="),
-            "{login_page}"
-        );
-        let html = body_text(
-            router
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .uri(&login_page)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap(),
-        )
-        .await;
-        assert!(html.contains("shop.example.com wants to connect"), "{html}");
-        assert!(
-            html.contains("/dashboard/signup?next="),
-            "sign up keeps where they were going: {html}"
-        );
-
-        let (cookie, to) = sign_up(&router, "from-woo@example.com", Some(connect)).await;
-        assert!(
-            to.starts_with("/account/wallets/setup?next=%2Fconnect%2Fwoocommerce"),
-            "{to}"
-        );
-        let html = body_text(get(&router, &to, &cookie).await).await;
-        assert!(
-            html.contains("shop.example.com"),
-            "it says what the wallet is for: {html}"
-        );
-
-        let added = router
-            .clone()
-            .oneshot(post(
-                "/account/wallets/import",
-                Some(&cookie),
-                &[
-                    ("view_key_hex", TEST_VIEW_KEY_HEX),
-                    ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
-                    ("network", "mainnet"),
-                    ("next", connect),
-                ],
-            ))
-            .await
-            .unwrap();
-        let ready = body_text(get(&router, &location(&added), &cookie).await).await;
-        assert!(
-            ready.contains("Continue connecting shop.example.com"),
-            "{ready}"
-        );
-
-        let html = body_text(get(&router, connect, &cookie).await).await;
-        let id = wallets_of(&state, "from-woo@example.com")[0]
-            .wallet
-            .id
-            .to_string();
-        assert!(
-            html.contains(r#"name="mode" value="new""#),
-            "no store yet, so no question: {html}"
-        );
-        assert!(
-            html.contains(&format!(r#"value="{id}" selected"#)),
-            "{html}"
-        );
-    }
-
     /// A store made before wallets is matched to the wallet the engine says
     /// it uses, the first time the wallets page is opened.
     #[tokio::test]
@@ -1636,19 +1652,16 @@ mod tests {
             .wallet
             .id
             .to_string();
-        router
-            .clone()
-            .oneshot(post(
-                "/dashboard/connect",
-                Some(&cookie),
-                &[
-                    ("site_url", "https://old.example.com"),
-                    ("wallet_id", &id),
-                    ("base_currency", "XMR"),
-                ],
-            ))
-            .await
-            .unwrap();
+        crate::http::test_support::store_made(
+            &crate::http::test_support::set_up_store_on_wallet(
+                &router,
+                &cookie,
+                "Old shop",
+                "old.example.com",
+                &id,
+            )
+            .await,
+        );
         // As it was before wallets: no wallet on the store, none recorded.
         {
             let db = state.db.lock();
@@ -1689,26 +1702,10 @@ mod tests {
 
     /// A store on `wallet`, its id.
     async fn connect_store(router: &Router, cookie: &str, site: &str, wallet: &str) -> String {
-        let response = router
-            .clone()
-            .oneshot(post(
-                "/dashboard/connect",
-                Some(cookie),
-                &[
-                    ("site_url", site),
-                    ("wallet_id", wallet),
-                    ("base_currency", "XMR"),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::FOUND);
-        location(&response)
-            .trim_start_matches("/dashboard/stores/")
-            .split(['/', '?'])
-            .next()
-            .unwrap()
-            .to_owned()
+        let response =
+            crate::http::test_support::set_up_store_on_wallet(router, cookie, site, site, wallet)
+                .await;
+        crate::http::test_support::store_made(&response)
     }
 
     fn wallet_named(state: &AppState, email: &str, name: &str) -> crate::db::WalletRow {
@@ -2004,32 +2001,5 @@ mod tests {
         assert!(body_text(response)
             .await
             .contains("Choose one of your wallets"));
-    }
-
-    #[test]
-    fn the_connecting_site_is_read_from_a_woocommerce_connect_link_only() {
-        let next =
-            "/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com%2F&return_url=x&nonce=n";
-        assert_eq!(
-            connecting_site(Some(next)).as_deref(),
-            Some("shop.example.com")
-        );
-        assert_eq!(connecting_site(Some("/dashboard/connect")), None);
-        assert_eq!(connecting_site(None), None);
-    }
-
-    #[test]
-    fn a_typed_name_wins_then_a_free_suggestion_then_a_fresh_one() {
-        let taken = vec!["Copper Heron".to_owned()];
-        assert_eq!(
-            chosen_name(Some(" Till "), Some("Amber Finch"), &taken),
-            "Till"
-        );
-        assert_eq!(
-            chosen_name(Some(""), Some("Amber Finch"), &taken),
-            "Amber Finch"
-        );
-        let fresh = chosen_name(None, Some("copper heron"), &taken);
-        assert_ne!(fresh.to_lowercase(), "copper heron");
     }
 }

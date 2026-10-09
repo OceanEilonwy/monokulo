@@ -2526,14 +2526,14 @@ mod tests {
             .unwrap();
         assert_eq!(saved.status(), StatusCode::SEE_OTHER);
         // The next request sees it: the link works now, so an account
-        // with no wallet yet is sent to set one up first, and back.
+        // with no store on the shop's site is sent to set one up.
         let after = get(&router, confirm, Some(&cookie)).await;
         assert_eq!(after.status(), StatusCode::FOUND);
         assert!(
             after.headers()["location"]
                 .to_str()
                 .unwrap()
-                .starts_with("/account/wallets/setup?next=%2Fconnect%2Fwoocommerce"),
+                .starts_with("/setup?plugin=woocommerce&site_url=https%3A%2F%2Fshop.example.com"),
             "{:?}",
             after.headers()["location"]
         );

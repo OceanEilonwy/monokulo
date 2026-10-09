@@ -590,9 +590,14 @@ mod tests {
 
     /// `(connection_id, public_key)`.
     async fn create_store_with_key(router: &Router, session: &str) -> (String, String) {
+        create_store_on(router, session, "https://store-home.example/shop").await
+    }
+
+    /// A store on `site` (no two stores share one); `(connection_id, public_key)`.
+    async fn create_store_on(router: &Router, session: &str, site: &str) -> (String, String) {
         let body = serde_json::json!({
             "platform": "custom",
-            "site_url": "https://store-home.example/shop",
+            "site_url": site,
             "view_key_hex": TEST_VIEW_KEY_HEX,
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
             "network": "mainnet",
@@ -781,7 +786,12 @@ mod tests {
             ]
         );
 
-        let (status, _) = create_store_via_api(&router, &session, serde_json::json!({})).await;
+        let (status, _) = create_store_via_api(
+            &router,
+            &session,
+            serde_json::json!({ "site_url": "https://second-home.example" }),
+        )
+        .await;
         assert_eq!(status, StatusCode::CREATED, "domains is optional");
 
         let (status, _) = create_store_via_api(
@@ -882,7 +892,8 @@ mod tests {
         let router = build_router(state.clone());
         let session = session_for(&router, "keys@example.com").await;
         let (id, pk) = create_store_with_key(&router, &session).await;
-        let (other_id, _) = create_store_with_key(&router, &session).await;
+        let (other_id, _) =
+            create_store_on(&router, &session, "https://other-home.example/shop").await;
         let key = format!("Bearer {}", secret_key_of(&state, &id));
         let other_key = format!("Bearer {}", secret_key_of(&state, &other_id));
 

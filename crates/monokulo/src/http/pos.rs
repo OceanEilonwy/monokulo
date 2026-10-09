@@ -49,7 +49,7 @@ use crate::engine_client::{EngineClientError, OrderView};
 use crate::views;
 use crate::views::pos::PosViewModel;
 
-use super::orders::{decrypt_sk, display_name_for, load_owned_connection};
+use super::orders::{decrypt_sk, load_owned_connection};
 use super::{ApiError, AppState, AuthedUser};
 use crate::crypto::AtRestKey;
 use crate::db::Database;
@@ -89,7 +89,7 @@ pub async fn pos_page(
     let view = PosViewModel {
         connection_id: id,
         public_key: row.tenant_public_key,
-        display_name: display_name_for(&row.site_url),
+        display_name: row.name.clone(),
         base_currency: row.base_currency,
         base_currency_decimals,
         client_logging,

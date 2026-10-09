@@ -503,7 +503,7 @@ async fn signing_up_logs_in_and_goes_on_to_set_up_a_wallet() {
         .unwrap()
         .to_str()
         .unwrap();
-    assert_eq!(location, "/account/wallets/setup");
+    assert_eq!(location, "/setup");
     assert!(
         response.headers()["set-cookie"]
             .to_str()
@@ -692,37 +692,32 @@ async fn a_signed_out_browser_is_sent_to_log_in_and_back_while_the_api_gets_401(
 
     let response = router
         .clone()
-        .oneshot(page("/dashboard/stores/new?from=nav"))
+        .oneshot(page("/setup?from=nav"))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FOUND);
     let to = response.headers()["location"].to_str().unwrap().to_string();
-    assert_eq!(
-        to,
-        "/dashboard/login?next=%2Fdashboard%2Fstores%2Fnew%3Ffrom%3Dnav"
-    );
+    assert_eq!(to, "/dashboard/login?next=%2Fsetup%3Ffrom%3Dnav");
     let html = body_text(router.clone().oneshot(page(&to)).await.unwrap()).await;
     assert!(
-        html.contains(
-            r#"<input type="hidden" name="next" value="/dashboard/stores/new?from=nav">"#
-        ),
+        html.contains(r#"<input type="hidden" name="next" value="/setup?from=nav">"#),
         "{html}"
     );
 
     // Not a page load: the plain 401, as before.
     for request in [
         Request::builder()
-            .uri("/dashboard/stores/new")
+            .uri("/setup")
             .body(Body::empty())
             .unwrap(),
         Request::builder()
-            .uri("/dashboard/stores/new")
+            .uri("/setup")
             .header("accept", "text/html")
             .header("fx-request", "true")
             .body(Body::empty())
             .unwrap(),
         Request::builder()
-            .uri("/dashboard/stores/new")
+            .uri("/setup")
             .header("accept", "text/html")
             .header("authorization", "Bearer not-a-session")
             .body(Body::empty())
@@ -925,11 +920,11 @@ async fn an_unknown_email_at_dashboard_login_gets_the_same_generic_error_as_a_wr
     );
 }
 
-// -- WBS 1.3.2: browser-facing wallet-connection form ------------------------
+// -- Setting up a store (`/setup`) -----------------------------------------
 //
 // Unlike the rest of this file, these tests need a *real* spawned engine
-// (same reason as `connections.rs`'s own tests: `/dashboard/connect` really
-// provisions a tenant) - so they get their own `AppState` helper instead of
+// (same reason as `connections.rs`'s own tests: setup really provisions a
+// tenant) - so they get their own `AppState` helper instead of
 // `AppState::for_tests()`'s dummy, never-dialed engine URL.
 
 /// Same fixed-scalar construction `connections.rs`'s and `engine_client.rs`'s
@@ -948,29 +943,6 @@ async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEn
         ..AppState::for_tests()
     };
     (state, engine)
-}
-
-fn connect_get_request(cookie: Option<&str>) -> Request<Body> {
-    let mut builder = Request::builder().method("GET").uri("/dashboard/connect");
-    if let Some(cookie) = cookie {
-        builder = builder.header("cookie", cookie);
-    }
-    builder.body(Body::empty()).unwrap()
-}
-
-fn connect_post_request(cookie: &str, fields: &[(&str, &str)]) -> Request<Body> {
-    let body = fields
-        .iter()
-        .map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v)))
-        .collect::<Vec<_>>()
-        .join("&");
-    Request::builder()
-        .method("POST")
-        .uri("/dashboard/connect")
-        .header("content-type", "application/x-www-form-urlencoded")
-        .header("cookie", cookie)
-        .body(Body::from(body))
-        .unwrap()
 }
 
 /// Signs up and logs in a fresh user through the browser form flow, returning
@@ -1014,22 +986,25 @@ async fn signed_up_and_logged_in_session_cookie(
 
 /// A form post as the browser holding `cookie` sends it.
 fn cookie_form_request(uri: &str, cookie: &str, fields: &[(&str, &str)]) -> Request<Body> {
-    let body = fields
-        .iter()
-        .map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v)))
-        .collect::<Vec<_>>()
-        .join("&");
-    Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header("content-type", "application/x-www-form-urlencoded")
-        .header("cookie", cookie)
-        .body(Body::from(body))
+    crate::http::test_support::form_post(uri, Some(cookie), fields)
+}
+
+async fn cookie_get(router: &Router, uri: &str, cookie: &str) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
         .unwrap()
 }
 
 /// Brings in a wallet with the test keys ("Bring your own wallet"), as a
-/// merchant does right after signing up; its id.
+/// merchant does from the Account page; its id.
 async fn add_test_wallet(router: &Router, cookie: &str) -> String {
     let response = router
         .clone()
@@ -1053,237 +1028,404 @@ async fn add_test_wallet(router: &Router, cookie: &str) -> String {
     let location = response.headers()["location"].to_str().unwrap().to_owned();
     location
         .trim_start_matches("/account/wallets/")
-        .split('/')
+        .split(['/', '?'])
         .next()
         .unwrap()
         .to_owned()
 }
 
 #[tokio::test]
-async fn get_dashboard_connect_without_a_session_is_rejected() {
+async fn setup_without_a_session_sends_a_page_load_to_log_in() {
     let (state, _engine) = test_state_with_real_engine().await;
     let router = build_router(state);
-
-    let response = router.oneshot(connect_get_request(None)).await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/setup")
+                .header("accept", "text/html")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(
+        response.headers()["location"],
+        "/dashboard/login?next=%2Fsetup"
+    );
 }
 
+/// The whole of setup without JavaScript: the store step, the wallet
+/// step's choice (no wallet yet, so nothing to reuse), bringing a wallet in
+/// with its keys, and Done. The store keeps its name apart from its site,
+/// and its site is the host of what was pasted.
 #[tokio::test]
-async fn a_logged_in_user_submitting_valid_wallet_fields_gets_a_confirmation_page_and_a_real_store_connections_row(
-) {
+async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
     let (state, _engine) = test_state_with_real_engine().await;
     let router = build_router(state.clone());
-
     let cookie = signed_up_and_logged_in_session_cookie(
         &router,
-        "connect-form@example.com",
+        "bakery@example.com",
+        "correct horse battery staple",
+    )
+    .await;
+
+    let html = body_text(cookie_get(&router, "/setup", &cookie).await).await;
+    assert!(html.contains("Where will you take payments?"), "{html}");
+    assert!(html.contains(r#"<li aria-current="step"><span class="n">1</span>Store</li>"#));
+
+    let store_step = [
+        ("kind", "web"),
+        ("store_name", "  Bakery "),
+        ("store_site", "https://Bakery.example/checkout?x=1"),
+    ];
+    let response = router
+        .clone()
+        .oneshot(cookie_form_request("/setup", &cookie, &store_step))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let wallet_step = response.headers()["location"].to_str().unwrap().to_owned();
+    assert_eq!(
+        wallet_step,
+        "/setup/wallet?kind=web&store_name=Bakery&store_site=bakery.example"
+    );
+
+    let html = body_text(cookie_get(&router, &wallet_step, &cookie).await).await;
+    assert!(
+        html.contains("Where should Bakery&#39;s money go?")
+            || html.contains("Where should Bakery's money go?"),
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"value="Bakery takings""#),
+        "a name is offered: {html}"
+    );
+    assert!(
+        !html.contains("Use a wallet you already added"),
+        "none yet: {html}"
+    );
+    assert!(html.contains(r#"<li class="done"><span class="n">1</span>Store</li>"#));
+    assert!(
+        !html.contains("Base currency"),
+        "defaults, not asked: {html}"
+    );
+
+    let keys = body_text(
+        cookie_get(
+            &router,
+            "/setup/wallet/keys?kind=web&store_name=Bakery&store_site=bakery.example&name=Bakery%20takings&network=mainnet",
+            &cookie,
+        )
+        .await,
+    )
+    .await;
+    assert!(keys.contains("<h1>Bring your own wallet</h1>"), "{keys}");
+    assert!(
+        keys.contains(r#"<input type="hidden" name="store_site" value="bakery.example">"#),
+        "{keys}"
+    );
+
+    let mut fields = vec![
+        ("kind", "web"),
+        ("store_name", "Bakery"),
+        ("store_site", "bakery.example"),
+        ("name", "Bakery takings"),
+        ("network", "mainnet"),
+        ("view_key_hex", TEST_VIEW_KEY_HEX),
+        ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+    ];
+    let made = router
+        .clone()
+        .oneshot(cookie_form_request("/setup/wallet/keys", &cookie, &fields))
+        .await
+        .unwrap();
+    let store_id = crate::http::test_support::store_made(&made);
+
+    let row = state
+        .db
+        .lock()
+        .get_store_connection_by_id(&shared::ids::ConnectionId::new(store_id.clone()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.name, "Bakery");
+    assert_eq!(row.site, "bakery.example");
+    assert_eq!(row.platform, "custom");
+    assert_eq!(row.base_currency, "XMR", "the default base currency");
+    let wallet = state
+        .db
+        .lock()
+        .get_wallet(&row.user_id, row.wallet_id.as_ref().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(wallet.name, "Bakery takings");
+    // The site's domain waits to be verified.
+    let domains = state.db.lock().list_store_domains(&row.id).unwrap();
+    assert_eq!(domains[0].domain, "bakery.example");
+
+    let done = body_text(
+        cookie_get(
+            &router,
+            made.headers()["location"].to_str().unwrap(),
+            &cookie,
+        )
+        .await,
+    )
+    .await;
+    assert!(done.contains("Bakery is set up"), "{done}");
+    assert!(done.contains("Not taking payments yet"));
+    assert!(done.contains("Open the guide"));
+    assert!(done.contains("Bakery takings"));
+
+    // The dashboard calls it by its name.
+    let dashboard = body_text(cookie_get(&router, "/", &cookie).await).await;
+    assert!(dashboard.contains("Bakery"), "{dashboard}");
+
+    // The same keys again make no second wallet: they're refused on the
+    // keys screen, which says which wallet has them.
+    fields[1] = ("store_name", "Second");
+    fields[2] = ("store_site", "second.example");
+    let again = router
+        .clone()
+        .oneshot(cookie_form_request("/setup/wallet/keys", &cookie, &fields))
+        .await
+        .unwrap();
+    assert_eq!(again.status(), StatusCode::OK);
+    assert!(body_text(again).await.contains("already added this wallet"));
+}
+
+/// A store that's in person only has a name and no site; Done opens the
+/// till.
+#[tokio::test]
+async fn an_in_person_store_has_a_name_and_no_site() {
+    let (state, _engine) = test_state_with_real_engine().await;
+    let router = build_router(state.clone());
+    let cookie = signed_up_and_logged_in_session_cookie(
+        &router,
+        "market@example.com",
+        "correct horse battery staple",
+    )
+    .await;
+    let made = crate::http::test_support::set_up_store_with_keys(
+        &router,
+        &cookie,
+        &[
+            ("kind", "pos"),
+            ("store_name", "Saturday market stall"),
+            ("store_site", "ignored.example"),
+            ("view_key_hex", TEST_VIEW_KEY_HEX),
+            ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+        ],
+    )
+    .await;
+    let store_id = crate::http::test_support::store_made(&made);
+    let row = state
+        .db
+        .lock()
+        .get_store_connection_by_id(&shared::ids::ConnectionId::new(store_id.clone()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.site, "");
+    assert_eq!(row.platform, "pos");
+    let done = body_text(
+        cookie_get(
+            &router,
+            made.headers()["location"].to_str().unwrap(),
+            &cookie,
+        )
+        .await,
+    )
+    .await;
+    assert!(done.contains("Saturday market stall is ready"), "{done}");
+    assert!(done.contains(&format!(
+        r#"href="/dashboard/stores/{store_id}/pos">Open the till"#
+    )));
+}
+
+/// The store step says what's wrong and keeps what was typed; a site any
+/// store on the instance has is refused, linking to it when it's yours.
+#[tokio::test]
+async fn the_store_step_refuses_a_missing_name_a_bad_site_and_a_site_already_used() {
+    let (state, _engine) = test_state_with_real_engine().await;
+    let router = build_router(state);
+    let cookie = signed_up_and_logged_in_session_cookie(
+        &router,
+        "corner@example.com",
         "correct horse battery staple",
     )
     .await;
 
     let response = router
         .clone()
-        .oneshot(connect_post_request(
+        .oneshot(cookie_form_request(
+            "/setup",
             &cookie,
             &[
-                ("site_url", "https://shop.example.com"),
-                ("view_key_hex", TEST_VIEW_KEY_HEX),
-                ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
-                ("network", "mainnet"),
-                (
-                    "allowed_origins",
-                    "https://shop.example.com, https://admin.example.com",
-                ),
-                ("base_currency", "XMR"),
+                ("kind", "web"),
+                ("store_name", ""),
+                ("store_site", "ftp://x"),
             ],
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::FOUND);
-    let location = response.headers()["location"].to_str().unwrap();
-    assert!(location.ends_with("/setup"));
-    let page = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(location)
-                .header("cookie", &cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let html = body_text(page).await;
-    assert!(html.contains("Save and continue"));
-    let public_key = {
-        let db = state.db.lock();
-        let user = db
-            .get_user_by_email("connect-form@example.com")
-            .unwrap()
-            .unwrap();
-        db.list_store_connections_for_user(&user.id).unwrap()[0]
-            .tenant_public_key
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_text(response).await;
+    assert!(html.contains("Give the store a name."), "{html}");
+    assert!(html.contains(r#"value="ftp://x""#), "kept: {html}");
+
+    let made = crate::http::test_support::set_up_store_with_keys(
+        &router,
+        &cookie,
+        &[
+            ("kind", "web"),
+            ("store_name", "Corner shop"),
+            ("store_site", "shop.example"),
+            ("view_key_hex", TEST_VIEW_KEY_HEX),
+            ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+        ],
+    )
+    .await;
+    let corner = crate::http::test_support::store_made(&made);
+
+    let again = [
+        ("kind", "web"),
+        ("store_name", "Another"),
+        ("store_site", "https://shop.example/other-page"),
+    ];
+    let html = body_text(
+        router
             .clone()
-    };
+            .oneshot(cookie_form_request("/setup", &cookie, &again))
+            .await
+            .unwrap(),
+    )
+    .await;
     assert!(
-        public_key.len() > 3,
-        "expected a real pk_... value, got: {public_key}"
+        html.contains(&format!(
+            r#"Your store <a href="/dashboard/stores/{corner}">Corner shop</a> already uses shop.example."#
+        )),
+        "{html}"
     );
 
-    // The secret token must never be shown on the confirmation page.
+    let other = signed_up_and_logged_in_session_cookie(
+        &router,
+        "someone-else@example.com",
+        "correct horse battery staple",
+    )
+    .await;
+    let html = body_text(
+        router
+            .clone()
+            .oneshot(cookie_form_request("/setup", &other, &again))
+            .await
+            .unwrap(),
+    )
+    .await;
     assert!(
-        !html.contains("sk_"),
-        "the confirmation page must never contain the secret token"
+        html.contains("shop.example is already connected to Monokulo here."),
+        "{html}"
     );
-
-    // Confirm the row that actually landed in `store_connections`. The
-    // browser form flow never hands the connection id back to the caller
-    // (unlike the JSON API's response), so look it up by the public key
-    // shown on the confirmation page instead - see
-    // `Db::get_store_connection_by_public_key`'s doc comment for why that
-    // lookup exists.
-    let user = state
-        .db
-        .lock()
-        .get_user_by_email("connect-form@example.com")
-        .unwrap()
-        .expect("the signed-up user should exist");
-    let row = state
-        .db
-        .lock()
-        .get_store_connection_by_public_key(&public_key)
-        .unwrap()
-        .expect("a store_connections row for this public key must exist");
-    assert_eq!(row.user_id, user.id);
-    // "custom", not "woocommerce" - this is the advanced/direct-API form,
-    // never routed through a WooCommerce plugin. Real user-reported bug:
-    // this was wrongly hardcoded to "woocommerce" for every advanced-form
-    // connection.
-    assert_eq!(row.platform, "custom");
-    assert_eq!(row.site_url, "https://shop.example.com");
+    assert!(!html.contains(&corner), "nothing about whose it is: {html}");
 }
 
+/// A bad view key is refused on the keys screen, with the store's answers
+/// kept, and nothing is made.
 #[tokio::test]
-async fn submitting_an_invalid_view_key_rerenders_the_form_with_a_visible_error() {
+async fn an_invalid_view_key_is_refused_on_the_keys_screen_and_nothing_is_made() {
     let (state, _engine) = test_state_with_real_engine().await;
-    let router = build_router(state);
-
+    let router = build_router(state.clone());
     let cookie = signed_up_and_logged_in_session_cookie(
         &router,
         "bad-view-key@example.com",
         "correct horse battery staple",
     )
     .await;
-
-    let response = router
-        .oneshot(connect_post_request(
-            &cookie,
-            &[
-                ("site_url", "https://shop.example.com"),
-                // Wrong length - not valid hex for a 32-byte view key.
-                ("view_key_hex", "0707"),
-                ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
-                ("network", "mainnet"),
-                ("allowed_origins", ""),
-                ("base_currency", "XMR"),
-            ],
-        ))
-        .await
-        .unwrap();
-
-    // A visible, re-rendered form - not a raw 500 and not a panic.
+    let response = crate::http::test_support::set_up_store_with_keys(
+        &router,
+        &cookie,
+        &[
+            ("kind", "web"),
+            ("store_name", "Shop"),
+            ("store_site", "shop.example.com"),
+            ("view_key_hex", "0707"),
+            ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+        ],
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_text(response).await;
+    assert!(html.contains("class=\"error\""), "{html}");
     assert!(
-        html.contains("<form"),
-        "expected the connect form to be re-rendered, got: {html}"
+        html.contains(r#"name="store_site" value="shop.example.com""#),
+        "{html}"
     );
-    assert!(
-        html.contains("class=\"error\""),
-        "expected a visible error message, got: {html}"
-    );
-    assert!(
-        !html.contains("pk_"),
-        "a rejected submission must not show a public key"
-    );
+    let user = state
+        .db
+        .lock()
+        .get_user_by_email("bad-view-key@example.com")
+        .unwrap()
+        .unwrap();
+    assert!(state
+        .db
+        .lock()
+        .list_store_connections_for_user(&user.id)
+        .unwrap()
+        .is_empty());
+    assert!(state.db.lock().list_wallets(&user.id).unwrap().is_empty());
 }
 
-/// A refused custom-store submission keeps what the merchant typed and
-/// says why on the same page.
+/// A wallet already added comes first on the wallet step and makes the
+/// store with one click; someone else's (or none) is refused.
 #[tokio::test]
-async fn a_refused_custom_store_submission_keeps_the_site_url_and_says_why() {
+async fn a_store_can_use_a_wallet_already_added_but_only_your_own() {
     let (state, _engine) = test_state_with_real_engine().await;
     let router = build_router(state);
     let cookie = signed_up_and_logged_in_session_cookie(
         &router,
-        "keep-my-inputs@example.com",
+        "reuse-wallet@example.com",
         "correct horse battery staple",
     )
     .await;
-    add_test_wallet(&router, &cookie).await;
+    let wallet = add_test_wallet(&router, &cookie).await;
 
-    let response = router
-        .oneshot(cookie_form_request(
-            "/dashboard/connect",
+    let html = body_text(
+        cookie_get(
+            &router,
+            "/setup/wallet?kind=web&store_name=Shop&store_site=shop.example.com",
             &cookie,
-            &[
-                ("site_url", "https://shop.example.com"),
-                ("wallet_id", "w_not_mine"),
-                ("base_currency", "XMR"),
-            ],
-        ))
-        .await
-        .unwrap();
+        )
+        .await,
+    )
+    .await;
+    let already = html
+        .find("Use a wallet you already added")
+        .expect("offered first");
+    assert!(already < html.find("or-divider").unwrap());
+    assert!(html.find("or-divider").unwrap() < html.find(r#"name="name""#).unwrap());
+    assert!(html.contains(&format!(r#"value="{wallet}""#)));
 
-    assert_eq!(response.status(), StatusCode::OK);
-    let html = body_text(response).await;
-    assert!(html.contains("Choose one of your wallets."), "{html}");
-    assert!(
-        html.contains(r#"value="https://shop.example.com""#),
-        "{html}"
-    );
-}
-
-#[tokio::test]
-async fn an_unknown_base_currency_on_the_dashboard_connect_form_is_rejected_before_provisioning_a_tenant(
-) {
-    let (state, _engine) = test_state_with_real_engine().await;
-    let router = build_router(state.clone());
-    let cookie = signed_up_and_logged_in_session_cookie(
+    let refused = crate::http::test_support::set_up_store_on_wallet(
         &router,
-        "bad-currency-form@example.com",
-        "correct horse battery staple",
+        &cookie,
+        "Shop",
+        "shop.example.com",
+        "w_not_mine",
     )
     .await;
-
-    let response = router
-        .oneshot(connect_post_request(
-            &cookie,
-            &[
-                ("site_url", "https://shop.example.com"),
-                ("view_key_hex", TEST_VIEW_KEY_HEX),
-                ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
-                ("network", "mainnet"),
-                ("allowed_origins", ""),
-                ("base_currency", "NOTREAL"),
-            ],
-        ))
+    assert_eq!(refused.status(), StatusCode::OK);
+    assert!(body_text(refused)
         .await
-        .unwrap();
-    assert_eq!(
-        response.status(),
-        StatusCode::OK,
-        "a rejected submission re-renders the form, not a redirect"
-    );
-    let html = body_text(response).await;
-    assert!(
-        html.contains("class=\"error\""),
-        "expected a visible error, got: {html}"
-    );
-    assert!(
-        !html.contains("pk_"),
-        "no tenant should have been provisioned for a rejected submission"
-    );
+        .contains("Choose one of your wallets."));
+
+    let made = crate::http::test_support::set_up_store_on_wallet(
+        &router,
+        &cookie,
+        "Shop",
+        "shop.example.com",
+        &wallet,
+    )
+    .await;
+    crate::http::test_support::store_made(&made);
 }
 
 // -- WBS 1.4.1: `next`-redirect support on dashboard::login_submit ----------
@@ -1619,7 +1761,7 @@ async fn public_embed_routes_allow_any_origin_and_the_dashboard_does_not() {
     let dashboard = router
         .oneshot(
             Request::builder()
-                .uri("/dashboard/stores/new")
+                .uri("/setup")
                 .header("origin", "https://shop.example")
                 .body(Body::empty())
                 .unwrap(),
@@ -1676,7 +1818,7 @@ fn state_with_owner_and_store(
             &shared::ids::ConnectionId::new("c1"),
             &shared::ids::UserId::new("u_owner"),
             "woocommerce",
-            "https://shop.example.com",
+            "shop.example.com",
             tenant_public_key,
             "enc",
             1,
@@ -1881,7 +2023,7 @@ async fn store_pages_load_browser_reports_only_once_the_store_opted_in_but_admin
     };
     assert!(with_script("/dashboard/admin/logs").await);
     assert!(with_script("/").await);
-    assert!(with_script("/dashboard/stores/new").await);
+    assert!(with_script("/setup").await);
     assert!(!with_script("/dashboard/stores/c1").await);
     assert!(!with_script("/dashboard/stores/c1/settings").await);
     state

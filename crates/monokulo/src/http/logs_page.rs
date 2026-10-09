@@ -381,7 +381,7 @@ async fn add_notes(state: &AppState, rows: &mut [RowView]) {
                     db.get_store_connection_by_id(&crate::db::ConnectionId::new(id.clone()))
                         .ok()
                         .flatten()
-                        .map(|store| super::orders::display_name_for(&store.site_url))
+                        .map(|store| store.name.clone())
                 };
                 if let Some(note) = note {
                     notes.insert((is_user, id), note);
@@ -1200,7 +1200,7 @@ pub async fn pos_timeline(
                 .await
                 .ok()
                 .flatten()
-                .map(|row| super::orders::display_name_for(&row.site_url))
+                .map(|row| row.name.clone())
                 .unwrap_or_else(|| id.clone());
             Some((name, format!("/dashboard/stores/{id}")))
         }

@@ -10,18 +10,14 @@ pub struct StoreDetailData {
     pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
     pub platform: String,
-    pub site_url: String,
+    /// The host its checkout runs on; empty for a store with no site.
+    pub site: String,
     pub public_key: String,
-    /// This instance's public address, when set - used by the integration
-    /// help's snippets (`integration_help::fragment`).
-    pub public_url: Option<String>,
     pub base_currency: String,
     pub health: String,
     pub health_label: String,
     pub created_at: i64,
     pub recent_orders: Vec<OrderRowViewModel>,
-    /// Drives which half of the integration-help fragment renders.
-    pub is_woocommerce: bool,
     /// `docs/txid_lookup_and_scan_chunking_wbs.md` Part B.3 - re-populates the
     /// "look up a payment" card's own input after a submission, empty for a
     /// plain page view.
@@ -128,16 +124,6 @@ fn embed_warnings(connection_id: &str, warnings: &EmbedWarnings) -> Markup {
     }
 }
 
-/// A site's address as people say it: `shop.example.com`, not
-/// `https://shop.example.com/`.
-fn site_host(url: &str) -> &str {
-    let host = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .unwrap_or(url);
-    host.strip_suffix('/').unwrap_or(host)
-}
-
 pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
@@ -150,24 +136,19 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                     // rather than broken mid-word; the link keeps the full URL.
                     span class="store-header-status" {
                         span class=(format!("tag tag-{}", store.health)) { (store.health_label) }
-                        span class="muted" { (store.platform) } span class="muted" aria-hidden="true" { "·" }
-                        // A link only to an http(s) site: the URL is the
-                        // merchant's (or an API caller's) text, and a
-                        // `javascript:` one must not become a link.
-                        @if store.site_url.starts_with("https://") || store.site_url.starts_with("http://") {
-                            a class="store-site" href=(store.site_url) title=(store.site_url) { (site_host(&store.site_url)) }
-                        } @else {
-                            span class="store-site" title=(store.site_url) { (site_host(&store.site_url)) }
+                        span class="muted" { (crate::stores::StoreKind::of_platform(&store.platform).label()) }
+                        // The site is a host (`crate::stores::normalize_site`),
+                        // so the link is built, never the merchant's text.
+                        @if !store.site.is_empty() {
+                            span class="muted" aria-hidden="true" { "·" }
+                            a class="store-site" href=(crate::stores::site_link(&store.site)) title=(store.site) { (store.site) }
                         }
                     }
                     a class="btn btn-secondary settings-link" href=(format!("/dashboard/stores/{}/settings", store.connection_id)) {
                         "Settings " span aria-hidden="true" { "→" }
                     }
-                    details class="help-disclosure" {
-                        summary class="btn btn-secondary help-control" { "Help" }
-                        div class="store-help-content" {
-                            (super::integration_help::fragment(&store.public_key, store.public_url.as_deref(), store.is_woocommerce))
-                        }
+                    a class="btn btn-secondary help-control" href=(super::DOCS_URL) target="_blank" rel="noopener" {
+                        "Help " (super::external_link_icon())
                     }
                 }
 
@@ -262,38 +243,6 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
     layout(chrome, &title, body)
 }
 
-pub fn woocommerce_instructions_page(chrome: &PageChrome) -> Markup {
-    let body = html! {
-        div class="wrap" {
-            nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard/stores/new" { "Add a store" } }
-            h1 { "Set up WooCommerce" }
-            p class="hint" {
-                "This flow runs from inside WordPress, not from here - it needs your store's own "
-                "URL and a plugin-issued token to hand back to it, which only WordPress itself can provide. Follow "
-                "these steps from your WordPress admin:"
-            }
-            ol class="steps" {
-                li { "Install and activate the " strong { "Monokulo" } " plugin (WordPress admin → Plugins → Add New, search \"Monokulo\")." }
-                li { "Go to " strong { "WooCommerce → Settings → Payments" } " and enable " strong { "Monokulo" } "." }
-                li { "Open its settings and click " strong { "Connect your Monero wallet" } "." }
-                li {
-                    "You'll land back here: say whether the shop is a new store, and pick the wallet its payments go to "
-                    "(or set one up on the way). Your WooCommerce site is remembered automatically."
-                }
-                li { "Once confirmed, you're sent straight back to your WooCommerce settings, already connected." }
-            }
-            div class="box" {
-                p class="hint" {
-                    "Don't have the plugin installed yet? You can also "
-                    a href="/dashboard/connect" { "add it as a custom store" }
-                    " right now and enter your WooCommerce site's URL yourself."
-                }
-            }
-        }
-    };
-    layout(chrome, "Connect WooCommerce - Monokulo", body)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,21 +255,19 @@ mod tests {
         StoreDetailData {
             wallet: None,
             connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
-            display_name: "shop.example.com".to_string(),
+            display_name: "Corner shop".to_string(),
             platform: if is_woocommerce {
                 "woocommerce".to_string()
             } else {
                 "custom".to_string()
             },
-            site_url: "https://shop.example.com".to_string(),
+            site: "shop.example.com".to_string(),
             public_key: "pk_abc123".to_string(),
-            public_url: None,
             base_currency: "XMR".to_string(),
             health: "ok".to_string(),
             health_label: "healthy".to_string(),
             created_at: 1000,
             recent_orders: vec![],
-            is_woocommerce,
             lookup_txid_value: String::new(),
             lookup_message: None,
             lookup_found_order_id: None,
@@ -421,40 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_integration_help_with_the_right_public_key_via_the_shared_fragment() {
-        let store = StoreDetailData {
-            wallet: None,
-            health: "error".to_string(),
-            health_label: "unreachable".to_string(),
-            ..base_store(true)
-        };
-        let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
-        // Proves the integration_help fragment actually received this
-        // store's own public_key, not some stale or empty value - the exact
-        // same fragment the post-connect success page uses
-        // (`views::connect`'s own tests), so the two can never drift on
-        // what "integrate this store" means. The engine's address is never
-        // part of this page.
-        assert!(html.contains("pk_abc123"));
-        assert!(html.contains("tag-error"));
-        assert!(html.contains("Integrate this store"));
-        // is_woocommerce: true must render the "already connected" copy,
-        // not the "install the plugin" onboarding steps - real bug: this
-        // used to always show WooCommerce onboarding instructions even for
-        // stores connected through the advanced/custom form.
-        assert!(html.contains("already connected via the WooCommerce plugin"));
-        assert!(
-            !html.contains("Install the"),
-            "should not show plugin-install instructions for an already-connected store"
-        );
-    }
-
-    /// The other half of the same real bug: a store connected via the
-    /// advanced (custom) form must show generic direct-API instructions,
-    /// never the WooCommerce-specific onboarding steps - it was never
-    /// connected through the plugin at all.
-    #[test]
-    fn shows_generic_integration_help_for_a_non_woocommerce_store() {
+    fn the_store_is_called_by_its_name_and_its_site_is_a_link_to_the_host() {
         let html = page(
             &chrome(),
             &StoreDetailViewModel {
@@ -462,11 +376,27 @@ mod tests {
             },
         )
         .into_string();
+        assert!(html.contains("<h1>Corner shop</h1>"), "{html}");
         assert!(
-            html.contains("Install the"),
-            "expected the WooCommerce onboarding steps to still be offered, got: {html}"
+            html.contains(
+                r#"href="https://shop.example.com" title="shop.example.com">shop.example.com</a>"#
+            ),
+            "{html}"
         );
-        assert!(!html.contains("already connected via the WooCommerce plugin"));
+        assert!(html.contains("pk_abc123"));
+
+        // A store that only takes payments in person has no site to show.
+        let html = page(
+            &chrome(),
+            &StoreDetailViewModel {
+                store: Some(StoreDetailData {
+                    site: String::new(),
+                    ..base_store(false)
+                }),
+            },
+        )
+        .into_string();
+        assert!(!html.contains("store-site"), "{html}");
     }
 
     #[test]
@@ -518,16 +448,15 @@ mod tests {
             settings < help,
             "Help should be the rightmost control in the store header: {html}"
         );
+        // Help is the docs, in a new tab.
         assert!(
-            html.contains(r#"<summary class="btn btn-secondary help-control">Help</summary>"#),
-            "expected Help to be the disclosure's only summary content: {html}"
+            html.contains(&format!(
+                r#"<a class="btn btn-secondary help-control" href="{}" target="_blank" rel="noopener">Help "#,
+                crate::views::DOCS_URL
+            )),
+            "expected Help to link to the docs: {html}"
         );
-        let summary_start = html.find("<summary").unwrap();
-        assert!(html.find("class=\"store-header-status\"").unwrap() < summary_start);
-        assert!(
-            settings < summary_start,
-            "Settings must sit outside the Help summary: {html}"
-        );
+        assert!(html.find("class=\"store-header-status\"").unwrap() < help);
         assert!(
             html.contains("Settings <span aria-hidden=\"true\">→</span>"),
             "expected the Settings arrow: {html}"
@@ -551,12 +480,5 @@ mod tests {
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
         assert!(html.contains("No transaction with that ID was found on the network."));
         assert!(html.contains(r#"value="abc123""#));
-    }
-
-    #[test]
-    fn woocommerce_instructions_page_renders() {
-        let html = woocommerce_instructions_page(&chrome()).into_string();
-        assert!(html.to_lowercase().contains("woocommerce"));
-        assert!(html.contains(r#"href="/dashboard/connect""#));
     }
 }

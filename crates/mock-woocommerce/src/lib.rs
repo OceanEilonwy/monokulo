@@ -358,12 +358,6 @@ pub struct ConnectFlowWallet {
     /// The engine's own default applies when `None`; `Some(0)` enables native
     /// 0-conf for orders using this tenant's default tier.
     pub confirmations_required: Option<u64>,
-    /// The tenant's base currency (`ConfirmForm::base_currency`, WBS "Confirmation
-    /// Thresholds") - required by the real confirm form as of that feature (an empty
-    /// submission is rejected as an unknown currency), so unlike the two `Option`
-    /// optional field above this one is always submitted. `"XMR"` by
-    /// default, matching every existing caller's own XMR-denominated test order.
-    pub base_currency: String,
 }
 
 impl Default for ConnectFlowWallet {
@@ -373,7 +367,6 @@ impl Default for ConnectFlowWallet {
             spend_pubkey_hex: TEST_SPEND_PUBKEY_HEX.to_string(),
             network: "mainnet".to_string(),
             confirmations_required: None,
-            base_currency: "XMR".to_string(),
         }
     }
 }
@@ -568,7 +561,12 @@ async fn run_connect_flow_inner(
 ) -> Result<FinishedCredentials, ConnectFlowError> {
     let callback_url = format!("http://{}/moneropay/callback", callback.addr);
 
-    let client = reqwest::Client::builder().cookie_store(true).build()?;
+    // Redirects are followed by hand, step by step, as each one says where
+    // the next screen is.
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
 
     // The exact relative path+query `monokulo`'s own
     // `http/connect.rs::start` would construct as `this_url` for the
@@ -582,26 +580,23 @@ async fn run_connect_flow_inner(
         encode_query_value(&callback_url),
         encode_query_value(nonce),
     );
-    let connect_start_url = format!("{monokulo_base_url}{connect_next_path}");
 
-    // Step 2: no session yet - auto-followed to /dashboard/login.
-    let get_response = client.get(&connect_start_url).send().await?;
-    expect_ok(get_response, "connect start (pre-login)").await?;
+    // Step 2: no session yet - sent to /dashboard/login.
+    let start = client
+        .get(format!("{monokulo_base_url}{connect_next_path}"))
+        .send()
+        .await?;
+    expect_redirect(start, "connect start (pre-login)").await?;
 
-    // Step 3: sign up a fresh account. Its own redirect goes to a bare
-    // /dashboard/login with no `next` (today's real behavior) - that's fine,
-    // step 4 supplies `next` itself.
-    let signup_response = client
+    // Step 3: sign up a fresh account, then log in carrying `next` back to
+    // the connect link.
+    let signup = client
         .post(format!("{monokulo_base_url}/dashboard/signup"))
         .form(&[("email", email), ("password", password)])
         .send()
         .await?;
-    expect_ok(signup_response, "dashboard signup").await?;
-
-    // Step 4: log in, carrying `next` back to the original connect-start
-    // path - auto-followed (the client now holds the just-issued session
-    // cookie) all the way to the confirm form.
-    let login_response = client
+    expect_redirect(signup, "dashboard signup").await?;
+    let login = client
         .post(format!("{monokulo_base_url}/dashboard/login"))
         .form(&[
             ("email", email),
@@ -610,67 +605,148 @@ async fn run_connect_flow_inner(
         ])
         .send()
         .await?;
-    expect_ok(login_response, "dashboard login").await?;
+    expect_redirect(login, "dashboard login").await?;
 
-    // Step 5: confirm the wallet connection with `wallet`'s material (the fixed test
-    // scalars by default - see `ConnectFlowWallet`'s own doc comment - or real wallet
-    // material for a caller using `run_connect_flow_with_wallet`) - auto-followed
-    // to the store's optional common settings form.
-    let order_expiry_seconds_string = order_expiry_seconds.map(|s| s.to_string());
-    let confirmations_required_string = wallet.confirmations_required.map(|v| v.to_string());
-    let mut confirm_fields: Vec<(&str, &str)> = vec![
-        ("site_url", site_url),
-        ("return_url", callback_url.as_str()),
-        ("nonce", nonce),
-        ("view_key_hex", wallet.view_key_hex.as_str()),
-        ("spend_pubkey_hex", wallet.spend_pubkey_hex.as_str()),
-        ("network", wallet.network.as_str()),
-        ("base_currency", wallet.base_currency.as_str()),
-    ];
-    if let Some(s) = &order_expiry_seconds_string {
-        confirm_fields.push(("order_expiry_seconds", s.as_str()));
-    }
-    if let Some(s) = &confirmations_required_string {
-        confirm_fields.push(("confirmations_required", s.as_str()));
-    }
-    let mut confirm_response = client
-        .post(format!("{monokulo_base_url}/connect/{platform}"))
-        .form(&confirm_fields)
+    // Step 4: the shop has no store yet, so the connect link sends the
+    // merchant to store setup with the plugin's request.
+    let start = client
+        .get(format!("{monokulo_base_url}{connect_next_path}"))
         .send()
         .await?;
-    // Step 6: act as the merchant choosing "Skip for now". Keep the wallet's
-    // submitted currency/confirmation defaults, and carry the callback and
-    // nonce through the form. The connect token is minted only afterward.
-    let setup_prefix = format!("{monokulo_base_url}/dashboard/stores/");
-    if confirm_response.url().as_str().starts_with(&setup_prefix)
-        && confirm_response.url().path().ends_with("/setup")
-    {
-        let setup_url = confirm_response.url().clone();
-        expect_ok(confirm_response, "store setup").await?;
-        confirm_response = client
-            .post(setup_url)
-            .form(&[
-                ("return_url", callback_url.as_str()),
-                ("nonce", nonce),
-                ("skip", "yes"),
-            ])
-            .send()
-            .await?;
-    }
-    // An accepted flow reaches the callback (followed); a refused form
-    // re-renders with its error and never calls the plugin.
-    if !confirm_response.url().as_str().starts_with(&callback_url) {
-        let status = confirm_response.status().as_u16();
-        let body = confirm_response.text().await.unwrap_or_default();
+    let to_setup = expect_redirect(start, "connect start").await?;
+
+    let return_url = walk_setup(
+        &client,
+        monokulo_base_url,
+        platform,
+        &to_setup,
+        order_expiry_seconds,
+        wallet,
+    )
+    .await?;
+
+    // Step 6: the browser goes back to the plugin with the token and nonce;
+    // the callback redeems them.
+    if !return_url.starts_with(&callback_url) {
         return Err(ConnectFlowError::UnexpectedResponse {
-            step: "connect confirm (refused, no redirect to the callback)".to_string(),
-            status,
-            body,
+            step: "back to the plugin (not the callback)".to_string(),
+            status: 302,
+            body: return_url,
         });
     }
-    expect_ok(confirm_response, "connect confirm").await?;
+    let back = client.get(&return_url).send().await?;
+    expect_ok(back, "connect callback").await?;
 
     callback.result_rx_recv().await
+}
+
+/// Store setup as a browser without JavaScript walks it, from the
+/// `/setup?...` the connect link sent the merchant to: the store step (a
+/// store named "Mock shop"), a wallet brought in with `wallet`'s keys, and
+/// Done's "Back to WooCommerce" button. Returns where that button sends the
+/// browser: the plugin's `return_url` with `token` and `nonce`. `client`
+/// follows no redirects.
+async fn walk_setup(
+    client: &reqwest::Client,
+    monokulo_base_url: &str,
+    platform: &str,
+    to_setup: &str,
+    order_expiry_seconds: Option<i64>,
+    wallet: &ConnectFlowWallet,
+) -> Result<String, ConnectFlowError> {
+    let query = to_setup.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let mut draft: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect();
+    let field = |draft: &[(String, String)], name: &str| {
+        draft
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
+    let (site_url, return_url, nonce) = (
+        field(&draft, "site_url"),
+        field(&draft, "return_url"),
+        field(&draft, "nonce"),
+    );
+    draft.push(("store_name".into(), "Mock shop".into()));
+    if let Some(seconds) = order_expiry_seconds {
+        draft.push(("order_expiry_seconds".into(), seconds.to_string()));
+    }
+    if let Some(confirmations) = wallet.confirmations_required {
+        draft.push(("confirmations_required".into(), confirmations.to_string()));
+    }
+
+    // Step 5a: the store step.
+    let store = client
+        .post(format!("{monokulo_base_url}/setup"))
+        .form(&draft)
+        .send()
+        .await?;
+    let wallet_step = expect_redirect(store, "setup: store").await?;
+    let query = wallet_step.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let mut keys: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect();
+    keys.extend([
+        ("name".to_string(), String::new()),
+        ("network".to_string(), wallet.network.clone()),
+        ("view_key_hex".to_string(), wallet.view_key_hex.clone()),
+        (
+            "spend_pubkey_hex".to_string(),
+            wallet.spend_pubkey_hex.clone(),
+        ),
+    ]);
+
+    // Step 5b: bring the wallet in with its keys, which makes the store.
+    let made = client
+        .post(format!("{monokulo_base_url}/setup/wallet/keys"))
+        .form(&keys)
+        .send()
+        .await?;
+    let done = expect_redirect(made, "setup: wallet keys").await?;
+    let store_id = done
+        .trim_start_matches("/setup/done/")
+        .split('?')
+        .next()
+        .unwrap_or_default()
+        .to_string();
+
+    // Step 5c: Done's button back to the plugin mints its key.
+    let back = client
+        .post(format!("{monokulo_base_url}/connect/{platform}"))
+        .form(&[
+            ("connection_id", store_id.as_str()),
+            ("site_url", site_url.as_str()),
+            ("return_url", return_url.as_str()),
+            ("nonce", nonce.as_str()),
+        ])
+        .send()
+        .await?;
+    expect_redirect(back, "setup: back to the plugin").await
+}
+
+async fn expect_redirect(
+    response: reqwest::Response,
+    step: &str,
+) -> Result<String, ConnectFlowError> {
+    if response.status().is_redirection() {
+        if let Some(location) = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+        {
+            return Ok(location.to_string());
+        }
+    }
+    let status = response.status().as_u16();
+    let body = response.text().await.unwrap_or_default();
+    Err(ConnectFlowError::UnexpectedResponse {
+        step: step.to_string(),
+        status,
+        body,
+    })
 }
 
 async fn expect_ok(response: reqwest::Response, step: &str) -> Result<(), ConnectFlowError> {
@@ -1239,66 +1315,27 @@ mod tests {
             .await
             .unwrap();
 
-        let confirm_response = client
-            .post(format!("{monokulo_base_url}/connect/{platform}"))
-            .form(&[
-                ("site_url", site_url),
-                ("return_url", return_url),
-                ("nonce", correct_nonce.as_str()),
-                ("view_key_hex", TEST_VIEW_KEY_HEX),
-                ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
-                ("network", "mainnet"),
-                ("base_currency", "XMR"),
-            ])
+        let to_setup = client
+            .get(format!("{monokulo_base_url}{connect_next_path}"))
             .send()
             .await
-            .unwrap();
-        assert_eq!(
-            confirm_response.status(),
-            reqwest::StatusCode::FOUND,
-            "expected a redirect to the common store settings"
-        );
-        let location = confirm_response
-            .headers()
-            .get("location")
             .unwrap()
+            .headers()["location"]
             .to_str()
             .unwrap()
             .to_string();
-        let setup_url = url::Url::parse(&monokulo_base_url)
-            .unwrap()
-            .join(&location)
-            .unwrap();
-        assert!(setup_url.path().starts_with("/dashboard/stores/"));
-        assert!(setup_url.path().ends_with("/setup"));
-        assert!(
-            !parse_query_params(setup_url.as_str()).contains_key("token"),
-            "the connect token must not be minted before settings are completed"
-        );
-        let setup_page = client.get(setup_url.clone()).send().await.unwrap();
-        assert_eq!(setup_page.status(), reqwest::StatusCode::OK);
-        assert!(setup_page
-            .text()
-            .await
-            .unwrap()
-            .contains("Save and continue"));
-        let completed = client
-            .post(setup_url)
-            .form(&[
-                ("return_url", return_url),
-                ("nonce", correct_nonce.as_str()),
-                ("skip", "yes"),
-            ])
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(completed.status(), reqwest::StatusCode::FOUND);
-        let location = completed
-            .headers()
-            .get("location")
-            .unwrap()
-            .to_str()
-            .unwrap();
+        assert!(to_setup.starts_with("/setup?"), "{to_setup}");
+        let location = walk_setup(
+            &client,
+            &monokulo_base_url,
+            platform,
+            &to_setup,
+            None,
+            &ConnectFlowWallet::default(),
+        )
+        .await
+        .unwrap();
+        let location = location.as_str();
         let params = parse_query_params(location);
         assert_eq!(params.get("nonce"), Some(&correct_nonce));
         let token = params
