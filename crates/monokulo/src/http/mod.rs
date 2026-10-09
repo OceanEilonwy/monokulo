@@ -475,11 +475,11 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/account/wallets/{id}/retire",
-            axum::routing::post(wallets::retire),
+            axum::routing::get(wallets::retire_form).post(wallets::retire),
         )
         .route(
             "/account/wallets/{id}/restore",
-            axum::routing::post(wallets::restore),
+            axum::routing::get(wallets::restore_form_page).post(wallets::restore),
         )
         .route(
             "/dashboard/stores/{id}",
