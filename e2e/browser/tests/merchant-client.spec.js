@@ -111,28 +111,15 @@ test('merchant site keeps following an order through a status outage when its st
   // The page's time stands still from the start: only the test moves it.
   const start = new Date('2026-01-01T00:00:00Z');
   await pauseClockAt(page, start);
-  // The shop page's own record of the library's following: each delay it
-  // schedules (its next poll, set once it has handled a refusal or a
-  // poll's answer), so the test moves the clock only once the library is
-  // waiting on it, and each poll as it's sent (synchronously, inside the
-  // timer that polls). Added after the clock's own script, so it wraps the
-  // fake setTimeout.
-  await page.addInitScript(() => {
-    window.scheduled = [];
-    window.polled = 0;
-    const setTimeout_ = window.setTimeout;
-    window.setTimeout = function (callback, delay, ...args) {
-      window.scheduled.push(delay);
-      return setTimeout_.call(this, callback, delay, ...args);
-    };
-    const fetch_ = window.fetch;
-    window.fetch = function (resource, ...rest) {
-      if (String(resource instanceof Request ? resource.url : resource).endsWith('/status')) window.polled++;
-      return fetch_.call(this, resource, ...rest);
-    };
-  });
-  const scheduled = () => page.evaluate(() => window.scheduled);
-  const polled = () => page.evaluate(() => window.polled);
+  // The library's polls are recorded (recordFetches): each one as it's
+  // sent, synchronously inside the timer that polls, and whether it has
+  // been answered. The library says nothing to the merchant about a poll
+  // that failed, so the answered record is the only sign it has handled
+  // one (and set its next wait); a poll that succeeded shows in the
+  // merchant's callbacks (window.events), which the library calls before
+  // setting the next wait.
+  await recordFetches(page);
+  const polled = async () => (await fetches(page)).filter(call => call.url.endsWith('/status'));
   await openShop(page);
   let polls = 0;
   await page.route(`${fixture.base_url}/pay/*/orders/*/events`, route => route.fulfill({ status: 503, body: '' }));
@@ -147,33 +134,35 @@ test('merchant site keeps following an order through a status outage when its st
     return created;
   }, fixture.public_key);
   // The poll that takes over from the refused stream comes 3s after the
-  // refusal, not a millisecond before.
-  await expect.poll(() => streams(page), 'the library handles the refused stream').toEqual([{ readyState: CLOSED, refused: 1 }]);
-  await expect.poll(scheduled).toEqual([3000]);
+  // library has handled the refusal (its stream's error event, with the
+  // stream closed for good), not a millisecond before.
+  await expect.poll(() => eventSources(page), 'the library handles the refused stream').toEqual([expect.objectContaining({ readyState: EVENT_SOURCE_CLOSED, refused: 1 })]);
   await page.clock.runFor(2999);
-  expect(await polled(), 'no poll before 3s').toBe(0);
+  expect(await polled(), 'no poll before 3s').toHaveLength(0);
   await page.clock.runFor(1);
-  expect(await polled(), 'the poll at 3s').toBe(1);
-  // A failed poll says nothing to the merchant and tries again after 5s.
-  await expect.poll(scheduled, 'the library handles the failed poll').toEqual([3000, 5000]);
+  expect(await polled(), 'the poll at 3s').toHaveLength(1);
+  // A failed poll says nothing to the merchant and tries again 5s after
+  // the library has handled the answer.
+  await expect.poll(async () => (await polled()).map(call => call.settled), 'the library handles the failed poll').toEqual([true]);
   expect(polls).toBe(1);
   expect(await page.evaluate(() => window.events)).toEqual([]);
   await page.clock.runFor(4999);
-  expect(await polled(), 'no retry before 5s').toBe(1);
+  expect(await polled(), 'no retry before 5s').toHaveLength(1);
   await page.clock.runFor(1);
-  expect(await polled(), 'the retry at 5s').toBe(2);
+  expect(await polled(), 'the retry at 5s').toHaveLength(2);
+  // Following the order: a poll every 3s while it's open, from the moment
+  // the merchant is told what the last one said.
   await expect.poll(() => page.evaluate(() => window.events)).toEqual([['change', 'pending']]);
-  // Following the order: every 3s while it's open.
-  await expect.poll(scheduled, 'the library handles the answer').toEqual([3000, 5000, 3000]);
   await request.post(`${fixture.base_url}/__coverage/orders/${order.orderId}/paid`);
   await page.clock.runFor(2999);
-  expect(await polled(), 'no poll before 3s').toBe(2);
+  expect(await polled(), 'no poll before 3s').toHaveLength(2);
   await page.clock.runFor(1);
-  expect(await polled(), 'the poll at 3s').toBe(3);
+  expect(await polled(), 'the poll at 3s').toHaveLength(3);
   await expect.poll(() => page.evaluate(() => window.events)).toEqual([['change', 'pending'], ['change', 'paid'], ['paid', 'paid']]);
   expect(polls).toBe(3);
-  // Paid: the library stops following the order.
-  expect(await scheduled(), 'no poll after the order is final').toEqual([3000, 5000, 3000]);
+  // Paid: the library stops following the order, however long it's left.
+  await page.clock.runFor(60 * 1000);
+  expect(await polled(), 'no poll after the order is final').toHaveLength(3);
 });
 
 test('a visitor past the rate limit, or asked for proof on a plain-HTTP shop, gets a clear failure', async ({ page }) => {
