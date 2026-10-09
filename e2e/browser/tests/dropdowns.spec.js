@@ -42,7 +42,7 @@ test('a dropdown floats over the page, picks with the mouse and saves through th
   await usd.click();
   await expect(list).not.toBeVisible();
   await expect(button).toBeFocused();
-  expect(await dropdown.locator('select').inputValue()).toBe('USD');
+  await expect(dropdown.locator('select')).toHaveValue('USD');
   await expect(button.locator('.mk-detail')).toHaveText('USD');
 
   await section.getByRole('button', { name: 'Update', exact: true }).click();
@@ -71,7 +71,7 @@ test('the keyboard opens, moves, chooses and closes without leaving the dialog',
   await expect(dropdown.getByRole('listbox')).not.toBeVisible();
   await expect(section.locator('dialog')).toBeVisible();
   await expect(button).toBeFocused();
-  expect(await select.inputValue()).toBe(start);
+  await expect(select).toHaveValue(start);
 
   // Opens on the chosen option; Down then Enter takes the next one.
   await page.keyboard.press('Enter');
@@ -84,14 +84,14 @@ test('the keyboard opens, moves, chooses and closes without leaving the dialog',
   await page.keyboard.press('Enter');
   await expect(dropdown.getByRole('listbox')).not.toBeVisible();
   await expect(button).toBeFocused();
-  expect(await select.evaluate(s => String(s.selectedIndex))).toBe(next);
-  expect(await select.inputValue()).not.toBe(start);
+  await expect.poll(() => select.evaluate(s => String(s.selectedIndex))).toBe(next);
+  await expect(select).not.toHaveValue(start);
 
   // Typing on the button starts a search.
   await page.keyboard.type('eur');
   await expect(find).toHaveValue('eur');
   await page.keyboard.press('Enter');
-  expect(await select.inputValue()).toBe('EUR');
+  await expect(select).toHaveValue('EUR');
 });
 
 test('a long list has a find box, and a script setting the select is followed', async ({ page, context }) => {
@@ -107,7 +107,7 @@ test('a long list has a find box, and a script setting the select is followed', 
   await expect(dropdown.getByRole('option')).toHaveCount(1);
   await page.keyboard.press('Enter');
   await expect(button).toContainText('Australia/Perth');
-  expect(await dropdown.locator('select').inputValue()).toBe('Australia/Perth');
+  await expect(dropdown.locator('select')).toHaveValue('Australia/Perth');
 
   await button.click();
   await dropdown.getByRole('combobox', { name: 'Find' }).fill('no such place');
@@ -176,7 +176,7 @@ test('a required dropdown left on its prompt is refused, and green is only for C
   await expect(off).toHaveAttribute('aria-disabled', 'true');
   await off.click();
   await expect(dropdown.getByRole('listbox')).toBeVisible();
-  expect(await dropdown.locator('select').inputValue()).toBe('');
+  await expect(dropdown.locator('select')).toHaveValue('');
   await dropdown.getByRole('option', { name: /Copper Heron/ }).click();
   await expect(dropdown).not.toHaveClass(/mk-invalid/);
   await expect(button.locator('.mk-label')).toHaveText('Copper Heron');
@@ -193,7 +193,7 @@ test('a required dropdown left on its prompt is refused, and green is only for C
   await page.keyboard.type('caf');
   await expect(dropdown.locator('.mk-active')).toContainText('Café till');
   await page.keyboard.press(' ');
-  expect(await dropdown.locator('select').inputValue()).toBe('w2');
+  await expect(dropdown.locator('select')).toHaveValue('w2');
 });
 
 test('without JavaScript the dropdown is the plain select, every part in words', async ({ browser }) => {

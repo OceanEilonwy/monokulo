@@ -170,7 +170,7 @@ test('real POS header is the site app bar: the mark, the store, a POS label and 
   await expect(top.locator('.pos-brand svg.logo-mark')).toBeVisible();
   await expect(top.locator('.pos-store')).toHaveAttribute('href', `/dashboard/stores/${fixture.connection_id}`);
   await expect(top.locator('.pos-mode')).toHaveText('POS');
-  expect(await page.locator('#pos-site-brand').count()).toBe(0);
+  await expect(page.locator('#pos-site-brand')).toHaveCount(0);
   const status = top.locator('#status-indicator');
   await expect(status).toHaveAttribute('href', '/status');
   // Rightmost in the bar, after the theme toggle, as on every page.

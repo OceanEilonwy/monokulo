@@ -35,7 +35,7 @@ test('real checkout scans a refund QR with the camera, then stops the camera', a
   // A successful scan turns the camera off by itself.
   await expect(video).toBeHidden();
   await expect(scan).toHaveAttribute('aria-label', 'Scan refund QR');
-  expect(await video.evaluate(el => el.srcObject)).toBeNull();
+  await expect.poll(() => video.evaluate(el => el.srcObject)).toBeNull();
 });
 
 test('real checkout camera can be stopped by the customer before it finds a code', async ({ page, request }) => {
@@ -70,7 +70,7 @@ test('merchant scans the customer refund QR with the POS tablet camera', async (
   // The scan ends by itself: camera hidden and released.
   await expect(card.locator('.pos-camera')).toBeHidden();
   await expect(card.getByRole('button', { name: 'Scan refund QR' })).toBeVisible();
-  expect(await card.locator('.pos-camera').evaluate(el => el.srcObject)).toBeNull();
+  await expect.poll(() => card.locator('.pos-camera').evaluate(el => el.srcObject)).toBeNull();
 });
 
 test('POS tablet camera stopped before it finds a code leaves the field as it was', async ({ page, context }) => {
