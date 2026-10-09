@@ -382,18 +382,23 @@ test('counter loses its connection: the order shows connection lost, then recove
   await expect(page.locator('.pos-stage-msg')).toContainText('Payment seen. Waiting for its first confirmation.');
 });
 
-test('merchant opens Cancel order then changes their mind: nothing happens', async ({ page }) => {
+test('merchant opens Cancel order then changes their mind: nothing happens until they confirm', async ({ page }) => {
   const writes = [];
   page.on('request', sent => { if (sent.method() !== 'GET') writes.push(sent.url()); });
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   page.once('dialog', dialog => dialog.dismiss());
   await page.getByRole('button', { name: 'Cancel order' }).click();
-  await page.waitForTimeout(1000);
-  expect(writes).toEqual([]);
   await expect(page.locator('.pos-error')).toHaveCount(0);
   await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Awaiting payment');
   await expect(page.getByRole('button', { name: 'Cancel order' })).toBeEnabled();
+  // Confirmed the second time: the one write the server gets is that one.
+  // A write the dismissed question had sent would have gone out first, so
+  // this proves it sent none without waiting for nothing to happen.
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: 'Cancel order' }).click();
+  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Cancelled');
+  expect(writes).toEqual([`${posUrl()}/orders/${fixture.order_id}/cancel`]);
 });
 
 test('payment lands just before the merchant confirms a cancel: the server refuses and says why', async ({ page, request }) => {
