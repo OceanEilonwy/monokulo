@@ -444,9 +444,9 @@ fn proof_window(window: &ProofWindow) -> Markup {
             }
             span { span class="pip" data-settles {} " settles to" }
             span { span class="pip-tip" {} " node tip" }
-            span class="pip-figures" {
-                "last " (WINDOW_BLOCKS) " blocks · settles to " (thousands(window.ceiling)) " · tip " (thousands(window.top()))
-            }
+        }
+        p class="pip-figures" {
+            "Last " (WINDOW_BLOCKS) " blocks · settles to " (thousands(window.ceiling)) " · tip " (thousands(window.top()))
         }
         @if let Some((anchor, age)) = &window.anchor {
             p class="hint pip-anchor" {
@@ -899,7 +899,7 @@ mod tests {
         );
         let css = include_str!("site.css");
         for rule in [
-            "table.node-table td.card-amount { display: contents; }",
+            "table.node-table td.card-amount { display: contents; font-weight: 400; }",
             "table.node-table .card-meta.is-quiet { display: none; }",
         ] {
             assert!(css.contains(rule), "{rule}");
@@ -951,7 +951,9 @@ mod tests {
             html.contains(r#"<span class="pip" data-settles title="block 3,412,881"></span><span class="pip-tip"></span></div>"#),
             "the settled block is ringed, then the tip: {html}"
         );
-        assert!(html.contains("last 30 blocks · settles to 3,412,881 · tip 3,412,881"));
+        assert!(html.contains(
+            r#"<p class="pip-figures">Last 30 blocks · settles to 3,412,881 · tip 3,412,881</p>"#
+        ));
         assert!(html.contains(
             r#"<p class="hint pip-anchor">Anchored at block 3,412,160, 2d ago: every block since then is checked.</p>"#
         ));
