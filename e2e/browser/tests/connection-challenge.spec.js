@@ -1,4 +1,4 @@
-const { test, expect } = require('../coverage-test');
+const { test, expect, pauseClockAt } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
 
@@ -60,12 +60,31 @@ test('real challenge on a plain-HTTP onion (no Web Crypto) waits ten seconds and
   // A Tor .onion served over plain HTTP is not a secure context, so
   // crypto.subtle is missing and the proof cannot be computed in the page.
   await page.addInitScript(() => { Object.defineProperty(window.crypto, 'subtle', { get: () => undefined }); });
-  await page.clock.install();
+  // The page's time stands still from the start: only the test moves it.
+  const start = new Date('2026-01-01T00:00:00Z');
+  await pauseClockAt(page, start);
+  // The page's own record of its wait: the timer it sets, and when it
+  // fires (which is when it moves on). Added after the clock's own script,
+  // so it wraps the fake setTimeout.
+  await page.addInitScript(() => {
+    window.waits = [];
+    const setTimeout_ = window.setTimeout;
+    window.setTimeout = function (callback, delay, ...args) {
+      const wait = { delay, fired: false };
+      window.waits.push(wait);
+      return setTimeout_.call(this, (...callbackArgs) => { wait.fired = true; return callback(...callbackArgs); }, delay, ...args);
+    };
+  });
+  const waits = () => page.evaluate(() => window.waits);
   await page.goto(`${fixture.base_url}/__coverage/challenge`);
+  // Said as the wait is set: 10.5s (challenge.js), so the server's own ten
+  // seconds have passed when the page continues. Not a millisecond before.
   await expect(page.locator('#challenge-progress')).toHaveText('This page continues in 10 seconds.');
-  await page.clock.runFor(9000);
+  expect(await waits()).toEqual([{ delay: 10500, fired: false }]);
+  await page.clock.runFor(10499);
+  expect(await waits(), 'still waiting at 10.499s').toEqual([{ delay: 10500, fired: false }]);
   expect(page.url()).toContain('/__coverage/challenge');
-  await page.clock.runFor(2000);
+  await page.clock.runFor(1);
   await expect(page.locator('#checkout-root')).toBeVisible();
   expect(page.url()).toContain('monokulo_wait=');
 });
