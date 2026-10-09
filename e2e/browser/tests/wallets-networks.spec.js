@@ -88,7 +88,7 @@ test("a wallet's page shows its network beside its name", async ({ page, context
   const title = page.locator('.wallet-title');
   await expect(title.getByRole('heading', { name: 'Feather test' })).toBeVisible();
   await expect(title.locator('.tag-network.is-test')).toHaveText('Stagenet');
-  await expect(page.getByText('Brought in · test network, no real value')).toBeVisible();
+  await expect(page.locator('.where-banner strong')).toHaveText('Brought in from Feather');
   await captureCoverageStage(page, 'wallets-networks-wallet-page', test.info(), { group: GROUP });
 });
 
