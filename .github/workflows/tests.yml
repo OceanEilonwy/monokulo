@@ -47,6 +47,20 @@ jobs:
     timeout-minutes: ${{ inputs.platform == 'windows' && 90 || 30 }}
     steps:
       - uses: actions/checkout@v7
+      # The engine's property tests make, reopen and delete thousands of
+      # SQLite files in the temporary folder, which on Windows runners is on
+      # C:, the slow system disk; the checkout and target are on D:, the
+      # runner's local disk. With TMP and TEMP in the runner's own temporary
+      # folder on D: (emptied after every job) nextest took 450 to 800 s
+      # instead of 3,000. Defender doesn't scan files on these runners, so a
+      # Dev Drive for target and TMP did no better, built no faster, and its
+      # System Volume Information folder stopped the Rust cache saving.
+      - name: Keep temporary files on D:
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "TMP=${{ runner.temp }}" >> $env:GITHUB_ENV
+          "TEMP=${{ runner.temp }}" >> $env:GITHUB_ENV
       - uses: ./.github/actions/setup-rust
         with:
           components: ${{ inputs.coverage && 'llvm-tools-preview' || '' }}
