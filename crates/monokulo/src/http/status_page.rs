@@ -368,6 +368,18 @@ pub(crate) fn seed_status_for_tests(engine: &Engine, status: EngineStatusRespons
     });
 }
 
+/// Puts `status` in the cache and keeps it there for an hour, for the
+/// browser fixture (`examples/coverage_fixture.rs`): the page and its live
+/// updates show this status, not the fixture engine's, however slowly the
+/// browser test runs.
+#[cfg(feature = "test-support")]
+pub fn hold_status_for_tests(engine: &Engine, status: EngineStatusResponse) {
+    status_cache(engine).cached = Some(CachedStatus {
+        fetched_at: Instant::now() + Duration::from_secs(3600),
+        result: Ok(status),
+    });
+}
+
 /// The stores the engine last said it can't scan (task 3.7), from the same
 /// cache as [`known_health`], without waiting on the engine. Empty when
 /// nothing is known yet.

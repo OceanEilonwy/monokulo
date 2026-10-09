@@ -39,6 +39,8 @@ struct Controls {
     public_key: String,
     order_id: String,
     db: Database,
+    /// The site's engine, its status cache with it.
+    site_engine: monokulo::http::Engine,
 }
 
 async fn ready() -> &'static str {
@@ -516,6 +518,125 @@ async fn plugin_order(
 /// networks (`seed_wallets`).
 const TESTER_SESSION: &str = "coverage-tester-session-token";
 
+/// `POST /__coverage/status/{story}`: the status page's mainnet as the
+/// network card's screenshots show it (status-network-card.spec.js): three
+/// nodes, one caught serving a bad block and left out, and proof-of-work
+/// checking `following` 3 blocks behind the tip, `lagging` 14 behind, or
+/// `held`. Held until the next story.
+async fn status_story(State(control): State<Controls>, Path(story): Path<String>) -> StatusCode {
+    use monokulo::engine_client::NodeStatus;
+    use shared::proof::{AnchorStatus, Hashing, NodeProof, NodeVerdict, ProofState, ProofStatus};
+    let Ok(mut status) = control.client.get_status().await else {
+        return StatusCode::BAD_GATEWAY;
+    };
+    let now = monokulo::now_unix();
+    let tip = 3_412_881;
+    let behind = match story.as_str() {
+        "following" | "held" => 3,
+        "lagging" => 14,
+        _ => return StatusCode::NOT_FOUND,
+    };
+    let held = story == "held";
+    let Some(mainnet) = status.networks.iter_mut().find(|n| n.network == "mainnet") else {
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    };
+    let node =
+        |label: &str, is_active: bool, height: Option<u64>, error: Option<&str>| NodeStatus {
+            label: label.into(),
+            is_active,
+            in_cooldown: false,
+            height,
+            error: error.map(Into::into),
+            network: Some("mainnet".into()),
+            link: None,
+        };
+    mainnet.nodes = vec![
+        node("node.home.lan:18081", true, Some(tip - 1), None),
+        node("xmr.example.org:18089", false, Some(tip), None),
+        node("10.0.0.5:18081", false, Some(tip - 1), None),
+        node(
+            "backup.example.net:18089",
+            false,
+            None,
+            Some("connection refused"),
+        ),
+    ];
+    mainnet.scanner.ever_ticked = true;
+    mainnet.scanner.last_tick_ok = true;
+    mainnet.scanner.is_stale = false;
+    mainnet.scanner.last_tick_finished_at = Some(now - 2);
+    mainnet.scanner.tick_count = 41_203;
+    mainnet.scanner.tenants_scanned = 3;
+    mainnet.scanner.last_error = None;
+    let verdict =
+        |node: &str, height: Option<u64>, verdict, detail: Option<&str>, excluded| NodeProof {
+            node: node.into(),
+            height,
+            verdict,
+            detail: detail.map(Into::into),
+            excluded,
+        };
+    let (on_chain, ahead) = if held {
+        (NodeVerdict::Diverged, NodeVerdict::Diverged)
+    } else {
+        (NodeVerdict::OnChain, NodeVerdict::Ahead)
+    };
+    mainnet.proof = Some(ProofStatus {
+        state: if held {
+            ProofState::Held
+        } else {
+            ProofState::Following
+        },
+        summary: if held {
+            "Every node's chain left the proven one more than 720 blocks back, further than can be followed. Nothing new settles. If the network really reorganised that deep, check the nodes, then take a new anchor.".into()
+        } else {
+            format!(
+                "Proven up to block {}; orders settle on blocks up to {}.",
+                tip - behind,
+                tip - behind
+            )
+        },
+        anchor: Some(AnchorStatus {
+            height: 3_412_160,
+            hash: "ab".repeat(32),
+            agreed: 2,
+            nodes: 3,
+            anchored_at: now - 2 * 86_400,
+        }),
+        proven_height: Some(tip - behind),
+        proven_hash: Some("cd".repeat(32)),
+        ceiling: Some(tip - behind),
+        nodes: vec![
+            verdict("node.home.lan:18081", Some(tip - 1), on_chain, None, false),
+            verdict("xmr.example.org:18089", Some(tip), ahead, None, false),
+            verdict(
+                "10.0.0.5:18081",
+                Some(tip - 1),
+                NodeVerdict::Caught,
+                Some("block 3,412,860's proof of work doesn't meet its difficulty."),
+                true,
+            ),
+            verdict(
+                "backup.example.net:18089",
+                None,
+                NodeVerdict::Unreachable,
+                Some("connection refused"),
+                false,
+            ),
+        ],
+        blocks_checked: 6_401,
+        hashing: Some(Hashing {
+            jit: true,
+            mean_hash_ms: 14.0,
+            mean_key_build_ms: 250.0,
+            keys_held: 2,
+        }),
+        checked_at: Some(now - 3),
+    });
+    monokulo::http::status_page::hold_status_for_tests(&control.site_engine, status);
+    StatusCode::NO_CONTENT
+}
+
 /// Wallets for the wallets list's and a wallet page's screenshots
 /// (wallets-networks.spec.js, wallet-page.spec.js): the merchant gets
 /// mainnet, stagenet and testnet wallets and a retired one, its store
@@ -787,6 +908,7 @@ async fn main() {
         .route("/__coverage/wallets", post(seed_wallets))
         .route("/__coverage/integration", post(connect_plugin))
         .route("/__coverage/integration/order", post(plugin_order))
+        .route("/__coverage/status/{story}", post(status_story))
         .with_state(Controls {
             engine,
             client: state.engine.client.clone(),
@@ -794,6 +916,7 @@ async fn main() {
             public_key: tenant.public_key.clone(),
             order_id: order.order_id.clone().into_string(),
             db: state.db.clone(),
+            site_engine: state.engine.clone(),
         });
     // Coingecko's two endpoints, answering 1 XMR = 400 AUD (or USD).
     let prices = Router::new()
