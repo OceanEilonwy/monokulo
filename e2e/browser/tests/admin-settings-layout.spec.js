@@ -71,14 +71,13 @@ test('clearing a network stores use asks first; one no store uses does not', asy
     if (request.method() === 'POST' && request.url().endsWith('/dashboard/admin/settings')) posts += 1;
   });
 
-  // Dismissed: nothing is sent.
+  // Dismissed: nothing is sent. Proven by the accepted save below being
+  // the only post: one the question had sent would have gone out first.
   await fillNodes(page, { stagenet: [] });
   let asked = '';
   page.once('dialog', async (dialog) => { asked = dialog.message(); await dialog.dismiss(); });
   await pressSave(page);
   expect(asked).toContain(expected);
-  await page.waitForTimeout(500);
-  expect(posts).toBe(0);
 
   // Accepted: sent, and the red banner says what happened.
   page.once('dialog', (dialog) => dialog.accept());
@@ -154,7 +153,7 @@ test('an on/off setting is a switch: on and off both save', async ({ page }) => 
   // At the right edge of its setting, where the other controls end.
   const [box, field] = await Promise.all([
     control.boundingBox(),
-    control.locator('xpath=ancestor::div[contains(@class, "setting-field")][1]').boundingBox(),
+    page.locator('.setting-field').filter({ has: input }).last().boundingBox(),
   ]);
   expect(Math.abs(box.x + box.width - (field.x + field.width))).toBeLessThan(1);
   await control.click();

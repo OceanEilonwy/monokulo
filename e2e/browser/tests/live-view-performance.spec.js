@@ -43,13 +43,14 @@ test('live view remains responsive and bounded through sustained activity and st
       const now = Date.now();
       const marks = Array.from({ length: 50000 }, (_, index) => ({ seq: 100000 + cycle * 50000 + index,
         at_ms: now - 1700000 + index * 30, round: index, tier: 'blocks', key: index % 5000 === 0,
-        text: 'Synthetic block scan activity' }));
+        text: `Synthetic block scan activity, frame ${cycle}` }));
       const frame = { ...history.frame, at_ms: now - 2000, marks, effects: [] };
       const started = performance.now();
       window.engineSource.dispatchEvent(new MessageEvent('frame', { data: JSON.stringify(frame) }));
       return performance.now() - started;
     }, cycle));
-    await page.waitForTimeout(350);
+    // Played on the page's next draw: its newest events are this frame's.
+    await expect(page.locator('#engine-events tr').first()).toContainText(`frame ${cycle}`);
     await page.locator('#tl-mode').selectOption('paused');
     await expect(page.locator('#tl-mode')).toHaveValue('paused');
     await page.locator('#tl-mode').selectOption('live');

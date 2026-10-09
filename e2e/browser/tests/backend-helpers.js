@@ -40,12 +40,16 @@ async function signInAsAdmin(page) {
     await page.locator('input[name="password"]').fill(ADMIN_PASSWORD);
     await page.locator('input[name="confirm_password"]').fill(ADMIN_PASSWORD);
     await page.getByRole('button', { name: 'Create admin account' }).click();
+    // Signed in once the form's redirect has landed: the response sets the
+    // session cookie the caller's next page needs.
+    await expect(page).not.toHaveURL(/\/admin\/setup/);
     return;
   }
   await page.goto(base + '/dashboard/login');
   await page.locator('input[name="email"]').fill(ADMIN_EMAIL);
   await page.locator('input[name="password"]').fill(ADMIN_PASSWORD);
   await page.locator('form[action="/dashboard/login"] button[type="submit"]').click();
+  await expect(page).not.toHaveURL(/\/dashboard\/login/);
 }
 
 /** The fake monerod's address, as the node form takes it. */

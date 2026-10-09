@@ -171,10 +171,16 @@ test('live adds new lines at the top without a reload, and pauses', async ({ pag
   await page.evaluate(() => { window.__notReloaded = true; });
   const before = await page.locator('#log-rows .log-row').count();
   const live = page.locator('#log-live');
+  // The stream is held back until the button has been checked: Pause
+  // shows at once, not when the stream first answers.
+  const tail = new URL(await page.locator('#log-rows').getAttribute('data-tail-url'), fixture().monokulo_url).href;
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  await page.route((url) => url.href === tail, async (route) => { await held; await route.continue(); });
   await live.click();
-  // At once, not when the stream first has something to say.
-  await expect(live).toHaveText('Pause', { timeout: 1_000 });
+  await expect(live).toHaveText('Pause');
   await expect(live).toHaveAttribute('aria-pressed', 'true');
+  release();
   await request.get(`${fixture().monokulo_url}/status`, { headers: { traceparent: `00-${traceId}-00f067aa0ba902b7-01` } });
   await expect(page.locator('#log-rows .log-row')).toHaveCount(before + 1, { timeout: 15_000 });
   await expect(page.getByText('No lines match.')).toBeHidden();

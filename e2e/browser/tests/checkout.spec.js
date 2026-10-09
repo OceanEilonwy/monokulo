@@ -1,5 +1,5 @@
 const path = require('node:path');
-const { test, expect } = require('../coverage-test');
+const { test, expect, pauseClockAt, recordEventSources, eventSources } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
 
@@ -228,6 +228,14 @@ test('client falls back to status polling when its stream is refused', async ({ 
     polled++;
     return route.fulfill({ json: { status: 'paid', confirmations: 1 } });
   });
+  // The library shows nothing of the refusal until it polls, so its
+  // stream's error event, with the stream closed for good, is recorded
+  // (recordEventSources): once the test sees it, the library has handled
+  // it and set its 3s wait.
+  await recordEventSources(page);
+  // The page's time stands still from the start: only the test moves it.
+  const start = new Date('2026-01-01T00:00:00Z');
+  await pauseClockAt(page, start);
   await page.goto(`${fixture.base_url}/__coverage/ready`);
   await page.setContent('<div id="mount"></div>');
   await page.addScriptTag({ url: `${fixture.base_url}/static/monokulo-client.js` });
@@ -236,9 +244,17 @@ test('client falls back to status polling when its stream is refused', async ({ 
       onStatusChange: status => { document.querySelector('#mount').dataset.status = status; } });
   }, { base_url: fixture.base_url, public_key: fixture.public_key, order_id: url.split('/').pop() });
   await expect(page.locator('#mount iframe')).toHaveAttribute('src', url);
-  await expect(page.locator('#mount')).toHaveAttribute('data-status', 'paid', { timeout: 10000 });
-  expect(refused).toBeGreaterThan(0);
-  expect(polled).toBeGreaterThan(0);
+  await expect.poll(async () => (await eventSources(page)).map(stream => stream.refused), 'the library handles the refused stream').toEqual([1]);
+  expect(refused).toBe(1);
+  // The first poll comes 3s after the refusal: not a millisecond before. A
+  // request of the page's own anchors the count: a poll sent while the
+  // clock moved would have reached the route before it.
+  await page.clock.runFor(2999);
+  await page.evaluate(() => fetch('/__coverage/ready').then(response => response.status));
+  expect(polled, 'no poll before 3s').toBe(0);
+  await page.clock.runFor(1);
+  await expect.poll(() => polled, 'the poll at 3s').toBe(1);
+  await expect(page.locator('#mount')).toHaveAttribute('data-status', 'paid');
 });
 
 test('real restricted checkout permits its own origin and blocks another origin', async ({ page, request }) => {
@@ -274,8 +290,21 @@ test('real frame-only checkout refuses a top-level navigation', async ({ page, r
 test('real checkout open while the customer pays shows paid and stops following the order', async ({ page, request }) => {
   const url = await checkoutUrl(request);
   const orderId = url.split('/').pop();
+  // Every request for the live stream (fixi's first, and any reconnect
+  // ssexi makes), and the page's own record of the server ending it: the
+  // fx:sse:close event, which is when ssexi decides whether to reconnect.
   let streams = 0;
   page.on('request', sent => { if (sent.url().startsWith(`${url}/events?`)) streams++; });
+  await page.addInitScript(() => {
+    window.__streamsEnded = 0;
+    document.addEventListener('fx:sse:close', event => {
+      if (event.target instanceof Element && event.target.id === 'checkout-stream') window.__streamsEnded++;
+    }, true);
+  });
+  const streamsEnded = () => page.evaluate(() => window.__streamsEnded);
+  // The page's time stands still from the start: only the test moves it.
+  const start = new Date('2026-01-01T00:00:00Z');
+  await pauseClockAt(page, start);
   await page.goto(url);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'pending');
   await expect.poll(() => streams).toBe(1);
@@ -286,9 +315,16 @@ test('real checkout open while the customer pays shows paid and stops following 
   // The stage says it's paid over a faded code: nothing invites a second payment.
   await expect(page.locator('.stage-track')).toContainText('Paid.');
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
-  // A final order closes its stream for good rather than reconnecting.
-  await page.waitForTimeout(5000);
-  expect(streams).toBe(1);
+  // A final order closes its stream for good rather than reconnecting:
+  // once the page has seen the stream end, no amount of time opens another
+  // (ssexi reconnects a dropped stream after 3s; checkout.js retries a
+  // refused one after up to a minute). A request of the page's own anchors
+  // the count: a reconnect made while the clock moved would have been
+  // sent before it.
+  await expect.poll(streamsEnded, 'the page sees its stream end').toBe(1);
+  await page.clock.runFor(2 * 60 * 1000);
+  await page.evaluate(() => fetch('/__coverage/ready').then(response => response.status));
+  expect(streams, 'no second stream').toBe(1);
 });
 
 test('real checkout keeps retrying a refused live stream with backoff and then follows the order', async ({ page, request }) => {
@@ -319,12 +355,8 @@ test('real checkout keeps retrying a refused live stream with backoff and then f
   const stream = () => page.evaluate(() => window.checkoutStream);
   const pageNow = () => page.evaluate(() => Date.now());
   // The page's time stands still from the start: only the test moves it.
-  // The clock flows from install until pauseAt, and pausing at a moment it
-  // has already passed fails ("Cannot fast-forward to the past"), so it is
-  // installed a minute before the moment it pauses at.
   const start = new Date('2026-01-01T00:00:00Z');
-  await page.clock.install({ time: new Date(start.getTime() - 60_000) });
-  await page.clock.pauseAt(start);
+  await pauseClockAt(page, start);
   await page.goto(url);
 
   // Refusal n is retried exactly `delay` ms after the page handled it: not a
@@ -409,15 +441,34 @@ test('real checkout saves the address the customer ends with when they change it
 
 test('real checkout saves on Enter without leaving the page', async ({ page, request }) => {
   const url = await checkoutUrl(request);
-  await page.goto(url);
-  const input = page.locator('#refund_address');
   // Without script the form posts and the server redirects back; with it,
   // Enter saves in place, so the page (and a live camera or stream) stays.
+  // The page's own record of what Enter did: the form's submit event, as
+  // the page's handler left it (a listener on the window runs last), and
+  // every save request, with whether it was a navigation (the form posting)
+  // or the script's own fetch.
+  await page.addInitScript(() => {
+    window.__submits = [];
+    window.addEventListener('submit', event => window.__submits.push({ form: event.target.id, prevented: event.defaultPrevented }));
+  });
+  const saves = [];
+  await page.route(`${url}/refund-address*`, route => {
+    saves.push({ navigation: route.request().isNavigationRequest() });
+    return route.continue();
+  });
+  await page.goto(url);
+  const input = page.locator('#refund_address');
   await page.evaluate(() => { window.__samePage = true; });
   await input.fill(address);
+  // Enter's implicit submission dispatches the submit event before the key
+  // press is done: by now the page has either prevented it or let it post.
   await input.press('Enter');
+  expect(await page.evaluate(() => window.__submits), 'the page took over the submit').toEqual([{ form: 'refund-form', prevented: true }]);
   await expect(page.locator('#refund-field')).toHaveClass(/is-saved/);
-  await page.waitForTimeout(500);
+  // Typing alone saves too, after a pause, so there may be one save or
+  // two; none of them is the form posting.
+  expect(saves.length, 'saved').toBeGreaterThan(0);
+  expect(saves.filter(save => save.navigation), 'no save by the form posting').toEqual([]);
   expect(await page.evaluate(() => window.__samePage)).toBe(true);
   expect(page.url()).toBe(url);
 });
