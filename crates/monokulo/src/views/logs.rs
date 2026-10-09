@@ -173,8 +173,8 @@ const PAGE_STYLE: &str = r#"
 /* Live mode adds rows to an empty page: the empty message goes with them. */
 .log-empty:has(+ #log-rows .log-row) { display: none; }
 .log-row { border-bottom: 1px solid var(--line); }
-.log-row > summary { display: grid; grid-template-columns: 13em 4.5em 6em 1fr 3.4em; gap: .5em; align-items: center; padding: .25em .3em; cursor: pointer; list-style: none; font-size: .9em; }
-.log-row > summary::-webkit-details-marker { display: none; }
+.log-row > summary { display: grid; grid-template-columns: 13em 4.5em 6em 1fr 3.4em; gap: .5em; align-items: center; padding: .25em .3em; font-size: .9em; }
+.log-row > summary:hover, .trace-span:hover { background: var(--surface-sunken); }
 .log-row > summary .msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-row[open] > summary .msg { white-space: normal; overflow-wrap: anywhere; }
 /* Trace and session, on every line: a slot each, so they line up. */

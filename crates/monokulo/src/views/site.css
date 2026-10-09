@@ -29,6 +29,21 @@ html, body {
 body { padding-bottom: 4rem; }
 a { color: var(--ink); text-decoration: underline; text-decoration-thickness: 1px; }
 a:hover { color: var(--accent-text); }
+/* Disclosures (issue #8): every <details> opens with a pointer, without the
+   browser's marker, and shows a focus ring from the keyboard. Its summary
+   reads as a text link with a caret that turns over when open, unless the
+   disclosure is a component with a look of its own: the admin page's node
+   rows and the Account menu (here), the test networks' wallets fold, the
+   Logs page's rows and trace spans, the engine page's panels and its "?",
+   and a summary drawn as a button (the store page's Help). Those keep their
+   look and have their own hover. */
+summary { cursor: pointer; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: 2px; }
+details:not(.node-row, .acct, .test-wallets, .log-row, .trace-span-details, .mini, .engine-help) > summary:not(.btn) { display: inline; color: var(--ink); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+details:not(.node-row, .acct, .test-wallets, .log-row, .trace-span-details, .mini, .engine-help) > summary:not(.btn)::after { content: " \25BE"; color: var(--muted); }
+details:not(.node-row, .acct, .test-wallets, .log-row, .trace-span-details, .mini, .engine-help)[open] > summary:not(.btn)::after { content: " \25B4"; }
+details:not(.node-row, .acct, .test-wallets, .log-row, .trace-span-details, .mini, .engine-help) > summary:not(.btn):hover { color: var(--accent-text); }
 h1, h2, h3 { font-weight: 700; letter-spacing: -0.01em; margin: 1.4em 0 0.6em; }
 h1 { font-size: 1.6rem; border-bottom: 2px solid var(--line); padding-bottom: 0.3em; margin: var(--space-lg) 0 var(--space-sm); }
 .context-nav + h1 { margin-top: var(--space-xs); }
@@ -188,7 +203,7 @@ html.js .toast-error { animation: toast-in 0.22s ease-out; }
 .node-row.is-changed { border-color: var(--card-changed); }
 .node-row:has(.setting-problem) { border-color: var(--card-failed); }
 .node-row[data-node-add] { border-style: dashed; background: transparent; }
-.node-row-summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-md); padding: var(--space-sm) var(--space-md); cursor: pointer; border-radius: var(--radius-md); }
+.node-row-summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-md); padding: var(--space-sm) var(--space-md); border-radius: var(--radius-md); }
 .node-row[open] > .node-row-summary { border-bottom: 1px solid var(--card-border); border-radius: var(--radius-md) var(--radius-md) 0 0; }
 .node-row-summary:hover { background: var(--surface-sunken); }
 .node-handle { cursor: grab; color: var(--muted); font-size: 1.1em; line-height: 1; padding: 0 var(--space-xs); user-select: none; touch-action: none; }
@@ -206,7 +221,6 @@ html.js .toast-error { animation: toast-in 0.22s ease-out; }
 .node-status { margin: var(--space-xs) 0; color: var(--muted); }
 .node-status.is-problem { color: var(--error); }
 .node-row-actions button { margin-top: var(--space-xs); }
-details.node-network-closed > summary { cursor: pointer; font-weight: 700; padding-bottom: var(--space-sm); }
 /* How the engine is performing (`views::scaling`): the Resources panel's
    stacked charts, each node's link figures, each network's Scanning panel. */
 .resources { border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md); margin: var(--space-md) 0; }
@@ -535,8 +549,7 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 /* The details element spans the content width; its summary is positioned in
    the header's reserved Help slot, away from status and Settings. */
 .help-disclosure { grid-column: 1 / -1; grid-row: 2; width: 100%; }
-.help-disclosure summary { position: absolute; top: 0; right: 0; list-style: none; cursor: pointer; }
-.help-disclosure summary::-webkit-details-marker { display: none; }
+.help-disclosure summary { position: absolute; top: 0; right: 0; }
 .help-disclosure .help-control { margin: 0; white-space: nowrap; }
 .help-disclosure[open] .help-control::after { content: " \25B4"; }
 /* A phone: the status line gets the width to itself, above Settings and
@@ -603,9 +616,8 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 .acct { position: relative; margin-left: 1.2em; }
 /* The account button: a person icon in a 2em circle (the bar's height
    stays the same), with a 44px target like the status dot's. */
-.acct > summary { position: relative; list-style: none; display: flex; align-items: center; justify-content: center; width: 2em; height: 2em; padding: 0; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--chrome-ink); cursor: pointer; }
+.acct > summary { position: relative; display: flex; align-items: center; justify-content: center; width: 2em; height: 2em; padding: 0; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--chrome-ink); }
 .acct > summary::before { content: ""; position: absolute; inset: min(0px, calc((2em - 44px) / 2)); }
-.acct > summary::-webkit-details-marker { display: none; }
 .acct > summary:hover, .acct[open] > summary { border-color: var(--ink); background: var(--btn-hover-bg); }
 .acct > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .acct-icon { width: 1.15em; height: 1.15em; display: block; }
@@ -1122,7 +1134,6 @@ mk-select[compact] .mk-popup { white-space: nowrap; }
 .change-confirm h3 { margin: 0 0 var(--space-xs); }
 .change-confirm p { margin: 0 0 var(--space-md); }
 .wallet-history { margin-top: var(--space-lg); }
-.wallet-history summary { cursor: pointer; font-weight: 600; }
 .wallet-history table { margin-top: var(--space-sm); }
 .wallet-history .num { text-align: right; }
 .wallet-history tr.current td { background: var(--tint-highlight); font-weight: 600; }
@@ -1135,7 +1146,6 @@ mk-select[compact] .mk-popup { white-space: nowrap; }
 .keys-gone-title { font-weight: 800; font-size: 1.15em; }
 .keys-deleted { display: inline-flex; gap: var(--space-xs); align-items: center; }
 .retired-wallets { margin: var(--space-lg) 0; }
-.retired-wallets summary { cursor: pointer; }
 
 /* A Monero network (`views::network_badge`): the word always, an icon,
    and an edge that differs as well as the tint, so colour is never the
@@ -1152,7 +1162,7 @@ mk-select[compact] .mk-popup { white-space: nowrap; }
 .net-section-head h2 { margin: 0; border: 0; padding: 0; font-size: 1.05rem; }
 .net-section-head .hint { margin: 0; }
 .test-wallets { margin: var(--space-lg) 0; border: 1px dashed var(--line-strong); border-radius: var(--radius-md); background: var(--paper-raised); }
-.test-wallets > summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); padding: var(--space-sm) var(--space-md); cursor: pointer; border-radius: var(--radius-md); }
+.test-wallets > summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); padding: var(--space-sm) var(--space-md); border-radius: var(--radius-md); }
 .test-wallets > summary:hover { background: var(--btn-hover-bg); }
 .test-wallets[open] > summary { border-bottom: 1px dashed var(--line-strong); border-radius: var(--radius-md) var(--radius-md) 0 0; }
 .test-wallets > div { padding: 0 var(--space-md) var(--space-sm); }

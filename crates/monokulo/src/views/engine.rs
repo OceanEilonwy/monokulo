@@ -49,8 +49,7 @@ const ENGINE_STYLE: &str = r#"
 .engine-tabs a:hover { background: var(--btn-hover-bg); }
 .engine-tabs a[aria-current] { background: var(--ink); color: var(--paper-raised); }
 .engine-tabs span.off { opacity: 0.45; cursor: not-allowed; }
-.engine-help > summary { list-style: none; width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid var(--btn-border); display: grid; place-items: center; font-weight: 800; font-size: 0.8rem; cursor: pointer; color: var(--btn-ink); background: var(--btn-bg); }
-.engine-help > summary::-webkit-details-marker { display: none; }
+.engine-help > summary { width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid var(--btn-border); display: grid; place-items: center; font-weight: 800; font-size: 0.8rem; color: var(--btn-ink); background: var(--btn-bg); }
 .engine-help > summary:hover { border-color: var(--btn-hover-border); }
 .engine-help[open] > summary { background: var(--ink); color: var(--paper-raised); border-color: var(--ink); }
 .help-body { position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; width: min(920px, calc(100vw - 32px)); max-height: min(78vh, 760px); overflow-y: auto; background: var(--paper-raised); border: 1px solid var(--line-strong); border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md) var(--space-md); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-xs) var(--space-lg); font-size: 0.75rem; }
@@ -203,8 +202,8 @@ const ENGINE_STYLE: &str = r#"
 .rgap.woken::after { content: ""; position: absolute; right: 1px; bottom: 0; width: 5px; height: 7px; border: 1.5px solid var(--viz-tier-chain); border-radius: 1.5px; background: var(--paper-raised); }
 .engine-side { display: grid; gap: 5px; }
 details.mini { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-md); }
-details.mini > summary { list-style: none; display: grid; grid-template-columns: 96px minmax(0, 1fr) 12px; gap: var(--space-sm); align-items: center; padding: 5px 10px; cursor: pointer; min-height: 32px; }
-details.mini > summary::-webkit-details-marker { display: none; }
+details.mini > summary { display: grid; grid-template-columns: 96px minmax(0, 1fr) 12px; gap: var(--space-sm); align-items: center; padding: 5px 10px; min-height: 32px; border-radius: var(--radius-md); }
+details.mini > summary:hover { background: var(--surface-sunken); }
 details.mini > summary::after { content: ""; width: 6px; height: 6px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); transition: transform 0.2s; }
 details.mini[open] > summary::after { transform: rotate(45deg); }
 details.mini .sum { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 0.75rem; overflow: hidden; white-space: nowrap; }
