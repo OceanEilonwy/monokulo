@@ -1,4 +1,4 @@
-//! A merchant's wallets (docs/wallets.md): `/dashboard/wallets` and its
+//! A merchant's wallets (docs/wallets.md): `/account?tab=wallets` and its
 //! pages. Choosing how to set one up, bringing one's own (keys pasted in,
 //! works without JavaScript), making a new one in the browser (the phrase
 //! never leaves the page; only watch-only keys are posted), the list, and a
@@ -108,7 +108,7 @@ async fn is_onboarding(state: &AppState, user: &UserRow) -> bool {
         .unwrap_or(false)
 }
 
-/// `GET /dashboard/wallets/setup`.
+/// `GET /account/wallets/setup`.
 pub async fn setup(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -124,7 +124,7 @@ pub async fn setup(
         network: network_or_mainnet(query.network.as_deref()),
         next,
     };
-    let chrome = super::page_chrome(&state, Some(&user), "/dashboard/wallets/setup").await;
+    let chrome = super::page_chrome(&state, Some(&user), "/account/wallets/setup").await;
     views::wallets::choice_page(&chrome, &data).into_response()
 }
 
@@ -194,11 +194,11 @@ async fn render_import(
         custody_choices,
         snp_entry,
     };
-    let chrome = super::page_chrome(state, Some(user), "/dashboard/wallets/import").await;
+    let chrome = super::page_chrome(state, Some(user), "/account/wallets/import").await;
     views::wallets::import_page(&chrome, &data).into_response()
 }
 
-/// `GET /dashboard/wallets/import`.
+/// `GET /account/wallets/import`.
 pub async fn import_form(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -207,7 +207,7 @@ pub async fn import_form(
     render_import(&state, &user, None, None, &query).await
 }
 
-/// `POST /dashboard/wallets/import`.
+/// `POST /account/wallets/import`.
 pub async fn import_submit(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -278,9 +278,9 @@ fn ready_path(wallet: &WalletRow, next: Option<&str>, skipped: bool) -> String {
     }
     let query = query.finish();
     if query.is_empty() {
-        format!("/dashboard/wallets/{}/ready", wallet.id)
+        format!("/account/wallets/{}/ready", wallet.id)
     } else {
-        format!("/dashboard/wallets/{}/ready?{query}", wallet.id)
+        format!("/account/wallets/{}/ready?{query}", wallet.id)
     }
 }
 
@@ -344,7 +344,7 @@ async fn render_create(
         next,
         error,
     };
-    let chrome = super::page_chrome(state, Some(user), "/dashboard/wallets/new").await;
+    let chrome = super::page_chrome(state, Some(user), "/account/wallets/new").await;
     (
         // Never kept: a reload makes a different wallet.
         [(header::CACHE_CONTROL, "no-store")],
@@ -353,7 +353,7 @@ async fn render_create(
         .into_response()
 }
 
-/// `GET /dashboard/wallets/new`.
+/// `GET /account/wallets/new`.
 pub async fn create_form(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -388,7 +388,7 @@ pub struct CreateForm {
     next: Option<String>,
 }
 
-/// `POST /dashboard/wallets/new`: the watch-only keys of the wallet the page
+/// `POST /account/wallets/new`: the watch-only keys of the wallet the page
 /// made, and how its phrase was backed up. The page's address is checked
 /// against the one the engine works out from the keys.
 pub async fn create_submit(
@@ -460,7 +460,7 @@ async fn load_wallet(state: &AppState, user: &UserRow, id: &str) -> Option<Walle
         .flatten()
 }
 
-/// `GET /dashboard/wallets/{id}/ready`.
+/// `GET /account/wallets/{id}/ready`.
 pub async fn ready(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -497,17 +497,28 @@ pub async fn ready(
         wallet,
         next,
     };
-    let chrome = super::page_chrome(&state, Some(&user), "/dashboard/wallets").await;
+    let chrome = super::page_chrome(
+        &state,
+        Some(&user),
+        format!("/account/wallets/{}/ready", data.wallet.id),
+    )
+    .await;
     views::wallets::ready_page(&chrome, &data).into_response()
 }
 
 // -- The list and a wallet's page --------------------------------------------
 
-/// `GET /dashboard/wallets`.
-pub async fn index(State(state): State<AppState>, AuthedUser(user, _): AuthedUser) -> Response {
-    adopt_unlinked_stores(&state, &user).await;
+/// `user`'s wallets and retired wallets for the Account page's Wallets tab
+/// (`http::account`), retirement times in `clock`. `None` when they can't
+/// be read.
+pub(super) async fn list(
+    state: &AppState,
+    user: &UserRow,
+    clock: &views::time::Clock,
+) -> Option<(Vec<WalletListItem>, Vec<views::wallets::RetiredListItem>)> {
+    adopt_unlinked_stores(state, user).await;
     let user_id = user.id.clone();
-    let (wallets, retired) = match state
+    let (wallets, retired) = state
         .db
         .read(move |db| {
             Ok::<_, crate::db::DbError>((
@@ -516,11 +527,8 @@ pub async fn index(State(state): State<AppState>, AuthedUser(user, _): AuthedUse
             ))
         })
         .await
-    {
-        Ok(lists) => lists,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let items: Vec<WalletListItem> = wallets
+        .ok()?;
+    let items = wallets
         .into_iter()
         .map(|w| WalletListItem {
             id: w.wallet.id.to_string(),
@@ -534,19 +542,15 @@ pub async fn index(State(state): State<AppState>, AuthedUser(user, _): AuthedUse
             stores: w.store_count,
         })
         .collect();
-    let chrome = super::page_chrome(&state, Some(&user), "/dashboard/wallets").await;
-    let retired: Vec<views::wallets::RetiredListItem> = retired
+    let retired = retired
         .into_iter()
         .map(|w| views::wallets::RetiredListItem {
             id: w.id.to_string(),
-            retired: w
-                .retired_at
-                .map(|at| chrome.clock.text(at))
-                .unwrap_or_default(),
+            retired: w.retired_at.map(|at| clock.text(at)).unwrap_or_default(),
             name: w.name,
         })
         .collect();
-    views::wallets::list_page(&chrome, &items, &retired).into_response()
+    Some((items, retired))
 }
 
 #[derive(Deserialize, Default)]
@@ -565,7 +569,8 @@ async fn render_detail(
     notice: Option<String>,
     name_field: Option<String>,
 ) -> Response {
-    let chrome = super::page_chrome(state, Some(user), "/dashboard/wallets").await;
+    let chrome =
+        super::page_chrome(state, Some(user), format!("/account/wallets/{}", wallet.id)).await;
     let (user_id, wallet_id) = (user.id.clone(), wallet.id.clone());
     // Every store that has used the wallet: those on it now, and those
     // that changed to another (`store_wallet_periods`).
@@ -706,7 +711,7 @@ async fn render_detail(
     views::wallets::detail_page(&chrome, &data).into_response()
 }
 
-/// `GET /dashboard/wallets/{id}`.
+/// `GET /account/wallets/{id}`.
 pub async fn detail(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -730,7 +735,7 @@ pub struct RenameForm {
     name: String,
 }
 
-/// `POST /dashboard/wallets/{id}/rename`.
+/// `POST /account/wallets/{id}/rename`.
 pub async fn rename(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -763,7 +768,7 @@ pub async fn rename(
         .write(move |db| db.rename_wallet(&user_id, &wallet_id, &new_name, crate::now_unix()))
         .await
     {
-        Ok(_) => redirect_303(&format!("/dashboard/wallets/{}?renamed=1", wallet.id)),
+        Ok(_) => redirect_303(&format!("/account/wallets/{}?renamed=1", wallet.id)),
         Err(e) if e.is_unique_violation() => {
             render_detail(
                 &state,
@@ -834,7 +839,7 @@ pub struct RetireForm {
     confirm: String,
 }
 
-/// `POST /dashboard/wallets/{id}/retire`: the wallet is offered nowhere
+/// `POST /account/wallets/{id}/retire`: the wallet is offered nowhere
 /// again and its keys are deleted (docs/wallets.md, "Retiring a wallet").
 /// Refused unless its name was typed, while a store uses it, or while an
 /// order on it can still be paid.
@@ -848,7 +853,7 @@ pub async fn retire(
         return StatusCode::NOT_FOUND.into_response();
     };
     if wallet.retired_at.is_some() {
-        return redirect_303(&format!("/dashboard/wallets/{}", wallet.id));
+        return redirect_303(&format!("/account/wallets/{}", wallet.id));
     }
     if form.confirm.trim() != wallet.name {
         let message = format!("Type \u{201c}{}\u{201d} exactly to retire it.", wallet.name);
@@ -886,7 +891,7 @@ pub async fn retire(
         tracing::error!(error = %e, wallet = %wallet.id, "the engine retired a wallet but it couldn't be recorded");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    redirect_303(&format!("/dashboard/wallets/{}", wallet.id))
+    redirect_303(&format!("/account/wallets/{}", wallet.id))
 }
 
 #[derive(Deserialize)]
@@ -901,7 +906,7 @@ pub struct RestoreForm {
     key_custody_backend: Option<String>,
 }
 
-/// `POST /dashboard/wallets/{id}/restore`: a retired wallet back, with its
+/// `POST /account/wallets/{id}/restore`: a retired wallet back, with its
 /// keys entered again; the engine checks they are this wallet's.
 pub async fn restore(
     State(state): State<AppState>,
@@ -913,7 +918,7 @@ pub async fn restore(
         return StatusCode::NOT_FOUND.into_response();
     };
     if wallet.retired_at.is_none() {
-        return redirect_303(&format!("/dashboard/wallets/{}", wallet.id));
+        return redirect_303(&format!("/account/wallets/{}", wallet.id));
     }
     let backend = form
         .key_custody_backend
@@ -959,7 +964,7 @@ pub async fn restore(
         tracing::error!(error = %e, wallet = %wallet.id, "the engine brought a wallet back but it couldn't be recorded");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    redirect_303(&format!("/dashboard/wallets/{}?restored=1", wallet.id))
+    redirect_303(&format!("/account/wallets/{}?restored=1", wallet.id))
 }
 
 #[cfg(test)]
@@ -1053,7 +1058,7 @@ mod tests {
         router
             .clone()
             .oneshot(post(
-                "/dashboard/wallets/import",
+                "/account/wallets/import",
                 Some(cookie),
                 &[
                     ("name", name),
@@ -1083,7 +1088,7 @@ mod tests {
         let (state, _engine) = real_engine_state().await;
         let router = build_router(state);
         let (cookie, to) = sign_up(&router, "first@example.com", None).await;
-        assert_eq!(to, "/dashboard/wallets/setup");
+        assert_eq!(to, "/account/wallets/setup");
 
         let html = body_text(get(&router, &to, &cookie).await).await;
         assert!(html.contains("Set up your wallet"));
@@ -1094,7 +1099,7 @@ mod tests {
         // Drawn unavailable, with the reason, until the script turns it on.
         assert!(html.contains("pick-card recommended unavailable"));
         assert!(
-            html.contains(r#"formaction="/dashboard/wallets/new" disabled"#),
+            html.contains(r#"formaction="/account/wallets/new" disabled"#),
             "{html}"
         );
         assert!(html.contains("Creating a new wallet needs JavaScript"));
@@ -1103,7 +1108,7 @@ mod tests {
             "hardware wallets aren't there yet"
         );
         assert!(
-            html.contains(r#"formaction="/dashboard/wallets/import""#),
+            html.contains(r#"formaction="/account/wallets/import""#),
             "bring your own works without it"
         );
     }
@@ -1133,7 +1138,7 @@ mod tests {
             "one button to add a store"
         );
 
-        let list = body_text(get(&router, "/dashboard/wallets", &cookie).await).await;
+        let list = body_text(get(&router, "/account?tab=wallets", &cookie).await).await;
         assert!(
             list.contains("Market stall") && list.contains("Brought in"),
             "{list}"
@@ -1175,12 +1180,7 @@ mod tests {
         let router = build_router(state.clone());
         let (cookie, _) = sign_up(&router, "maker@example.com", None).await;
 
-        let page = get(
-            &router,
-            "/dashboard/wallets/new?name=Copper%20Heron",
-            &cookie,
-        )
-        .await;
+        let page = get(&router, "/account/wallets/new?name=Copper%20Heron", &cookie).await;
         assert_eq!(page.headers()["cache-control"], "no-store");
         let html = body_text(page).await;
         assert!(
@@ -1197,7 +1197,7 @@ mod tests {
         let added = router
             .clone()
             .oneshot(post(
-                "/dashboard/wallets/new",
+                "/account/wallets/new",
                 Some(&cookie),
                 &[
                     ("name", "Copper Heron"),
@@ -1226,7 +1226,7 @@ mod tests {
         let response = router
             .clone()
             .oneshot(post(
-                "/dashboard/wallets/new",
+                "/account/wallets/new",
                 Some(&cookie),
                 &[
                     ("name", "Mixed up"),
@@ -1323,8 +1323,7 @@ mod tests {
         );
 
         let html =
-            body_text(get(&router, &format!("/dashboard/wallets/{wallet_id}"), &cookie).await)
-                .await;
+            body_text(get(&router, &format!("/account/wallets/{wallet_id}"), &cookie).await).await;
         assert!(
             html.contains("one.example.com") && html.contains("two.example.com"),
             "{html}"
@@ -1355,7 +1354,7 @@ mod tests {
         router
             .clone()
             .oneshot(post(
-                "/dashboard/wallets/new",
+                "/account/wallets/new",
                 Some(&cookie),
                 &[
                     ("name", "Second"),
@@ -1387,7 +1386,7 @@ mod tests {
             .wallet
             .id
             .to_string();
-        let page = format!("/dashboard/wallets/{id}");
+        let page = format!("/account/wallets/{id}");
 
         let renamed = router
             .clone()
@@ -1447,7 +1446,7 @@ mod tests {
         );
         assert!(html.contains("Bring it back"), "{html}");
         assert!(!html.contains("Retire wallet"), "{html}");
-        let list = body_text(get(&router, "/dashboard/wallets", &cookie).await).await;
+        let list = body_text(get(&router, "/account?tab=wallets", &cookie).await).await;
         assert!(list.contains("Retired wallets (1)"), "{list}");
         // Its keys again: it's this one, retired, to be brought back.
         let again = body_text(bring_in(&router, &cookie, "Back again").await).await;
@@ -1483,7 +1482,7 @@ mod tests {
             .wallet
             .id
             .to_string();
-        let page = format!("/dashboard/wallets/{id}");
+        let page = format!("/account/wallets/{id}");
         let retired = router
             .clone()
             .oneshot(post(
@@ -1524,7 +1523,7 @@ mod tests {
             .id
             .to_string();
         let (other, _) = sign_up(&router, "other@example.com", None).await;
-        let page = format!("/dashboard/wallets/{id}");
+        let page = format!("/account/wallets/{id}");
         assert_eq!(
             get(&router, &page, &other).await.status(),
             StatusCode::NOT_FOUND
@@ -1581,7 +1580,7 @@ mod tests {
 
         let (cookie, to) = sign_up(&router, "from-woo@example.com", Some(connect)).await;
         assert!(
-            to.starts_with("/dashboard/wallets/setup?next=%2Fconnect%2Fwoocommerce"),
+            to.starts_with("/account/wallets/setup?next=%2Fconnect%2Fwoocommerce"),
             "{to}"
         );
         let html = body_text(get(&router, &to, &cookie).await).await;
@@ -1593,7 +1592,7 @@ mod tests {
         let added = router
             .clone()
             .oneshot(post(
-                "/dashboard/wallets/import",
+                "/account/wallets/import",
                 Some(&cookie),
                 &[
                     ("view_key_hex", TEST_VIEW_KEY_HEX),
@@ -1659,7 +1658,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let html = body_text(get(&router, "/dashboard/wallets", &cookie).await).await;
+        let html = body_text(get(&router, "/account?tab=wallets", &cookie).await).await;
         assert!(html.contains("Brought in"), "{html}");
         let wallets = wallets_of(&state, "legacy@example.com");
         assert_eq!(wallets.len(), 1);
@@ -1674,7 +1673,7 @@ mod tests {
         let response = router
             .clone()
             .oneshot(post(
-                "/dashboard/wallets/import",
+                "/account/wallets/import",
                 Some(cookie),
                 &[
                     ("name", name),
@@ -1842,28 +1841,21 @@ mod tests {
             "{html}"
         );
         // The open order stays on Copper Heron, which can't go yet.
-        let copper_page = body_text(
-            get(
-                &router,
-                &format!("/dashboard/wallets/{}", copper.id),
-                &cookie,
-            )
-            .await,
-        )
-        .await;
+        let copper_page =
+            body_text(get(&router, &format!("/account/wallets/{}", copper.id), &cookie).await)
+                .await;
         assert!(
             copper_page.contains("changed to another wallet"),
             "{copper_page}"
         );
         assert!(copper_page.contains("Before"), "{copper_page}");
         let cafe_page =
-            body_text(get(&router, &format!("/dashboard/wallets/{}", cafe.id), &cookie).await)
-                .await;
+            body_text(get(&router, &format!("/account/wallets/{}", cafe.id), &cookie).await).await;
         assert!(cafe_page.contains("changed to this wallet"), "{cafe_page}");
         let refused = router
             .clone()
             .oneshot(post(
-                &format!("/dashboard/wallets/{}/retire", copper.id),
+                &format!("/account/wallets/{}/retire", copper.id),
                 Some(&cookie),
                 &[("confirm", "Copper Heron")],
             ))

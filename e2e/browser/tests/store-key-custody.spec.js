@@ -25,7 +25,7 @@ test('a store keeps its keys in the engine; snp turned on without SEV-SNP hardwa
 
   // One backend: no choice is offered, and the keys go in as they are.
   // A wallet's keys are given when it's added (Bring your own wallet).
-  await page.goto(base + '/dashboard/wallets/import');
+  await page.goto(base + '/account/wallets/import');
   await expect(page.locator('select[name="key_custody_backend"]')).toHaveCount(0);
   await createStore(page, 'kept.example.com');
   const storeId = (await finishStoreSetup(page)).split('/').pop();
@@ -41,7 +41,7 @@ test('a store keeps its keys in the engine; snp turned on without SEV-SNP hardwa
   // Said in the toast, and as a banner that stays: the backend can't run.
   await expect(page.locator('#settings-toasts').getByText(/snp backend can.t start/)).toBeVisible();
   await expect(page.locator('#settings-banners').getByText(/snp key custody backend can.t run/)).toBeVisible();
-  await page.goto(base + '/dashboard/wallets/import');
+  await page.goto(base + '/account/wallets/import');
   await expect(page.locator('input[name="view_key_hex"]')).toBeVisible();
   await expect(page.locator('select[name="key_custody_backend"]')).toHaveCount(0);
 

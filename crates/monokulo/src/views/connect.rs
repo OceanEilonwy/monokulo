@@ -117,7 +117,7 @@ fn needs_a_wallet(next: &str) -> Markup {
         div class="notice" {
             p { strong { "A store needs a wallet to take payments into." } " Set one up first; you'll come straight back here." }
             p {
-                a class="btn btn-primary" href=(format!("/dashboard/wallets/setup?next={next}")) { "Set up a wallet" }
+                a class="btn btn-primary" href=(format!("/account/wallets/setup?next={next}")) { "Set up a wallet" }
             }
         }
     }
@@ -404,7 +404,7 @@ mod tests {
         )
         .into_string();
         assert!(!html.contains(r#"id="connect-form""#));
-        assert!(html.contains("/dashboard/wallets/setup?next=%2Fdashboard%2Fconnect"));
+        assert!(html.contains("/account/wallets/setup?next=%2Fdashboard%2Fconnect"));
     }
 
     #[test]

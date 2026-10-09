@@ -204,7 +204,7 @@ const WALLET_NAME = 'Dev stagenet';
  */
 async function addWallet(page) {
   const { monokulo_url: base } = fixture();
-  await page.goto(base + '/dashboard/wallets/import');
+  await page.goto(base + '/account/wallets/import');
   await page.locator('input[name="name"]').fill(WALLET_NAME);
   await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);
   await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);

@@ -46,6 +46,7 @@
 //! monokulo session at all — and redeems that token exactly once.
 
 pub mod abuse;
+mod account;
 mod admin_settings;
 mod admin_setup;
 mod checkout;
@@ -437,10 +438,6 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(dashboard::theme_submit),
         )
         .route(
-            "/dashboard/timezone",
-            axum::routing::post(dashboard::timezone_submit),
-        )
-        .route(
             "/dashboard/connect",
             axum::routing::get(dashboard::connect_form).post(dashboard::connect_submit),
         )
@@ -448,37 +445,33 @@ pub fn build_router(state: AppState) -> Router {
             "/dashboard/stores/new",
             axum::routing::get(home::new_store_picker),
         )
-        .route("/dashboard/wallets", axum::routing::get(wallets::index))
+        .route("/account", axum::routing::get(account::page))
+        .route("/account/profile", post(account::save_profile))
+        .route("/account/password", post(account::change_password))
+        .route("/account/wallets/setup", axum::routing::get(wallets::setup))
         .route(
-            "/dashboard/wallets/setup",
-            axum::routing::get(wallets::setup),
-        )
-        .route(
-            "/dashboard/wallets/import",
+            "/account/wallets/import",
             axum::routing::get(wallets::import_form).post(wallets::import_submit),
         )
         .route(
-            "/dashboard/wallets/new",
+            "/account/wallets/new",
             axum::routing::get(wallets::create_form).post(wallets::create_submit),
         )
+        .route("/account/wallets/{id}", axum::routing::get(wallets::detail))
         .route(
-            "/dashboard/wallets/{id}",
-            axum::routing::get(wallets::detail),
-        )
-        .route(
-            "/dashboard/wallets/{id}/ready",
+            "/account/wallets/{id}/ready",
             axum::routing::get(wallets::ready),
         )
         .route(
-            "/dashboard/wallets/{id}/rename",
+            "/account/wallets/{id}/rename",
             axum::routing::post(wallets::rename),
         )
         .route(
-            "/dashboard/wallets/{id}/retire",
+            "/account/wallets/{id}/retire",
             axum::routing::post(wallets::retire),
         )
         .route(
-            "/dashboard/wallets/{id}/restore",
+            "/account/wallets/{id}/restore",
             axum::routing::post(wallets::restore),
         )
         .route(

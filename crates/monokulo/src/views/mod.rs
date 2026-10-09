@@ -64,6 +64,7 @@ pub fn font_faces() -> String {
         .concat()
 }
 
+pub mod account;
 pub mod admin;
 pub mod auth;
 pub mod challenge;

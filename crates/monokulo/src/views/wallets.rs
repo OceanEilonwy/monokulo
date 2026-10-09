@@ -128,7 +128,7 @@ pub struct ChoiceViewModel {
     pub next: Option<String>,
 }
 
-/// `GET /dashboard/wallets/setup`: create a new wallet, bring your own, or
+/// `GET /account/wallets/setup`: create a new wallet, bring your own, or
 /// (coming soon) a hardware wallet. Creating one needs JavaScript: the card
 /// is drawn unavailable, and `wallet-setup.js` turns it on.
 pub fn choice_page(chrome: &PageChrome, data: &ChoiceViewModel) -> Markup {
@@ -137,7 +137,7 @@ pub fn choice_page(chrome: &PageChrome, data: &ChoiceViewModel) -> Markup {
             @if data.onboarding {
                 (setup_steps(SetupStep::Wallet))
             } @else {
-                nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard/wallets" { "Wallets" } }
+                nav class="context-nav" aria-label="Breadcrumb" { a href="/account?tab=wallets" { "Wallets" } }
             }
             h1 { @if data.onboarding { "Set up your wallet" } @else { "Add a wallet" } }
             @if let Some(site) = &data.connecting_site {
@@ -147,7 +147,7 @@ pub fn choice_page(chrome: &PageChrome, data: &ChoiceViewModel) -> Markup {
                 "Payments go straight to your own Monero wallet. Monokulo only gets watch-only keys: it sees "
                 "payments arrive and can never spend them."
             }
-            form method="get" action="/dashboard/wallets/import" data-wallet-choice {
+            form method="get" action="/account/wallets/import" data-wallet-choice {
                 @if let Some(next) = &data.next {
                     input type="hidden" name="next" value=(next);
                 }
@@ -182,7 +182,7 @@ pub fn choice_page(chrome: &PageChrome, data: &ChoiceViewModel) -> Markup {
                                 "Stack Wallet, or write it down, then we check it."
                             }
                             p class="hint" { (lock_icon()) " The phrase is made and kept on this page. It is never sent to Monokulo." }
-                            button type="submit" class="btn-primary" formaction="/dashboard/wallets/new" disabled data-create-wallet { "Create a new wallet" }
+                            button type="submit" class="btn-primary" formaction="/account/wallets/new" disabled data-create-wallet { "Create a new wallet" }
                         }
                     }
                     section class="pick-card" {
@@ -200,7 +200,7 @@ pub fn choice_page(chrome: &PageChrome, data: &ChoiceViewModel) -> Markup {
                             "Paste its private view key and public spend key."
                         }
                         p class="hint" { "Works without JavaScript." }
-                        button type="submit" formaction="/dashboard/wallets/import" { "Bring your own wallet" }
+                        button type="submit" formaction="/account/wallets/import" { "Bring your own wallet" }
                     }
                     section class="pick-card unavailable" {
                         div class="faded" {
@@ -246,7 +246,7 @@ pub struct ImportViewModel {
     pub snp_entry: Option<super::key_entry::SnpKeyEntry>,
 }
 
-/// `GET`/`POST /dashboard/wallets/import`: "Bring your own wallet".
+/// `GET`/`POST /account/wallets/import`: "Bring your own wallet".
 pub fn import_page(chrome: &PageChrome, data: &ImportViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
@@ -262,7 +262,7 @@ pub fn import_page(chrome: &PageChrome, data: &ImportViewModel) -> Markup {
             @if let Some(error) = &data.error {
                 p class="error" role="alert" { (error) }
             }
-            form method="post" action="/dashboard/wallets/import" {
+            form method="post" action="/account/wallets/import" {
                 @if let Some(next) = &data.next {
                     input type="hidden" name="next" value=(next);
                 }
@@ -313,8 +313,8 @@ pub fn import_page(chrome: &PageChrome, data: &ImportViewModel) -> Markup {
 
 fn setup_link(next: Option<&str>) -> String {
     match next {
-        Some(next) => format!("/dashboard/wallets/setup?next={}", url_encode(next)),
-        None => "/dashboard/wallets/setup".to_owned(),
+        Some(next) => format!("/account/wallets/setup?next={}", url_encode(next)),
+        None => "/account/wallets/setup".to_owned(),
     }
 }
 
@@ -334,7 +334,7 @@ pub struct CreateViewModel {
     pub error: Option<String>,
 }
 
-/// `GET /dashboard/wallets/new`: the recovery phrase is made, backed up and
+/// `GET /account/wallets/new`: the recovery phrase is made, backed up and
 /// checked on this page (`static/wallet-setup.js` with the `wallet-setup`
 /// WebAssembly module); only the watch-only keys are posted. Every screen is
 /// drawn here and shown by the script.
@@ -350,7 +350,7 @@ pub fn create_page(chrome: &PageChrome, data: &CreateViewModel) -> Markup {
                 div class="error" role="alert" {
                     "Creating a wallet needs JavaScript: its recovery phrase is made inside your browser so it never "
                     "reaches our server. Turn JavaScript on for this site and reload, or "
-                    a href=(format!("/dashboard/wallets/import{}", next_query(data.next.as_deref()))) { "bring your own wallet" } "."
+                    a href=(format!("/account/wallets/import{}", next_query(data.next.as_deref()))) { "bring your own wallet" } "."
                 }
             }
             @if let Some(error) = &data.error {
@@ -488,9 +488,9 @@ pub fn create_page(chrome: &PageChrome, data: &CreateViewModel) -> Markup {
                 section data-screen="failed" hidden {
                     h1 { "This browser can't make a wallet" }
                     p class="error" role="alert" data-failed-reason {}
-                    p { a href=(format!("/dashboard/wallets/import{}", next_query(data.next.as_deref()))) { "Bring your own wallet" } " instead." }
+                    p { a href=(format!("/account/wallets/import{}", next_query(data.next.as_deref()))) { "Bring your own wallet" } " instead." }
                 }
-                form method="post" action="/dashboard/wallets/new" data-register hidden {
+                form method="post" action="/account/wallets/new" data-register hidden {
                     input type="hidden" name="name" value=(data.name);
                     input type="hidden" name="network" value=(data.network);
                     input type="hidden" name="backup" data-field="backup";
@@ -653,15 +653,9 @@ pub fn key_gone_icon(size: u32) -> Markup {
     }
 }
 
-/// `GET /dashboard/wallets`: read-only; a wallet's page changes it.
-pub fn list_page(
-    chrome: &PageChrome,
-    wallets: &[WalletListItem],
-    retired: &[RetiredListItem],
-) -> Markup {
-    let body = html! {
-        div class="wrap" {
-            h1 { "Wallets" }
+/// The wallets list: the Account page's Wallets tab (`views::account`).
+pub fn list_section(wallets: &[WalletListItem], retired: &[RetiredListItem]) -> Markup {
+    html! {
             p { "Where your stores' payments go. Monokulo holds watch-only keys for each." }
             @if wallets.is_empty() {
                 p class="notice" { "No wallets yet." }
@@ -672,7 +666,7 @@ pub fn list_page(
                         tbody {
                             @for w in wallets {
                                 tr {
-                                    td { a href=(format!("/dashboard/wallets/{}", w.id)) { (w.name) } }
+                                    td { a href=(format!("/account/wallets/{}", w.id)) { (w.name) } }
                                     td { (w.kind) }
                                     td { code { (w.address) } }
                                     td { @if w.network == "mainnet" { (w.network) } @else { span class="tag tag-slow" { (w.network) } } }
@@ -693,7 +687,7 @@ pub fn list_page(
                             tbody {
                                 @for w in retired {
                                     tr {
-                                        td { a href=(format!("/dashboard/wallets/{}", w.id)) { (w.name) } }
+                                        td { a href=(format!("/account/wallets/{}", w.id)) { (w.name) } }
                                         td { (w.retired) }
                                         td { span class="keys-deleted" { (key_gone_icon(16)) " Deleted" } }
                                     }
@@ -703,10 +697,8 @@ pub fn list_page(
                     }
                 }
             }
-            p { a class="btn btn-primary" href="/dashboard/wallets/setup" { "+ add a wallet" } }
-        }
-    };
-    layout(chrome, "Wallets - Monokulo", body)
+            p { a class="btn btn-primary" href="/account/wallets/setup" { "+ add a wallet" } }
+    }
 }
 
 // -- A wallet's page -------------------------------------------------------
@@ -764,7 +756,7 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
     let in_use = !data.stores.is_empty();
     let body = html! {
         div class="wrap" {
-            nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard/wallets" { "Wallets" } }
+            nav class="context-nav" aria-label="Breadcrumb" { a href="/account?tab=wallets" { "Wallets" } }
             h1 { (w.name) }
             p class="hint" { (origin_label(w)) " · " (w.network) }
             @if let Some(notice) = &data.notice { p class="success" role="status" { (notice) } }
@@ -786,7 +778,7 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
                 div class="main" {
                     section class="box" {
                         h2 { "Details" }
-                        form class="rename-form" method="post" action=(format!("/dashboard/wallets/{}/rename", w.id)) {
+                        form class="rename-form" method="post" action=(format!("/account/wallets/{}/rename", w.id)) {
                             label { "Name" input type="text" name="name" value=(data.name_field) maxlength=(crate::wallets::MAX_NAME_LEN) required; }
                             button type="submit" { "Rename" }
                         }
@@ -887,7 +879,7 @@ fn retire_section(w: &crate::db::WalletRow, state: &RetireState) -> Markup {
                 p class="field-error" id="retire-why" { (why) }
                 button type="button" disabled aria-describedby="retire-why" { "Retire wallet" }
             } @else {
-                form method="post" action=(format!("/dashboard/wallets/{}/retire", w.id)) {
+                form method="post" action=(format!("/account/wallets/{}/retire", w.id)) {
                     label { "Type " strong { (w.name) } " to confirm" input type="text" name="confirm" autocomplete="off" required; }
                     button type="submit" class="btn-danger" { "Retire wallet" }
                 }
@@ -902,7 +894,7 @@ fn restore_section(w: &crate::db::WalletRow, restore: &RestoreForm) -> Markup {
         section class="box" {
             h2 { "Bring it back" }
             p { "Enter the keys again to watch " (w.name) " and offer it to stores. They must be this wallet's: Monokulo checks them against its address." }
-            form method="post" action=(format!("/dashboard/wallets/{}/restore", w.id)) {
+            form method="post" action=(format!("/account/wallets/{}/restore", w.id)) {
                 (super::key_entry::key_fields(
                     "",
                     "",
@@ -973,8 +965,8 @@ pub fn add_wallet_links(next: &str) -> Markup {
     let next = url_encode(next);
     html! {
         p class="hint" {
-            "Or " a href=(format!("/dashboard/wallets/new?next={next}")) { "create a new wallet" }
-            " or " a href=(format!("/dashboard/wallets/import?next={next}")) { "bring your own" }
+            "Or " a href=(format!("/account/wallets/new?next={next}")) { "create a new wallet" }
+            " or " a href=(format!("/account/wallets/import?next={next}")) { "bring your own" }
             ". You'll come back here with it ready to pick."
         }
     }

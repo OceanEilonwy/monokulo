@@ -178,7 +178,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                         th { "Wallet" }
                         td {
                             @match &store.wallet {
-                                Some((id, name)) => a href=(format!("/dashboard/wallets/{id}")) { (name) },
+                                Some((id, name)) => a href=(format!("/account/wallets/{id}")) { (name) },
                                 None => span class="muted" { "-" },
                             }
                         }

@@ -316,7 +316,7 @@ pub async fn start(
             encode_query_value(&query.nonce),
         );
         return redirect_302(&format!(
-            "/dashboard/wallets/setup?next={}",
+            "/account/wallets/setup?next={}",
             encode_query_value(&this_url)
         ));
     }
@@ -881,7 +881,7 @@ mod tests {
         let added = router
             .clone()
             .oneshot(form_request(
-                "/dashboard/wallets/import",
+                "/account/wallets/import",
                 Some(&cookie),
                 &[
                     ("view_key_hex", TEST_VIEW_KEY_HEX),
