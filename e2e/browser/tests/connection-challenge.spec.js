@@ -63,28 +63,27 @@ test('real challenge on a plain-HTTP onion (no Web Crypto) waits ten seconds and
   // The page's time stands still from the start: only the test moves it.
   const start = new Date('2026-01-01T00:00:00Z');
   await pauseClockAt(page, start);
-  // The page's own record of its wait: the timer it sets, and when it
-  // fires (which is when it moves on). Added after the clock's own script,
-  // so it wraps the fake setTimeout.
+  // The page's own record of moving on: each navigation it makes, and the
+  // page's time when it made it, from the Navigation API's navigate event,
+  // dispatched as location.replace is called (inside the timer that calls
+  // it). Kept in sessionStorage, which the next document on this origin
+  // shares, so the record is read once the page has arrived.
   await page.addInitScript(() => {
-    window.waits = [];
-    const setTimeout_ = window.setTimeout;
-    window.setTimeout = function (callback, delay, ...args) {
-      const wait = { delay, fired: false };
-      window.waits.push(wait);
-      return setTimeout_.call(this, (...callbackArgs) => { wait.fired = true; return callback(...callbackArgs); }, delay, ...args);
-    };
+    navigation.addEventListener('navigate', event => {
+      const made = JSON.parse(sessionStorage.getItem('navigations') || '[]');
+      sessionStorage.setItem('navigations', JSON.stringify([...made, { url: event.destination.url, at: Date.now() }]));
+    });
   });
-  const waits = () => page.evaluate(() => window.waits);
+  const navigations = () => page.evaluate(() => JSON.parse(sessionStorage.getItem('navigations') || '[]'));
   await page.goto(`${fixture.base_url}/__coverage/challenge`);
-  // Said as the wait is set: 10.5s (challenge.js), so the server's own ten
-  // seconds have passed when the page continues. Not a millisecond before.
+  // Said as the wait is set, in the same breath (challenge.js): 10.5s, so
+  // the server's own ten seconds have passed when the page continues. The
+  // page's time hasn't moved since, so it continues at 10.5s exactly: not
+  // a millisecond before, which the page's own time of moving on shows.
   await expect(page.locator('#challenge-progress')).toHaveText('This page continues in 10 seconds.');
-  expect(await waits()).toEqual([{ delay: 10500, fired: false }]);
   await page.clock.runFor(10499);
-  expect(await waits(), 'still waiting at 10.499s').toEqual([{ delay: 10500, fired: false }]);
-  expect(page.url()).toContain('/__coverage/challenge');
   await page.clock.runFor(1);
   await expect(page.locator('#checkout-root')).toBeVisible();
   expect(page.url()).toContain('monokulo_wait=');
+  expect(await navigations(), 'continued once, to the wait, at 10.5s').toEqual([{ url: expect.stringContaining('monokulo_wait='), at: start.getTime() + 10500 }]);
 });
