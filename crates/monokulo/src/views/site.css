@@ -906,6 +906,9 @@ input[aria-invalid="true"] { border-color: var(--error); }
 /* The wallet step's choice: today's pick cards, after "use a wallet you
    already added" and an "or". */
 .wallet-choice [hidden], [data-wallet-setup] [hidden] { display: none !important; }
+/* A screen's heading takes focus when the screen opens, for screen readers:
+   it isn't something to act on, so it shows no ring. */
+[data-wallet-setup] h1[tabindex="-1"]:focus, [data-wallet-setup] h2[tabindex="-1"]:focus { outline: none; }
 .pick-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .wallet-choice .pick-card { display: flex; flex-direction: column; gap: var(--space-sm); }
 .wallet-choice .pick-card p { margin: 0; }
