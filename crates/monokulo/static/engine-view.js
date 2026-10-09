@@ -10,6 +10,9 @@
 // of the whole history, with a window over it to move and resize, and
 // inside the window, once off live, the playback position; each moment is
 // asked of the server (`/status/engine/at`, `/status/engine/replay`).
+// Every few seconds the stream also sends a `machine` event: the "Machine and
+// links" strip and the Scanning panel, worked out by the server
+// (`views::scaling`), drawn here field by field.
 //
 // The page never zooms on the mouse wheel: scrolling scrolls the page.
 (() => {
@@ -17,10 +20,8 @@
   const page = document.querySelector("main.engine-page[data-network]");
   if (!page) return;
   const networkSelect = document.getElementById("engine-network");
-  if (networkSelect) {
-    networkSelect.addEventListener("change", () => networkSelect.form.requestSubmit());
-    page.querySelector(".network-go").hidden = true;
-  }
+  // Picking a network goes there; Go is only for a page without JavaScript.
+  if (networkSelect) networkSelect.addEventListener("change", () => networkSelect.form.requestSubmit());
   if (!window.EventSource) return;
   if (!document.getElementById("tl")) return;
   const network = page.dataset.network;
@@ -30,7 +31,12 @@
   const LAG = 1500;
   const MIN_SPAN = 5000;
   const REPLAY_MS = 10000;
-  const CELL_PX = 26;
+  // The chain strip's cells keep their size: 22px and a 4px gap, the next
+  // block 32px; the strip's padding is 14px left and 8px right.
+  const CELL_PX = 26, NEXT_PX = 32, STRIP_PAD_PX = 22;
+  // Narrower than this many cells, the strip shows the newest blocks only,
+  // without the cut back to the lowest group of stores.
+  const CUT_FROM_CELLS = 20;
   // How long things take to cross the page: slow enough to follow by eye.
   const FLY_MS = 1600; // a payment, stores moving
   const CALL_MS = 1300; // a call to the node
@@ -140,6 +146,7 @@
       }
       tlDirty = true;
     });
+    source.addEventListener("machine", (e) => drawMachine(JSON.parse(e.data)));
     source.addEventListener("restarted", () => connect());
     source.addEventListener("unreachable", () => { showRefresh(true); setReadout("The engine isn't answering; showing what was last seen"); });
     source.addEventListener("error", () => showRefresh(true));
@@ -301,33 +308,43 @@
   const cellEls = new Map();
   const pillEls = new Map();
 
+  // The blocks to draw in `cells` cells, oldest first, `null` for the cut
+  // (as wide as three cells). The newest is the block still to come, at the
+  // right edge.
   function visibleBlocks(chain, cells) {
     if (chain.tip == null || chain.high_water == null) return [];
-    // Move the viewport in small blocks of five instead of rebuilding its
-    // anchors for every block arriving during initial node synchronisation.
-    const right = Math.ceil(Math.max(chain.tip, chain.high_water) / 5) * 5 + 1;
+    const right = Math.max(chain.tip, chain.high_water) + 1;
+    // The cut's end moves in steps of five, rather than with each block
+    // arriving during initial node synchronisation.
     const lowest = Math.floor(Math.min(chain.lowest ?? chain.high_water, chain.high_water) / 5) * 5;
-    const left = Math.max(0, Math.min(lowest - 1, right - cells + 1));
     const all = [];
-    if (right - left < cells) { for (let h = left; h <= right; h++) all.push(h); return all; }
+    const left = Math.max(0, right - cells + 1);
+    if (cells < CUT_FROM_CELLS || lowest - 1 >= left) { for (let h = left; h <= right; h++) all.push(h); return all; }
     for (let h = Math.max(0, lowest - 1); h <= lowest + 5; h++) all.push(h);
     all.push(null);
     for (let h = right - (cells - 11); h <= right; h++) all.push(h);
     return all;
   }
 
+  // As many whole cells as the strip holds, the next block's wider one
+  // among them: a wider window shows more blocks, never wider ones.
+  function cellsThatFit() {
+    const width = ($("strip").clientWidth || 800) - STRIP_PAD_PX;
+    return Math.max(1, 1 + Math.floor((width - NEXT_PX) / CELL_PX));
+  }
+
   function drawChain(chain) {
     const box = $("cells");
     if (!box) return;
-    const width = $("strip-scroll").clientWidth || 800;
-    const blocks = visibleBlocks(chain, Math.max(12, Math.floor((width - 30) / CELL_PX)));
+    const blocks = visibleBlocks(chain, cellsThatFit());
     const keep = new Set(blocks.map((h) => (h === null ? "brk" : String(h))));
     for (const [key, el] of cellEls) if (!keep.has(key)) { el.remove(); cellEls.delete(key); }
     for (const el of [...box.children]) if (!el.dataset.key) el.remove();
     const cached = new Set(chain.cached), replaced = new Set(chain.replaced);
     const saved = new Map(chain.checkpoints);
+    // Newest first: the strip lays them out from the right.
     let previous = null;
-    for (const h of blocks) {
+    for (const h of [...blocks].reverse()) {
       const key = h === null ? "brk" : String(h);
       let el = cellEls.get(key);
       if (!el) {
@@ -484,6 +501,52 @@
       d.querySelectorAll(".minibars i").forEach((bar, i) => { bar.style.height = `${2 + Math.min(2, side.queues[i] || 0) * 6}px`; });
     });
     panel("d-restart", side.restart);
+  }
+
+  // ---- the "Machine and links" strip and the Scanning panel ----
+  // Each `machine` event redraws them; the chip says how long ago the engine
+  // reported the figures.
+  let machineAt = null;
+  function tileHTML(tile) {
+    let chart = "";
+    if (tile.chart.kind === "stack") {
+      chart = '<svg class="resource-chart tile-chart" viewBox="0 0 360 100" preserveAspectRatio="none" aria-hidden="true">' +
+        tile.chart.layers.map((layer) => `<path class="chart-layer ${esc(layer.class)}" d="${esc(layer.d)}"></path>`).join("") +
+        tile.chart.limits.map((limit) => `<line class="chart-limit ${esc(limit.class)}" x1="0" x2="360" y1="${esc(limit.y)}" y2="${esc(limit.y)}" vector-effect="non-scaling-stroke"><title>${esc(limit.label)}</title></line>`).join("") +
+        "</svg>";
+    } else if (tile.chart.kind === "spark") {
+      chart = '<svg class="sparkline tile-spark" viewBox="0 0 59 16" preserveAspectRatio="none" aria-hidden="true">' +
+        tile.chart.runs.map((points) => {
+          if (points.includes(" ")) return `<polyline points="${esc(points)}"></polyline>`;
+          const [x, y] = points.split(",");
+          return `<circle cx="${esc(x)}" cy="${esc(y)}" r="1"></circle>`;
+        }).join("") + "</svg>";
+    }
+    return `<div class="tile" data-tile="${esc(tile.key)}" title="${esc(tile.title)}"><span class="k">${esc(tile.label)}</span><span class="v">${esc(tile.value)}</span><span class="s">${esc(tile.note)}</span><span class="visually-hidden">${esc(tile.title)}</span>${chart}</div>`;
+  }
+  function drawMachine(machine) {
+    const tiles = $("machine-tiles");
+    if (!tiles) return;
+    setHTML(tiles, machine.tiles.map(tileHTML).join(""));
+    $("machine-legend").hidden = !machine.stacked;
+    machineAt = machine.at_unix * 1000;
+    const chip = $("machine-live");
+    chip.title = "Updated every few seconds while the page follows the engine";
+    chip.querySelector(".live-dot").hidden = false;
+    drawMachineAge();
+    const scanning = machine.scanning;
+    if (scanning) {
+      $("scan-sum").firstElementChild.textContent = scanning.preview;
+      setHTML($("scan-body"), (scanning.slow ? `<p class="notice slow-block" role="status">${esc(scanning.slow)}</p>` : "") +
+        `<dl class="scan-figures">${scanning.rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>`);
+    }
+  }
+  function drawMachineAge() {
+    if (machineAt === null) return;
+    const ms = Math.max(0, engineNow() - machineAt);
+    const text = `live · ${ms < 60000 ? `${Math.round(ms / 1000)} s` : ago(ms)} ago`;
+    const age = $("machine-age");
+    if (age.textContent !== text) age.textContent = text;
   }
 
   // ---- events table ----
@@ -953,7 +1016,16 @@
   const help = $("engine-help");
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && help.open) { help.open = false; help.querySelector("summary").focus(); } });
   document.addEventListener("pointerdown", (e) => { if (help.open && !help.contains(e.target)) help.open = false; });
-  addEventListener("resize", () => { if (view) drawChain(view.chain); tlDirty = true; });
+  addEventListener("resize", () => { tlDirty = true; });
+  // The strip's width sets how many blocks it shows: asked again whenever
+  // it changes.
+  let stripWidth = 0;
+  new ResizeObserver(() => {
+    const width = $("strip")?.clientWidth || 0;
+    if (width === stripWidth) return;
+    stripWidth = width;
+    if (view) drawChain(view.chain);
+  }).observe($("strip-scroll"));
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) { clearEffects(); queue = queue.slice(-1); }
     else { lastTick = performance.now(); tlDirty = true; if (mode === "live") queue = queue.slice(-1); }
@@ -962,7 +1034,11 @@
     stopped = false;
     lastTick = performance.now();
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
-    refreshTimer = setInterval(() => { if (!document.hidden && mode !== "live") tlDirty = true; }, 1000);
+    refreshTimer = setInterval(() => {
+      if (document.hidden) return;
+      if (mode !== "live") tlDirty = true;
+      drawMachineAge();
+    }, 1000);
     connect();
     animationFrame = requestAnimationFrame(frameLoop);
   }

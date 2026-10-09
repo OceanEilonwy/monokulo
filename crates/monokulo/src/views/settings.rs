@@ -79,6 +79,7 @@ pub struct Card<'a> {
     class: Option<&'a str>,
     attrs: Vec<(&'static str, String)>,
     head: Option<Markup>,
+    link: Option<Markup>,
     badge: Option<Markup>,
     failed: bool,
     message: Option<&'a str>,
@@ -99,6 +100,7 @@ impl<'a> Card<'a> {
             class: None,
             attrs: Vec::new(),
             head: None,
+            link: None,
             badge: None,
             failed: false,
             message: None,
@@ -126,6 +128,13 @@ impl<'a> Card<'a> {
     /// What follows the title in the card's head: a chip, a line of meta.
     pub fn head(mut self, head: Markup) -> Self {
         self.head = Some(head);
+        self
+    }
+
+    /// A link at the right of the card's head, to where more about it is
+    /// shown ("See it on the engine page").
+    pub fn link(mut self, link: Markup) -> Self {
+        self.link = Some(link);
         self
     }
 
@@ -215,6 +224,7 @@ impl<'a> Card<'a> {
                     }
                 }
                 span class="card-spacer" {}
+                @if let Some(link) = self.link { (link) }
                 @if self.readonly {
                     span class="card-meta" { "Can't be changed here" }
                 } @else {

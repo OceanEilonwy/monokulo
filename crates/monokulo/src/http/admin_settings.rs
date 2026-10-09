@@ -134,32 +134,6 @@ fn only_for_a_remote_engine(state: &AppState, key: &str) -> Option<String> {
     })
 }
 
-/// The Resources panel's figures. Inside monokulo, the engine's
-/// `/status` reports the same process as monokulo's own sampler, so the
-/// one report is split by thread instead: counted twice, it would double.
-fn resources_view(
-    client: &crate::engine_client::EngineClient,
-    status: &crate::engine_client::EngineStatusResponse,
-    now: i64,
-) -> views::scaling::ResourcesView {
-    let process = shared::resources::sampler().report();
-    if client.is_embedded() {
-        views::scaling::ResourcesView {
-            engine: Some(process.hosted()),
-            monokulo: process.without_hosted(),
-            now_unix: now,
-            one_process: true,
-        }
-    } else {
-        views::scaling::ResourcesView {
-            engine: status.resources.clone(),
-            monokulo: process,
-            now_unix: now,
-            one_process: false,
-        }
-    }
-}
-
 /// Whether `key` is one of monokulo's own settings.
 fn is_monokulo_key(key: &str) -> bool {
     crate::settings::ALL.iter().any(|s| s.key() == key)
@@ -293,7 +267,6 @@ async fn fetch_engine_settings(
                 network,
                 example_address,
                 tenant_count: meta.tenant_count,
-                scaling: None,
                 error: None,
             }
         })
@@ -496,9 +469,7 @@ async fn build_view_model(
         let unserved = if tab == SettingsTab::Nodes {
             match super::status_page::get_status_cached(&state.engine).await {
                 Ok(status) => {
-                    let now = shared::time::now_unix();
-                    attach_node_status(&mut view.engine_networks, &status, now);
-                    view.resources = Some(resources_view(&state.engine.client, &status, now));
+                    attach_node_status(&mut view.engine_networks, &status);
                     status.unserved_tenants
                 }
                 Err(_) => Vec::new(),
@@ -526,12 +497,11 @@ fn unreachable_networks(unserved: Vec<crate::engine_client::UnservedTenant>) -> 
 
 /// Each row's status from `/status`, found by the engine's label for the
 /// node (`host:port`). A node on a network other than its block's says so;
-/// one that reports `fakechain`, or nothing, isn't called wrong. Each
-/// network also gets its scan figures, and each node its link's.
+/// one that reports `fakechain`, or nothing, isn't called wrong. How the
+/// scan and the link to the node in use are doing is on the engine page.
 fn attach_node_status(
     networks: &mut [AdminNetworkFieldView],
     status: &crate::engine_client::EngineStatusResponse,
-    now: i64,
 ) {
     for network in networks {
         let Some(reported) = status
@@ -541,7 +511,6 @@ fn attach_node_status(
         else {
             continue;
         };
-        network.scaling = reported.scaling.clone();
         let highest = reported.nodes.iter().filter_map(|node| node.height).max();
         for row in &mut network.rows {
             let Some(node) = reported
@@ -564,10 +533,6 @@ fn attach_node_status(
                 behind: highest
                     .zip(node.height)
                     .map(|(highest, height)| highest.saturating_sub(height)),
-                link: node.link.clone().map(|link| views::scaling::NodeLinkView {
-                    link,
-                    now_unix: now,
-                }),
             });
         }
     }
@@ -4978,15 +4943,14 @@ mod tests {
             html.contains(r#"<p class="node-status">Reachable, height 99. In use.</p>"#),
             "{html}"
         );
-        // The tab also shows how the engine is doing (docs/engine_scaling.md
-        // section 6): both processes' CPU and memory, and the network's scan.
+        // How the engine is doing (docs/engine_scaling.md section 6) is on
+        // the engine page, which the network's card links to.
         assert!(
-            html.contains(r#"<h3 id="resources-title">Resources</h3>"#),
+            html.contains(r#"<a class="engine-link" href="/status/engine?network=stagenet">See it on the engine page</a>"#),
             "{html}"
         );
-        assert!(html.contains("<strong>CPU</strong>"), "{html}");
-        assert!(html.contains(r#"data-scanning="stagenet""#), "{html}");
-        assert!(html.contains("Pace set by"), "{html}");
+        assert!(!html.contains("resources-title"), "{html}");
+        assert!(!html.contains("data-scanning"), "{html}");
     }
 
     fn stagenet_tenant() -> crate::engine_client::CreateTenantRequest {
