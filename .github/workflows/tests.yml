@@ -42,8 +42,9 @@ jobs:
   rust:
     name: Rust tests
     runs-on: ${{ format('{0}-latest', inputs.platform == 'linux' && 'ubuntu' || inputs.platform) }}
-    # Windows runners build the workspace about twice as slowly.
-    timeout-minutes: ${{ inputs.platform == 'windows' && 60 || 30 }}
+    # Windows runners build and run the workspace's tests several times as
+    # slowly: a cold-cache run took 58 minutes.
+    timeout-minutes: ${{ inputs.platform == 'windows' && 90 || 30 }}
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
