@@ -120,7 +120,7 @@ impl Choice {
             push(format!("({detail})"));
         }
         if let Some(network) = &self.network {
-            push(format!("[{}]", super::network_word(network)));
+            push(format!("[{}]", super::scaling::network_name(network)));
         }
         if let Some(chip) = &self.chip {
             push(format!("[{}]", chip.text()));
