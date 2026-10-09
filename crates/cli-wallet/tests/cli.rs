@@ -307,12 +307,15 @@ fn a_testnet_wallet_is_created_with_the_flag_and_opened_without_it() {
     );
     assert!(!both.status.success(), "the flags conflict");
 
-    // An unreachable node fails as a testnet node.
+    // An unreachable node fails as a testnet node. One that hangs up on
+    // every request, not a closed port, which Windows takes two seconds to
+    // refuse.
+    let nowhere = shared::unreachable::address().to_string();
     let unreachable = cli(
         &dir,
         &[
             "--daemon-address",
-            "127.0.0.1:9",
+            &nowhere,
             "--wallet-file",
             "erin",
             "bc_height",
@@ -321,7 +324,9 @@ fn a_testnet_wallet_is_created_with_the_flag_and_opened_without_it() {
     );
     assert!(!unreachable.status.success());
     assert!(
-        stderr(&unreachable).contains("cannot reach the testnet node at http://127.0.0.1:9"),
+        stderr(&unreachable).contains(&format!(
+            "cannot reach the testnet node at http://{nowhere}"
+        )),
         "{}",
         stderr(&unreachable)
     );
@@ -372,7 +377,9 @@ fn rescan_takes_a_block_range_and_leaves_the_file_alone_without_a_node() {
     let before = std::fs::read(dir.join("dave.db")).unwrap();
     // An unreachable node: the bad arguments fail before connecting, and
     // the good one fails to connect.
-    let node = ["--daemon-address", "127.0.0.1:9"];
+    let nowhere = shared::unreachable::address().to_string();
+    let cannot_reach = format!("cannot reach the stagenet node at http://{nowhere}");
+    let node = ["--daemon-address", nowhere.as_str()];
     for (args, expected) in [
         (vec!["rescan"], "<BLOCKS>"),
         (vec!["rescan", "200"], "a bare number is ambiguous"),
@@ -382,10 +389,7 @@ fn rescan_takes_a_block_range_and_leaves_the_file_alone_without_a_node() {
             vec!["rescan", "http://node:38089", "^10"],
             "unexpected argument",
         ),
-        (
-            vec!["rescan", "^200..^100"],
-            "cannot reach the stagenet node at http://127.0.0.1:9",
-        ),
+        (vec!["rescan", "^200..^100"], cannot_reach.as_str()),
     ] {
         let output = cli(
             &dir,

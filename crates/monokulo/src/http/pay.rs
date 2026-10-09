@@ -1607,10 +1607,11 @@ mod tests {
             ("coinmarketcap".to_string(), 500_000_000_000)
         );
 
-        // Now the preferred provider is down altogether (nothing listening).
+        // Now the preferred provider is down altogether (it hangs up on
+        // every request).
         state.exchange_rate = std::sync::Arc::new(
             crate::exchange_rate_config::ExchangeRateProviders::coingecko_and_coinmarketcap(
-                "http://127.0.0.1:1",
+                format!("http://{}", shared::unreachable::address()),
                 spawn_mock_coinmarketcap(Some(4.0)).await,
             ),
         );
