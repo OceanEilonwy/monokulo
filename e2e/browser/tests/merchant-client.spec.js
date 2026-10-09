@@ -17,6 +17,21 @@ test.beforeEach(async ({ context }) => {
 });
 
 async function openShop(page) {
+  // The shop page's own record of the library's streams: each EventSource
+  // it opens, and (a listener added in the constructor runs before the
+  // library's, in the same dispatch) each refusal the library has handled.
+  await page.addInitScript(() => {
+    const Native = window.EventSource;
+    window.streams = [];
+    window.EventSource = class extends Native {
+      constructor(...args) {
+        super(...args);
+        const record = { url: String(args[0]), refused: 0, source: this };
+        window.streams.push(record);
+        this.addEventListener('error', () => { if (this.readyState === Native.CLOSED) record.refused++; });
+      }
+    };
+  });
   await page.goto(`${shopOrigin}/__coverage/ready`);
   await page.setContent(`<!doctype html><div id="pay"></div><p id="log"></p>
     <script src="${fixture.base_url}/static/monokulo-client.js"></script>`);
@@ -26,6 +41,11 @@ async function openShop(page) {
     window.track = name => (status, data) => window.events.push([name, typeof status === 'string' ? status : status.status]);
   });
 }
+
+/** The shop page's streams: each one's `readyState` and the refusals it handled. */
+const streams = page => page.evaluate(() => window.streams.map(({ source, refused }) => ({ readyState: source.readyState, refused })));
+/** `EventSource.CLOSED`: the stream is over for good, by the server's refusal or the library's close(). */
+const CLOSED = 2;
 
 test('merchant site creates an order, mounts the checkout, and is told once when it is paid', async ({ page, request }) => {
   await openShop(page);
@@ -45,8 +65,10 @@ test('merchant site creates an order, mounts the checkout, and is told once when
   expect(paid.status()).toBe(204);
   await expect.poll(() => page.evaluate(() => window.events)).toEqual([['change', 'pending'], ['change', 'paid'], ['paid', 'paid']]);
   await expect(page.frameLocator('#pay iframe').locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
-  // Nothing fires twice for the same state.
-  await page.waitForTimeout(1500);
+  // Nothing fires twice for the same state: a final order's stream is
+  // closed for good (the browser would otherwise reopen it and get the
+  // state again), so the merchant hears no more.
+  await expect.poll(() => streams(page), 'the library closed its one stream').toEqual([{ readyState: CLOSED, refused: 0 }]);
   expect(await page.evaluate(() => window.events)).toHaveLength(3);
 });
 
