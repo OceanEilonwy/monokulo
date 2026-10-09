@@ -55,10 +55,29 @@
     return JSON.parse(new TextDecoder().decode(out));
   };
 
-  const say = (box, text) => {
+  // `parts` are text, or `{ short, full }` for a value the module shortened:
+  // shown as the site shows one (`views::short_id`, `.short-value`), the
+  // short text on screen and the whole under it, to select, copy and read.
+  const say = (box, ...parts) => {
     const status = box.querySelector('[data-key-custody-status]');
     if (!status) return;
-    status.textContent = text;
+    status.replaceChildren(
+      ...parts.map((part) => {
+        if (typeof part === 'string' || part.short === part.full) return part.full ?? part;
+        const value = document.createElement('span');
+        value.className = 'short-value';
+        value.title = part.full;
+        const text = document.createElement('span');
+        text.className = 'short-value-text';
+        text.setAttribute('aria-hidden', 'true');
+        text.textContent = part.short;
+        const full = document.createElement('span');
+        full.className = 'short-value-full';
+        full.textContent = part.full;
+        value.append(text, full);
+        return value;
+      }),
+    );
     status.hidden = false;
   };
 
@@ -105,7 +124,9 @@
         spend.value = '';
         say(
           box,
-          `Encrypted for the engine (image ${out.measurement.slice(0, 16)}…, security version ${out.guest_svn}).`,
+          'Encrypted for the engine (image ',
+          { short: out.measurement_short, full: out.measurement },
+          `, security version ${out.guest_svn}).`,
         );
         form.dataset.keyCustodySealed = 'yes';
         form.requestSubmit(event.submitter ?? undefined);

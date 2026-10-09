@@ -10,7 +10,10 @@
 //! An `id_key_digest` of null means the official one built in.
 //!
 //! Output: `{"envelope": "<text to submit>", "measurement": hex,
-//! "guest_svn": n}` or `{"error": "<what went wrong>"}`.
+//! "measurement_short": "a1b2c3…d4e5f6…a7b8c9", "guest_svn": n}` or
+//! `{"error": "<what went wrong>"}`. `measurement_short` is the measurement
+//! as the site shortens a long value (`short_id::short_address`), so the
+//! page never cuts it itself.
 
 use std::cell::RefCell;
 
@@ -100,6 +103,7 @@ enum Output {
     Sealed {
         envelope: String,
         measurement: String,
+        measurement_short: String,
         guest_svn: u32,
     },
     Failed {
@@ -135,9 +139,11 @@ fn seal_input(input: &Input) -> Result<Output, String> {
     keys[..32].copy_from_slice(&key("private view key", &input.view_key)?);
     keys[32..].copy_from_slice(&key("public spend key", &input.spend_public_key)?);
     let envelope = transport::seal(&verified, keys.as_slice()).map_err(|e| e.to_string())?;
+    let measurement = hex::encode(verified.measurement);
     Ok(Output::Sealed {
         envelope: envelope.to_text(),
-        measurement: hex::encode(verified.measurement),
+        measurement_short: short_id::short_address(&measurement),
+        measurement,
         guest_svn: verified.guest_svn,
     })
 }
