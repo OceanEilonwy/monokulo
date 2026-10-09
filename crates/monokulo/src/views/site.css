@@ -896,12 +896,22 @@ input[aria-invalid="true"] { border-color: var(--error); }
 .hw-logo { display: block; flex: none; color: var(--ink); }
 .icon-tile { display: inline-flex; align-items: center; justify-content: center; width: 2.25rem; height: 2.25rem; border-radius: var(--radius-md); background: var(--tint-highlight); color: var(--ink); }
 
-/* "Where do I find these keys?" and other help that opens in place. */
-details.keys-help, details.more-options { margin: var(--space-md) 0; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
-details.keys-help > summary, details.more-options > summary { cursor: pointer; padding: var(--space-sm) var(--space-md); font-weight: 700; border-radius: var(--radius-md); }
-details.keys-help > summary:hover, details.more-options > summary:hover { background: var(--surface-sunken); color: var(--accent-text); }
-details.keys-help[open] > summary, details.more-options[open] > summary { border-bottom: 1px solid var(--line); border-radius: var(--radius-md) var(--radius-md) 0 0; }
+/* A boxed disclosure: "Where do I find these keys?", the store's public key
+   and "More options", help that opens in place. Its summary keeps the
+   site's link-with-a-caret look (Disclosures, top) but is a block row inset
+   like the box's body, a step (md) from the top and bottom edges and lg
+   from the sides, so its text lines up with what opens under it. The
+   summary rule matches the site-wide one's specificity (it comes later) so
+   its display wins over that rule's inline, which would let the padding
+   spill over the box's border. */
+details:is(.keys-help, .more-options) { margin: var(--space-md) 0; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
+details:is(.keys-help, .more-options) > summary:not(.btn) { display: block; padding: var(--space-md) var(--space-lg); font-weight: 700; border-radius: var(--radius-md); }
+details:is(.keys-help, .more-options) > summary:hover { background: var(--surface-sunken); }
+details:is(.keys-help, .more-options)[open] > summary { border-bottom: 1px solid var(--line); border-radius: var(--radius-md) var(--radius-md) 0 0; }
 .keys-help-body, details.more-options > .setting-field { padding: var(--space-md) var(--space-lg); margin: 0; }
+/* "More options" is a group of its own between the wallet's name and the
+   ways to add it: a wide step (xl) from each, like settings are apart. */
+details.more-options { margin: var(--space-xl) 0; }
 .keys-help-body h4 { margin: var(--space-md) 0 var(--space-xs); font-size: .95rem; }
 .keys-help-body h4:first-child { margin-top: 0; }
 .keys-help-body p { margin: 0; }
