@@ -71,6 +71,18 @@ pub struct CreateOrderResponse {
 /// plugin sends `Monokulo-Client: woocommerce/1.2.3`.
 pub const CLIENT_HEADER: &str = "monokulo-client";
 
+/// The version a request's [`CLIENT_HEADER`] gives for the client `name`:
+/// `woocommerce/0.4.0` is version `0.4.0` of `woocommerce`. `None` when the
+/// header names another client, or none.
+pub(crate) fn client_version(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    let value = headers.get(CLIENT_HEADER)?.to_str().ok()?;
+    let (client, version) = value.split_once('/').unwrap_or((value, ""));
+    client
+        .trim()
+        .eq_ignore_ascii_case(name)
+        .then(|| version.trim().chars().take(40).collect())
+}
+
 /// Where an order made through `POST /pay/{pk}/orders` came from, for its
 /// page and the orders table: `woocommerce` (the plugin, with the store's
 /// key), `api` (anything else with the key) or `website` (a browser).
@@ -243,6 +255,8 @@ pub async fn create_order(
             // smaller problem than telling a customer their real order
             // failed when it didn't.
             let source = order_source(created_with_key, &headers);
+            // An order from the plugin: its integration was seen now.
+            let version = client_version(&headers, "woocommerce").unwrap_or_default();
             let (id, order_id, currency, amount, provider) = (
                 row.id.clone(),
                 order.order_id.clone(),
@@ -271,7 +285,11 @@ pub async fn create_order(
                         confirmations,
                         created_with_key,
                         Some(source),
-                    )
+                    )?;
+                    if source == "woocommerce" {
+                        db.integration_seen(&id, "woocommerce", &version, now_unix())?;
+                    }
+                    Ok::<_, crate::db::DbError>(())
                 })
                 .await;
             if let Err(e) = recorded {

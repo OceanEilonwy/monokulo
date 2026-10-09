@@ -959,7 +959,7 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
                     }
                     a class="btn" href=(format!("{}/restore", wallet_path(w))) data-opens-dialog="restore-dialog" { "Restore wallet…" }
                 }
-                dialog id="restore-dialog" class="settings-dialog wallet-dialog" aria-labelledby="restore-title" {
+                dialog id="restore-dialog" class="settings-dialog confirm-dialog" aria-labelledby="restore-title" {
                     (restore_content(w, restore, None, true))
                 }
             } @else {
@@ -970,12 +970,12 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
                     }
                     a class="btn btn-danger" href=(format!("{}/retire", wallet_path(w))) data-opens-dialog="retire-dialog" { "Retire wallet…" }
                 }
-                dialog id="retire-dialog" class="settings-dialog wallet-dialog" aria-labelledby="retire-title" {
+                dialog id="retire-dialog" class="settings-dialog confirm-dialog" aria-labelledby="retire-title" {
                     (retire_content(w, &data.retire, &data.stores, None, true))
                 }
             }
         }
-        (super::script("wallet-page.js", super::Load::Defer))
+        (super::script("confirm-dialogs.js", super::Load::Defer))
     };
     layout(chrome, &format!("{} - Wallets - Monokulo", w.name), body)
 }
@@ -1309,7 +1309,7 @@ fn dialog_page(
                 " › "
                 a href=(wallet_path(w)) { (w.name) }
             }
-            div class="wallet-dialog-page" { (content) }
+            div class="confirm-dialog-page" { (content) }
         }
     };
     layout(
@@ -1822,7 +1822,7 @@ mod tests {
             r#"<h3 id="card-details-title">Details</h3>"#,
             r#"<details class="history-fold"><summary>History <span class="hint">1 event</span></summary>"#,
             r#"<div class="wallet-foot"><div><strong>Retire this wallet</strong>"#,
-            r#"<dialog id="retire-dialog" class="settings-dialog wallet-dialog" aria-labelledby="retire-title">"#,
+            r#"<dialog id="retire-dialog" class="settings-dialog confirm-dialog" aria-labelledby="retire-title">"#,
         ];
         let at: Vec<usize> = order
             .iter()
@@ -1850,7 +1850,7 @@ mod tests {
                 && html.contains(r#"id="wallet-name" name="name" value="Shop takings""#),
             "{html}"
         );
-        assert!(html.contains("wallet-page."), "its script: {html}");
+        assert!(html.contains("confirm-dialogs."), "its script: {html}");
         // One orange button, the save bar's Save; the red one is Retire's.
         assert_eq!(html.matches("btn-primary").count(), 1, "{html}");
         assert!(

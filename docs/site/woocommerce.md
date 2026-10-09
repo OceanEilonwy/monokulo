@@ -23,6 +23,28 @@ Any store can do everything at once: take payments at the till, show the
 checkout on your own pages, and take WooCommerce orders. There's no kind of
 store to choose.
 
+## While it's connected
+
+The store's settings show the plugin in the *Connections* card: the shop,
+the plugin's version, when it connected and its last order. The store's
+website is the shop's and is locked while the plugin is connected
+("Set by WooCommerce · see Connections").
+
+## Disconnecting and reconnecting
+
+*Disconnect…* in the Connections card cuts the plugin off:
+
+- it waits while an order the plugin made can still be paid, and says until
+  about when;
+- then, with the store's name typed to confirm, Monokulo removes the
+  plugin's paid webhook and gives the store a new secret key, so the
+  plugin's key stops working: the shop stops taking Monero;
+- the store's website unlocks, to change or remove (each asks first).
+
+To connect again, use *Connect* in WooCommerce as the first time: it finds
+the store by its website and gets the new key and a new webhook. The
+Connections card keeps the earlier connection under *Before*.
+
 ## Orders
 
 The plugin creates each order from your shop's server with the store's

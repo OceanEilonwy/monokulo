@@ -38,8 +38,10 @@ test('a change marks its card and shows the save bar, and Discard puts it back',
   const field = card.locator('input[name="confirmations_required"]');
   const saved = await field.inputValue();
   await expect(bar).toBeHidden();
-  // No dialogs: every setting is in its card.
-  await expect(page.locator('dialog')).toHaveCount(0);
+  // No dialog open: every setting is in its card; only the website's
+  // confirm dialogs wait, closed.
+  await expect(page.locator('dialog[open]')).toHaveCount(0);
+  await expect(page.locator('dialog:not(.confirm-dialog)')).toHaveCount(0);
   await captureCoverageStage(page, 'store-settings', test.info());
 
   await field.fill('7');

@@ -858,6 +858,20 @@ impl EngineClient {
         .parsed()
     }
 
+    /// `POST /api/v1/admin/tenant/rotate-secret` — gives `sk`'s tenant a new
+    /// secret key; `sk` stops working at once. The new key.
+    pub async fn rotate_secret(&self, sk: &RawToken) -> Result<RawToken, EngineClientError> {
+        #[derive(Deserialize)]
+        struct Rotated {
+            secret_token: RawToken,
+        }
+        let rotated: Rotated = self
+            .send(Call::post("/api/v1/admin/tenant/rotate-secret").store(sk))
+            .await?
+            .parsed()?;
+        Ok(rotated.secret_token)
+    }
+
     /// `GET /api/v1/admin/tenant/webhooks` — lists `sk`'s tenant's
     /// registered webhooks (WBS 1.3.3).
     pub async fn list_webhooks(

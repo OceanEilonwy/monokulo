@@ -415,6 +415,93 @@ async fn unrestrict_embed(State(control): State<Controls>) -> StatusCode {
     }
 }
 
+/// The fixture store's secret key as the store has it now: a disconnected
+/// plugin rotates it, so it's read from the store, not `Controls::token`.
+fn store_secret(control: &Controls) -> Result<shared::auth::RawToken, StatusCode> {
+    let row = control
+        .db
+        .lock()
+        .get_store_connection_by_id(&shared::ids::ConnectionId::new("coverage-store"))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let secret = crypto::decrypt(
+        &ENCRYPTION_KEY,
+        crypto::Binding::StoreSecret("coverage-store"),
+        &row.tenant_secret_token_encrypted,
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(shared::auth::RawToken::presented(&secret))
+}
+
+/// The WooCommerce plugin connected to the fixture store
+/// (store-site.spec.js): its webhook registered in the engine, connected
+/// six days ago, its last order an hour ago.
+async fn connect_plugin(
+    State(control): State<Controls>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sk = store_secret(&control)?;
+    let url = "https://shop.localhost/?wc-api=monokulo";
+    let (webhook_id, _) = control
+        .client
+        .create_webhook(&sk, url, &Default::default())
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let now = monokulo::now_unix();
+    let db = control.db.lock();
+    let store = shared::ids::ConnectionId::new("coverage-store");
+    let id = db
+        .connect_integration(&monokulo::db::NewStoreIntegration {
+            store_id: &store,
+            kind: "woocommerce",
+            site: "shop.localhost",
+            version: "0.4.0",
+            webhook_id: Some(&webhook_id),
+            webhook_url: Some(url),
+            at: now - 6 * 86_400,
+        })
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    db.integration_seen(&store, "woocommerce", "0.4.0", now - 3600)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(serde_json::json!({ "integration_id": id })))
+}
+
+/// An order the plugin made, still open: disconnecting it waits.
+async fn plugin_order(
+    State(control): State<Controls>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let sk = store_secret(&control)?;
+    let order = control
+        .client
+        .create_order(
+            &sk,
+            shared::xmr_amount::Piconero(1_000_000_000),
+            Some("wc-1042".into()),
+            None,
+            None,
+        )
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    control
+        .db
+        .lock()
+        .create_order_currency_metadata(
+            &shared::ids::ConnectionId::new("coverage-store"),
+            &order.order_id,
+            "XMR",
+            "0.001",
+            shared::xmr_amount::Piconero(1_000_000_000_000),
+            "fixed",
+            monokulo::now_unix(),
+            "XMR",
+            None,
+            1,
+            true,
+            Some("woocommerce"),
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(serde_json::json!({ "order_id": order.order_id })))
+}
+
 /// The session of a second merchant, whose wallets are all on test
 /// networks (`seed_wallets`).
 const TESTER_SESSION: &str = "coverage-tester-session-token";
@@ -688,6 +775,8 @@ async fn main() {
         )
         .route("/__coverage/engine/story", post(engine_story))
         .route("/__coverage/wallets", post(seed_wallets))
+        .route("/__coverage/integration", post(connect_plugin))
+        .route("/__coverage/integration/order", post(plugin_order))
         .with_state(Controls {
             engine,
             client: state.engine.client.clone(),

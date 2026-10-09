@@ -391,7 +391,21 @@ pub struct FinishResponse {
 /// While this instance has no public address, `/finish` answers `503` with
 /// a JSON `{"error": ...}` the plugin can show, *before* redeeming the
 /// token, so the same token still works once the operator sets it.
-pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest>) -> Response {
+///
+/// Once it succeeds, the store has an active integration
+/// (`store_integrations`): the plugin, the store's site, the plugin's
+/// version (its `Monokulo-Client` header, `woocommerce/<version>`) and the
+/// webhook it registered. While it's active the store's site is locked;
+/// connecting again adds a new row.
+pub async fn finish(
+    State(state): State<AppState>,
+    Path(platform): Path<String>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<FinishRequest>,
+) -> Response {
+    if !PLATFORMS.contains(&platform.as_str()) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let endpoint = match public_url_for_plugins(&state).await {
         Ok(url) => url,
         Err(message) => {
@@ -447,18 +461,40 @@ pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest
     // because the collapse-to-401 pattern was merely convenient to reuse - flagged
     // here explicitly in case a real deployment prefers "credentials now, webhook
     // registration retried separately" instead.
-    let webhook_signing_secret = match &req.webhook_url {
+    let (webhook_id, webhook_signing_secret) = match &req.webhook_url {
         Some(url) => match state
             .engine
             .client
             .create_webhook(&secret_token, url, &Default::default())
             .await
         {
-            Ok((_webhook_id, signing_secret)) => Some(signing_secret),
+            Ok((webhook_id, signing_secret)) => (Some(webhook_id), Some(signing_secret)),
             Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
         },
-        None => None,
+        None => (None, None),
     };
+
+    let version = super::pay::client_version(&headers, &platform).unwrap_or_default();
+    let (store_id, site, webhook_url) = (row.id.clone(), row.site.clone(), req.webhook_url.clone());
+    let recorded = state
+        .db
+        .write(move |db| {
+            db.connect_integration(&crate::db::NewStoreIntegration {
+                store_id: &store_id,
+                kind: &platform,
+                site: &site,
+                version: &version,
+                webhook_id: webhook_id.as_deref(),
+                webhook_url: webhook_url.as_deref(),
+                at: now_unix(),
+            })
+        })
+        .await;
+    if let Err(e) = recorded {
+        // The plugin has its key either way; the store just doesn't show
+        // it as connected.
+        tracing::error!(store.id = %row.id, error = %e, "a plugin connected but it couldn't be recorded");
+    }
 
     Json(FinishResponse {
         public_key: row.tenant_public_key,
@@ -863,6 +899,250 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(tenant_view.order_expiry_seconds, 1);
+    }
+
+    /// `/finish` with the plugin's `Monokulo-Client` header and a webhook.
+    async fn finish_as_plugin(router: &Router, token: &str, version: &str) -> serde_json::Value {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/connect/woocommerce/finish")
+                    .header("content-type", "application/json")
+                    .header("monokulo-client", format!("woocommerce/{version}"))
+                    .body(Body::from(
+                        serde_json::json!({ "token": token, "webhook_url": "https://shop.example.com/?wc-api=monokulo" })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        body_json(response).await
+    }
+
+    /// A store's plugin, from connecting to disconnecting and back: the
+    /// integration is recorded with its version and webhook and locks the
+    /// site; its orders say when it was last seen; disconnecting waits while
+    /// one of them can be paid, then removes its webhook and changes the
+    /// store's key; connecting again adds a new active row.
+    #[tokio::test]
+    async fn a_plugin_connects_locks_the_site_and_is_disconnected_with_a_new_key() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let cookie = signed_up_and_logged_in_session_cookie(&router, "lifecycle@example.com").await;
+        let back = connect_through_setup(
+            &router,
+            &cookie,
+            "https://shop.example.com",
+            "https://shop.example.com/settings",
+            "nonce-life",
+            &[],
+        )
+        .await;
+        let token = parse_query_params(&location(&back))["token"].clone();
+        let creds = finish_as_plugin(&router, &token, "0.4.0").await;
+        let old_sk = shared::auth::RawToken::presented(creds["secret_token"].as_str().unwrap());
+        let pk = creds["public_key"].as_str().unwrap().to_owned();
+        let store = state
+            .db
+            .lock()
+            .get_store_connection_by_public_key(&pk)
+            .unwrap()
+            .unwrap();
+        let id = store.id.clone();
+        let rows = state.db.lock().list_integrations(&id).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (
+                rows[0].kind.as_str(),
+                rows[0].site.as_str(),
+                rows[0].version.as_str()
+            ),
+            ("woocommerce", "shop.example.com", "0.4.0")
+        );
+        assert!(rows[0].webhook_id.is_some() && rows[0].disconnected_at.is_none());
+        assert_eq!(
+            rows[0].webhook_url.as_deref(),
+            Some("https://shop.example.com/?wc-api=monokulo")
+        );
+
+        // The site is locked; Connections lists the plugin.
+        let settings = format!("/dashboard/stores/{id}/settings");
+        let page = body_text(get(&router, &settings, &cookie).await).await;
+        assert!(
+            page.contains(
+                r##"Set by WooCommerce · <a href="#card-connections">see Connections</a>"##
+            ),
+            "{page}"
+        );
+        assert!(!page.contains(r#"name="store_site""#), "{page}");
+        assert!(
+            page.contains("shop.example.com · plugin 0.4.0 · connected "),
+            "{page}"
+        );
+        assert!(page.contains("no orders yet"), "{page}");
+        // A site sent anyway changes nothing; the website page refuses.
+        router
+            .clone()
+            .oneshot(form_request(
+                &settings,
+                Some(&cookie),
+                &[("store_site", "other.example")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            state
+                .db
+                .lock()
+                .get_store_connection_by_id(&id)
+                .unwrap()
+                .unwrap()
+                .site,
+            "shop.example.com"
+        );
+        let website = format!("{settings}/website");
+        let blocked =
+            body_text(get(&router, &format!("{website}?site=other.example"), &cookie).await).await;
+        assert!(
+            blocked.contains("No plugin is connected to it")
+                && blocked.contains("disconnect it first"),
+            "{blocked}"
+        );
+        let refused = router
+            .clone()
+            .oneshot(form_request(
+                &website,
+                Some(&cookie),
+                &[("site", "other.example"), ("confirm", "Shop")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Nothing from the shop is open: disconnecting is ready, and says
+        // its webhook goes.
+        let disconnect = format!("{settings}/connections/{}/disconnect", rows[0].id);
+        let ready = body_text(get(&router, &disconnect, &cookie).await).await;
+        assert!(ready.contains("The plugin's webhook is removed<span class=\"fix\">https://shop.example.com/?wc-api=monokulo</span>"), "{ready}");
+        let wrong = router
+            .clone()
+            .oneshot(form_request(
+                &disconnect,
+                Some(&cookie),
+                &[("confirm", "shop")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let done = router
+            .clone()
+            .oneshot(form_request(
+                &disconnect,
+                Some(&cookie),
+                &[("confirm", "Shop")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(done.status(), StatusCode::SEE_OTHER);
+        assert!(location(&done).ends_with("?saved=connections#card-connections"));
+        let toast =
+            body_text(get(&router, &format!("{settings}?saved=connections"), &cookie).await).await;
+        assert!(toast.contains("Plugin disconnected"), "{toast}");
+
+        // The plugin's key no longer works; the store's new one does, and
+        // the webhook is gone.
+        let engine_client = EngineClient::embedded_for_tests(engine.router());
+        assert!(
+            engine_client.get_tenant(&old_sk).await.is_err(),
+            "the old key is refused"
+        );
+        let row = state
+            .db
+            .lock()
+            .get_store_connection_by_id(&id)
+            .unwrap()
+            .unwrap();
+        let new_sk = super::super::orders::decrypt_sk(&state.encryption_key, &row).unwrap();
+        assert_ne!(new_sk.expose(), old_sk.expose());
+        assert!(engine_client
+            .list_webhooks(&new_sk)
+            .await
+            .unwrap()
+            .is_empty());
+        let rows = state.db.lock().list_integrations(&id).unwrap();
+        assert!(rows[0].disconnected_at.is_some());
+        // The site unlocks.
+        let page = body_text(get(&router, &settings, &cookie).await).await;
+        assert!(
+            page.contains(r#"name="store_site" value="shop.example.com""#),
+            "{page}"
+        );
+        assert!(page.contains("<h4>Before</h4>"), "{page}");
+
+        // Connecting again: a new active row, with the new key.
+        let again = router
+            .clone()
+            .oneshot(form_request(
+                "/connect/woocommerce",
+                Some(&cookie),
+                &[
+                    ("site_url", "https://shop.example.com/"),
+                    ("return_url", "https://shop.example.com/settings"),
+                    ("nonce", "nonce-again"),
+                    ("connection_id", id.as_str()),
+                ],
+            ))
+            .await
+            .unwrap();
+        let token = parse_query_params(&location(&again))["token"].clone();
+        let creds = finish_as_plugin(&router, &token, "0.4.0").await;
+        assert_eq!(creds["secret_token"].as_str().unwrap(), new_sk.expose());
+        let rows = state.db.lock().list_integrations(&id).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].disconnected_at.is_none() && rows[1].disconnected_at.is_some());
+
+        // An order from the plugin: seen now, at its new version; and while
+        // it can be paid, disconnecting waits.
+        let order = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/pay/{pk}/orders"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {}", new_sk.expose()))
+                    .header("monokulo-client", "woocommerce/0.4.1")
+                    .body(Body::from(
+                        serde_json::json!({ "amount": "1.00", "currency": "XMR" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(order.status(), StatusCode::OK);
+        let rows = state.db.lock().list_integrations(&id).unwrap();
+        assert_eq!(rows[0].version, "0.4.1");
+        assert!(rows[0].last_seen_at.is_some());
+        let disconnect = format!("{settings}/connections/{}/disconnect", rows[0].id);
+        let blocked = body_text(get(&router, &disconnect, &cookie).await).await;
+        assert!(blocked.contains("No order from shop.example.com can still be paid<span class=\"fix\">1 can be paid until about "), "{blocked}");
+        let refused = router
+            .clone()
+            .oneshot(form_request(
+                &disconnect,
+                Some(&cookie),
+                &[("confirm", "Shop")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(state.db.lock().list_integrations(&id).unwrap()[0]
+            .disconnected_at
+            .is_none());
     }
 
     /// A `webhook_url` the engine rejects fails the whole `/finish` call
