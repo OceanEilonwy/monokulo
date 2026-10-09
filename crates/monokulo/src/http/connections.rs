@@ -251,6 +251,7 @@ pub(super) async fn create_connection_for_user(
                 key_custody_backend: req.key_custody_backend.clone(),
                 origin: crate::db::WalletOrigin::Imported,
                 backup: None,
+                app: None,
                 expected_address: None,
             },
         )

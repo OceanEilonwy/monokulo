@@ -124,6 +124,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         34,
         include_str!("../migrations/0034_store_name_and_site.sql"),
     ),
+    (35, include_str!("../migrations/0035_wallet_app.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -694,6 +695,9 @@ pub struct WalletRow {
     /// How the recovery phrase of a created wallet was saved
     /// (`crate::wallets::Backup`).
     pub backup: Option<String>,
+    /// For a brought-in wallet: the wallet app its owner said it's in
+    /// (`crate::wallets::is_known_app`).
+    pub app: Option<String>,
     pub created_at: i64,
     /// When it was retired: its keys deleted, offered nowhere.
     pub retired_at: Option<i64>,
@@ -708,6 +712,7 @@ pub struct NewWalletRow<'a> {
     pub engine_wallet_id: &'a EngineWalletId,
     pub origin: WalletOrigin,
     pub backup: Option<&'a str>,
+    pub app: Option<&'a str>,
     pub created_at: i64,
 }
 
@@ -1242,8 +1247,8 @@ impl Db {
             rusqlite::TransactionBehavior::Immediate,
         )?;
         tx.execute(
-            "INSERT INTO wallets (id, user_id, name, network, primary_address, engine_wallet_id, origin, backup, created_at_utc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO wallets (id, user_id, name, network, primary_address, engine_wallet_id, origin, backup, app, created_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 new.id,
                 new.user_id,
@@ -1253,6 +1258,7 @@ impl Db {
                 new.engine_wallet_id,
                 new.origin.as_str(),
                 new.backup,
+                new.app,
                 new.created_at,
             ],
         )?;
@@ -1265,7 +1271,9 @@ impl Db {
                     WalletOrigin::Created => "created",
                     WalletOrigin::Imported => "imported",
                 },
-                new.backup.unwrap_or(""),
+                // How a made wallet was backed up, or which app a brought-in
+                // one is in.
+                new.backup.or(new.app).unwrap_or(""),
             ],
         )?;
         tx.commit()?;
@@ -1282,6 +1290,7 @@ impl Db {
             engine_wallet_id: row.get("engine_wallet_id")?,
             origin: WalletOrigin::parse(&row.get::<_, String>("origin")?),
             backup: row.get("backup")?,
+            app: row.get("app")?,
             created_at: row.get("created_at_utc")?,
             retired_at: row.get("retired_at_utc")?,
         })
@@ -2689,6 +2698,7 @@ pub(crate) mod test_rows {
             engine_wallet_id: &EngineWalletId::new(format!("wl_{}", id.as_str())),
             origin: WalletOrigin::Imported,
             backup: None,
+            app: None,
             created_at,
         })?;
         db.create_store_connection_on_wallet(
@@ -4924,6 +4934,7 @@ mod tests {
                 engine_wallet_id: &EngineWalletId::new(format!("e_{i}")),
                 origin: WalletOrigin::Imported,
                 backup: None,
+                app: None,
                 created_at: i as i64,
             })
             .unwrap();
