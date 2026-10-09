@@ -458,7 +458,10 @@ mod tests {
     #[tokio::test]
     async fn an_unreachable_remote_engine_is_said_so_over_http() {
         let state = AppState {
-            engine: crate::http::Engine::new(EngineClient::for_tests("http://127.0.0.1:9")),
+            engine: crate::http::Engine::new(EngineClient::for_tests(format!(
+                "http://{}",
+                shared::unreachable::address()
+            ))),
             ..AppState::for_tests()
         };
         let router = crate::http::build_router(state);

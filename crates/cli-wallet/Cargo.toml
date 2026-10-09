@@ -84,6 +84,9 @@ path = "src/bin/cli/main.rs"
 # the same keys: tests/wallet_setup.rs. The check lives on this side so the
 # WebAssembly build of wallet-setup never needs this crate's dependencies.
 wallet-setup = { path = "../wallet-setup" }
+# A node that hangs up on every request (`shared::unreachable`), for the
+# tests where none can be reached.
+shared = { path = "../shared", features = ["test-support"] }
 
 [lints]
 workspace = true

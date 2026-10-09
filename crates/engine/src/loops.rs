@@ -803,8 +803,10 @@ mod tests {
                     .unwrap(),
             )
         };
-        // Nothing listens on port 9: the loop runs and records failing ticks.
-        let node = serde_json::json!({ "host": "127.0.0.1", "port": 9, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] });
+        // A node that hangs up on every request: the loop runs and records
+        // failing ticks.
+        let port = shared::unreachable::address().port();
+        let node = serde_json::json!({ "host": "127.0.0.1", "port": port, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] });
         let saved = save(serde_json::json!({ "monero_node": { "stagenet": node } }))
             .await
             .unwrap();

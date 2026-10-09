@@ -29,5 +29,7 @@ pub mod shutdown;
 pub mod sqlite;
 pub mod supervise;
 pub mod time;
+#[cfg(any(test, feature = "test-support"))]
+pub mod unreachable;
 pub mod webhook_sign;
 pub mod xmr_amount;

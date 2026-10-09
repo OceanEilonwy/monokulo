@@ -364,7 +364,10 @@ mod tests {
 
         let unconfigured = relay.watch("mainnet").await;
         assert!(unconfigured.is_err(), "the engine scans no mainnet");
-        let nowhere = Arc::new(Relay::new(EngineClient::for_tests("http://127.0.0.1:9")));
+        let nowhere = Arc::new(Relay::new(EngineClient::for_tests(format!(
+            "http://{}",
+            shared::unreachable::address()
+        ))));
         assert!(nowhere.watch("stagenet").await.is_err());
     }
 }
