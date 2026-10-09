@@ -339,6 +339,7 @@ impl Engine {
                         reorg_check_depth: scan.reorg_check_depth,
                         grace_period_seconds: scan.expired_order_grace_period_seconds,
                         scan_chunk_memory_budget_mb: scan.scan_chunk_memory_budget_mb,
+                        order_event_retention_secs: scan.order_event_retention_secs,
                     };
                     engine::work::run_round(&memory, &inputs, memory.tuning().round_budget)
                         .await

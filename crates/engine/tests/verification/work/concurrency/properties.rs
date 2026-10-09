@@ -112,6 +112,7 @@ async fn overlap(ordering: usize, cancelled: u8, change: u8, repeats: usize) {
         reorg_check_depth: 20,
         grace_period_seconds: 100_000,
         scan_chunk_memory_budget_mb: 16,
+        order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     };
     for _ in 0..2 {
         run_round(&state, &input, Duration::ZERO)
@@ -381,6 +382,7 @@ async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_c
         reorg_check_depth: 20,
         grace_period_seconds: 100_000,
         scan_chunk_memory_budget_mb: 16,
+        order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     };
     for _ in 0..2 {
         run_round(&state, &input, Duration::ZERO)

@@ -407,7 +407,7 @@ pub struct VanishedPoolReport {
     /// Orders whose payments changed and therefore need a status recompute.
     pub dirty_orders: Vec<crate::store::OrderId>,
     /// The subset of `dirty_orders` where a payment was voided on affirmative
-    /// double-spend proof - the `order.double_spend_detected` webhook's trigger.
+    /// double-spend proof - the `order.double_spend_detected` event's trigger.
     pub double_spent_orders: Vec<crate::store::OrderId>,
     /// Payments (by id) whose transaction is nowhere and isn't proven
     /// double-spent: dropped, evicted or still propagating. They stay as
@@ -568,75 +568,61 @@ pub(crate) async fn check_vanished_candidates(
     })
 }
 
-/// Enqueues a webhook delivery for every enabled webhook on `order_id`'s tenant.
-/// Internal orchestration helper - routes through `Store::get_order_tenant_id`
-/// (unscoped by design, see its doc comment) since the scanner only has a bare
-/// `order_id` at this point, not a tenant-authenticated request.
-///
-/// Wraps whatever event-specific fields the caller supplies in a common envelope
-/// carrying an `event_id`, the `event` type, and a `created_at` timestamp. The
-/// `event_id` is minted once per *event* here and baked into the stored payload, so
-/// every retry of that delivery re-sends the identical id under the identical
-/// signature: that is what lets a receiver tell "the same notification again, my ack
-/// must have been lost" apart from "a genuine second transition to the same status",
-/// which the previous `{order_id, status}` payload made indistinguishable. The
-/// timestamp being inside the signed body (rather than only an unsigned header) is
-/// what stops a captured delivery from being replayable against the merchant
-/// indefinitely.
-fn enqueue_webhook_event(
+/// Adds an event to the order-event log and, until monokulo delivers the
+/// log's events itself, queues the engine's own webhook delivery of it too
+/// (with the same `event_id`), in the caller's transaction.
+fn record_order_event(
     store: &Store,
     order_id: &crate::store::OrderId,
     event_type: &str,
     fields: &[(&str, &str)],
     now: i64,
 ) -> Result<()> {
-    // The caller has just written this order in the same transaction.
-    let tenant_id = store
-        .get_order_tenant_id(order_id)?
+    let seq = store.append_order_event(order_id, event_type, fields, now)?;
+    let event = store
+        .order_events_after(seq - 1, 1)?
+        .into_iter()
+        .next()
         .ok_or(StoreError::NotFound)?;
     let webhooks: Vec<_> = store
-        .list_webhooks(&tenant_id)?
+        .list_webhooks(&event.tenant_id)?
         .into_iter()
         .filter(|w| w.enabled)
         .collect();
     if webhooks.is_empty() {
         return Ok(());
     }
-
     let mut envelope: serde_json::Map<String, serde_json::Value> = fields
         .iter()
         .map(|(name, value)| ((*name).to_owned(), serde_json::Value::from(*value)))
         .collect();
-    envelope.insert("event_id".into(), serde_json::json!(new_event_id()));
+    envelope.insert("order_id".into(), serde_json::json!(order_id.as_str()));
+    envelope.insert("event_id".into(), serde_json::json!(event.event_id));
     envelope.insert("event".into(), serde_json::json!(event_type));
     envelope.insert("created_at".into(), serde_json::json!(now));
     let body = serde_json::Value::Object(envelope).to_string();
-
     for webhook in webhooks {
         store.enqueue_webhook_delivery(&webhook.id, order_id, event_type, &body, now)?;
     }
     Ok(())
 }
 
-fn new_event_id() -> String {
-    format!("evt_{}", uuid::Uuid::new_v4().simple())
-}
-
-/// Recomputes an order's status and, on an actual transition, enqueues an
-/// `order.<status>` webhook event for every one of its tenant's webhooks.
+/// Recomputes an order's status and, on an actual transition, adds an
+/// `order.<status>` event to the order-event log, which monokulo delivers
+/// to the store's webhooks.
 ///
-/// This is the *only* place status-transition webhooks are enqueued - see
+/// This is the *only* place status-transition events are written - see
 /// `docs/DESIGN.md` §11 for why that's a transition-triggered event, never a
 /// per-confirmation-count tick.
 ///
-/// The status write and the enqueue it implies happen in one transaction. They are
+/// The status write and the event it implies happen in one transaction. They are
 /// not independently retryable: `recompute_order_status` decides "did anything
 /// change" by comparing against the *stored* status, so the instant the new status
-/// commits the transition stops being detectable. Enqueueing separately meant a
-/// transient store error (or a crash) in the window between them didn't postpone the
-/// merchant's `order.paid`, it destroyed it - permanently, for an order that really
-/// is paid. Rolling the status back with the failed enqueue leaves the next tick to
-/// redo both.
+/// commits the transition stops being detectable. Writing the event separately
+/// meant a transient store error (or a crash) in the window between them didn't
+/// postpone the merchant's `order.paid`, it destroyed it - permanently, for an
+/// order that really is paid. Rolling the status back with the failed write leaves
+/// the next tick to redo both.
 ///
 /// Public so `engine-test-support` can settle an order the same way a real
 /// scan does (`TestEngineHandle::mark_order_paid`).
@@ -669,18 +655,13 @@ pub(crate) fn recompute_and_notify_in_tx(
     if old_status == new_status {
         return Ok(None);
     }
-    {
-        enqueue_webhook_event(
-            store,
-            order_id,
-            &format!("order.{new_status}"),
-            &[
-                ("order_id", order_id.as_str()),
-                ("status", new_status.as_str()),
-            ],
-            now,
-        )?;
-    }
+    record_order_event(
+        store,
+        order_id,
+        &format!("order.{new_status}"),
+        &[("status", new_status.as_str())],
+        now,
+    )?;
     #[cfg(test)]
     crate::store::crash_checkpoint("recompute.before_commit");
     Ok(Some(shared::activity::Transition {
@@ -812,11 +793,11 @@ pub(crate) fn void_and_notify_in_tx(
     recompute_and_notify_in_tx(store, order_id, current_height, now)?;
     // One event per voided payment row (docs/DESIGN.md §11), independent of
     // whatever status transition the recompute above may also have announced.
-    enqueue_webhook_event(
+    record_order_event(
         store,
         order_id,
         "order.double_spend_detected",
-        &[("order_id", order_id.as_str())],
+        &[("txid", txid)],
         now,
     )?;
     Ok(true)
@@ -866,11 +847,11 @@ fn unvoid_as_false_positive(
             store.clear_double_spend_flag(order_id)?;
         }
         recompute_and_notify_in_tx(store, order_id, current_height, now)?;
-        enqueue_webhook_event(
+        record_order_event(
             store,
             order_id,
             "order.double_spend_reversed",
-            &[("order_id", order_id.as_str()), ("txid", txid)],
+            &[("txid", txid)],
             now,
         )?;
         Ok(true)
@@ -1229,6 +1210,7 @@ pub async fn run_scan_tick_with(
         reorg_check_depth,
         grace_period_seconds: expired_order_grace_period_seconds,
         scan_chunk_memory_budget_mb,
+        order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     };
     crate::work::run_round(state, &inputs, state.tuning().round_budget)
         .await

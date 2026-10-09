@@ -1927,6 +1927,7 @@ async fn every_route_refuses_a_request_without_the_engine_token() {
         ("GET", "/api/v1/admin/tenant"),
         ("GET", "/api/v1/admin/tenant/orders"),
         ("GET", "/api/v1/admin/tenant/events"),
+        ("GET", "/api/v1/admin/order-events"),
         ("GET", "/no/such/route"),
     ];
     let wrong_values = [None, Some("wrong"), Some(tenant.secret_token.as_str())];
@@ -2638,6 +2639,205 @@ async fn order_events_stream_reports_only_the_authenticated_tenants_changes() {
         serde_json::from_str::<serde_json::Value>(&data).unwrap()["order_id"],
         order_id.as_str()
     );
+}
+
+// -- The order-event log stream ----------------------------------------
+
+/// Reads SSE frames from `body` until one full event has arrived, returning
+/// its `(event, id, data)`.
+async fn next_logged_event(body: &mut Body, buffer: &mut String) -> (String, String, String) {
+    loop {
+        if let Some(end) = buffer.find("\n\n") {
+            let block: String = buffer.drain(..end + 2).collect();
+            let (mut event, mut id, mut data) = (String::new(), String::new(), String::new());
+            for line in block.lines() {
+                if let Some(value) = line.strip_prefix("event: ") {
+                    event = value.to_owned();
+                } else if let Some(value) = line.strip_prefix("id: ") {
+                    id = value.to_owned();
+                } else if let Some(value) = line.strip_prefix("data: ") {
+                    data = value.to_owned();
+                } else {
+                    // Comments: keep-alives.
+                }
+            }
+            if !event.is_empty() {
+                return (event, id, data);
+            }
+            continue;
+        }
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), body.frame())
+            .await
+            .expect("timed out waiting for an SSE event")
+            .expect("stream ended")
+            .unwrap();
+        if let Ok(bytes) = frame.into_data() {
+            buffer.push_str(std::str::from_utf8(&bytes).unwrap());
+        }
+    }
+}
+
+/// Opens the order-event stream with `request` built on top of a GET of
+/// `uri`.
+async fn open_order_event_log(
+    router: &Router,
+    uri: &str,
+    last_event_id: Option<&str>,
+) -> axum::response::Response {
+    let mut request = Request::builder().uri(uri);
+    if let Some(id) = last_event_id {
+        request = request.header("last-event-id", id);
+    }
+    router
+        .clone()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+/// The stream replays every kept event after the reader's position, oldest
+/// first, each with its sequence as its id and the order's fields in its
+/// data, then sends new ones as they commit.
+#[tokio::test]
+async fn the_order_event_stream_replays_from_a_position_then_goes_live() {
+    let state = AppState::for_tests();
+    let router = build_router(state.clone(), 1_000_000);
+    let tenant = create_tenant(&router, 12).await;
+    let order_id = shared::ids::OrderId::new(create_admin_order(&router, &tenant).await);
+    let (first, second) = {
+        let store = state.db.lock();
+        (
+            store
+                .append_order_event(
+                    &order_id,
+                    "order.unconfirmed",
+                    &[("status", "unconfirmed")],
+                    100,
+                )
+                .unwrap(),
+            store
+                .append_order_event(&order_id, "order.paid", &[("status", "paid")], 200)
+                .unwrap(),
+        )
+    };
+
+    let response = open_order_event_log(
+        &router,
+        &format!("/api/v1/admin/order-events?after={first}"),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    let mut body = response.into_body();
+    let mut buffer = String::new();
+    let (event, id, data) = next_logged_event(&mut body, &mut buffer).await;
+    assert_eq!((event.as_str(), id), ("order_event", second.to_string()));
+    let data: serde_json::Value = serde_json::from_str(&data).unwrap();
+    assert_eq!(data["event"], "order.paid");
+    assert_eq!(data["status"], "paid");
+    assert_eq!(data["order_id"], order_id.as_str());
+    assert_eq!(data["tenant"], tenant.public_key.as_str());
+    assert_eq!(data["xmr_amount_piconero"], 1_000_000_000_000u64);
+    assert_eq!(data["merchant_order_id"], serde_json::Value::Null);
+    assert_eq!(data["created_at"], 200);
+    assert!(data["event_id"].as_str().unwrap().starts_with("evt_"));
+
+    // Live: a status change committed now arrives next.
+    let third = state
+        .db
+        .lock()
+        .in_transaction(|s| {
+            s.append_order_event(&order_id, "order.double_spend_detected", &[], 300)
+        })
+        .unwrap();
+    let (event, id, data) = next_logged_event(&mut body, &mut buffer).await;
+    assert_eq!((event.as_str(), id), ("order_event", third.to_string()));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&data).unwrap()["event"],
+        "order.double_spend_detected"
+    );
+
+    // `Last-Event-ID` wins over `?after=`, as on an EventSource reconnect.
+    let response = open_order_event_log(
+        &router,
+        "/api/v1/admin/order-events?after=0",
+        Some(&second.to_string()),
+    )
+    .await;
+    let mut body = response.into_body();
+    let mut buffer = String::new();
+    let (_, id, _) = next_logged_event(&mut body, &mut buffer).await;
+    assert_eq!(id, third.to_string());
+}
+
+/// A reader asking from before the oldest kept event is told, with a
+/// distinct `events_lost` event, which events it missed, then gets the
+/// rest; so is one whose position this log never handed out.
+#[tokio::test]
+async fn the_order_event_stream_says_when_a_reader_missed_events() {
+    let state = AppState::for_tests();
+    let router = build_router(state.clone(), 1_000_000);
+    let tenant = create_tenant(&router, 13).await;
+    let order_id = shared::ids::OrderId::new(create_admin_order(&router, &tenant).await);
+    let kept = {
+        let store = state.db.lock();
+        for at in [10, 20] {
+            store
+                .append_order_event(&order_id, "order.unconfirmed", &[], at)
+                .unwrap();
+        }
+        let kept = store
+            .append_order_event(&order_id, "order.paid", &[], 5000)
+            .unwrap();
+        assert_eq!(store.prune_order_events_before(1000).unwrap(), 2);
+        kept
+    };
+
+    let mut body = open_order_event_log(&router, "/api/v1/admin/order-events?after=0", None)
+        .await
+        .into_body();
+    let mut buffer = String::new();
+    let (event, id, data) = next_logged_event(&mut body, &mut buffer).await;
+    assert_eq!(event, "events_lost");
+    assert_eq!(id, (kept - 1).to_string());
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&data).unwrap(),
+        serde_json::json!({ "requested_after": 0, "resume_after": kept - 1 })
+    );
+    let (event, id, _) = next_logged_event(&mut body, &mut buffer).await;
+    assert_eq!((event.as_str(), id), ("order_event", kept.to_string()));
+
+    // A position past the newest event: another engine's, or one whose
+    // database was replaced.
+    let mut body = open_order_event_log(&router, "/api/v1/admin/order-events?after=999", None)
+        .await
+        .into_body();
+    let mut buffer = String::new();
+    let (event, _, data) = next_logged_event(&mut body, &mut buffer).await;
+    assert_eq!(event, "events_lost");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&data).unwrap()["resume_after"],
+        kept - 1
+    );
+
+    // Nothing lost: no `events_lost`, straight to the event.
+    let mut body = open_order_event_log(
+        &router,
+        &format!("/api/v1/admin/order-events?after={}", kept - 1),
+        None,
+    )
+    .await
+    .into_body();
+    let mut buffer = String::new();
+    assert_eq!(
+        next_logged_event(&mut body, &mut buffer).await.0,
+        "order_event"
+    );
+
+    // Not a position at all.
+    let response = open_order_event_log(&router, "/api/v1/admin/order-events", Some("abc")).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

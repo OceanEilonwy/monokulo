@@ -29,9 +29,14 @@ use crate::status::{derive_status, OrderStatus, PaymentView, StatusInputs};
 mod conflicts;
 pub mod db;
 pub mod dispatch;
+mod order_events;
 pub mod proof;
 mod work;
 pub use db::{Db, DbMetrics};
+pub use order_events::{
+    OrderEvent, OrderEventSpan, ResumePoint, DEFAULT_ORDER_EVENT_RETENTION_DAYS,
+    DEFAULT_ORDER_EVENT_RETENTION_SECS,
+};
 pub use work::{
     position, sql_height, ActivityFacts, BlockCheckpoint, OpenedReorg, Position, ReorgCandidate,
     ReorgJob, ReorgPhase, StagedPayment,
@@ -144,6 +149,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (28, include_str!("../../migrations/0028_wallets.sql")),
     (29, include_str!("../../migrations/0029_wallet_changes.sql")),
+    (30, include_str!("../../migrations/0030_order_events.sql")),
 ];
 
 /// The engine's writing connections (the shared store and the database
@@ -234,6 +240,7 @@ pub struct Database {
     writes: Db,
     reads: ReadStorePool,
     changes: tokio::sync::broadcast::Sender<OrderChange>,
+    events: OrderEventsAppended,
     /// The test's shared store, for [`Database::lock`].
     #[cfg(test)]
     inline: Option<SharedStore>,
@@ -248,6 +255,7 @@ impl Database {
             writes,
             reads,
             changes: store.order_changes.clone(),
+            events: Arc::clone(&store.order_events_appended),
             #[cfg(test)]
             inline: None,
         }
@@ -257,13 +265,20 @@ impl Database {
     /// databases. Reads still can't write.
     #[cfg(any(test, feature = "test-support"))]
     pub fn inline(store: SharedStore) -> Self {
-        let changes = store.lock().order_changes.clone();
+        let (changes, events) = {
+            let store = store.lock();
+            (
+                store.order_changes.clone(),
+                Arc::clone(&store.order_events_appended),
+            )
+        };
         #[cfg(test)]
         let inline = Some(Arc::clone(&store));
         Self {
             writes: Db::over_shared(Arc::clone(&store)),
             reads: ReadStorePool::inline(store),
             changes,
+            events,
             #[cfg(test)]
             inline,
         }
@@ -296,6 +311,12 @@ impl Database {
     /// Every [`OrderChange`] committed from now on.
     pub fn subscribe_order_changes(&self) -> tokio::sync::broadcast::Receiver<OrderChange> {
         self.changes.subscribe()
+    }
+
+    /// Changes each time events are added to the order-event log
+    /// (after their commit).
+    pub fn subscribe_order_events(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.events.subscribe()
     }
 
     /// The test's shared store, for setting up and checking state directly.
@@ -372,7 +393,17 @@ pub struct Store {
     /// before the write that announced it is visible - and a rolled-back
     /// transaction announces nothing at all.
     pending_order_changes: RefCell<Option<Vec<OrderChange>>>,
+    /// Bumped after each commit that added to the order-event log, so its
+    /// readers (`GET /api/v1/admin/order-events`) look again. Shared like
+    /// `order_changes`.
+    order_events_appended: OrderEventsAppended,
+    /// Set while [`Store::in_transaction`] runs once it added an event:
+    /// readers are told after the commit, never before.
+    pending_order_event: std::cell::Cell<bool>,
 }
+
+/// Bumped after each commit that adds to the order-event log.
+type OrderEventsAppended = Arc<tokio::sync::watch::Sender<u64>>;
 
 /// A hint that one order's customer-visible state (status, confirmations, amount
 /// received, payments, double-spend flag or refund address) changed.
@@ -874,6 +905,8 @@ impl Store {
             conn,
             order_changes,
             pending_order_changes: RefCell::new(None),
+            order_events_appended: Arc::new(tokio::sync::watch::channel(0).0),
+            pending_order_event: std::cell::Cell::new(false),
         }
     }
 
@@ -899,6 +932,8 @@ impl Store {
             conn,
             order_changes: self.order_changes.clone(),
             pending_order_changes: RefCell::new(None),
+            order_events_appended: Arc::clone(&self.order_events_appended),
+            pending_order_event: std::cell::Cell::new(false),
         })
     }
 
@@ -944,6 +979,22 @@ impl Store {
                 let _ = self.order_changes.send(change);
             }
         }
+    }
+
+    /// Tells the order-event log's readers to look again: now, or after
+    /// the commit inside [`Self::in_transaction`].
+    fn note_order_event_appended(&self) {
+        if self.pending_order_changes.borrow().is_some() {
+            self.pending_order_event.set(true);
+        } else {
+            self.order_events_appended
+                .send_modify(|n| *n = n.wrapping_add(1));
+        }
+    }
+
+    /// Every bump of the order-event log from now on.
+    pub fn subscribe_order_events(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.order_events_appended.subscribe()
     }
 
     /// [`Self::publish_order_change`] for a caller holding only the order id.
@@ -996,6 +1047,7 @@ impl Store {
             }
         }
         *self.pending_order_changes.borrow_mut() = Some(Vec::new());
+        self.pending_order_event.set(false);
         let reset = ResetOnDrop(&self.pending_order_changes);
         let result = self.run_transaction(f);
         let pending = self
@@ -1004,9 +1056,14 @@ impl Store {
             .take()
             .unwrap_or_default();
         drop(reset);
+        let appended = self.pending_order_event.replace(false);
         if result.is_ok() {
             for change in pending {
                 let _ = self.order_changes.send(change);
+            }
+            if appended {
+                self.order_events_appended
+                    .send_modify(|n| *n = n.wrapping_add(1));
             }
         }
         result

@@ -73,6 +73,7 @@ async fn competing_scans(boundary: u8) {
         reorg_check_depth: 20,
         grace_period_seconds: 0,
         scan_chunk_memory_budget_mb: 16,
+        order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     };
     let state = ScanState::default();
     let tx = fixture_tx();
@@ -415,6 +416,7 @@ async fn entry_point_contention(fast_first: bool, cancel: bool, competitors: usi
         reorg_check_depth: 20,
         grace_period_seconds: 0,
         scan_chunk_memory_budget_mb: 16,
+        order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     };
     let state = ScanState::default();
     // Bootstrap before holding custody so the rendezvous belongs to a mempool
@@ -520,6 +522,7 @@ async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
         reorg_check_depth: 20,
         grace_period_seconds: 0,
         scan_chunk_memory_budget_mb: 16,
+        order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     };
     let trigger = match failure {
         1 => Some(format!("CREATE TRIGGER batch_fault BEFORE INSERT ON order_payments WHEN NEW.order_id = '{bo}' BEGIN SELECT RAISE(ABORT, 'payment publication'); END;")),

@@ -459,6 +459,7 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
         reorg_check_depth: 10,
         grace_period_seconds: 3600,
         scan_chunk_memory_budget_mb: budget_mb,
+        order_event_retention_secs: engine::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     };
 
     // Catch up: rounds back to back until every group reaches the tip, or

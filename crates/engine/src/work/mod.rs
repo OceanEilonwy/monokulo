@@ -145,6 +145,9 @@ pub struct RoundInputs<'a> {
     pub reorg_check_depth: u64,
     pub grace_period_seconds: i64,
     pub scan_chunk_memory_budget_mb: u32,
+    /// How long the order-event log keeps an event, in seconds: the
+    /// upkeep tier prunes older ones.
+    pub order_event_retention_secs: i64,
 }
 
 /// How long one daemon call inside a unit may take before the unit treats
