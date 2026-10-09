@@ -1279,7 +1279,10 @@ mod tests {
         let order: serde_json::Value = client
             .post(format!("{base_url}/api/v1/admin/tenant/orders"))
             .bearer_auth(&secret_token)
-            .json(&serde_json::json!({ "xmr_amount_piconero": 1_000_000_000_000u64 }))
+            .json(&serde_json::json!({
+                "xmr_amount_piconero": 1_000_000_000_000u64,
+                "merchant_order_id": "gm-1042",
+            }))
             .send()
             .await
             .expect("create_order request failed")
@@ -1313,6 +1316,11 @@ mod tests {
             matched.expect("expected a real order.expired webhook delivery within the deadline");
         assert_eq!(payload["event"], serde_json::json!("order.expired"));
         assert_eq!(payload["status"], serde_json::json!("expired"));
+        // The merchant's own order id, the amount and the currency travel in
+        // the signed body, so a receiver needs no lookup to act on it.
+        assert_eq!(payload["merchant_order_id"], serde_json::json!("gm-1042"));
+        assert_eq!(payload["amount"], serde_json::json!("1.000000000000"));
+        assert_eq!(payload["currency"], serde_json::json!("XMR"));
         assert!(payload["event_id"]
             .as_str()
             .is_some_and(|id| id.starts_with("evt_")));
