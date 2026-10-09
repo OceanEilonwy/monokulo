@@ -203,6 +203,9 @@ pub struct ImportForm {
     pub encrypted_keys: Option<String>,
     #[serde(default)]
     pub network: String,
+    /// "Which app is it in?": a `WALLET_APPS` key, `other`, or blank.
+    #[serde(default)]
+    pub app: Option<String>,
     #[serde(default)]
     pub key_custody_backend: Option<String>,
 }
@@ -232,6 +235,7 @@ pub(super) async fn render_import(
         name,
         network,
         spend_pubkey_hex: form.map(|f| f.spend_pubkey_hex.clone()).unwrap_or_default(),
+        app: form.and_then(|f| f.app.clone()).unwrap_or_default(),
         custody_choices,
         snp_entry,
     };
@@ -290,6 +294,7 @@ pub(super) async fn add_imported(
             key_custody_backend: form.key_custody_backend.clone(),
             origin: WalletOrigin::Imported,
             backup: None,
+            app: form.app.clone().filter(|app| !app.is_empty()),
             expected_address: None,
         },
     )
@@ -466,6 +471,7 @@ pub(super) async fn add_created(
             key_custody_backend: None,
             origin: WalletOrigin::Created,
             backup: Some(form.backup.clone()),
+            app: None,
             expected_address: Some(form.primary_address.clone()),
         },
     )
@@ -1988,6 +1994,7 @@ mod tests {
                 engine_wallet_id: &crate::db::EngineWalletId::new("wl_x".to_owned()),
                 origin: crate::db::WalletOrigin::Imported,
                 backup: None,
+                app: None,
                 created_at: 1,
             })
             .unwrap();

@@ -344,6 +344,8 @@ pub struct ImportViewModel {
     pub name: String,
     pub network: String,
     pub spend_pubkey_hex: String,
+    /// "Which app is it in?": a `WALLET_APPS` key, `other`, or blank.
+    pub app: String,
     pub custody_choices: Vec<super::connect::CustodyChoice>,
     pub snp_entry: Option<super::key_entry::SnpKeyEntry>,
 }
@@ -376,6 +378,7 @@ pub fn import_page(chrome: &PageChrome, flow: Flow<'_>, data: &ImportViewModel) 
                     html! { "The " em { "public" } " half of your spend key. Never enter the private spend key anywhere." },
                 ))
                 (keys_help())
+                (app_field(&data.app))
                 (super::connect::custody_select(&data.custody_choices))
                 @if let Some(entry) = &data.snp_entry {
                     (super::key_entry::snp_section(entry, (!data.custody_choices.is_empty()).then_some("key_custody_backend")))
@@ -389,6 +392,29 @@ pub fn import_page(chrome: &PageChrome, flow: Flow<'_>, data: &ImportViewModel) 
         }
     };
     layout(chrome, "Bring your own wallet - Monokulo", body)
+}
+
+/// "Which app is it in?" on "Bring your own wallet": optional, saved as
+/// `wallets.app`, and the wallet's page says "Brought in from Feather".
+/// Each app with its logo, then Other.
+pub fn app_field(selected: &str) -> Markup {
+    html! {
+        label {
+            "Which app is it in? " span class="hint" { "(optional)" }
+            mk-select {
+                select name="app" {
+                    (Choice::new("", "Not saying").selected(selected.is_empty()))
+                    @for app in WALLET_APPS {
+                        (Choice::new(app.key, app.name)
+                            .logo(crate::assets::url(&format!("wallet-logos/{}.png", app.key)))
+                            .selected(selected == app.key))
+                    }
+                    (Choice::new("other", "Other").selected(selected == "other"))
+                }
+            }
+            span class="field-help" { "The wallet's page then says where its keys and recovery phrase live." }
+        }
+    }
 }
 
 // -- Making a new wallet ---------------------------------------------------
@@ -1194,6 +1220,7 @@ mod tests {
                 engine_wallet_id: crate::db::EngineWalletId::new("e"),
                 origin: crate::db::WalletOrigin::Imported,
                 backup: None,
+                app: None,
                 created_at: 0,
                 retired_at: None,
             },

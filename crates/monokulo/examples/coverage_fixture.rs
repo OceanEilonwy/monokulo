@@ -465,6 +465,7 @@ async fn seed_wallets(
             engine_wallet_id: &engine_id,
             origin: *origin,
             backup: None,
+            app: None,
             created_at: 1,
         })
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -578,6 +579,7 @@ async fn main() {
         engine_wallet_id: view.wallet_id.as_ref().expect("fixture tenant's wallet"),
         origin: monokulo::db::WalletOrigin::Imported,
         backup: None,
+        app: None,
         created_at: 1,
     })
     .expect("create fixture wallet");

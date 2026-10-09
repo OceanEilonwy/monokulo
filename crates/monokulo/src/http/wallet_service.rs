@@ -21,6 +21,9 @@ pub(crate) struct AddWallet {
     pub key_custody_backend: Option<String>,
     pub origin: WalletOrigin,
     pub backup: Option<String>,
+    /// For a brought-in wallet: which app it's in, if said
+    /// (`crate::wallets::is_known_app`).
+    pub app: Option<String>,
     /// For a wallet made in the browser: the address the page worked out
     /// from the phrase, which must be the one the engine derives from the
     /// keys it was sent.
@@ -53,6 +56,13 @@ pub(crate) async fn add_wallet(
         if !crate::wallets::is_known_backup(backup) {
             return Err(AddWalletError::Invalid(
                 "That backup method isn't one this page offers.".to_owned(),
+            ));
+        }
+    }
+    if let Some(app) = req.app.as_deref() {
+        if !crate::wallets::is_known_app(app) {
+            return Err(AddWalletError::Invalid(
+                "That wallet app isn't one this page offers.".to_owned(),
             ));
         }
     }
@@ -132,6 +142,7 @@ pub(crate) async fn add_wallet(
     let row_id = id.clone();
     let origin = req.origin;
     let backup = req.backup.clone();
+    let app = req.app.clone();
     let recorded = state
         .db
         .write(move |db| {
@@ -151,6 +162,7 @@ pub(crate) async fn add_wallet(
                 engine_wallet_id: &created.wallet_id,
                 origin,
                 backup: backup.as_deref(),
+                app: app.as_deref(),
                 created_at: now_unix(),
             })?;
             Ok::<_, crate::db::DbError>(name)
@@ -232,6 +244,7 @@ pub(crate) async fn adopt_unlinked_stores(state: &AppState, user: &UserRow) {
                             engine_wallet_id: &EngineWalletId::new(engine_wallet.as_str()),
                             origin: WalletOrigin::Imported,
                             backup: None,
+                            app: None,
                             created_at: now_unix(),
                         })?;
                         id

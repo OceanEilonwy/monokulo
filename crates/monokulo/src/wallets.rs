@@ -170,6 +170,17 @@ pub fn is_known_backup(backup: &str) -> bool {
     backup == "paper" || backup == "skipped" || WALLET_APPS.iter().any(|app| app.key == backup)
 }
 
+/// Which app a brought-in wallet is in, as its owner said: one of the
+/// apps' keys, or `other`. Anything else isn't recorded.
+pub fn is_known_app(app: &str) -> bool {
+    app == "other" || WALLET_APPS.iter().any(|a| a.key == app)
+}
+
+/// The app with this key.
+pub fn wallet_app(key: &str) -> Option<&'static WalletApp> {
+    WALLET_APPS.iter().find(|app| app.key == key)
+}
+
 /// What a backup is called on a wallet's page.
 pub fn backup_label(backup: &str) -> String {
     match backup {
@@ -226,5 +237,10 @@ mod tests {
         assert!(is_known_backup("paper") && is_known_backup("skipped"));
         assert!(!is_known_backup("dropbox"));
         assert_eq!(backup_label("cake"), "Saved in Cake Wallet");
+        for app in WALLET_APPS {
+            assert!(is_known_app(app.key));
+        }
+        assert!(is_known_app("other"));
+        assert!(!is_known_app("paper") && !is_known_app("skipped") && !is_known_app(""));
     }
 }

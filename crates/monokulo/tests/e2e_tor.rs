@@ -362,6 +362,7 @@ async fn start_monokulo(
         engine_wallet_id: view.wallet_id.as_ref().expect("the tenant's wallet"),
         origin: monokulo::db::WalletOrigin::Imported,
         backup: None,
+        app: None,
         created_at: 0,
     })
     .unwrap();
