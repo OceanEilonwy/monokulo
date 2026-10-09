@@ -1,11 +1,11 @@
 name: Checks
 
 # What a pull request must pass: lint, and every Linux test suite, without
-# coverage (release.yml collects it on main). macOS and Windows run on main
-# before a release; a manual run (Actions > Checks > Run workflow) can add
-# them, or coverage, for any branch.
+# coverage (release.yml collects it on main, and tests macOS and Windows).
+# A manual run (Actions > Checks > Run workflow) can test any branch on
+# other platforms, or with coverage.
 #
-# Required checks: Lint / rustfmt and clippy, and each Linux / ... suite.
+# Required checks: lint / rustfmt and clippy, and tests (linux) / Summary.
 
 on:
   # Every PR, including documentation changes: path-filtered workflows would
@@ -13,12 +13,12 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      coverage:
-        description: Collect coverage and check the report, as main does
-        type: boolean
-        default: false
       platforms:
-        description: Also run the Rust tests on macOS and Windows
+        description: The platforms to test on, a JSON list of linux, macos and windows
+        type: string
+        default: '["linux"]'
+      coverage:
+        description: Collect coverage on Linux and check the report, as main does
         type: boolean
         default: false
 
@@ -32,28 +32,18 @@ permissions:
 
 jobs:
   lint:
-    name: Lint
+    name: lint
     uses: ./.github/workflows/lint.yml
 
-  linux:
-    name: Linux
+  # One entry per platform asked for (Linux for a pull request), so a
+  # pull request's checks list only what runs.
+  tests:
+    name: tests (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platforms || '["linux"]') }}
     uses: ./.github/workflows/tests.yml
     with:
-      os: ubuntu-latest
-      coverage: ${{ inputs.coverage || false }}
-      suites: '["rust", "browser", "woocommerce", "stress", "scale"]'
-      report: ${{ inputs.coverage || false }}
-
-  macos:
-    name: macOS
-    if: inputs.platforms
-    uses: ./.github/workflows/tests.yml
-    with:
-      os: macos-latest
-
-  windows:
-    name: Windows
-    if: inputs.platforms
-    uses: ./.github/workflows/tests.yml
-    with:
-      os: windows-latest
+      platform: ${{ matrix.platform }}
+      coverage: ${{ inputs.coverage == true && matrix.platform == 'linux' }}

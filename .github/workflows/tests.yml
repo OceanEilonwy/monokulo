@@ -1,12 +1,14 @@
 name: Tests
 
 # One platform's test suites, called by checks.yml (pull requests) and
-# release.yml (main, version tags). Each suite is a job of its own, run when
-# `suites` names it. With `coverage` (Linux only), each runs through its
-# coverage collector (`cargo xtask coverage <suite>`) and uploads what it
-# collected; `report` then joins those into one artifact and checks it, as
-# `cargo xtask coverage all` does locally. Every job writes a summary table
-# and lists its failures.
+# release.yml (main, version tags), each suite a job of its own: the Rust
+# tests on every platform, the browser, WooCommerce, stress and scale suites
+# on Linux. With `coverage` (Linux only), each runs through its coverage
+# collector (`cargo xtask coverage <suite>`) and uploads what it collected.
+# Summary then passes only when every suite did, and with coverage joins
+# what they collected into one artifact and checks it, as
+# `cargo xtask coverage all` does locally: one check to require per
+# platform. Every job writes a summary table and lists its failures.
 #
 # Test builds have every feature a build can ship: the engine's default zmq
 # and, through monokulo/snp, the snp key custody backend.
@@ -14,20 +16,12 @@ name: Tests
 on:
   workflow_call:
     inputs:
-      os:
-        description: The GitHub-hosted runner label to run on
+      platform:
+        description: linux, macos or windows
         required: true
         type: string
       coverage:
-        description: Collect coverage (Linux only)
-        type: boolean
-        default: false
-      suites:
-        description: JSON list of the suites to run - rust, browser, woocommerce, stress, scale
-        type: string
-        default: '["rust"]'
-      report:
-        description: Join the suites' coverage into one checked report (with coverage)
+        description: Collect coverage and check the report (Linux only)
         type: boolean
         default: false
 
@@ -44,10 +38,9 @@ env:
 jobs:
   rust:
     name: Rust tests${{ inputs.coverage && ' (coverage)' || '' }}
-    if: contains(fromJSON(inputs.suites), 'rust')
-    runs-on: ${{ inputs.os }}
+    runs-on: ${{ format('{0}-latest', inputs.platform == 'linux' && 'ubuntu' || inputs.platform) }}
     # Windows runners build the workspace about twice as slowly.
-    timeout-minutes: ${{ inputs.os == 'windows-latest' && 60 || 30 }}
+    timeout-minutes: ${{ inputs.platform == 'windows' && 60 || 30 }}
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
@@ -106,8 +99,8 @@ jobs:
 
   browser:
     name: Browser tests${{ inputs.coverage && ' (coverage)' || '' }}
-    if: contains(fromJSON(inputs.suites), 'browser')
-    runs-on: ${{ inputs.os }}
+    if: inputs.platform == 'linux'
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -175,8 +168,8 @@ jobs:
 
   woocommerce:
     name: WooCommerce tests${{ inputs.coverage && ' (coverage)' || '' }}
-    if: contains(fromJSON(inputs.suites), 'woocommerce')
-    runs-on: ${{ inputs.os }}
+    if: inputs.platform == 'linux'
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -240,8 +233,8 @@ jobs:
     # (docs/engine_stress.md). With coverage, its report joins the coverage
     # artifact.
     name: 'Stress: engine scanner (one CPU)'
-    if: contains(fromJSON(inputs.suites), 'stress')
-    runs-on: ${{ inputs.os }}
+    if: inputs.platform == 'linux'
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -271,8 +264,10 @@ jobs:
     # Every scale scenario, the ignored large fixtures included, one test at
     # a time (`cargo xtask engine scale`), at 32 cases and a seed per run.
     name: Engine scale tests
-    if: contains(fromJSON(inputs.suites), 'scale')
-    runs-on: ${{ inputs.os }}
+    # Instrumenting it would add nothing: Coverage runs on main after the
+    # plain Linux run already ran it.
+    if: inputs.platform == 'linux' && !inputs.coverage
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       PROPTEST_CASES: '32'
@@ -291,35 +286,40 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: engine-scale-${{ github.run_id }}-${{ github.run_attempt }}${{ inputs.coverage && '-coverage' || '' }}
+          name: engine-scale-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             target/engine-scale/
             crates/engine/proptest-regressions/
 
-  report:
-    # One artifact and index from the collectors, checked as
-    # `cargo xtask coverage all` checks a local run.
-    name: Coverage report
-    needs: [rust, browser, woocommerce, stress]
-    if: always() && inputs.report
+  summary:
+    # Passes only when every suite did (a suite this platform doesn't run is
+    # skipped). With coverage, also the one artifact and index from the
+    # collectors, checked as `cargo xtask coverage all` checks a local run.
+    name: Summary
+    needs: [rust, browser, woocommerce, stress, scale]
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        if: inputs.coverage
       - uses: ./.github/actions/setup-rust
+        if: inputs.coverage
         with:
           pos-app: 'false'
       - uses: actions/download-artifact@v8
+        if: inputs.coverage
         with:
           pattern: coverage-*-${{ github.sha }}
           path: target/coverage
           merge-multiple: true
       - name: Combine and check the coverage report
         id: report
+        if: inputs.coverage
         continue-on-error: true
         run: cargo xtask coverage report
-      - name: Summarize
-        if: always()
+      - name: Summarize the coverage
+        if: always() && inputs.coverage
         run: |
           cargo xtask coverage summary >> "$GITHUB_STEP_SUMMARY"
           cargo xtask test-summary 'Coverage tests' \
@@ -327,12 +327,19 @@ jobs:
             browser=target/coverage/browser/junit.xml \
             woocommerce=target/coverage/woocommerce/junit.xml >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the coverage report
-        if: always()
+        if: always() && inputs.coverage
         uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ github.sha }}
           path: target/coverage/
           if-no-files-found: warn
-      - name: Fail on collector, test or report failure
-        if: always()
-        run: test '${{ steps.report.outcome }}' = success
+      - name: Fail unless every suite passed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          REPORT: ${{ steps.report.outcome }}
+        run: |
+          failed=$(echo "$RESULTS" | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key')
+          for name in $failed; do echo "::error::$name did not pass"; done
+          # Skipped without coverage.
+          if test "$REPORT" = failure; then echo '::error::the coverage report did not pass'; exit 1; fi
+          test -z "$failed"

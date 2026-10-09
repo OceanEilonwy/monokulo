@@ -2,16 +2,16 @@ name: Release
 
 # Main, version tags and manual runs: every test on every platform, then the
 # downloads.
-#   Lint, Linux        what a pull request passed (checks.yml), again on the
-#                      merged commit; Linux's plain run also keeps the Rust
+#   lint, tests (linux, macos, windows)
+#                      the pull request checks again on the merged commit,
+#                      on every platform; Linux's run also keeps the Rust
 #                      cache pull requests start from warm
-#   Coverage           every Linux suite through its coverage collector, and
-#                      the one report and artifact (coverage-<sha>) they make
-#   macOS, Windows     the Rust tests
+#   coverage           once they pass: every Linux suite through its
+#                      coverage collector, and the one report and artifact
+#                      (coverage-<sha>) they make
 #   Build ...          monokulo zips for Linux, macOS and Windows,
 #                      key-custody-cli for every computer merchants use, the
-#                      Docker image and the OpenWrt package, once everything
-#                      above passed
+#                      Docker image and the OpenWrt package
 #   GitHub release     a version tag's release (with build provenance for the
 #                      CLI); main updates the latest-main prerelease instead
 # pages.yml then publishes the OpenWrt package site and the quality report
@@ -54,36 +54,26 @@ env:
 
 jobs:
   lint:
-    name: Lint
+    name: lint
     uses: ./.github/workflows/lint.yml
 
-  linux:
-    name: Linux
+  tests:
+    name: tests (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux, macos, windows]
     uses: ./.github/workflows/tests.yml
     with:
-      os: ubuntu-latest
-      suites: '["rust", "browser", "woocommerce", "stress", "scale"]'
+      platform: ${{ matrix.platform }}
 
   coverage:
-    name: Coverage
+    name: coverage
+    needs: tests
     uses: ./.github/workflows/tests.yml
     with:
-      os: ubuntu-latest
+      platform: linux
       coverage: true
-      suites: '["rust", "browser", "woocommerce", "stress"]'
-      report: true
-
-  macos:
-    name: macOS
-    uses: ./.github/workflows/tests.yml
-    with:
-      os: macos-latest
-
-  windows:
-    name: Windows
-    uses: ./.github/workflows/tests.yml
-    with:
-      os: windows-latest
 
   monokulo:
     # monokulo (the engine inside it: one executable) for every computer a
@@ -92,7 +82,7 @@ jobs:
     # Releases page; a manual run of any branch (Actions > Release > Run
     # workflow) keeps them as the run's artifacts only.
     name: Build monokulo (${{ matrix.target }})
-    needs: [lint, linux, coverage, macos, windows]
+    needs: [lint, coverage]
     strategy:
       fail-fast: false
       matrix:
@@ -178,7 +168,7 @@ jobs:
     # its SHA-256 and, on a version tag, GitHub build provenance
     # (`gh attestation verify`).
     name: Build key-custody-cli (${{ matrix.target }})
-    needs: [lint, linux, coverage, macos, windows]
+    needs: [lint, coverage]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     strategy:
       fail-fast: false
@@ -246,7 +236,7 @@ jobs:
     # The production image (Dockerfile): built on main, and on a version tag
     # also pushed to ghcr.io/<owner>/monokulo as that version and latest.
     name: Build the Docker image
-    needs: [lint, linux, coverage, macos, windows]
+    needs: [lint, coverage]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -287,7 +277,7 @@ jobs:
     # The OpenWrt package, its repository and landing page (openwrt.yml);
     # on main, the site is deployed to GitHub Pages too.
     name: OpenWrt
-    needs: [lint, linux, coverage, macos, windows]
+    needs: [lint, coverage]
     uses: ./.github/workflows/openwrt.yml
     secrets: inherit
 

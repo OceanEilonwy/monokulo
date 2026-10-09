@@ -31,24 +31,25 @@ implement it. Organized by component, in roughly the order a component would be 
 
 Two workflows run the tests, both through two reusable ones: `lint.yml`
 (rustfmt, clippy and the checks below) and `tests.yml` (one platform's
-suites, each a job of its own: `rust`, `browser`, `woocommerce`, `stress`,
-`scale`; with `coverage`, each through its coverage collector, and with
-`report`, joined into the one coverage artifact).
+suites, each a job of its own: the Rust tests everywhere, the browser,
+WooCommerce, stress and scale suites on Linux; with `coverage`, each
+through its coverage collector). Each `tests.yml` run ends in a Summary job
+that passes only when every suite did and, with coverage, joins what they
+collected into the one coverage artifact and checks it.
 
-- `checks.yml`, on every pull request update: Lint, and every Linux suite
-  without coverage. A manual run (Actions > Checks > Run workflow) can add
-  coverage, or the macOS and Windows Rust tests, for any branch.
-- `release.yml`, on main, version tags and manual runs: Lint and Linux again
-  on the merged commit, Coverage (every Linux suite instrumented, and the
-  report), the macOS and Windows Rust tests, then the builds and releases
-  once all of them pass. Linux's plain run there also keeps the Rust cache
-  pull requests start from warm: an instrumented build shares nothing with
-  a plain one.
+- `checks.yml`, on every pull request update: `lint`, and `tests (linux)`
+  without coverage. A manual run (Actions > Checks > Run workflow) takes a
+  JSON list of platforms (`["linux", "macos", "windows"]`) and can collect
+  coverage, for any branch. A pull request's checks list only jobs that
+  run: nothing is skipped.
+- `release.yml`, on main, version tags and manual runs: `lint` and
+  `tests (linux)`, `tests (macos)` and `tests (windows)` on the merged
+  commit, then `coverage` once they pass, then the builds and releases.
+  The plain Linux run there also keeps the Rust cache pull requests start
+  from warm: an instrumented build shares nothing with a plain one.
 
 The `main` branch requires one approval, dismisses stale approvals after a
-push, and requires `Lint / rustfmt and clippy`, `Linux / Rust tests`,
-`Linux / Browser tests`, `Linux / WooCommerce tests`,
-`Linux / Stress: engine scanner (one CPU)` and `Linux / Engine scale tests`.
+push, and requires `lint / rustfmt and clippy` and `tests (linux) / Summary`.
 macOS, Windows and coverage problems show on main, before anything is
 released.
 
