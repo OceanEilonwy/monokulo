@@ -51,7 +51,7 @@ test("a wallet's page is one column: where it lives, stores, details, history, t
 
   const details = page.locator('#card-details');
   await expect(details.locator('dl.facts dt')).toHaveText(['Address', 'Kind']);
-  await expect(details.locator('.mid-ellipsis')).toBeVisible();
+  await expect(details.locator('.short-value')).toBeVisible();
   const history = page.locator('details.history-fold');
   await expect(history).not.toHaveAttribute('open', '');
   await expect(history.locator('summary')).toContainText('History');
