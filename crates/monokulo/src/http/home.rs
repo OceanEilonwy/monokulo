@@ -1,13 +1,11 @@
-//! The landing page, the dashboard home page, and the "add a store" picker +
-//! guided-flow instructional page - the pages a merchant actually lands on
-//! first, none of which existed before this task (`dashboard.rs`'s own doc
-//! comment on `login_submit` notes exactly this gap: "no real dashboard
-//! content page exists yet").
+//! The dashboard (`/`), and the "add a store" picker + guided-flow
+//! instructional page.
 
 use axum::extract::State;
 use axum::http::HeaderMap;
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 
+use crate::db::UserRow;
 use crate::views;
 use crate::views::dashboard::{DashboardOrderRow, DashboardStoreRow, DashboardViewModel};
 
@@ -15,34 +13,33 @@ use super::dashboard::redirect_302;
 use super::orders::{display_name_for, health_of_tenant_lookup};
 use super::{resolve_authed_user, AppState, AuthedUser};
 
-/// `GET /` - unauthenticated, explains the product, links to signup/login
-/// (or, if the visitor happens to already have a session, "log out" - a
-/// real per-request check via [`resolve_authed_user`], not a fixed literal
-/// like every other page's `logged_in`, since this is the one truly public
-/// page most people actually revisit while already logged in).
+/// `GET /` - the dashboard for a signed-in merchant, the login page for
+/// anyone else.
 ///
-/// The one gate for the first-run admin setup wizard (`http/admin_setup.rs`):
-/// a fresh instance (`Db::is_setup_complete` still false) redirects here to
-/// `/admin/setup` instead of ever rendering the landing page - "when you
-/// open monokulo it should open to an admin setup flow" is exactly the
-/// front door this page is. No other route is gated on this flag; a direct
-/// link to `/dashboard/login` or the plain `/signup` API still works even
-/// pre-setup; only the very first thing a fresh install's operator sees when
-/// they actually load the site.
-pub async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Response {
+/// Also the one gate for the first-run admin setup wizard
+/// (`http/admin_setup.rs`): a fresh instance (`Db::is_setup_complete` still
+/// false) redirects to `/admin/setup` - "when you open monokulo it should
+/// open to an admin setup flow" is exactly the front door this page is. No
+/// other route is gated on this flag; a direct link to `/dashboard/login`
+/// or the plain `/signup` API still works even pre-setup.
+pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let setup_complete = state
         .db
         .read(|db| Ok::<_, crate::db::DbError>(db.is_setup_complete().unwrap_or(true)))
         .await
         .unwrap_or(true);
-    let signup_mode = state.settings.signup_mode();
     if !setup_complete {
         return redirect_302("/admin/setup");
     }
-    let authed = resolve_authed_user(&state, &headers).await;
-    let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), "/").await;
-    let signup_public = signup_mode == crate::settings::SignupMode::Public;
-    views::landing::page(&chrome, signup_public).into_response()
+    match resolve_authed_user(&state, &headers).await {
+        Some((user, _)) => dashboard(&state, &user).await,
+        None => redirect_302("/dashboard/login"),
+    }
+}
+
+/// `GET /dashboard`: the dashboard moved to `/` (308, permanent).
+pub async fn dashboard_moved() -> Redirect {
+    Redirect::permanent("/")
 }
 
 /// `GET /dashboard/stores/new` - the picker between the two connect
@@ -72,18 +69,15 @@ pub async fn woocommerce_instructions(
     views::store_detail::woocommerce_instructions_page(&chrome).into_response()
 }
 
-/// `GET /dashboard` - the real dashboard home page: every store the user
-/// has connected, a merged recent-orders feed across all of them, and a
+/// The dashboard (`GET /`, signed in): every store the user has
+/// connected, a merged recent-orders feed across all of them, and a
 /// total-received figure. There is no dedicated "dashboard summary" engine
 /// endpoint to call - this is real aggregation over each connection's own
 /// `EngineClient::get_tenant`/`list_orders` calls, done sequentially here
 /// (the expected number of stores per user is small; this is not the place
 /// to add concurrency complexity for a case with no evidence it matters
 /// yet).
-pub async fn dashboard_home(
-    State(state): State<AppState>,
-    AuthedUser(user, _): AuthedUser,
-) -> Response {
+async fn dashboard(state: &AppState, user: &UserRow) -> Response {
     let user_id = user.id.clone();
     let rows = match state
         .db
@@ -172,7 +166,7 @@ pub async fn dashboard_home(
         }
     }
 
-    let chrome = super::page_chrome(&state, Some(&user), "/dashboard").await;
+    let chrome = super::page_chrome(state, Some(user), "/").await;
     let view_model = DashboardViewModel {
         has_stores: !stores.is_empty(),
         stores,
@@ -335,40 +329,26 @@ mod tests {
                 .to_string()
         }
 
+        /// `/` is the dashboard: someone not signed in is sent to log in,
+        /// and the old `/dashboard` address moved there for good.
         #[tokio::test]
-        async fn landing_page_is_reachable_without_any_session() {
+        async fn signed_out_the_home_page_sends_you_to_log_in_and_dashboard_moved_to_it() {
             let (state, _engine) = test_state_with_real_engine().await;
             let router = build_router(state);
-            let response = router
-                .oneshot(
-                    Request::builder()
-                        .method("GET")
-                        .uri("/")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            let html = body_text(response).await;
-            assert!(html.contains(r#"href="/dashboard/signup""#));
-        }
+            let get = |uri: &str| {
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap()
+            };
+            let response = router.clone().oneshot(get("/")).await.unwrap();
+            assert_eq!(response.status(), StatusCode::FOUND);
+            assert_eq!(response.headers()["location"], "/dashboard/login");
 
-        #[tokio::test]
-        async fn dashboard_without_a_session_is_rejected() {
-            let (state, _engine) = test_state_with_real_engine().await;
-            let router = build_router(state);
-            let response = router
-                .oneshot(
-                    Request::builder()
-                        .method("GET")
-                        .uri("/dashboard")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let response = router.oneshot(get("/dashboard")).await.unwrap();
+            assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
+            assert_eq!(response.headers()["location"], "/");
         }
 
         #[tokio::test]
@@ -386,7 +366,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .method("GET")
-                        .uri("/dashboard")
+                        .uri("/")
                         .header("authorization", format!("Bearer {session_token}"))
                         .body(Body::empty())
                         .unwrap(),
@@ -442,7 +422,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .method("GET")
-                        .uri("/dashboard")
+                        .uri("/")
                         .header("authorization", format!("Bearer {session_token}"))
                         .body(Body::empty())
                         .unwrap(),

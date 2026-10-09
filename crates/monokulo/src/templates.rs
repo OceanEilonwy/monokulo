@@ -160,9 +160,6 @@ mod tests {
     // `views::connect`'s own test module - those pages no longer go through
     // this engine at all.
 
-    // Landing page tests moved to `views::landing`'s own test module - that
-    // page no longer goes through this engine at all.
-
     // Dashboard home page tests moved to `views::dashboard`'s own test
     // module - that page no longer goes through this engine at all.
 

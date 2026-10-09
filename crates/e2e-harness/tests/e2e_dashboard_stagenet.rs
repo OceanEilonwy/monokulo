@@ -404,7 +404,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/dashboard")
+                    .uri("/")
                     .header("cookie", &session_cookie)
                     .body(Body::empty())
                     .unwrap(),

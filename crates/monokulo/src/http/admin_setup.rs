@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(landing.status(), StatusCode::OK);
         let html = body_text(landing).await;
         assert!(
-            html.contains("log out"),
+            html.contains(">Log out<"),
             "the freshly created admin should already be logged in, got: {html}"
         );
     }

@@ -129,7 +129,7 @@ mod tests {
             page_may_report(&db, "/dashboard/admin/logs"),
             "admin pages always report"
         );
-        assert!(page_may_report(&db, "/dashboard"));
+        assert!(page_may_report(&db, "/"));
         assert!(page_may_report(&db, ""));
         assert!(!page_may_report(&db, "/dashboard/stores/c1/settings"));
         assert!(!page_may_report(&db, "/dashboard/stores/c1/pos"));
@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn a_report_that_is_not_json_is_refused() {
         assert!(serde_json::from_slice::<ClientReport>(b"nope").is_err());
-        let ok = br#"{"kind":"error","message":"x is undefined","page":"/dashboard"}"#;
+        let ok = br#"{"kind":"error","message":"x is undefined","page":"/"}"#;
         assert!(serde_json::from_slice::<ClientReport>(ok).is_ok());
     }
 }

@@ -495,7 +495,7 @@ mod tests {
 
     /// Every static file a real page asks for is served, with the type its
     /// extension needs (a font or script with the wrong type is refused by
-    /// the browser): the landing and login pages, a customer's checkout, and
+    /// the browser): the sign-up and login pages, a customer's checkout, and
     /// the static files those scripts load in turn.
     #[tokio::test]
     async fn every_static_file_the_pages_reference_is_served_with_its_type() {
@@ -519,7 +519,7 @@ mod tests {
         let checkout = format!("/pay/{pk}/orders/{}", order["order_id"].as_str().unwrap());
 
         let mut referenced = std::collections::BTreeSet::new();
-        for page in ["/", "/dashboard/login", checkout.as_str()] {
+        for page in ["/dashboard/signup", "/dashboard/login", checkout.as_str()] {
             let response = router
                 .clone()
                 .oneshot(Request::builder().uri(page).body(Body::empty()).unwrap())
@@ -663,7 +663,6 @@ mod tests {
             "/dashboard/login".into(),
             "/dashboard/signup".into(),
             "/status".into(),
-            "/dashboard".into(),
             "/dashboard/stores/new".into(),
             "/dashboard/connect".into(),
             format!("/dashboard/stores/{store_id}"),
