@@ -71,7 +71,7 @@ test('POS uses the approved symbols in the compact stack and list badges', async
     ['double', 'pending'], ['cancelled', 'pending'],
   ];
   const orders = states.map(([id, status], index) => ({
-    order_id: id, merchant_order_id: id, address, amount: '1.00', currency: 'XMR', xmr_amount: '1.000000000000',
+    order_id: id, order_id_short: id, merchant_order_id: id, address, address_short: '86hiL7…ZcauZJ…FGCnfC', amount: '1.00', currency: 'XMR', xmr_amount: '1.000000000000',
     status, confirmations: id === 'confirming' ? 3 : 0, confirmations_required: 10,
     error: id === 'double' ? 'Double-spend detected on this payment.' : null,
     backgrounded: true, cancelled_at: id === 'cancelled' ? 2000 : null,

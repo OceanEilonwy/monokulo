@@ -101,7 +101,7 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     // The POS's own payment card shows the order's QR and address.
     const card = page.locator('.pos-pay-card');
     await expect(card.locator('.pos-qr svg')).toBeVisible();
-    await expect(card.locator('.pos-address code')).toHaveAttribute('title', order.address);
+    await expect(card.locator('.pos-address .short-value')).toHaveAttribute('title', order.address);
     await captureCoverageStage(page, 'pos-stagenet-payment-ready', test.info());
     // An image of the displayed QR can fill the refund address without typing.
     const qrImage = await card.locator('.pos-qr svg').screenshot();
@@ -170,6 +170,6 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     await page.getByRole('button', { name: 'All orders' }).click();
     await page.getByRole('tab', { name: /Finished/ }).click();
     const core = order.order_id.replace(/^order_/, '');
-    await expect(page.locator('.pos-order-card').filter({ hasText: `#${core.slice(0, 4)}…${core.slice(-4)}` })).toContainText('Paid');
+    await expect(page.locator('.pos-order-card').filter({ hasText: `#${core.slice(0, 6)}…${core.slice(-6)}` })).toContainText('Paid');
   });
 });

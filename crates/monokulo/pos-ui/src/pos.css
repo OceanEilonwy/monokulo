@@ -140,7 +140,8 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
     box-shadow: 2px 2px 0 var(--state-border); scroll-snap-align: start; white-space: nowrap;
   }
   .pos-stack-card.state-offline { box-shadow: none; border-style: dashed; }
-  .pos-stack-ref { font-size: 11px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 12ch; }
+  /* Wide enough for a shortened order ID (`#a8723b…b0d44e`), cut only when it's a long reference. */
+  .pos-stack-ref { font-size: 11px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 15ch; }
   .pos-stack-amount { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .pos-keypad.has-stack { gap: 9px; padding-top: 12px; }
   .pos-keypad.has-stack .pos-amount { font-size: 40px; }
@@ -230,7 +231,7 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   @media (prefers-reduced-motion: reduce) { .pos-qr-new { animation: none; } }
   .pos-quiet-label { font-size: 11px; color: var(--muted); margin-top: 6px; }
   .pos-address { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border: 1px solid var(--pos-border); border-radius: 3px; background: var(--pos-field); }
-  .pos-address code { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: all; }
+  .pos-address code { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 11px; white-space: nowrap; user-select: all; }
   .pos-address button { font-size: 11px; font-weight: 700; text-decoration: underline; }
   .pos-pay-card hr { height: 1px; background: var(--pos-soft-line); margin: 6px 0 2px; }
   .pos-refund { position: relative; }

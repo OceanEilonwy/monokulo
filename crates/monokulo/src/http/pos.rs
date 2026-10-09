@@ -414,8 +414,13 @@ pub struct PosStatusResponse {
 #[derive(Serialize)]
 pub struct PosOrderData {
     order_id: crate::db::OrderId,
+    /// The order id and the address as the rest of the site shows them
+    /// shortened (`views::short_id_text`, `views::short_address_text`), so
+    /// the POS app never cuts an identifier itself.
+    order_id_short: String,
     merchant_order_id: Option<String>,
     address: String,
+    address_short: String,
     xmr_amount: String,
     amount: String,
     currency: String,
@@ -497,8 +502,10 @@ fn pos_order_view(
         .and_then(|m| m.confirmations_required_applied)
         .unwrap_or(crate::confirmation_thresholds::FALLBACK_CONFIRMATIONS);
     PosOrderData {
+        order_id_short: crate::views::short_id_text(row.order_id.as_str()),
         order_id: row.order_id,
         merchant_order_id: order.merchant_order_id.clone(),
+        address_short: crate::views::short_address_text(&order.address),
         address: order.address.clone(),
         xmr_amount: shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero),
         amount: metadata
@@ -1183,6 +1190,26 @@ mod tests {
         assert_eq!(list["orders"][0]["order_id"], first_id);
         assert_eq!(list["orders"][0]["backgrounded"], true);
         assert_eq!(list["orders"][0]["status"], "pending");
+        // The id and address come shortened by the server too, so the POS
+        // app shows them as the rest of the site does.
+        let listed = &list["orders"][0];
+        assert_eq!(
+            listed["order_id_short"],
+            crate::views::short_id_text(first_id.as_str())
+        );
+        assert!(listed["order_id_short"].as_str().unwrap().contains('…'));
+        assert_eq!(
+            listed["address_short"],
+            crate::views::short_address_text(listed["address"].as_str().unwrap())
+        );
+        assert_eq!(
+            listed["address_short"]
+                .as_str()
+                .unwrap()
+                .matches('…')
+                .count(),
+            2
+        );
         let search_list = router
             .clone()
             .oneshot(

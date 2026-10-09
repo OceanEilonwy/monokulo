@@ -64,7 +64,9 @@ test('real POS displays a shortened ID for an order without a reference', async 
   await page.getByRole('button', { name: '1', exact: true }).click();
   await expect(page.locator('#pos-reference')).toHaveValue('');
   await page.getByRole('button', { name: 'Charge' }).click();
-  await expect(page.locator('.pos-order-heading h1')).toHaveText(/^#[0-9a-f]{4}…[0-9a-f]{4}$/);
+  // Shortened by the server as the site shortens ids, the whole id under it.
+  await expect(page.locator('.pos-order-heading h1 .short-value-text')).toHaveText(/^#[0-9a-f]{6}…[0-9a-f]{6}$/);
+  await expect(page.locator('.pos-order-heading h1 .short-value-full')).toHaveText(/^order_[0-9a-f]{32}$/);
   await expect(page.locator('.pos-pay-card .pos-qr svg')).toBeVisible();
 });
 
@@ -85,7 +87,8 @@ test('real POS shows pending, partial, confirming, and terminal badge symbols', 
   // Every order starts open, as the server lists them; the final ones then
   // arrive over the live stream, as they would at the counter.
   const orders = states.map(([id], index) => ({
-    order_id: id, merchant_order_id: id, address: '86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC',
+    order_id: id, order_id_short: id, merchant_order_id: id, address: '86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC',
+    address_short: '86hiL7…ZcauZJ…FGCnfC',
     amount: '1.00', currency: 'XMR', xmr_amount: '1.000000000000', status: ['paid', 'overpaid', 'expired'].includes(id) ? 'pending' : states[index][1],
     confirmations: id === 'confirming' ? 3 : 0, confirmations_required: 10,
     error: id === 'double' ? 'Double-spend detected on this payment.' : null,
@@ -123,7 +126,7 @@ test('real POS payment card copies the address and saves a refund address', asyn
   await page.goto(posUrl());
   const card = page.locator('.pos-pay-card');
   await expect(card.locator('.pos-stage-msg')).toContainText(/(59m|1h) left/);
-  const address = await card.locator('.pos-address code').getAttribute('title');
+  const address = await card.locator('.pos-address .short-value').getAttribute('title');
   await card.getByRole('button', { name: 'Copy payment address' }).click();
   await expect(card.getByRole('button', { name: 'Copy payment address' })).toHaveText('Copied');
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(address);
