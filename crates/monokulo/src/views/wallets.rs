@@ -9,6 +9,7 @@
 use maud::{html, Markup};
 
 use super::controls::Choice;
+use super::settings::{self, Card, Field, Save, Toast, ToastKind};
 use super::setup::{SetupContext, WalletAt, WalletPath};
 use super::{layout, layout_with_head, PageChrome};
 use crate::wallets::{AppMethod, WalletApp, WALLET_APPS};
@@ -824,7 +825,72 @@ pub struct DetailViewModel {
     pub history: Vec<WalletEvent>,
     pub error: Option<String>,
     pub notice: Option<String>,
-    pub name_field: String,
+    /// What the rename this page answers did.
+    pub rename: Option<RenameOutcome>,
+}
+
+/// What a rename did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenameOutcome {
+    Saved,
+    /// `name` (as sent) was refused, for `message`.
+    Refused {
+        name: String,
+        message: String,
+    },
+}
+
+/// "Details": the wallet's name, a settings form of its own (renaming
+/// posts and comes back with a toast), and its facts.
+fn details_card(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
+    let w = &data.wallet;
+    let (shown, refusal) = match &data.rename {
+        Some(RenameOutcome::Refused { name, message }) => (name.as_str(), Some(message.as_str())),
+        _ => (w.name.as_str(), None),
+    };
+    let toast = match &data.rename {
+        Some(RenameOutcome::Saved) => Some(
+            Toast::new(ToastKind::Success, "Renamed")
+                .line(format!("This wallet is called {} now.", w.name)),
+        ),
+        Some(RenameOutcome::Refused { message, .. }) => Some(
+            Toast::new(ToastKind::Error, "Not renamed")
+                .line(message.clone())
+                .show("details"),
+        ),
+        None => None,
+    };
+    html! {
+        (settings::form(&format!("/account/wallets/{}/rename", w.id), Save::Reload, "Details", html! {
+            (Card::new("details", "Details")
+                .failed(refusal.is_some(), refusal)
+                .saved(matches!(data.rename, Some(RenameOutcome::Saved)).then_some(""), false)
+                .render(html! {
+                    (Field::new("Name", "wallet-name")
+                        .help(None, html! { "Only you see it, in wallet lists and pickers." })
+                        .render(html! {
+                            input type="text" id="wallet-name" name="name" value=(shown) maxlength=(crate::wallets::MAX_NAME_LEN) required
+                                data-saved=[refusal.map(|_| w.name.as_str())];
+                        }))
+                    dl class="facts" {
+                        dt { "Address" } dd { code { (w.primary_address) } }
+                        dt { "Network" } dd { (super::network_badge(&w.network)) }
+                        dt { "Kind" } dd { (origin_label(w)) }
+                        @if let Some(at) = w.retired_at {
+                            dt { "Keys" } dd { "Deleted " (chrome.clock.time(at)) }
+                        }
+                    }
+                }))
+            (settings::save_bar(refusal.is_some(), false, html! {
+                @if let Some(message) = refusal {
+                    strong { "Not renamed." } " " (message)
+                } @else {
+                    "Saving renames this wallet."
+                }
+            }, &format!("/account/wallets/{}", w.id)))
+        }))
+        (settings::toast_region(toast.as_ref(), false))
+    }
 }
 
 pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
@@ -855,21 +921,7 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
             }
             div class="wallet-layout" {
                 div class="main" {
-                    section class="box" {
-                        h2 { "Details" }
-                        form class="rename-form" method="post" action=(format!("/account/wallets/{}/rename", w.id)) {
-                            label { "Name" input type="text" name="name" value=(data.name_field) maxlength=(crate::wallets::MAX_NAME_LEN) required; }
-                            button type="submit" { "Rename" }
-                        }
-                        dl class="facts" {
-                            dt { "Address" } dd { code { (w.primary_address) } }
-                            dt { "Network" } dd { (super::network_badge(&w.network)) }
-                            dt { "Kind" } dd { (origin_label(w)) }
-                            @if let Some(at) = w.retired_at {
-                                dt { "Keys" } dd { "Deleted " (chrome.clock.time(at)) }
-                            }
-                        }
-                    }
+                    (details_card(chrome, data))
                     section class="box" {
                         h2 { "History" }
                         @if data.history.is_empty() {

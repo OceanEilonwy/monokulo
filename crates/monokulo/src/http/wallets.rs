@@ -18,8 +18,8 @@ use serde::Deserialize;
 use crate::db::{UserRow, WalletId, WalletOrigin, WalletRow};
 use crate::views;
 use crate::views::wallets::{
-    ChoiceViewModel, CreateViewModel, DetailViewModel, Flow, ImportViewModel, WalletEvent,
-    WalletListItem, WalletStore,
+    ChoiceViewModel, CreateViewModel, DetailViewModel, Flow, ImportViewModel, RenameOutcome,
+    WalletEvent, WalletListItem, WalletStore,
 };
 use crate::wallets::{clean_name, friendly_name};
 
@@ -591,7 +591,7 @@ async fn render_detail(
     wallet: WalletRow,
     error: Option<String>,
     notice: Option<String>,
-    name_field: Option<String>,
+    rename: Option<RenameOutcome>,
 ) -> Response {
     let chrome =
         super::page_chrome(state, Some(user), format!("/account/wallets/{}", wallet.id)).await;
@@ -695,7 +695,7 @@ async fn render_detail(
     let data = DetailViewModel {
         retire,
         restore,
-        name_field: name_field.unwrap_or_else(|| wallet.name.clone()),
+        rename,
         stores: stores
             .iter()
             .filter(|s| s.wallet_id.as_ref() == Some(&wallet.id))
@@ -730,7 +730,12 @@ async fn render_detail(
         error,
         notice,
     };
-    views::wallets::detail_page(&chrome, &data).into_response()
+    let page = views::wallets::detail_page(&chrome, &data);
+    if matches!(data.rename, Some(RenameOutcome::Refused { .. })) {
+        (StatusCode::UNPROCESSABLE_ENTITY, page).into_response()
+    } else {
+        page.into_response()
+    }
 }
 
 /// `GET /account/wallets/{id}`.
@@ -743,20 +748,20 @@ pub async fn detail(
     let Some(wallet) = load_wallet(&state, &user, &id).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let notice = match (query.renamed, query.restored, query.added) {
-        (Some(_), _, _) => Some("Renamed.".to_owned()),
-        (None, Some(_), _) => Some(format!("{} is back. Stores can use it again.", wallet.name)),
-        (None, None, Some(_)) => Some(format!(
+    let notice = match (query.restored, query.added) {
+        (Some(_), _) => Some(format!("{} is back. Stores can use it again.", wallet.name)),
+        (None, Some(_)) => Some(format!(
             "{} is added. Pick it for a store in the store's settings, or when you set one up.",
             wallet.name
         )),
-        (None, None, None) => None,
+        (None, None) => None,
     };
     let error = (query.skipped.is_some() && wallet.backup.as_deref() == Some("skipped")).then(|| {
         "This wallet's recovery phrase was not backed up. Payments to it can't be spent unless you have it."
             .to_owned()
     });
-    render_detail(&state, &user, wallet, error, notice, None).await
+    let rename = query.renamed.map(|_| RenameOutcome::Saved);
+    render_detail(&state, &user, wallet, error, notice, rename).await
 }
 
 #[derive(Deserialize)]
@@ -778,18 +783,18 @@ pub async fn rename(
     let name = match clean_name(&form.name) {
         Ok(Some(name)) => name,
         Ok(None) => {
-            return render_detail(
-                &state,
-                &user,
-                wallet,
-                Some("A wallet needs a name.".to_owned()),
-                None,
-                Some(form.name),
-            )
-            .await
+            let refused = RenameOutcome::Refused {
+                name: form.name,
+                message: "A wallet needs a name.".to_owned(),
+            };
+            return render_detail(&state, &user, wallet, None, None, Some(refused)).await;
         }
         Err(message) => {
-            return render_detail(&state, &user, wallet, Some(message), None, Some(form.name)).await
+            let refused = RenameOutcome::Refused {
+                name: form.name,
+                message,
+            };
+            return render_detail(&state, &user, wallet, None, None, Some(refused)).await;
         }
     };
     let (user_id, wallet_id, new_name) = (user.id.clone(), wallet.id.clone(), name.clone());
@@ -800,17 +805,11 @@ pub async fn rename(
     {
         Ok(_) => redirect_303(&format!("/account/wallets/{}?renamed=1", wallet.id)),
         Err(e) if e.is_unique_violation() => {
-            render_detail(
-                &state,
-                &user,
-                wallet,
-                Some(format!(
-                    "You already have a wallet called \u{201c}{name}\u{201d}."
-                )),
-                None,
-                Some(form.name),
-            )
-            .await
+            let refused = RenameOutcome::Refused {
+                name: form.name,
+                message: format!("You already have a wallet called \u{201c}{name}\u{201d}."),
+            };
+            render_detail(&state, &user, wallet, None, None, Some(refused)).await
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
@@ -1502,6 +1501,42 @@ mod tests {
             html.contains("New name") && html.contains("Renamed from"),
             "{html}"
         );
+        // The Details card, a settings form of its own, says it was saved.
+        assert!(
+            html.contains(&format!(r#"<mk-settings-form label="Details"><form method="post" action="/account/wallets/{id}/rename" id="settings-form">"#)),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<mk-settings-card id="card-details" class="settings-card" name="details""#
+            ),
+            "{html}"
+        );
+        assert!(html.contains("data-card-saved>Saved<"), "{html}");
+        assert!(html.contains("<strong>Renamed</strong>"), "{html}");
+
+        // A refused name: the card says why and keeps what was typed.
+        let refused = router
+            .clone()
+            .oneshot(post(
+                &format!("{page}/rename"),
+                Some(&cookie),
+                &[("name", "  ")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let html = body_text(refused).await;
+        assert!(
+            html.contains(r#"<mk-settings-card id="card-details" class="settings-card is-failed""#),
+            "{html}"
+        );
+        assert!(html.contains("A wallet needs a name."), "{html}");
+        assert!(
+            html.contains(r#"name="name" value="  " maxlength"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"data-saved="New name""#), "{html}");
         assert!(
             html.contains("btn-danger") && html.contains("Retire wallet"),
             "no store uses it, so retiring is offered: {html}"
