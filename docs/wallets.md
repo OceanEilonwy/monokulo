@@ -1,8 +1,9 @@
 # Wallets
 
 A merchant's stores take payments into **named wallets**. A new account sets
-up its first wallet straight after signing up; a store (custom, POS or
-WooCommerce) then picks one. Several stores can share a wallet.
+up its first store straight after signing up (`/setup`: Store, then
+Wallet, then Done), adding its first wallet on the way; a later store uses
+a wallet already added or adds another. Several stores can share a wallet.
 
 Designs: the "Monokulo wallet flows" canvas (2026-10-08). This page records
 how they were built and the decisions taken on the way.
@@ -13,26 +14,34 @@ how they were built and the decisions taken on the way.
 cargo run -p monokulo          # with an engine and a node for the network you use
 ```
 
-1. Sign up at `/dashboard/signup`: you're logged in and sent to
-   `/account/wallets/setup`.
-2. **Create a new wallet** (needs JavaScript), or **Bring your own wallet**
-   (paste a private view key and public spend key; works without it).
-   Hardware wallets show as *Coming soon*.
-3. For a new wallet: save the phrase in a wallet app (the QR code) or write
-   it down, then type the three words asked for. Only the watch-only keys
-   are sent.
-4. **Add a store**: the custom store form and the WooCommerce connect page
-   pick the wallet.
-5. The Wallets tab of `/account` lists them: mainnet wallets first, by name,
+1. Sign up at `/dashboard/signup`: you're logged in and sent to `/setup`.
+2. **Store**: where you take payments (your own website, WooCommerce, or in
+   person only), the store's name, and its site (a host: any page on it
+   works; none for in person). A site another store on the instance has is
+   refused.
+3. **Wallet**: use a wallet you already added, or name a new one (the name
+   is checked first) and **Create a new wallet** (needs JavaScript) or
+   **Bring your own wallet** (paste a private view key and public spend key;
+   works without it). Hardware wallets show as *Coming soon*.
+4. For a new wallet: its words and QR code show straight away on each
+   tab (Cake / Monero.com, Stack, Feather, Monero GUI / CLI, On paper);
+   **Make a different phrase** makes another. Then pick two of its words,
+   each from four, or go on after 20 seconds. Only the watch-only keys are
+   sent, and the store is made with it.
+5. **Done** says what's left. A website's store isn't taking payments yet:
+   add the checkout (the docs), verify the domain, take a test payment.
+6. The Wallets tab of `/account` lists them: mainnet wallets first, by name,
    then the stagenet and testnet ones folded below (open when there's no
    mainnet wallet), each network shown with one badge
    (`views::network_badge`), as on a wallet's page, the dashboard and the
-   wallet dropdowns. A wallet's page renames it, shows its stores and
-   history, and deletes it once no store uses it.
+   wallet dropdowns. **+ add a wallet** (`/account/wallets/add`) uses the
+   same screens as setup's Wallet step. A wallet's page renames it, shows
+   its stores and history, and retires it once no store uses it.
 
 Tests: `cargo test -p engine -p wallet-setup -p monokulo`, and in
 `e2e/browser`, `npx playwright test -c real-binaries.config.js
-tests/wallet-setup.spec.js` (the new-wallet flow in a real browser).
+tests/wallet-setup.spec.js` (store setup and the new-wallet flow in a real
+browser).
 
 ## How it fits together
 
@@ -41,6 +50,7 @@ tests/wallet-setup.spec.js` (the new-wallet flow in a real browser).
 | Engine wallets | `crates/engine` migration 0028, `POST/DELETE /api/v1/admin/wallets`, `wallet_id` on `POST /api/v1/admin/tenants` | A wallet's sealed keys and its one subaddress counter; stores are created on it |
 | Browser module | `crates/wallet-setup` (WebAssembly) | Polyseed from the page's randomness, keys, address, 25-word form, QR codes |
 | Monokulo wallets | migration 0031, `src/wallets.rs`, `src/http/{wallets,wallet_service}.rs`, `src/views/wallets.rs`, `static/wallet-setup.js` | Names, origin, backup, history; the pages |
+| Store setup | migration 0034, `src/stores.rs`, `src/http/setup.rs`, `src/views/setup.rs` | Store, Wallet, Done; a store's name and site |
 
 ## Decisions
 
@@ -56,17 +66,21 @@ Each: what was decided, what else was possible, and why.
    JavaScript. The design's hardware screens wait for that work.
 2. **A store can change its wallet** (see "Changing a store's wallet"
    below). It is called changing the wallet, never moving the store.
-3. **Signing up logs the new account in** (it used to send it to the login
-   page) and goes on to wallet setup, carrying `next` (a plugin's connect
-   page) through both, so someone arriving from WooCommerce ends up back at
-   their shop.
-4. **WooCommerce asks first** ("Is this shop already a store in Monokulo?")
-   with plain links, so it works without JavaScript. With no store yet the
-   question is skipped. An account with no wallet is sent to set one up and
-   comes back. A link that can't work (no public address, a return address on
-   another site) says why before anything else.
-5. **The wallet dropdown preselects only when there is exactly one wallet**;
-   with more it starts on "Choose a wallet…" and is required.
+3. **Signing up logs the new account in** and goes on to store setup, or
+   back to `next` (a plugin's connect page), so someone arriving from
+   WooCommerce ends up back at their shop.
+4. **WooCommerce finds the store by its site.** A store is a host and no two
+   stores on an instance share one, so the connect link needs no question:
+   a shop whose site one of the merchant's stores has connects to it with
+   one button; another account's is refused; otherwise setup makes the
+   store, with the kind and site fixed to the shop's, and its Done page's
+   button gives the plugin its key. A link that can't work (no public
+   address, a return address on another site) says why before anything
+   else.
+5. **The name comes before the kind** on the Wallet step, and is checked
+   before anything is made: as it changes (fixi), and again when a kind is
+   picked. A name taken in between gets a number ("Till (2)"), so a phrase
+   already backed up is never thrown away over its name.
 6. **Names**: blank picks a friendly "Adjective Noun" name nobody on the
    account has yet. Names are unique per account (ignoring case) so a picker
    is never ambiguous. The same keys can't be added twice to one account: the
@@ -85,21 +99,23 @@ Each: what was decided, what else was possible, and why.
    wallet. The wallet page lists the stores on it now and, under "Before",
    the stores that used it and changed to another wallet.
 9. **Skipping the backup is allowed**, behind the warning, a tick and typing
-   `skip`. The wallet records `backup = skipped` and its ready page says the
+   `skip`. The wallet records `backup = skipped` and the page after says the
    phrase wasn't saved. Refusing outright would leave someone who already has
    the phrase elsewhere stuck.
-10. **The check asks three random words**, exact match, from what was saved:
-    the 16 words, or the 25-word form for the Monero GUI. Instructions say
-    where to find the words in the app chosen (from each app's docs or
-    source: Cake and Monero.com Settings, Recovery & Keys; Stack Wallet's
-    Wallet backup; Feather's Wallet, Seed; the GUI's Settings, Seed & keys).
+10. **The check asks two random words, each picked from four**: the right
+    one and three from the same word list, never from the phrase (the words
+    of other wallets made in the page and thrown away). It checks what the
+    tab shows: the 16 words, or the 25-word form for the Monero GUI. Both
+    right enables Next; after 20 seconds Next works without answering
+    ("Continue without checking"), and the backup is recorded as the tab's.
 11. **Restore QR codes**: Cake Wallet and Monero.com scan
     `monero_wallet:<address>?seed=…&height=…&label=…` (their restore code
     accepts a polyseed); Stack Wallet scans `{"mnemonic": [words]}` into its
     word boxes; Feather has no full-wallet QR restore, so it gets the words;
     the Monero GUI can't read polyseed, so it gets the **25-word version of the
     same wallet** (the polyseed's spend key as a legacy seed, as Feather
-    offers) and a restore height. The QR stays hidden until asked for.
+    offers) and a restore height. The words and the QR show straight away:
+    the page is the private moment. Feather's tab records `feather`.
 12. **Wallet app logos** are the projects' own app icons, vendored in
     `static/wallet-logos/` with a SOURCE file; Trezor and Ledger are their
     marks from their own repositories, inline. They name the apps only.
@@ -140,9 +156,10 @@ Each: what was decided, what else was possible, and why.
     with how the phrase was saved. The server checks the address it derives
     from the keys matches the page's, so a wallet can't be registered with
     keys the phrase doesn't stand for. The page sends `Cache-Control:
-    no-store`, warns before leaving, and drops the words once submitted. If
-    registering fails, the page says plainly that the phrase backed up is not
-    connected and offers a fresh wallet.
+    no-store` and drops the words once submitted. It doesn't warn before
+    leaving: nothing is made until the check passes or is skipped, so Back
+    loses nothing. If registering fails, the page says plainly that the
+    phrase backed up is not connected.
 20. **Without JavaScript the create card is drawn unavailable with its
     reason**, server-side; the script turns it on (and says so if the browser
     lacks WebAssembly or secure randomness). Bring your own wallet needs no
@@ -153,8 +170,8 @@ Each: what was decided, what else was possible, and why.
 22. **The module is ~810 KB** (uncompressed): both seed crates carry every
     language's word list. Acceptable for one page; trimming means patching
     the crates.
-23. **The network for a new wallet** is under "More options" on the setup
-    page (mainnet by default).
+23. **The network for a new wallet** is under "More options" on the Wallet
+    step (mainnet by default), and isn't asked again.
 24. **The restore height** shown with the 25-word form is the highest node
     height the engine reports for the network when the page loads: the wallet
     is new, so nothing earlier is its.

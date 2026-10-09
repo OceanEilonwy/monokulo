@@ -60,7 +60,7 @@ test('clearing a network stores use asks first; one no store uses does not', asy
   if (Number(await stagenet.getAttribute('data-tenant-count')) === 0) {
     // Run on its own: make a store on stagenet to protect.
     await createStore(page, 'guarded.example.com');
-    await expect(page.getByRole('heading', { name: 'Store connected' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'guarded.example.com is set up' })).toBeVisible();
     await openSettingsTab(page, 'nodes');
   }
   const count = Number(await stagenet.getAttribute('data-tenant-count'));
