@@ -263,11 +263,15 @@ test('every tab, for the gallery', async ({ page }) => {
   for (const tab of SETTINGS_TABS) {
     await openSettingsTab(page, tab);
     if (tab === 'nodes') {
-      // How the engine performs (docs/engine_scaling.md section 6): both
-      // processes' CPU and memory, stacked, and stagenet's scan.
-      await expect(page.locator('#resources-title')).toBeVisible();
-      await expect(page.locator('.resource-chart')).toHaveCount(2);
-      await expect(page.locator('[data-scanning="stagenet"]')).toContainText('Pace set by');
+      // How the engine performs (docs/engine_scaling.md section 6) is on the
+      // engine page: the tab keeps the nodes and their status, and each
+      // network's card links there.
+      await expect(page.locator('#card-network-stagenet .node-row-status').first()).toBeVisible();
+      await expect(page.locator('.resource-chart')).toHaveCount(0);
+      await expect(page.locator('[data-scanning]')).toHaveCount(0);
+      const link = page.locator('#card-network-stagenet .card-head a.engine-link');
+      await expect(link).toHaveText('See it on the engine page');
+      await expect(link).toHaveAttribute('href', '/status/engine?network=stagenet');
     }
     await captureCoverageStage(page, `admin-settings-${tab}`, test.info(), { group: 'admin-settings', shapes: ['mobile-portrait', 'desktop'] });
   }

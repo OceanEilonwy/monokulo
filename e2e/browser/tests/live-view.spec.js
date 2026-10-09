@@ -1,7 +1,9 @@
 // The engine page (docs/engine_visualizer.md) in a real browser, against the
 // coverage fixture's engine: following it live, scrubbing the timeline,
 // replaying and going live again, moving and resizing the timeline's window,
-// the legend, and the page without JavaScript.
+// the legend, the chain strip's cells at each width, the round's lanes, the
+// network picker, the live "Machine and links" strip, and the page without
+// JavaScript.
 // The fixture plays a scripted story into the engine's activity record
 // (`POST /__coverage/engine/story`): a block with a payment, a pool payment
 // settling, a store catching up and joining the frontier, and a reorg.
@@ -190,6 +192,162 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
 
   await page.locator('#engine-filters input[data-tier="blocks"]').uncheck();
   await expect(events.locator('.tierchip.t-blocks')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+// The chain strip's cells as laid out: every one drawn, its box, and the
+// strip's content box (inside its padding).
+async function stripCells(page) {
+  return page.evaluate(() => {
+    const strip = document.getElementById('strip');
+    const box = strip.getBoundingClientRect();
+    const style = getComputedStyle(strip);
+    const left = box.left + parseFloat(style.paddingLeft), right = box.right - parseFloat(style.paddingRight);
+    const cells = [...document.querySelectorAll('#cells > .cell')].map((cell) => {
+      const r = cell.getBoundingClientRect();
+      return { h: Number(cell.dataset.h), next: cell.classList.contains('next'), left: r.left, right: r.right, top: r.top, width: r.width };
+    });
+    return { left, right, cells };
+  });
+}
+
+test('the chain strip shows more blocks when wider, never wider blocks', async ({ page, context }) => {
+  test.setTimeout(60_000);
+  await openAsAdmin(page, context);
+  await expect(page.locator('#engine-timeline')).toBeVisible();
+  await expect(page.locator('#cells .cell.next')).toHaveCount(1);
+  const counts = [];
+  for (const width of [1280, 1024, 800, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    // The script fits the strip again once it has been resized.
+    await expect.poll(async () => {
+      const { left, cells } = await stripCells(page);
+      return cells.every((c) => c.left >= left - 0.5);
+    }).toBe(true);
+    const { left, right, cells } = await stripCells(page);
+    const top = cells[0].top;
+    for (const cell of cells) {
+      // Whole cells only, on one line, inside the strip.
+      expect(cell.left, `${width}px: block ${cell.h}`).toBeGreaterThanOrEqual(left - 0.5);
+      expect(cell.right, `${width}px: block ${cell.h}`).toBeLessThanOrEqual(right + 0.5);
+      expect(Math.abs(cell.top - top), `${width}px: block ${cell.h}`).toBeLessThan(8);
+      // A fixed size: 22px, the next block 32px.
+      expect(Math.round(cell.width), `${width}px: block ${cell.h}`).toBe(cell.next ? 32 : 22);
+    }
+    // The newest block is the rightmost, at the right edge.
+    const newest = cells.reduce((a, b) => (b.h > a.h ? b : a));
+    expect(newest.next).toBe(true);
+    expect(Math.max(...cells.map((c) => c.right))).toBe(newest.right);
+    expect(right - newest.right).toBeLessThan(1);
+    // Room for no other whole cell on the left.
+    expect(Math.min(...cells.map((c) => c.left)) - left).toBeLessThan(26);
+    counts.push(cells.length);
+  }
+  for (let i = 1; i < counts.length; i++) expect(counts[i], `${counts}`).toBeLessThan(counts[i - 1]);
+
+  // On a phone the strip is the cells alone: the node list a --space-md
+  // (12px) gap under them.
+  const gap = await page.evaluate(() => {
+    const cells = document.getElementById('cells').getBoundingClientRect();
+    const node = document.querySelector('#nodes .node').getBoundingClientRect();
+    const space = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--space-md'));
+    return { gap: node.top - cells.bottom, space };
+  });
+  expect(Math.abs(gap.gap - gap.space), JSON.stringify(gap)).toBeLessThanOrEqual(1);
+});
+
+test('the round lanes use the width, their chips on their own row at the right', async ({ page, context }) => {
+  await openAsAdmin(page, context);
+  await expect(page.locator('#engine-timeline')).toBeVisible();
+  const lanes = async () => page.evaluate(() => {
+    const card = document.getElementById('engine-round');
+    const padding = parseFloat(getComputedStyle(card).paddingRight);
+    const edge = card.getBoundingClientRect().right - padding;
+    return [...card.querySelectorAll('.lanes .track')].map((track) => {
+      const t = track.getBoundingClientRect();
+      const chip = track.nextElementSibling.querySelector('.engine-chip').getBoundingClientRect();
+      const bar = track.querySelector('.bar').getBoundingClientRect();
+      return { edge, chipRight: chip.right, chipMiddle: chip.top + chip.height / 2, trackMiddle: t.top + t.height / 2, trackWidth: t.width, trackRight: t.right, chipLeft: chip.left, bar: bar.width };
+    });
+  });
+  for (const width of [1280, 800]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const lane of await lanes()) {
+      expect(Math.abs(lane.chipRight - lane.edge), `${width}px`).toBeLessThan(1.5);
+      expect(Math.abs(lane.chipMiddle - lane.trackMiddle), `${width}px: on the lane's row`).toBeLessThan(4);
+      expect(lane.chipLeft, `${width}px`).toBeGreaterThan(lane.trackRight);
+    }
+  }
+  // A phone keeps a mini form of the bars beside the label and the chip.
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const lane of await lanes()) {
+    expect(lane.trackWidth).toBeGreaterThan(120);
+    expect(lane.bar).toBeGreaterThan(0);
+    expect(Math.abs(lane.chipMiddle - lane.trackMiddle)).toBeLessThan(4);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+test('the network picker goes at once with JavaScript, with Go without', async ({ page, context, browser }) => {
+  await openAsAdmin(page, context);
+  await expect(page.locator('.network-go')).toBeHidden();
+  await expect(page.locator('mk-select .mk-button').first()).toBeVisible();
+  // Picking a network submits the form: the page loads it.
+  await Promise.all([
+    page.waitForURL(/\/status\/engine\?network=mainnet$/),
+    page.evaluate(() => {
+      const select = document.getElementById('engine-network');
+      select.value = 'mainnet';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }),
+  ]);
+
+  const noJs = await browser.newContext({ javaScriptEnabled: false });
+  await noJs.addCookies([{ name: 'session', value: fixture.admin_session, url: fixture.base_url }]);
+  const plain = await noJs.newPage();
+  await plain.goto(`${fixture.base_url}/status/engine`);
+  await expect(plain.locator('#engine-network')).toBeVisible();
+  await expect(plain.locator('#engine-network option[value="testnet"]')).toBeDisabled();
+  await plain.locator('.network-go').click();
+  await expect(plain).toHaveURL(/\/status\/engine\?network=mainnet$/);
+  await noJs.close();
+});
+
+test('the machine strip and the Scanning panel follow the engine live', async ({ page, context }) => {
+  test.setTimeout(60_000);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(String(error)));
+  await openAsAdmin(page, context);
+  const strip = page.locator('#engine-machine');
+  for (const tile of ['cpu', 'memory', 'transfer', 'round-trip', 'first-byte', 'block-size']) {
+    await expect(strip.locator(`[data-tile="${tile}"]`)).toHaveCount(1);
+  }
+  // The chip says how long ago the engine reported the figures.
+  await expect(page.locator('#machine-age')).toHaveText(/^live · \d+ s ago$/);
+  await expect(page.locator('#machine-live .live-dot')).toBeVisible();
+  // The Scanning panel is open, with a short line in its summary.
+  await expect(page.locator('#d-scanning')).toHaveAttribute('open', '');
+  await expect(page.locator('#scan-sum')).toHaveText(/^(at the tip|[\d,]+ behind)( · .*)?$/);
+  // Each machine event draws them again with the engine's newer report:
+  // the age goes back down when one comes.
+  const age = async () => Number((await page.locator('#machine-age').textContent()).match(/\d+/)[0]);
+  let last = await age(), fresher = false;
+  for (let i = 0; i < 40 && !fresher; i++) {
+    await page.waitForTimeout(500);
+    const now = await age();
+    fresher = now < last;
+    last = now;
+  }
+  expect(fresher, 'a newer report arrived').toBe(true);
+  await expect(page.locator('#scan-body dt').first()).toHaveText('Progress');
+  // Once the sampler has an hour's first samples, CPU has a figure.
+  await expect(strip.locator('[data-tile="cpu"] .v')).not.toHaveText('–', { timeout: 30_000 });
+  // The panels are a grid under the round: an open one spans the row.
+  const [scanning, reorg] = await Promise.all(['#d-scanning', '#d-reorg'].map((id) => page.locator(id).boundingBox()));
+  const panels = await page.locator('#engine-panels').boundingBox();
+  expect(Math.abs(scanning.width - panels.width)).toBeLessThan(1);
+  expect(reorg.width).toBeLessThan(panels.width / 2);
+  await captureCoverageStage(page, 'engine-strip', test.info(), { group: 'engine', shapes: ['mobile-portrait', 'tablet-portrait', 'desktop'] });
   expect(errors).toEqual([]);
 });
 
