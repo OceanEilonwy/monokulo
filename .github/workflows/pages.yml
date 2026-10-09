@@ -3,6 +3,8 @@
 #               package's site artifact)
 #   /quality/   the quality report (`cargo xtask pages build`): tests,
 #               coverage, screenshots, property tests, fuzzing and scale
+#   /docs/      the guides for adding Monokulo to a site (`cargo xtask
+#               pages docs`, from docs/site/), and the Geomart sample shop
 #
 # The site is in parts, each made by one workflow on main, which deploys the
 # whole site when it finishes (Pages serves a single deployment):
@@ -80,6 +82,10 @@ jobs:
             if test -d "target/pages/$source"; then args+=("--$source" "target/pages/$source"); fi
           done
           cargo xtask pages build "${args[@]}"
+      # The guides for adding Monokulo to a site, from docs/site/ in this
+      # checkout, with the Geomart sample shop under /docs/geomart/.
+      - name: Build the docs beside the landing page
+        run: cargo xtask pages docs --out target/pages/site/docs
       - uses: actions/upload-pages-artifact@v5
         with:
           path: target/pages/site/

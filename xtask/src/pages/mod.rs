@@ -12,6 +12,7 @@
 //! (`badge.json`). Only one engine build of the property and fuzz runs is
 //! shown (ZMQ unless told otherwise): they run each build separately.
 
+mod docs;
 mod fetch;
 mod format;
 mod inputs;
@@ -21,6 +22,7 @@ mod serve;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use docs::build as docs;
 pub(crate) use fetch::fetch;
 pub(crate) use serve::serve;
 
@@ -68,6 +70,9 @@ pub(crate) const HELP: &str = "\
         pages fetch DIR [--repo OWNER/NAME] [--feature zmq|default]\n\
                       Download main's newest OpenWrt site, coverage, property, fuzz and scale artifacts\n\
                       into DIR, with DIR/sources.json naming their runs (needs the gh CLI)\n\
+        pages docs --out DIR
+                      Build the docs (GitHub Pages /docs/) from docs/site/*.md, with the Geomart sample
+                      shop (examples/geomart/) under DIR/geomart/
         serve DIR [PORT]\n\
                       Serve DIR on http://127.0.0.1:PORT (8000) to look at a built site as Pages serves it";
 

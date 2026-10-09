@@ -91,6 +91,7 @@ fn main() -> ExitCode {
         ["test-timings", rest @ ..] => timings::timings(rest),
         ["pages", "build", rest @ ..] => pages::build(&root(), rest),
         ["pages", "fetch", rest @ ..] => pages::fetch(rest),
+        ["pages", "docs", rest @ ..] => pages::docs(&root(), rest),
         ["serve", rest @ ..] => pages::serve(rest),
         _ => {
             help();

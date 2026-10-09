@@ -90,6 +90,10 @@ fn stylesheets() -> Vec<(String, String)> {
         "web/pages/quality/quality.css".to_string(),
         read(&web.join("pages/quality/quality.css")),
     ));
+    sheets.push((
+        "web/pages/docs/docs.css".to_string(),
+        read(&web.join("pages/docs/docs.css")),
+    ));
     sheets
 }
 
