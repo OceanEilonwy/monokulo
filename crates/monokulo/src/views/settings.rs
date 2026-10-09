@@ -258,7 +258,6 @@ pub struct Field<'a> {
     /// checkboxes), the label's own id, which names the group.
     id: &'a str,
     group: bool,
-    class: Option<&'a str>,
     chip: Option<Markup>,
     help: Option<(Option<&'a str>, Markup)>,
 }
@@ -270,7 +269,6 @@ impl<'a> Field<'a> {
             label,
             id: control,
             group: false,
-            class: None,
             chip: None,
             help: None,
         }
@@ -283,12 +281,6 @@ impl<'a> Field<'a> {
             group: true,
             ..Field::new(label, id)
         }
-    }
-
-    /// Another class beside `setting-field`.
-    pub fn class(mut self, class: &'a str) -> Self {
-        self.class = Some(class);
-        self
     }
 
     /// Beside the label: where its value comes from.
@@ -305,10 +297,6 @@ impl<'a> Field<'a> {
 
     /// The setting around `control` (and anything under it).
     pub fn render(self, control: Markup) -> Markup {
-        let class = match self.class {
-            Some(more) => format!("setting-field {more}"),
-            None => "setting-field".to_string(),
-        };
         let help_id = self.help.as_ref().and_then(|(id, _)| *id);
         let help = html! {
             @if let Some((id, help)) = &self.help {
@@ -317,7 +305,7 @@ impl<'a> Field<'a> {
         };
         html! {
             @if self.group {
-                mk-setting class=(class) role="group" aria-labelledby=(self.id) aria-describedby=[help_id] {
+                mk-setting class="setting-field" role="group" aria-labelledby=(self.id) aria-describedby=[help_id] {
                     div class="setting-label-row" {
                         span class="setting-label" id=(self.id) { (self.label) }
                         @if let Some(chip) = &self.chip { (chip) }
@@ -327,7 +315,7 @@ impl<'a> Field<'a> {
                     (control)
                 }
             } @else {
-                mk-setting class=(class) {
+                mk-setting class="setting-field" {
                     div class="setting-label-row" {
                         label class="setting-label" for=(self.id) { (self.label) }
                         @if let Some(chip) = &self.chip { (chip) }
