@@ -24,7 +24,7 @@ async function wordsOnThePage(page) {
 /** Starts making a stagenet wallet called `name` from the setup page. */
 async function startNewWallet(page, name) {
   const { monokulo_url: base } = fixture();
-  await page.goto(base + '/dashboard/wallets/setup');
+  await page.goto(base + '/account/wallets/setup');
   await page.locator('input[name="name"]').fill(name);
   await page.getByText('More options').click();
   await page.locator('select[name="network"]').selectOption('stagenet');
@@ -40,7 +40,7 @@ test('a new wallet is made in the browser, saved, checked with three of its word
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
   await expectSaved(page);
 
-  await page.goto(base + '/dashboard/wallets/setup');
+  await page.goto(base + '/account/wallets/setup');
   // With JavaScript, creating one is offered.
   await expect(page.locator('#create-needs-js')).toBeHidden();
   await expect(page.getByText('Coming soon')).toBeVisible();
@@ -101,7 +101,7 @@ test('a new wallet is made in the browser, saved, checked with three of its word
   await expect(page.getByText('Copper Heron').first()).toBeVisible();
   await captureCoverageStage(page, 'wallets-ready', test.info(), { group: GROUP });
 
-  await page.goto(base + '/dashboard/wallets');
+  await page.goto(base + '/account?tab=wallets');
   const row = page.locator('tr', { hasText: 'Copper Heron' });
   await expect(row).toContainText('Made in Monokulo');
   await expect(row).toContainText('stagenet');
@@ -130,7 +130,7 @@ test.describe('with JavaScript off', () => {
   test('creating a wallet is shown unavailable with the reason, and bringing your own still works', async ({ page }) => {
     const { monokulo_url: base } = fixture();
     await signInAsAdmin(page);
-    await page.goto(base + '/dashboard/wallets/setup');
+    await page.goto(base + '/account/wallets/setup');
     await expect(page.getByRole('button', { name: 'Create a new wallet' })).toBeDisabled();
     await expect(page.locator('#create-needs-js')).toContainText('needs JavaScript');
     await expect(page.getByRole('button', { name: 'Connect a device' })).toBeDisabled();
@@ -156,7 +156,7 @@ test('stores pick a wallet, and a wallet lists its stores and is renamed on its 
   await finishStoreSetup(page);
   await expect(page.locator('.kv-table')).toContainText(WALLET_NAME);
 
-  await page.goto(base + '/dashboard/wallets');
+  await page.goto(base + '/account?tab=wallets');
   await captureCoverageStage(page, 'wallets-list', test.info(), { group: GROUP });
   await page.getByRole('link', { name: WALLET_NAME }).click();
   await expect(page.getByRole('link', { name: 'wallet-shop.example.com' }).first()).toBeVisible();
@@ -179,7 +179,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await createStore(page, 'changing-shop.example.com');
   const store = await finishStoreSetup(page);
   // A second stagenet wallet, with keys of its own.
-  await page.goto(base + '/dashboard/wallets/import');
+  await page.goto(base + '/account/wallets/import');
   await page.locator('input[name="name"]').fill('Cafe till');
   await page.locator('input[name="view_key_hex"]').fill('0707070707070707070707070707070707070707070707070707070707070707');
   await page.locator('input[name="spend_pubkey_hex"]').fill('8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90');
@@ -218,7 +218,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
 
   // The old wallet's page lists the store under Before. Changing back
   // leaves the helpers' wallet in use again.
-  await page.goto(base + '/dashboard/wallets');
+  await page.goto(base + '/account?tab=wallets');
   await page.getByRole('link', { name: WALLET_NAME }).click();
   await expect(page.getByText('changed to another wallet')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Before' })).toBeVisible();
@@ -230,7 +230,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
 
   // Cafe till is used by nothing now: retired, its keys deleted, said at
   // the top of its page; then brought back with its keys.
-  await page.goto(base + '/dashboard/wallets');
+  await page.goto(base + '/account?tab=wallets');
   await page.getByRole('link', { name: 'Cafe till' }).click();
   const retire = page.locator('.danger-zone');
   await expect(retire.getByRole('heading', { name: 'Retire wallet' })).toBeVisible();
@@ -241,7 +241,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await expect(banner).toContainText("private view key and public spend key");
   await expect(page.locator('dl.facts')).toContainText('Keys');
   await captureCoverageStage(page, 'wallets-retired', test.info(), { group: GROUP });
-  await page.goto(base + '/dashboard/wallets');
+  await page.goto(base + '/account?tab=wallets');
   await expect(page.getByText('Retired wallets (1)')).toBeVisible();
   await page.goto(base + store + '/settings');
   await page.locator('#wallet').getByRole('combobox', { name: 'Wallet' }).click();
@@ -250,7 +250,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await page.locator('#wallet details.wallet-history summary').click();
   await expect(page.locator('#wallet tbody tr', { hasText: 'Cafe till' }).locator('.tag')).toHaveText('Retired');
 
-  await page.goto(base + '/dashboard/wallets');
+  await page.goto(base + '/account?tab=wallets');
   await page.locator('.retired-wallets summary').click();
   await page.getByRole('link', { name: 'Cafe till' }).click();
   await page.locator('input[name="view_key_hex"]').fill('0707070707070707070707070707070707070707070707070707070707070707');

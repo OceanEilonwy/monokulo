@@ -38,6 +38,9 @@ pub struct SignupViewModel {
     /// checked to be a path on this site: kept through sign-up and wallet
     /// setup.
     pub next: Option<String>,
+    /// The theme the form has picked: System, or what a refused sign-up
+    /// sent.
+    pub theme: crate::db::Theme,
 }
 
 pub struct LoginViewModel {
@@ -77,13 +80,14 @@ pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
                     " to join."
                 }
             } @else {
-                form method="post" action="/dashboard/signup" {
+                form method="post" action="/dashboard/signup" class="signup-form" {
                     input type="hidden" name="invite" value=(data.invite_token);
                     @if let Some(next) = &data.next {
                         input type="hidden" name="next" value=(next);
                     }
                     label { "Email " input type="email" name="email" required; }
                     label { "Password " input type="password" name="password" required minlength=(crate::http::MIN_PASSWORD_LEN) autocomplete="new-password"; }
+                    (super::account::theme_choice(data.theme, None, "You can change it any time from the account menu."))
                     button type="submit" class="btn-primary" { "Sign up" }
                 }
             }
@@ -140,6 +144,7 @@ mod tests {
                 error: None,
                 invite_required: false,
                 invite_token: String::new(),
+                theme: crate::db::Theme::System,
             },
         )
         .into_string();
@@ -156,6 +161,7 @@ mod tests {
                 error: Some("that email is already registered".to_string()),
                 invite_required: false,
                 invite_token: String::new(),
+                theme: crate::db::Theme::System,
             },
         )
         .into_string();
@@ -171,6 +177,7 @@ mod tests {
                 error: None,
                 invite_required: true,
                 invite_token: String::new(),
+                theme: crate::db::Theme::System,
             },
         )
         .into_string();

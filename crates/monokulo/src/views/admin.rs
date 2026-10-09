@@ -1246,9 +1246,15 @@ pub fn banners(data: &AdminSettingsViewModel, oob: bool) -> Markup {
 /// JavaScript it fades by itself (CSS); with it, one saying something
 /// wasn't saved stays until it's closed.
 pub fn toasts(data: &AdminSettingsViewModel, oob: bool) -> Markup {
+    toast_region(data.toast.as_ref(), oob)
+}
+
+/// The corner of the window a settings page's toast shows in (the admin
+/// settings page's, the account page's), with `toast` in it.
+pub fn toast_region(toast: Option<&Toast>, oob: bool) -> Markup {
     html! {
         div id="settings-toasts" class="toasts" data-fx-oob[oob] {
-            @if let Some(toast) = &data.toast {
+            @if let Some(toast) = toast {
                 @let (class, icon, role) = match toast.kind {
                     ToastKind::Success => ("toast toast-success", "\u{2713}", "status"),
                     ToastKind::Warning => ("toast toast-warning", "!", "status"),
@@ -1840,21 +1846,39 @@ fn save_bar(data: &AdminSettingsViewModel) -> Markup {
     let outcome = data.outcome.as_ref();
     let failure = outcome.and_then(|outcome| outcome.failures().first());
     let partly = matches!(outcome, Some(SaveOutcome::PartlySaved { .. }));
+    let message = html! {
+        @if let Some(failure) = failure {
+            strong { @if partly { "Changes partly saved." } @else { "Nothing saved." } } " " (failure.message)
+            @if let Some(group) = failure.group {
+                " " a href=(format!("#{}", group.card_id())) data-show-card=(group) { "Show" }
+            }
+        } @else {
+            "Saving writes the changes on this tab to the options file and applies them."
+        }
+    };
+    save_bar_frame(
+        failure.is_some(),
+        data.answers_save && failure.is_some(),
+        message,
+        &data.tab.href(),
+    )
+}
+
+/// A settings page's one bottom save bar (the admin settings page's, the
+/// account page's): `message`, then Discard changes (a link back to
+/// `discard_href`, the page as saved) and Save. Red after a save that
+/// refused something (`failed`); `focus` gives its message focus after a
+/// save fixi swapped in. `static/admin-settings.js` shows it only while
+/// something is changed.
+pub fn save_bar_frame(failed: bool, focus: bool, message: Markup, discard_href: &str) -> Markup {
     html! {
-        div id="save-bar" class={ "save-bar" @if failure.is_some() { " is-failed" } } role="region" aria-label="Save changes" data-save-bar {
+        div id="save-bar" class={ "save-bar" @if failed { " is-failed" } } role="region" aria-label="Save changes" data-save-bar {
           div class="wrap save-bar-inner" {
-            p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus[data.answers_save && failure.is_some()] {
-                @if let Some(failure) = failure {
-                    strong { @if partly { "Changes partly saved." } @else { "Nothing saved." } } " " (failure.message)
-                    @if let Some(group) = failure.group {
-                        " " a href=(format!("#{}", group.card_id())) data-show-card=(group) { "Show" }
-                    }
-                } @else {
-                    "Saving writes the changes on this tab to the options file and applies them."
-                }
+            p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus[focus] {
+                (message)
             }
             div class="save-bar-actions" {
-                a class="btn" href=(data.tab.href()) data-discard-all { "Discard changes" }
+                a class="btn" href=(discard_href) data-discard-all { "Discard changes" }
                 button type="submit" class="btn-primary" data-save { "Save" }
             }
           }

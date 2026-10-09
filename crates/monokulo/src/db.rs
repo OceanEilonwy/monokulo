@@ -889,13 +889,44 @@ impl Db {
         Ok(())
     }
 
-    /// `POST /dashboard/timezone`: a zone name, or `None` for automatic.
-    pub fn update_user_timezone(&self, id: &UserId, timezone: Option<&str>) -> Result<()> {
+    /// `POST /account/profile`: the email they log in with, their theme and
+    /// time zone (a zone name, or `None` for automatic), all at once. An
+    /// email another account has fails with a unique violation
+    /// ([`DbError::is_unique_violation`]), and nothing is changed.
+    pub fn update_user_profile(
+        &self,
+        id: &UserId,
+        email: &str,
+        theme: Theme,
+        timezone: Option<&str>,
+    ) -> Result<()> {
         self.conn.execute(
-            "UPDATE users SET timezone = ?2 WHERE id = ?1",
-            params![id, timezone],
+            "UPDATE users SET email = ?2, theme = ?3, timezone = ?4 WHERE id = ?1",
+            params![id, email, theme.as_str(), timezone],
         )?;
         Ok(())
+    }
+
+    /// `POST /account/password`: the new password's hash, and every one of
+    /// the user's sessions but `keep` (the one changing it) ended, in one
+    /// transaction. Returns how many sessions were ended.
+    pub fn change_password(
+        &self,
+        id: &UserId,
+        password_hash: &str,
+        keep: &shared::auth::TokenHash,
+    ) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE users SET password_hash = ?2 WHERE id = ?1",
+            params![id, password_hash],
+        )?;
+        let ended = tx.execute(
+            "DELETE FROM sessions WHERE user_id = ?1 AND token != ?2",
+            params![id, keep],
+        )?;
+        tx.commit()?;
+        Ok(ended)
     }
 
     /// `POST /dashboard/theme` - the nav's own no-JS toggle form. Same

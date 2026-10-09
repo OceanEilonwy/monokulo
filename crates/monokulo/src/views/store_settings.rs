@@ -352,7 +352,7 @@ fn wallet_section(store: &StoreSettingsData, in_place: bool, oob: bool) -> Marku
         }
         @if let Some(current) = &wallet.current {
             p class="settings-summary-line" {
-                "Payments go to " strong { a href=(format!("/dashboard/wallets/{}", current.id)) { (current.name) } }
+                "Payments go to " strong { a href=(format!("/account/wallets/{}", current.id)) { (current.name) } }
                 " since " (store.clock.time(current.since)) "."
             }
         } @else {
@@ -400,7 +400,7 @@ fn wallet_section(store: &StoreSettingsData, in_place: bool, oob: bool) -> Marku
                                 td {
                                     @match (&period.wallet_id, &period.wallet_name) {
                                         (Some(id), Some(name)) => {
-                                            a href=(format!("/dashboard/wallets/{id}")) { (name) }
+                                            a href=(format!("/account/wallets/{id}")) { (name) }
                                             @if period.wallet_retired { " " span class="tag tag-unknown" { "Retired" } }
                                         },
                                         _ => span class="muted" { "A deleted wallet" },

@@ -2533,7 +2533,7 @@ mod tests {
             after.headers()["location"]
                 .to_str()
                 .unwrap()
-                .starts_with("/dashboard/wallets/setup?next=%2Fconnect%2Fwoocommerce"),
+                .starts_with("/account/wallets/setup?next=%2Fconnect%2Fwoocommerce"),
             "{:?}",
             after.headers()["location"]
         );

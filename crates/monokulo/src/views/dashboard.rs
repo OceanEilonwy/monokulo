@@ -1,8 +1,7 @@
-//! `GET /dashboard` - `http::home::dashboard_home`.
+//! `GET /` (signed in) - `http::home::home`.
 
 use maud::{html, Markup};
 
-use super::controls::Choice;
 use super::{layout, PageChrome};
 
 /// One connected store as shown on the dashboard home page - a much smaller
@@ -122,42 +121,10 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                     a class="btn btn-primary" href="/dashboard/stores/new" { "+ add a store" }
                 }
             }
-            (timezone_setting(chrome))
         }
     };
 
     layout(chrome, "Dashboard - Monokulo", body)
-}
-
-/// The zone every date and time is shown in (the nav's "tz: ..." link
-/// comes here). Automatic follows the browser.
-fn timezone_setting(chrome: &PageChrome) -> Markup {
-    let clock = &chrome.clock;
-    let automatic = if clock.is_automatic() && clock.name() != "UTC" {
-        Choice::new("", "Automatic").note(format!("this browser: {}", clock.name()))
-    } else {
-        Choice::new("", "Automatic").note("this browser's zone, UTC until it's known")
-    };
-    html! {
-        section class="box timezone-setting" id="timezone" {
-            div class="timezone-current" { strong { "Time zone" } span class="muted" { (clock.name()) } }
-            details class="timezone-edit" {
-            summary { "Edit time zone" }
-            form method="post" action="/dashboard/timezone" class="setting-field" {
-                label for="timezone-select" { "Show dates and times in" }
-                mk-select {
-                    select id="timezone-select" name="timezone" {
-                        (automatic.selected(clock.is_automatic()))
-                        @for name in super::time::zone_names() {
-                            (Choice::new(&name, &name).selected(!clock.is_automatic() && name == clock.name()))
-                        }
-                    }
-                }
-                button type="submit" { "Save" }
-            }
-            }
-        }
-    }
 }
 
 #[cfg(test)]

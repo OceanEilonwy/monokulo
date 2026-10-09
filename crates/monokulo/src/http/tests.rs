@@ -503,7 +503,7 @@ async fn signing_up_logs_in_and_goes_on_to_set_up_a_wallet() {
         .unwrap()
         .to_str()
         .unwrap();
-    assert_eq!(location, "/dashboard/wallets/setup");
+    assert_eq!(location, "/account/wallets/setup");
     assert!(
         response.headers()["set-cookie"]
             .to_str()
@@ -1034,7 +1034,7 @@ async fn add_test_wallet(router: &Router, cookie: &str) -> String {
     let response = router
         .clone()
         .oneshot(cookie_form_request(
-            "/dashboard/wallets/import",
+            "/account/wallets/import",
             cookie,
             &[
                 ("name", "Test wallet"),
@@ -1052,7 +1052,7 @@ async fn add_test_wallet(router: &Router, cookie: &str) -> String {
     );
     let location = response.headers()["location"].to_str().unwrap().to_owned();
     location
-        .trim_start_matches("/dashboard/wallets/")
+        .trim_start_matches("/account/wallets/")
         .split('/')
         .next()
         .unwrap()

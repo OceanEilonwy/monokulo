@@ -1,4 +1,5 @@
-// The admin settings page with JavaScript (crates/monokulo/src/views/admin.rs).
+// The admin settings page with JavaScript (crates/monokulo/src/views/admin.rs),
+// and the account page's cards (views/account.rs), which use the same markup.
 // Without it the page already works: one form per tab, a save bar that is
 // always there, and buttons that save at once. This adds:
 //   - unsaved changes: each card with a change is marked, with its own
@@ -35,12 +36,15 @@
 
   // ---- values: what a control holds, and what's saved -------------------
 
+  // A checkbox or a radio button holds whether it's ticked.
+  function ticks(el) { return el.type === "checkbox" || el.type === "radio"; }
+
   function savedValue(el) {
     if (el.hasAttribute("data-saved")) {
       var saved = el.getAttribute("data-saved");
-      return el.type === "checkbox" ? saved === "on" : saved;
+      return ticks(el) ? saved === "on" : saved;
     }
-    if (el.type === "checkbox") return el.defaultChecked;
+    if (ticks(el)) return el.defaultChecked;
     if (el.tagName === "SELECT") {
       for (var i = 0; i < el.options.length; i++) if (el.options[i].defaultSelected) return el.options[i].value;
       return el.options.length ? el.options[0].value : "";
@@ -48,11 +52,11 @@
     return el.defaultValue;
   }
 
-  function currentValue(el) { return el.type === "checkbox" ? el.checked : el.value; }
+  function currentValue(el) { return ticks(el) ? el.checked : el.value; }
 
   function restore(el) {
     var saved = savedValue(el);
-    if (el.type === "checkbox") el.checked = saved;
+    if (ticks(el)) el.checked = saved;
     else el.value = saved;
   }
 

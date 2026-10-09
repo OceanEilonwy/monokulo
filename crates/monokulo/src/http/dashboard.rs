@@ -45,6 +45,10 @@ pub struct SignupForm {
     /// page): carried through wallet setup and back there.
     #[serde(default)]
     pub next: Option<String>,
+    /// The theme picked on the form (`system`, `light` or `dark`), saved
+    /// to the new account.
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -189,6 +193,7 @@ async fn render_signup(
     error: Option<&str>,
     invite_token: &str,
     next: Option<&str>,
+    theme: Theme,
 ) -> Response {
     let invite_only = state.settings.signup_mode() == crate::settings::SignupMode::InviteOnly;
     let invite_required = invite_only && invite_token.trim().is_empty();
@@ -197,6 +202,7 @@ async fn render_signup(
         error: error.map(str::to_string),
         invite_required,
         invite_token: invite_token.to_string(),
+        theme,
         next: next
             .and_then(SafePath::parse)
             .map(|p| p.as_str().to_owned()),
@@ -278,8 +284,18 @@ pub async fn signup_form(
         None,
         query.invite.as_deref().unwrap_or(""),
         query.next.as_deref(),
+        Theme::System,
     )
     .await
+}
+
+/// The theme a sign-up form chose: System unless it names another.
+fn signup_theme(chosen: Option<&str>) -> Theme {
+    match chosen {
+        Some("light") => Theme::Light,
+        Some("dark") => Theme::Dark,
+        _ => Theme::System,
+    }
 }
 
 pub async fn signup_submit(
@@ -287,7 +303,8 @@ pub async fn signup_submit(
     headers: axum::http::HeaderMap,
     Form(form): Form<SignupForm>,
 ) -> Response {
-    match signup::create_account(
+    let theme = signup_theme(form.theme.as_deref());
+    let (error, invite) = match signup::create_account(
         &state,
         &form.email,
         &form.password,
@@ -301,6 +318,17 @@ pub async fn signup_submit(
         // page) comes after it.
         Ok(user_id) => {
             let user_id = crate::db::UserId::new(user_id);
+            if theme != Theme::System {
+                let id = user_id.clone();
+                if let Err(e) = state
+                    .db
+                    .write(move |db| db.update_user_theme(&id, theme))
+                    .await
+                {
+                    // The account works without it: the theme is System.
+                    tracing::error!(error = %e, "saving the theme chosen at sign-up failed");
+                }
+            }
             let Ok(raw_token) = login::start_session(&state, &user_id).await else {
                 return redirect_302("/dashboard/login");
             };
@@ -308,66 +336,52 @@ pub async fn signup_submit(
             let jar = CookieJar::new().add(cookie);
             let setup = match form.next.as_deref().and_then(SafePath::parse) {
                 Some(next) => format!(
-                    "/dashboard/wallets/setup?next={}",
+                    "/account/wallets/setup?next={}",
                     url::form_urlencoded::byte_serialize(next.as_str().as_bytes())
                         .collect::<String>()
                 ),
-                None => "/dashboard/wallets/setup".to_owned(),
+                None => "/account/wallets/setup".to_owned(),
             };
-            (jar, redirect_302(&setup)).into_response()
+            return (jar, redirect_302(&setup)).into_response();
         }
-        Err(CreateAccountError::DuplicateEmail) => {
-            render_signup(
-                &state,
-                Some("That email is already registered. Try logging in instead."),
-                &form.invite,
-                form.next.as_deref(),
-            )
-            .await
-        }
-        Err(CreateAccountError::Internal) => {
-            render_signup(
-                &state,
-                Some("Something went wrong. Please try again."),
-                &form.invite,
-                form.next.as_deref(),
-            )
-            .await
-        }
-        Err(CreateAccountError::InviteRequired) => {
-            render_signup(&state, None, "", form.next.as_deref()).await
-        }
-        Err(CreateAccountError::InvalidOrUsedInvite) => render_signup(
-            &state,
-            Some("That invite link is invalid or has already been used. Please request a new one."),
+        Err(CreateAccountError::DuplicateEmail) => (
+            Some("That email is already registered. Try logging in instead.".to_string()),
+            form.invite.as_str(),
+        ),
+        Err(CreateAccountError::Internal) => (
+            Some("Something went wrong. Please try again.".to_string()),
+            form.invite.as_str(),
+        ),
+        Err(CreateAccountError::InviteRequired) => (None, ""),
+        Err(CreateAccountError::InvalidOrUsedInvite) => (
+            Some(
+                "That invite link is invalid or has already been used. Please request a new one."
+                    .to_string(),
+            ),
             "",
-            form.next.as_deref(),
-        )
-        .await,
-        Err(CreateAccountError::WeakPassword) => {
-            render_signup(
-                &state,
-                Some(&format!(
-                    "The password must be at least {} characters.",
-                    signup::MIN_PASSWORD_LEN
-                )),
-                &form.invite,
-                form.next.as_deref(),
-            )
-            .await
-        }
-        Err(CreateAccountError::InvalidEmail) => {
-            render_signup(
-                &state,
-                Some("That is not an email address."),
-                &form.invite,
-                form.next.as_deref(),
-            )
-            .await
-        }
+        ),
+        Err(CreateAccountError::WeakPassword) => (
+            Some(format!(
+                "The password must be at least {} characters.",
+                signup::MIN_PASSWORD_LEN
+            )),
+            form.invite.as_str(),
+        ),
+        Err(CreateAccountError::InvalidEmail) => (
+            Some("That is not an email address.".to_string()),
+            form.invite.as_str(),
+        ),
         // Not a path a non-admin signup takes.
-        Err(CreateAccountError::AlreadySetUp) => redirect_302("/dashboard/login"),
-    }
+        Err(CreateAccountError::AlreadySetUp) => return redirect_302("/dashboard/login"),
+    };
+    render_signup(
+        &state,
+        error.as_deref(),
+        invite,
+        form.next.as_deref(),
+        theme,
+    )
+    .await
 }
 
 pub async fn login_form(
@@ -405,46 +419,6 @@ pub async fn logout_submit(
     (jar, redirect_302("/dashboard/login")).into_response()
 }
 
-/// `POST /dashboard/theme` - the nav's no-JS theme selector. Named submit
-/// buttons select a theme directly; older forms without a choice still cycle.
-/// Persists the result against the
-/// authenticated user (not a cookie - see the design-language rollout's own
-/// migration comment, `migrations/0017_user_theme.sql`, for why this is
-/// server-side per-user state rather than client storage), then redirects
-/// back to wherever the form was submitted from - the same validated-`next`
-/// pattern `login_submit` already uses (see [`is_safe_redirect_path`]),
-/// falling back to `/dashboard` for anything that doesn't validate. No CSRF
-/// token needed beyond what `logout_submit` above already relies on
-/// (`SameSite=Lax`) - same-origin `<form method="post">`, nothing more.
-#[derive(Deserialize)]
-pub struct TimezoneForm {
-    /// A zone name, or empty for automatic.
-    pub timezone: String,
-}
-
-/// `POST /dashboard/timezone`: the zone dates and times are shown in. An
-/// unknown name is ignored rather than saved.
-pub async fn timezone_submit(
-    State(db): State<Database>,
-    AuthedUser(user, _): AuthedUser,
-    Form(form): Form<TimezoneForm>,
-) -> Response {
-    let chosen = form.timezone.trim().to_string();
-    let zone = if chosen.is_empty() {
-        Some(None)
-    } else if jiff::tz::TimeZone::get(&chosen).is_ok() {
-        Some(Some(chosen))
-    } else {
-        None
-    };
-    if let Some(zone) = zone {
-        db.write(move |db| db.update_user_timezone(&user.id, zone.as_deref()))
-            .await
-            .ok();
-    }
-    redirect_302("/#timezone")
-}
-
 #[derive(Deserialize)]
 pub struct ThemeForm {
     pub next: Option<String>,
@@ -460,6 +434,15 @@ fn selected_theme(current: Theme, submitted: Option<&str>) -> Theme {
     }
 }
 
+/// `POST /dashboard/theme` - the account menu's no-JS theme switch. Named
+/// submit buttons select a theme directly; a form without a choice cycles.
+/// Persists the result against the authenticated user (not a cookie - see
+/// `migrations/0017_user_theme.sql` for why this is server-side per-user
+/// state rather than client storage), then redirects back to wherever the
+/// form was submitted from - the same validated-`next` pattern
+/// `login_submit` uses (see [`is_safe_redirect_path`]), falling back to `/`
+/// for anything that doesn't validate. No CSRF token needed beyond what
+/// `logout_submit` above relies on (`SameSite=Lax`, `http::csrf`).
 pub async fn theme_submit(
     State(db): State<Database>,
     AuthedUser(user, _): AuthedUser,
@@ -795,112 +778,5 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.headers()["location"], "/");
-    }
-
-    #[tokio::test]
-    async fn times_follow_the_zone_a_merchant_picks_or_else_their_browsers() {
-        use axum::body::Body;
-        use axum::http::{Request, StatusCode};
-        use http_body_util::BodyExt;
-        use tower::ServiceExt;
-
-        let router = crate::http::build_router(crate::http::AppState::for_tests());
-        let json = |uri: &str, body: serde_json::Value| {
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap()
-        };
-        let credentials = serde_json::json!({ "email": "zone@example.com", "password": "correct horse battery staple" });
-        assert_eq!(
-            router
-                .clone()
-                .oneshot(json("/signup", credentials.clone()))
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::CREATED
-        );
-        let login = router
-            .clone()
-            .oneshot(json("/login", credentials))
-            .await
-            .unwrap();
-        let body: serde_json::Value =
-            serde_json::from_slice(&login.into_body().collect().await.unwrap().to_bytes()).unwrap();
-        let session = body["session_token"].as_str().unwrap().to_string();
-
-        let pick = |zone: &str| {
-            Request::builder()
-                .method("POST")
-                .uri("/dashboard/timezone")
-                .header("authorization", format!("Bearer {session}"))
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(format!("timezone={}", zone.replace('/', "%2F"))))
-                .unwrap()
-        };
-        let dashboard = |cookie: Option<&str>| {
-            let mut request = Request::builder()
-                .uri("/")
-                .header("authorization", format!("Bearer {session}"));
-            if let Some(cookie) = cookie {
-                request = request.header("cookie", cookie.to_string());
-            }
-            let router = router.clone();
-            async move {
-                let response = router
-                    .oneshot(request.body(Body::empty()).unwrap())
-                    .await
-                    .unwrap();
-                String::from_utf8(
-                    response
-                        .into_body()
-                        .collect()
-                        .await
-                        .unwrap()
-                        .to_bytes()
-                        .to_vec(),
-                )
-                .unwrap()
-            }
-        };
-
-        // Automatic: the browser's zone, else UTC.
-        assert!(dashboard(None).await.contains("Times in UTC<"));
-        let html = dashboard(Some("tz=Australia%2FPerth")).await;
-        assert!(
-            html.contains(r##"<a href="/account#card-time""##)
-                && html.contains("Times in Australia/Perth<"),
-            "{html}"
-        );
-        assert!(
-            html.contains("Automatic - this browser: Australia/Perth"),
-            "{html}"
-        );
-
-        // A picked zone wins over the browser's; one that doesn't exist is ignored.
-        let response = router
-            .clone()
-            .oneshot(pick("America/New_York"))
-            .await
-            .unwrap();
-        assert_eq!(
-            (response.status(), &response.headers()["location"]),
-            (StatusCode::FOUND, &"/#timezone".parse().unwrap())
-        );
-        let html = dashboard(Some("tz=Australia%2FPerth")).await;
-        assert!(
-            html.contains("Times in America/New_York<")
-                && html.contains(r#"<option value="America/New_York" selected>"#),
-            "{html}"
-        );
-        router.clone().oneshot(pick("Not/AZone")).await.unwrap();
-        assert!(dashboard(None).await.contains("Times in America/New_York<"));
-        router.clone().oneshot(pick("")).await.unwrap();
-        assert!(dashboard(Some("tz=Asia%2FTokyo"))
-            .await
-            .contains("Times in Asia/Tokyo<"));
     }
 }

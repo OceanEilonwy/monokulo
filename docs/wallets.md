@@ -14,7 +14,7 @@ cargo run -p monokulo          # with an engine and a node for the network you u
 ```
 
 1. Sign up at `/dashboard/signup`: you're logged in and sent to
-   `/dashboard/wallets/setup`.
+   `/account/wallets/setup`.
 2. **Create a new wallet** (needs JavaScript), or **Bring your own wallet**
    (paste a private view key and public spend key; works without it).
    Hardware wallets show as *Coming soon*.
@@ -23,7 +23,7 @@ cargo run -p monokulo          # with an engine and a node for the network you u
    are sent.
 4. **Add a store**: the custom store form and the WooCommerce connect page
    pick the wallet.
-5. `/dashboard/wallets` lists them; a wallet's page renames it, shows its
+5. The Wallets tab of `/account` lists them; a wallet's page renames it, shows its
    stores and history, and deletes it once no store uses it.
 
 Tests: `cargo test -p engine -p wallet-setup -p monokulo`, and in

@@ -4712,7 +4712,7 @@ mod tests {
         )
         .await;
 
-        let html = get_page(&router, &session_token, "/dashboard/wallets/import").await;
+        let html = get_page(&router, &session_token, "/account/wallets/import").await;
         assert!(
             html.contains(r#"<select name="key_custody_backend">"#),
             "{html}"
@@ -4730,7 +4730,7 @@ mod tests {
         let added = router
             .clone()
             .oneshot(form_post_request(
-                "/dashboard/wallets/import",
+                "/account/wallets/import",
                 &session_token,
                 &[
                     ("name", "Kept apart"),
