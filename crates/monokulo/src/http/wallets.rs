@@ -1765,7 +1765,7 @@ mod tests {
         let settings = format!("/dashboard/stores/{store}/settings");
         let html = body_text(get(&router, &settings, &cookie).await).await;
         assert!(
-            html.contains(r#"id="wallet""#) && html.contains("data-settings-inline"),
+            html.contains(r#"<section id="card-wallet" class="settings-card""#),
             "{html}"
         );
         assert!(html.contains("Payments go to"), "{html}");
@@ -1813,8 +1813,15 @@ mod tests {
             ))
             .await
             .unwrap();
-        let status = changed.status();
-        assert_eq!(status, StatusCode::FOUND, "{}", body_text(changed).await);
+        assert_eq!(changed.status(), StatusCode::OK);
+        let html = body_text(changed).await;
+        assert!(
+            html.contains(
+                "Changed to Cafe till. The 1 order it took on Copper Heron is still watched there."
+            ),
+            "{html}"
+        );
+        assert!(html.contains("<strong>Wallet changed</strong>"), "{html}");
         assert_eq!(store_row(&state, &store).wallet_id.as_ref(), Some(&cafe.id));
         let tenant = state.engine.client.get_tenant(&sk).await.unwrap();
         assert_eq!(tenant.wallet_id.as_ref(), Some(&cafe.engine_wallet_id));
@@ -1885,10 +1892,10 @@ mod tests {
         assert_ne!(after.address, open.address);
     }
 
-    /// With fixi, picking a wallet in the dropdown posts it at once and the
-    /// section comes back asking; refusals stay in the section.
+    /// Picking a wallet asks first, in the Wallet card; refusals show in
+    /// the card.
     #[tokio::test]
-    async fn the_wallet_section_asks_in_place_and_refuses_another_network() {
+    async fn the_wallet_card_asks_first_and_refuses_another_network() {
         let (state, _engine) = real_engine_state().await;
         let router = build_router(state.clone());
         let email = "fixi-changer@example.com";
@@ -1905,25 +1912,16 @@ mod tests {
         )
         .await;
         let action = format!("/dashboard/stores/{store}/settings/wallet");
-        let fx_post = |fields: &[(&str, &str)]| {
-            let mut request = post(&action, Some(&cookie), fields);
-            request
-                .headers_mut()
-                .insert("FX-Request", "true".parse().unwrap());
-            request
-        };
+        let card_post = |fields: &[(&str, &str)]| post(&action, Some(&cookie), fields);
 
         let response = router
             .clone()
-            .oneshot(fx_post(&[("wallet_id", cafe.id.as_str())]))
+            .oneshot(card_post(&[("wallet_id", cafe.id.as_str())]))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
-        assert!(
-            html.starts_with(r#"<section id="wallet""#),
-            "only the section: {html}"
-        );
+        assert!(html.contains(r#"<section id="card-wallet""#), "{html}");
         assert!(html.contains("Change to Cafe till?"), "{html}");
         assert!(
             html.contains("No orders are open on Copper Heron"),
@@ -1934,7 +1932,7 @@ mod tests {
         let html = body_text(
             router
                 .clone()
-                .oneshot(fx_post(&[("wallet_id", copper.id.as_str())]))
+                .oneshot(card_post(&[("wallet_id", copper.id.as_str())]))
                 .await
                 .unwrap(),
         )
@@ -1980,7 +1978,10 @@ mod tests {
         );
         let response = router
             .clone()
-            .oneshot(fx_post(&[("wallet_id", "w_stagenet"), ("confirm", "yes")]))
+            .oneshot(card_post(&[
+                ("wallet_id", "w_stagenet"),
+                ("confirm", "yes"),
+            ]))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -1994,7 +1995,7 @@ mod tests {
         // Someone else's wallet, or none: refused the same way.
         let response = router
             .clone()
-            .oneshot(fx_post(&[("wallet_id", "w_nope"), ("confirm", "yes")]))
+            .oneshot(card_post(&[("wallet_id", "w_nope"), ("confirm", "yes")]))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);

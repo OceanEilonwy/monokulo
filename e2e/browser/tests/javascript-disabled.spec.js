@@ -20,6 +20,6 @@ test('refresh icon and settings fallback remain usable without JS', async ({ bro
   await expect(refresh).toBeVisible();
   const bounds = await refresh.boundingBox(); expect(bounds.width).toBeLessThan(50);
   await page.goto(fixture.base_url + store + '/settings');
-  await expect(page.locator('#base-currency select')).toBeVisible();
+  await expect(page.locator('#card-base-currency select')).toBeVisible();
   await context.close();
 });

@@ -358,26 +358,6 @@ tr:nth-child(even) td { background: color-mix(in srgb, var(--ink) 5%, transparen
 form label { display: block; margin: 0.9em 0 0.6em; font-weight: 700; }
 /* Long unbroken words (an address, a file name) wrap rather than widen the page. */
 form .field-help { display: block; font-weight: 400; color: var(--muted); margin-top: 0.15em; font-size: 0.88em; overflow-wrap: anywhere; }
-/* A small "?" affordance next to a checkbox/label needing a longer
-   explanation than fits inline - the native `title` attribute supplies the
-   actual tooltip text, so this needs no JS to be useful. */
-.help-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.1em;
-  height: 1.1em;
-  margin-left: 0.35em;
-  border: 1px solid var(--muted);
-  border-radius: 50%;
-  color: var(--muted);
-  font-size: 0.78em;
-  font-weight: 700;
-  line-height: 1;
-  cursor: help;
-  vertical-align: middle;
-  user-select: none;
-}
 /* `.setting-source` (admin settings page): a caption naming where a field's
    current value came from. Left inline, it lets a submit `button` that
    immediately follows the last field in a form (e.g. "Save scanner
@@ -472,15 +452,11 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 .widget-link-title { font-weight: 700; }
 .widget-link-hint { font-weight: 400; font-size: 0.82em; opacity: 0.85; }
 .pos-launch-disabled, .pos-launch-disabled:hover { opacity: 0.45; cursor: not-allowed; background: var(--btn-bg); color: var(--btn-ink); border-color: var(--btn-border); }
-/* Confirmation-thresholds table, Default row: the 0-conf checkbox sits on
-   its own line below the confirmations count, rather than the whole
-   "Zero-confirmation payments" section this used to be. */
-.zero-conf-toggle { display: flex; align-items: center; flex-wrap: wrap; gap: 0.3em; font-weight: 400; margin-top: 0.5em; }
 /* The confirmations-required count never needs more than 720's own 3
    digits (`scanner::http::admin::MAX_CONFIRMATIONS_REQUIRED`) - overrides
    the site-wide `input[type=text] { width: 100% }` default, which would
    otherwise stretch it to the full cell. */
-.thresholds-table .confirmations-input { width: 4.5em; }
+.confirmations-input { width: 4.5em; }
 /* Highlight the entry row while keeping it in the same table. */
 .thresholds-table .new-threshold-row td {
   background: var(--tint-highlight);
@@ -810,12 +786,7 @@ a.order-id { display: inline-block; max-width: 11em; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .page-heading h1 { flex: 1; }
 
-.settings-saved { padding: .6rem .8rem; border: 1px solid var(--success); border-radius: var(--radius-sm); background: var(--tint-success); }
-
-[data-store-settings] > section { position: relative; padding: 1rem; margin: .8rem 0; border: 1px solid var(--line); border-radius: var(--radius-md); }
-[data-store-settings] > section > h2 { margin: 0 5rem .3rem 0; }
-.settings-edit { position: absolute; right: 1rem; top: 1rem; margin: 0; }
-.settings-summary { margin: .4rem 5rem .4rem 0; }
+/* The Account page's email question. */
 .settings-dialog { width: min(46rem, calc(100vw - 2rem)); max-height: calc(100dvh - 3rem); box-sizing: border-box; padding: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--paper-raised); color: var(--ink); }
 .settings-dialog::backdrop { background: color-mix(in srgb, var(--ink) 45%, transparent); }
 .settings-dialog > h2 { margin-top: 0; }

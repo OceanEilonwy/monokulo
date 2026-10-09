@@ -119,10 +119,6 @@ pub async fn embed_policy_middleware(
     response
 }
 
-fn settings_url(id: &str) -> String {
-    format!("/dashboard/stores/{id}/settings#verified-domains")
-}
-
 /// "3h 20m ago", or "just now" under a minute.
 fn ago(then: i64, now: i64) -> String {
     if now - then < 60 {
@@ -234,7 +230,6 @@ pub struct EmbedRestrictionForm {
 pub async fn set_embed_restriction(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    fx: FxRequest,
     Path(id): Path<crate::db::ConnectionId>,
     Form(form): Form<EmbedRestrictionForm>,
 ) -> Response {
@@ -258,7 +253,7 @@ pub async fn set_embed_restriction(
         })
         .await;
     match result {
-        Ok(None) => saved(&state, row, &user, SECTION, fx, &settings_url(id.as_str())).await,
+        Ok(None) => saved(&id, SECTION),
         Ok(Some(error)) => {
             render_store_settings_page(
                 &state,
@@ -266,7 +261,7 @@ pub async fn set_embed_restriction(
                 &user,
                 Some(error.to_string()),
                 None,
-                Some((SECTION, fx)),
+                Some(SECTION),
             )
             .await
         }
@@ -277,7 +272,7 @@ pub async fn set_embed_restriction(
                 &user,
                 Some("Something went wrong. Please try again.".to_string()),
                 None,
-                Some((SECTION, fx)),
+                Some(SECTION),
             )
             .await
         }
@@ -294,7 +289,6 @@ pub struct AddDomainForm {
 pub async fn add_domain(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    fx: FxRequest,
     Path(id): Path<crate::db::ConnectionId>,
     Form(form): Form<AddDomainForm>,
 ) -> Response {
@@ -313,7 +307,7 @@ pub async fn add_domain(
                 &user,
                 Some(message.to_string()),
                 None,
-                Some((SECTION, fx)),
+                Some(SECTION),
             )
             .await
         }
@@ -334,9 +328,7 @@ pub async fn add_domain(
         })
         .await;
     let error = match created {
-        Ok(true) => {
-            return saved(&state, row, &user, SECTION, fx, &settings_url(id.as_str())).await
-        }
+        Ok(true) => return saved(&id, SECTION),
         Ok(false) => format!(
             "A store can have at most {} domains. Remove one to add another.",
             embed_domains::MAX_DOMAINS_PER_STORE
@@ -344,7 +336,7 @@ pub async fn add_domain(
         Err(e) if e.is_unique_violation() => format!("{domain} is already on this store's list."),
         Err(_) => "Something went wrong. Please try again.".to_string(),
     };
-    render_store_settings_page(&state, row, &user, Some(error), None, Some((SECTION, fx))).await
+    render_store_settings_page(&state, row, &user, Some(error), None, Some(SECTION)).await
 }
 
 /// `POST /dashboard/stores/{id}/settings/domains/{domain_id}/check` - looks
@@ -352,7 +344,6 @@ pub async fn add_domain(
 pub async fn check_domain(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    fx: FxRequest,
     Path((id, domain_id)): Path<(crate::db::ConnectionId, String)>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Domains;
@@ -385,13 +376,13 @@ pub async fn check_domain(
                 &user,
                 Some(error),
                 None,
-                Some((SECTION, fx)),
+                Some(SECTION),
             )
             .await;
         }
     }
     match embed_domains::check_and_record(&state.db, state.dns.as_ref(), &domain, now).await {
-        Ok(_) => saved(&state, row, &user, SECTION, fx, &settings_url(id.as_str())).await,
+        Ok(_) => saved(&id, SECTION),
         Err(_) => {
             render_store_settings_page(
                 &state,
@@ -399,7 +390,7 @@ pub async fn check_domain(
                 &user,
                 Some("Something went wrong. Please try again.".to_string()),
                 None,
-                Some((SECTION, fx)),
+                Some(SECTION),
             )
             .await
         }
@@ -410,7 +401,6 @@ pub async fn check_domain(
 pub async fn delete_domain(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    fx: FxRequest,
     Path((id, domain_id)): Path<(crate::db::ConnectionId, String)>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Domains;
@@ -438,7 +428,7 @@ pub async fn delete_domain(
         })
         .await;
     match deleted {
-        Ok(Some(true)) => saved(&state, row, &user, SECTION, fx, &settings_url(id.as_str())).await,
+        Ok(Some(true)) => saved(&id, SECTION),
         Ok(Some(false)) => StatusCode::NOT_FOUND.into_response(),
         Ok(None) => {
             let error = "This is your last verified domain. Turn off \"Only my verified domains can show this checkout\" first - otherwise no website could show your checkout.";
@@ -448,7 +438,7 @@ pub async fn delete_domain(
                 &user,
                 Some(error.to_string()),
                 None,
-                Some((SECTION, fx)),
+                Some(SECTION),
             )
             .await
         }
@@ -459,7 +449,7 @@ pub async fn delete_domain(
                 &user,
                 Some("Something went wrong. Please try again.".to_string()),
                 None,
-                Some((SECTION, fx)),
+                Some(SECTION),
             )
             .await
         }
@@ -1136,7 +1126,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn diagnostics_turn_on_the_checkouts_problem_reports_and_save_in_place_with_fixi() {
+    async fn diagnostics_turn_on_the_checkouts_problem_reports() {
         let (state, _engine) = test_state(Arc::new(FakeDns::default())).await;
         let router = build_router(state.clone());
         let session = session_for(&router, "diagnostics@example.com").await;
@@ -1184,21 +1174,23 @@ mod tests {
         )
         .await;
         assert!(
-            settings.contains("This store sends no diagnostic logs."),
-            "{settings}"
+            settings.contains(
+                r#"name="client_logging" value="true" id="client-logging" aria-describedby"#
+            ),
+            "off: {settings}"
         );
         assert!(
             !settings.contains(&crate::assets::url("telemetry.js")),
             "the store's own pages don't report either"
         );
 
-        // Without JavaScript: a redirect back to the page.
-        let url = format!("/dashboard/stores/{id}/settings/diagnostics");
+        // The settings form: a redirect back to the page.
+        let url = format!("/dashboard/stores/{id}/settings");
         assert_eq!(
             send(&router, "POST", &url, &session, Some("client_logging=on"))
                 .await
                 .0,
-            StatusCode::FOUND
+            StatusCode::SEE_OTHER
         );
         assert!(state
             .db
@@ -1218,32 +1210,19 @@ mod tests {
         .await;
         assert!(settings.contains(&crate::assets::url("telemetry.js")));
 
-        // With fixi: just the section comes back.
-        let request = Request::builder()
-            .method("POST")
-            .uri(&url)
-            .header("authorization", format!("Bearer {session}"))
-            .header("content-type", "application/x-www-form-urlencoded")
-            .header(crate::http::fx::FX_REQUEST, "true")
-            .body(Body::from("client_logging=off"))
-            .unwrap();
-        let response = router.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let fragment = String::from_utf8(
-            response
-                .into_body()
-                .collect()
-                .await
-                .unwrap()
-                .to_bytes()
-                .to_vec(),
-        )
-        .unwrap();
-        assert!(
-            fragment.starts_with(r#"<section id="diagnostics">"#),
-            "{fragment}"
+        // Turned off: the form names the switch, and doesn't send it.
+        assert_eq!(
+            send(
+                &router,
+                "POST",
+                &url,
+                &session,
+                Some("switches=client_logging")
+            )
+            .await
+            .0,
+            StatusCode::SEE_OTHER
         );
-        assert!(fragment.contains("This store sends no diagnostic logs."));
         assert!(!state
             .db
             .lock()
@@ -1336,7 +1315,7 @@ mod tests {
             )
             .await
             .0,
-            StatusCode::FOUND
+            StatusCode::SEE_OTHER
         );
 
         // Framing: only monokulo itself and the verified domain.
@@ -1476,7 +1455,7 @@ mod tests {
             )
             .await
             .0,
-            StatusCode::FOUND
+            StatusCode::SEE_OTHER
         );
         assert_eq!(
             create_order_from(&router, &pk, Some("https://elsewhere.example"))
@@ -1526,7 +1505,7 @@ mod tests {
             Some("domain=https%3A%2F%2FShop.Example%2Fcart"),
         )
         .await;
-        assert_eq!(status, StatusCode::FOUND);
+        assert_eq!(status, StatusCode::SEE_OTHER);
         let shop = |state: &AppState| {
             state
                 .db
@@ -1573,7 +1552,7 @@ mod tests {
         let check = format!("{settings}/domains/{}/check", row.id);
         assert_eq!(
             send(&router, "POST", &check, &session, None).await.0,
-            StatusCode::FOUND
+            StatusCode::SEE_OTHER
         );
         let (_, html) = send(&router, "GET", &settings, &session, None).await;
         assert!(
@@ -1688,7 +1667,7 @@ mod tests {
             )
             .await
             .0,
-            StatusCode::FOUND
+            StatusCode::SEE_OTHER
         );
         assert_eq!(
             state
@@ -1735,7 +1714,7 @@ mod tests {
             )
             .await
             .0,
-            StatusCode::FOUND
+            StatusCode::SEE_OTHER
         );
         let (_, html) = send(&router, "GET", &settings, &session, None).await;
         assert!(

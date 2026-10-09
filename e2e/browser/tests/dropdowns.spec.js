@@ -18,15 +18,16 @@ test('a dropdown floats over the page, picks with the mouse and saves through th
   await login(context);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(fixture.base_url + store + '/settings');
-  const section = page.locator('#base-currency');
-  await section.getByRole('button', { name: 'Edit base currency', exact: true }).click();
+  const section = page.locator('#card-base-currency');
+  // At the top of the window, so the list has room to open below.
+  await section.evaluate((card) => card.scrollIntoView({ block: 'start' }));
   const dropdown = section.locator('mk-select');
   const button = dropdown.getByRole('combobox', { name: 'Base currency' });
   await expect(button).toBeVisible();
   await expect(button).toHaveAttribute('aria-expanded', 'false');
 
   // Opening it moves nothing: the list is drawn over what's below.
-  const help = section.locator('dialog .field-help').first();
+  const help = section.locator('.field-help').first();
   const before = await help.boundingBox();
   await button.click();
   const list = dropdown.getByRole('listbox');
@@ -45,17 +46,17 @@ test('a dropdown floats over the page, picks with the mouse and saves through th
   await expect(dropdown.locator('select')).toHaveValue('USD');
   await expect(button.locator('.mk-detail')).toHaveText('USD');
 
-  await section.getByRole('button', { name: 'Update', exact: true }).click();
-  await expect(section).toContainText('Settings saved.');
-  await expect(section.locator('.settings-summary')).toHaveText('USD');
+  await page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.locator('#settings-toasts')).toContainText('Settings saved');
+  await expect(section.locator('select')).toHaveValue('USD');
+  await expect(section.locator('[data-card-saved]')).toHaveText('Saved');
   expect(errors).toEqual([]);
 });
 
-test('the keyboard opens, moves, chooses and closes without leaving the dialog', async ({ page, context }) => {
+test('the keyboard opens, moves, chooses and closes without leaving the card', async ({ page, context }) => {
   await login(context);
   await page.goto(fixture.base_url + store + '/settings');
-  const section = page.locator('#base-currency');
-  await section.getByRole('button', { name: 'Edit base currency', exact: true }).click();
+  const section = page.locator('#card-base-currency');
   const dropdown = section.locator('mk-select');
   const button = dropdown.getByRole('combobox', { name: 'Base currency' });
   const find = dropdown.getByRole('combobox', { name: 'Find' });
@@ -63,13 +64,12 @@ test('the keyboard opens, moves, chooses and closes without leaving the dialog',
   const start = await select.inputValue();
   await button.focus();
 
-  // Escape closes the list only: the dialog stays, nothing changes.
+  // Escape closes the list only: nothing changes.
   await page.keyboard.press('ArrowDown');
   await expect(dropdown.getByRole('listbox')).toBeVisible();
   await expect(find).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(dropdown.getByRole('listbox')).not.toBeVisible();
-  await expect(section.locator('dialog')).toBeVisible();
   await expect(button).toBeFocused();
   await expect(select).toHaveValue(start);
 
@@ -201,8 +201,8 @@ test('without JavaScript the dropdown is the plain select, every part in words',
   await login(context);
   const page = await context.newPage();
   await page.goto(fixture.base_url + store + '/settings');
-  const select = page.locator('#base-currency select[name=base_currency]');
-  await expect(page.locator('#base-currency .mk-button')).toHaveCount(0);
+  const select = page.locator('#card-base-currency select[name=base_currency]');
+  await expect(page.locator('#card-base-currency .mk-button')).toHaveCount(0);
   await expect(select.locator('option[value=USD]')).toHaveText('United States Dollar (USD)');
   await context.close();
 });

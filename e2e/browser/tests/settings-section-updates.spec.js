@@ -1,7 +1,7 @@
 // @ts-check
-// Settings pages save one section at a time with fixi (structured_logging.md
-// parts 6 and 9): the page isn't reloaded, the scroll position survives,
-// and the saved section shows how it went. The admin settings page saves
+// The admin settings page saves with fixi (structured_logging.md parts 6
+// and 9): the page isn't reloaded, the scroll position survives, and the
+// saved cards show how it went. It saves
 // a tab all or nothing: its panel is swapped, the tab bar and page-wide
 // banners come back whole, a toast says how it went, and a card a save
 // refused stays red with what was typed.
@@ -149,7 +149,7 @@ test('leaving a tab with unsaved changes asks first, and Save and go saves then 
   await expect(page.locator('input[name="abuse.stream_cap"]')).toHaveValue('17');
 });
 
-test('a store settings form that is refused shows why inside its own section', async ({ page }) => {
+test('a store settings save that is refused shows why on its card, and an action on its own card', async ({ page }) => {
   const base = fixture().monokulo_url;
   await signInAsAdmin(page);
   // A store needs its network to have a node (run on its own, this spec
@@ -162,20 +162,18 @@ test('a store settings form that is refused shows why inside its own section', a
   const store = await page.locator('tr', { hasText: 'sections.example.com' }).first().getByRole('link', { name: 'view →' }).getAttribute('href');
   await page.goto(base + store + '/settings');
 
-  await page.evaluate(() => { window.__notReloaded = true; });
-  await page.locator('#webhooks').getByRole('button', { name: 'Edit webhooks' }).click();
-  const url = page.locator('#webhooks input[name="url"]');
-  await url.fill('https://hooks.example.com/monokulo');
-  await page.getByRole('button', { name: 'Add webhook' }).click();
-  await expect(page.locator('#webhooks').getByRole('heading', { name: 'Webhook created' })).toBeVisible();
+  // An action: its card says what it did, once.
+  const webhooks = page.locator('#card-webhooks');
+  await webhooks.locator('input[name="url"]').fill('https://hooks.example.com/monokulo');
+  await webhooks.getByRole('button', { name: 'Add webhook' }).click();
+  await expect(webhooks.getByRole('heading', { name: 'Webhook created' })).toBeVisible();
+  await expect(page.locator('#settings-toasts')).toContainText('Webhook created');
 
-  await page.locator('#webhooks dialog').getByRole('button', { name: 'Close', exact: true }).click();
-  const webhookContents = await page.locator('#webhooks').innerHTML();
-  await page.locator('#confirmation-thresholds').getByRole('button', { name: 'Edit confirmation thresholds' }).click();
-  await page.locator('input[name="confirmations_required"]').fill('abc');
-  await page.locator('#confirmation-thresholds button[form="default-confirmations"]').click();
-  await expect(page.locator('#confirmation-thresholds [role="alert"]')).toContainText('Enter a whole number');
-  // The webhook section, including its dismissed secret, is untouched.
-  expect(await page.locator('#webhooks').innerHTML()).toBe(webhookContents);
-  expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
+  // A setting the engine is asked about, refused: the card says why.
+  const card = page.locator('#card-confirmation-thresholds');
+  await card.locator('input[name="confirmations_required"]').fill('abc');
+  await page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(card.locator('[role="alert"]')).toContainText('Enter a whole number');
+  await expect(card).toHaveClass(/is-failed/);
+  await expect(page.locator('#card-webhooks [role="alert"]')).toHaveCount(0);
 });

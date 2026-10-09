@@ -70,6 +70,7 @@ mod setup;
 mod signup;
 pub mod status_page;
 pub mod store_key;
+mod store_settings;
 mod telemetry_client;
 #[cfg(test)]
 mod test_support;
@@ -486,7 +487,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/dashboard/stores/{id}/settings",
-            axum::routing::get(orders::store_settings),
+            axum::routing::get(orders::store_settings).post(store_settings::save),
         )
         .route(
             "/dashboard/stores/{id}/settings/domains",
@@ -519,26 +520,6 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/dashboard/stores/{id}/orders/new",
             axum::routing::get(orders::create_order_page).post(orders::create_order),
-        )
-        .route(
-            "/dashboard/stores/{id}/settings/confirmations",
-            axum::routing::post(orders::update_confirmations_required),
-        )
-        .route(
-            "/dashboard/stores/{id}/settings/fx-provider",
-            axum::routing::post(orders::update_fx_providers),
-        )
-        .route(
-            "/dashboard/stores/{id}/settings/diagnostics",
-            axum::routing::post(orders::update_diagnostics),
-        )
-        .route(
-            "/dashboard/stores/{id}/settings/base-currency",
-            axum::routing::post(orders::update_base_currency),
-        )
-        .route(
-            "/dashboard/stores/{id}/settings/confirmation-thresholds/save",
-            axum::routing::post(orders::save_confirmation_thresholds),
         )
         .route(
             "/dashboard/stores/{id}/settings/webhooks",
