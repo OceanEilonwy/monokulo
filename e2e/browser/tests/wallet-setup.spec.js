@@ -294,14 +294,15 @@ test('a wallet lists its stores and is renamed on its page', async ({ page }) =>
   await page.getByRole('link', { name: WALLET_NAME }).click();
   await expect(page.getByRole('link', { name: 'wallet-shop.example.com' }).first()).toBeVisible();
   await expect(page.getByText(/still uses? this wallet/)).toBeVisible();
-  await page.locator('form.rename-form input[name="name"]').fill('Dev stagenet till');
-  await page.getByRole('button', { name: 'Rename' }).click();
+  await page.locator('#card-details input[name="name"]').fill('Dev stagenet till');
+  await page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Dev stagenet till' })).toBeVisible();
   await expect(page.getByText(/Renamed from/)).toBeVisible();
   await captureCoverageStage(page, 'wallets-detail', test.info(), { group: 'wallets' });
   // Put the name back for the specs' helpers.
-  await page.locator('form.rename-form input[name="name"]').fill(WALLET_NAME);
-  await page.getByRole('button', { name: 'Rename' }).click();
+  await page.locator('#card-details input[name="name"]').fill(WALLET_NAME);
+  await page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByRole('heading', { name: WALLET_NAME, level: 1 })).toBeVisible();
 });
 
 test('a store changes its wallet: the dropdown asks first, then the history shows both', async ({ page }) => {
