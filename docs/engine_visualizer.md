@@ -170,19 +170,25 @@ Top to bottom:
 3. **Summary** (one line of six): node tip, scanned to, behind (and time to
    catch up), stores (and how many are catching up), the last round against
    its budget, what sets the pace.
-4. **Two columns.**
-   - Left, the animation: the **chain strip** (blocks as cells, the node
-     cards beside it, group pills under it) and the **round** (five lanes,
+4. **One column** (D38): the **"Machine and links" strip** (CPU and memory,
+   the link to the node in use, the blocks' size; docs/engine_scaling.md
+   section 6), then the animation and the panels.
+   - The **chain strip** (blocks as fixed-size cells, as many as fit, the
+     newest at the right; the node cards beside it, group pills under it)
+     and the **round** (five lanes,
      each 18 px high, with the reserved share, the units, the playhead and
      the outcome chip; under the lanes, the playhead carries the round's
      length so far as a label ("0.42 s"); the recent-rounds ribbon
      underneath). **The round card never changes size**: rows have fixed
      heights, an outcome chip fills a space that is always there, and the
      state line is one line that ellipsises.
-   - Right, 380 px: **one line per part**, each opening for its detail
+   - Under the round, a grid of panels, **one line per part**, each opening
+     for its detail, across the row
      (`<details>`, so it works without JavaScript too). Each line is a
      condensed summary that still moves, and the animations fly to it
      whether it is open or not:
+     - Scanning (open at first): "at the tip · pace: link speed", and the
+       scan's figures.
      - Reorg: "Agrees at 3,412,882, free". Opens by itself, with a red edge,
        while a reorg job is open, and closes when it ends.
      - Mempool: a heartbeat for each fast pass, the newest transactions as
@@ -197,9 +203,9 @@ Top to bottom:
    position, filterable by tier; clicking a row moves the timeline there.
 
 Cards are tight: 8 px padding, 8 px between them, 13 px text, 11 px labels.
-Below 1150 px wide the right column moves under the animation as a grid of
-the same lines; at phone width everything is one column and the chain strip
-shows fewer cells.
+The panels' grid fits as many 18rem columns as the width allows, one at
+phone width, where the summary and the strip are two across and the chain
+strip shows fewer cells.
 
 ### Timeline
 
