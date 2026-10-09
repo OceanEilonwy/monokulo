@@ -382,7 +382,11 @@
       const el = cellEls.get(String(h));
       if (el && el.isConnected) return el.offsetLeft + el.offsetWidth / 2;
       const cut = cellEls.get("brk");
-      return cut && cut.isConnected ? cut.offsetLeft + cut.offsetWidth / 2 : 0;
+      if (cut && cut.isConnected) return cut.offsetLeft + cut.offsetWidth / 2;
+      // Older than the strip shows (a narrow strip has no cut): at its
+      // oldest block, the left edge.
+      const oldest = cellEls.get(String(blocks.find((b) => b !== null)));
+      return oldest && oldest.isConnected ? oldest.offsetLeft + oldest.offsetWidth / 2 : 0;
     };
     const tip = chain.tip ?? 0, hw = chain.high_water ?? 0;
     let marksHtml = chain.tip != null ? `<span class="m-tip" style="left:${x(tip)}px">node tip</span>` : "";
