@@ -61,7 +61,10 @@ jobs:
           if ${{ inputs.coverage }}; then
             cargo xtask coverage rust
           else
-            cargo nextest run --workspace --locked --exclude xtask --profile ci --features monokulo/snp
+            # On Linux, xtask's own tests too: the tooling CI and the Pages
+            # build run on Linux.
+            cargo nextest run --workspace --locked --profile ci --features monokulo/snp \
+              ${{ inputs.platform != 'linux' && '--exclude xtask' || '' }}
           fi
       - name: Run doctests
         id: doctests
