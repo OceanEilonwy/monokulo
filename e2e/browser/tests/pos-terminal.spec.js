@@ -342,20 +342,43 @@ test('counter loses its connection: the order shows connection lost, then recove
   // The Wi-Fi is down: every attempt to (re)open the update stream fails.
   await page.route('**/pos/events?*', route => (online ? route.continue() : route.abort('internetdisconnected')));
   online = false;
+  // The page's own record of the stream failing: its EventSource's error
+  // events. A listener added in the constructor runs before the app's, in
+  // the same dispatch, so once the test sees a failure the app has handled
+  // it (and started its 6s count).
+  await page.addInitScript(() => {
+    const Native = window.EventSource;
+    window.__streamFailures = 0;
+    window.EventSource = class extends Native {
+      constructor(...args) {
+        super(...args);
+        this.addEventListener('error', () => { window.__streamFailures++; });
+      }
+    };
+  });
+  // The page's time stands still from the start: only the test moves it.
+  // The browser retries the stream on its own clock, which is real; the
+  // 6s after which the merchant is told is the page's.
+  const start = new Date('2026-01-01T00:00:00Z');
+  await pauseClockAt(page, start);
   await page.goto(posUrl());
   const badge = page.locator('.pos-order-heading .pos-badge');
   await expect(page.locator('.pos-pay-card')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__streamFailures), 'the app sees the stream fail').toBeGreaterThan(0);
   // Retries fail every few seconds; once 6s have passed without a
-  // connection the merchant is told, however many retries that took.
-  await page.waitForTimeout(3000);
+  // connection the merchant is told, however many retries that took: not a
+  // millisecond before.
+  await page.clock.runFor(5999);
   await expect(badge).toContainText('Awaiting payment');
-  await expect(badge).toContainText('Connection lost', { timeout: 8000 });
+  await page.clock.runFor(1);
+  await expect(badge).toContainText('Connection lost');
   await captureCoverageStage(page, 'pos-connection-lost', test.info());
-  // The customer pays meanwhile; back online, the stream reconnects and
-  // brings the missed payment in without a reload.
+  // The customer pays meanwhile; back online, the stream reconnects (the
+  // browser's own retry, a few real seconds) and brings the missed payment
+  // in without a reload.
   await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/payment?fraction=1`);
   online = true;
-  await expect(badge).toContainText('Unconfirmed', { timeout: 10000 });
+  await expect(badge).toContainText('Unconfirmed', { timeout: 15000 });
   await expect(page.locator('.pos-stage-msg')).toContainText('Payment seen. Waiting for its first confirmation.');
 });
 
