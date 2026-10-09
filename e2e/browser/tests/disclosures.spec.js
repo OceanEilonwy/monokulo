@@ -63,7 +63,7 @@ test('a disclosure reads as a link with a caret, with a pointer, a hover and a f
   await page.keyboard.press('Enter');
   await expect(details).not.toHaveAttribute('open', '');
 
-  // "More options", with no class of its own, is the same.
+  // "More options", boxed the same way, reads the same.
   await page.goto(fixture.base_url + '/account/wallets/add');
   const more = page.locator('details', { hasText: 'More options' }).locator('summary');
   const options = await looks(more);
@@ -91,3 +91,102 @@ test('the account menu keeps its own look, with a pointer, a hover and a focus r
   await expect(button).toBeFocused();
   expect((await looks(button)).outline).toBe('solid');
 });
+
+/** Where a boxed disclosure sits, in CSS pixels: its summary's text from the
+ * box's inner edges, the opened body from the summary's rule and the box,
+ * and the box from the elements before and after it. */
+const spacing = (details) => details.evaluate((box) => {
+  const px = (el, prop) => parseFloat(getComputedStyle(el).getPropertyValue(prop));
+  const summary = box.querySelector(':scope > summary');
+  const b = box.getBoundingClientRect();
+  const s = summary.getBoundingClientRect();
+  const inner = {
+    top: b.top + box.clientTop, left: b.left + box.clientLeft,
+    right: b.left + box.clientLeft + box.clientWidth, bottom: b.bottom - box.clientTop,
+  };
+  const text = {
+    top: s.top + px(summary, 'padding-top'), left: s.left + px(summary, 'padding-left'),
+    right: s.right - px(summary, 'padding-right'),
+    bottom: s.bottom - px(summary, 'border-bottom-width') - px(summary, 'padding-bottom'),
+  };
+  const out = {
+    summaryTop: text.top - inner.top,
+    summaryLeft: text.left - inner.left,
+    summaryRight: inner.right - text.right,
+    above: b.top - box.previousElementSibling.getBoundingClientRect().bottom,
+    below: box.nextElementSibling.getBoundingClientRect().top - b.bottom,
+  };
+  if (box.open) {
+    const body = summary.nextElementSibling;
+    const c = body.getBoundingClientRect();
+    out.bodyTop = c.top + px(body, 'padding-top') - s.bottom;
+    out.bodyLeft = c.left + px(body, 'padding-left') - inner.left;
+    out.bodyBottom = inner.bottom - (c.bottom - px(body, 'padding-bottom'));
+  } else {
+    out.summaryBottom = inner.bottom - text.bottom;
+  }
+  return out;
+});
+
+/** The site's spacing steps (theme.css), in pixels. */
+const steps = (page) => page.evaluate(() => {
+  const root = getComputedStyle(document.documentElement);
+  return Object.fromEntries(['md', 'lg', 'xl'].map((k) => [k, parseFloat(root.getPropertyValue(`--space-${k}`))]));
+});
+
+/** Within a pixel of a spacing step. */
+const near = (actual, step) => expect(Math.abs(actual - step)).toBeLessThanOrEqual(1);
+
+for (const width of [1280, 390]) {
+  test(`"More options" sits a step inside its box and a wide step from its neighbours, at ${width}px`, async ({ page, context }) => {
+    await login(context);
+    await page.setViewportSize({ width, height: 844 });
+    // The same screen in setup's Wallet step and in Add a wallet.
+    for (const url of ['/setup/wallet?store_name=New&store_site=new.example', '/account/wallets/add']) {
+      await page.goto(fixture.base_url + url);
+      const space = await steps(page);
+      const details = page.locator('details.more-options');
+      await details.scrollIntoViewIfNeeded();
+      await page.mouse.move(0, 0);
+
+      // Closed: the summary's text md from the box's top and bottom and lg
+      // from its sides; the box xl from the name above and the ways to add
+      // a wallet below.
+      const closed = await spacing(details);
+      near(closed.summaryTop, space.md);
+      near(closed.summaryBottom, space.md);
+      near(closed.summaryLeft, space.lg);
+      near(closed.summaryRight, space.lg);
+      near(closed.above, space.xl);
+      near(closed.below, space.xl);
+      if (url.startsWith('/account')) await captureCoverageStage(page, `site-more-options-closed-${width}`, test.info(), { group: 'site', asIs: true });
+
+      // Open: the summary keeps its inset; the Network field sits md under
+      // the summary's rule and above the box's bottom, lg from its side in
+      // line with the summary's text; the neighbours stay xl away.
+      await details.locator('summary').click();
+      await expect(details).toHaveAttribute('open', '');
+      await page.mouse.move(0, 0);
+      const open = await spacing(details);
+      near(open.summaryTop, space.md);
+      near(open.summaryLeft, space.lg);
+      near(open.summaryRight, space.lg);
+      near(open.bodyTop, space.md);
+      near(open.bodyBottom, space.md);
+      near(open.bodyLeft, space.lg);
+      near(open.above, space.xl);
+      near(open.below, space.xl);
+      if (url.startsWith('/account')) await captureCoverageStage(page, `site-more-options-open-${width}`, test.info(), { group: 'site', asIs: true });
+    }
+
+    // "Where do I find these keys?", the other boxed disclosure, has the
+    // same inset.
+    await page.goto(fixture.base_url + '/account/wallets/import');
+    const space = await steps(page);
+    const help = await spacing(page.locator('details.keys-help'));
+    near(help.summaryTop, space.md);
+    near(help.summaryBottom, space.md);
+    near(help.summaryLeft, space.lg);
+    near(help.summaryRight, space.lg);
+  });
+}
