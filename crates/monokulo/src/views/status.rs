@@ -309,9 +309,8 @@ fn announcements_section(announcements: &AnnouncementsView) -> Markup {
 pub fn page(chrome: &PageChrome, data: &StatusPageViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
-            nav class="context-nav" aria-label="Breadcrumb" {
-                @if chrome.logged_in { a href="/dashboard" { "Dashboard" } }
-                @else { a href="/" { "Home" } }
+            @if chrome.logged_in {
+                nav class="context-nav" aria-label="Breadcrumb" { a href="/" { "Dashboard" } }
             }
             div class="page-heading" { h1 { "Engine status" } (super::reload_button("/status")) }
             (live_fragment(data))

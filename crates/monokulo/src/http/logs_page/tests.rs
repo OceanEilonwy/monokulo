@@ -249,8 +249,8 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
     );
     assert!(!html.contains("http-equiv=\"refresh\""));
     assert!(
-        !html.contains("Times in"),
-        "the header's tz already says which zone: {html}"
+        html.matches("Times in").count() == 1,
+        "only the account menu says which zone times are in: {html}"
     );
     // Syntax help: a link to its own page, opened as a dialog by script.
     assert!(
@@ -989,7 +989,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
             .oneshot(builder.body(Body::empty()).unwrap())
             .with_subscriber(s.dispatch.clone())
     };
-    call("/dashboard", Some(&s.cookie)).await.unwrap();
+    call("/", Some(&s.cookie)).await.unwrap();
     call("/dashboard/stores/c_who", Some(&s.cookie))
         .await
         .unwrap();
@@ -1045,7 +1045,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
         "nothing that finds the session"
     );
 
-    let dashboard = finished("/dashboard").await;
+    let dashboard = finished("/").await;
     assert_eq!(dashboard.attributes["user.id"], admin.id.as_str());
     assert_eq!(dashboard.attributes["session.id"], session.as_str());
     assert!(
@@ -1089,7 +1089,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
     );
     let (_, _, found) = s.get(&session_search.replace("&amp;", "&"), false).await;
     assert!(
-        found.contains("GET /dashboard 200") && found.contains("GET /dashboard/stores/{id} 500"),
+        found.contains("GET / 200") && found.contains("GET /dashboard/stores/{id} 500"),
         "{found}"
     );
     assert!(!found.contains("/pay/{pk}"), "{found}");

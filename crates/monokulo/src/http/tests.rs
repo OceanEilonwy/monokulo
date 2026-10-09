@@ -584,7 +584,7 @@ async fn posting_valid_form_encoded_login_data_sets_a_session_cookie() {
     // home page (`http/home.rs`) now that one exists - see
     // `dashboard::login_submit`'s own doc comment.
     assert_eq!(response.status(), StatusCode::FOUND);
-    assert_eq!(response.headers().get("location").unwrap(), "/dashboard");
+    assert_eq!(response.headers().get("location").unwrap(), "/");
     let set_cookie = response
         .headers()
         .get("set-cookie")
@@ -671,31 +671,75 @@ async fn the_session_cookie_from_dashboard_login_authenticates_against_a_protect
         .is_some_and(|s| !s.is_empty()));
 }
 
+/// A browser loading a page it must be signed in for is sent to log in,
+/// and comes back to that page after; anything that isn't a page load (the
+/// JSON API, a script's fetch, a form post) still gets a plain `401`.
+/// Signed in, the nav shows the account menu instead of Log in and Sign up.
 #[tokio::test]
-async fn the_landing_page_shows_log_out_instead_of_log_in_once_a_session_cookie_is_presented() {
+async fn a_signed_out_browser_is_sent_to_log_in_and_back_while_the_api_gets_401() {
     let router = test_router();
+    let page = |uri: &str| {
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(
+                "accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            )
+            .body(Body::empty())
+            .unwrap()
+    };
 
-    let no_session = router
+    let response = router
         .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(page("/dashboard/stores/new?from=nav"))
         .await
         .unwrap();
-    let html = body_text(no_session).await;
-    assert!(
-        html.contains(r#"href="/dashboard/login""#),
-        "expected a log-in link with no session, got: {html}"
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let to = response.headers()["location"].to_str().unwrap().to_string();
+    assert_eq!(
+        to,
+        "/dashboard/login?next=%2Fdashboard%2Fstores%2Fnew%3Ffrom%3Dnav"
     );
+    let html = body_text(router.clone().oneshot(page(&to)).await.unwrap()).await;
     assert!(
-        !html.contains("log out"),
-        "expected no log-out link with no session, got: {html}"
+        html.contains(
+            r#"<input type="hidden" name="next" value="/dashboard/stores/new?from=nav">"#
+        ),
+        "{html}"
     );
 
+    // Not a page load: the plain 401, as before.
+    for request in [
+        Request::builder()
+            .uri("/dashboard/stores/new")
+            .body(Body::empty())
+            .unwrap(),
+        Request::builder()
+            .uri("/dashboard/stores/new")
+            .header("accept", "text/html")
+            .header("fx-request", "true")
+            .body(Body::empty())
+            .unwrap(),
+        Request::builder()
+            .uri("/dashboard/stores/new")
+            .header("accept", "text/html")
+            .header("authorization", "Bearer not-a-session")
+            .body(Body::empty())
+            .unwrap(),
+        Request::builder()
+            .method("POST")
+            .uri("/dashboard/theme")
+            .header("accept", "text/html")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from("theme=dark"))
+            .unwrap(),
+    ] {
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // Logged in, the account menu takes the place of Log in and Sign up.
     let signup = router
         .clone()
         .oneshot(form_request(
@@ -708,60 +752,43 @@ async fn the_landing_page_shows_log_out_instead_of_log_in_once_a_session_cookie_
         .await
         .unwrap();
     assert_eq!(signup.status(), StatusCode::FOUND);
-    let login = router
-        .clone()
-        .oneshot(form_request(
-            "/dashboard/login",
-            &[
-                ("email", "nav-auth-state@example.com"),
-                ("password", "correct horse battery staple"),
-            ],
-        ))
-        .await
-        .unwrap();
-    let set_cookie = login
-        .headers()
-        .get("set-cookie")
-        .unwrap()
+    let session_pair = signup.headers()["set-cookie"]
         .to_str()
         .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
         .to_string();
-    let session_pair = set_cookie.split(';').next().unwrap().to_string();
-
-    let with_session = router
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/")
-                .header("cookie", session_pair)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let html = body_text(with_session).await;
-    // The landing page's own body has separate, always-shown marketing CTAs
-    // ("Sign up - it's free...", "Log in", both capitalized, with a `btn`
-    // class) that are deliberately unaffected by login state - only the nav
-    // bar's own lowercase, unstyled "log in"/"sign up" links are checked
-    // here, matched by their exact nav markup rather than a generic `href`
-    // substring that would also match those body CTAs.
+    let html = body_text(
+        router
+            .oneshot(
+                Request::builder()
+                    .uri("/status")
+                    .header("cookie", session_pair)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(html.contains(">Log out</button>"), "{html}");
     assert!(
-        html.contains(r#">log out<"#),
-        "expected a log-out link once a real session cookie is presented, got: {html}"
+        html.contains("<strong>nav-auth-state@example.com</strong>"),
+        "{html}"
     );
     assert!(
-        !html.contains(r#"href="/dashboard/login">log in<"#),
-        "the nav's log-in link must be gone once logged in, got: {html}"
+        !html.contains(r#"href="/dashboard/login">Log in<"#),
+        "{html}"
     );
     assert!(
-        !html.contains(r#"href="/dashboard/signup">sign up<"#),
-        "the nav's sign-up link must be gone once logged in, got: {html}"
+        !html.contains(r#"href="/dashboard/signup">Sign up<"#),
+        "{html}"
     );
 }
 
 #[tokio::test]
-async fn logging_out_via_the_dashboard_nav_form_clears_the_session_and_redirects_home() {
+async fn logging_out_via_the_dashboard_nav_form_clears_the_session_and_goes_to_log_in() {
     let router = test_router();
 
     let signup = router
@@ -813,7 +840,10 @@ async fn logging_out_via_the_dashboard_nav_form_clears_the_session_and_redirects
         StatusCode::FOUND,
         "expected a redirect after logging out"
     );
-    assert_eq!(logout.headers().get("location").unwrap(), "/");
+    assert_eq!(
+        logout.headers().get("location").unwrap(),
+        "/dashboard/login"
+    );
 
     // The same, now-deleted session cookie must no longer authenticate.
     let whoami_after = router
@@ -1301,7 +1331,7 @@ async fn a_successful_login_with_a_malicious_next_falls_back_to_the_default_conf
             .await
             .unwrap();
         // A malicious `next` must be silently ignored, falling back to the
-        // exact same `/dashboard` redirect a `next`-less login gets - never
+        // exact same `/` redirect a `next`-less login gets - never
         // the attacker-controlled value. The response *is* a redirect
         // either way now that a real dashboard exists (see
         // `dashboard::login_submit`'s doc comment) - the load-bearing check
@@ -1309,7 +1339,7 @@ async fn a_successful_login_with_a_malicious_next_falls_back_to_the_default_conf
         assert_eq!(response.status(), StatusCode::FOUND);
         assert_eq!(
             response.headers().get("location").unwrap(),
-            "/dashboard",
+            "/",
             "a malicious next ({malicious_next}) must never appear in Location - only the safe default"
         );
     }
@@ -1589,7 +1619,7 @@ async fn public_embed_routes_allow_any_origin_and_the_dashboard_does_not() {
     let dashboard = router
         .oneshot(
             Request::builder()
-                .uri("/dashboard")
+                .uri("/dashboard/stores/new")
                 .header("origin", "https://shop.example")
                 .body(Body::empty())
                 .unwrap(),
@@ -1698,7 +1728,7 @@ async fn the_owner_of_a_store_on_a_network_without_a_node_is_alerted_on_every_pa
         }]),
     );
 
-    let chrome = super::page_chrome(&state, Some(&owner), "/dashboard").await;
+    let chrome = super::page_chrome(&state, Some(&owner), "/").await;
     assert_eq!(chrome.alerts.len(), 1);
     assert!(
         chrome.alerts[0].contains("shop.example.com") && chrome.alerts[0].contains("stagenet"),
@@ -1707,7 +1737,7 @@ async fn the_owner_of_a_store_on_a_network_without_a_node_is_alerted_on_every_pa
     );
 
     assert!(
-        super::page_chrome(&state, Some(&other), "/dashboard")
+        super::page_chrome(&state, Some(&other), "/")
             .await
             .alerts
             .is_empty(),
@@ -1753,13 +1783,11 @@ async fn a_store_catching_up_gets_a_gentler_alert_and_it_goes_away_once_it_has()
             blocks_behind: Some(12),
         }]),
     );
-    let alerts = super::page_chrome(&state, Some(&owner), "/dashboard")
-        .await
-        .alerts;
+    let alerts = super::page_chrome(&state, Some(&owner), "/").await.alerts;
     assert!(alerts[0].contains("catching up 12 block"), "{alerts:?}");
 
     crate::http::status_page::seed_status_for_tests(&state.engine, status_with(vec![]));
-    assert!(super::page_chrome(&state, Some(&owner), "/dashboard")
+    assert!(super::page_chrome(&state, Some(&owner), "/")
         .await
         .alerts
         .is_empty());
@@ -1781,9 +1809,7 @@ async fn a_store_whose_key_storage_is_off_or_down_gets_an_alert_saying_so() {
                 blocks_behind: None,
             }]),
         );
-        let alerts = super::page_chrome(&state, Some(&owner), "/dashboard")
-            .await
-            .alerts;
+        let alerts = super::page_chrome(&state, Some(&owner), "/").await.alerts;
         assert_eq!(alerts.len(), 1);
         assert!(
             alerts[0].contains("shop.example.com") && alerts[0].contains(expected),
@@ -1803,7 +1829,7 @@ async fn browser_reports_are_accepted_up_to_a_small_size_and_only_the_sites_own_
             .body(Body::from(body))
             .unwrap()
     };
-    let small = r#"{"kind":"error","message":"x is undefined","page":"/dashboard"}"#.to_string();
+    let small = r#"{"kind":"error","message":"x is undefined","page":"/"}"#.to_string();
     assert_eq!(
         router
             .clone()
@@ -1854,7 +1880,7 @@ async fn store_pages_load_browser_reports_only_once_the_store_opted_in_but_admin
             .contains(&crate::assets::url("telemetry.js"))
     };
     assert!(with_script("/dashboard/admin/logs").await);
-    assert!(with_script("/dashboard").await);
+    assert!(with_script("/").await);
     assert!(with_script("/dashboard/stores/new").await);
     assert!(!with_script("/dashboard/stores/c1").await);
     assert!(!with_script("/dashboard/stores/c1/settings").await);

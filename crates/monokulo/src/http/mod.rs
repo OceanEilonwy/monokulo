@@ -321,7 +321,7 @@ impl AppState {
 
 pub fn build_router(state: AppState) -> Router {
     let router = Router::new()
-        .route("/", axum::routing::get(home::landing))
+        .route("/", axum::routing::get(home::home))
         .route(
             "/admin/setup",
             axum::routing::get(admin_setup::setup_form).post(admin_setup::setup_submit),
@@ -419,7 +419,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/login", post(login::login))
         .route("/logout", post(logout::logout))
         .route("/connections", post(connections::create_connection))
-        .route("/dashboard", axum::routing::get(home::dashboard_home))
+        .route("/dashboard", axum::routing::get(home::dashboard_moved))
         .route(
             "/dashboard/signup",
             axum::routing::get(dashboard::signup_form).post(dashboard::signup_submit),
@@ -753,7 +753,8 @@ pub fn build_router(state: AppState) -> Router {
 /// unknown/invalid token - never distinguishes any of these from each
 /// other. Both paths converge on the exact same "hash the token, look up
 /// the session" logic below - there is one auth system here, not two
-/// parallel ones.
+/// parallel ones. A browser loading a page is sent to log in instead of
+/// getting the `401` ([`unauthenticated`]).
 ///
 /// Also carries the presented session's `token_hash` (the same hash
 /// `Db::find_session`/`Db::delete_session` key on) alongside the resolved
@@ -768,7 +769,7 @@ pub struct AuthedUser(pub UserRow, pub TokenHash);
 pub(crate) struct ResolvedSession(pub UserRow, pub TokenHash);
 
 impl FromRequestParts<AppState> for AuthedUser {
-    type Rejection = ApiError;
+    type Rejection = Response;
 
     async fn from_request_parts(
         parts: &mut Parts,
@@ -777,11 +778,35 @@ impl FromRequestParts<AppState> for AuthedUser {
         if let Some(ResolvedSession(user, hash)) = parts.extensions.get::<ResolvedSession>() {
             return Ok(AuthedUser(user.clone(), hash.clone()));
         }
-        resolve_authed_user(state, &parts.headers)
-            .await
-            .map(|(user, hash)| AuthedUser(user, hash))
-            .ok_or(ApiError::Unauthorized)
+        match resolve_authed_user(state, &parts.headers).await {
+            Some((user, hash)) => Ok(AuthedUser(user, hash)),
+            None => Err(unauthenticated(parts)),
+        }
     }
+}
+
+/// What a request without a valid session gets: a browser loading a page
+/// is sent to log in, coming back to the page after (`next`); anything
+/// else (the JSON API, a script's fetch, a form post) a plain `401`.
+fn unauthenticated(parts: &Parts) -> Response {
+    let headers = &parts.headers;
+    let page = matches!(
+        parts.method,
+        axum::http::Method::GET | axum::http::Method::HEAD
+    ) && !headers.contains_key(header::AUTHORIZATION)
+        && !headers.contains_key(fx::FX_REQUEST)
+        && headers
+            .get(header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|accept| accept.contains("text/html"));
+    if !page {
+        return ApiError::Unauthorized.into_response();
+    }
+    let here = parts.uri.path_and_query().map_or("/", |p| p.as_str());
+    dashboard::redirect_302(&format!(
+        "/dashboard/login?next={}",
+        url::form_urlencoded::byte_serialize(here.as_bytes()).collect::<String>()
+    ))
 }
 
 /// Same credential resolution as [`AuthedUser`], plus a real
@@ -795,7 +820,7 @@ impl FromRequestParts<AppState> for AuthedUser {
 pub struct AuthedAdmin(pub UserRow, pub TokenHash);
 
 impl FromRequestParts<AppState> for AuthedAdmin {
-    type Rejection = ApiError;
+    type Rejection = Response;
 
     async fn from_request_parts(
         parts: &mut Parts,
@@ -803,7 +828,7 @@ impl FromRequestParts<AppState> for AuthedAdmin {
     ) -> Result<Self, Self::Rejection> {
         let AuthedUser(user, hash) = AuthedUser::from_request_parts(parts, state).await?;
         if !user.is_admin {
-            return Err(ApiError::Forbidden);
+            return Err(ApiError::Forbidden.into_response());
         }
         Ok(AuthedAdmin(user, hash))
     }
@@ -879,26 +904,30 @@ pub(crate) async fn page_chrome(
 ) -> crate::views::PageChrome {
     let current_path = current_path.into();
     let unserved = status_page::known_unserved(&state.engine);
-    // One read for both: the user's stores (only when some store can't be
-    // scanned) and whether this page's store reports browser logs.
-    let user_id = user
-        .filter(|_| !unserved.is_empty())
-        .map(|user| user.id.clone());
+    // One read for all three: the user's stores (only when some store
+    // can't be scanned), how many wallets they have (the account menu's
+    // count), and whether this page's store reports browser logs.
+    let user_id = user.map(|user| user.id.clone());
+    let any_unserved = !unserved.is_empty();
     let store = store_of_path(&current_path).map(str::to_string);
-    let (stores, browser_reports) = state
+    let (stores, wallet_count, browser_reports) = state
         .db
         .read(move |db| {
-            let stores = match user_id {
-                Some(user_id) => db
-                    .list_store_connections_for_user(&user_id)
+            let stores = match &user_id {
+                Some(user_id) if any_unserved => db
+                    .list_store_connections_for_user(user_id)
                     .unwrap_or_default(),
-                None => Vec::new(),
+                _ => Vec::new(),
+            };
+            let wallets = match &user_id {
+                Some(user_id) => db.count_wallets(user_id).unwrap_or(0),
+                None => 0,
             };
             let reports = store.map(|store| {
                 db.client_logging(&crate::db::ConnectionId::new(store))
                     .unwrap_or(false)
             });
-            Ok::<_, crate::db::DbError>((stores, reports))
+            Ok::<_, crate::db::DbError>((stores, wallets, reports))
         })
         .await
         .unwrap_or_default();
@@ -912,6 +941,7 @@ pub(crate) async fn page_chrome(
     let mut chrome = crate::views::PageChrome::from_user(user, current_path)
         .with_health(status_page::known_health(&state.engine))
         .with_alerts(alerts);
+    chrome.wallet_count = wallet_count;
     // Only a store's own pages depend on its opt-in; every other page keeps
     // `from_user`'s choice.
     if let Some(reports) = browser_reports {

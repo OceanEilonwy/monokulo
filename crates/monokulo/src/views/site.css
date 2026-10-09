@@ -271,12 +271,6 @@ html.js .no-js-only { display: none; }
    delete (`admin_invites.html.hbs`) - struck through and faded so it reads
    as gone-but-still-visible-for-confirmation, not a live row. */
 .row-deleted td { opacity: 0.45; text-decoration: line-through; }
-.hero { display: flex; align-items: flex-start; gap: 1rem; margin-top: 1.2rem; }
-.hero-logo { flex: none; margin-top: 0.3rem; }
-.hero h1 { margin-top: 0; }
-@media (max-width: 560px) {
-  .hero { flex-direction: column; align-items: flex-start; gap: 0.6rem; }
-}
 .box {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -429,7 +423,7 @@ input[type=date], input[type=datetime-local], input[type=time], select, textarea
 textarea { resize: vertical; }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--focus-ring); }
 /* `margin-right`: two `.btn`/`button` elements written as separate Maud
-   markup expressions (e.g. the landing page's "Sign up" + "Log in") render
+   markup expressions (a Save beside a Discard, say) render
    with no whitespace text node between them - unlike a hand-written .hbs
    template's literal newline/indentation, Maud never inserts one - so an
    explicit horizontal gap is the only thing keeping adjacent buttons from
@@ -532,8 +526,6 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 .state-expired, .state-offline, .state-unknown { --state-bg: var(--state-expired-bg); --state-border: var(--state-expired-border); --state-ink: var(--state-expired-ink); }
 .state-double-spend { --state-bg: var(--state-double-spend-bg); --state-border: var(--state-double-spend-border); --state-ink: var(--state-double-spend-ink); }
 .state-cancelled { --state-bg: var(--state-cancelled-bg); --state-border: var(--state-cancelled-border); --state-ink: var(--state-cancelled-ink); }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }
-@media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
 .muted { color: var(--muted); }
 .rule { border: none; border-top: 2px dashed var(--line); margin: 1.6em 0; }
 .pick-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; margin: 1.2rem 0; }
@@ -591,6 +583,9 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
   justify-content: space-between;
   padding-top: 0.7rem;
   padding-bottom: 0.7rem;
+  /* One height signed in or out, whatever the bar holds: its tallest
+     control (the 2em status target and account button) plus the padding. */
+  min-height: calc(2em + 1.4rem);
   flex-wrap: wrap;
   position: relative;
 }
@@ -613,8 +608,31 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 }
 .site-nav-links a:hover, .site-nav-links .nav-link-button:hover { color: var(--accent-text); background: none; text-decoration: underline; text-decoration-thickness: 1px; }
 .site-nav-links .nav-logout-form, .site-nav-links .nav-theme-form { margin: 0; display: inline; }
-.site-nav-links .nav-tz-link { font-size: 0.8em; font-weight: 500; color: var(--muted); text-decoration: none; white-space: nowrap; }
-.nav-status-link { display: inline-flex; align-items: center; align-self: center; text-decoration: none !important; }
+/* The status dot's link: a 2em box round the dot, and a transparent
+   ::before that makes the target at least 44px square. */
+.nav-status-link { position: relative; display: inline-flex; align-items: center; justify-content: center; align-self: center; width: 2em; height: 2em; border-radius: 50%; text-decoration: none !important; }
+.nav-status-link::before { content: ""; position: absolute; inset: min(0px, calc((2em - 44px) / 2)); }
+.nav-status-link:hover { background: var(--surface-sunken); }
+/* The account menu (`views::account_menu`): a <details>, so it opens
+   without JavaScript. */
+.acct { position: relative; margin-left: 1.2em; }
+.acct > summary { list-style: none; display: inline-flex; align-items: center; gap: var(--space-sm); height: 2em; max-width: 14em; padding: 0 var(--space-sm) 0 2px; border: 1px solid var(--line-strong); border-radius: 999px; cursor: pointer; font-weight: 600; }
+.acct > summary::-webkit-details-marker { display: none; }
+.acct > summary:hover { border-color: var(--ink); background: var(--btn-hover-bg); }
+.acct > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.acct-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct > summary .mk-caret { margin-left: var(--space-xs); }
+.acct[open] > summary .mk-caret { transform: translateY(25%) rotate(-135deg); }
+.avatar { display: inline-flex; align-items: center; justify-content: center; flex: none; width: calc(2em - 6px); height: calc(2em - 6px); border-radius: 50%; background: var(--tint-highlight); color: var(--ink); font-size: 0.75em; font-weight: 800; }
+.acct-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 25; width: 17rem; padding: var(--space-xs); background: var(--paper-raised); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius-md); box-shadow: 0 6px 24px var(--popup-shadow); }
+.acct-who { padding: var(--space-sm) var(--space-md); border-bottom: 1px solid var(--line); margin-bottom: var(--space-xs); overflow-wrap: anywhere; }
+.acct-who small { display: block; color: var(--muted); }
+.site-nav-links .acct-menu a, .acct-menu .menu-item, .site-nav-links .acct-menu .nav-link-button { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); width: 100%; margin: 0; padding: var(--space-sm) var(--space-md); border-radius: var(--radius-sm); font-weight: 500; color: var(--ink); text-align: left; text-decoration: none; }
+.site-nav-links .acct-menu a:hover, .site-nav-links .acct-menu .nav-link-button:hover { background: var(--surface-sunken); color: var(--ink); text-decoration: none; }
+.acct-menu .menu-note { color: var(--muted); font-size: 0.85em; }
+.acct-menu hr { border: 0; border-top: 1px solid var(--line); margin: var(--space-xs) 0; }
+.acct-menu .theme-toggle { margin: 0; }
+.acct-menu .nav-logout-form { display: block; }
 /* The Orders page's search: field and button on one line. */
 .orders-search { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0.5em; margin: 0 0 1em; }
 .orders-search input[type="search"] { flex: 1 1 16em; min-width: 0; padding: 0.5em 0.7em; font: inherit; }
@@ -740,6 +758,23 @@ a.order-id { display: inline-block; max-width: 11em; }
   }
   .site-nav-links a, .site-nav-links .nav-link-button, .theme-toggle { margin-left: 0; }
   .nav-toggle-checkbox:checked ~ .site-nav-links { display: flex; }
+  /* The account menu's items join the list, each row at least 44px. A
+     browser that can't show a closed <details>'s content keeps the
+     account button, which opens them in place. */
+  .site-nav-links { align-items: stretch; gap: 0; border-top: 1px solid var(--line); }
+  .site-nav-links > a, .site-nav-links .acct-menu a, .acct-menu .menu-item, .site-nav-links .acct-menu .nav-link-button { display: flex; align-items: center; min-height: 44px; }
+  .site-nav-links > a { border-bottom: 1px solid var(--line); }
+  .site-nav-links .nav-status-link { margin: var(--space-xs) 0; }
+  .acct { margin-left: 0; }
+  .acct > summary { margin: var(--space-sm) 0; }
+  .acct-menu { position: static; width: auto; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: none; color: inherit; }
+  .acct-who { padding-left: 0; padding-right: 0; }
+  .site-nav-links .acct-menu a, .acct-menu .menu-item, .site-nav-links .acct-menu .nav-link-button { padding: 0; border-radius: 0; border-bottom: 1px solid var(--line); color: var(--chrome-ink); font-weight: 600; }
+  .acct-menu hr { display: none; }
+  @supports selector(::details-content) {
+    .acct > summary { display: none; }
+    .acct::details-content { content-visibility: visible; display: contents; }
+  }
 }
 .status-dot {
   display: inline-block;

@@ -1374,7 +1374,7 @@ pub async fn pos_session_for_order(
     let body = maud::html! {
         div class="wrap" {
             nav class="context-nav" aria-label="Breadcrumb" {
-                a href="/dashboard" { "Dashboard" } " / " a href=(LOGS) { "Logs" }
+                a href="/" { "Dashboard" } " / " a href=(LOGS) { "Logs" }
             }
             h1 { "No POS session recorded" }
             p {

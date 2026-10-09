@@ -66,7 +66,6 @@ fn with_next(path: &str, next: Option<&str>) -> String {
 pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
-            nav class="context-nav" aria-label="Breadcrumb" { a href="/" { "Home" } }
             h1 { "Sign up" }
             @if let Some(error) = &data.error {
                 p class="error" { (error) }
@@ -97,7 +96,6 @@ pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
 pub fn login_page(chrome: &PageChrome, data: &LoginViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
-            nav class="context-nav" aria-label="Breadcrumb" { a href="/" { "Home" } }
             h1 { "Log in" }
             @if let Some(site) = &data.connecting_site {
                 div class="notice" {

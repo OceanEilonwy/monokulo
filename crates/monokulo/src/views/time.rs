@@ -73,16 +73,6 @@ impl Clock {
         self.automatic
     }
 
-    /// The zone as a word or two: `perth`, `new york`, `utc`.
-    pub fn short_label(&self) -> String {
-        self.name
-            .rsplit('/')
-            .next()
-            .unwrap_or(&self.name)
-            .replace('_', " ")
-            .to_lowercase()
-    }
-
     /// `28 Sep, 14:22` (with the year when it isn't this one), in a
     /// `<time>` that never wraps; the full date, seconds and zone are in
     /// its title.
@@ -189,18 +179,5 @@ mod tests {
             .time_local(T)
             .into_string()
             .contains(" data-local>"));
-    }
-
-    #[test]
-    fn a_zone_reads_as_its_last_part() {
-        assert_eq!(
-            Clock::new(Some("Australia/Perth"), None, T).short_label(),
-            "perth"
-        );
-        assert_eq!(
-            Clock::new(Some("America/New_York"), None, T).short_label(),
-            "new york"
-        );
-        assert_eq!(Clock::utc(T).short_label(), "utc");
     }
 }

@@ -533,7 +533,7 @@ async fn main() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/dashboard")
+                .uri("/")
                 .header("cookie", &session_cookie)
                 .body(Body::empty())
                 .unwrap(),

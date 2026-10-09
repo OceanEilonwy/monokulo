@@ -1282,6 +1282,17 @@ impl Db {
         Ok(rows)
     }
 
+    /// How many wallets `user_id` has in use (retired ones left out, as
+    /// [`Self::list_wallets`] leaves them out): the account menu's count.
+    pub fn count_wallets(&self, user_id: &UserId) -> Result<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM wallets WHERE user_id = ?1 AND retired_at_utc IS NULL",
+            params![user_id],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
     /// One of `user_id`'s wallets. Someone else's and a missing one look
     /// the same: `None`.
     pub fn get_wallet(&self, user_id: &UserId, id: &WalletId) -> Result<Option<WalletRow>> {

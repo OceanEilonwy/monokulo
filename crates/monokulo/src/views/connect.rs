@@ -127,7 +127,7 @@ pub fn page(chrome: &PageChrome, data: &ConnectViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
             @if let Some(public_key) = &data.public_key {
-                nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
+                nav class="context-nav" aria-label="Breadcrumb" { a href="/" { "Dashboard" } }
                 h1 { "Store connected" }
                 @if let Some(connection_id) = &data.connection_id {
                     p { a class="btn btn-primary" href=(format!("/dashboard/stores/{connection_id}")) { "View store →" } }
@@ -299,7 +299,7 @@ pub fn platform_page(chrome: &PageChrome, data: &PlatformConnectViewModel) -> Ma
 pub fn new_store_picker_page(chrome: &PageChrome) -> Markup {
     let body = html! {
         div class="wrap" {
-            nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
+            nav class="context-nav" aria-label="Breadcrumb" { a href="/" { "Dashboard" } }
             h1 { "Add a store" }
             p { "Choose the setup that matches your storefront." }
             div class="pick-grid" {

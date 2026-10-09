@@ -386,7 +386,7 @@ pub async fn login_form(
 /// runs, just via `AuthedUser`'s cookie path rather than its `Bearer` one.
 /// Clears the cookie in the response (an empty value with `max_age(0)`) so
 /// the browser doesn't keep presenting a now-deleted session token on its
-/// next request, then redirects to `/` - a human clicking "log out" expects
+/// next request, then redirects to the login page - a human clicking "log out" expects
 /// a real page back, not `logout::logout`'s bare `204` (which is correct
 /// for the JSON API, wrong for a browser form submission).
 pub async fn logout_submit(
@@ -402,7 +402,7 @@ pub async fn logout_submit(
     let mut cookie = super::session_cookie(&headers, String::new());
     cookie.set_max_age(time::Duration::ZERO);
     let jar = CookieJar::new().add(cookie);
-    (jar, redirect_302("/")).into_response()
+    (jar, redirect_302("/dashboard/login")).into_response()
 }
 
 /// `POST /dashboard/theme` - the nav's no-JS theme selector. Named submit
@@ -442,7 +442,7 @@ pub async fn timezone_submit(
             .await
             .ok();
     }
-    redirect_302("/dashboard#timezone")
+    redirect_302("/#timezone")
 }
 
 #[derive(Deserialize)]
@@ -472,7 +472,7 @@ pub async fn theme_submit(
         .ok();
     match form.next.as_deref().and_then(SafePath::parse) {
         Some(next) => redirect_to(&next),
-        None => redirect_302("/dashboard"),
+        None => redirect_302("/"),
     }
 }
 
@@ -521,7 +521,7 @@ pub async fn login_submit(
             // A real dashboard home page exists now (`http/home.rs`) - a
             // plain login with no `next` lands there, same as any other
             // "you're logged in, here's your stuff" flow.
-            (jar, redirect_302("/dashboard")).into_response()
+            (jar, redirect_302("/")).into_response()
         }
         Err(LoginError::Unauthorized) => {
             render_login(
@@ -542,12 +542,8 @@ pub async fn login_submit(
     }
 }
 
-/// `GET /dashboard/connect` (WBS 1.3.2) - behind [`AuthedUser`]. A missing or
-/// invalid session gets the exact same `401` `AuthedUser` already returns for
-/// every other protected route in this crate (the JSON API's own
-/// `/connections` included) - no redirect-on-401 behavior exists anywhere in
-/// the dashboard yet, so a bare `401` here is the consistent choice rather
-/// than inventing new behavior for just this one route.
+/// `GET /dashboard/connect` (WBS 1.3.2) - behind [`AuthedUser`], which
+/// sends a browser without a session to log in, as on every other page.
 pub async fn connect_form(
     State(state): State<AppState>,
     AuthedUser(user, _token_hash): AuthedUser,
@@ -741,7 +737,7 @@ mod tests {
                 let response = router
                     .oneshot(
                         Request::builder()
-                            .uri("/dashboard")
+                            .uri("/")
                             .header("authorization", format!("Bearer {session}"))
                             .body(Body::empty())
                             .unwrap(),
@@ -798,7 +794,7 @@ mod tests {
             .oneshot(pick("dark", "https://evil.example/phish"))
             .await
             .unwrap();
-        assert_eq!(response.headers()["location"], "/dashboard");
+        assert_eq!(response.headers()["location"], "/");
     }
 
     #[tokio::test]
@@ -847,7 +843,7 @@ mod tests {
         };
         let dashboard = |cookie: Option<&str>| {
             let mut request = Request::builder()
-                .uri("/dashboard")
+                .uri("/")
                 .header("authorization", format!("Bearer {session}"));
             if let Some(cookie) = cookie {
                 request = request.header("cookie", cookie.to_string());
@@ -872,11 +868,11 @@ mod tests {
         };
 
         // Automatic: the browser's zone, else UTC.
-        assert!(dashboard(None).await.contains(">tz: utc</a>"));
+        assert!(dashboard(None).await.contains("Times in UTC<"));
         let html = dashboard(Some("tz=Australia%2FPerth")).await;
         assert!(
-            html.contains(r##"<a href="/dashboard#timezone" class="nav-tz-link""##)
-                && html.contains(">tz: perth</a>"),
+            html.contains(r##"<a href="/account#card-time""##)
+                && html.contains("Times in Australia/Perth<"),
             "{html}"
         );
         assert!(
@@ -892,19 +888,19 @@ mod tests {
             .unwrap();
         assert_eq!(
             (response.status(), &response.headers()["location"]),
-            (StatusCode::FOUND, &"/dashboard#timezone".parse().unwrap())
+            (StatusCode::FOUND, &"/#timezone".parse().unwrap())
         );
         let html = dashboard(Some("tz=Australia%2FPerth")).await;
         assert!(
-            html.contains(">tz: new york</a>")
+            html.contains("Times in America/New_York<")
                 && html.contains(r#"<option value="America/New_York" selected>"#),
             "{html}"
         );
         router.clone().oneshot(pick("Not/AZone")).await.unwrap();
-        assert!(dashboard(None).await.contains(">tz: new york</a>"));
+        assert!(dashboard(None).await.contains("Times in America/New_York<"));
         router.clone().oneshot(pick("")).await.unwrap();
         assert!(dashboard(Some("tz=Asia%2FTokyo"))
             .await
-            .contains(">tz: tokyo</a>"));
+            .contains("Times in Asia/Tokyo<"));
     }
 }

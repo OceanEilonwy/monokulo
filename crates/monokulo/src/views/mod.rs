@@ -75,7 +75,6 @@ pub mod dashboard;
 pub mod engine;
 pub mod integration_help;
 pub mod key_entry;
-pub mod landing;
 mod logo_art;
 pub mod logs;
 pub mod orders;
@@ -113,6 +112,12 @@ pub fn store_breadcrumb(connection_id: &str, display_name: &str, include_orders:
 pub struct PageChrome {
     pub logged_in: bool,
     pub is_admin: bool,
+    /// The signed-in user's email, for the account menu (empty when no one
+    /// is signed in).
+    pub email: String,
+    /// How many wallets the signed-in user has, shown by the account
+    /// menu's Wallets shortcut (`crate::http::page_chrome` counts them).
+    pub wallet_count: usize,
     pub theme: Theme,
     /// The current request's own path (+ query string, where relevant) -
     /// carried as the theme-toggle form's hidden `next` field so toggling
@@ -142,14 +147,15 @@ impl PageChrome {
     /// The constructor almost every caller wants: `user` is whatever
     /// [`AuthedUser`](crate::http::AuthedUser)/[`AuthedAdmin`](crate::http::AuthedAdmin)
     /// already resolved, or `None` for an unauthenticated page (still real
-    /// per-request state for `/`/`/status`, which show "log out" for a
-    /// visitor who happens to have a session - see `views::landing`/
-    /// `views::status`'s own callers).
+    /// per-request state for `/status`, which shows the account menu to a
+    /// visitor who happens to have a session).
     pub fn from_user(user: Option<&UserRow>, current_path: impl Into<String>) -> Self {
         match user {
             Some(u) => PageChrome {
                 logged_in: true,
                 is_admin: u.is_admin,
+                email: u.email.clone(),
+                wallet_count: 0,
                 theme: u.theme,
                 current_path: current_path.into(),
                 health: None,
@@ -160,6 +166,8 @@ impl PageChrome {
             None => PageChrome {
                 logged_in: false,
                 is_admin: false,
+                email: String::new(),
+                wallet_count: 0,
                 theme: Theme::System,
                 current_path: current_path.into(),
                 health: None,
@@ -191,9 +199,8 @@ fn theme_attr(theme: Theme) -> Option<&'static str> {
 
 /// The page shell every page in this module renders through: everything
 /// from `<!doctype html>` to `</html>`, nav bar included. `title` is the
-/// full `<title>` text (not auto-suffixed - some pages, e.g. the landing
-/// page, deliberately have no " - Monokulo" suffix, so each caller states
-/// its own title exactly).
+/// full `<title>` text (not auto-suffixed: each caller states its own
+/// title exactly).
 const DEFAULT_VIEWPORT: &str = "width=device-width, initial-scale=1";
 
 pub fn layout(chrome: &PageChrome, title: &str, body: Markup) -> Markup {
@@ -580,11 +587,11 @@ pub fn status_indicator(health: Option<Health>, class: &str) -> Markup {
     }
 }
 
-/// The site nav - brand, log-in-state links, the no-JS theme toggle (only
-/// shown once logged in: there's no account to persist a preference
-/// against otherwise, and an anonymous visitor already gets a real
-/// `prefers-color-scheme` experience with no control needed), admin links,
-/// and the status dot.
+/// The site nav: the brand (linking to `/`, the dashboard), the admin
+/// links, the status dot, then the account menu once signed in (the theme
+/// switch is in it: an anonymous visitor has no account to keep a choice
+/// against, and gets `prefers-color-scheme`), or Log in and Sign up. The
+/// row is one height either way (`site.css`, `.site-nav-row`).
 fn nav(chrome: &PageChrome) -> Markup {
     html! {
         nav class="site-nav" {
@@ -596,37 +603,90 @@ fn nav(chrome: &PageChrome) -> Markup {
                 input type="checkbox" id="nav-toggle" class="nav-toggle-checkbox";
                 label for="nav-toggle" class="nav-toggle-label" aria-label="Menu" { "☰" }
                 div class="site-nav-links" {
-                    a href="/dashboard" { "dashboard" }
-                    @if chrome.logged_in {
-                        a href="/dashboard/wallets" { "wallets" }
-                    }
                     @if chrome.is_admin {
-                        a href="/dashboard/admin/settings" { "admin" }
-                        a href="/dashboard/admin/invites" { "invites" }
-                        a href="/dashboard/admin/logs" { "logs" }
+                        a href="/dashboard/admin/settings" { "Admin" }
+                        a href="/dashboard/admin/invites" { "Invites" }
+                        a href="/dashboard/admin/logs" { "Logs" }
                     }
-                    @if chrome.logged_in {
-                        form method="post" action="/dashboard/logout" class="nav-logout-form" {
-                            button type="submit" class="nav-link-button" { "log out" }
-                        }
-                    } @else {
-                        a href="/dashboard/login" { "log in" }
-                        a href="/dashboard/signup" { "sign up" }
+                    @if !chrome.logged_in {
+                        a href="/dashboard/login" { "Log in" }
+                        a href="/dashboard/signup" { "Sign up" }
                     }
-                    @if chrome.logged_in {
-                        (theme_toggle(chrome))
-                        // The zone every time on the page is in; changed on
-                        // the dashboard.
-                        a href="/dashboard#timezone" class="nav-tz-link"
-                            title=(format!("Times are in {}{}. Change it on your dashboard.", chrome.clock.name(), if chrome.clock.is_automatic() { " (automatic)" } else { "" })) {
-                            "tz: " (chrome.clock.short_label())
-                        }
-                    }
-                    // Rightmost on every page.
                     (status_indicator(chrome.health, "nav-status-link"))
+                    @if chrome.logged_in {
+                        (account_menu(chrome))
+                    }
                 }
             }
         }
+    }
+}
+
+/// The name the account button shows: the email's part before the `@`.
+fn account_name(email: &str) -> &str {
+    email.split('@').next().unwrap_or(email)
+}
+
+/// Up to two letters for the account button's circle: the first letter of
+/// the first two words of the email's name part (`rachel.dz` is `RD`), or
+/// its first letter alone.
+fn account_initials(email: &str) -> String {
+    account_name(email)
+        .split(['.', '_', '-', '+'])
+        .filter_map(|word| word.chars().find(|c| c.is_alphanumeric()))
+        .take(2)
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+/// Closes an open account menu on a click outside it, or on Escape. Only
+/// an enhancement: without it the menu closes from its own button, as any
+/// `<details>` does.
+const ACCOUNT_MENU_SCRIPT: &str = r#"(function () {
+  function each(fn) { Array.prototype.forEach.call(document.querySelectorAll("details.acct[open]"), fn); }
+  document.addEventListener("click", function (event) {
+    each(function (menu) { if (!menu.contains(event.target)) menu.open = false; });
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") each(function (menu) { menu.open = false; menu.querySelector("summary").focus(); });
+  });
+})();"#;
+
+/// The account menu: a button with the user's initials and name, opening
+/// a `<details>` (no JavaScript needed) with who they are, Account, their
+/// wallets, the theme switch, the zone times are shown in, and Log out. On
+/// a phone its items sit in the hamburger list instead (`site.css`).
+fn account_menu(chrome: &PageChrome) -> Markup {
+    let role = if chrome.is_admin { "Admin" } else { "Merchant" };
+    let zone = chrome.clock.name();
+    let zone_title = if chrome.clock.is_automatic() {
+        format!("Every time on the site is shown in {zone}, this browser's zone.")
+    } else {
+        format!("Every time on the site is shown in {zone}.")
+    };
+    html! {
+        details class="acct" {
+            summary class="acct-button" aria-label=(format!("Account menu for {}", chrome.email)) {
+                span class="avatar" aria-hidden="true" { (account_initials(&chrome.email)) }
+                span class="acct-name" { (account_name(&chrome.email)) }
+                span class="mk-caret" aria-hidden="true" {}
+            }
+            div class="acct-menu" {
+                div class="acct-who" { strong { (chrome.email) } small { (role) } }
+                a href="/account" { "Account" }
+                a href="/account?tab=wallets" { "Wallets" span class="menu-note" { (chrome.wallet_count) } }
+                hr;
+                div class="menu-item" { span { "Theme" } (theme_toggle(chrome)) }
+                a href="/account#card-time" title=(zone_title) {
+                    span { "Times in " (zone) } span class="menu-note" { "change" }
+                }
+                hr;
+                form method="post" action="/dashboard/logout" class="nav-logout-form" {
+                    button type="submit" class="nav-link-button" { "Log out" }
+                }
+            }
+        }
+        script { (PreEscaped(ACCOUNT_MENU_SCRIPT)) }
     }
 }
 
@@ -722,69 +782,140 @@ mod tests {
             .contains("status-dot status-dot-ok"));
     }
 
-    #[test]
-    fn logged_in_admin_nav_order_is_dashboard_admin_invites_logout_theme_status() {
-        let chrome = PageChrome {
+    /// A signed-in user's chrome, as `page_chrome` makes it.
+    fn signed_in(email: &str, is_admin: bool, theme: Theme) -> PageChrome {
+        PageChrome {
             logged_in: true,
-            is_admin: true,
-            theme: Theme::Dark,
-            current_path: "/dashboard".to_string(),
+            is_admin,
+            email: email.to_string(),
+            wallet_count: 3,
+            theme,
+            current_path: "/".to_string(),
             health: None,
             alerts: Vec::new(),
             browser_reports: true,
-            clock: time::Clock::utc(0),
-        };
-        let html = nav(&chrome).into_string();
-
-        let dashboard = html.find(r#"href="/dashboard""#).expect("dashboard link");
-        let admin = html
-            .find(r#"href="/dashboard/admin/settings""#)
-            .expect("admin link");
-        let invites = html
-            .find(r#"href="/dashboard/admin/invites""#)
-            .expect("invites link");
-        let logout = html
-            .find(r#"action="/dashboard/logout""#)
-            .expect("logout form");
-        let status = html.find(r#"href="/status""#).expect("status link");
-        let theme = html
-            .find(r#"action="/dashboard/theme""#)
-            .expect("theme form");
-
-        assert!(
-            dashboard < admin,
-            "dashboard must come before admin, got: {html}"
-        );
-        assert!(
-            admin < invites,
-            "admin must come before invites, got: {html}"
-        );
-        let logs = html
-            .find(r#"href="/dashboard/admin/logs""#)
-            .expect("logs link");
-        assert!(
-            invites < logs && logs < logout,
-            "logs comes after invites, before log out, got: {html}"
-        );
-        assert!(
-            logout < theme,
-            "log out must come before the theme toggle, got: {html}"
-        );
-        assert!(
-            theme < status,
-            "the status indicator must be rightmost, after the theme toggle, got: {html}"
-        );
+            clock: time::Clock::new(Some("Australia/Perth"), None, 0),
+        }
     }
 
     #[test]
-    fn logged_out_nav_has_no_admin_logout_or_theme_controls() {
-        let chrome = PageChrome::from_user(None, "/dashboard");
+    fn an_admin_sees_admin_links_then_the_status_dot_then_their_account_menu() {
+        let html = nav(&signed_in("rachel.dz@example.org", true, Theme::Dark)).into_string();
+        let at = |needle: &str| {
+            html.find(needle)
+                .unwrap_or_else(|| panic!("{needle} in {html}"))
+        };
+        let admin = at(r#"href="/dashboard/admin/settings">Admin<"#);
+        let invites = at(r#"href="/dashboard/admin/invites">Invites<"#);
+        let logs = at(r#"href="/dashboard/admin/logs">Logs<"#);
+        let status = at(r#"href="/status""#);
+        let menu = at(r#"<details class="acct">"#);
+        assert!(
+            admin < invites && invites < logs && logs < status && status < menu,
+            "{html}"
+        );
+        // The brand is the way to the dashboard: no separate link, and no
+        // top-level wallets link (the account menu has it).
+        assert!(
+            html.contains(r#"<a href="/" class="site-nav-brand">"#),
+            "{html}"
+        );
+        assert!(!html.contains(r#"href="/dashboard""#), "{html}");
+        assert!(!html.contains(">wallets<"), "{html}");
+    }
+
+    #[test]
+    fn the_account_menu_holds_who_account_wallets_theme_times_and_log_out_in_that_order() {
+        let html = nav(&signed_in("rachel.dz@example.org", true, Theme::Dark)).into_string();
+        let menu = &html[html.find(r#"<div class="acct-menu">"#).expect(&html)..];
+        assert!(
+            html.contains(r#"<span class="avatar" aria-hidden="true">RD</span><span class="acct-name">rachel.dz</span>"#),
+            "{html}"
+        );
+        let at = |needle: &str| {
+            menu.find(needle)
+                .unwrap_or_else(|| panic!("{needle} in {menu}"))
+        };
+        let who = at("<strong>rachel.dz@example.org</strong><small>Admin</small>");
+        let account = at(r#"<a href="/account">Account</a>"#);
+        let wallets =
+            at(r#"<a href="/account?tab=wallets">Wallets<span class="menu-note">3</span></a>"#);
+        let theme = at(r#"<form method="post" action="/dashboard/theme" class="nav-theme-form">"#);
+        let times = at(r##"<a href="/account#card-time""##);
+        let logout = at(r#"action="/dashboard/logout""#);
+        assert!(
+            who < account
+                && account < wallets
+                && wallets < theme
+                && theme < times
+                && times < logout,
+            "{menu}"
+        );
+        assert!(
+            menu.contains(
+                r#"Times in Australia/Perth</span><span class="menu-note">change</span>"#
+            ),
+            "{menu}"
+        );
+        assert!(menu.contains(">Log out</button>"), "{menu}");
+
+        let merchant = nav(&signed_in("ann@example.org", false, Theme::System)).into_string();
+        assert!(merchant.contains("<small>Merchant</small>"), "{merchant}");
+        assert!(
+            merchant.contains(r#"<span class="avatar" aria-hidden="true">A</span>"#),
+            "{merchant}"
+        );
+        assert!(!merchant.contains("/dashboard/admin"), "{merchant}");
+    }
+
+    #[test]
+    fn signed_out_the_nav_offers_log_in_and_sign_up_and_no_account_controls() {
+        let chrome = PageChrome::from_user(None, "/dashboard/login");
         let html = nav(&chrome).into_string();
-        assert!(html.contains(r#"href="/dashboard/login""#));
-        assert!(html.contains(r#"href="/dashboard/signup""#));
+        assert!(
+            html.contains(r#"<a href="/dashboard/login">Log in</a>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<a href="/dashboard/signup">Sign up</a>"#),
+            "{html}"
+        );
         assert!(!html.contains("admin"));
         assert!(!html.contains(r#"action="/dashboard/logout""#));
         assert!(!html.contains("theme-toggle"));
+        assert!(!html.contains("acct"));
+    }
+
+    /// #1: the bar is one height whatever it holds, so a signed-out page's
+    /// is as tall as a signed-in one's (its tallest control, 2em, plus the
+    /// row's padding). #9: the status dot's link is a 2em box whose
+    /// `::before` makes a 44px target.
+    #[test]
+    fn the_nav_row_keeps_one_height_and_the_status_dot_is_a_44px_target() {
+        let css = include_str!("site.css");
+        let row = &css[css.find(".site-nav-row {").expect("the nav row's rule")..];
+        assert!(
+            row[..row.find('}').unwrap()].contains("min-height: calc(2em + 1.4rem);"),
+            "{row}"
+        );
+        let status = &css[css
+            .find(".nav-status-link {")
+            .expect("the status link's rule")..];
+        assert!(
+            status[..status.find('}').unwrap()].contains("width: 2em; height: 2em;"),
+            "{status}"
+        );
+        assert!(css.contains(
+            r#".nav-status-link::before { content: ""; position: absolute; inset: min(0px, calc((2em - 44px) / 2)); }"#
+        ));
+    }
+
+    #[test]
+    fn initials_come_from_the_first_two_words_of_the_email() {
+        assert_eq!(account_initials("rachel.dz@example.org"), "RD");
+        assert_eq!(account_initials("ann@example.org"), "A");
+        assert_eq!(account_initials("j_smith+shop@example.org"), "JS");
+        assert_eq!(account_initials("4ever@example.org"), "4");
     }
 
     #[test]
@@ -795,14 +926,8 @@ mod tests {
             (Theme::Dark, "theme-toggle-dark"),
         ] {
             let chrome = PageChrome {
-                logged_in: true,
-                is_admin: false,
-                theme,
-                current_path: "/dashboard".to_string(),
-                health: None,
-                alerts: Vec::new(),
-                browser_reports: true,
-                clock: time::Clock::utc(0),
+                current_path: "/dashboard/stores".to_string(),
+                ..signed_in("ann@example.org", false, theme)
             };
             let html = nav(&chrome).into_string();
             assert!(
@@ -820,7 +945,7 @@ mod tests {
             );
             // Each option submits its theme through the same no-JS form.
             assert!(html.contains(r#"<form method="post" action="/dashboard/theme""#));
-            assert!(html.contains(r#"<input type="hidden" name="next" value="/dashboard">"#));
+            assert!(html.contains(r#"<input type="hidden" name="next" value="/dashboard/stores">"#));
             for value in ["light", "system", "dark"] {
                 assert!(html.contains(&format!(r#"name="theme" value="{value}""#)));
             }
@@ -846,16 +971,7 @@ mod tests {
 
     #[test]
     fn logs_links_are_for_admins_and_quote_the_value() {
-        let admin = PageChrome {
-            logged_in: true,
-            is_admin: true,
-            theme: Theme::System,
-            current_path: "/".into(),
-            health: None,
-            alerts: Vec::new(),
-            browser_reports: true,
-            clock: time::Clock::utc(0),
-        };
+        let admin = signed_in("admin@example.org", true, Theme::System);
         let html = logs_link(&admin, "order.id", "o'1", "Logs").into_string();
         assert_eq!(
             html,
