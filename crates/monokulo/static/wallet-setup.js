@@ -12,6 +12,9 @@
 // phrase never leaves the page.
 (() => {
   'use strict';
+  // Where the page says the module is (its URL carries the file's
+  // version), read now: currentScript is only set while this runs.
+  const MODULE_URL = (document.currentScript && document.currentScript.dataset.module) || '/static/wallet-setup.wasm';
 
   const supported =
     typeof WebAssembly === 'object' &&
@@ -321,7 +324,7 @@
 
   (async () => {
     try {
-      const response = await fetch('/static/wallet-setup.wasm');
+      const response = await fetch(MODULE_URL);
       if (!response.ok) throw new Error(`the wallet maker didn't load (${response.status})`);
       const { instance } = await WebAssembly.instantiate(await response.arrayBuffer(), {});
       exports = instance.exports;

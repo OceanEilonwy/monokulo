@@ -1,33 +1,9 @@
 /* Every component on monokulo's server-rendered pages, and the parts the
    POS and the checkout share with them (buttons, badges, the app bar). It
    names roles from `theme.css`, never a colour: retheme there. */
-/* Manrope, self-hosted (`http::pay::manrope_*_woff2`) - not a Google Fonts
-   `<link>`, deliberately: that CDN sees every visitor's IP on every page
-   load, checkout included, which is the wrong tradeoff for a privacy-
-   focused payment tool (same reasoning `client_library`'s own doc comment
-   gives for shipping the embed JS from this binary instead of a CDN).
-   Latin-only, matching this UI's own text. */
-@font-face {
-  font-family: "Manrope";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url("/static/manrope-500.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Manrope";
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url("/static/manrope-700.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Manrope";
-  font-style: normal;
-  font-weight: 800;
-  font-display: swap;
-  src: url("/static/manrope-800.woff2") format("woff2");
-}
+/* The typeface's `@font-face` rules come first in the page's style, from
+   `views::font_faces`: the font files' URLs carry their version, like every
+   file baked into the binary (`crate::assets`). */
 
 * { box-sizing: border-box; }
 /* Minimal reset for form controls - browsers (and this file's own later,

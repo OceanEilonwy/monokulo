@@ -20,7 +20,7 @@ use maud::{html, Markup, PreEscaped};
 
 use super::{DisplayStatus, OrderStatus};
 
-use super::{layout_bare, layout_bare_with_head, layout_with_head, PageChrome};
+use super::{layout_bare, layout_bare_with_head, layout_with_head, script, Load, PageChrome};
 
 /// One payment row on the checkout page's payments table - mirrors the
 /// engine's own `PaymentViewModel` field-for-field.
@@ -267,13 +267,13 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
         @if data.is_compact { style { (PreEscaped("body{padding:.4rem}")) } }
         // Live updates and the refund address save (structured_logging.md
         // part 8), in this order: the glue sets fixi's defaults.
-        script src="/static/fx-glue.js" defer {}
-        script src="/static/fixi.js" defer {}
-        script src="/static/ssexi.js" defer {}
+        (script("fx-glue.js", Load::Defer))
+        (script("fixi.js", Load::Defer))
+        (script("ssexi.js", Load::Defer))
         // Problem reports, only from a store that opted in to client logs
         // (off by default: a payment page, D8).
         @if chrome.browser_reports {
-            script src="/static/telemetry.js" defer {}
+            (script("telemetry.js", Load::Defer))
         }
     };
     let body = html! {
@@ -361,8 +361,8 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                 }
             }
         }
-        @if data.refund_enabled { script src="/static/jsQR.js" {} }
-        script src="/static/checkout.js" {}
+        @if data.refund_enabled { (script("jsQR.js", Load::Now)) }
+        (script("checkout.js", Load::Now))
     };
     layout_bare_with_head(
         chrome,
@@ -852,9 +852,9 @@ mod tests {
     #[test]
     fn checkout_page_preserves_no_js_refund_entry_and_adds_local_qr_capture() {
         let html = checkout_page(&chrome(), &test_checkout_view_model(false)).into_string();
-        assert!(html.contains("/static/checkout.js"));
+        assert!(html.contains(&crate::assets::url("checkout.js")));
         assert!(html.contains("id=\"scan-refund\""));
-        assert!(html.contains("/static/jsQR.js"));
+        assert!(html.contains(&crate::assets::url("jsQR.js")));
         assert!(html.contains(
             r#"<noscript><meta http-equiv="refresh" content="60" id="checkout-refresh"></noscript>"#
         ));
@@ -875,7 +875,7 @@ mod tests {
     #[test]
     fn checkout_page_stops_meta_refreshing_once_the_order_is_terminal() {
         let html = checkout_page(&chrome(), &test_checkout_view_model(true)).into_string();
-        assert!(html.contains("/static/checkout.js"));
+        assert!(html.contains(&crate::assets::url("checkout.js")));
         assert!(
             !html.contains(r#"<meta http-equiv="refresh""#),
             "a paid/terminal order must not keep re-fetching itself, got: {html}"
@@ -1139,7 +1139,7 @@ mod tests {
         data.refund_enabled = false;
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(!html.contains("id=\"refund_address\""));
-        assert!(!html.contains("/static/jsQR.js"));
+        assert!(!html.contains(&crate::assets::url("jsQR.js")));
         assert!(html.contains("id=\"confirmations-label\""));
     }
 

@@ -59,7 +59,7 @@ fn backup_steps(at: usize) -> Markup {
 /// A wallet app's icon (`/static/wallet-logos/{key}.png`).
 pub fn app_logo(key: &str, size: u32, label: Option<&str>) -> Markup {
     html! {
-        img class="app-logo" src=(format!("/static/wallet-logos/{key}.png")) alt=(label.unwrap_or("")) title=[label] width=(size) height=(size);
+        img class="app-logo" src=(crate::assets::url(&format!("wallet-logos/{key}.png"))) alt=(label.unwrap_or("")) title=[label] width=(size) height=(size);
     }
 }
 
@@ -226,7 +226,8 @@ pub fn choice_page(chrome: &PageChrome, data: &ChoiceViewModel) -> Markup {
                 p class="hint" { "Need separate wallets for different shops? Add as many as you like, and pick one per store." }
             }
         }
-        script src="/static/wallet-setup.js" defer {}
+        // The script fetches its module from where the page says.
+        script src=(crate::assets::url("wallet-setup.js")) data-module=(crate::assets::url("wallet-setup.wasm")) defer {}
     };
     layout(chrome, "Set up your wallet - Monokulo", body)
 }
@@ -505,7 +506,7 @@ pub fn create_page(chrome: &PageChrome, data: &CreateViewModel) -> Markup {
                 }
             }
         }
-        script src="/static/wallet-setup.js" defer {}
+        script src=(crate::assets::url("wallet-setup.js")) data-module=(crate::assets::url("wallet-setup.wasm")) defer {}
     };
     layout_with_head(chrome, "Create a new wallet - Monokulo", html! {}, body)
 }

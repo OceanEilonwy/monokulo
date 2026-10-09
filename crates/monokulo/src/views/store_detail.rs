@@ -4,7 +4,7 @@
 use maud::{html, Markup};
 
 use super::orders::{lookup_payment_card, orders_table, OrderRowViewModel};
-use super::{layout, PageChrome};
+use super::{layout, script, Load, PageChrome};
 
 pub struct StoreDetailData {
     pub connection_id: crate::db::ConnectionId,
@@ -214,7 +214,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                             span class="widget-link-hint" id="pos-launch-hint" { "Requires JS" }
                         }
                     }
-                    script { (maud::PreEscaped("(function(){var link=document.getElementById('pos-launch');if(!link)return;link.href=link.dataset.href;link.removeAttribute('aria-disabled');link.removeAttribute('tabindex');link.classList.remove('pos-launch-disabled');document.getElementById('pos-launch-hint').textContent='Full-screen keypad for in-person sales';})();")) }
+                    (script("store-detail.js", Load::Now))
                     a class="btn widget-link" href=(format!("/dashboard/stores/{}/orders/new", store.connection_id)) {
                         span class="widget-link-icon" {
                             svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"

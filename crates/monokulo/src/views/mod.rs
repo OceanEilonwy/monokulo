@@ -18,7 +18,51 @@
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 pub use shared::order_status::OrderStatus;
 
+use crate::assets;
 use crate::db::{Theme, UserRow};
+
+/// How a page loads a script: as the parser reaches it, once the page is
+/// parsed (`defer`), or as a module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Load {
+    Now,
+    Defer,
+    Module,
+}
+
+/// A `<script>` for a script baked into the binary, by its name
+/// (`crate::assets`), at the URL its content gives it.
+pub fn script(name: &'static str, load: Load) -> Markup {
+    let src = assets::url(name);
+    match load {
+        Load::Now => html! { script src=(src) {} },
+        Load::Defer => html! { script src=(src) defer {} },
+        Load::Module => html! { script type="module" src=(src) {} },
+    }
+}
+
+/// A `<link rel="stylesheet">` for a stylesheet baked into the binary, by
+/// its name (`crate::assets`), at the URL its content gives it.
+pub fn stylesheet(name: &'static str) -> Markup {
+    html! { link rel="stylesheet" href=(assets::url(name)); }
+}
+
+/// The `@font-face` rules for Manrope, the UI typeface, at the font files'
+/// versioned URLs (`crate::assets`): the first thing in every page's style.
+/// Self-hosted, not a Google Fonts `<link>`, deliberately: that CDN sees
+/// every visitor's IP on every page load, checkout included, which is the
+/// wrong tradeoff for a privacy-focused payment tool. Latin-only, matching
+/// this UI's own text.
+pub fn font_faces() -> String {
+    [500, 700, 800]
+        .map(|weight| {
+            format!(
+                "@font-face{{font-family:\"Manrope\";font-style:normal;font-weight:{weight};font-display:swap;src:url(\"{}\") format(\"woff2\")}}\n",
+                assets::url(&format!("manrope-{weight}.woff2"))
+            )
+        })
+        .concat()
+}
 
 pub mod admin;
 pub mod auth;
@@ -220,8 +264,13 @@ fn page_shell(
                 meta charset="utf-8";
                 meta name="viewport" content=(viewport);
                 title { (title) }
-                link rel="icon" type="image/svg+xml" href="/static/favicon.svg";
-                style { (PreEscaped(THEME_CSS)) (PreEscaped(SITE_CSS)) }
+                link rel="icon" type="image/svg+xml" href=(assets::url("favicon.svg"));
+                // The typeface, then the colours, then the components:
+                // the stylesheets at their versioned URLs (crate::assets),
+                // kept by the browser for a year once seen.
+                style { (PreEscaped(font_faces())) }
+                (stylesheet("theme.css"))
+                (stylesheet("site.css"))
                 // The trace of the request that rendered this page, so
                 // browser reports join it (structured_logging.md 2.5).
                 @if let Some(traceparent) = telemetry::trace::current_traceparent() {
@@ -232,16 +281,16 @@ fn page_shell(
                 // nav, and on a store's pages only when it opted in. (The
                 // checkout embed adds its own, also only when opted in.)
                 @if nav.is_some() && chrome.browser_reports {
-                    script src="/static/telemetry.js" defer {}
+                    (script("telemetry.js", Load::Defer))
                 }
                 @if nav.is_some() {
                     // Partial updates and live streams (structured_logging.md
                     // part 4), in this order: the glue sets fixi's defaults.
-                    script src="/static/fx-glue.js" defer {}
-                    script src="/static/fixi.js" defer {}
-                    script src="/static/ssexi.js" defer {}
+                    (script("fx-glue.js", Load::Defer))
+                    (script("fixi.js", Load::Defer))
+                    (script("ssexi.js", Load::Defer))
                     // Every dropdown (`views::controls`).
-                    script src="/static/mk-select.js" defer {}
+                    (script("mk-select.js", Load::Defer))
                 }
                 @if let Some(extra_head) = extra_head {
                     (extra_head)

@@ -6,7 +6,7 @@
 use maud::{html, Markup, PreEscaped};
 
 use super::controls::Choice;
-use super::{layout_with_head, reload_button, PageChrome};
+use super::{layout_with_head, reload_button, script, Load, PageChrome};
 use crate::engine_view::present::{
     Bar, ChainView, Lane, MarkView, Panel, Presented, RibbonMark, RoundView,
 };
@@ -277,7 +277,7 @@ const TIERS: [(&str, &str); 5] = [
 pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
     let head = html! {
         style { (PreEscaped(ENGINE_STYLE)) }
-        script src="/static/engine-view.js" defer {}
+        (script("engine-view.js", Load::Defer))
     };
     let body = html! {
         div id="engine-stage" {

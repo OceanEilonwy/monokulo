@@ -6,7 +6,7 @@
 use maud::{html, Markup};
 
 use super::controls::Choice;
-use super::{layout, PageChrome};
+use super::{layout, script, Load, PageChrome};
 
 /// `error` means the same thing every other page's own re-render-on-
 /// rejection `error` field does; `email` is echoed back into the form on a
@@ -1934,7 +1934,7 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
             (tab_bar(data, false))
             (settings_panel(data, false))
             (toasts(data, false))
-            script { (maud::PreEscaped(include_str!("../../static/admin-settings.js"))) }
+            (script("admin-settings.js", Load::Now))
         }
     };
     layout(
@@ -3059,10 +3059,13 @@ mod tests {
             !html.contains(r#"data-custody-backend="plain""#),
             "nothing to set up for plain: {html}"
         );
+        // Shown as soon as it's ticked, with JavaScript: the page's script.
         assert!(
-            html.contains(r#"name === "key_custody.enabled_backends""#),
-            "shown as soon as it's ticked, with JavaScript"
+            html.contains(&crate::assets::url("admin-settings.js")),
+            "{html}"
         );
+        assert!(include_str!("../../static/admin-settings.js")
+            .contains(r#"name === "key_custody.enabled_backends""#));
 
         let html = page("plain,snp");
         assert!(html.contains(r#"<section id="card-custody-snp" class="settings-card" data-card="custody-snp" data-custody-backend="snp" aria-labelledby="card-custody-snp-title"><header class="card-head"><h3 id="card-custody-snp-title">SEV-SNP</h3>"#), "{html}");
