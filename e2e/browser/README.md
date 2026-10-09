@@ -6,7 +6,7 @@ checkout, and POS. The configurations select separate environments and workloads
 | Configuration | Coverage | Environment |
 | --- | --- | --- |
 | `surface.config.js` | Client challenge protocol | Local mocked server |
-| `coverage-browser.config.js` | Checkout, challenge, camera, client, POS, layout, live view, store setup and settings, dropdowns, order resubmission, JavaScript-disabled pages and time zone preferences; and the `real-binaries.config.js` specs as a second project | Local rendered-UI fixture with coverage reporting |
+| `coverage-browser.config.js` | Checkout, challenge, camera, client, POS, layout, live view, store setup and settings, dropdowns, order resubmission, JavaScript-disabled pages and the account page; and the `real-binaries.config.js` specs as a second project | Local rendered-UI fixture with coverage reporting |
 | `real-binaries.config.js` | Admin setup and settings, store keys, logs, themes, crash recovery, sections, and POS timeline | Real binaries and a local fake node |
 | `playwright.config.js` | POS payments and confirmations | Public stagenet and funded test wallet |
 

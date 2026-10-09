@@ -97,7 +97,7 @@ test('a new wallet is made in the browser, saved, checked with three of its word
   await checks.nth(0).locator('input').fill(words[asked[0] - 1]);
   await page.getByRole('button', { name: 'Check and add wallet' }).click();
 
-  await expect(page).toHaveURL(/\/dashboard\/wallets\/[^/]+\/ready/);
+  await expect(page).toHaveURL(/\/account\/wallets\/[^/]+\/ready/);
   await expect(page.getByText('Copper Heron').first()).toBeVisible();
   await captureCoverageStage(page, 'wallets-ready', test.info(), { group: GROUP });
 

@@ -623,7 +623,7 @@ test('real checkout takes its theme from ?theme=, the embed option, and the sign
 
   // Monokulo's share page frames the checkout in a signed-in merchant's theme.
   await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
-  const pick = theme => page.request.post(`${fixture.base_url}/dashboard/theme`, { form: { theme, next: '/dashboard' }, maxRedirects: 0 });
+  const pick = theme => page.request.post(`${fixture.base_url}/dashboard/theme`, { form: { theme, next: '/' }, maxRedirects: 0 });
   await pick('dark');
   await page.goto(`${url}/share`);
   await expect(page.locator('#checkout-frame')).toHaveAttribute('src', `/pay/${fixture.public_key}/orders/${orderId}?theme=dark`);

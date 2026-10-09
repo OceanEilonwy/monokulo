@@ -166,7 +166,7 @@ test('real POS header is the site app bar: the mark, the store, a POS label and 
   const top = page.locator('.pos-top');
   // The site's own mark and name first, linking to the dashboard, as the
   // nav does on every page.
-  await expect(top.locator('.pos-brand')).toHaveAttribute('href', '/dashboard');
+  await expect(top.locator('.pos-brand')).toHaveAttribute('href', '/');
   await expect(top.locator('.pos-brand svg.logo-mark')).toBeVisible();
   await expect(top.locator('.pos-store')).toHaveAttribute('href', `/dashboard/stores/${fixture.connection_id}`);
   await expect(top.locator('.pos-mode')).toHaveText('POS');
@@ -195,7 +195,7 @@ test('real dashboard health indicator follows healthy and unavailable polls', as
       ? route.fulfill({ status: 503, contentType: 'text/plain', body: 'Unavailable' })
       : route.fulfill({ json: { healthy: health, state: health ? 'ok' : 'error' } });
   });
-  await page.goto(`${fixture.base_url}/dashboard`);
+  await page.goto(`${fixture.base_url}/`);
   const dot = page.locator('#status-indicator .status-dot');
   await expect(dot).toBeVisible();
   await expect(dot).toHaveClass(/status-dot-unknown/);

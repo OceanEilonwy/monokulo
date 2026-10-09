@@ -30,7 +30,7 @@ const background = (locator) => locator.evaluate((el) => getComputedStyle(el).ba
  * new one on a fresh instance. Reusing one keeps this spec off the engine's
  * admin rate limit, which the specs before it use heavily. */
 async function aStore(page, base) {
-  await page.goto(base + '/dashboard');
+  await page.goto(base + '/');
   const existing = page.getByRole('link', { name: 'view →' }).first();
   if (await existing.count()) return existing.getAttribute('href');
   return connectStore(page, 'theme.example.com');
@@ -46,10 +46,11 @@ async function fitsSmallPhone(page) {
   return overflow;
 }
 
-/** Chooses `theme` with the nav's own toggle, as a merchant does. */
+/** Chooses `theme` with the account menu's switch, as a merchant does. */
 async function chooseTheme(page, base, theme) {
-  await page.goto(base + '/dashboard');
-  await page.locator('.site-nav').getByRole('button', { name: `${theme[0].toUpperCase()}${theme.slice(1)} theme` }).click();
+  await page.goto(base + '/');
+  await page.locator('.site-nav .acct > summary').click();
+  await page.locator('.acct-menu').getByRole('button', { name: `${theme[0].toUpperCase()}${theme.slice(1)} theme` }).click();
   if (theme === 'system') await expect(page.locator('html')).not.toHaveAttribute('data-theme', /./);
   else await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
 }
@@ -82,6 +83,11 @@ test('the site, the POS and the hosted payment page share one theme, light and d
       await chooseTheme(page, base, theme);
       expect(await background(page.locator('.site-nav'))).toBe(expected.bar);
       if (theme === 'light') await captureCoverageStage(page, 'site-dashboard', test.info(), { group: 'site' });
+      expect(await fitsSmallPhone(page)).toBe(0);
+
+      await page.goto(base + '/account');
+      await expect(page.getByRole('heading', { name: 'Account', level: 1 })).toBeVisible();
+      if (theme === 'light') await captureCoverageStage(page, 'site-account', test.info(), { group: 'site' });
       expect(await fitsSmallPhone(page)).toBe(0);
 
       await page.goto(base + store);

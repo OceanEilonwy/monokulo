@@ -158,7 +158,7 @@ test('a store settings form that is refused shows why inside its own section', a
   await expectSaved(page);
   await createStore(page, 'sections.example.com');
   await finishStoreSetup(page);
-  await page.goto(base + '/dashboard');
+  await page.goto(base + '/');
   const store = await page.locator('tr', { hasText: 'sections.example.com' }).first().getByRole('link', { name: 'view →' }).getAttribute('href');
   await page.goto(base + store + '/settings');
 

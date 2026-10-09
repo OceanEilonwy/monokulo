@@ -794,10 +794,10 @@ mod tests {
                 .headers_mut()
                 .insert("cookie", "session=session-token".parse().unwrap());
             let response = router.clone().oneshot(request).await.unwrap();
-            // The landing page sends a signed-in merchant on to the dashboard.
+            // `/` is a signed-in merchant's dashboard.
             assert_eq!(
                 response.status(),
-                StatusCode::FOUND,
+                StatusCode::OK,
                 "a signed-in merchant has their own, higher limit"
             );
         }
