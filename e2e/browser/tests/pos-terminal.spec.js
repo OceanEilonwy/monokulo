@@ -707,7 +707,9 @@ test('a backgrounded order that is paid while the merchant serves someone else m
 });
 
 test('finished orders drop off the tab 24 hours after they finished', async ({ page, request }) => {
-  await page.clock.install();
+  // The page's time stands still from the start: only the test moves it,
+  // so the order finishes at a moment the test knows exactly.
+  await pauseClockAt(page, new Date());
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/paid`);
