@@ -34,21 +34,26 @@ async function charge(page, digits, note) {
 }
 
 /** The page is hidden, frozen by the browser, resumed and shown again, as
- * when the merchant switches apps for a while. Headless Chrome can't hide a
- * page (a minimised window and a tab behind another stay "visible"), and it
- * only freezes hidden pages, so the browser's own events are sent, with the
- * state it would report. */
-async function hideFreezeAndShow(page, ms) {
+ * when the merchant switches apps. Headless Chrome can't hide a page (a
+ * minimised window and a tab behind another stay "visible"), and it only
+ * freezes hidden pages, so the browser's own events are sent, with the
+ * state it would report. Each is handled before the next is sent. */
+async function hideFreezeAndShow(page) {
   const set = (state) => page.evaluate((state) => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
     document.dispatchEvent(new Event('visibilitychange'));
   }, state);
   await set('hidden');
   await page.evaluate(() => document.dispatchEvent(new Event('freeze')));
-  await page.waitForTimeout(ms);
   await page.evaluate(() => document.dispatchEvent(new Event('resume')));
   await set('visible');
 }
+
+/** What the POS has recorded and not yet sent (timeline.ts keeps its queue in sessionStorage). */
+const queued = (page) => page.evaluate(() => JSON.parse(sessionStorage.getItem('monokulo-pos-timeline') || '{"queue":[]}').queue.map((event) => event.kind));
+
+/** How often the POS sends what it has recorded (timeline.ts SEND_EVERY_MS). */
+const SEND_EVERY_MS = 5000;
 
 test('a POS session reads as one timeline, from opting in to the last event', async ({ page, context }) => {
   test.setTimeout(3 * 60 * 1000);
@@ -81,11 +86,14 @@ test('a POS session reads as one timeline, from opting in to the last event', as
   await expect(page.locator('.pos-stack-card')).toHaveCount(1);
   const second = await charge(page, '250000000000');
 
-  // Coverage lost for a while, then back.
+  // Coverage lost, then back once the POS has recorded losing it (offline,
+  // it sends nothing, so the record waits in its queue). How long each
+  // period lasted is the POS's to measure; the timeline below only has to
+  // show it did.
   await context.setOffline(true);
-  await page.waitForTimeout(1500);
+  await expect.poll(() => queued(page), 'the POS records going offline').toContain('network.offline');
   await context.setOffline(false);
-  await hideFreezeAndShow(page, 1200);
+  await hideFreezeAndShow(page);
 
   // Back to the first order from the stack, and cancel it.
   await page.locator('.pos-stack-card').first().click();
@@ -141,10 +149,23 @@ test('a POS session reads as one timeline, from opting in to the last event', as
   await expect(page.locator('#diagnostics')).toContainText('This store sends no diagnostic logs.');
   const sent = [];
   page.on('request', (request) => { if (request.url().endsWith('/pos/logs')) sent.push(request.url()); });
+  // The page's clock is faked from here on, to run the POS's send timer.
+  // (Not before: the fake clock's performance API has no navigation entry,
+  // which the pos.opened line checked above carries.)
+  await page.clock.install();
   await page.goto(base + store + '/pos');
   await expect(page.locator('#pos-root')).toHaveAttribute('data-client-logging', 'false');
   await expect(page.locator('.pos-top')).toBeVisible();
-  await page.waitForTimeout(6000);
+  // Nothing recorded: hidden and shown, which an opted-in POS records, its
+  // queue is as it was. Nothing sent, either way it would: its timer, run
+  // twice over on the page's clock, and the beacon a hidden page sends at
+  // once; then a request of the page's own, which any of those would have
+  // gone out before.
+  await page.clock.runFor(2 * SEND_EVERY_MS);
+  const before = await queued(page);
+  await hideFreezeAndShow(page);
+  expect(await queued(page), 'nothing recorded').toEqual(before);
+  await page.evaluate((url) => fetch(url, { credentials: 'same-origin' }).then((response) => response.status), `${base}${store}/pos/orders?state=active`);
   expect(sent).toHaveLength(0);
   const refused = await page.request.post(`${base}${store}/pos/logs`, {
     data: { session, events: [{ seq: 999, t: Date.now(), kind: 'page.hidden' }] },
