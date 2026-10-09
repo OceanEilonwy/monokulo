@@ -379,6 +379,7 @@ mod tests {
             secs: 0.5,
             status: TestStatus::Passed,
             kind: None,
+            project: String::new(),
         }
     }
 

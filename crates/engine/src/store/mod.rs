@@ -851,8 +851,9 @@ impl Store {
 
     /// A fresh in-memory store is a copy of one migrated once per process:
     /// running every migration costs tens of milliseconds, and tests open
-    /// thousands of stores. `open_file` still migrates, and the migration
-    /// tests run the migrations themselves.
+    /// thousands of stores. `open_file` still migrates (tests that need a
+    /// file start from the same copy with [`Self::create_file`]), and the
+    /// migration tests run the migrations themselves.
     pub fn open_in_memory() -> Result<Self> {
         let template = migrated_template()?;
         let mut conn = Connection::open_in_memory()?;
@@ -878,6 +879,21 @@ impl Store {
         configure_connection(&conn)?;
         apply_migrations(&conn)?;
         Ok(Self::from_connection(conn))
+    }
+
+    /// [`Self::open_file`] on a new database file at `path`, written from
+    /// the migrated copy [`Self::open_in_memory`] uses, so `open_file` finds
+    /// every migration applied: for tests that need a file (a worker's own
+    /// connection, a reopen) without migrating it each time. Fails rather
+    /// than overwrite a database already at `path`.
+    #[cfg(any(test, feature = "test-support", feature = "fuzzing"))]
+    pub fn create_file(path: &str) -> Result<Self> {
+        let template = migrated_template()?;
+        let mut conn = Connection::open_in_memory()?;
+        conn.deserialize_read_exact(rusqlite::MAIN_DB, template, template.len(), true)?;
+        conn.execute("VACUUM INTO ?1", [path])?;
+        drop(conn);
+        Self::open_file(path)
     }
 
     /// Every [`OrderChange`] committed from now on, across all tenants - the
@@ -3928,6 +3944,57 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn a_file_created_from_the_template_matches_a_migrated_file_and_never_replaces_one() {
+        fn schema(store: &Store) -> (Vec<String>, Vec<i64>, String) {
+            let sql = store
+                .conn
+                .prepare("SELECT type || ' ' || name || ': ' || coalesce(sql, '') FROM sqlite_master ORDER BY type, name")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            let versions = store
+                .conn
+                .prepare("SELECT version FROM schema_migrations ORDER BY version")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            let journal = store
+                .conn
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .unwrap();
+            (sql, versions, journal)
+        }
+        let paths = ["migrated", "template"]
+            .map(|kind| std::env::temp_dir().join(format!("{kind}_{}.db", Uuid::new_v4())));
+        let [migrated, created] = paths.each_ref().map(|path| path.to_str().unwrap());
+
+        let expected = schema(&Store::open_file(migrated).unwrap());
+        let store = Store::create_file(created).unwrap();
+        assert_eq!(schema(&store), expected);
+        assert_eq!(expected.1.len(), MIGRATIONS.len());
+        let tenant = new_tenant(&store);
+        drop(store);
+
+        assert!(Store::create_file(created).is_err());
+        let reopened = Store::open_file(created).unwrap();
+        assert!(reopened
+            .get_tenant_by_id(&tenant.tenant.id)
+            .unwrap()
+            .is_some());
+        drop(reopened);
+
+        for path in paths {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+            }
+        }
     }
 
     #[test]

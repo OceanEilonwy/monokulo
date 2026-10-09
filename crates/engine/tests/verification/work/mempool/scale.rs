@@ -15,7 +15,7 @@ fn foreign(index: usize) -> Transaction {
 
 async fn sustained_arrivals(wave: usize, rounds: usize) {
     let path = TempFile::new();
-    let store = Store::open_file(&path.0).unwrap();
+    let store = Store::create_file(&path.0).unwrap();
     let custody = crate::work::history_fixture::FlakyKeyCustody::default();
     let (id, handle, first) = fixture_tenant(&store, &custody, i64::MAX).await;
     let db = Db::open(&path.0, &store).unwrap();
@@ -98,7 +98,7 @@ async fn large_pool(count: usize) {
     tokio::time::pause();
     let _clock = crate::property_support::hold_virtual_clock();
     let path = TempFile::new();
-    let store = Store::open_file(&path.0).unwrap();
+    let store = Store::create_file(&path.0).unwrap();
     let custody = crate::work::history_fixture::FlakyKeyCustody::default();
     let (id, handle, order) = fixture_tenant(&store, &custody, i64::MAX).await;
     let db = Db::open(&path.0, &store).unwrap();
@@ -292,7 +292,7 @@ proptest! {
 
 async fn transaction_tenant_matrix(count: usize, transactions: usize) {
     let path = TempFile::new();
-    let store = Store::open_file(&path.0).unwrap();
+    let store = Store::create_file(&path.0).unwrap();
     let custody = crate::work::history_fixture::FlakyKeyCustody::default();
     let mut tenants = Vec::new();
     let mut original_orders = Vec::new();

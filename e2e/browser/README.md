@@ -186,8 +186,8 @@ databases; `E2E_ENGINE_BIN=<path>` runs another engine build, for
 checking a spec fails against the bug it guards (`node-settings.spec.js`
 fails against the engine from before 8830c92, at the status page step).
 
-`cargo xtask coverage browser` runs this suite too
-(`coverage-real-binaries.config.js`), after the fixture suite: its stages
+`cargo xtask coverage browser` runs this suite too, as the `real-binaries`
+project of `coverage-browser.config.js` beside the fixture tests: its stages
 join the screenshot gallery, and specs that use `coverage-test.js`
 (`log-search-and-tracing.spec.js`, `pos-session-diagnostics.spec.js`) are served the instrumented browser
 assets and add to the browser coverage.

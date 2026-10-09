@@ -4,4 +4,4 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
-cc 06c482e452d38e72a409d13a2172c09b5a509a27f6038b4b1a3395ca85bb1cd7 # shrinks to which = 0, epoch = 833881290
+cc 3975dfe690971763aed3f6be83f575a175b48577f6a97db73325da14b3bfa0c7 # shrinks to failures = 1, max = 2, status = 200, text = ""

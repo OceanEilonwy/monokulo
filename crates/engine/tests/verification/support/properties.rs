@@ -18,16 +18,46 @@ pub(crate) fn config() -> proptest::test_runner::Config {
 }
 /// Pin replay files to their historical paths when test sources move.
 /// Respect Proptest's option to disable persistence and retain seed/shrink settings.
+///
+/// `path` names a module's file, `dir/module.txt`; each property gets its
+/// own `dir/module/<test>.txt`. Proptest replays every seed in its file
+/// before generating cases, so one file per module made every property
+/// replay every other property's seeds as extra random cases.
 pub(crate) fn persist(
     mut config: proptest::test_runner::Config,
     path: &'static str,
 ) -> proptest::test_runner::Config {
     if config.failure_persistence.is_some() {
         config.failure_persistence = Some(Box::new(
-            proptest::test_runner::FileFailurePersistence::Direct(path),
+            proptest::test_runner::FileFailurePersistence::Direct(test_file(path)),
         ));
     }
     config
+}
+
+/// The running property's file under `path`'s module directory. The test
+/// is named from its thread, which libtest names after the test's path:
+/// the `proptest!` macro sets `Config::test_name` only after the config
+/// expression has been evaluated, so `persist` can't read it there.
+fn test_file(path: &str) -> &'static str {
+    let module = path
+        .strip_suffix(".txt")
+        .unwrap_or_else(|| panic!("regression file {path} must end in .txt"));
+    let thread = std::thread::current();
+    let test = thread
+        .name()
+        .filter(|name| *name != "main")
+        .and_then(|name| name.rsplit("::").next())
+        .unwrap_or_else(|| panic!("persist must run on a libtest test thread, not {thread:?}"));
+    Box::leak(format!("{module}/{test}.txt").into_boxed_str())
+}
+
+#[test]
+fn each_property_replays_only_its_own_regression_file() {
+    assert_eq!(
+        test_file("/seeds/work/properties.txt"),
+        "/seeds/work/properties/each_property_replays_only_its_own_regression_file.txt"
+    );
 }
 pub(crate) use crate::verification_temp_db::TempDb as TempFile;
 /// Modes: normal, unavailable, rendezvous. The rendezvous lets tests cancel

@@ -88,12 +88,23 @@ pub(super) enum TestStatus {
     Skipped,
 }
 
-/// Which browser suite a test ran in: against the fixture server or the
-/// real binaries.
+/// Which browser project a test ran in: against the fixture server or the
+/// real binaries. Playwright's `JUnit` report names it as each testsuite's
+/// `hostname`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum BrowserKind {
     Fixture,
     RealBinaries,
+}
+
+impl BrowserKind {
+    fn of_project(project: &str) -> Self {
+        if project == "real-binaries" {
+            BrowserKind::RealBinaries
+        } else {
+            BrowserKind::Fixture
+        }
+    }
 }
 
 /// One test case of a `JUnit` report.
@@ -103,6 +114,8 @@ pub(super) struct Test {
     pub(super) secs: f64,
     pub(super) status: TestStatus,
     pub(super) kind: Option<BrowserKind>,
+    /// The `hostname` of its testsuite: the Playwright project, or empty.
+    pub(super) project: String,
 }
 
 fn junit(path: &Path) -> io::Result<Vec<Test>> {
@@ -132,6 +145,12 @@ fn junit(path: &Path) -> io::Result<Vec<Test>> {
                 secs,
                 status,
                 kind: None,
+                project: case
+                    .ancestors()
+                    .find(|n| n.has_tag_name("testsuite"))
+                    .and_then(|suite| suite.attribute("hostname"))
+                    .unwrap_or("")
+                    .to_string(),
             }
         })
         .collect())
@@ -226,16 +245,14 @@ fn test_results(src: &Path) -> io::Result<Tests> {
             Ok(Vec::new())
         }
     };
-    let mut browser = Vec::new();
-    for (file, kind) in [
-        ("browser/junit-fixture.xml", BrowserKind::Fixture),
-        ("browser/junit-real-binaries.xml", BrowserKind::RealBinaries),
-    ] {
-        browser.extend(read(file)?.into_iter().map(|t| Test {
-            kind: Some(kind),
+    // One run of both browser projects.
+    let browser = read("browser/junit.xml")?
+        .into_iter()
+        .map(|t| Test {
+            kind: Some(BrowserKind::of_project(&t.project)),
             ..t
-        }));
-    }
+        })
+        .collect();
     Ok(Tests {
         rust: read("rust/junit.xml")?,
         browser,

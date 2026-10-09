@@ -20,6 +20,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 roxmltree = "0.21"
 # Reading fuzzer, test and mutation logs.
 regex = "1"
+# test-timings: the database of how long each test took.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [target.'cfg(unix)'.dependencies]
 # Stopping a timed-out mutation run's whole process group.

@@ -8,6 +8,7 @@ mod snp;
 mod stress;
 mod summary;
 mod support;
+mod timings;
 mod validate;
 
 use std::{env, io, process::ExitCode};
@@ -22,6 +23,7 @@ Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|summar
        cargo xtask logo
        cargo xtask engine <fuzz|properties|scale|mutations> [...]
        cargo xtask test-summary TITLE LABEL=JUNIT...
+       cargo xtask test-timings [--db PATH] <run|load|report> [...]
        cargo xtask pages <build|fetch> [...]
        cargo xtask serve DIR [PORT]
 ";
@@ -38,6 +40,7 @@ fn help() {
         exploration::HELP,
         mutations::HELP,
         summary::HELP,
+        timings::HELP,
         pages::HELP,
     ] {
         println!("{text}");
@@ -85,6 +88,7 @@ fn main() -> ExitCode {
             print!("{}", summary::test_summary(title, suites));
             Ok(Exit::SUCCESS)
         }
+        ["test-timings", rest @ ..] => timings::timings(rest),
         ["pages", "build", rest @ ..] => pages::build(&root(), rest),
         ["pages", "fetch", rest @ ..] => pages::fetch(rest),
         ["serve", rest @ ..] => pages::serve(rest),

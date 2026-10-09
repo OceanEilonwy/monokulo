@@ -68,14 +68,14 @@ buttons and CSS, so the page works from disk without script. Playwright's
 own HTML reports retain attachments and failure traces. The gallery and
 native reports use relative links; no local server is needed.
 
-The browser collector runs two suites: the deterministic browser tests
-against a fixture server, then the real-binaries tests
-(the specs selected by `real-binaries.config.js`: the real engine and monokulo binaries with a fake
-monerod), which add their stages to the same gallery, their own report
-(`browser/playwright-report-real`), and, in specs using `coverage-test.js`,
-their instrumented browser coverage. Both run on four workers: the fixture
-suite test by test, the real-binaries suite file by file, each spec file
-with processes of its own.
+The browser collector runs two suites as projects of one Playwright run
+(`coverage-browser.config.js`): the deterministic browser tests against a
+fixture server, and the real-binaries tests (the specs selected by
+`real-binaries.config.js`: the real engine and monokulo binaries with a fake
+monerod). They share one report, one gallery and, in specs using
+`coverage-test.js`, the instrumented browser coverage, and four workers
+(`E2E_WORKERS` sets another number): the fixture tests spread test by test,
+the real-binaries tests file by file, each spec file with processes of its own.
 
 ## In CI
 

@@ -973,7 +973,7 @@ proptest! {
             let base = crate::proof::tests::base_chain();
             let mut chain = base.clone();
             let rules = crate::proof::tests::tuning();
-            let mut follower = crate::proof::Follower::new(NETWORK,rules.clone()).unwrap();
+            let mut follower = crate::proof::tests::follower(NETWORK, rules.clone());
             {
                 let s = w.h.store().lock();
                 s.forget_scanned_blocks_at_or_above(NETWORK,0).unwrap();
@@ -1005,7 +1005,7 @@ proptest! {
                     "the replacement branch never reached durable reconciliation");
             }
             integration_round(&mut w,&mut follower,Some(fault)).await;
-            if restart { w.h.restart(); follower = crate::proof::Follower::new(NETWORK,rules.clone()).unwrap(); }
+            if restart { w.h.restart(); follower = crate::proof::tests::follower(NETWORK, rules.clone()); }
             integration_converge(&mut w,&mut follower,&replacement,OrderStatus::Unconfirmed).await;
             assert_eq!(payment_identities(&w.h,std::slice::from_ref(&w.h.order)),ids);
             // Returning to the pool is insufficient for positive-confirmation settlement.
@@ -1014,7 +1014,7 @@ proptest! {
             assert!(!settled(w.h.store().lock().get_order(&w.h.tenants[0].0,&w.h.order).unwrap().unwrap().status));
             replacement.mine(vec![tx]); replacement.mine_empty((required-1) as usize + count);
             let mut paced = rules.clone(); paced.blocks_per_round = 1;
-            follower = crate::proof::Follower::new(NETWORK,paced).unwrap();
+            follower = crate::proof::tests::follower(NETWORK, paced);
             for node in &w.nodes { replacement.install(&node.fake,base.tip().height+1); node.fake.set_mempool(vec![]); }
             follower.round(w.h.db.as_ref().unwrap(),&w.client,true,w.h.now).await;
             let partial = w.h.store().lock().proven_tip(NETWORK).unwrap().unwrap();

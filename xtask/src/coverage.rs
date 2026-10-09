@@ -387,9 +387,9 @@ fn playwright(log: &Log, config: &str, env: &[(&str, String)]) -> io::Result<Exi
     )
 }
 
-/// Browser: the deterministic suite against a fixture server, then the same
+/// Browser: the deterministic tests against a fixture server and the same
 /// code against the real engine and monokulo binaries (and a fake monerod),
-/// both instrumented and photographed.
+/// as one Playwright run of two projects, instrumented and photographed.
 fn collect_browser(log: &Log) -> io::Result<Exit> {
     if let Some(exit) = browser_prerequisites(log) {
         return Ok(exit);
@@ -438,17 +438,10 @@ fn collect_browser(log: &Log) -> io::Result<Exit> {
         .join("screenshots");
     let _ = fs::remove_dir_all(&screenshots);
     fs::create_dir_all(&raw)?;
-    // The real-binaries suite runs even when the first failed, so one run
-    // reports every failure. It adds the Logs page, the POS session timeline
-    // and store Diagnostics to the gallery.
-    let first = playwright(log, "coverage-browser.config.js", &env)?;
-    let second = playwright(log, "coverage-real-binaries.config.js", &env)?;
-    if !first.succeeded() {
-        return Ok(first);
-    }
-    if !second.succeeded() {
-        return Ok(second);
-    }
+    // The two projects share the run's workers, so neither waits for the
+    // other; the real-binaries one adds the Logs page, the POS session
+    // timeline and store Diagnostics to the gallery.
+    step!(playwright(log, "coverage-browser.config.js", &env));
     log.run(
         "node",
         &["e2e/browser/collect-browser-report.js"],

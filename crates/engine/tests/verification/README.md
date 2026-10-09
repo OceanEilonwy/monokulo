@@ -35,9 +35,11 @@ and fixtures use `#[cfg(any(test, feature = "fuzzing"))]`; ordinary engine build
 exclude them. The cargo-fuzz drivers, reviewed seed inputs and disposable corpus
 remain in the repository's central `fuzz/` package.
 
-Each property module pins its regression file through
-`property_support::persist`. Existing counterexamples remain in
-`crates/engine/proptest-regressions/` and replay before fresh cases. Do not rely
+Each property module pins its regression directory through
+`property_support::persist`, which gives each property its own file in it
+(`<module>/<test>.txt`). Existing counterexamples remain in
+`crates/engine/proptest-regressions/` and replay before that property's fresh
+cases, and only that property's. Do not rely
 on Proptest's source-location-derived persistence here: moving a test file must
 not lose its saved cases. Explicit case counts, RNG seeds, shrinking options and
 the option to disable persistence retain their existing behavior.

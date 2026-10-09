@@ -95,9 +95,11 @@ PROPTEST_CASES=128 PROPTEST_RNG_SEED=42 cargo test -p engine --lib --locked work
 
 Normal runs use fresh randomness. For a failure, Proptest shrinks the input and
 prints the counterexample; it also saves a replay seed under
-`crates/engine/proptest-regressions/` (`status/properties.txt`, `work/properties.txt`, `work/money_properties.txt`, `work/expansion_properties.txt`,
-`work/node_properties.txt` and `proof/node_properties.txt`). Subsequent
-runs replay persisted seeds before new cases. CI uploads these directories on
+`crates/engine/proptest-regressions/`, one file per property under its
+module's directory (for example `work/properties/<test>.txt`,
+`work/money_properties/<test>.txt` or `proof/node_properties/<test>.txt`).
+Subsequent runs of that property replay its seeds before new cases; other
+properties don't, since another test's seed is only one more random case. CI uploads these directories on
 test/coverage failure. Download the artifact and restore the directory under the
 corresponding crate, then rerun the failing test. Keep regression files in Git after
 a fix, and add a named example for a discovered bug: seeds depend on the strategy,
@@ -270,8 +272,9 @@ proof and integration families. Each job has a 90-minute limit.
 
 Both default and CI nextest profiles kill an ordinary test process after ten
 120-second slow periods (20 minutes), and a proof process after twelve 300-second
-periods (60 minutes). The `proof-workers` group admits at most two proof test
-processes, including the integration property, to limit CPU/memory contention.
+periods (60 minutes). The `proof-workers` group admits at most eight proof test
+processes, including the integration property, to limit CPU/memory contention
+(each holds up to two 256 MiB RandomX caches).
 These are outer watchdogs for synchronous hangs; scenario-level deadlines remain
 much shorter. Plain `cargo test` does not provide these process watchdogs, so use
 nextest for sustained exploration. Failed tests are never retried automatically.
@@ -683,7 +686,7 @@ daily default/ZMQ exploration job select these tests automatically.
 Fixed regressions also protect success/error cleanup, late-outcome immunity,
 reserved stored headers, a warmed `localhost` connection after policy tightening,
 and full-width counters/timestamps. Replay seeds are committed in
-`crates/engine/proptest-regressions/webhook_properties.txt`.
+`crates/engine/proptest-regressions/webhook_properties/`, one file per property.
 
 These tests enforce **at-least-once**, so an interrupted acknowledgement or an
 overlapping worker may deliver a duplicate. The durable attempt count tracks
@@ -1028,24 +1031,28 @@ unassigned 99. Invoices deliberately request the exact total, half the total or
 one more than the total, with confirmation thresholds 0–3. The independent ledger
 comes from recipient instructions, not scanner results or the database.
 
-In legacy byte histories, all outputs are first observed in the pool. Up to sixteen commands then independently
-mine, return or drop transactions, replace branches, reopen a worker/reset scanner
-state, repeat the fast path, and change chain length. Absence without positive
+Histories either start empty or (a setup bit) with every output first observed in
+the pool. Up to sixteen typed commands then independently mine, return or drop
+transactions, rebuild the branch above height 3 with mined transactions kept or
+moved, reorg to empty branches, reopen a worker/reset scanner state, repeat the
+fast path, replace custody handles and change chain length. Absence without positive
 spent evidence must preserve the funds. At each quiescent point, exact recipient,
 transaction/output identity, amount, height, non-void/non-superseded state, status,
 and foreign-tenant rejection agree with the ledger. IDs remain stable. Final
 forced mining with cold scanner state and a SQLite reopen provide positive controls.
-Both inline and production file-backed worker modes are generated. Property byte
-vectors contain 0–192 bytes; the decoder bounds work and ignores any unused tail.
+Both inline and production file-backed worker modes are generated.
 
 These are scanner-valid transparent crypto fixtures with derived one-time keys
 and per-output transaction keys, not fully signed transactions accepted by a live
 Monero network. Consensus proof/signature arithmetic and daemon decoding remain
-outside this package. Three reviewed seeds force mixed forks, worker restarts and
-partial payments. `portfolio` is the ninth default/ZMQ daily fuzz target; its corpus
-and failures use the existing runner/artifact workflow.
+outside this package. The reviewed seeds in `fuzz/seeds/portfolio/` are the
+encodings of the fixed histories in `scenario::reviewed` (combined interactions,
+partial payments and the recorded sweep);
+`reviewed_portfolio_seeds_are_the_encoded_reviewed_scenarios` checks they match, and
+`REGENERATE_PORTFOLIO_SEEDS=1` rewrites them. `portfolio` is the ninth default/ZMQ
+daily fuzz target; its corpus and failures use the existing runner/artifact workflow.
 
-Run `PROPTEST_CASES=64 cargo test -p engine --lib mixed_wallet`, adding
+Run `PROPTEST_CASES=64 cargo test -p engine --lib portfolio_histories`, adding
 `--features zmq` for that build. Run `ENGINE_FUZZ_SEED=229 cargo xtask engine fuzz
 portfolio 900` and append `zmq` for fuzzing that configuration.
 
@@ -1125,7 +1132,7 @@ final recovery drains them. Status commits must have their corresponding durable
 webhook, delivery fails once through actual HTTP, retries preserve exact event
 bytes, and every expected event eventually reaches its tenant's destination.
 
-Run `cargo test -p engine --lib mixed_wallet` and `cargo test -p engine --lib
+Run `cargo test -p engine --lib portfolio_histories` and `cargo test -p engine --lib
 combined_portfolio`; append `--features zmq` for that build. The existing portfolio
 fuzzer and daily matrix automatically run this same expanded harness; reviewed
 `combined-worker-0`/`combined-worker-1` seeds force the combined interactions.
@@ -1181,7 +1188,7 @@ counts, RingCT type, tagged/untagged shape, signatures and known recipient resul
 using the crypto library directly. Recorded provenance and upstream licensing
 are in `tests/fixtures/RECORDED_TRANSACTIONS.md` and its JSON manifest.
 
-Run `cargo test -p engine --lib recorded_ringct` and the existing `mixed_wallet`
+Run `cargo test -p engine --lib recorded_ringct` and the existing `portfolio_histories`
 properties in both feature builds. Reviewed recorded/CLSAG portfolio seeds are
 shared with the existing sanitizer fuzzer and daily CI; no external node is needed
 for any test or fuzz execution.
@@ -1289,14 +1296,14 @@ with the planned amount. SQL denial may be handled by a fallback/retry; an
 additional counter distinguishes round-level errors. Isolated component entry
 is not counted as engine-path coverage.
 
-Portfolio semantic histories use `MKP\x01`, 128 fixed setup bytes, then four-byte
-command records (up to 32). Properties generate setup and typed commands
-independently (0–16 commands), shrink command lists structurally, and round-trip
-the codec. Fuzzing uses the same runner/oracle. Inputs without the v1 marker retain
-legacy decoding, so reviewed seeds and persisted byte regressions still replay.
+Portfolio histories are 128 fixed setup bytes, then four-byte command records (up
+to 32); any bytes decode as a history, so every fuzzer mutation is one. Properties
+generate setup and typed commands independently (0–16 commands), shrink command
+lists structurally, and round-trip the codec. Fuzzing uses the same runner/oracle.
 Typed commands independently control arrivals, mining, extension (1–4 blocks),
-reorg (up to four heights), disappearance, spent evidence, proof lag (0–7 blocks)
-and mismatch, elapsed time (1–8 × 301 seconds), restart, faults and delivery.
+reorg (up to four heights), branch rebuilds keeping or moving mined transactions,
+disappearance, spent evidence, proof lag (0–7 blocks) and mismatch, elapsed time
+(1–8 × 301 seconds), restart, fast passes, custody replacement, faults and delivery.
 Invoice goals, thresholds (0–3) and expiry are independently selected. Planned
 outputs enter the expected ledger only after observation; disappearance retains
 observed funds. The oracle tracks proof hashes independently across reorgs and

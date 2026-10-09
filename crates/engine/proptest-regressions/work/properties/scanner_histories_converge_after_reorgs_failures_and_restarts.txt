@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 16771cb56b5b720dedb35d02009c38947649286114527d43c1c24f775bec9d34 # shrinks to initial_depth = 1, events = [Reorg { depth: 1, destination: Gone, offset: 0 }, Tick(2), Reorg { depth: 1, destination: Block, offset: 0 }, Tick(1)], final_destination = Gone, final_offset = 0
+cc de285f0ec5566f11679400588cc7b5f8ba37c0a04c56d906cc32d4aecfcf2968 # shrinks to initial_depth = 1, events = [Reorg { depth: 1, destination: Gone, offset: 0 }, Mine { count: 1, payment: true }, Tick(3), Tick(1), Reorg { depth: 1, destination: Gone, offset: 0 }, Restart], final_destination = Gone, final_offset = 0
+cc a7145bb4a2d9b7caa6e4dd1509e0f5786334176399cbccb6067472463aa4c6a5 # shrinks to initial_depth = 6, events = [ResizeReorg { depth: 6, length: 10, destination: Block, offset: 250 }, ResizeReorg { depth: 7, length: 1, destination: Gone, offset: 0 }, Check], final_destination = Gone, final_offset = 0
+cc c9dacfeba1ac11a9663e9ae16628bcfd194a0a8ec504a3188250fb430f257648 # shrinks to initial_depth = 1, events = [Mine { count: 4, payment: false }, SqlFault(78), ResizeReorg { depth: 2, length: 1, destination: Gone, offset: 0 }, Check], final_destination = Gone, final_offset = 0

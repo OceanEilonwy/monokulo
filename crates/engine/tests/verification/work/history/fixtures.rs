@@ -173,7 +173,7 @@ fn fixture_tenant_rows(
 pub(crate) use crate::verification_temp_db::TempDb;
 pub(crate) fn file_store() -> (Store, TempDb) {
     let path = TempDb::new();
-    (Store::open_file(&path).unwrap(), path)
+    (Store::create_file(&path).unwrap(), path)
 }
 
 #[cfg(test)]

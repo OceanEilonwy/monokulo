@@ -4,7 +4,7 @@ use super::*;
 
 async fn waves(count: usize) {
     let path = TempFile::new();
-    let store = Store::open_file(&path.0).unwrap();
+    let store = Store::create_file(&path.0).unwrap();
     let db = Db::open(&path.0, &store).unwrap();
     let trace = Arc::new(parking_lot::Mutex::new(Vec::new()));
     for wave in 0..count {

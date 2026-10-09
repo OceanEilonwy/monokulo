@@ -116,9 +116,14 @@ fn coverage_artifact(root: &Path) {
             ),
         ]),
     );
+    // One Playwright run of both projects, each spec's testsuite naming its
+    // project as the hostname.
     put(
-        &root.join("browser/junit-fixture.xml"),
-        junit_xml(&[("checkout.spec.js", "checkout shows the amount", 2.0, "")]),
+        &root.join("browser/junit.xml"),
+        r#"<testsuites>
+            <testsuite name="checkout.spec.js" hostname="fixture"><testcase name="checkout shows the amount" classname="checkout.spec.js" time="2"/></testsuite>
+            <testsuite name="logs.spec.js" hostname="real-binaries"><testcase name="logs load" classname="logs.spec.js" time="3"/></testsuite>
+        </testsuites>"#,
     );
     put(
         &root.join("browser/index.html"),
@@ -388,13 +393,19 @@ fn every_test_keeps_its_result_and_is_listed_without_javascript() {
         statuses,
         [TestStatus::Passed, TestStatus::Failed, TestStatus::Skipped]
     );
+    let kinds: Vec<Option<inputs::BrowserKind>> =
+        run.tests.browser.iter().map(|t| t.kind).collect();
     assert_eq!(
-        run.tests.browser[0].kind,
-        Some(inputs::BrowserKind::Fixture)
+        kinds,
+        [
+            Some(inputs::BrowserKind::Fixture),
+            Some(inputs::BrowserKind::RealBinaries)
+        ]
     );
     f.build(&["--coverage", &f.path("coverage")]);
     let page = f.page("tests.html");
-    assert_eq!(page.matches("<li data-suite=").count(), 4);
+    assert_eq!(page.matches("<li data-suite=").count(), 5);
+    assert!(page.contains(">logs (real binaries)<"));
     assert!(page.contains("A reorg moves the payment"));
     assert!(page.contains(">checkout<"));
     // A failed test means the run line doesn't claim everything passed.
