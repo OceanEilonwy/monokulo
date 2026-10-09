@@ -1,0 +1,13 @@
+[package]
+name = "short-id"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+
+# How every shortened identifier reads, wherever it's shown: monokulo's
+# pages and its POS app (`views::short_id`), and the browser's key checker
+# (`key-custody`'s `wasm` feature). One rule, in one place. No dependencies,
+# so it builds for WebAssembly as it is.
+
+[lints]
+workspace = true

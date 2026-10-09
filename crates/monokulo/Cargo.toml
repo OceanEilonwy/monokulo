@@ -70,6 +70,8 @@ clap = "4.6.7"
 # The key entry policy: parsing and comparing which engine images are
 # trusted with merchants' keys (`settings::SnpEntryPolicy`).
 key-custody = { path = "../key-custody", default-features = false }
+# Every shortened identifier's text (`views::short_id`).
+short-id = { path = "../short-id" }
 
 [build-dependencies]
 # Not used by the build script's own code: it builds this crate for
