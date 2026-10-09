@@ -160,8 +160,8 @@ pub struct WalletChoice {
     pub name: String,
     pub short_address: String,
     pub current: bool,
-    /// On another network: shown, but can't be picked.
-    pub other_network: Option<String>,
+    /// Its Monero network: the store's own, as only those are offered.
+    pub network: String,
     /// Stores other than this one that use it.
     pub other_stores: u64,
 }
@@ -369,7 +369,10 @@ fn wallet_section(store: &StoreSettingsData, in_place: bool, oob: bool) -> Marku
                         }
                     }
                 }
-                span class="field-help" { "The store takes new payments into the wallet picked here." }
+                span class="field-help" {
+                    "The store takes new payments into the wallet picked here."
+                    @if wallet.current.is_some() { " A store can only change to a wallet on its own network." }
+                }
             }
             @if let (Some(pending), Some(current)) = (&wallet.pending, &wallet.current) {
                 div class="change-confirm" role="status" {
@@ -420,18 +423,17 @@ fn wallet_section(store: &StoreSettingsData, in_place: bool, oob: bool) -> Marku
 }
 
 fn wallet_choice(choice: &WalletChoice, picked: Option<&str>) -> Markup {
-    let note = match (&choice.other_network, choice.current, choice.other_stores) {
-        (Some(network), _, _) => format!("{network}: not this store's network"),
-        (None, true, 0) => "this store only".to_owned(),
-        (None, _, 0) => "no other stores".to_owned(),
-        (None, _, 1) => "1 other store".to_owned(),
-        (None, _, n) => format!("{n} other stores"),
+    let note = match (choice.current, choice.other_stores) {
+        (true, 0) => "this store only".to_owned(),
+        (_, 0) => "no other stores".to_owned(),
+        (_, 1) => "1 other store".to_owned(),
+        (_, n) => format!("{n} other stores"),
     };
     let option = super::controls::Choice::new(&choice.id, &choice.name)
         .detail(&choice.short_address)
+        .network(&choice.network)
         .current(choice.current)
         .note(note)
-        .disabled(choice.other_network.is_some())
         .selected(picked == Some(choice.id.as_str()));
     html! { (option) }
 }

@@ -21,6 +21,9 @@ pub struct DashboardStoreRow {
     pub public_key: String,
     pub health: String,
     pub health_label: String,
+    /// The wallet it takes payments into: its name and network. `None`
+    /// for a store not yet matched to one of the account's wallets.
+    pub wallet: Option<(String, String)>,
 }
 
 /// One order row on the dashboard home page - like an orders-list row but
@@ -68,12 +71,19 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                 // On a phone only the name, health and link stay (`.col-optional`).
                 div class="table-scroll" { table {
                     thead {
-                        tr { th { "Store" } th class="col-optional" { "Platform" } th class="col-optional" { "Public key" } th { "Status" } th {} }
+                        tr { th { "Store" } th { "Wallet" } th class="col-optional" { "Platform" } th class="col-optional" { "Public key" } th { "Status" } th {} }
                     }
                     tbody {
                         @for store in &data.stores {
                             tr {
                                 td { (store.display_name) }
+                                td {
+                                    @if let Some((name, network)) = &store.wallet {
+                                        (name) " " (super::network_badge(network))
+                                    } @else {
+                                        span class="muted" { "Not linked yet" }
+                                    }
+                                }
                                 td class="col-optional" { (store.platform) }
                                 td class="col-optional" { code class="ellipsis" { (store.public_key) } }
                                 td { span class=(format!("tag tag-{}", store.health)) { (store.health_label) } }
@@ -165,6 +175,7 @@ mod tests {
                 public_key: "pk_abc123".to_string(),
                 health: "ok".to_string(),
                 health_label: "healthy".to_string(),
+                wallet: Some(("Feather test".to_string(), "stagenet".to_string())),
             }],
             recent_orders: vec![DashboardOrderRow {
                 connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
@@ -179,6 +190,10 @@ mod tests {
         };
         let html = page(&chrome(), &data).into_string();
         assert!(html.contains("pk_abc123"));
+        assert!(
+            html.contains(r#"<td>Feather test <span class="tag-network is-test">"#),
+            "the store's wallet, with its network: {html}"
+        );
         assert!(html.contains("1.234567890123"));
         assert!(html.contains("tag-ok"));
         assert!(html.contains(r#"href="/dashboard/stores/conn_1""#));

@@ -536,7 +536,7 @@ pub(super) async fn list(
                 WalletOrigin::Created => "Made in Monokulo",
                 WalletOrigin::Imported => "Brought in",
             },
-            address: views::wallets::short_address(&w.wallet.primary_address),
+            address: w.wallet.primary_address,
             network: w.wallet.network,
             name: w.wallet.name,
             stores: w.store_count,
@@ -1944,7 +1944,7 @@ mod tests {
         .await;
         assert!(!html.contains("change-confirm"), "{html}");
 
-        // A stagenet wallet: shown, can't be picked, refused if sent.
+        // A stagenet wallet: not offered, and refused if sent.
         let stagenet = crate::db::WalletId::new("w_stagenet".to_owned());
         {
             let db = state.db.lock();
@@ -1971,14 +1971,15 @@ mod tests {
             .await,
         )
         .await;
+        assert!(!page.contains("w_stagenet"), "{page}");
+        assert!(!page.contains("Quiet Lantern"), "{page}");
         assert!(
-            page.contains(r#"value="w_stagenet" disabled data-label="Quiet Lantern""#),
+            page.contains("A store can only change to a wallet on its own network."),
             "{page}"
         );
         assert!(
-            page.contains("stagenet: not this store&#39;s network")
-                || page.contains("stagenet: not this store's network"),
-            "{page}"
+            page.contains(r#"data-network="mainnet""#),
+            "the store's own network's wallets carry its badge: {page}"
         );
         let response = router
             .clone()

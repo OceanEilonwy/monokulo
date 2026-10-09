@@ -10,6 +10,8 @@
 // An option can carry its parts as data attributes:
 //   data-label   the name shown (else the option's text)
 //   data-detail  monospace, muted: an address, a currency code
+//   data-network a wallet's Monero network, drawn as the site's network
+//                badge (`views::network_badge`)
 //   data-chip    a short tag; data-chip-tone="current" makes it green
 //   data-note    muted, at the end: a count, a date, why it's off
 //
@@ -41,6 +43,29 @@
     return node;
   };
 
+  // `views::network_badge`, drawn here: the word, and the icon (a coin
+  // marked M for mainnet, a flask for a test network) the view draws.
+  const SVG = 'http://www.w3.org/2000/svg';
+  const ICONS = {
+    main: [['circle', { cx: '12', cy: '12', r: '9' }], ['path', { d: 'M7 15V9l5 5 5-5v6' }]],
+    test: [['path', { d: 'M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3' }], ['path', { d: 'M7.5 15h9' }]],
+  };
+  const networkBadge = (network) => {
+    const kind = network === 'mainnet' ? 'main' : 'test';
+    const badge = el('span', `tag-network is-${kind}`);
+    const svg = document.createElementNS(SVG, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    for (const [tag, attrs] of ICONS[kind]) {
+      const shape = document.createElementNS(SVG, tag);
+      for (const [name, val] of Object.entries(attrs)) shape.setAttribute(name, val);
+      svg.append(shape);
+    }
+    badge.append(svg, network.charAt(0).toUpperCase() + network.slice(1));
+    return badge;
+  };
+
   // A disabled option with no value is the "Choose…" prompt: shown in the
   // button until something is picked, never in the list.
   const isPrompt = (option) => option.value === '' && option.disabled;
@@ -49,6 +74,7 @@
   const parts = (option) => ({
     label: option.dataset.label || option.text,
     detail: option.dataset.detail || '',
+    network: option.dataset.network || '',
     chip: option.dataset.chip || '',
     current: option.dataset.chipTone === 'current',
     note: option.dataset.note || '',
@@ -161,6 +187,7 @@
     draw(p, withNote) {
       const out = [el('span', 'mk-label', p.label)];
       if (p.detail) out.push(el('span', 'mk-detail', p.detail));
+      if (p.network) out.push(networkBadge(p.network));
       if (p.chip) out.push(el('span', `tag ${p.current ? 'tag-ok' : 'tag-unknown'} mk-chip`, p.chip));
       if (withNote && p.note) out.push(el('span', 'mk-note', p.note));
       return out;
