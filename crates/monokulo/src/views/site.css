@@ -1074,6 +1074,7 @@ mk-select:defined > select.mk-native { position: absolute; left: 0; bottom: 0; w
 .mk-prompt { color: var(--muted); }
 .mk-caret { margin-left: auto; width: .5em; height: .5em; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: translateY(-25%) rotate(45deg); flex: none; }
 .mk-open .mk-caret { transform: translateY(25%) rotate(-135deg); }
+.mk-logo { width: 1.4em; height: 1.4em; flex: none; border-radius: 22%; object-fit: contain; }
 .mk-detail { font-family: var(--font-mono); font-size: .88em; color: var(--muted); }
 .mk-note { margin-left: auto; padding-left: var(--space-md); font-size: .88em; color: var(--muted); text-align: right; }
 .mk-popup {

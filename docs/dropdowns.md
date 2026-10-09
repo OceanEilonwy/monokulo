@@ -25,13 +25,15 @@ plus optional parts:
 
 | Part | Shown as |
 |---|---|
+| logo | A small picture before the label (a wallet app's logo). Drawn by the component only; the option's text doesn't mention it. |
 | detail | Monospace and muted, after the label (an address, a currency code). |
-| network | A wallet's Monero network, as the site's network badge (`views::network_badge`): Mainnet or the test network's name. |
+| network | A wallet's Monero network, as the site's network badge (`views::network_badge`): Mainnet or the test network's name. An option can be the badge alone, with an empty label: the setup flow's network dropdown. |
 | chip | A tag. Only `Chip::Current` is green; any other chip is neutral, so green always means "the one in use now". |
 | note | Muted, at the end (a count, a date, why it can't be picked). |
 
 **Without JavaScript**, the select is all there is. Each option's text carries
-every part in words: `Label (detail) [Network] [chip] - note`.
+every part in words: `Label (detail) [Network] [chip] - note`. An option
+with no label starts at its first part: `[Stagenet]`.
 
 **With JavaScript**, the component:
 
