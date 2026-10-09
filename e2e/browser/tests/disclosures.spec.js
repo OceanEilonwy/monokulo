@@ -64,7 +64,7 @@ test('a disclosure reads as a link with a caret, with a pointer, a hover and a f
   await expect(details).not.toHaveAttribute('open', '');
 
   // "More options", with no class of its own, is the same.
-  await page.goto(fixture.base_url + '/account/wallets/setup');
+  await page.goto(fixture.base_url + '/account/wallets/add');
   const more = page.locator('details', { hasText: 'More options' }).locator('summary');
   const options = await looks(more);
   expect(options.cursor).toBe('pointer');
