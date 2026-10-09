@@ -214,8 +214,9 @@ jobs:
           else
             mkdir -p target/coverage/woocommerce
             cd plugins/woocommerce
-            wp-env run tests-cli --env-cwd=wp-content/plugins/monokulo \
-              vendor/bin/phpunit --log-junit junit.xml
+            # The config `wp-env start` was given names the environment.
+            wp-env run --config=.wp-env.coverage.json tests-cli \
+              --env-cwd=wp-content/plugins/monokulo vendor/bin/phpunit --log-junit junit.xml
             mv junit.xml ../../target/coverage/woocommerce/junit.xml
           fi
       - name: Summarize
