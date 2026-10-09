@@ -1,0 +1,157 @@
+<!doctype html>
+<!--
+  Geomart: a pretend shop that sells shapes, for Monokulo's walkthrough
+  (https://oceaneilonwy.github.io/monokulo/docs/walkthrough-geomart/).
+
+  One file: a catalogue, a cart and a checkout page, and a fake API standing
+  in for the shop's server. It has no way to pay. done.html, beside it, is
+  the same shop once the walkthrough's six steps have added Monokulo.
+
+  Open it straight from disk, or at
+  https://oceaneilonwy.github.io/monokulo/docs/geomart/.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Geomart</title>
+<style>
+  /* Geomart's own plain look: it's the merchant's shop, not Monokulo. */
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.5 system-ui, sans-serif; color: #1d2433; background: #f6f7fb; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: #fff; border-bottom: 1px solid #dde1ea; }
+  header strong { font-size: 20px; }
+  header nav { margin-left: auto; display: flex; gap: 16px; }
+  header a { color: inherit; }
+  main { max-width: 760px; margin: 0 auto; padding: 20px; }
+  .shapes { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; }
+  .shape { background: #fff; border: 1px solid #dde1ea; border-radius: 10px; padding: 16px; text-align: center; }
+  .shape svg { width: 64px; height: 64px; }
+  .shape svg * { fill: #e8ecf6; stroke: #1d2433; stroke-width: 1.5; }
+  button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid #1d2433; background: #fff; cursor: pointer; }
+  button.main { background: #1d2433; color: #fff; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #dde1ea; border-radius: 10px; }
+  td, th { padding: 8px 12px; border-bottom: 1px solid #eef0f5; text-align: left; }
+  td.n, th.n { text-align: right; }
+  .total { font-weight: 700; }
+  .box { background: #fff; border: 1px solid #dde1ea; border-radius: 10px; padding: 16px; margin: 16px 0; }
+  .soon { border-style: dashed; color: #5b6475; text-align: center; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <strong>◭ Geomart</strong>
+  <span>Shapes, freshly drawn</span>
+  <nav><a href="#shop">Shop</a><a href="#cart">Cart (<span id="cart-count">0</span>)</a></nav>
+</header>
+<main>
+  <section id="page-shop">
+    <h1>Shapes</h1>
+    <div class="shapes" id="shapes"></div>
+  </section>
+
+  <section id="page-cart" hidden>
+    <h1>Your cart</h1>
+    <div id="cart"></div>
+  </section>
+
+  <section id="page-checkout" hidden>
+    <h1>Checkout</h1>
+    <div id="summary"></div>
+    <div class="box soon" id="pay">Payment coming soon</div>
+  </section>
+
+  <section id="page-thanks" hidden>
+    <h1>Thank you</h1>
+    <p>Your order <strong id="thanks-order"></strong> is on its way.</p>
+  </section>
+</main>
+
+<script>
+// -- The fake API: stands in for Geomart's own server -------------------------
+const fakeApi = (() => {
+  const products = [
+    { id: "triangle", name: "Triangle", price: "4.00", path: "M32 6l26 50H6z" },
+    { id: "square", name: "Square", price: "5.50", path: "M10 10h44v44H10z" },
+    { id: "circle", name: "Circle", price: "6.25", path: "M32 8a24 24 0 1 0 0.01 0z" },
+    { id: "hexagon", name: "Hexagon", price: "7.75", path: "M19 8h26l13 24-13 24H19L6 32z" },
+    { id: "star", name: "Star", price: "9.00", path: "M32 5l8 18 19 2-14 13 4 19-17-10-17 10 4-19L5 25l19-2z" },
+  ];
+  const orders = JSON.parse(localStorage.getItem("geomart-orders") || "{}");
+  const save = () => localStorage.setItem("geomart-orders", JSON.stringify(orders));
+  const cents = (price) => Math.round(Number(price) * 100);
+  return {
+    products: () => products,
+    product: (id) => products.find((p) => p.id === id),
+    // Places the order Geomart ships from: its own id and total.
+    placeOrder(cart) {
+      const total = cart.reduce((sum, line) => sum + cents(this.product(line.id).price) * line.qty, 0);
+      const id = "gm-" + (1000 + Object.keys(orders).length + 1);
+      orders[id] = { id, lines: cart, total: (total / 100).toFixed(2), currency: "EUR", paid: false };
+      save();
+      return Promise.resolve(orders[id]);
+    },
+  };
+})();
+
+// -- The cart -----------------------------------------------------------------
+let cart = JSON.parse(localStorage.getItem("geomart-cart") || "[]");
+const saveCart = () => {
+  localStorage.setItem("geomart-cart", JSON.stringify(cart));
+  document.getElementById("cart-count").textContent = cart.reduce((n, line) => n + line.qty, 0);
+};
+const add = (id) => {
+  const line = cart.find((l) => l.id === id);
+  if (line) line.qty += 1; else cart.push({ id, qty: 1 });
+  saveCart();
+};
+const totalOf = (lines) =>
+  (lines.reduce((sum, l) => sum + Math.round(Number(fakeApi.product(l.id).price) * 100) * l.qty, 0) / 100).toFixed(2);
+
+// -- Pages ----------------------------------------------------------------------
+const shapeSvg = (p) => `<svg viewBox="0 0 64 64" aria-hidden="true"><path d="${p.path}"/></svg>`;
+const linesTable = (lines) => `
+  <table>
+    <tr><th>Shape</th><th class="n">Qty</th><th class="n">Price</th></tr>
+    ${lines.map((l) => {
+      const p = fakeApi.product(l.id);
+      return `<tr><td>${p.name}</td><td class="n">${l.qty}</td><td class="n">€${(Number(p.price) * l.qty).toFixed(2)}</td></tr>`;
+    }).join("")}
+    <tr class="total"><td>Total</td><td></td><td class="n">€${totalOf(lines)}</td></tr>
+  </table>`;
+
+function showPage(name) {
+  for (const page of document.querySelectorAll("main > section")) page.hidden = page.id !== "page-" + name;
+  if (name === "shop") {
+    document.getElementById("shapes").innerHTML = fakeApi.products().map((p) => `
+      <div class="shape">${shapeSvg(p)}<h3>${p.name}</h3><p>€${p.price}</p>
+      <button data-add="${p.id}">Add to cart</button></div>`).join("");
+  }
+  if (name === "cart") {
+    document.getElementById("cart").innerHTML = cart.length
+      ? linesTable(cart) + `<p><button class="main" data-go="checkout">Checkout</button></p>`
+      : `<p>Your cart is empty. <a href="#shop">See the shapes</a>.</p>`;
+  }
+}
+
+async function checkout() {
+  const receipt = await fakeApi.placeOrder(cart);   // Geomart's own order id
+  showPage("checkout");
+  document.getElementById("summary").innerHTML =
+    `<p>Order <strong>${receipt.id}</strong></p>` + linesTable(receipt.lines);
+}
+
+document.addEventListener("click", (event) => {
+  const add_ = event.target.closest("[data-add]");
+  if (add_) add(add_.dataset.add);
+  const go = event.target.closest("[data-go]");
+  if (go && go.dataset.go === "checkout") checkout();
+});
+const route = () => showPage((location.hash || "#shop").slice(1) === "cart" ? "cart" : "shop");
+window.addEventListener("hashchange", route);
+saveCart();
+route();
+</script>
+</body>
+</html>

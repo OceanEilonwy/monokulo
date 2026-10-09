@@ -1,0 +1,230 @@
+<!doctype html>
+<!--
+  Geomart: a pretend shop that sells shapes, for Monokulo's walkthrough
+  (https://oceaneilonwy.github.io/monokulo/docs/walkthrough-geomart/).
+
+  This is the shop once the walkthrough's six steps have added Monokulo;
+  index.html, beside it, is the shop before, with no way to pay. To try it,
+  change pay.example to your Monokulo's public address and pk_3f9a...c21e to
+  your store's public key.
+
+  Open it straight from disk, or at
+  https://oceaneilonwy.github.io/monokulo/docs/geomart/done.html.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Geomart</title>
+<style>
+  /* Geomart's own plain look: it's the merchant's shop, not Monokulo. */
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.5 system-ui, sans-serif; color: #1d2433; background: #f6f7fb; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: #fff; border-bottom: 1px solid #dde1ea; }
+  header strong { font-size: 20px; }
+  header nav { margin-left: auto; display: flex; gap: 16px; }
+  header a { color: inherit; }
+  main { max-width: 760px; margin: 0 auto; padding: 20px; }
+  .shapes { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; }
+  .shape { background: #fff; border: 1px solid #dde1ea; border-radius: 10px; padding: 16px; text-align: center; }
+  .shape svg { width: 64px; height: 64px; }
+  .shape svg * { fill: #e8ecf6; stroke: #1d2433; stroke-width: 1.5; }
+  button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid #1d2433; background: #fff; cursor: pointer; }
+  button.main { background: #1d2433; color: #fff; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #dde1ea; border-radius: 10px; }
+  td, th { padding: 8px 12px; border-bottom: 1px solid #eef0f5; text-align: left; }
+  td.n, th.n { text-align: right; }
+  .total { font-weight: 700; }
+  .box { background: #fff; border: 1px solid #dde1ea; border-radius: 10px; padding: 16px; margin: 16px 0; }
+  .soon { border-style: dashed; color: #5b6475; text-align: center; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <strong>◭ Geomart</strong>
+  <span>Shapes, freshly drawn</span>
+  <nav><a href="#shop">Shop</a><a href="#cart">Cart (<span id="cart-count">0</span>)</a></nav>
+</header>
+<main>
+  <section id="page-shop">
+    <h1>Shapes</h1>
+    <div class="shapes" id="shapes"></div>
+  </section>
+
+  <section id="page-cart" hidden>
+    <h1>Your cart</h1>
+    <div id="cart"></div>
+  </section>
+
+  <section id="page-checkout" hidden>
+    <h1>Checkout</h1>
+    <div id="summary"></div>
+    <p class="box" id="banner" hidden></p>
+    <div id="pay"></div>
+  </section>
+
+  <section id="page-thanks" hidden>
+    <h1>Thank you</h1>
+    <p>Thanks: we'll send order <strong id="thanks-order"></strong> once our server hears it's paid.</p>
+  </section>
+</main>
+
+<script src="https://pay.example/static/monokulo-client.js"></script>
+<script>
+// Your store's public key, from its page in Monokulo (step 1).
+const MONOKULO_PUBLIC_KEY = "pk_3f9a...c21e";
+
+// -- The fake API: stands in for Geomart's own server -------------------------
+const fakeApi = (() => {
+  const products = [
+    { id: "triangle", name: "Triangle", price: "4.00", path: "M32 6l26 50H6z" },
+    { id: "square", name: "Square", price: "5.50", path: "M10 10h44v44H10z" },
+    { id: "circle", name: "Circle", price: "6.25", path: "M32 8a24 24 0 1 0 0.01 0z" },
+    { id: "hexagon", name: "Hexagon", price: "7.75", path: "M19 8h26l13 24-13 24H19L6 32z" },
+    { id: "star", name: "Star", price: "9.00", path: "M32 5l8 18 19 2-14 13 4 19-17-10-17 10 4-19L5 25l19-2z" },
+  ];
+  const orders = JSON.parse(localStorage.getItem("geomart-orders") || "{}");
+  const save = () => localStorage.setItem("geomart-orders", JSON.stringify(orders));
+  const cents = (price) => Math.round(Number(price) * 100);
+  return {
+    products: () => products,
+    product: (id) => products.find((p) => p.id === id),
+    // Places the order Geomart ships from: its own id and total.
+    placeOrder(cart) {
+      const total = cart.reduce((sum, line) => sum + cents(this.product(line.id).price) * line.qty, 0);
+      const id = "gm-" + (1000 + Object.keys(orders).length + 1);
+      orders[id] = { id, lines: cart, total: (total / 100).toFixed(2), currency: "EUR", paid: false };
+      save();
+      return Promise.resolve(orders[id]);
+    },
+    // Ships an order once Monokulo's signed webhook says it's paid.
+    markPaid(id) {
+      if (orders[id]) orders[id].paid = true;
+      save();
+    },
+    // What a real server does with Monokulo's webhook (step 5). A static
+    // page can't receive one: this shows the handler your server needs.
+    //   POST /hooks/monokulo   X-Monokulo-Signature: t=...,v1=...
+    async onMonokuloWebhook(headers, body) {
+      if (!(await signatureOk(headers["x-monokulo-signature"], body, WEBHOOK_SECRET))) return 400;
+      const event = JSON.parse(body);
+      if (seen.has(event.event_id)) return 200;          // deliveries can repeat
+      seen.add(event.event_id);
+      if (event.event === "order.paid") this.markPaid(event.merchant_order_id);
+      return 200;
+    },
+  };
+})();
+
+// The webhook's signing secret, kept on the server (Monokulo shows it once,
+// when the webhook is added in the store's settings).
+const WEBHOOK_SECRET = "whsec_...";
+const seen = new Set();
+
+// `t=<unix seconds>,v1=<hex>`: HMAC-SHA256 of "<t>.<body>" with the secret,
+// accepted only within five minutes of t.
+async function signatureOk(header, body, secret) {
+  const parts = Object.fromEntries((header || "").split(",").map((p) => p.split("=")));
+  if (!parts.t || !parts.v1 || Math.abs(Date.now() / 1000 - Number(parts.t)) > 300) return false;
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(parts.t + "." + body));
+  const hex = [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return hex.length === parts.v1.length && hex === parts.v1;   // compare in constant time on a real server
+}
+
+// -- The cart -----------------------------------------------------------------
+let cart = JSON.parse(localStorage.getItem("geomart-cart") || "[]");
+const saveCart = () => {
+  localStorage.setItem("geomart-cart", JSON.stringify(cart));
+  document.getElementById("cart-count").textContent = cart.reduce((n, line) => n + line.qty, 0);
+};
+const add = (id) => {
+  const line = cart.find((l) => l.id === id);
+  if (line) line.qty += 1; else cart.push({ id, qty: 1 });
+  saveCart();
+};
+const totalOf = (lines) =>
+  (lines.reduce((sum, l) => sum + Math.round(Number(fakeApi.product(l.id).price) * 100) * l.qty, 0) / 100).toFixed(2);
+
+// -- Pages ----------------------------------------------------------------------
+const shapeSvg = (p) => `<svg viewBox="0 0 64 64" aria-hidden="true"><path d="${p.path}"/></svg>`;
+const linesTable = (lines) => `
+  <table>
+    <tr><th>Shape</th><th class="n">Qty</th><th class="n">Price</th></tr>
+    ${lines.map((l) => {
+      const p = fakeApi.product(l.id);
+      return `<tr><td>${p.name}</td><td class="n">${l.qty}</td><td class="n">€${(Number(p.price) * l.qty).toFixed(2)}</td></tr>`;
+    }).join("")}
+    <tr class="total"><td>Total</td><td></td><td class="n">€${totalOf(lines)}</td></tr>
+  </table>`;
+
+function showPage(name) {
+  for (const page of document.querySelectorAll("main > section")) page.hidden = page.id !== "page-" + name;
+  if (name === "shop") {
+    document.getElementById("shapes").innerHTML = fakeApi.products().map((p) => `
+      <div class="shape">${shapeSvg(p)}<h3>${p.name}</h3><p>€${p.price}</p>
+      <button data-add="${p.id}">Add to cart</button></div>`).join("");
+  }
+  if (name === "cart") {
+    document.getElementById("cart").innerHTML = cart.length
+      ? linesTable(cart) + `<p><button class="main" data-go="checkout">Checkout</button></p>`
+      : `<p>Your cart is empty. <a href="#shop">See the shapes</a>.</p>`;
+  }
+}
+
+const setBanner = (status) => {
+  const banner = document.getElementById("banner");
+  banner.hidden = false;
+  banner.textContent = {
+    pending: "Waiting for your payment.",
+    unconfirmed: "Payment seen, waiting for the network.",
+    confirming: "Payment seen, confirming.",
+    partial: "Part of the amount arrived. Send the rest.",
+  }[status] || "Payment " + status + ".";
+};
+
+async function checkout() {
+  const receipt = await fakeApi.placeOrder(cart);   // Geomart's own order id
+  showPage("checkout");
+  document.getElementById("summary").innerHTML =
+    `<p>Order <strong>${receipt.id}</strong></p>` + linesTable(receipt.lines);
+  try {
+    const order = await Monokulo.createOrder({
+      publicKey: MONOKULO_PUBLIC_KEY,
+      amount: receipt.total,          // "13.50"
+      currency: "EUR",
+      merchantOrderId: receipt.id,    // "gm-1042"
+    });
+    Monokulo.mount("#pay", order, {
+      theme: "light",
+      onStatusChange: (status) => setBanner(status),
+      onPaid: () => {                 // a nicety only: the webhook says it's paid
+        document.getElementById("thanks-order").textContent = receipt.id;
+        cart = [];
+        saveCart();
+        showPage("thanks");
+      },
+      onExpired: () => showPage("cart"),
+    });
+  } catch (error) {
+    document.getElementById("pay").textContent =
+      "The checkout couldn't start: " + error.message +
+      " (set MONOKULO_PUBLIC_KEY and the script's address to your own Monokulo).";
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const add_ = event.target.closest("[data-add]");
+  if (add_) add(add_.dataset.add);
+  const go = event.target.closest("[data-go]");
+  if (go && go.dataset.go === "checkout") checkout();
+});
+const route = () => showPage((location.hash || "#shop").slice(1) === "cart" ? "cart" : "shop");
+window.addEventListener("hashchange", route);
+saveCart();
+route();
+</script>
+</body>
+</html>

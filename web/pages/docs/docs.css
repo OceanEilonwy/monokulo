@@ -1,0 +1,44 @@
+@font-face{font-family:"Manrope";font-style:normal;font-weight:500;font-display:swap;src:url(manrope-500.woff2) format("woff2")}
+@font-face{font-family:"Manrope";font-style:normal;font-weight:700;font-display:swap;src:url(manrope-700.woff2) format("woff2")}
+@font-face{font-family:"Manrope";font-style:normal;font-weight:800;font-display:swap;src:url(manrope-800.woff2) format("woff2")}
+/* The docs (cargo xtask pages docs, xtask/src/pages/docs.rs): a plain page in
+   the site's own look. Colours come only from theme.css roles. */
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:500 16px/1.65 var(--font-ui)}
+a{color:var(--ink);text-decoration-thickness:1px;text-underline-offset:2px}
+a:hover{color:var(--accent-text)}
+:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+code{font-family:var(--font-mono);font-size:.88em;background:var(--paper-raised);border:1px solid var(--line);border-radius:var(--radius-sm);padding:.05em .35em;overflow-wrap:anywhere}
+pre{background:var(--paper-raised);border:1px solid var(--line);border-radius:var(--radius-md);padding:var(--space-md) var(--space-lg);overflow-x:auto;font-size:.85em}
+pre code{border:0;padding:0;background:none}
+
+header.chrome{background:var(--chrome-bg);border-bottom:3px solid var(--chrome-rule)}
+.bar{max-width:900px;margin:0 auto;padding:var(--space-md) var(--space-lg);display:flex;align-items:center;justify-content:space-between;gap:var(--space-lg);flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:var(--space-sm);font-weight:800;font-size:19px;text-decoration:none;color:var(--chrome-ink)}
+header nav{display:flex;gap:var(--space-lg);flex-wrap:wrap;font-weight:700;font-size:14px}
+header nav a{color:var(--chrome-ink);text-decoration:none}
+header nav a[aria-current]{color:var(--accent-text)}
+
+.docs-page{max-width:900px;margin:0 auto;padding:var(--space-xl) var(--space-lg) 80px}
+.docs-tabs{display:flex;flex-wrap:wrap;gap:var(--space-xs);margin:0 0 var(--space-lg);border-bottom:1px solid var(--line)}
+.docs-tabs a{padding:var(--space-xs) var(--space-md);text-decoration:none;border-bottom:3px solid transparent;color:var(--muted);font-weight:700;font-size:.92em}
+.docs-tabs a[aria-current]{color:var(--ink);border-bottom-color:var(--tab-current)}
+article h1{font-size:clamp(28px,4.5vw,38px);font-weight:800;line-height:1.15;margin:var(--space-lg) 0 var(--space-md)}
+article h2{font-size:1.4rem;font-weight:800;margin:var(--space-xl) 0 var(--space-sm)}
+article h3{font-size:1.05rem;font-weight:800;margin:var(--space-xl) 0 var(--space-xs)}
+article ol, article ul{padding-left:1.4em}
+article li{margin:var(--space-xs) 0}
+article blockquote{margin:var(--space-lg) 0;padding:var(--space-md) var(--space-lg);border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface-sunken)}
+article blockquote p{margin:0}
+.table-scroll{overflow-x:auto;margin:var(--space-md) 0}
+table{border-collapse:collapse;width:100%;background:var(--paper-raised);border:1px solid var(--line);font-size:.92em}
+th,td{text-align:left;vertical-align:top;padding:var(--space-sm) var(--space-md);border-bottom:1px solid var(--line)}
+th{background:var(--table-head-bg);color:var(--table-head-ink)}
+td:first-child{white-space:nowrap}
+/* A walkthrough step's change: the file, then each line, the added ones
+   on the success tint. */
+pre.diff{padding:0;white-space:pre}
+pre.diff span{display:block;padding:0 var(--space-lg)}
+pre.diff .file{background:var(--surface-sunken);color:var(--muted);padding-top:2px;padding-bottom:2px;border-bottom:1px solid var(--line)}
+pre.diff .add{background:var(--tint-success)}
+pre.diff .ctx{color:var(--muted)}
