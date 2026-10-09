@@ -646,7 +646,6 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 .short-value { position: relative; display: inline-block; text-decoration: inherit; }
 .short-value-text { user-select: none; }
 .short-value-full { position: absolute; inset: 0; overflow: hidden; white-space: nowrap; color: transparent; user-select: text; }
-.short-value-full::selection { color: transparent; }
 /* Three form buttons make each theme a direct target. Their sibling hover
    rules preview the indicator position without JavaScript. */
 .theme-toggle {
