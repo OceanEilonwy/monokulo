@@ -1,5 +1,5 @@
 const path = require('node:path');
-const { test, expect, pauseClockAt } = require('../coverage-test');
+const { test, expect, pauseClockAt, recordEventSources, eventSources } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
 
@@ -305,29 +305,24 @@ test('real frame-only checkout refuses a top-level navigation', async ({ page, r
 test('real checkout open while the customer pays shows paid and stops following the order', async ({ page, request }) => {
   const url = await checkoutUrl(request);
   const orderId = url.split('/').pop();
-  // The page's own record of its live stream: every fetch of it (fixi's
-  // first request and any reconnect ssexi makes, synchronously inside the
-  // timer that makes it), and fx:sse:close each time the server ends it,
-  // which is when ssexi decides whether to reconnect.
+  // Every request for the live stream (fixi's first, and any reconnect
+  // ssexi makes), and the page's own record of the server ending it: the
+  // fx:sse:close event, which is when ssexi decides whether to reconnect.
+  let streams = 0;
+  page.on('request', sent => { if (sent.url().startsWith(`${url}/events?`)) streams++; });
   await page.addInitScript(() => {
-    const stream = { started: 0, ended: 0 };
-    window.checkoutStream = stream;
-    const fetch_ = window.fetch;
-    window.fetch = function (resource, ...rest) {
-      if (String(resource instanceof Request ? resource.url : resource).includes('/events?')) stream.started++;
-      return fetch_.call(this, resource, ...rest);
-    };
+    window.__streamsEnded = 0;
     document.addEventListener('fx:sse:close', event => {
-      if (event.target instanceof Element && event.target.id === 'checkout-stream') stream.ended++;
+      if (event.target instanceof Element && event.target.id === 'checkout-stream') window.__streamsEnded++;
     }, true);
   });
-  const stream = () => page.evaluate(() => window.checkoutStream);
+  const streamsEnded = () => page.evaluate(() => window.__streamsEnded);
   // The page's time stands still from the start: only the test moves it.
   const start = new Date('2026-01-01T00:00:00Z');
   await pauseClockAt(page, start);
   await page.goto(url);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'pending');
-  await expect.poll(async () => (await stream()).started).toBe(1);
+  await expect.poll(() => streams).toBe(1);
   const paid = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/paid`);
   expect(paid.status()).toBe(204);
   // The live stream carries the new state in; no reload.
@@ -338,10 +333,13 @@ test('real checkout open while the customer pays shows paid and stops following 
   // A final order closes its stream for good rather than reconnecting:
   // once the page has seen the stream end, no amount of time opens another
   // (ssexi reconnects a dropped stream after 3s; checkout.js retries a
-  // refused one after up to a minute).
-  await expect.poll(async () => (await stream()).ended, 'the page sees its stream end').toBe(1);
+  // refused one after up to a minute). A request of the page's own anchors
+  // the count: a reconnect made while the clock moved would have been
+  // sent before it.
+  await expect.poll(streamsEnded, 'the page sees its stream end').toBe(1);
   await page.clock.runFor(2 * 60 * 1000);
-  expect((await stream()).started, 'no second stream').toBe(1);
+  await page.evaluate(() => fetch('/__coverage/ready').then(response => response.status));
+  expect(streams, 'no second stream').toBe(1);
 });
 
 test('real checkout keeps retrying a refused live stream with backoff and then follows the order', async ({ page, request }) => {
