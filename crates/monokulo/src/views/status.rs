@@ -92,10 +92,6 @@ pub struct ProofWindow {
 /// the anchor's age.
 pub const WINDOW_BLOCKS: u64 = 30;
 
-/// Settlement more than this many blocks behind the tip is called out as
-/// slow; up to it is a normal round or two of checking.
-pub const BEHIND_SLOW_AFTER: u64 = 5;
-
 /// What one block of the window is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pip {
@@ -410,20 +406,20 @@ fn proof_section(network: &str, name: &str, proof: &ProofView) -> Markup {
 /// The last [`WINDOW_BLOCKS`] blocks at a fixed scale: filled when proven,
 /// outlined when only seen, the block orders settle up to ringed and the
 /// tip marked at the end. The sentence and its chip say the same in words;
-/// the figures sit on their own line, never along the blocks.
+/// the figures sit on their own line, never along the blocks. The chip is
+/// the same neutral tag at every count: a few blocks behind is checking
+/// at work, not a problem.
 fn proof_window(window: &ProofWindow) -> Markup {
-    let behind = window.behind();
-    let (chip, chip_class) = match behind {
-        0 => ("caught up".to_owned(), "tag-ok"),
-        n if n <= BEHIND_SLOW_AFTER => (format!("{n} behind the tip"), "tag-unknown"),
-        n => (format!("{n} behind the tip"), "tag-slow"),
+    let chip = match window.behind() {
+        0 => "caught up".to_owned(),
+        n => format!("{n} behind the tip"),
     };
     let pips = window.pips();
     let before_anchor = pips.iter().any(|(_, pip)| *pip == Pip::BeforeAnchor);
     html! {
         p class="pline" {
             "Orders settle on blocks up to " strong { (thousands(window.ceiling)) } ", proven by the engine itself."
-            " " span class=(format!("tag {chip_class}")) { (chip) }
+            " " span class="tag tag-unknown" { (chip) }
         }
         div class="pips" aria-hidden="true" {
             @for (height, pip) in &pips {
@@ -941,7 +937,7 @@ mod tests {
     fn the_window_when_caught_up() {
         let html = render(&admin_with(following(0, 3_412_160), vec![]));
         assert!(
-            html.contains(r#"<p class="pline">Orders settle on blocks up to <strong>3,412,881</strong>, proven by the engine itself. <span class="tag tag-ok">caught up</span></p>"#),
+            html.contains(r#"<p class="pline">Orders settle on blocks up to <strong>3,412,881</strong>, proven by the engine itself. <span class="tag tag-unknown">caught up</span></p>"#),
             "{html}"
         );
         let pips = pip_classes(&html);
@@ -978,14 +974,15 @@ mod tests {
         assert!(html.contains(r#"<span class="pip" data-settles title="block 3,412,878">"#));
     }
 
-    /// Fourteen behind: past the slow mark, the chip says so in amber.
+    /// Fourteen behind: the same neutral chip, never amber.
     #[test]
     fn the_window_fourteen_behind() {
         let html = render(&admin_with(following(14, 3_412_160), vec![]));
         assert!(
-            html.contains(r#"<span class="tag tag-slow">14 behind the tip</span>"#),
+            html.contains(r#"<span class="tag tag-unknown">14 behind the tip</span>"#),
             "{html}"
         );
+        assert!(!html.contains("tag-slow"), "{html}");
         let pips = pip_classes(&html);
         assert_eq!(pips.iter().filter(|pip| **pip == "pip seen").count(), 14);
         assert_eq!(pips.iter().filter(|pip| **pip == "pip").count(), 16);

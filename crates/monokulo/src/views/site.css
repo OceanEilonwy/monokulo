@@ -121,13 +121,15 @@ pre { padding: var(--space-md); overflow-x: auto; white-space: pre-wrap; word-br
 .pip { display: inline-block; flex: 1 1 0; max-width: 12px; height: 12px; border-radius: 3px; background: var(--pow-proven); border: 1px solid var(--pow-proven); }
 .pip.seen { background: transparent; border: 1px dashed var(--pow-seen-edge); }
 .pip.before { background: var(--pow-before); border-color: var(--pow-before); }
-.pip[data-settles] { outline: 2px solid var(--pow-mark); outline-offset: 1px; }
+/* The ring reaches 3px past its block (2px outline, 1px offset); the 3px
+   margin each side, on top of the 2px gap, keeps it 2px clear of its
+   neighbours. Every block keeps the same width. */
+.pip[data-settles] { outline: 2px solid var(--pow-mark); outline-offset: 1px; margin: 0 3px; }
 .pip-tip { display: inline-block; flex: none; width: 2px; height: 18px; margin-left: 3px; border-radius: 1px; background: var(--pow-mark); }
 .pip-legend { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-md); margin: var(--space-sm) 0 0; font-size: 0.8em; color: var(--muted); }
 .pip-legend > span { display: inline-flex; align-items: center; gap: var(--space-xs); }
 .pip-legend .pip { flex: none; width: 10px; height: 10px; }
 .pip-legend .pip-tip { height: 12px; margin: 0; }
-.pip-legend .pip[data-settles] { margin: 0 3px; }
 .pip-figures { margin: var(--space-xs) 0 0; font-size: 0.8em; color: var(--muted); font-variant-numeric: tabular-nums; }
 .pip-anchor { margin: var(--space-xs) 0 0; }
 /* Settlement held: the reason and the way out, in one calm box; the
