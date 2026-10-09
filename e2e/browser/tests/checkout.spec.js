@@ -319,8 +319,11 @@ test('real checkout keeps retrying a refused live stream with backoff and then f
   const stream = () => page.evaluate(() => window.checkoutStream);
   const pageNow = () => page.evaluate(() => Date.now());
   // The page's time stands still from the start: only the test moves it.
+  // The clock flows from install until pauseAt, and pausing at a moment it
+  // has already passed fails ("Cannot fast-forward to the past"), so it is
+  // installed a minute before the moment it pauses at.
   const start = new Date('2026-01-01T00:00:00Z');
-  await page.clock.install({ time: start });
+  await page.clock.install({ time: new Date(start.getTime() - 60_000) });
   await page.clock.pauseAt(start);
   await page.goto(url);
 
