@@ -8,7 +8,10 @@ import { createTimeline, routeOf, watchPage } from './timeline';
 import './pos.css';
 
 type Order = {
-  order_id: string; merchant_order_id: string | null; address: string;
+  /** `order_id_short` and `address_short` are the server's shortened forms
+   * (`views::short_id_text`, `views::short_address_text`): the app never cuts
+   * an identifier itself. */
+  order_id: string; order_id_short: string; merchant_order_id: string | null; address: string; address_short: string;
   xmr_amount: string; amount: string; currency: string; status: string;
   confirmations: number; confirmations_required: number; error: string | null;
   updated_at?: number;
@@ -32,12 +35,21 @@ const timeline = createTimeline(config.clientLogging, `${api}/logs`);
 watchPage(timeline);
 const terminal = (o: Order) => Boolean(o.cancelled_at) || ['paid', 'overpaid', 'expired'].includes(o.status);
 
-/** `#8f42…a91c` - the order ID's distinctive part, without its `order_` prefix. */
-function shortId(id: string): string {
-  const core = id.replace(/^order_/, '');
-  return core.length <= 10 ? `#${core}` : `#${core.slice(0, 4)}…${core.slice(-4)}`;
+/** `#a8723b…b0d44e` - the order ID as the server shortened it, marked with `#`. */
+const shortId = (o: Order) => `#${o.order_id_short}`;
+const label = (o: Order) => o.merchant_order_id || shortId(o);
+/** A value as the server shortened it, in the site's own markup
+ * (`views::short_id`, site.css `.short-value`): the short text on screen,
+ * the whole over it to double-click and copy, and for a screen reader. */
+function Shortened(props: { short: string; full: string }) {
+  return <Show when={props.short !== props.full} fallback={props.full}>
+    <span class="short-value" title={props.full}><span class="short-value-text" aria-hidden="true">{props.short}</span><span class="short-value-full">{props.full}</span></span>
+  </Show>;
 }
-const label = (o: Order) => o.merchant_order_id || shortId(o.order_id);
+/** An order's ID shortened, `#` first. */
+const OrderId = (props: { order: Order }) => <Shortened short={shortId(props.order)} full={props.order.order_id}/>;
+/** An order's name: its reference, or else its ID shortened. */
+const Label = (props: { order: Order }) => <Show when={props.order.merchant_order_id} fallback={<OrderId order={props.order}/>}>{props.order.merchant_order_id}</Show>;
 /** An exact XMR amount without trailing zeros (`0.052431000000` → `0.052431`). */
 const trimXmr = (value: string) => value.includes('.') ? value.replace(/0+$/, '').replace(/\.$/, '') : value;
 /** An order's amount as shown: an XMR amount without trailing zeros. */
@@ -60,12 +72,6 @@ function durationUntil(unix: number, now: number): string {
   return minutes ? `${minutes}m` : 'less than a minute';
 }
 const clock = (unix: number) => new Date(unix * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
-/** A long address shown on one line: start … middle … end. */
-function shortAddress(address: string): string {
-  if (address.length < 40) return address;
-  const middle = Math.floor(address.length / 2);
-  return `${address.slice(0, 5)}…${address.slice(middle - 9, middle + 9)}…${address.slice(-4)}`;
-}
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const started = performance.now();
@@ -279,7 +285,7 @@ function PaymentCard(props: { order: Order }) {
     </Show>
     <p class="pos-quiet-label">Payment address</p>
     <div class="pos-address">
-      <code title={props.order.address}>{shortAddress(props.order.address)}</code>
+      <code><Shortened short={props.order.address_short} full={props.order.address}/></code>
       <Show when={awaiting()}><button type="button" onClick={() => void copy()} aria-label="Copy payment address">{copied() ? 'Copied' : 'Copy'}</button></Show>
     </div>
     <hr/>
@@ -554,7 +560,7 @@ function App() {
     return () => { document.removeEventListener('keydown', onKey); window.clearInterval(clockTick); window.clearTimeout(lostTimer); };
   });
 
-  const orderLine = (o: Order) => `${o.merchant_order_id ? 'Reference · ' : ''}${shortId(o.order_id)} · created ${clock(o.created_at)}`;
+  const orderLine = (o: Order) => <>{o.merchant_order_id ? 'Reference · ' : ''}<OrderId order={o}/> · created {clock(o.created_at)}</>;
   /** The card's one-line state detail (sketch 4): short, never the
    * engine's full message. */
   const cardDetail = (o: Order) => {
@@ -637,7 +643,7 @@ function App() {
     <Show when={screen() === 'payment' ? activeId() : null} keyed>{_id => <Show when={active()} fallback={<main class="pos-payment"><p class="pos-loading">Loading order…</p></main>}>{order => (
       <main class="pos-payment">
         <div class="pos-order-heading">
-          <div><h1>{label(order())}</h1><p>{order().merchant_order_id ? 'Reference · ' : ''}Order {shortId(order().order_id)}</p></div>
+          <div><h1><Label order={order()}/></h1><p>{order().merchant_order_id ? 'Reference · ' : ''}Order <OrderId order={order()}/></p></div>
           {/* The status at a glance; the stage in the card says the rest,
               the time left included. */}
           <div class="pos-status-row">
@@ -681,7 +687,7 @@ function App() {
         </Show>
         <div class="pos-list-items"><For each={visible()} keyed={o => o.order_id}>{order => <article class="pos-order-card">
           <div class="pos-order-card-head">
-            <div><h2>{label(order())}</h2><p>{orderLine(order())}</p></div>
+            <div><h2><Label order={order()}/></h2><p>{orderLine(order())}</p></div>
             <StatusBadge order={order()} offline={offline() && !terminal(order())}/>
           </div>
           <p class="pos-order-sum">{shownAmount(order())} <span>{order().currency}</span></p>
