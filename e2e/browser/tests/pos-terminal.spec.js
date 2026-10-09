@@ -522,7 +522,7 @@ test('charge whose response is lost is retried without creating a second order',
 
 test('payment waiting on the store\'s confirmations shows its progress', async ({ page, request }) => {
   // The merchant asks for 3 confirmations on the store's settings page.
-  const saved = await request.post(`${fixture.base_url}/dashboard/stores/${fixture.connection_id}/settings/confirmations`,
+  const saved = await request.post(`${fixture.base_url}/dashboard/stores/${fixture.connection_id}/settings`,
     { headers: { cookie: `session=${fixture.session}` }, form: { confirmations_required: '3' }, maxRedirects: 0 });
   expect(saved.status()).toBeLessThan(400);
   await page.goto(posUrl());
@@ -559,7 +559,7 @@ test('double spend on the order on screen warns the merchant not to hand over go
 
 test('store priced in AUD: the merchant keys in dollars and cents and sees both amounts throughout', async ({ page, request }) => {
   // The merchant switches the store to Australian dollars on its settings page.
-  const saved = await request.post(`${fixture.base_url}/dashboard/stores/${fixture.connection_id}/settings/base-currency`,
+  const saved = await request.post(`${fixture.base_url}/dashboard/stores/${fixture.connection_id}/settings`,
     { headers: { cookie: `session=${fixture.session}` }, form: { base_currency: 'AUD' }, maxRedirects: 0 });
   expect(saved.status()).toBeLessThan(400);
   await page.goto(posUrl());

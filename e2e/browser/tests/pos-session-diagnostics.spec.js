@@ -63,15 +63,15 @@ test('a POS session reads as one timeline, from opting in to the last event', as
 
   // Diagnostics: off until the store turns it on.
   await page.goto(base + store + '/settings');
-  const diagnostics = page.locator('#diagnostics');
-  await expect(diagnostics).toContainText('This store sends no diagnostic logs.');
+  const diagnostics = page.locator('#card-diagnostics');
+  const logs = diagnostics.getByRole('switch', { name: 'Send diagnostic logs' });
+  await expect(logs).not.toBeChecked();
   await diagnostics.scrollIntoViewIfNeeded();
   await captureCoverageStage(page, 'store-diagnostics-off', test.info(), { group: 'store-settings', ...desktop });
-  await page.evaluate(() => { window.__notReloaded = true; });
-  await diagnostics.getByRole('button', { name: 'Edit diagnostics', exact: true }).click();
-  await diagnostics.getByRole('button', { name: 'Send diagnostic logs' }).click();
-  await expect(diagnostics).toContainText('This store sends diagnostic logs.');
-  expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
+  await diagnostics.locator('label.switch').click();
+  await page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.locator('#settings-toasts')).toContainText('Settings saved');
+  await expect(logs).toBeChecked();
   await captureCoverageStage(page, 'store-diagnostics-on', test.info(), { group: 'store-settings', ...desktop });
 
   // The session.
@@ -144,9 +144,10 @@ test('a POS session reads as one timeline, from opting in to the last event', as
 
   // Opted out: the POS records nothing and sends nothing.
   await page.goto(base + store + '/settings');
-  await page.locator('#diagnostics').getByRole('button', { name: 'Edit diagnostics', exact: true }).click();
-  await page.locator('#diagnostics').getByRole('button', { name: 'Turn off' }).click();
-  await expect(page.locator('#diagnostics')).toContainText('This store sends no diagnostic logs.');
+  await page.locator('#card-diagnostics label.switch').click();
+  await page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.locator('#settings-toasts')).toContainText('Settings saved');
+  await expect(page.locator('#card-diagnostics').getByRole('switch', { name: 'Send diagnostic logs' })).not.toBeChecked();
   const sent = [];
   page.on('request', (request) => { if (request.url().endsWith('/pos/logs')) sent.push(request.url()); });
   // The page's clock is faked from here on, to run the POS's send timer.

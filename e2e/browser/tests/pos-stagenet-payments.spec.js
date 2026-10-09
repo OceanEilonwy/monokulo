@@ -55,12 +55,12 @@ async function loginAndOpenPos(page) {
 /**
  * `context.request` shares the browser context's own cookie jar - once
  * `loginAndOpenPos` has run in this same `context`, this reaches the real
- * authenticated settings endpoint (`orders::update_confirmations_required`)
+ * authenticated settings endpoint (`http::store_settings::save`)
  * exactly as the store detail page's own form would.
  */
 async function setConfirmationsRequired(context, value) {
   const response = await context.request.post(
-    `${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}/settings/confirmations`,
+    `${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}/settings`,
     { form: { confirmations_required: String(value) } },
   );
   expect(response.ok()).toBeTruthy();

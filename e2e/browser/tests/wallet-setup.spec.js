@@ -319,7 +319,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await expect(page.getByText(/is added|already added this wallet/)).toBeVisible();
 
   await page.goto(base + store + '/settings');
-  const section = page.locator('#wallet');
+  const section = page.locator('#card-wallet');
   // Shown in place, not behind an Edit button.
   await expect(section.getByRole('button', { name: /Edit/ })).toHaveCount(0);
   await expect(section).toContainText(`Payments go to ${WALLET_NAME}`);
@@ -329,7 +329,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
 
   await wallet.click();
   await section.getByRole('option', { name: /Cafe till/ }).click();
-  // Picking posts at once (fixi): the section asks.
+  // Picking posts at once: the card asks.
   await expect(section.getByRole('heading', { name: 'Change to Cafe till?' })).toBeVisible();
   await expect(section).toContainText(`No orders are open on ${WALLET_NAME}`);
   await captureCoverageStage(page, 'wallets-change-ask', test.info(), { group: 'wallets' });
@@ -354,10 +354,10 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await expect(page.getByText('changed to another wallet')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Before' })).toBeVisible();
   await page.goto(base + store + '/settings');
-  await page.locator('#wallet').getByRole('combobox', { name: 'Wallet' }).click();
-  await page.locator('#wallet').getByRole('option', { name: new RegExp(WALLET_NAME) }).click();
-  await page.locator('#wallet').getByRole('button', { name: `Change to ${WALLET_NAME}` }).click();
-  await expect(page.locator('#wallet')).toContainText(`Payments go to ${WALLET_NAME}`);
+  await page.locator('#card-wallet').getByRole('combobox', { name: 'Wallet' }).click();
+  await page.locator('#card-wallet').getByRole('option', { name: new RegExp(WALLET_NAME) }).click();
+  await page.locator('#card-wallet').getByRole('button', { name: `Change to ${WALLET_NAME}` }).click();
+  await expect(page.locator('#card-wallet')).toContainText(`Payments go to ${WALLET_NAME}`);
 
   // Cafe till is used by nothing now: retired, its keys deleted, said at
   // the top of its page; then brought back with its keys.
@@ -375,11 +375,11 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await page.goto(base + '/account?tab=wallets');
   await expect(page.getByText('Retired wallets (1)')).toBeVisible();
   await page.goto(base + store + '/settings');
-  await page.locator('#wallet').getByRole('combobox', { name: 'Wallet' }).click();
-  await expect(page.locator('#wallet').getByRole('option', { name: /Cafe till/ })).toHaveCount(0);
+  await page.locator('#card-wallet').getByRole('combobox', { name: 'Wallet' }).click();
+  await expect(page.locator('#card-wallet').getByRole('option', { name: /Cafe till/ })).toHaveCount(0);
   await page.keyboard.press('Escape');
-  await page.locator('#wallet details.wallet-history summary').click();
-  await expect(page.locator('#wallet tbody tr', { hasText: 'Cafe till' }).locator('.tag')).toHaveText('Retired');
+  await page.locator('#card-wallet details.wallet-history summary').click();
+  await expect(page.locator('#card-wallet tbody tr', { hasText: 'Cafe till' }).locator('.tag')).toHaveText('Retired');
 
   await page.goto(base + '/account?tab=wallets');
   await page.locator('.retired-wallets summary').click();

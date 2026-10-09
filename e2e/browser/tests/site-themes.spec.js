@@ -95,14 +95,15 @@ test('the site, the POS and the hosted payment page share one theme, light and d
       if (theme === 'light') await captureCoverageStage(page, 'site-store-page', test.info(), { group: 'site' });
       expect(await fitsSmallPhone(page)).toBe(0);
 
-      // Buttons are neutral; the one creating action of a form is orange.
+      // Buttons are neutral; the page's one orange button is the save
+      // bar's Save, shown once something changes.
       await page.goto(base + store + '/settings');
-      await page.getByRole('button', { name: 'Edit base currency', exact: true }).click();
-      expect(await background(page.getByRole('button', { name: 'Update', exact: true }))).toBe(expected.button);
-      await page.keyboard.press('Escape');
-      await page.getByRole('button', { name: 'Edit webhooks', exact: true }).click();
-      expect(await background(page.getByRole('button', { name: 'Add webhook' }))).toBe(ORANGE);
-      await page.keyboard.press('Escape');
+      expect(await background(page.getByRole('button', { name: 'Add webhook' }))).toBe(expected.button);
+      const logs = page.locator('#card-diagnostics label.switch');
+      await logs.click();
+      expect(await background(page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }))).toBe(ORANGE);
+      await logs.click();
+      await expect(page.locator('#save-bar')).toBeHidden();
       if (theme === 'light') await captureCoverageStage(page, 'site-store-settings', test.info(), { group: 'site' });
       expect(await fitsSmallPhone(page)).toBe(0);
 

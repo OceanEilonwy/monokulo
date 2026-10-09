@@ -27,7 +27,7 @@ pub const HAVENO_CURRENCIES: &str = "haveno_currencies";
 pub const HAVENO_MAX_SPREAD_PCT: &str = "haveno_max_spread_pct";
 pub const HAVENO_MIN_OFFERS_PER_SIDE: &str = "haveno_min_offers_per_side";
 pub const HAVENO_MIN_DEPTH_XMR_PER_SIDE: &str = "haveno_min_depth_xmr_per_side";
-const HAVENO_FIELDS: [&str; 4] = [
+pub const HAVENO_FIELDS: [&str; 4] = [
     HAVENO_CURRENCIES,
     HAVENO_MAX_SPREAD_PCT,
     HAVENO_MIN_OFFERS_PER_SIDE,

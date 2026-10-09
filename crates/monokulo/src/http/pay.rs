@@ -1212,9 +1212,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!(
-                        "/dashboard/stores/{connection_id}/settings/fx-provider"
-                    ))
+                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::from(body))
@@ -1759,7 +1757,7 @@ mod tests {
             .clone()
             .oneshot(forged(
                 &token_b,
-                format!("/dashboard/stores/{id_a}/settings/fx-provider"),
+                format!("/dashboard/stores/{id_a}/settings"),
                 "POST",
                 body,
             ))
