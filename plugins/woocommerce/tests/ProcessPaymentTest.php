@@ -65,6 +65,14 @@ class ProcessPaymentTest extends WP_UnitTestCase {
 	 *
 	 * @return WC_Order
 	 */
+	/**
+	 * The plugin's version, from its header in monokulo.php.
+	 */
+	private static function plugin_version() {
+		$header = get_file_data( dirname( __DIR__ ) . '/monokulo.php', array( 'Version' => 'Version' ) );
+		return $header['Version'];
+	}
+
 	private function create_real_order() {
 		$order = wc_create_order();
 		$this->assertNotWPError( $order, 'wc_create_order() should succeed inside a WP_UnitTestCase transaction.' );
@@ -191,6 +199,11 @@ class ProcessPaymentTest extends WP_UnitTestCase {
 			'Bearer sk_test_secret',
 			$this->captured_request['args']['headers']['Authorization'],
 			'Orders are created with the store\'s secret key, so Monokulo knows they come from the shop\'s server.'
+		);
+		$this->assertSame(
+			'woocommerce/' . self::plugin_version(),
+			$this->captured_request['args']['headers']['Monokulo-Client'],
+			'The plugin names itself, with its own version, so Monokulo shows the order as WooCommerce\'s.'
 		);
 		$this->assertMatchesRegularExpression(
 			'/^00-' . WC_Gateway_Monokulo::trace_id() . '-[0-9a-f]{16}-01$/',

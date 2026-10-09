@@ -92,9 +92,7 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
         stores.push(DashboardStoreRow {
             connection_id: row.id.clone(),
             display_name: display_name.clone(),
-            platform: crate::stores::StoreKind::of_platform(&row.platform)
-                .label()
-                .to_owned(),
+            site: row.site.clone(),
             public_key: row.tenant_public_key.clone(),
             health,
             health_label,
@@ -239,7 +237,6 @@ mod tests {
 
         async fn create_connection(router: &Router, session_token: &str) -> (String, String) {
             let body = serde_json::json!({
-                "platform": "woocommerce",
                 "site_url": "https://shop.example.com",
                 "view_key_hex": TEST_VIEW_KEY_HEX,
                 "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,

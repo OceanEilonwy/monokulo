@@ -11,66 +11,6 @@
 /// The longest name a store may have.
 pub const MAX_NAME_LEN: usize = 60;
 
-/// Where a store takes payments: the first question of setup (`/setup`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StoreKind {
-    /// A checkout on the merchant's own pages (`monokulo-client.js`, or
-    /// orders made by their server).
-    Website,
-    /// A WooCommerce shop, through the plugin.
-    WooCommerce,
-    /// Only the point of sale: no site.
-    InPerson,
-}
-
-impl StoreKind {
-    pub const ALL: [StoreKind; 3] = [Self::Website, Self::WooCommerce, Self::InPerson];
-
-    /// As the setup form sends it.
-    pub fn parse(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.key() == key)
-    }
-
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::Website => "web",
-            Self::WooCommerce => "woocommerce",
-            Self::InPerson => "pos",
-        }
-    }
-
-    /// What `store_connections.platform` records for it.
-    pub fn platform(self) -> &'static str {
-        match self {
-            Self::Website => "custom",
-            Self::WooCommerce => "woocommerce",
-            Self::InPerson => "pos",
-        }
-    }
-
-    /// The kind of a store, from its `platform`.
-    pub fn of_platform(platform: &str) -> Self {
-        match platform {
-            "woocommerce" => Self::WooCommerce,
-            "pos" => Self::InPerson,
-            _ => Self::Website,
-        }
-    }
-
-    /// How a store's page and the dashboard name the kind.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Website => "Website",
-            Self::WooCommerce => "WooCommerce",
-            Self::InPerson => "In person",
-        }
-    }
-
-    pub fn has_site(self) -> bool {
-        self != Self::InPerson
-    }
-}
-
 /// A store name as typed: trimmed, inner runs of spaces made one. `Err`
 /// says what's wrong with it, for the field.
 pub fn clean_name(raw: &str) -> Result<String, &'static str> {

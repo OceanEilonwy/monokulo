@@ -369,7 +369,6 @@ async fn start_monokulo(
     db.create_store_connection_on_wallet(
         &shared::ids::ConnectionId::new("store-1"),
         &shared::ids::UserId::new("u1"),
-        "custom",
         "Tor shop",
         "shop.example",
         &tenant.public_key,

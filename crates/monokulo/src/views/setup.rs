@@ -9,7 +9,6 @@
 use maud::{html, Markup};
 
 use super::{layout, PageChrome};
-use crate::stores::StoreKind;
 
 /// The three steps of setup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,7 +164,6 @@ pub enum SiteError {
 }
 
 pub struct StoreStepViewModel {
-    pub kind: StoreKind,
     pub name: String,
     pub site: String,
     /// The plugin's request, when a WooCommerce plugin sent the merchant
@@ -177,68 +175,9 @@ pub struct StoreStepViewModel {
     pub site_error: Option<SiteError>,
 }
 
-fn globe_icon() -> Markup {
-    html! {
-        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" {
-            circle cx="12" cy="12" r="9" {}
-            path d="M3 12h18M12 3c2.6 2.6 3.8 5.6 3.8 9s-1.2 6.4-3.8 9M12 3C9.4 5.6 8.2 8.6 8.2 12s1.2 6.4 3.8 9" {}
-        }
-    }
-}
-
-/// WooCommerce's mark: its speech bubble with "Woo" in it.
-fn woo_icon() -> Markup {
-    html! {
-        svg class="woo" viewBox="0 0 32 24" {
-            path class="woo-bubble" d="M4 3h24a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3H17l-5 4 1-4H4a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3z" {}
-            text class="woo-text" x="16" y="14.6" text-anchor="middle" { "Woo" }
-        }
-    }
-}
-
-fn shop_icon() -> Markup {
-    html! {
-        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" {
-            path d="M3 9l1.5-5h15L21 9" {}
-            path d="M3 9c0 1.4 1 2.4 2.25 2.4S7.5 10.4 7.5 9c0 1.4 1 2.4 2.25 2.4S12 10.4 12 9c0 1.4 1 2.4 2.25 2.4S16.5 10.4 16.5 9c0 1.4 1 2.4 2.25 2.4S21 10.4 21 9" {}
-            path d="M4.5 11.4V20h15v-8.6" {}
-            path d="M10 20v-5h4v5" {}
-        }
-    }
-}
-
-/// One whole-card choice of where payments are taken: a radio, hidden but
-/// there, inside a label, so it works without JavaScript and by keyboard.
-fn kind_card(kind: StoreKind, checked: bool) -> Markup {
-    let (title, icon, description) = match kind {
-        StoreKind::Website => (
-            "My own website",
-            globe_icon(),
-            "A checkout on your pages, with a script tag or from your server.",
-        ),
-        StoreKind::WooCommerce => (
-            "WooCommerce",
-            woo_icon(),
-            "Install the plugin in WordPress; it connects back here.",
-        ),
-        StoreKind::InPerson => (
-            "In person only",
-            shop_icon(),
-            "The point of sale on a phone or tablet. No website.",
-        ),
-    };
-    html! {
-        label class="kind-card" {
-            input class="visually-hidden" type="radio" name="kind" value=(kind.key()) checked[checked];
-            span class="kc-title" { (title) }
-            span class="kind-icon" aria-hidden="true" { (icon) }
-            span class="kc-desc" { (description) }
-        }
-    }
-}
-
-/// `GET`/`POST /setup`: where payments are taken, the store's name and its
-/// site.
+/// `GET`/`POST /setup`: the store's name and, optionally, its website.
+/// Any store takes payments at the till; a website lets it show the
+/// checkout on its pages and connect the WooCommerce plugin too.
 pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
     let body = html! {
         div class="wrap setup-store" {
@@ -247,21 +186,11 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
                 h1 { "Connect your WooCommerce shop" }
                 p { "The WooCommerce plugin on " strong { (host) } " asked to connect to your account. Name the store, then choose where its money goes." }
             } @else {
-                h1 { "Where will you take payments?" }
+                h1 { "Set up a store" }
             }
             form method="post" action="/setup" class="store-form" novalidate {
                 @for (name, value) in &data.carried {
                     input type="hidden" name=(name) value=(value);
-                }
-                @if data.plugin_host.is_some() {
-                    input type="hidden" name="kind" value=(StoreKind::WooCommerce.key());
-                } @else {
-                    fieldset class="kind-grid" {
-                        legend class="visually-hidden" { "Where will you take payments?" }
-                        @for kind in StoreKind::ALL {
-                            (kind_card(kind, kind == data.kind))
-                        }
-                    }
                 }
                 div class="two-fields" {
                     div class="setting-field" {
@@ -275,8 +204,11 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
                         }
                     }
                     div class="setting-field site-field" {
-                        div class="setting-label-row" { label class="setting-label" for="store-site" { "Site" } }
-                        p class="field-help hint" { "The website the checkout runs on. Any page on it works." }
+                        div class="setting-label-row" {
+                            label class="setting-label" for="store-site" { "Your website" }
+                            @if data.plugin_host.is_none() { span class="hint" { "(optional)" } }
+                        }
+                        p class="field-help hint" { "Needed for the checkout on your pages or for the WooCommerce plugin. Leave it empty to take payments at the till only." }
                         input id="store-site" type="text" name="store_site" value=(data.site) inputmode="url"
                             autocomplete="url" placeholder="shop.example" readonly[data.plugin_host.is_some()]
                             aria-invalid=[data.site_error.as_ref().map(|_| "true")]
@@ -313,8 +245,11 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
 pub struct DoneViewModel {
     pub store_id: String,
     pub name: String,
-    pub kind: StoreKind,
+    /// Its host, or empty when it has none.
     pub site: String,
+    /// Whether any order has been made for it yet: until then, a store
+    /// with a site isn't taking payments on it.
+    pub has_orders: bool,
     pub public_key: String,
     pub base_currency: String,
     pub wallet_name: String,
@@ -359,113 +294,90 @@ pub fn plugin_return_form(store_id: &str, plugin: &PluginReturn, label: &str) ->
     }
 }
 
-/// `GET /setup/done/{id}`: what's left. A website's store never says it can
-/// take payments yet: it lists the checkout, the domain and a test payment.
+/// `GET /setup/done/{id}`: every way the store can start taking payments,
+/// its state deciding what's ready. The checkout needs a site; the plugin
+/// goes back to WooCommerce when it sent the merchant here; the till is
+/// always there. One orange button: Back to WooCommerce from the plugin,
+/// else Open the guide when there's a site, else Open the till. Nothing
+/// claims the store takes payments: a site with no orders yet says it
+/// doesn't.
 pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
     let id = &data.store_id;
+    let has_site = !data.site.is_empty();
+    let primary = |on: bool| if on { "btn btn-primary" } else { "btn" };
+    let till_primary = data.plugin.is_none() && !has_site;
+    let guide_primary = data.plugin.is_none() && has_site;
     let body = html! {
         div class="wrap setup-done" {
             (steps(Step::Done, None))
-            @match (data.kind, &data.plugin) {
-                (_, Some(plugin)) => {
-                    h1 { (data.name) " is connected" }
+            @if data.plugin.is_some() {
+                h1 { (data.name) " is connected" }
+            } @else {
+                h1 { (data.name) " is set up" }
+            }
+            p class="store-summary" {
+                @if has_site && !data.has_orders { span class="tag tag-unknown not-yet" { "Not taking payments yet" } " " }
+                (summary(data))
+            }
+            @if data.skipped_backup { (skipped_warning()) }
+            ol class="todo" {
+                li {
+                    span class="num" { "1" }
                     p {
-                        "Go back to WooCommerce to give the plugin on " strong { (data.site) } " its key. WooCommerce then shows "
-                        "Monero at checkout as soon as you turn it on in " strong { "WooCommerce → Settings → Payments" } "."
+                        strong { "Add the checkout to your site" }
+                        @if has_site {
+                            span class="hint" { "A script tag and a button on " (data.site) ", or a call from your server. The guide shows both, and how to verify the domain." }
+                        } @else {
+                            span class="hint" { "It runs on your website: add your site in the store's settings first." }
+                        }
                     }
-                    p class="store-summary" { (summary(data)) }
-                    @if data.skipped_backup { (skipped_warning()) }
-                    div class="step-foot" {
-                        a class="btn" href=(settings_link(id)) { "Store settings" }
-                        span class="spacer" {}
+                    @if has_site {
+                        a class=(format!("{} docs-link", primary(guide_primary))) href=(super::DOCS_URL) target="_blank" rel="noopener" {
+                            "Open the guide " (super::external_link_icon())
+                        }
+                    } @else {
+                        a class="btn" href=(format!("{}#card-store", settings_link(id))) { "Add your site" }
+                    }
+                }
+                li {
+                    span class="num" { "2" }
+                    p {
+                        strong { "Install the WooCommerce plugin" }
+                        @if data.plugin.is_some() {
+                            span class="hint" {
+                                "Go back to WooCommerce to give the plugin on " (data.site) " its key. Monero then shows at checkout once you "
+                                "turn it on in WooCommerce → Settings → Payments."
+                            }
+                        } @else {
+                            span class="hint" {
+                                "In WordPress: Plugins, Add New, search for Monokulo, then Connect it from WooCommerce → Settings → Payments. "
+                                "It finds this store by its site."
+                            }
+                        }
+                    }
+                    @if let Some(plugin) = &data.plugin {
                         (plugin_return_form(id, plugin, "Back to WooCommerce"))
+                    } @else {
+                        a class="btn docs-link" href=(super::docs_url("woocommerce/")) target="_blank" rel="noopener" {
+                            "Plugin guide " (super::external_link_icon())
+                        }
                     }
                 }
-                (StoreKind::InPerson, None) => {
-                    h1 { (data.name) " is ready" }
+                li {
+                    span class="num" { "3" }
                     p {
-                        "Open the till on the phone or tablet you'll take payments with. Customers scan a QR code; it's paid "
-                        "when it lands in your wallet."
+                        strong { "Open the till (POS)" }
+                        span class="hint" { "On the phone or tablet you take payments with. Customers scan a QR code." }
                     }
-                    p class="store-summary" { (summary(data)) }
-                    @if data.skipped_backup { (skipped_warning()) }
-                    div class="step-foot" {
-                        a class="btn" href=(settings_link(id)) { "Store settings" }
-                        span class="spacer" {}
-                        a class="btn btn-primary" href=(format!("/dashboard/stores/{id}/pos")) { "Open the till" }
-                    }
-                }
-                (StoreKind::WooCommerce, None) => {
-                    h1 { (data.name) " is set up" }
-                    p class="store-summary" { span class="tag tag-unknown not-yet" { "Not taking payments yet" } " " (summary(data)) }
-                    @if data.skipped_backup { (skipped_warning()) }
-                    ol class="todo" {
-                        li {
-                            span class="num" { "1" }
-                            p {
-                                strong { "Install the Monokulo plugin on " (data.site) }
-                                span class="hint" { "In WordPress: Plugins, Add New, search for Monokulo, then activate it." }
-                            }
-                            span {}
-                        }
-                        li {
-                            span class="num" { "2" }
-                            p {
-                                strong { "Connect it" }
-                                span class="hint" {
-                                    "WooCommerce, Settings, Payments, Monokulo, then Connect. It finds this store by its site, so "
-                                    "there's nothing to type."
-                                }
-                            }
-                            span {}
-                        }
-                        li {
-                            span class="num" { "3" }
-                            p {
-                                strong { "Take a test payment" }
-                                span class="hint" { "Buy something from your shop. This store's page shows the order when it arrives." }
-                            }
-                            a class="btn" href=(format!("/dashboard/stores/{id}")) { "Store page" }
-                        }
-                    }
-                    (public_key_help(&data.public_key))
-                }
-                (StoreKind::Website, None) => {
-                    h1 { (data.name) " is set up" }
-                    p class="store-summary" { span class="tag tag-unknown not-yet" { "Not taking payments yet" } " " (summary(data)) }
-                    @if data.skipped_backup { (skipped_warning()) }
-                    ol class="todo" {
-                        li {
-                            span class="num" { "1" }
-                            p {
-                                strong { "Add the checkout to " (data.site) }
-                                span class="hint" { "A script tag and a button, or a call from your server. The guide shows both." }
-                            }
-                            a class="btn btn-primary docs-link" href=(super::DOCS_URL) target="_blank" rel="noopener" {
-                                "Open the guide " (super::external_link_icon())
-                            }
-                        }
-                        li {
-                            span class="num" { "2" }
-                            p {
-                                strong { "Verify " (data.site) }
-                                span class="hint" { "A DNS record, so only your site can show the checkout. Optional, recommended." }
-                            }
-                            a class="btn" href=(format!("/dashboard/stores/{id}/settings#verified-domains")) { "Verify domain" }
-                        }
-                        li {
-                            span class="num" { "3" }
-                            p {
-                                strong { "Take a test payment" }
-                                span class="hint" { "Make an order from your site. This store's page shows it when it arrives." }
-                            }
-                            a class="btn" href=(super::docs_url("walkthrough-geomart/#step-6")) target="_blank" rel="noopener" { "How to test" }
-                        }
-                    }
-                    (public_key_help(&data.public_key))
+                    a class=(primary(till_primary)) href=(format!("/dashboard/stores/{id}/pos")) { "Open the till" }
                 }
             }
-            p { a href=(format!("/dashboard/stores/{id}")) { "Go to " (data.name) "'s page" } }
+            @if has_site { (public_key_help(&data.public_key)) }
+            div class="step-foot" {
+                a class="btn" href=(settings_link(id)) { "Store settings" }
+                span class="spacer" {}
+                a href=(format!("/dashboard/stores/{id}")) { "Go to " (data.name) "'s page" }
+            }
         }
     };
     layout(chrome, &format!("{} is set up - Monokulo", data.name), body)
@@ -536,7 +448,6 @@ mod tests {
 
     fn store_data() -> StoreStepViewModel {
         StoreStepViewModel {
-            kind: StoreKind::Website,
             name: "Bakery".into(),
             site: "shop.example".into(),
             plugin_host: None,
@@ -546,19 +457,26 @@ mod tests {
         }
     }
 
+    /// One screen: the store's name, and its website, optional. No kinds.
     #[test]
-    fn the_store_step_offers_three_whole_card_kinds_and_a_name_apart_from_the_site() {
+    fn the_store_step_asks_a_name_and_an_optional_website() {
         let html = store_page(&chrome(), &store_data()).into_string();
-        assert_eq!(html.matches(r#"class="kind-card""#).count(), 3);
         assert!(
-            html.contains(
-                r#"<input class="visually-hidden" type="radio" name="kind" value="web" checked>"#
-            ),
+            !html.contains("kind-card") && !html.contains(r#"name="kind""#),
             "{html}"
         );
+        assert!(html.contains("<h1>Set up a store</h1>"), "{html}");
         assert!(html.contains(r#"name="store_name" value="Bakery""#));
         assert!(html.contains(r#"name="store_site" value="shop.example""#));
-        assert!(html.contains("Checkouts on any page of the site work"));
+        assert!(
+            html.contains(r#"<label class="setting-label" for="store-site">Your website</label><span class="hint">(optional)</span>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains("Needed for the checkout on your pages or for the WooCommerce plugin."),
+            "{html}"
+        );
+        assert!(!html.to_lowercase().contains("in person"), "{html}");
         assert!(html.contains(r#"action="/setup""#));
     }
 
@@ -592,11 +510,10 @@ mod tests {
     }
 
     #[test]
-    fn from_the_plugin_the_kind_and_site_are_fixed() {
+    fn from_the_plugin_the_site_is_the_shops_and_fixed() {
         let html = store_page(
             &chrome(),
             &StoreStepViewModel {
-                kind: StoreKind::WooCommerce,
                 plugin_host: Some("bakery.example".into()),
                 site: "bakery.example".into(),
                 carried: vec![("return_url", "https://bakery.example/wp-admin".into())],
@@ -604,18 +521,18 @@ mod tests {
             },
         )
         .into_string();
-        assert!(!html.contains("kind-card"));
-        assert!(html.contains(r#"<input type="hidden" name="kind" value="woocommerce">"#));
+        assert!(html.contains("<h1>Connect your WooCommerce shop</h1>"));
         assert!(html.contains(r#"name="return_url" value="https://bakery.example/wp-admin""#));
         assert!(html.contains("readonly"));
+        assert!(!html.contains("(optional)"), "{html}");
     }
 
-    fn done(kind: StoreKind) -> DoneViewModel {
+    fn done(site: &str) -> DoneViewModel {
         DoneViewModel {
             store_id: "c_1".into(),
             name: "Bakery".into(),
-            kind,
-            site: "bakery.example".into(),
+            site: site.into(),
+            has_orders: false,
             public_key: "pk_abc".into(),
             base_currency: "XMR".into(),
             wallet_name: "Bakery takings".into(),
@@ -625,41 +542,124 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_website_is_never_said_to_take_payments_before_its_checkout_is_added() {
-        let html = done_page(&chrome(), &done(StoreKind::Website)).into_string();
-        assert!(html.contains("Not taking payments yet"));
-        assert!(!html.to_lowercase().contains("ready to take payments"));
-        assert!(html.contains(&format!(r#"href="{}""#, crate::views::DOCS_URL)));
-        assert!(html.contains("Open the guide"));
-        assert!(html.contains("Verify bakery.example"));
-        assert!(html.contains("Take a test payment"));
-        assert_eq!(html.matches("btn-primary").count(), 1, "one primary button");
-        assert!(html.contains(r#"<li aria-current="step"><span class="n">3</span>Done</li>"#));
+    fn plugin() -> PluginReturn {
+        PluginReturn {
+            platform: "woocommerce".into(),
+            site_url: "https://bakery.example".into(),
+            return_url: "https://bakery.example/wp-admin/x".into(),
+            nonce: "n1".into(),
+        }
     }
 
+    /// The one orange button on Done.
+    fn primary(html: &str) -> &str {
+        assert_eq!(
+            html.matches("btn-primary").count(),
+            1,
+            "one primary button: {html}"
+        );
+        let at = html.find("btn-primary").unwrap();
+        let rest = &html[at..];
+        &rest[..rest.find("</").unwrap()]
+    }
+
+    /// Every way to start, whatever the store: the checkout, the plugin and
+    /// the till.
     #[test]
-    fn a_till_opens_and_a_plugin_gets_its_key_back() {
-        let html = done_page(&chrome(), &done(StoreKind::InPerson)).into_string();
+    fn done_lists_the_checkout_the_plugin_and_the_till() {
+        for data in [
+            done("bakery.example"),
+            done(""),
+            DoneViewModel {
+                plugin: Some(plugin()),
+                ..done("bakery.example")
+            },
+        ] {
+            let html = done_page(&chrome(), &data).into_string();
+            assert!(
+                html.contains("<strong>Add the checkout to your site</strong>"),
+                "{html}"
+            );
+            assert!(
+                html.contains("<strong>Install the WooCommerce plugin</strong>"),
+                "{html}"
+            );
+            assert!(
+                html.contains("<strong>Open the till (POS)</strong>"),
+                "{html}"
+            );
+            assert!(
+                html.contains(r#"href="/dashboard/stores/c_1/pos""#),
+                "{html}"
+            );
+            assert!(
+                !html.to_lowercase().contains("ready to take payments"),
+                "{html}"
+            );
+            assert!(!html.to_lowercase().contains("in person"), "{html}");
+            assert!(html.contains(r#"<li aria-current="step"><span class="n">3</span>Done</li>"#));
+        }
+    }
+
+    /// With a site and no plugin: the guide is the primary, and the store
+    /// isn't taking payments on it yet.
+    #[test]
+    fn with_a_site_the_guide_is_the_primary() {
+        let html = done_page(&chrome(), &done("bakery.example")).into_string();
+        assert!(primary(&html).contains("Open the guide"), "{html}");
+        assert!(html.contains(&format!(r#"href="{}""#, crate::views::DOCS_URL)));
+        assert!(html.contains("Not taking payments yet"), "{html}");
         assert!(
-            html.contains(r#"href="/dashboard/stores/c_1/pos">Open the till"#),
+            html.contains("A script tag and a button on bakery.example"),
             "{html}"
         );
+        assert!(html.contains("Your store's public key"), "{html}");
+        // Once an order was made, it no longer says so.
         let html = done_page(
             &chrome(),
             &DoneViewModel {
-                plugin: Some(PluginReturn {
-                    platform: "woocommerce".into(),
-                    site_url: "https://bakery.example".into(),
-                    return_url: "https://bakery.example/wp-admin/x".into(),
-                    nonce: "n1".into(),
-                }),
-                ..done(StoreKind::WooCommerce)
+                has_orders: true,
+                ..done("bakery.example")
             },
         )
         .into_string();
+        assert!(!html.contains("Not taking payments yet"), "{html}");
+    }
+
+    /// With no site: the till is the primary; the checkout says to add a
+    /// site in the store's settings first.
+    #[test]
+    fn with_no_site_the_till_is_the_primary() {
+        let html = done_page(&chrome(), &done("")).into_string();
+        assert!(primary(&html).contains("Open the till"), "{html}");
+        assert!(
+            html.contains("add your site in the store's settings first"),
+            "{html}"
+        );
+        assert!(html.contains(r#"<a class="btn" href="/dashboard/stores/c_1/settings#card-store">Add your site</a>"#), "{html}");
+        assert!(!html.contains("Open the guide"), "{html}");
+        assert!(!html.contains("Not taking payments yet"), "{html}");
+    }
+
+    /// From the plugin: Back to WooCommerce is the primary, a form that
+    /// mints the store's key.
+    #[test]
+    fn from_the_plugin_back_to_woocommerce_is_the_primary() {
+        let html = done_page(
+            &chrome(),
+            &DoneViewModel {
+                plugin: Some(plugin()),
+                ..done("bakery.example")
+            },
+        )
+        .into_string();
+        assert!(primary(&html).contains("Back to WooCommerce"), "{html}");
         assert!(html.contains(r#"action="/connect/woocommerce""#));
         assert!(html.contains(r#"name="connection_id" value="c_1""#));
-        assert!(html.contains("Back to WooCommerce"));
+        assert!(html.contains("<h1>Bakery is connected</h1>"), "{html}");
+        assert!(
+            html.contains("Open the guide"),
+            "the guide is still there: {html}"
+        );
     }
 }

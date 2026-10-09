@@ -657,19 +657,6 @@ fn paper_panel() -> Markup {
     }
 }
 
-fn origin_label(w: &crate::db::WalletRow) -> String {
-    match w.origin {
-        crate::db::WalletOrigin::Created => match w.backup.as_deref() {
-            Some(backup) => format!(
-                "Made in Monokulo, {}",
-                crate::wallets::backup_label(backup).to_lowercase()
-            ),
-            None => "Made in Monokulo".to_owned(),
-        },
-        crate::db::WalletOrigin::Imported => "Brought in".to_owned(),
-    }
-}
-
 // -- The list --------------------------------------------------------------
 
 pub struct WalletListItem {
@@ -802,9 +789,8 @@ fn wallets_count(n: usize) -> String {
 pub struct WalletStore {
     pub id: String,
     pub name: String,
-    /// Where it sells, under its name: its host when that isn't already
-    /// its name, "in person" for a store with no website.
-    pub place: Option<String>,
+    /// Its site's host, under its name; none for a store with no site.
+    pub site: Option<String>,
     /// For a store that changed to another wallet: when, in the viewer's
     /// time zone.
     pub until: Option<String>,
@@ -1137,7 +1123,7 @@ fn stores_card(stores: &[WalletStore], past: &[WalletStore]) -> Markup {
                             li {
                                 span class="sr-name" {
                                     a href=(format!("/dashboard/stores/{}", store.id)) { (store.name) }
-                                    @if let Some(place) = &store.place { span class="sr-host" { (place) } }
+                                    @if let Some(site) = &store.site { span class="sr-host" { (site) } }
                                 }
                                 a class="sr-act" href=(change_wallet_link(&store.id)) { "change the wallet" }
                             }
@@ -1151,7 +1137,7 @@ fn stores_card(stores: &[WalletStore], past: &[WalletStore]) -> Markup {
                             li {
                                 span class="sr-name" {
                                     a href=(format!("/dashboard/stores/{}", store.id)) { (store.name) }
-                                    @if let Some(place) = &store.place { span class="sr-host" { (place) } }
+                                    @if let Some(site) = &store.site { span class="sr-host" { (site) } }
                                 }
                                 @if let Some(until) = &store.until { span class="sr-host" { "until " (until) } }
                             }
@@ -1635,11 +1621,11 @@ mod tests {
         );
     }
 
-    fn store(id: &str, name: &str, place: Option<&str>, until: Option<&str>) -> WalletStore {
+    fn store(id: &str, name: &str, site: Option<&str>, until: Option<&str>) -> WalletStore {
         WalletStore {
             id: id.to_owned(),
             name: name.to_owned(),
-            place: place.map(str::to_owned),
+            site: site.map(str::to_owned),
             until: until.map(str::to_owned),
         }
     }
@@ -1648,8 +1634,8 @@ mod tests {
     fn the_stores_card_lists_stores_flush_with_a_change_link_and_past_ones_muted() {
         let html = stores_card(
             &[
-                store("s1", "bakery.example", None, None),
-                store("s2", "Saturday market", Some("in person"), None),
+                store("s1", "Bakery", Some("bakery.example"), None),
+                store("s2", "Saturday market", None, None),
             ],
             &[store("s0", "old-shop.example", None, Some("1 Oct"))],
         )
@@ -1658,11 +1644,8 @@ mod tests {
             html.contains(r#"<span class="card-meta">2 take payments into this wallet</span>"#),
             "{html}"
         );
-        assert!(html.contains(r#"<li><span class="sr-name"><a href="/dashboard/stores/s1">bakery.example</a></span><a class="sr-act" href="/dashboard/stores/s1/settings#wallet">change the wallet</a></li>"#), "{html}");
-        assert!(
-            html.contains(r#"Saturday market</a><span class="sr-host">in person</span>"#),
-            "{html}"
-        );
+        assert!(html.contains(r#"<li><span class="sr-name"><a href="/dashboard/stores/s1">Bakery</a><span class="sr-host">bakery.example</span></span><a class="sr-act" href="/dashboard/stores/s1/settings#wallet">change the wallet</a></li>"#), "{html}");
+        assert!(html.contains(r#"Saturday market</a></span>"#), "{html}");
         let before = between(&html, "<h4>Before</h4>", "</ul>");
         assert!(
             before.contains(r#"<ul class="store-rows past">"#),
@@ -1966,7 +1949,7 @@ mod tests {
     fn the_wallets_already_added_show_each_wallets_network() {
         let setup = SetupContext {
             store_name: "Bakery".into(),
-            fields: vec![("kind", "web".into())],
+            fields: vec![("store_name", "Bakery".into())],
         };
         let html = choice_page(
             &PageChrome::from_user(None, "/setup/wallet"),

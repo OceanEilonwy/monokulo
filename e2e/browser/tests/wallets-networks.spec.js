@@ -104,7 +104,7 @@ test("the dashboard shows each store's wallet with its network", async ({ page, 
 test('pickers show each wallet with its network, and a store changes only within its own', async ({ page, context }) => {
   await login(context);
   // A new store picks from every network (setup's wallet step).
-  await page.goto(fixture.base_url + '/setup/wallet?kind=web&store_name=New&store_site=new.example');
+  await page.goto(fixture.base_url + '/setup/wallet?store_name=New&store_site=new.example');
   const picker = page.locator('.already').getByRole('combobox');
   await picker.click();
   const options = page.getByRole('option');

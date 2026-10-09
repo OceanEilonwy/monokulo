@@ -90,6 +90,8 @@ pub struct StoreSettingsData {
     pub clock: super::time::Clock,
     pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
+    /// Its site's host; empty when it has none.
+    pub site: String,
     /// The tenant's current confirmation threshold -
     /// `confirmation_thresholds::FALLBACK_CONFIRMATIONS` when the engine is
     /// currently unreachable.
@@ -197,6 +199,7 @@ pub struct WalletPeriodView {
 /// actions'.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreSection {
+    Store,
     Wallet,
     BaseCurrency,
     Confirmations,
@@ -210,6 +213,7 @@ pub enum StoreSection {
 impl StoreSection {
     pub fn from_id(id: &str) -> Option<Self> {
         [
+            Self::Store,
             Self::Wallet,
             Self::BaseCurrency,
             Self::Confirmations,
@@ -227,6 +231,7 @@ impl StoreSection {
     /// names it by.
     pub fn id(self) -> &'static str {
         match self {
+            StoreSection::Store => "store",
             StoreSection::Wallet => "wallet",
             StoreSection::BaseCurrency => "base-currency",
             StoreSection::Confirmations => "confirmation-thresholds",
@@ -271,7 +276,8 @@ pub struct StoreSettingsViewModel {
 }
 
 /// The settings form's cards, in the order they're saved.
-pub const SETTINGS_CARDS: [StoreSection; 4] = [
+pub const SETTINGS_CARDS: [StoreSection; 5] = [
+    StoreSection::Store,
     StoreSection::BaseCurrency,
     StoreSection::Confirmations,
     StoreSection::FxProvider,
@@ -574,6 +580,36 @@ fn wallets_label(n: usize) -> String {
     } else {
         format!("{n} wallets")
     }
+}
+
+/// "Store": its name, and its website, optional. Any store takes payments
+/// at the till; a website lets it show the checkout on its pages and
+/// connect the WooCommerce plugin.
+fn store_card(store: &StoreSettingsData) -> Markup {
+    let name = store.shown("store_name", &store.display_name);
+    let site = store.shown("store_site", &store.site);
+    settings_card(
+        store,
+        StoreSection::Store,
+        "Store",
+        html! {
+            (Field::new("Store name", "store-name")
+                .help(None, html! { "Shown on your dashboard, the till and the checkout." })
+                .render(html! {
+                    input type="text" id="store-name" name="store_name" value=(name) maxlength=(crate::stores::MAX_NAME_LEN) required
+                        data-saved=[store.saved_attr(&store.display_name)];
+                }))
+            (Field::new("Your website (optional)", "store-site")
+                .help(None, html! {
+                    "Needed for the checkout on your pages or for the WooCommerce plugin, which finds this store by it. "
+                    "Any page on the site works. Leave it empty to take payments at the till only."
+                })
+                .render(html! {
+                    input type="text" id="store-site" name="store_site" value=(site) inputmode="url" autocomplete="url"
+                        placeholder="shop.example" data-saved=[store.saved_attr(&store.site)];
+                }))
+        },
+    )
 }
 
 /// "Base currency".
@@ -902,6 +938,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                     Save::Reload,
                     "Store settings",
                     html! {
+                        (store_card(store))
                         (base_currency_card(store))
                         (confirmations_card(store))
                         (fx_provider_card(store))
@@ -1030,6 +1067,7 @@ mod tests {
             clock: crate::views::time::Clock::utc(0),
             connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
+            site: "shop.example.com".to_string(),
             confirmations_required: 10,
             fx_provider_options: vec![FxProviderOption {
                 name: "coingecko".to_string(),

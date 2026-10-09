@@ -112,7 +112,6 @@ mod tests {
             &db,
             &shared::ids::ConnectionId::new("c1"),
             &shared::ids::UserId::new("u1"),
-            "woocommerce",
             "https://shop.example.com",
             "pk_1",
             "sk_1",

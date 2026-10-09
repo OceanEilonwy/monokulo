@@ -9,7 +9,6 @@ use super::{layout, script, Load, PageChrome};
 pub struct StoreDetailData {
     pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
-    pub platform: String,
     /// The host its checkout runs on; empty for a store with no site.
     pub site: String,
     pub public_key: String,
@@ -136,7 +135,6 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                     // rather than broken mid-word; the link keeps the full URL.
                     span class="store-header-status" {
                         span class=(format!("tag tag-{}", store.health)) { (store.health_label) }
-                        span class="muted" { (crate::stores::StoreKind::of_platform(&store.platform).label()) }
                         // The site is a host (`crate::stores::normalize_site`),
                         // so the link is built, never the merchant's text.
                         @if !store.site.is_empty() {
@@ -251,16 +249,11 @@ mod tests {
         PageChrome::from_user(None, "/dashboard/stores/conn_1")
     }
 
-    fn base_store(is_woocommerce: bool) -> StoreDetailData {
+    fn base_store() -> StoreDetailData {
         StoreDetailData {
             wallet: None,
             connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "Corner shop".to_string(),
-            platform: if is_woocommerce {
-                "woocommerce".to_string()
-            } else {
-                "custom".to_string()
-            },
             site: "shop.example.com".to_string(),
             public_key: "pk_abc123".to_string(),
             base_currency: "XMR".to_string(),
@@ -285,7 +278,7 @@ mod tests {
         let html = page(
             &chrome(),
             &StoreDetailViewModel {
-                store: Some(base_store(false)),
+                store: Some(base_store()),
             },
         )
         .into_string();
@@ -316,7 +309,7 @@ mod tests {
                     },
                 ],
             },
-            ..base_store(false)
+            ..base_store()
         };
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
         assert!(html.contains(r#"<div class="embed-warning is-compact" id="embed-warning"><strong>Any website can show this store's checkout.</strong>"#), "got: {html}");
@@ -347,7 +340,7 @@ mod tests {
         let store = StoreDetailData {
             wallet: None,
             embed_warnings: warnings(false),
-            ..base_store(false)
+            ..base_store()
         };
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
         assert!(!html.contains(r#"class="embed-warning"#), "got: {html}");
@@ -355,7 +348,7 @@ mod tests {
         let store = StoreDetailData {
             wallet: None,
             embed_warnings: warnings(true),
-            ..base_store(false)
+            ..base_store()
         };
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
         assert!(html.contains("No website can show this store's checkout"));
@@ -372,7 +365,7 @@ mod tests {
         let html = page(
             &chrome(),
             &StoreDetailViewModel {
-                store: Some(base_store(false)),
+                store: Some(base_store()),
             },
         )
         .into_string();
@@ -385,13 +378,13 @@ mod tests {
         );
         assert!(html.contains("pk_abc123"));
 
-        // A store that only takes payments in person has no site to show.
+        // A store with no site has none to show.
         let html = page(
             &chrome(),
             &StoreDetailViewModel {
                 store: Some(StoreDetailData {
                     site: String::new(),
-                    ..base_store(false)
+                    ..base_store()
                 }),
             },
         )
@@ -404,7 +397,7 @@ mod tests {
         let store = StoreDetailData {
             wallet: None,
             base_currency: "USD".to_string(),
-            ..base_store(false)
+            ..base_store()
         };
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
         assert!(
@@ -430,7 +423,7 @@ mod tests {
         let html = page(
             &chrome(),
             &StoreDetailViewModel {
-                store: Some(base_store(false)),
+                store: Some(base_store()),
             },
         )
         .into_string();
@@ -475,7 +468,7 @@ mod tests {
             lookup_message: Some(
                 "No transaction with that ID was found on the network.".to_string(),
             ),
-            ..base_store(false)
+            ..base_store()
         };
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
         assert!(html.contains("No transaction with that ID was found on the network."));

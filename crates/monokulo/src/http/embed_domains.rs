@@ -586,7 +586,6 @@ mod tests {
     /// A store on `site` (no two stores share one); `(connection_id, public_key)`.
     async fn create_store_on(router: &Router, session: &str, site: &str) -> (String, String) {
         let body = serde_json::json!({
-            "platform": "custom",
             "site_url": site,
             "view_key_hex": TEST_VIEW_KEY_HEX,
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
@@ -643,7 +642,6 @@ mod tests {
         extra: serde_json::Value,
     ) -> (StatusCode, String) {
         let mut body = serde_json::json!({
-            "platform": "custom",
             "site_url": "https://store-home.example",
             "view_key_hex": TEST_VIEW_KEY_HEX,
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,

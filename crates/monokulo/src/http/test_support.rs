@@ -123,7 +123,7 @@ pub(crate) async fn set_up_store_with_keys(
         .unwrap()
 }
 
-/// Sets up a website's store (or, with no site, one that's in person only)
+/// Sets up a store (with no site when `site` is empty)
 /// on one of the account's wallets: the response to
 /// `POST /setup/wallet/existing`.
 pub(crate) async fn set_up_store_on_wallet(
@@ -133,14 +133,12 @@ pub(crate) async fn set_up_store_on_wallet(
     site: &str,
     wallet_id: &str,
 ) -> axum::response::Response {
-    let kind = if site.is_empty() { "pos" } else { "web" };
     router
         .clone()
         .oneshot(form_post(
             "/setup/wallet/existing",
             Some(cookie),
             &[
-                ("kind", kind),
                 ("store_name", name),
                 ("store_site", site),
                 ("wallet_id", wallet_id),

@@ -13,8 +13,8 @@ files straight from disk.
 
 ### Step 1 · Make a store for Geomart
 
-In Monokulo: *Add a store*, then *My own website*. Name it **Geomart**, with
-the site `geomart.example`, and take payments into a **stagenet** wallet for
+In Monokulo: *Add a store*. Name it **Geomart**, with the website
+`geomart.example`, and take payments into a **stagenet** wallet for
 now (under *More options* when you add the wallet). Copy the public key from
 the store's page.
 
