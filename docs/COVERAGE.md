@@ -94,17 +94,30 @@ branch.
 Main's results don't need downloading:
 <https://oceaneilonwy.github.io/monokulo/quality/> shows every test, the
 coverage of each crate and file (linked to its annotated source), the
-nightly property and fuzz runs, the stress points and the screenshot
-gallery. `.github/workflows/pages.yml` rebuilds it whenever CI, the engine
-property, fuzz or scale workflows, or the OpenWrt package finish on main:
-`cargo xtask pages fetch target/pages` downloads the newest artifact of
-each and `cargo xtask pages build` (`xtask/src/pages/`) renders a page per
-section from them, plus `badge.json` (the README's coverage badge), shipping
-only the report pages the pages link and the files those need. The pages
-are plain HTML that reads without JavaScript; `web/pages/quality/`
-holds their stylesheet and the script that adds the filters and the
-screenshot viewer. Only the ZMQ build of the property and fuzz runs is
-shown (`--feature` on both commands picks the other).
+nightly property and fuzz runs, the stress and scale points and the
+screenshot gallery. The site is in parts, each made by one workflow on
+main, which deploys the whole site when it finishes
+(`.github/workflows/pages.yml`; Pages serves one deployment):
+
+| Part | Pages | Made by |
+| --- | --- | --- |
+| release | the landing page and apk repository, `tests.html`, `coverage.html` and `badge.json`, `screens.html`, the stress section of `scale.html` | Release on main, once every test passed, from that run on the commit it tested |
+| properties | `properties.html` | the nightly engine property exploration |
+| fuzz | `fuzzing.html` | the nightly engine fuzz exploration |
+| scale | the scale section of `scale.html` | the weekly engine scale measurements |
+
+`index.html` sums up whatever each deploy has. `cargo xtask pages fetch
+target/pages --current PART` takes the calling workflow's part from its own
+run and every other part from that part's newest run on main (the release
+part only from a run that passed, its site and coverage from the same
+run), and `cargo xtask pages build` (`xtask/src/pages/`) renders a page per
+section, each naming the run and commit it is from, plus `badge.json` (the
+README's coverage badge), shipping only the report pages the pages link and
+the files those need. The pages are plain HTML that reads without
+JavaScript; `web/pages/quality/` holds their stylesheet and the script that
+adds the filters and the screenshot viewer. The default build of the
+property and fuzz runs is shown (`--feature` on both commands picks
+another).
 
 To see a local run the same way, after `cargo xtask coverage all`:
 

@@ -12,10 +12,11 @@ name: Release
 #   Build ...          monokulo zips for Linux, macOS and Windows,
 #                      key-custody-cli for every computer merchants use, the
 #                      Docker image and the OpenWrt package
+#   Pages              on main: the GitHub Pages site's release part (the
+#                      OpenWrt package site and the quality report) from
+#                      this run's artifacts (pages.yml)
 #   GitHub release     a version tag's release (with build provenance for the
 #                      CLI); main updates the latest-main prerelease instead
-# pages.yml then publishes the OpenWrt package site and the quality report
-# from this run's artifacts.
 # A version tag must name the workspace's version: monokulo links the CLI
 # release by it, and pushes the image to ghcr.io.
 
@@ -280,6 +281,22 @@ jobs:
     needs: [lint, coverage]
     uses: ./.github/workflows/openwrt.yml
     secrets: inherit
+
+  pages:
+    # The landing page, apk repository and quality report from this run, on
+    # the commit it tested, with the property, fuzz and scale pages as they
+    # are live (pages.yml).
+    name: Pages
+    needs: [lint, coverage, openwrt]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      actions: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
+    with:
+      part: release
 
   github-release:
     # A version tag's binaries as a GitHub release, for merchants to download

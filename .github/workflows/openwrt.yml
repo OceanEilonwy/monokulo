@@ -11,10 +11,10 @@
 #                                               (monokulo.pem) and SHA256SUMS
 #   monokulo-openwrt-site                       the landing page with the
 #                                               repository under it
-# The Pages workflow (pages.yml) publishes the site from main's newest
-# monokulo-openwrt-site artifact, with the quality report beside it; routers
-# use it as their package repository (Settings > Pages > Source: GitHub
-# Actions).
+# On main, release.yml's Pages job publishes that run's
+# monokulo-openwrt-site artifact, with the quality report beside it
+# (pages.yml); routers use it as their package repository (Settings > Pages >
+# Source: GitHub Actions).
 #
 # Needs the repository secret APK_SIGNING_KEY: the private key matching
 # openwrt/keys/monokulo.pem (the same key signs kringle). Pull requests from
@@ -102,5 +102,6 @@ jobs:
           path: site/
           include-hidden-files: true
           if-no-files-found: error
-          # The Pages workflow republishes main's newest one on every deploy.
+          # Every Pages deploy republishes the newest from a Release run on
+          # main that passed, so it must outlast the gap between them.
           retention-days: 90

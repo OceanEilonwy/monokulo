@@ -63,3 +63,20 @@ jobs:
             target/nextest/ci/junit.xml
             target/engine-exploration/
           if-no-files-found: ignore
+
+  pages:
+    # This run's properties page, with every other part of the site as it is
+    # live (pages.yml). On main only; a run that didn't finish shows nothing
+    # new.
+    name: Pages
+    needs: properties
+    if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success", "failure"]'), needs.properties.result)
+    permissions:
+      contents: read
+      actions: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
+    with:
+      part: properties
+      conclusion: ${{ needs.properties.result }}

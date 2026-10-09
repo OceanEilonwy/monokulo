@@ -1,6 +1,14 @@
-//! `cargo xtask pages fetch`: main's newest artifacts of every source the
-//! report is built from, downloaded with the gh CLI, and `sources.json`
-//! naming the run behind each.
+//! `cargo xtask pages fetch`: the artifacts the report is built from,
+//! downloaded with the gh CLI, and `sources.json` naming the run behind
+//! each.
+//!
+//! The site is in parts, each made by one workflow on main: release
+//! (release.yml: the OpenWrt site and the coverage artifact, from one run
+//! that passed), properties, fuzz and scale (their scheduled workflows).
+//! Pages serves one deployment, so each of those workflows deploys the whole
+//! site when it finishes: its own part from its own run (`--current PART`,
+//! the run in GITHUB_RUN_ID), and every other part from that part's newest
+//! run on main, which is what the live site already shows.
 
 use crate::exploration::Build;
 use crate::support::{at, write_json, Exit};
@@ -61,6 +69,15 @@ enum Key {
 }
 
 impl Key {
+    /// The part of the site this source belongs to: the workflow that makes
+    /// it.
+    fn part(self) -> &'static str {
+        match self {
+            Key::Site | Key::Coverage => "release",
+            other => other.name(),
+        }
+    }
+
     fn name(self) -> &'static str {
         match self {
             Key::Site => "site",
@@ -103,7 +120,8 @@ const SOURCES: [Source; 5] = [
                 .is_some_and(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
         },
         required: false,
-        needs_success: false,
+        // From the same run as the site: the one that passed and deployed.
+        needs_success: true,
     },
     Source {
         key: Key::Properties,
@@ -179,18 +197,28 @@ struct FetchArgs {
     dir: PathBuf,
     repo: String,
     build: Build,
+    /// The part this run made, taken from this run rather than searched for.
+    current: Option<String>,
+    /// How this run went, for its part: the run itself hasn't finished.
+    conclusion: String,
 }
+
+/// The parts of the site, as `--current` names them.
+const PARTS: [&str; 4] = ["release", "properties", "fuzz", "scale"];
 
 fn parse(args: &[&str]) -> io::Result<FetchArgs> {
     let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidInput, what.to_string());
     let [dir, options @ ..] = args else {
         return Err(bad(
-            "usage: cargo xtask pages fetch DIR [--repo OWNER/NAME] [--feature zmq|default]",
+            "usage: cargo xtask pages fetch DIR [--repo OWNER/NAME] [--feature zmq|default] \
+             [--current release|properties|fuzz|scale [--conclusion success|failure]]",
         ));
     };
     let mut repo = env::var("GITHUB_REPOSITORY").ok();
     // The default build is the one that ships: zmq is a default feature.
     let mut build = Build::Default;
+    let mut current = None;
+    let mut conclusion = "success".to_string();
     let mut rest = options.iter();
     while let Some(flag) = rest.next() {
         let value = rest
@@ -198,6 +226,9 @@ fn parse(args: &[&str]) -> io::Result<FetchArgs> {
             .ok_or_else(|| bad(&format!("{flag} needs a value")))?;
         match *flag {
             "--repo" => repo = Some((*value).to_string()),
+            "--current" if PARTS.contains(value) => current = Some((*value).to_string()),
+            "--current" => return Err(bad("--current is release, properties, fuzz or scale")),
+            "--conclusion" => conclusion = (*value).to_string(),
             "--feature" => {
                 build = Build::parse(value).ok_or_else(|| bad("--feature is zmq or default"))?;
             }
@@ -208,7 +239,32 @@ fn parse(args: &[&str]) -> io::Result<FetchArgs> {
         dir: PathBuf::from(dir),
         repo: repo.ok_or_else(|| bad("name the repository with --repo or GITHUB_REPOSITORY"))?,
         build,
+        current,
+        conclusion,
     })
+}
+
+/// This run (GITHUB_RUN_ID), as it went so far, and its artifacts of a
+/// source.
+fn this_run(
+    repo: &str,
+    source: &Source,
+    build: Build,
+    conclusion: &str,
+) -> io::Result<Option<(WorkflowRun, Vec<String>)>> {
+    let id = env::var("GITHUB_RUN_ID").map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "--current needs GITHUB_RUN_ID")
+    })?;
+    let mut run: WorkflowRun = api(repo, &format!("actions/runs/{id}"))?;
+    run.conclusion = Some(conclusion.to_string());
+    let artifacts: Artifacts = api(repo, &format!("actions/runs/{id}/artifacts?per_page=100"))?;
+    let names: Vec<String> = artifacts
+        .artifacts
+        .into_iter()
+        .filter(|a| !a.expired && (source.wanted)(&a.name, build))
+        .map(|a| a.name)
+        .collect();
+    Ok((!names.is_empty()).then_some((run, names)))
 }
 
 /// The newest finished run of a source's workflow on main that still has its
@@ -254,11 +310,22 @@ fn newest(
 /// takes the newest finished run that still has them, skipping cancelled
 /// runs, and writes `dir/sources.json` naming the run behind each.
 pub(crate) fn fetch(args: &[&str]) -> io::Result<Exit> {
-    let FetchArgs { dir, repo, build } = parse(args)?;
+    let FetchArgs {
+        dir,
+        repo,
+        build,
+        current,
+        conclusion,
+    } = parse(args)?;
     let mut sources = Sources::default();
     for source in &SOURCES {
         let key = source.key.name();
-        let Some((run, names)) = newest(&repo, source, build)? else {
+        let found = if current.as_deref() == Some(source.key.part()) {
+            this_run(&repo, source, build, &conclusion)?
+        } else {
+            newest(&repo, source, build)?
+        };
+        let Some((run, names)) = found else {
             if source.required {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
@@ -305,6 +372,15 @@ pub(crate) fn fetch(args: &[&str]) -> io::Result<Exit> {
             conclusion,
             artifacts: names.len(),
         });
+    }
+    // The release part is one run's: the site and the coverage it tested.
+    if let (Some(site), Some(coverage)) = (&sources.site, &sources.coverage) {
+        if site.run_id != coverage.run_id {
+            return Err(io::Error::other(format!(
+                "the site (run {}) and the coverage (run {}) come from different Release runs",
+                site.run_id, coverage.run_id
+            )));
+        }
     }
     fs::create_dir_all(&dir).map_err(|e| at(&dir, e))?;
     write_json(&dir.join("sources.json"), &sources)?;
@@ -382,6 +458,50 @@ mod tests {
             "engine-properties-default-37695839811",
             Build::Default
         ));
+    }
+
+    #[test]
+    fn each_source_belongs_to_the_part_whose_workflow_makes_it() {
+        let parts: Vec<_> = SOURCES
+            .iter()
+            .map(|s| (s.key.name(), s.key.part(), s.workflow))
+            .collect();
+        assert_eq!(
+            parts,
+            [
+                ("site", "release", "release.yml"),
+                ("coverage", "release", "release.yml"),
+                ("properties", "properties", "engine-properties.yml"),
+                ("fuzz", "fuzz", "engine-fuzz.yml"),
+                ("scale", "scale", "engine-scale.yml"),
+            ]
+        );
+        // The release part is what passed: the live site never shows a
+        // failed Release's coverage beside another run's site.
+        assert!(SOURCES[..2].iter().all(|s| s.needs_success));
+        assert!(PARTS
+            .iter()
+            .all(|p| SOURCES.iter().any(|s| s.key.part() == *p)));
+    }
+
+    #[test]
+    fn current_names_a_part_and_this_run_s_conclusion() {
+        let args = parse(&[
+            "dir",
+            "--repo",
+            "o/r",
+            "--current",
+            "fuzz",
+            "--conclusion",
+            "failure",
+        ])
+        .unwrap();
+        assert_eq!(args.current.as_deref(), Some("fuzz"));
+        assert_eq!(args.conclusion, "failure");
+        let args = parse(&["dir", "--repo", "o/r"]).unwrap();
+        assert!(args.current.is_none());
+        assert_eq!(args.conclusion, "success");
+        assert!(parse(&["dir", "--repo", "o/r", "--current", "coverage"]).is_err());
     }
 
     #[test]

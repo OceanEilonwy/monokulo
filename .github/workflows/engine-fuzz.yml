@@ -92,3 +92,20 @@ jobs:
         env:
           FUZZ_FEATURES: ${{ matrix.features }}
         run: cargo test --manifest-path fuzz/Cargo.toml --locked --features "$FUZZ_FEATURES" --test interleavings
+
+  pages:
+    # This run's fuzz page, with every other part of the site as it is
+    # live (pages.yml). On main only; a run that didn't finish shows nothing
+    # new.
+    name: Pages
+    needs: fuzz
+    if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success", "failure"]'), needs.fuzz.result)
+    permissions:
+      contents: read
+      actions: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
+    with:
+      part: fuzz
+      conclusion: ${{ needs.fuzz.result }}

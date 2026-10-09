@@ -340,8 +340,8 @@ fn every_local_link_of_every_page_resolves() {
             "coverage.html",
             "fuzzing.html",
             "index.html",
-            "load.html",
             "properties.html",
+            "scale.html",
             "screens.html",
             "tests.html"
         ]
@@ -473,7 +473,7 @@ fn the_stress_run_reads_its_named_hardware_file_and_fault_settings() {
     );
     assert_eq!(rpc.peak_bytes(), Some(1_048_576));
     f.build(&["--coverage", &f.path("coverage")]);
-    let page = f.page("load.html");
+    let page = f.page("scale.html");
     assert!(page.contains("Test CPU"));
     assert!(page.contains("every third request failed until block 2"));
     assert!(page.contains("<svg"));

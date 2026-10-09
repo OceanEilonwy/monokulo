@@ -46,7 +46,7 @@ const OUTPUTS: [&str; 11] = [
     "coverage.html",
     "properties.html",
     "fuzzing.html",
-    "load.html",
+    "scale.html",
     "screens.html",
     "badge.json",
     "assets",
