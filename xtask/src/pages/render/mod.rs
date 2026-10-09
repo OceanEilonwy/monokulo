@@ -4,8 +4,8 @@
 //! and the screenshot viewer.
 
 mod coverage;
-mod load;
 mod runs;
+mod scale;
 mod screens;
 mod tests;
 
@@ -25,7 +25,7 @@ pub(super) enum Tab {
     Coverage,
     Properties,
     Fuzzing,
-    Load,
+    Scale,
     Screens,
 }
 
@@ -36,7 +36,7 @@ impl Tab {
         Tab::Coverage,
         Tab::Properties,
         Tab::Fuzzing,
-        Tab::Load,
+        Tab::Scale,
         Tab::Screens,
     ];
 
@@ -47,7 +47,7 @@ impl Tab {
             Tab::Coverage => "coverage.html",
             Tab::Properties => "properties.html",
             Tab::Fuzzing => "fuzzing.html",
-            Tab::Load => "load.html",
+            Tab::Scale => "scale.html",
             Tab::Screens => "screens.html",
         }
     }
@@ -59,7 +59,7 @@ impl Tab {
             Tab::Coverage => "Coverage",
             Tab::Properties => "Property tests",
             Tab::Fuzzing => "Fuzzing",
-            Tab::Load => "Load",
+            Tab::Scale => "Scale",
             Tab::Screens => "Screens",
         }
     }
@@ -78,7 +78,7 @@ impl Tab {
             }),
             Tab::Properties => report.properties.is_some(),
             Tab::Fuzzing => !report.fuzz.is_empty(),
-            Tab::Load => report.stress.is_some(),
+            Tab::Scale => report.stress.is_some() || report.scale.is_some(),
             Tab::Screens => report
                 .gallery
                 .as_ref()
@@ -93,7 +93,7 @@ impl Tab {
             Tab::Properties => report.properties.as_ref().map(|p| p.tests.len()),
             Tab::Fuzzing => Some(report.fuzz.len()),
             Tab::Screens => report.gallery.as_ref().map(|g| g.total),
-            Tab::Overview | Tab::Coverage | Tab::Load => None,
+            Tab::Overview | Tab::Coverage | Tab::Scale => None,
         }
     }
 }
@@ -141,7 +141,7 @@ pub(super) fn write(report: &Report, out: &Path) -> io::Result<Vec<Tab>> {
             Tab::Coverage => coverage::page(report),
             Tab::Properties => runs::properties(report),
             Tab::Fuzzing => runs::fuzzing(report),
-            Tab::Load => load::page(report),
+            Tab::Scale => scale::page(report),
             Tab::Screens => screens::page(report),
         };
         save(out, tab, &page(report, &shell, tab, &body))?;

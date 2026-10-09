@@ -24,3 +24,20 @@ jobs:
         with:
           name: engine-scale-measurements-${{ github.run_id }}
           path: target/coverage/stress-scale/
+
+  pages:
+    # This run's scale page, with every other part of the site as it is
+    # live (pages.yml). On main only; a run that didn't finish shows nothing
+    # new.
+    name: Pages
+    needs: measurements
+    if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success", "failure"]'), needs.measurements.result)
+    permissions:
+      contents: read
+      actions: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
+    with:
+      part: scale
+      conclusion: ${{ needs.measurements.result }}

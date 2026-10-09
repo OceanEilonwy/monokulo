@@ -1,72 +1,78 @@
-# The GitHub Pages site, deployed from one place:
-#   /           the landing page and the signed apk repository, as the
-#               Release workflow last built them on main (its site artifact)
-#   /quality/   the quality report: tests, coverage, property tests, fuzzing,
-#               load and screenshots (`cargo xtask pages build`), from the newest
-#               runs on main of Release, the nightly engine property and fuzz
-#               explorations, and the weekly engine scale measurements
+# The GitHub Pages site:
+#   /           the landing page and the signed apk repository (the OpenWrt
+#               package's site artifact)
+#   /quality/   the quality report (`cargo xtask pages build`): tests,
+#               coverage, screenshots, property tests, fuzzing and scale
 #
-# Runs whenever one of those finishes on main, when the report itself changes
-# there, and by hand (Actions > Pages > Run workflow), so the site always
-# carries the newest of each. Pages serves a single deployment, which is why
-# the OpenWrt workflow no longer deploys: this workflow republishes its site
-# beside the report.
+# The site is in parts, each made by one workflow on main, which deploys the
+# whole site when it finishes (Pages serves a single deployment):
+#   release     release.yml, once every test passed: the landing page and
+#               apk repository, tests, coverage, screenshots and the one-CPU
+#               stress run, all from that run, on the commit it tested
+#   properties  the nightly engine property exploration
+#   fuzz        the nightly engine fuzz exploration
+#   scale       the weekly engine scale measurements
+# The calling workflow names its part: that part comes from its own run, and
+# every other part from that part's newest run on main, which is what the
+# live site already shows. Each page names the run and commit it is from.
 #
-# If the OpenWrt site artifact has expired (90 days without a release run on
-# main), the build stops rather than take the package repository offline:
-# run the Release workflow on main, which brings this one round again.
+# A manual run (Actions > Pages > Run workflow) rebuilds the site from every
+# part's newest run on main. If the release part's artifacts have expired
+# (90 days without a release run on main), the build stops rather than take
+# the package repository offline: run the Release workflow on main.
 
 name: Pages
 
 on:
-  workflow_run:
-    workflows:
-      - Release
-      - Engine property exploration
-      - Engine fuzz exploration
-      - Engine scale measurements
-    types: [completed]
-    branches: [main]
-  # A change to the report itself publishes it with the data already there.
-  push:
-    branches: [main]
-    paths:
-      - 'web/pages/**'
-      - 'xtask/src/pages/**'
-      - 'xtask/Cargo.toml'
-      - 'crates/monokulo/src/views/theme.css'
-      - '.github/workflows/pages.yml'
+  workflow_call:
+    inputs:
+      part:
+        description: The part this run made - release, properties, fuzz or scale
+        required: true
+        type: string
+      conclusion:
+        description: How the part's run went (success or failure), shown beside it
+        type: string
+        default: success
   workflow_dispatch:
 
 permissions:
   contents: read
   actions: read
 
-# One deployment at a time; a newer trigger waits rather than cancelling one
-# already publishing.
-concurrency:
-  group: pages
-  cancel-in-progress: false
-
 jobs:
-  build:
-    # Pull-request runs of those workflows never trigger this (branches: main),
-    # but a run on main that was cancelled changes nothing worth publishing.
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'cancelled'
+  deploy:
+    name: Build and deploy the site
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # One build and deployment at a time, in the order they started: a newer
+    # one waits rather than cancelling one already publishing.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
         with:
-          ref: main
-      # The latest nightly, as rust-toolchain.toml names it, for xtask.
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
+          pos-app: 'false'
       # The artifacts land under target/, which the checkout ignores.
-      - name: Download the newest artifacts on main
+      - name: Download each part's artifacts
         env:
           GH_TOKEN: ${{ github.token }}
-        run: cargo xtask pages fetch target/pages
+          PART: ${{ inputs.part }}
+          CONCLUSION: ${{ inputs.conclusion }}
+        run: |
+          args=(target/pages)
+          if test -n "$PART"; then args+=(--current "$PART" --conclusion "$CONCLUSION"); fi
+          cargo xtask pages fetch "${args[@]}"
       - name: Build the quality report beside the landing page
         run: |
           args=(--out target/pages/site/quality --sources target/pages/sources.json --repo-url "https://github.com/$GITHUB_REPOSITORY")
@@ -77,17 +83,5 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: target/pages/site/
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
       - id: deployment
         uses: actions/deploy-pages@v5

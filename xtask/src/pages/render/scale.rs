@@ -1,4 +1,4 @@
-//! Load: how long one block takes to scan for every store on one CPU core,
+//! Scale: how long one block takes to scan for every store on one CPU core,
 //! how that grows with the store count, and how the engine recovers from
 //! injected faults.
 
@@ -305,7 +305,7 @@ pub(super) fn page(report: &Report) -> Markup {
     let hw = &stress.hardware;
     let reports = report.coverage.as_ref().map(|c| &c.reports);
     html! {
-        (heading("Load", &intro, run_pill(report, report.sources.coverage.as_ref())))
+        (heading("Scale", &intro, run_pill(report, report.sources.coverage.as_ref())))
         @if let Some(figures) = run_figures(stress, None) { (figures) }
         @else { p.card.unavail { "The stress run recorded no measured points." } }
         (faults(stress).unwrap_or_default())
