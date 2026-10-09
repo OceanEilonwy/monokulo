@@ -296,43 +296,58 @@ test('real checkout keeps retrying a refused live stream with backoff and then f
   const orderId = url.split('/').pop();
   // The server refuses the stream while restarting, or past its per-client
   // limit of open streams (429); the page must not give up on live updates.
-  const attempts = [];
+  let served = 0;
   await page.route(`${url}/events?*`, route => {
-    attempts.push(Date.now());
-    if (attempts.length <= 2) return route.fulfill({ status: attempts.length === 1 ? 503 : 429, body: '' });
+    served++;
+    if (served === 1) return route.fulfill({ status: 503, body: '' });
+    if (served === 2) return route.fulfill({ status: 429, body: '' });
     return route.continue();
   });
-  // The page has handled a refusal once its fx:after has run: that's where
-  // checkout.js starts the retry timer. Counted from the capture phase, so
-  // by the time the count shows, the timer is set; the fake clock only
-  // moves on after that, so the timer starts at the time it should.
+  // The page's own record of its live stream, from the events fixi sends:
+  // fx:config when it starts a request (synchronously, inside the timer that
+  // retries), fx:after when it has the response, which is when checkout.js
+  // schedules the next retry. Times are the page's fake clock.
   await page.addInitScript(() => {
-    window.__refused = 0;
+    const stream = { started: 0, refusedAt: [] };
+    window.checkoutStream = stream;
+    const isStream = event => event.target instanceof Element && event.target.id === 'checkout-stream';
+    document.addEventListener('fx:config', event => { if (isStream(event)) stream.started++; }, true);
     document.addEventListener('fx:after', event => {
-      const response = event.detail.cfg.response;
-      if (response && !response.ok) window.__refused += 1;
+      if (isStream(event) && !event.detail.cfg.response.ok) stream.refusedAt.push(Date.now());
     }, true);
   });
-  const refused = () => page.evaluate(() => window.__refused);
-  await page.clock.install();
+  const stream = () => page.evaluate(() => window.checkoutStream);
+  const pageNow = () => page.evaluate(() => Date.now());
+  // The page's time stands still from the start: only the test moves it.
+  // The clock flows from install until pauseAt, and pausing at a moment it
+  // has already passed fails ("Cannot fast-forward to the past"), so it is
+  // installed a minute before the moment it pauses at.
+  const start = new Date('2026-01-01T00:00:00Z');
+  await page.clock.install({ time: new Date(start.getTime() - 60_000) });
+  await page.clock.pauseAt(start);
   await page.goto(url);
-  await expect.poll(refused).toBe(1);
-  // Each "not yet" check lets a request the fake clock just released reach
-  // the route before counting.
-  await page.clock.runFor(4000);
-  await page.waitForTimeout(500);
-  expect(attempts.length, 'waits 5s before the first retry').toBe(1);
-  await page.clock.runFor(1500);
-  await expect.poll(refused).toBe(2);
-  expect(attempts.length).toBe(2);
-  await page.clock.runFor(9000);
-  await page.waitForTimeout(500);
-  expect(attempts.length, 'then doubles the wait to 10s').toBe(2);
-  await page.clock.runFor(1500);
-  await expect.poll(() => attempts.length).toBe(3);
+
+  // Refusal n is retried exactly `delay` ms after the page handled it: not a
+  // millisecond before, and with one request then.
+  const retriedAfter = async (n, delay) => {
+    await expect.poll(async () => (await stream()).refusedAt.length, `the page handles refusal ${n}`).toBe(n);
+    const { started, refusedAt } = await stream();
+    expect(started, `one request per refusal so far`).toBe(n);
+    await page.clock.runFor(refusedAt[n - 1] + delay - 1 - (await pageNow()));
+    expect((await stream()).started, `no retry before ${delay} ms`).toBe(n);
+    await page.clock.runFor(1);
+    expect((await stream()).started, `the retry at ${delay} ms`).toBe(n + 1);
+  };
+  await retriedAfter(1, 5000);
+  // The wait doubles after each refusal.
+  await retriedAfter(2, 10000);
+
+  // The third request is let through: the stream opens and follows the order.
+  await expect.poll(() => served).toBe(3);
   const paid = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/paid`);
   expect(paid.status()).toBe(204);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
+  expect((await stream()).refusedAt, 'no refusal after the stream opened').toHaveLength(2);
 });
 
 test('real checkout copies the payment address without the Clipboard API, as over plain-HTTP onion', async ({ page, request }) => {
