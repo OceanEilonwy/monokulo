@@ -274,11 +274,29 @@ test('real frame-only checkout refuses a top-level navigation', async ({ page, r
 test('real checkout open while the customer pays shows paid and stops following the order', async ({ page, request }) => {
   const url = await checkoutUrl(request);
   const orderId = url.split('/').pop();
-  let streams = 0;
-  page.on('request', sent => { if (sent.url().startsWith(`${url}/events?`)) streams++; });
+  // The page's own record of its live stream: every fetch of it (fixi's
+  // first request and any reconnect ssexi makes, synchronously inside the
+  // timer that makes it), and fx:sse:close each time the server ends it,
+  // which is when ssexi decides whether to reconnect.
+  await page.addInitScript(() => {
+    const stream = { started: 0, ended: 0 };
+    window.checkoutStream = stream;
+    const fetch_ = window.fetch;
+    window.fetch = function (resource, ...rest) {
+      if (String(resource instanceof Request ? resource.url : resource).includes('/events?')) stream.started++;
+      return fetch_.call(this, resource, ...rest);
+    };
+    document.addEventListener('fx:sse:close', event => {
+      if (event.target instanceof Element && event.target.id === 'checkout-stream') stream.ended++;
+    }, true);
+  });
+  const stream = () => page.evaluate(() => window.checkoutStream);
+  // The page's time stands still from the start: only the test moves it.
+  const start = new Date('2026-01-01T00:00:00Z');
+  await pauseClockAt(page, start);
   await page.goto(url);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'pending');
-  await expect.poll(() => streams).toBe(1);
+  await expect.poll(async () => (await stream()).started).toBe(1);
   const paid = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/paid`);
   expect(paid.status()).toBe(204);
   // The live stream carries the new state in; no reload.
@@ -286,9 +304,13 @@ test('real checkout open while the customer pays shows paid and stops following 
   // The stage says it's paid over a faded code: nothing invites a second payment.
   await expect(page.locator('.stage-track')).toContainText('Paid.');
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
-  // A final order closes its stream for good rather than reconnecting.
-  await page.waitForTimeout(5000);
-  expect(streams).toBe(1);
+  // A final order closes its stream for good rather than reconnecting:
+  // once the page has seen the stream end, no amount of time opens another
+  // (ssexi reconnects a dropped stream after 3s; checkout.js retries a
+  // refused one after up to a minute).
+  await expect.poll(async () => (await stream()).ended, 'the page sees its stream end').toBe(1);
+  await page.clock.runFor(2 * 60 * 1000);
+  expect((await stream()).started, 'no second stream').toBe(1);
 });
 
 test('real checkout keeps retrying a refused live stream with backoff and then follows the order', async ({ page, request }) => {
