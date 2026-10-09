@@ -51,10 +51,11 @@ jobs:
       # SQLite files in the temporary folder, which on Windows runners is on
       # C:, the slow system disk; the checkout and target are on D:, the
       # runner's local disk. With TMP and TEMP in the runner's own temporary
-      # folder on D: (emptied after every job) nextest took 440 to 800 s
-      # instead of 3,000. Defender doesn't scan files on these runners, so a
-      # Dev Drive for target and TMP did no better, built no faster, and its
-      # System Volume Information folder stopped the Rust cache saving.
+      # folder on D: (emptied after every job), nextest took 440 to 800 s
+      # instead of 1,500 to 3,000 on the same machines. Defender doesn't
+      # scan files on these runners, so a Dev Drive for target and TMP did no
+      # better, built no faster, and its System Volume Information folder
+      # stopped the Rust cache saving.
       - name: Keep temporary files on drive D
         if: runner.os == 'Windows'
         shell: pwsh
