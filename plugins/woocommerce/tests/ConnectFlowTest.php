@@ -197,6 +197,11 @@ class ConnectFlowTest extends WP_UnitTestCase {
 			'Should POST to the real, configured control plane\'s /finish route (connect.rs step 5).'
 		);
 		$this->assertSame( 'POST', $this->captured_request['args']['method'] );
+		$this->assertSame(
+			WC_Gateway_Monokulo::CLIENT,
+			$this->captured_request['args']['headers']['Monokulo-Client'],
+			'The plugin names itself and its version, so Monokulo records the connection with it.'
+		);
 		$sent_body = json_decode( $this->captured_request['args']['body'], true );
 		$this->assertSame( 'conn_real_token_abc', $sent_body['token'] );
 		$this->assertSame(

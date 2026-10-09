@@ -106,6 +106,7 @@ mod shorten;
 pub mod status;
 pub mod store_detail;
 pub mod store_settings;
+pub mod store_site;
 pub mod time;
 pub mod wallets;
 

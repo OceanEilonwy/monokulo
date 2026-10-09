@@ -43,8 +43,16 @@ const ORDINARY_DEFAULT: u64 = 10;
 type NewThreshold = (u64, String);
 
 /// What a save changes, once every card's values were checked.
+/// A saved website changed in the form, to be asked about first.
+enum WebsiteRequest {
+    To(String),
+    Remove,
+}
+
 #[derive(Default)]
 struct Plan {
+    /// The website changed or emptied: the save goes on to ask about it.
+    website: Option<WebsiteRequest>,
     /// The store's name, and its site (empty: none).
     name: Option<String>,
     site: Option<String>,
@@ -90,15 +98,26 @@ pub async fn save(
     // store's lock, so no order is priced against one half saved.
     let policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
 
-    let plan = match plan(&state, &row, &sk, &sent).await {
+    let mut plan = match plan(&state, &row, &sk, &sent).await {
         Ok(plan) => plan,
         Err((section, message)) => {
             drop(policy);
             return refused(&state, row, &user, sent, section, message, Vec::new()).await;
         }
     };
+    let website = plan.website.take().map(|request| {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        match request {
+            WebsiteRequest::To(site) => query.append_pair("site", &site),
+            WebsiteRequest::Remove => query.append_pair("remove", "1"),
+        };
+        format!("/dashboard/stores/{id}/settings/website?{}", query.finish())
+    });
     if plan.is_empty() {
-        return redirect_303(&format!("/dashboard/stores/{id}/settings?saved=nothing"));
+        drop(policy);
+        return redirect_303(
+            &website.unwrap_or_else(|| format!("/dashboard/stores/{id}/settings?saved=nothing")),
+        );
     }
 
     let mut saved = Vec::new();
@@ -114,6 +133,9 @@ pub async fn save(
     }
     let ids: Vec<&str> = saved.iter().map(|section| section.id()).collect();
     tracing::info!(store.id = %id, saved = %ids.join(","), "store settings saved");
+    if let Some(website) = website {
+        return redirect_303(&website);
+    }
     redirect_303(&format!(
         "/dashboard/stores/{id}/settings?saved={}",
         ids.join(",")
@@ -180,13 +202,34 @@ async fn plan(
             plan.name = Some(name);
         }
     }
-    if let Some(raw) = form.get("store_site") {
+    // The settings form only ever adds a first site. Changing or removing
+    // one asks first (`http::store_site`): the save goes on to that page,
+    // the rest of the form saved. A connected plugin's site isn't in the
+    // form at all; one sent anyway is ignored.
+    let locked = {
+        let store_id = row.id.clone();
+        state
+            .db
+            .read(move |db| db.active_integration(&store_id))
+            .await
+            .map_err(|_| (STORE, something_went_wrong()))?
+            .is_some()
+    };
+    if let Some(raw) = form.get("store_site").filter(|_| !locked) {
         let site = if raw.trim().is_empty() {
             String::new()
-        } else {
+        } else if row.site.is_empty() {
             crate::stores::normalize_site(raw).map_err(|m| (STORE, m.to_owned()))?
+        } else {
+            raw.trim().to_owned()
         };
-        if site != row.site {
+        if !row.site.is_empty() && site != row.site {
+            plan.website = Some(if site.is_empty() {
+                WebsiteRequest::Remove
+            } else {
+                WebsiteRequest::To(site)
+            });
+        } else if site != row.site {
             if !site.is_empty() {
                 let (user_id, wanted) = (row.user_id.clone(), site.clone());
                 let taken = state

@@ -1293,7 +1293,8 @@ async fn a_stores_name_and_site_are_changed_in_its_settings() {
     let domains = state.db.lock().list_store_domains(&row.id).unwrap();
     assert_eq!(domains[0].domain, "stall.example", "waits to be verified");
 
-    // And back to none.
+    // Emptying it in the form saves nothing of it: the save goes on to ask
+    // (B1), the name typed; then it's gone, and its domain with it.
     let cleared = router
         .clone()
         .oneshot(cookie_form_request(
@@ -1304,13 +1305,99 @@ async fn a_stores_name_and_site_are_changed_in_its_settings() {
         .await
         .unwrap();
     assert_eq!(cleared.status(), StatusCode::SEE_OTHER);
-    let row = state
+    let website = format!("{settings}/website");
+    assert_eq!(
+        cleared.headers()["location"],
+        format!("{website}?remove=1").as_str()
+    );
+    let site_of = |state: &AppState| {
+        state
+            .db
+            .lock()
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(stall.clone()))
+            .unwrap()
+            .unwrap()
+            .site
+    };
+    assert_eq!(site_of(&state), "stall.example", "not yet");
+    let page = body_text(cookie_get(&router, &format!("{website}?remove=1"), &cookie).await).await;
+    assert!(
+        page.contains("Remove the website of \u{201c}Market stall &amp; café\u{201d}?"),
+        "{page}"
+    );
+    assert!(
+        page.contains("Checkouts embedded on stall.example stop loading"),
+        "{page}"
+    );
+    assert!(
+        page.contains("Its verified domain stall.example is dropped"),
+        "{page}"
+    );
+    let wrong = router
+        .clone()
+        .oneshot(cookie_form_request(
+            &website,
+            &cookie,
+            &[("remove", "1"), ("confirm", "market stall")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(site_of(&state), "stall.example");
+    let removed = router
+        .clone()
+        .oneshot(cookie_form_request(
+            &website,
+            &cookie,
+            &[("remove", "1"), ("confirm", "Market stall & café")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(removed.status(), StatusCode::SEE_OTHER);
+    assert_eq!(site_of(&state), "");
+    assert!(state
         .db
         .lock()
-        .get_store_connection_by_id(&shared::ids::ConnectionId::new(stall))
+        .list_store_domains(&shared::ids::ConnectionId::new(stall.clone()))
         .unwrap()
+        .is_empty());
+    // Changing works the same way, to the new site.
+    router
+        .clone()
+        .oneshot(cookie_form_request(
+            &settings,
+            &cookie,
+            &[("store_site", "first.example")],
+        ))
+        .await
         .unwrap();
-    assert_eq!(row.site, "");
+    let asked = router
+        .clone()
+        .oneshot(cookie_form_request(
+            &settings,
+            &cookie,
+            &[("store_site", "second.example")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        asked.headers()["location"],
+        format!("{website}?site=second.example").as_str()
+    );
+    let changed = router
+        .clone()
+        .oneshot(cookie_form_request(
+            &website,
+            &cookie,
+            &[
+                ("site", "https://Second.example/x"),
+                ("confirm", "Market stall & café"),
+            ],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(changed.status(), StatusCode::SEE_OTHER);
+    assert_eq!(site_of(&state), "second.example");
 }
 
 /// A site is optional: a store with none has a name only. Done still lists

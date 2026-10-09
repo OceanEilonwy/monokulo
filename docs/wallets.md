@@ -212,6 +212,34 @@ made with the store's secret key is `api` ("Store API"). The header
 counts only with the key. The plugin's connect link (`/connect/{platform}`)
 names the plugin, not the store.
 
+## Store site and integrations
+
+A store's settings (`docs/design/user-testing/store-site-integrations.html`,
+A3, B1, C1):
+
+- **Store** card: the name, and the website. Adding a first website saves
+  with the save bar. Changing or emptying a saved one asks first (the
+  settings save goes on to it): blocked while a plugin is connected, then
+  what follows (checkouts embedded on the old site stop loading, its
+  domain is dropped, orders started there can still be paid until about
+  when) and the store's name typed. Without JavaScript it's
+  `/dashboard/stores/{id}/settings/website`.
+- **Connections** card: each plugin connected to the store
+  (`store_integrations`, migration 0037), with its site, version, when it
+  connected and its last order; earlier ones under "Before". While one is
+  connected the website is locked ("Set by WooCommerce · see
+  Connections").
+- **Disconnect…** waits while an order the plugin made can still be paid.
+  Then, the store's name typed, it removes the plugin's webhook, rotates
+  the store's secret key in the engine (the plugin's stops working) and
+  marks the connection ended. Without JavaScript it's
+  `/dashboard/stores/{id}/settings/connections/{id}/disconnect`.
+
+A connection is recorded when `/connect/{plugin}/finish` succeeds, with
+the plugin's version from its `Monokulo-Client` header and the webhook it
+registered; each order carrying the header updates its version and last
+order. Connecting again adds a new row.
+
 ## A wallet's page
 
 `/account/wallets/{id}` is one centred column

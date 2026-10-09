@@ -1162,16 +1162,16 @@ mk-select[compact] .mk-popup { white-space: nowrap; }
 .wallet-foot .btn { margin: 0; }
 /* The retire and restore dialogs, and the pages holding the same without
    JavaScript. */
-.wallet-dialog { width: min(32rem, calc(100vw - 2rem)); }
-.wallet-dialog-page { max-width: 32rem; margin: var(--space-lg) 0; }
+.confirm-dialog { width: min(32rem, calc(100vw - 2rem)); }
+.confirm-dialog-page { max-width: 32rem; margin: var(--space-lg) 0; }
 .dialog-title { display: flex; align-items: center; gap: var(--space-sm); font-size: 1.15rem; border: 0; padding: 0; margin: 0 0 var(--space-sm); }
-.wallet-dialog-page .dialog-title { font-size: 1.5rem; }
+.confirm-dialog-page .dialog-title { font-size: 1.5rem; }
 .dialog-x, .dialog-x:hover { margin: 0 0 0 auto; padding: 0 var(--space-xs); border: 0; background: none; color: var(--muted); font-size: 1.3em; line-height: 1; }
-.wallet-dialog .dialog-actions, .wallet-dialog-page .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; }
+.confirm-dialog .dialog-actions, .confirm-dialog-page .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; }
 .dialog-actions .btn { margin: 0; }
 .dialog-actions button[disabled] { opacity: .45; cursor: not-allowed; }
-.wallet-dialog .setting-field, .wallet-dialog-page .setting-field { margin: var(--space-md) 0 0; }
-.wallet-dialog .setting-field .setting-label-row, .wallet-dialog-page .setting-field .setting-label-row { margin: 0 0 var(--space-sm); }
+.confirm-dialog .setting-field, .confirm-dialog-page .setting-field { margin: var(--space-md) 0 0; }
+.confirm-dialog .setting-field .setting-label-row, .confirm-dialog-page .setting-field .setting-label-row { margin: 0 0 var(--space-sm); }
 .checks { list-style: none; padding: 0; margin: var(--space-md) 0 var(--space-sm); border: 1px solid var(--line); border-radius: var(--radius-md); }
 .checks li { display: flex; gap: var(--space-sm); align-items: baseline; padding: var(--space-sm) var(--space-md); border-top: 1px solid var(--line); }
 .checks li:first-child { border-top: 0; }
@@ -1180,6 +1180,31 @@ mk-select[compact] .mk-popup { white-space: nowrap; }
 .checks .no .mark { color: var(--error); }
 .checks .fix { display: block; font-size: .9em; color: var(--muted); }
 .checks .fix-line { display: block; }
+.checks .then .mark { color: var(--muted); }
+.checks .fix { overflow-wrap: anywhere; }
+.confirm-dialog .setting-field.first, .confirm-dialog-page .setting-field.first { margin-top: 0; }
+/* A store's website and its plugins (`views::store_site`): the website
+   locked while a plugin is connected; the Connections card, one row each. */
+.locked-input { display: flex; align-items: center; gap: var(--space-sm); padding: .55rem .75rem; border: 1px dashed var(--line-strong); border-radius: var(--radius-sm); background: var(--surface-sunken); color: var(--ink); font-weight: 600; overflow-wrap: anywhere; }
+.locked-input .ico { color: var(--muted); }
+.ico { width: 1.1em; height: 1.1em; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.lock-note { margin: var(--space-sm) 0 0; color: var(--muted); font-size: .88em; }
+.card-note { margin: 0; }
+.int-rows { list-style: none; margin: 0; padding: 0; }
+.int-rows li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-xs) var(--space-md); align-items: center; padding: var(--space-sm) 0; border-top: 1px solid var(--line); }
+.int-rows li:first-child { border-top: 0; padding-top: 0; }
+.int-rows .int-name { font-weight: 700; }
+.int-rows .int-meta { display: block; color: var(--muted); font-size: .85em; overflow-wrap: anywhere; }
+.int-rows .btn { margin: 0; padding: var(--space-xs) var(--space-md); font-size: .85em; }
+.int-rows.past .int-name { font-weight: 400; color: var(--muted); }
+.int-rows.past .int-mark { opacity: .6; }
+.int-mark { display: inline-flex; align-items: center; justify-content: center; width: 2.2rem; height: 2.2rem; flex: none; border-radius: var(--radius-md); background: var(--surface-sunken); color: var(--ink); }
+.int-mark svg { width: 1.7rem; height: 1.3rem; }
+.woo-bubble { fill: currentColor; }
+.woo-text { fill: var(--paper-raised); font: 800 10.5px var(--font-ui); letter-spacing: -.03em; }
+.tag-active { font-size: .75em; font-weight: 700; border: 1px solid var(--line-strong); border-radius: 999px; padding: var(--pill-pad-y) var(--pill-pad-x); color: var(--ink); }
 @media (max-width: 640px) {
   .wallet-foot .btn { flex-basis: 100%; text-align: center; }
+  .int-rows li { grid-template-columns: auto minmax(0, 1fr); }
+  .int-rows li > .btn { grid-column: 1 / -1; text-align: center; }
 }

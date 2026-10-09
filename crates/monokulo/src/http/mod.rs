@@ -71,6 +71,7 @@ mod signup;
 pub mod status_page;
 pub mod store_key;
 mod store_settings;
+mod store_site;
 mod telemetry_client;
 #[cfg(test)]
 mod test_support;
@@ -512,6 +513,14 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/dashboard/stores/{id}/settings/wallet",
             post(orders::change_store_wallet),
+        )
+        .route(
+            "/dashboard/stores/{id}/settings/website",
+            axum::routing::get(store_site::website_form).post(store_site::website_submit),
+        )
+        .route(
+            "/dashboard/stores/{id}/settings/connections/{integration}/disconnect",
+            axum::routing::get(store_site::disconnect_form).post(store_site::disconnect_submit),
         )
         .route(
             "/dashboard/stores/{id}/embed-warning/dismiss",

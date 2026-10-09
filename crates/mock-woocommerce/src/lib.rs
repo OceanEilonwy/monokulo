@@ -838,6 +838,7 @@ async fn call_finish(
     let client = reqwest::Client::new();
     let response = client
         .post(format!("{monokulo_base_url}/connect/{platform}/finish"))
+        .header("Monokulo-Client", "woocommerce/mock")
         .json(&serde_json::json!({ "token": token, "webhook_url": webhook_url }))
         .send()
         .await?;

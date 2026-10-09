@@ -129,6 +129,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         36,
         include_str!("../migrations/0036_drop_store_platform.sql"),
     ),
+    (
+        37,
+        include_str!("../migrations/0037_store_integrations.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -616,6 +620,38 @@ fn store_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreConnectionRo
         wallet_id: row.get(9)?,
         name: row.get(10)?,
     })
+}
+
+/// A plugin connected to a store (migration 0037): active while
+/// `disconnected_at` is `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreIntegrationRow {
+    pub id: String,
+    pub store_id: ConnectionId,
+    /// The plugin: `woocommerce`.
+    pub kind: String,
+    /// The store's site when it connected.
+    pub site: String,
+    /// The plugin's version, from its `Monokulo-Client` header; empty when
+    /// it never said.
+    pub version: String,
+    pub webhook_id: Option<String>,
+    pub webhook_url: Option<String>,
+    pub connected_at: i64,
+    /// Its last order.
+    pub last_seen_at: Option<i64>,
+    pub disconnected_at: Option<i64>,
+}
+
+/// A plugin that just connected, for [`Db::connect_integration`].
+pub struct NewStoreIntegration<'a> {
+    pub store_id: &'a ConnectionId,
+    pub kind: &'a str,
+    pub site: &'a str,
+    pub version: &'a str,
+    pub webhook_id: Option<&'a str>,
+    pub webhook_url: Option<&'a str>,
+    pub at: i64,
 }
 
 pub struct StoreConnectionRow {
@@ -1247,6 +1283,128 @@ impl Db {
         Ok(())
     }
 
+    // -- Store integrations (migration 0037) -----------------------------
+
+    fn row_to_integration(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreIntegrationRow> {
+        Ok(StoreIntegrationRow {
+            id: row.get("id")?,
+            store_id: row.get("store_id")?,
+            kind: row.get("kind")?,
+            site: row.get("site")?,
+            version: row.get("version")?,
+            webhook_id: row.get("webhook_id")?,
+            webhook_url: row.get("webhook_url")?,
+            connected_at: row.get("connected_at_utc")?,
+            last_seen_at: row.get("last_seen_at_utc")?,
+            disconnected_at: row.get("disconnected_at_utc")?,
+        })
+    }
+
+    /// Records a plugin connecting to a store: a new active row. One of the
+    /// same kind still active on the store (the plugin connected again
+    /// without being disconnected) is closed at the same time.
+    pub fn connect_integration(&self, new: &NewStoreIntegration<'_>) -> Result<String> {
+        let id = format!("int_{}", uuid::Uuid::new_v4().simple());
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        tx.execute(
+            "UPDATE store_integrations SET disconnected_at_utc = ?3
+             WHERE store_id = ?1 AND kind = ?2 AND disconnected_at_utc IS NULL",
+            params![new.store_id, new.kind, new.at],
+        )?;
+        tx.execute(
+            "INSERT INTO store_integrations
+                (id, store_id, kind, site, version, webhook_id, webhook_url, connected_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                id,
+                new.store_id,
+                new.kind,
+                new.site,
+                new.version,
+                new.webhook_id,
+                new.webhook_url,
+                new.at
+            ],
+        )?;
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// A store's integrations, newest first.
+    pub fn list_integrations(&self, store_id: &ConnectionId) -> Result<Vec<StoreIntegrationRow>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT * FROM store_integrations WHERE store_id = ?1
+             ORDER BY connected_at_utc DESC, rowid DESC",
+        )?;
+        let rows = stmt
+            .query_map(params![store_id], Self::row_to_integration)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// The store's active integration, if any: while there is one, its site
+    /// is the plugin's and can't be changed.
+    pub fn active_integration(
+        &self,
+        store_id: &ConnectionId,
+    ) -> Result<Option<StoreIntegrationRow>> {
+        Ok(self
+            .list_integrations(store_id)?
+            .into_iter()
+            .find(|i| i.disconnected_at.is_none()))
+    }
+
+    /// An order from a plugin: its active integration of `kind` was seen
+    /// now, running `version` (kept as it was when empty).
+    pub fn integration_seen(
+        &self,
+        store_id: &ConnectionId,
+        kind: &str,
+        version: &str,
+        at: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE store_integrations
+             SET last_seen_at_utc = ?4, version = CASE WHEN ?3 = '' THEN version ELSE ?3 END
+             WHERE store_id = ?1 AND kind = ?2 AND disconnected_at_utc IS NULL",
+            params![store_id, kind, version, at],
+        )?;
+        Ok(())
+    }
+
+    /// Marks an integration disconnected. `false` when it wasn't this
+    /// store's, or was disconnected already.
+    pub fn disconnect_integration(
+        &self,
+        store_id: &ConnectionId,
+        id: &str,
+        at: i64,
+    ) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE store_integrations SET disconnected_at_utc = ?3
+             WHERE id = ?2 AND store_id = ?1 AND disconnected_at_utc IS NULL",
+            params![store_id, id, at],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// The store's secret key, encrypted at rest, after the engine rotated
+    /// it.
+    pub fn set_store_secret(
+        &self,
+        id: &ConnectionId,
+        tenant_secret_token_encrypted: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE store_connections SET tenant_secret_token_encrypted = ?2 WHERE id = ?1",
+            params![id, tenant_secret_token_encrypted],
+        )?;
+        Ok(())
+    }
+
     // -- Wallets (migration 0031) --------------------------------------
 
     /// Adds a wallet and its first history entry. A name or address the
@@ -1759,6 +1917,21 @@ impl Db {
             )
             .optional()
             .map_err(DbError::from)
+    }
+
+    /// The store's orders that came from `source` (`woocommerce`, ...).
+    pub fn order_ids_from_source(
+        &self,
+        connection_id: &ConnectionId,
+        source: &str,
+    ) -> Result<std::collections::HashSet<OrderId>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT order_id FROM order_currency_metadata WHERE connection_id = ?1 AND source = ?2",
+        )?;
+        let ids = stmt
+            .query_map(params![connection_id, source], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
     }
 
     /// Currency metadata for each of `order_ids` (one page of a listing)

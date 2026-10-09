@@ -1371,8 +1371,10 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			$url,
 			array(
 				'headers' => array(
-					'Content-Type' => 'application/json',
-					'traceparent'  => self::traceparent(),
+					'Content-Type'    => 'application/json',
+					// Monokulo records the connection with this plugin's version.
+					'Monokulo-Client' => self::CLIENT,
+					'traceparent'     => self::traceparent(),
 				),
 				'body'    => wp_json_encode(
 					array(

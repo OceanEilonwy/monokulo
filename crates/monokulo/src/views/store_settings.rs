@@ -92,6 +92,9 @@ pub struct StoreSettingsData {
     pub display_name: String,
     /// Its site's host; empty when it has none.
     pub site: String,
+    /// The website and the plugins connected to the store
+    /// (`views::store_site`).
+    pub sites: super::store_site::SiteView,
     /// The tenant's current confirmation threshold -
     /// `confirmation_thresholds::FALLBACK_CONFIRMATIONS` when the engine is
     /// currently unreachable.
@@ -200,6 +203,7 @@ pub struct WalletPeriodView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreSection {
     Store,
+    Connections,
     Wallet,
     BaseCurrency,
     Confirmations,
@@ -214,6 +218,7 @@ impl StoreSection {
     pub fn from_id(id: &str) -> Option<Self> {
         [
             Self::Store,
+            Self::Connections,
             Self::Wallet,
             Self::BaseCurrency,
             Self::Confirmations,
@@ -232,6 +237,7 @@ impl StoreSection {
     pub fn id(self) -> &'static str {
         match self {
             StoreSection::Store => "store",
+            StoreSection::Connections => "connections",
             StoreSection::Wallet => "wallet",
             StoreSection::BaseCurrency => "base-currency",
             StoreSection::Confirmations => "confirmation-thresholds",
@@ -352,6 +358,8 @@ impl StoreSettingsData {
             StoreOutcome::Saved(sections) => {
                 let title = match sections.as_slice() {
                     [StoreSection::Wallet] => "Wallet changed",
+                    [StoreSection::Store] => "Store saved",
+                    [StoreSection::Connections] => "Plugin disconnected",
                     [StoreSection::KeyStorage] => "Keys moved",
                     [StoreSection::Domains] => "Verified domains updated",
                     [StoreSection::Webhooks] if self.created_webhook_signing_secret.is_some() => {
@@ -599,15 +607,7 @@ fn store_card(store: &StoreSettingsData) -> Markup {
                     input type="text" id="store-name" name="store_name" value=(name) maxlength=(crate::stores::MAX_NAME_LEN) required
                         data-saved=[store.saved_attr(&store.display_name)];
                 }))
-            (Field::new("Your website (optional)", "store-site")
-                .help(None, html! {
-                    "Needed for the checkout on your pages or for the WooCommerce plugin, which finds this store by it. "
-                    "Any page on the site works. Leave it empty to take payments at the till only."
-                })
-                .render(html! {
-                    input type="text" id="store-site" name="store_site" value=(site) inputmode="url" autocomplete="url"
-                        placeholder="shop.example" data-saved=[store.saved_attr(&store.site)];
-                }))
+            (super::store_site::website_field(&store.sites, &site))
         },
     )
 }
@@ -946,12 +946,15 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                         (save_bar(store))
                     },
                 ))
+                (super::store_site::connections_card(&store.sites))
                 @if let Some(key_storage) = &store.key_storage {
                     (key_storage_card(store, key_storage))
                 }
                 (verified_domains_card(store))
                 (webhooks_card(store))
                 (toast_region(store.toast().as_ref(), false))
+                (super::store_site::dialogs(&store.sites))
+                (super::script("confirm-dialogs.js", super::Load::Defer))
             } @else {
                 h1 { "Store not found" }
                 p { "This store doesn't exist, or isn't connected to your account." }
@@ -1068,6 +1071,16 @@ mod tests {
             connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             site: "shop.example.com".to_string(),
+            sites: crate::views::store_site::SiteView {
+                store_id: "conn_1".into(),
+                store_name: "shop.example.com".into(),
+                site: "shop.example.com".into(),
+                active: None,
+                past: Vec::new(),
+                open_orders: None,
+                plugin_open_orders: None,
+                site_domain: false,
+            },
             confirmations_required: 10,
             fx_provider_options: vec![FxProviderOption {
                 name: "coingecko".to_string(),
@@ -1253,8 +1266,19 @@ mod tests {
                 && domains < webhooks,
             "{html}"
         );
-        // No dialogs, and one orange button: the bar's Save.
-        assert!(!html.contains("<dialog"), "{html}");
+        // Only the website's confirm dialogs, and one orange button: the
+        // bar's Save.
+        assert_eq!(html.matches("<dialog").count(), 2, "{html}");
+        assert!(
+            html.contains(r#"<dialog id="website-dialog" class="settings-dialog confirm-dialog""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<dialog id="website-remove-dialog" class="settings-dialog confirm-dialog""#
+            ),
+            "{html}"
+        );
         assert!(!html.contains("settings-dialogs"), "{html}");
         assert_eq!(html.matches("btn-primary").count(), 1, "{html}");
         assert!(html.contains(r#"<a class="btn" href="/dashboard/stores/conn_1/settings" data-discard-all>Discard changes</a>"#), "{html}");
