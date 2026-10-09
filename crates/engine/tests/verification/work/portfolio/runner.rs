@@ -646,6 +646,7 @@ fn inputs<'a>(
         reorg_check_depth: 20,
         grace_period_seconds: 100_000,
         scan_chunk_memory_budget_mb: 16,
+        order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     }
 }
 /// Borrow effects for one convergence check; never retained across a restart.

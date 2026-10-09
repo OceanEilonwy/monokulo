@@ -939,6 +939,7 @@ mod settlement {
                 reorg_check_depth: 20,
                 grace_period_seconds: 0,
                 scan_chunk_memory_budget_mb: 16,
+                order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
             };
             let _ = run_round(&self.state, &inputs, Duration::from_secs(5)).await;
         }

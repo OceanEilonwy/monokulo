@@ -32,6 +32,7 @@ mod activity;
 mod admin;
 pub mod instance_admin;
 mod logs;
+mod order_events;
 mod orders;
 pub mod rate_limit;
 mod status_page;
@@ -305,13 +306,18 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
             admin_rate_limit_middleware,
         ));
 
-    // The long-lived order-event stream (one per store monokulo is watching)
-    // is kept out of the request limits below: a request timeout would cut
-    // streams off, and a shared concurrency limit would fill up with them.
-    // Streams get a cap of their own instead (task 7.10).
+    // The long-lived streams (a store's order changes, one per store
+    // monokulo is watching, and the order-event log monokulo delivers
+    // webhooks from) are kept out of the request limits below: a request
+    // timeout would cut streams off, and a shared concurrency limit would
+    // fill up with them. Streams get a cap of their own instead (task 7.10).
     let limits = RequestLimits::default();
     let events_router = Router::new()
         .route("/api/v1/admin/tenant/events", get(admin::order_events))
+        .route(
+            "/api/v1/admin/order-events",
+            get(order_events::order_events),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_rate_limit_middleware,

@@ -120,6 +120,7 @@ fn inputs<'a>(
         reorg_check_depth: 20,
         grace_period_seconds: 0,
         scan_chunk_memory_budget_mb: 16,
+        order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     }
 }
 
@@ -169,6 +170,55 @@ async fn a_rescanned_branch_anchor_pruned_before_detection_is_forgotten() {
         store.lock().reorg_branch(monero::Network::Mainnet).unwrap(),
         None
     );
+}
+
+/// A round's upkeep prunes order events older than the retention and keeps
+/// the rest; the log's numbering carries on past the pruned ones, so a
+/// reader asking from before them is told it missed some.
+#[tokio::test]
+async fn upkeep_prunes_order_events_older_than_the_retention() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let now = crate::now_unix();
+    let retention = crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS;
+    let old = store
+        .append_order_event(&order, "order.unconfirmed", &[], now - retention - 60)
+        .unwrap();
+    let kept = store
+        .append_order_event(&order, "order.paid", &[], now - retention + 3600)
+        .unwrap();
+    let store = store.into_shared();
+    let daemon = FakeDaemonClient::new();
+    daemon.push_block("h1", vec![]);
+    let tenants = [(tenant, handle)];
+    run_round(
+        &ScanState::default(),
+        &inputs(
+            &Db::over_shared(Arc::clone(&store)),
+            &custody,
+            &daemon,
+            &tenants,
+        ),
+        Duration::from_secs(5),
+    )
+    .await
+    .into_result()
+    .unwrap();
+    let store = store.lock();
+    let left: Vec<i64> = store
+        .order_events_for_test()
+        .unwrap()
+        .iter()
+        .map(|e| e.seq)
+        .collect();
+    assert_eq!(left, vec![kept], "only the event past the retention went");
+    let span = store.order_event_span().unwrap();
+    assert_eq!(
+        span.resume(old - 1),
+        crate::store::ResumePoint::Lost { resume_after: old }
+    );
+    assert_eq!(span.resume(old), crate::store::ResumePoint::Complete);
 }
 
 /// With no time at all, each tier with work still completes one unit a
@@ -1672,6 +1722,7 @@ async fn the_next_block_is_fetched_while_this_one_is_scanned_and_used() {
     let db = Db::over_shared(Arc::clone(&store));
     let inputs = RoundInputs {
         scan_chunk_memory_budget_mb: 0,
+        order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
         ..inputs(&db, &custody, &daemon, &tenants)
     };
     let started = Instant::now();
@@ -5231,6 +5282,7 @@ async fn a_200_mb_block_is_scanned_in_pages_and_its_payment_found() {
     // about 3.3 MB a page.
     let inputs = RoundInputs {
         scan_chunk_memory_budget_mb: 256,
+        order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
         ..inputs(&db, &custody, &node, &tenants)
     };
     let payments = || {
@@ -5322,6 +5374,7 @@ async fn a_failed_page_keeps_the_pages_before_it() {
     let db = Db::over_shared(Arc::clone(&store));
     let inputs = RoundInputs {
         scan_chunk_memory_budget_mb: 256,
+        order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
         ..inputs(&db, &custody, &node, &tenants)
     };
     // Asked for whole, refused: headers come first from now on.

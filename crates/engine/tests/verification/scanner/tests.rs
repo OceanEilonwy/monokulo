@@ -51,7 +51,7 @@
 //!    Store-side failures at the same boundaries:
 //!    `a_store_failure_recording_a_block_match_leaves_that_block_unscanned_for_the_next_tick`,
 //!    `a_store_failure_marking_a_block_scanned_does_not_discard_the_ticks_mempool_matches`,
-//!    `a_status_change_whose_webhook_cannot_be_enqueued_is_rolled_back_rather_than_lost`.
+//!    `a_status_change_whose_order_event_cannot_be_written_is_rolled_back_rather_than_lost`.
 //! 5. **Dishonest or swapped daemons** (see `docs/DESIGN.md` §7.7 for which of
 //!    these are closed and which are accepted trust boundaries).
 //!    `swapping_to_a_daemon_serving_a_different_chain_reconciles_exactly_like_a_reorg`
@@ -3294,28 +3294,19 @@ async fn a_payment_a_reorg_dropped_to_the_mempool_can_still_be_voided_when_later
 }
 
 #[tokio::test]
-async fn a_status_change_whose_webhook_cannot_be_enqueued_is_rolled_back_rather_than_lost() {
-    // The status write and the enqueue announcing it were two separate
-    // autocommits, and `recompute_order_status` decides "did anything change" by
+async fn a_status_change_whose_order_event_cannot_be_written_is_rolled_back_rather_than_lost() {
+    // The status write and the event announcing it (once a webhook
+    // delivery) were two separate autocommits, and `recompute_order_status` decides "did anything change" by
     // comparing against the *stored* status - so the moment the new status lands,
     // the transition stops being detectable. A failure in the window between them
     // therefore didn't delay the merchant's `order.confirming`, it destroyed it:
     // no later tick could ever re-derive that a transition had happened.
     let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-    store
-        .create_webhook(
-            &shared::ids::TenantId::new(tenant_id.clone()),
-            "https://merchant.example/hook",
-            "{}",
-            "whsec_x",
-            1000,
-        )
-        .unwrap();
-    // Fail only enqueues, leaving every other write working, so this reproduces
+    // Fail only the event log's writes, leaving every other write working, so this reproduces
     // the specific window rather than a broken database.
     store
         .execute_raw_for_test(
-            "CREATE TRIGGER simulated_enqueue_failure BEFORE INSERT ON webhook_deliveries
+            "CREATE TRIGGER simulated_enqueue_failure BEFORE INSERT ON order_events
              BEGIN SELECT RAISE(ABORT, 'simulated store failure'); END;",
         )
         .unwrap();
@@ -3337,7 +3328,7 @@ async fn a_status_change_whose_webhook_cannot_be_enqueued_is_rolled_back_rather_
     .await;
     assert!(
         result.is_err(),
-        "the enqueue failure must surface, not be swallowed"
+        "the failed event write must surface, not be swallowed"
     );
     assert_eq!(
         store
@@ -3389,11 +3380,10 @@ async fn a_status_change_whose_webhook_cannot_be_enqueued_is_rolled_back_rather_
         .status,
         OrderStatus::Confirming
     );
-    let due = s
-        .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
-        .unwrap();
-    assert_eq!(due.len(), 1);
-    assert_eq!(due[0].event_type, "order.confirming");
+    let events = s.order_events_for_test().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, "order.confirming");
+    assert_eq!(events[0].field("status").as_deref(), Some("confirming"));
     assert!(s
         .pending_payment_recomputes_page(Network::Mainnet, "", 10_000)
         .unwrap()
@@ -9157,6 +9147,7 @@ async fn cancellation_after_a_closed_orders_payment_is_written_does_not_lose_its
                 .scan
                 .load()
                 .scan_chunk_memory_budget_mb,
+            order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
         };
         let mut tick = Box::pin(crate::work::run_round(&state, &inputs, T.round_budget));
         std::future::poll_fn(|cx| {

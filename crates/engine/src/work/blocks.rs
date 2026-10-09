@@ -2164,6 +2164,7 @@ mod tests {
             reorg_check_depth: 10,
             grace_period_seconds: 0,
             scan_chunk_memory_budget_mb: 1,
+            order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
         };
 
         carry(&state, crate::daemon::NodeKey::default());

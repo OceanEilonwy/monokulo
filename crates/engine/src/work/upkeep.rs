@@ -4,6 +4,7 @@
 //!   reorg window, so older rows go. Measured from the scanner's own
 //!   high-water mark, never the node's reported height, so a node claiming
 //!   an absurd tip can't talk the scanner into deleting the window it needs.
+//!   Order events older than `order_events.retention_days` go too.
 //! - Scanned ranges (`docs/order_rescan_wbs.md` Phase 5.1): each in-scope
 //!   order shows the range of blocks scanned for it, up to its store's
 //!   cursor. A rotating page of stores per unit.
@@ -82,17 +83,29 @@ pub(super) async fn step(round: &mut Round<'_>, until: tokio::time::Instant) -> 
 
 async fn prune(round: &Round<'_>) -> Result<(), ScannerError> {
     let depth = round.inputs.reorg_check_depth;
-    let pruned = round
+    let events_before = round
+        .now
+        .saturating_sub(round.inputs.order_event_retention_secs);
+    let (pruned, events) = round
         .db(move |s, network| -> Result<_, ScannerError> {
-            Ok(match s.max_scanned_height(network)? {
+            let blocks = match s.max_scanned_height(network)? {
                 Some(high_water) => s.prune_scanned_blocks_below(
                     network,
                     high_water.saturating_sub(depth.saturating_mul(4)),
                 )?,
                 None => 0,
-            })
+            };
+            // The log is the whole engine's, not this network's: each
+            // network's upkeep prunes it, and only the first finds anything.
+            Ok((blocks, s.prune_order_events_before(events_before)?))
         })
         .await?;
+    if events > 0 {
+        tracing::debug!(
+            order_events.pruned = events,
+            "pruned order events older than the retention"
+        );
+    }
     round
         .state
         .activity()

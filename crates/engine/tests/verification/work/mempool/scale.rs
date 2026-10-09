@@ -39,6 +39,7 @@ async fn sustained_arrivals(wave: usize, rounds: usize) {
         reorg_check_depth: 20,
         grace_period_seconds: 0,
         scan_chunk_memory_budget_mb: 16,
+        order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     };
     let state = ScanState::default();
     // It pays an address allocated AFTER the successful initial scan. Merely
@@ -114,6 +115,7 @@ async fn large_pool(count: usize) {
         reorg_check_depth: 20,
         grace_period_seconds: 0,
         scan_chunk_memory_budget_mb: 16,
+        order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     };
     let state = ScanState::default();
     let mut pool: Vec<_> = (0..count - 1).map(foreign).collect();
@@ -326,6 +328,7 @@ async fn transaction_tenant_matrix(count: usize, transactions: usize) {
         reorg_check_depth: 20,
         grace_period_seconds: 0,
         scan_chunk_memory_budget_mb: 16,
+        order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     };
     let state = ScanState::default();
     for _ in 0..transactions {

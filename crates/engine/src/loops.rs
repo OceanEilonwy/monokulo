@@ -129,6 +129,7 @@ pub async fn run_fast_mempool_loop(
                 reorg_check_depth: scan.reorg_check_depth,
                 grace_period_seconds: scan.expired_order_grace_period_seconds,
                 scan_chunk_memory_budget_mb: scan.scan_chunk_memory_budget_mb,
+                order_event_retention_secs: scan.order_event_retention_secs,
             };
             let pass = tokio::time::timeout(
                 tick_deadline(scan.poll_interval),
@@ -509,6 +510,7 @@ pub async fn run_scanner_loop(
             reorg_check_depth: scan.reorg_check_depth,
             grace_period_seconds: scan.expired_order_grace_period_seconds,
             scan_chunk_memory_budget_mb: scan.scan_chunk_memory_budget_mb,
+            order_event_retention_secs: scan.order_event_retention_secs,
         };
         // The round keeps to its own budget (more only while one page of a
         // large block needs it); this outer deadline only catches a unit

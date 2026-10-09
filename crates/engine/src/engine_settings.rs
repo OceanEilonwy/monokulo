@@ -208,6 +208,13 @@ settings! {
         description: "Minutes after an order is paid or expires during which payments to it are still watched for. A payment sent later is found with the store's payment lookup.",
         example: "360",
     },
+    ORDER_EVENTS_RETENTION_DAYS: u64 {
+        key: "order_events.retention_days",
+        default: crate::store::DEFAULT_ORDER_EVENT_RETENTION_DAYS,
+        check: range(1, 365),
+        description: "Days the engine keeps each order event (an order paid, expired, double-spent) for monokulo, which delivers them to stores' webhooks. If monokulo is away longer than this, the events it missed are lost and it says so in its log.",
+        example: "7",
+    },
     PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB: u32 {
         key: "payment.scan_chunk_memory_budget_mb",
         default: 8,
@@ -476,6 +483,9 @@ pub struct ScanConfig {
     pub poll_interval: Duration,
     pub expired_order_grace_period_seconds: i64,
     pub scan_chunk_memory_budget_mb: u32,
+    /// How long the order-event log keeps an event, in seconds
+    /// (`order_events.retention_days`); the upkeep tier prunes older ones.
+    pub order_event_retention_secs: i64,
     /// The networks whose blocks' proof of work is checked
     /// (`docs/proof_of_work.md`).
     pub proof_of_work: Vec<monero::Network>,
@@ -495,6 +505,7 @@ impl Section for ScanConfig {
             &PAYMENT_MEMPOOL_POLL_INTERVAL_MS,
             &PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES,
             &PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB,
+            &ORDER_EVENTS_RETENTION_DAYS,
             &PROOF_OF_WORK_MAINNET,
             &PROOF_OF_WORK_STAGENET,
             &PROOF_OF_WORK_TESTNET,
@@ -518,6 +529,10 @@ impl Section for ScanConfig {
                 .get(&PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES)
                 * 60,
             scan_chunk_memory_budget_mb: snapshot.get(&PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB),
+            order_event_retention_secs: i64::try_from(
+                snapshot.get(&ORDER_EVENTS_RETENTION_DAYS) * 86_400,
+            )
+            .unwrap_or(i64::MAX),
             proof_of_work: [
                 (monero::Network::Mainnet, &PROOF_OF_WORK_MAINNET),
                 (monero::Network::Stagenet, &PROOF_OF_WORK_STAGENET),
