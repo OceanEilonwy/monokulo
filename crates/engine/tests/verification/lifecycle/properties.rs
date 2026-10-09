@@ -99,16 +99,20 @@ proptest! {
             use axum::{body::Body,http::{Request,StatusCode}};
             use tower::ServiceExt as _;
             use crate::http::rate_limit::RateLimiter;
-            let entered: [Arc<AtomicUsize>;3] = std::array::from_fn(|_| Arc::new(AtomicUsize::new(0)));
-            let mut ports = [0;3];
+            // A node for each network, and a fourth that every network's
+            // fallback names; what reaches the fourth isn't checked.
+            let entered: [Arc<AtomicUsize>;4] = std::array::from_fn(|_| Arc::new(AtomicUsize::new(0)));
+            let mut ports = [0;4];
             let mut servers = Vec::new();
-            for i in 0..3 {
+            for i in 0..4 {
                 let counter = Arc::clone(&entered[i]);
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                 ports[i] = listener.local_addr().unwrap().port();
                 // Reject admin get_info probes immediately; hang the scanner's
                 // plain RPC endpoints so configuration histories exercise real
-                // work cancellation without three seconds per API save.
+                // work cancellation without three seconds per API save. The
+                // fallback is one of these too, not a closed port: Windows
+                // takes two seconds to refuse each save's probe of one.
                 let endpoint = axum::Router::new()
                     .route("/json_rpc",axum::routing::post(async || { StatusCode::SERVICE_UNAVAILABLE }))
                     .fallback(move || {
@@ -143,7 +147,7 @@ proptest! {
                 let mut nodes = serde_json::Map::new();
                 for (i,network) in networks.iter().enumerate() {
                     nodes.insert(crate::network::network_str(*network).to_owned(),if mask & (1<<i)==0 { serde_json::Value::Null }
-                        else { serde_json::json!({"host":"127.0.0.1","port":ports[i],"ssl":false,"fallbacks":if fallback {vec![serde_json::json!({"host":"127.0.0.1","port":9})]} else {vec![]}}) });
+                        else { serde_json::json!({"host":"127.0.0.1","port":ports[i],"ssl":false,"fallbacks":if fallback {vec![serde_json::json!({"host":"127.0.0.1","port":ports[3]})]} else {vec![]}}) });
                 }
                 let response = router.clone().oneshot(Request::builder().method("POST").uri("/api/v1/admin/settings")
                     .header("content-type","application/json").header(shared::auth::ENGINE_TOKEN_HEADER,crate::http::TEST_ENGINE_TOKEN)

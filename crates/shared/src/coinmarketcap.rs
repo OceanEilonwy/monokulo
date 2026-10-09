@@ -340,7 +340,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_base_url_is_a_clean_error() {
-        let provider = CoinMarketCapRateProvider::new("http://127.0.0.1:1");
+        let provider =
+            CoinMarketCapRateProvider::new(format!("http://{}", crate::unreachable::address()));
         assert!(provider.piconero_per_unit_cached("USD", TTL).await.is_err());
     }
 

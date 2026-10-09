@@ -198,12 +198,47 @@ fn seed(conn: &Connection, version: usize, amount: i64, payload: &str) {
     }
 }
 
-fn upgrade(version: usize, amount: i64, payload: &str, fault: Option<usize>) -> usize {
-    let path = TempFile::new();
-    let conn = Connection::open(&path.0).unwrap();
+/// A database at schema `version` holding the seeded money and work, as
+/// bytes. The historic migrations and the seed are setup, not what these
+/// properties test, so they run in memory; each case writes the result to
+/// a file of its own and upgrades that.
+fn historic(version: usize, amount: i64, payload: &str) -> Vec<u8> {
+    let conn = Connection::open_in_memory().unwrap();
     configure_connection(&conn).unwrap();
     shared::migrations::apply(&conn, &MIGRATIONS[..version]).unwrap();
     seed(&conn, version, amount, payload);
+    conn.serialize(rusqlite::MAIN_DB).unwrap().to_vec()
+}
+
+fn historic_file(image: &[u8]) -> TempFile {
+    let path = TempFile::new();
+    write_database_file(&path.0, image).unwrap();
+    path
+}
+
+fn upgrade(version: usize, amount: i64, payload: &str, fault: Option<usize>) -> usize {
+    upgrade_from(
+        &historic(version, amount, payload),
+        version,
+        amount,
+        payload,
+        fault,
+    )
+}
+
+/// Upgrades a file holding `image` (from [`historic`]) to the current
+/// schema, denying the `fault`th authorizer access on the way, then checks
+/// the money and work survived through `Store::open_file` and a reopen.
+fn upgrade_from(
+    image: &[u8],
+    version: usize,
+    amount: i64,
+    payload: &str,
+    fault: Option<usize>,
+) -> usize {
+    let path = historic_file(image);
+    let conn = Connection::open(&path.0).unwrap();
+    configure_connection(&conn).unwrap();
     let accesses = Arc::new(AtomicUsize::new(0));
     let denied = Arc::new(AtomicBool::new(false));
     if let Some(at) = fault {
@@ -328,9 +363,13 @@ fn every_historic_schema_upgrades_with_existing_money_and_work() {
 fn every_reached_upgrade_fault_recovers_without_partial_schema() {
     // The last migration is a short representative transaction; deny every
     // authorizer boundary, including bookkeeping and commit operations.
-    let count = upgrade(MIGRATIONS.len() - 1, 42, "fault sweep", Some(usize::MAX));
+    // The file before the upgrade is the same for every fault, so it is
+    // built once.
+    let version = MIGRATIONS.len() - 1;
+    let image = historic(version, 42, "fault sweep");
+    let count = upgrade_from(&image, version, 42, "fault sweep", Some(usize::MAX));
     for at in 0..count {
-        upgrade(MIGRATIONS.len() - 1, 42, "fault sweep", Some(at));
+        upgrade_from(&image, version, 42, "fault sweep", Some(at));
     }
 }
 
@@ -359,12 +398,7 @@ fn migration_crash_child() {
 }
 
 async fn crash_upgrade(version: usize, amount: i64, payload: &str, point: &str) {
-    let path = TempFile::new();
-    let conn = Connection::open(&path.0).unwrap();
-    configure_connection(&conn).unwrap();
-    shared::migrations::apply(&conn, &MIGRATIONS[..version]).unwrap();
-    seed(&conn, version, amount, payload);
-    drop(conn);
+    let path = historic_file(&historic(version, amount, payload));
     let mut child = crate::property_support::CrashChild(Some(
         std::process::Command::new(std::env::current_exe().unwrap())
             .args([
