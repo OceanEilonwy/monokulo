@@ -345,20 +345,6 @@ tr:nth-child(even) td { background: color-mix(in srgb, var(--ink) 5%, transparen
   table.table-stack td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: 0.8em; font-weight: 700; }
   table.table-stack td:empty { display: none; }
 }
-/* Truncates long inline content (e.g. a public key in a list table) with an
-   ellipsis, without letting it force its containing table wider than its
-   own header row. Purely visual: CSS truncation never removes the full text
-   from the DOM/accessibility tree, so the browser's own native find-in-page
-   (see `tr:has(::target-text)` below) still matches against every character
-   that's actually there, ellipsised or not. */
-.ellipsis {
-  display: inline-block;
-  max-width: 16em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: bottom;
-}
 /* Highlights the whole row containing a native browser find-in-page match
    (Ctrl+F / Cmd+F) - no JS. `::target-text` is the pseudo-element the
    browser itself paints over a find match; `:has()` lets a plain selector
@@ -636,12 +622,6 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 .orders-search button { margin: 0; }
 .orders-search a { align-self: center; }
 .orders-table td:nth-child(2) { max-width: 14em; overflow-wrap: anywhere; }
-/* `views::order_id_short`: the start of an id, an ellipsis in the middle
-   when it doesn't fit, and always its last characters. */
-.mid-ellipsis { display: inline-flex; max-width: 100%; min-width: 0; white-space: nowrap; vertical-align: bottom; }
-.mid-head { min-width: 4ch; overflow: hidden; text-overflow: ellipsis; }
-.mid-tail { flex: none; }
-a.order-id { display: inline-block; max-width: 11em; }
 .orders-pages { display: flex; gap: 0.5em; }
 /* Visually hidden but still readable by assistive tech: the theme toggle's
    labels, the checkout's heading, the Logs page's search label. */
@@ -1166,14 +1146,12 @@ mk-select[compact] .mk-popup { white-space: nowrap; }
 .test-wallets > summary:hover { background: var(--btn-hover-bg); }
 .test-wallets[open] > summary { border-bottom: 1px dashed var(--line-strong); border-radius: var(--radius-md) var(--radius-md) 0 0; }
 .test-wallets > div { padding: 0 var(--space-md) var(--space-sm); }
-.wallets-table .wallet-address { display: inline-block; max-width: 17ch; vertical-align: bottom; }
 .wallets-table .card-unit { display: none; }
 .list-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-sm); margin-top: var(--space-lg); }
 .list-foot p, .list-foot .btn { margin: 0; }
 @media (max-width: 640px) {
   table.table-cards .card-detail { grid-column: 1; grid-row: 2; }
   .wallets-table .card-unit { display: inline; }
-  .wallets-table .wallet-address { max-width: 100%; }
 }
 /* A wallet's page: its network beside its name. */
 .wallet-title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-md); margin: var(--space-xs) 0 var(--space-sm); border-bottom: 2px solid var(--line); }

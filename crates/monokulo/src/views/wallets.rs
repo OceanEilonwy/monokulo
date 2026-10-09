@@ -234,7 +234,7 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
                         select id="existing-wallet" name="wallet_id" required {
                             @for w in &data.wallets {
                                 (Choice::new(&w.wallet.id, &w.wallet.name)
-                                    .detail(short_address(&w.wallet.primary_address))
+                                    .detail(super::short_address_text(&w.wallet.primary_address))
                                     .network(&w.wallet.network)
                                     .note(stores_label(w.store_count)))
                             }
@@ -630,14 +630,6 @@ fn paper_panel() -> Markup {
     }
 }
 
-pub fn short_address(address: &str) -> String {
-    if address.len() > 12 {
-        format!("{}…{}", &address[..5], &address[address.len() - 4..])
-    } else {
-        address.to_owned()
-    }
-}
-
 fn origin_label(w: &crate::db::WalletRow) -> String {
     match w.origin {
         crate::db::WalletOrigin::Created => match w.backup.as_deref() {
@@ -757,7 +749,7 @@ fn wallets_table(wallets: &[&WalletListItem], with_network: bool) -> Markup {
                             @if with_network { td class="card-meta" { (super::network_badge(&w.network)) } }
                             td class="card-title" { a href=(format!("/account/wallets/{}", w.id)) { (w.name) } }
                             td class="card-when" { (w.kind) }
-                            td class="card-detail" { code class="wallet-address" { (super::address_short(&w.address)) } }
+                            td class="card-detail" { code { (super::short_address(&w.address)) } }
                             td class="card-status" {
                                 (w.stores)
                                 span class="card-unit" { @if w.stores == 1 { " store" } @else { " stores" } }
@@ -1101,8 +1093,9 @@ mod tests {
         );
         assert!(!html.contains("test-wallets"), "{html}");
         assert!(!html.contains("No mainnet wallets yet"), "{html}");
-        // The address cut in the middle, all of it in the page.
-        assert!(html.contains(r#"<code class="wallet-address"><span class="mid-ellipsis" title="Cake-address-0123456789abcdef">"#), "{html}");
+        // The address shortened by `views::short_address`, all of it in reach.
+        assert!(html.contains(r#"<code><span title="Cake-address-0123456789abcdef"><span aria-hidden="true">Cake-a…s-0123…abcdef</span><span class="sr-only">Cake-address-0123456789abcdef</span></span></code>"#), "{html}");
+        assert!(!html.contains("..."), "{html}");
         // On a phone, "2 stores" and "1 store".
         assert!(
             html.contains(r#"2<span class="card-unit"> stores</span>"#),
@@ -1230,7 +1223,7 @@ mod tests {
             },
         )
         .into_string();
-        assert!(html.contains(r#"data-network="mainnet" data-note="2 stores">Cake (5B8s3…unGS) [Mainnet] - 2 stores</option>"#), "{html}");
+        assert!(html.contains(r#"data-network="mainnet" data-note="2 stores">Cake (5B8s3o…6z5NvM…QkunGS) [Mainnet] - 2 stores</option>"#), "{html}");
         assert!(
             html.contains(r#"data-network="stagenet" data-note="1 store">"#),
             "{html}"

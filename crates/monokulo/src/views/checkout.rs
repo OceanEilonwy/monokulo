@@ -25,7 +25,7 @@ use super::{layout_bare, layout_bare_with_head, layout_with_head, script, Load, 
 /// One payment row on the checkout page's payments table - mirrors the
 /// engine's own `PaymentViewModel` field-for-field.
 pub struct CheckoutPaymentViewModel {
-    pub txid_short: String,
+    pub txid: String,
     pub amount_xmr: String,
     pub confirmations: u64,
     pub is_zero_conf: bool,
@@ -661,7 +661,7 @@ fn live_payments(data: &CheckoutViewModel) -> Markup {
                         tbody id="payments-body" {
                             @for payment in &data.payments {
                                 tr {
-                                    td { (payment.txid_short) }
+                                    td { (super::short_id(&payment.txid)) }
                                     td class="nowrap" { (super::trim_xmr(&payment.amount_xmr)) " XMR" }
                                     td { @if payment.is_zero_conf { "mempool" } @else { (payment.confirmations) } }
                                 }
@@ -928,7 +928,7 @@ mod tests {
         let mut data = test_checkout_view_model(false);
         data.status = shared::order_status::OrderStatus::Partial.into();
         data.payments = vec![CheckoutPaymentViewModel {
-            txid_short: "abcd1234…ef5678".to_string(),
+            txid: format!("abcd12{}ef5678", "0".repeat(52)),
             amount_xmr: "0.200000000000".to_string(),
             confirmations: 0,
             is_zero_conf: true,
@@ -1199,20 +1199,26 @@ mod tests {
         let mut data = test_checkout_view_model(false);
         data.payments = vec![
             CheckoutPaymentViewModel {
-                txid_short: "abc…def".to_string(),
+                txid: format!("3f9a1c{}e21b07", "9".repeat(52)),
                 amount_xmr: "0.25".to_string(),
                 confirmations: 3,
                 is_zero_conf: false,
             },
             CheckoutPaymentViewModel {
-                txid_short: "ghi…jkl".to_string(),
+                txid: "short-txid".to_string(),
                 amount_xmr: "0.25".to_string(),
                 confirmations: 0,
                 is_zero_conf: true,
             },
         ];
         let html = checkout_page(&chrome(), &data).into_string();
-        assert!(html.contains("abc…def"));
+        // Each txid as `views::short_id` shows it, the whole in reach.
+        assert!(html.contains(&format!(
+            r#"<td><span title="3f9a1c{0}e21b07"><span aria-hidden="true">3f9a1c…e21b07</span><span class="sr-only">3f9a1c{0}e21b07</span></span></td>"#,
+            "9".repeat(52)
+        )), "{html}");
+        assert!(html.contains("<td>short-txid</td>"), "{html}");
+        assert!(!html.contains("..."), "{html}");
         assert!(html.contains("mempool"));
     }
 
