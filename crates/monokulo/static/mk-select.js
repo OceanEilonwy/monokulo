@@ -8,7 +8,9 @@
 // set the select keep working, because the select is still the field.
 //
 // An option can carry its parts as data attributes:
-//   data-label   the name shown (else the option's text)
+//   data-label   the name shown (else the option's text); empty for an
+//                option that is only its badge (a network)
+//   data-logo    a small picture before the name: a wallet app's logo
 //   data-detail  monospace, muted: an address, a currency code
 //   data-network a wallet's Monero network, drawn as the site's network
 //                badge (`views::network_badge`)
@@ -72,7 +74,8 @@
 
   // An option's parts, read from the select each time.
   const parts = (option) => ({
-    label: option.dataset.label || option.text,
+    label: option.dataset.label ?? option.text,
+    logo: option.dataset.logo || '',
     detail: option.dataset.detail || '',
     network: option.dataset.network || '',
     chip: option.dataset.chip || '',
@@ -185,7 +188,14 @@
     }
 
     draw(p, withNote) {
-      const out = [el('span', 'mk-label', p.label)];
+      const out = [];
+      if (p.logo) {
+        const logo = el('img', 'mk-logo');
+        logo.src = p.logo;
+        logo.alt = '';
+        out.push(logo);
+      }
+      if (p.label) out.push(el('span', 'mk-label', p.label));
       if (p.detail) out.push(el('span', 'mk-detail', p.detail));
       if (p.network) out.push(networkBadge(p.network));
       if (p.chip) out.push(el('span', `tag ${p.current ? 'tag-ok' : 'tag-unknown'} mk-chip`, p.chip));
@@ -255,7 +265,7 @@
       return Array.from(this.select.options)
         .map((option, index) => ({ option, index, p: parts(option) }))
         .filter(({ option, p }) => !isPrompt(option) &&
-          (!query || [p.label, p.detail, p.note, option.text].some((s) => s.toLowerCase().includes(query))));
+          (!query || [p.label, p.detail, p.network, p.note, option.text].some((s) => s.toLowerCase().includes(query))));
     }
 
     fill() {
@@ -385,7 +395,7 @@
       const enabled = this.shownOptions().filter((s) => !s.option.disabled);
       const from = Math.max(0, enabled.findIndex((s) => s.index === this.active));
       const order = enabled.slice(from + (this.typed.length === 1 ? 1 : 0)).concat(enabled.slice(0, from + 1));
-      const hit = order.find((s) => s.p.label.toLowerCase().startsWith(this.typed.toLowerCase()));
+      const hit = order.find((s) => (s.p.label || s.p.network).toLowerCase().startsWith(this.typed.toLowerCase()));
       if (hit) {
         this.active = hit.index;
         this.point();

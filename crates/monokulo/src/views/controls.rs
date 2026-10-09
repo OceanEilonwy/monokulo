@@ -4,7 +4,8 @@
 //! (`static/mk-select.js`), its options written with [`Choice`]: the
 //! option's text says everything in words, for a browser without
 //! JavaScript, and its data attributes give the component the parts to
-//! draw (a label, a monospace detail, a network badge, a chip, a note).
+//! draw (a logo, a label, a monospace detail, a network badge, a chip, a
+//! note).
 
 use maud::{html, Markup, Render};
 
@@ -13,6 +14,7 @@ use maud::{html, Markup, Render};
 pub struct Choice {
     value: String,
     label: String,
+    logo: Option<String>,
     detail: Option<String>,
     network: Option<String>,
     chip: Option<Chip>,
@@ -51,6 +53,14 @@ impl Choice {
     /// yet: no value, never pickable, shown until something is.
     pub fn prompt(label: impl AsRef<str>, shown: bool) -> Choice {
         Choice::new("", label).disabled(true).selected(shown)
+    }
+
+    /// A small picture before the label (a wallet app's logo), by its
+    /// URL. Drawn by the component only: the option's text has no room
+    /// for it.
+    pub fn logo(mut self, url: impl AsRef<str>) -> Choice {
+        self.logo = Some(url.as_ref().to_owned());
+        self
     }
 
     /// Monospace and muted after the label: an address, a currency code.
@@ -96,17 +106,24 @@ impl Choice {
     }
 
     /// The option's text, as a browser without JavaScript shows it:
-    /// `Label (detail) [Network] [chip] - note`.
+    /// `Label (detail) [Network] [chip] - note`. An option with no label
+    /// (a network on its own) starts at its first part: `[Stagenet]`.
     pub fn text(&self) -> String {
         let mut text = self.label.clone();
+        let mut push = |part: String| {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(&part);
+        };
         if let Some(detail) = &self.detail {
-            text.push_str(&format!(" ({detail})"));
+            push(format!("({detail})"));
         }
         if let Some(network) = &self.network {
-            text.push_str(&format!(" [{}]", super::network_word(network)));
+            push(format!("[{}]", super::network_word(network)));
         }
         if let Some(chip) = &self.chip {
-            text.push_str(&format!(" [{}]", chip.text()));
+            push(format!("[{}]", chip.text()));
         }
         if let Some(note) = &self.note {
             text.push_str(&format!(" - {note}"));
@@ -115,7 +132,8 @@ impl Choice {
     }
 
     fn has_parts(&self) -> bool {
-        self.detail.is_some()
+        self.logo.is_some()
+            || self.detail.is_some()
             || self.network.is_some()
             || self.chip.is_some()
             || self.note.is_some()
@@ -128,6 +146,7 @@ impl Render for Choice {
         html! {
             option value=(self.value) selected[self.selected] disabled[self.disabled]
                 data-label=[parts.then_some(&self.label)]
+                data-logo=[self.logo.as_ref()]
                 data-detail=[self.detail.as_ref()]
                 data-network=[self.network.as_ref()]
                 data-chip=[self.chip.as_ref().map(Chip::text)]
@@ -192,6 +211,34 @@ mod tests {
         assert_eq!(
             html,
             r#"<option value="w_2" data-label="Feather test" data-network="stagenet" data-note="1 store">Feather test [Stagenet] - 1 store</option>"#
+        );
+    }
+
+    /// The setup flow's network dropdown: the badge alone, `[Stagenet]`
+    /// without JavaScript.
+    #[test]
+    fn a_network_on_its_own_is_its_badge() {
+        let html = Choice::new("stagenet", "")
+            .network("stagenet")
+            .selected(true)
+            .render()
+            .into_string();
+        assert_eq!(
+            html,
+            r#"<option value="stagenet" selected data-label="" data-network="stagenet">[Stagenet]</option>"#
+        );
+    }
+
+    /// A logo is drawn by the component; the words don't change.
+    #[test]
+    fn a_logo_is_for_the_component_only() {
+        let html = Choice::new("feather", "Feather")
+            .logo("/static/wallet-logos/feather.png")
+            .render()
+            .into_string();
+        assert_eq!(
+            html,
+            r#"<option value="feather" data-label="Feather" data-logo="/static/wallet-logos/feather.png">Feather</option>"#
         );
     }
 

@@ -123,14 +123,15 @@ fn regenerate_icon() -> Markup {
     }
 }
 
+/// The setup flow's network dropdown: each network as its badge
+/// (`views::network_badge`), `[Stagenet]` without JavaScript.
 fn network_select(selected: &str) -> Markup {
     html! {
         mk-select {
             select name="network" {
                 @for network in ["mainnet", "stagenet", "testnet"] {
-                    (Choice::new(network, network)
+                    (Choice::new(network, "")
                         .network(network)
-                        .note(if network == "mainnet" { "real payments" } else { "test network" })
                         .selected(network == selected))
                 }
             }
