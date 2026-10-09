@@ -2245,17 +2245,15 @@ async fn the_snp_trust_settings_cannot_be_changed_through_the_settings_api() {
     }
 }
 
-/// Ports on 127.0.0.1 where nothing listens: bound and released, so a node
-/// saved there is refused at once, with no DNS and no reliance on a
-/// well-known port being closed.
-fn closed_ports<const N: usize>() -> [u16; N] {
-    let listeners: [std::net::TcpListener; N] =
-        std::array::from_fn(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap());
-    listeners.map(|listener| listener.local_addr().unwrap().port())
+/// Ports on 127.0.0.1 that hang up on every connection
+/// ([`shared::unreachable`]), so a node saved there fails at once, with no
+/// DNS. Not closed ports: Windows takes two seconds to refuse each try.
+fn unreachable_ports<const N: usize>() -> [u16; N] {
+    std::array::from_fn(|_| shared::unreachable::address().port())
 }
 
-fn closed_port() -> u16 {
-    let [port] = closed_ports();
+fn unreachable_port() -> u16 {
+    let [port] = unreachable_ports();
     port
 }
 
@@ -2264,7 +2262,7 @@ async fn setting_a_monero_node_round_trips_including_its_fallback_list() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
     let router = build_router(state, 1_000_000);
 
-    let [primary, backup] = closed_ports();
+    let [primary, backup] = unreachable_ports();
     let node = serde_json::json!({
         "host": "127.0.0.1",
         "port": primary,
@@ -2299,7 +2297,7 @@ async fn clearing_a_monero_node_with_a_null_value_removes_its_configuration() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
     let router = build_router(state, 1_000_000);
 
-    let node = serde_json::json!({ "host": "127.0.0.1", "port": closed_port(), "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] });
+    let node = serde_json::json!({ "host": "127.0.0.1", "port": unreachable_port(), "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] });
     router
         .clone()
         .oneshot(settings_request(
@@ -3064,7 +3062,7 @@ async fn a_saved_node_is_used_straight_away_and_clearing_it_stops_it_the_reporte
         .is_empty());
 
     // Save a stagenet node, as dev-run.sh and the admin page do.
-    let [primary, fallback] = closed_ports();
+    let [primary, fallback] = unreachable_ports();
     save_settings(
         &router,
         serde_json::json!({ "monero_node": { "stagenet": {
@@ -3112,7 +3110,7 @@ async fn a_saved_node_is_used_straight_away_and_clearing_it_stops_it_the_reporte
 #[tokio::test]
 async fn an_unchanged_network_keeps_its_client_when_another_network_is_saved() {
     let (router, daemons, _) = engine_that_applies_node_settings().await;
-    let node = serde_json::json!({ "host": "127.0.0.1", "port": closed_port(), "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] });
+    let node = serde_json::json!({ "host": "127.0.0.1", "port": unreachable_port(), "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] });
     save_settings(
         &router,
         serde_json::json!({ "monero_node": { "stagenet": node.clone() } }),
@@ -3197,7 +3195,7 @@ async fn a_saved_rate_limit_body_limit_and_tenant_default_apply_to_the_next_requ
         serde_json::json!({ "scalars": { "server.max_body_bytes": "8192" } }),
     )
     .await;
-    let save_node = serde_json::json!({ "monero_node": { "mainnet": { "host": "127.0.0.1", "port": closed_port(), "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] } } });
+    let save_node = serde_json::json!({ "monero_node": { "mainnet": { "host": "127.0.0.1", "port": unreachable_port(), "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] } } });
     save_settings(&router, save_node).await;
     let tenant = create_tenant(&router, 5).await;
     let me = router
@@ -3275,10 +3273,10 @@ async fn an_unknown_setting_is_refused_and_nothing_is_saved() {
 #[tokio::test]
 async fn status_lists_a_store_whose_network_has_no_answering_node() {
     let (router, _, _) = engine_that_applies_node_settings().await;
-    // A node where nothing listens: configured, but unreachable.
+    // A node that answers nothing: configured, but unreachable.
     save_settings(
         &router,
-        serde_json::json!({ "monero_node": { "stagenet": { "host": "127.0.0.1", "port": closed_port(), "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] } } }),
+        serde_json::json!({ "monero_node": { "stagenet": { "host": "127.0.0.1", "port": unreachable_port(), "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] } } }),
     )
     .await;
     let created = router
@@ -3301,7 +3299,7 @@ async fn status_lists_a_store_whose_network_has_no_answering_node() {
 async fn saving_nodes_that_dont_answer_for_a_network_stores_use_is_reported() {
     let (router, _, _) = engine_that_applies_node_settings().await;
     let node = |port: u16| serde_json::json!({ "monero_node": { "stagenet": { "host": "127.0.0.1", "port": port, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] } } });
-    let [first, second] = closed_ports();
+    let [first, second] = unreachable_ports();
     save_settings(&router, node(first)).await;
     assert_eq!(
         router
@@ -4183,7 +4181,7 @@ async fn nodes_that_do_not_answer_or_do_not_say_are_saved() {
     let router = settings_router().await;
     let fakechain = spawn_node_on(Some("fakechain")).await;
     let old = spawn_node_on(None).await;
-    let nothing = std::net::SocketAddr::from(([127, 0, 0, 1], closed_port()));
+    let nothing = std::net::SocketAddr::from(([127, 0, 0, 1], unreachable_port()));
 
     for (network, node) in [
         ("stagenet", nothing),

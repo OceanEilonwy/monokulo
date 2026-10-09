@@ -1202,13 +1202,16 @@ mod tests {
             );
         }
 
-        /// The real degradation path: the engine is entirely unreachable (no
-        /// listener at all at this port) - the page must show a plain error
+        /// The real degradation path: the engine is entirely unreachable (it
+        /// hangs up on every request) - the page must show a plain error
         /// banner, not a 500 or a fabricated healthy page.
         #[tokio::test]
         async fn status_page_shows_a_plain_error_banner_when_a_remote_engine_is_unreachable_over_http(
         ) {
-            let state = state_with_engine(EngineClient::for_tests("http://127.0.0.1:1"));
+            let state = state_with_engine(EngineClient::for_tests(format!(
+                "http://{}",
+                shared::unreachable::address()
+            )));
             let router: Router = build_router(state);
 
             let response = router
@@ -1561,7 +1564,10 @@ mod tests {
 
         #[tokio::test]
         async fn status_summary_reports_unhealthy_when_a_remote_engine_is_unreachable_over_http() {
-            let state = state_with_engine(EngineClient::for_tests("http://127.0.0.1:1"));
+            let state = state_with_engine(EngineClient::for_tests(format!(
+                "http://{}",
+                shared::unreachable::address()
+            )));
             let router: Router = build_router(state);
 
             let response = router
