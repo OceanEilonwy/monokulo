@@ -465,6 +465,11 @@ fn text_and_controls_are_legible_in_both_themes() {
         ("--btn-danger-ink", "--btn-danger-bg", 4.5),
         ("--step-current-ink", "--step-current-bg", 4.5),
         ("--step-done-ink", "--step-done-bg", 4.5),
+        // A done small step of the Wallet step: ink text on the success
+        // tint, inside an edge (and joined by a line) in the success colour.
+        ("--ink", "--step-done-ok-bg", 4.5),
+        ("--step-done-ok", "--paper-raised", 3.0),
+        ("--step-done-ok", "--step-done-ok-bg", 3.0),
         ("--accent-text", "--paper", 4.5),
         ("--accent-text", "--paper-raised", 4.5),
         ("--accent-text", "--chrome-bg", 4.5),

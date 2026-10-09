@@ -98,12 +98,17 @@
   /* The one destructive action of a page (Delete wallet). */
   --btn-danger-bg: var(--error);
   --btn-danger-ink: var(--error-ink);
-  /* The setup steps (Account, Wallet, Ready): the step you are on, and the
+  /* The setup steps (Store, Wallet, Done): the step you are on, and the
      ones done. */
   --step-current-bg: var(--accent);
   --step-current-ink: var(--accent-ink);
   --step-done-bg: var(--ink);
   --step-done-ink: var(--paper-raised);
+  /* The Wallet step's own small steps (Kind, Back up, Check): a done one is
+     green, its edge and the line to the next in the success colour, on the
+     success tint, with ink text. */
+  --step-done-ok: var(--success);
+  --step-done-ok-bg: var(--tint-success);
   /* The engine page's chain strip: a recorded block, its edge, a block
      held in the scan's cache, the mark of something saved to disk, and the
      next block: filled by the node's pool, up to the penalty zone. */
