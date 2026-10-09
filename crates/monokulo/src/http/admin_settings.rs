@@ -1432,7 +1432,7 @@ fn save_toast(outcome: &SaveOutcome, notes: &[SaveNote]) -> Toast {
             kind: ToastKind::Error,
             title: title.to_string(),
             lines,
-            show: first.and_then(|f| f.group),
+            show: first.and_then(|f| f.group).map(|group| group.to_string()),
         }
     };
     match outcome {
@@ -3018,7 +3018,7 @@ mod tests {
             "{html}"
         );
         assert!(html.contains(r#"<div id="settings-toasts" class="toasts" data-fx-oob><div class="toast toast-success" role="status" data-toast><span class="toast-icon" aria-hidden="true">✓</span><div class="toast-text"><strong>Changes saved and applied</strong>"#), "{html}");
-        assert!(html.contains(r#"<nav id="settings-tabs" class="tab-bar" aria-label="Settings sections" data-fx-oob>"#), "{html}");
+        assert!(html.contains(r#"<nav id="settings-tabs" class="tab-bar" aria-label="Settings sections" data-leave-asks data-fx-oob>"#), "{html}");
         assert!(
             html.contains(r#"value="70""#) && !html.contains("<html"),
             "{html}"
@@ -3049,13 +3049,13 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"<div id="save-bar" class="save-bar is-failed""#)
+            html.contains(r#"<mk-save-bar id="save-bar" class="save-bar is-failed""#)
                 && html.contains(r#"<strong>Nothing saved.</strong>"#)
                 && html.contains(r#"data-save-bar-message tabindex="-1" data-fx-focus>"#),
             "the save bar says which card, and gets focus: {html}"
         );
         assert!(
-            html.contains(r#"<section id="card-orders" class="settings-card is-failed""#),
+            html.contains(r#"<mk-settings-card id="card-orders" class="settings-card is-failed""#),
             "{html}"
         );
 
@@ -3320,7 +3320,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"<section id="card-abuse-limits" class="settings-card""#)
+            html.contains(r#"<mk-settings-card id="card-abuse-limits" class="settings-card""#)
                 && html[html.find(r#"id="card-abuse-limits""#).unwrap()..]
                     .contains(r#"<span class="card-meta card-saved" data-card-saved>Saved "#),
             "{html}"
@@ -3382,7 +3382,7 @@ mod tests {
             );
             assert!(
                 html.contains(&format!(
-                    r#"<section id="card-{card}" class="settings-card is-failed""#
+                    r#"<mk-settings-card id="card-{card}" class="settings-card is-failed""#
                 )),
                 "{html}"
             );
@@ -3579,7 +3579,7 @@ mod tests {
         assert!(html.contains(message), "{message} in {html}");
         assert!(toast_text(&html).contains("Nothing saved"), "{html}");
         assert!(
-            html.contains(r#"<section id="card-orders" class="settings-card is-failed""#),
+            html.contains(r#"<mk-settings-card id="card-orders" class="settings-card is-failed""#),
             "{html}"
         );
     }
@@ -4864,7 +4864,7 @@ mod tests {
         let card = |id: &str| {
             let at = html.find(&format!(r#"id="card-{id}""#)).expect(&html);
             let rest = &html[at..];
-            rest[..rest.find("</section>").unwrap()].to_string()
+            rest[..rest.find("</mk-settings-card>").unwrap()].to_string()
         };
         assert!(
             card("logging-engine").contains(r#"class="setting-problem""#),

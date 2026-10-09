@@ -132,6 +132,8 @@ pub static ASSETS: &[Asset] = &[
     asset!("ssexi.js", JS),
     // Every dropdown (`views::controls`).
     asset!("mk-select.js", JS),
+    // Every settings form (`views::settings`).
+    asset!("settings-form.js", JS),
     // Browser problem reports (`http::telemetry_client`).
     asset!("telemetry.js", JS),
     // The checkout embed (`views::checkout`), the QR decoder it and the
@@ -148,9 +150,9 @@ pub static ASSETS: &[Asset] = &[
     asset!(built "key-custody.wasm", "/key_custody.wasm", WASM),
     asset!("wallet-setup.js", JS),
     asset!(built "wallet-setup.wasm", "/wallet_setup.wasm", WASM),
-    // One page each: the admin settings page (and the account page's
-    // cards), the account page's email question, a store's settings
-    // dialogs, the Logs page, the order form, the store page.
+    // One page each: the admin settings page's node rows, the account
+    // page's email question, a store's settings dialogs, the Logs page, the
+    // order form, the store page.
     asset!("admin-settings.js", JS),
     asset!("account.js", JS),
     asset!("settings-dialogs.js", JS),

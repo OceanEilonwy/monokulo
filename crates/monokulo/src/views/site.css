@@ -94,9 +94,6 @@ pre { padding: var(--space-md); overflow-x: auto; white-space: pre-wrap; word-br
 .setting-field > :is(input, select, textarea, .locked-input, .setting-choices) { margin-top: 0; }
 .setting-field > :is(input, select, textarea, .locked-input, .setting-choices) + * { margin-top: var(--space-sm); }
 .setting-field > :is(.field-help, .setting-pending, .setting-problem) + :is(.field-help, .setting-pending, .setting-problem) { margin-top: var(--space-xs); }
-fieldset.setting-field { border: 0; padding: 0; min-width: 0; }
-fieldset.setting-field > legend { padding: 0 0 var(--space-xs); margin: 0; }
-fieldset.setting-field > legend.setting-label-row { margin: 0; }
 .setting-field label.inline { display: inline-flex; gap: 0.3em; align-items: center; margin: 0.2em 1.2em 0.2em 0; font-weight: 400; }
 .setting-field input, .setting-field select, .setting-field textarea { max-width: 100%; }
 .setting-field textarea { width: 100%; font-family: ui-monospace, monospace; }
@@ -108,9 +105,12 @@ fieldset.setting-field > legend.setting-label-row { margin: 0; }
 .tab-bar a:hover { color: var(--accent-text); }
 .tab-bar a[aria-current="page"] { font-weight: 700; border-bottom-color: var(--tab-current); }
 .tab-marker { color: var(--tab-marker); margin-left: 0.35em; font-size: 0.8em; }
-/* The admin settings page's cards: each a group of settings, saved
-   together. One with unsaved changes (with JavaScript) or that a save
-   refused takes the thin edge's colour, never a thicker edge. */
+/* The settings components (`views::settings`, static/settings-form.js):
+   custom elements, blocks like the elements they stand for. */
+mk-settings-form, mk-settings-card, mk-setting, mk-save-bar { display: block; }
+/* A settings card: a group of settings, saved together. One with unsaved
+   changes (with JavaScript) or that a save refused takes the thin edge's
+   colour, never a thicker edge. */
 .settings-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius-md); margin: 0 0 var(--space-lg); scroll-margin: var(--space-lg) 0 6rem; min-width: 0; }
 .settings-card.is-dirty { border-color: var(--card-changed); }
 .settings-card.is-failed { border-color: var(--card-failed); }
@@ -138,9 +138,9 @@ fieldset.setting-field > legend.setting-label-row { margin: 0; }
 .changed-mark { display: none; font-size: 0.75em; font-weight: 700; color: var(--card-changed); }
 .setting-field.is-changed .changed-mark { display: inline; }
 .setting-field.is-changed input:not([disabled]), .setting-field.is-changed select, .setting-field.is-changed textarea { border-color: var(--card-changed); }
-/* The bar at the bottom of the window that saves the tab. Without
-   JavaScript it's always there; with it, only while something changed or
-   a save refused a card. */
+/* The bar at the bottom of the window that saves the page's settings.
+   Without JavaScript it's always there; with the component defined, only
+   while something changed or a save refused a card. */
 .save-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 15; background: var(--save-bar-bg); border-top: 3px solid var(--save-bar-rule); padding-bottom: env(safe-area-inset-bottom, 0px); }
 .save-bar-inner { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); padding-top: var(--space-sm); padding-bottom: var(--space-sm); }
 /* Room under the last card for the bar, which is always there without
@@ -153,9 +153,9 @@ body:has(.save-bar) { padding-bottom: 9rem; }
 .save-bar-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
 .save-bar-actions[hidden] { display: none; }
 .save-bar-actions button, .save-bar-actions .btn { margin: 0; }
-html.js .save-bar:not(.is-dirty):not(.is-failed):not(.is-leaving) { display: none; }
+mk-save-bar:defined:not(.is-dirty):not(.is-failed):not(.is-leaving) { display: none; }
 @media (prefers-reduced-motion: no-preference) {
-  html.js .save-bar { animation: save-bar-in 0.18s ease-out; }
+  mk-save-bar:defined { animation: save-bar-in 0.18s ease-out; }
 }
 @keyframes save-bar-in { from { transform: translateY(100%); } to { transform: none; } }
 /* The toast a save leaves, in the corner. Without JavaScript every toast

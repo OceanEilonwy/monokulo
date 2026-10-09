@@ -100,6 +100,7 @@ pub mod logs;
 pub mod orders;
 pub mod pos;
 pub mod scaling;
+pub mod settings;
 pub mod setup;
 pub mod status;
 pub mod store_detail;
@@ -319,6 +320,8 @@ fn page_shell(
                     (script("ssexi.js", Load::Defer))
                     // Every dropdown (`views::controls`).
                     (script("mk-select.js", Load::Defer))
+                    // Every settings form (`views::settings`).
+                    (script("settings-form.js", Load::Defer))
                 }
                 @if let Some(extra_head) = extra_head {
                     (extra_head)

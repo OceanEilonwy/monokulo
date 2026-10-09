@@ -6,6 +6,8 @@
 use maud::{html, Markup};
 
 use super::controls::Choice;
+use super::settings::{Card, Field, Save};
+pub use super::settings::{Toast, ToastKind};
 use super::{layout, script, Load, PageChrome};
 
 /// `error` means the same thing every other page's own re-render-on-
@@ -873,29 +875,6 @@ fn field_subheading(key: &str) -> Option<&'static str> {
     }
 }
 
-/// A small message after a save, in the corner of the window (it fades
-/// on its own unless it says something wasn't saved).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Toast {
-    pub kind: ToastKind,
-    pub title: String,
-    pub lines: Vec<String>,
-    /// The card to go to: the one a refusal is about.
-    pub show: Option<Group>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToastKind {
-    /// Saved and applied.
-    Success,
-    /// Saved, but something waits for a restart.
-    Warning,
-    /// Something wasn't saved.
-    Error,
-    /// Nothing happened (nothing had changed).
-    Neutral,
-}
-
 /// One thing a save refused, and why: on the card holding the setting it
 /// names, or the save's own when it names none (the engine couldn't be
 /// reached).
@@ -1111,50 +1090,37 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
 
 /// A setting's name with the chip saying where its value comes from, then
 /// what it's for, then its control, then anything more about it. A list of
-/// choices is a group of checkboxes, named by a legend rather than a label.
+/// choices is a group of checkboxes, named by its label.
 fn scalar_field(field: &AdminScalarFieldView) -> Markup {
-    let help = html! {
-        @if let (Some(help), Some(id)) = (&field.help, help_id(field)) {
-            span class="field-help" id=(id) { (help) }
+    let help = help_id(field);
+    let help_text = field.help.as_ref().map(|help| html! { (help) });
+    let control_id = field_id(field.form_name());
+    let group_id = format!("{control_id}-label");
+    let list = matches!(field.kind, SettingKindView::ChoiceList { .. }) && field.locked.is_none();
+    let mut setting = if list {
+        Field::group(&field.label, &group_id)
+    } else {
+        Field::new(&field.label, &control_id)
+    }
+    .chip(source_chip(field.source));
+    if let Some(text) = help_text {
+        setting = setting.help(help.as_deref(), text);
+    }
+    setting.render(html! {
+        @if list {
+            div class="setting-choices" { (scalar_input(field)) }
+        // A secret comes from the environment only, and is never shown:
+        // always locked.
+        } @else if field.locked.is_some() || field.kind == SettingKindView::Secret {
+            (locked_input(field))
+        } @else {
+            (scalar_input(field))
         }
-    };
-    let locked = html! {
         @if let Some(reason) = &field.locked {
             span class="field-help locked-reason" { (reason) }
         }
-    };
-    html! {
-        @if matches!(field.kind, SettingKindView::ChoiceList { .. }) && field.locked.is_none() {
-            fieldset class="setting-field" aria-describedby=[help_id(field)] {
-                legend class="setting-label-row" {
-                    span class="setting-label" { (field.label) }
-                    (source_chip(field.source))
-                    span class="changed-mark" { "changed" }
-                }
-                (help)
-                div class="setting-choices" { (scalar_input(field)) }
-                (field_status(field))
-            }
-        } @else {
-            div class="setting-field" {
-                div class="setting-label-row" {
-                    label class="setting-label" for=(field_id(field.form_name())) { (field.label) }
-                    (source_chip(field.source))
-                    span class="changed-mark" { "changed" }
-                }
-                (help)
-                // A secret comes from the environment only, and is never
-                // shown: always locked.
-                @if field.locked.is_some() || field.kind == SettingKindView::Secret {
-                    (locked_input(field))
-                } @else {
-                    (scalar_input(field))
-                }
-                (locked)
-                (field_status(field))
-            }
-        }
-    }
+        (field_status(field))
+    })
 }
 
 /// A setting the page can't change (given on the command line or in the
@@ -1246,35 +1212,7 @@ pub fn banners(data: &AdminSettingsViewModel, oob: bool) -> Markup {
 /// JavaScript it fades by itself (CSS); with it, one saying something
 /// wasn't saved stays until it's closed.
 pub fn toasts(data: &AdminSettingsViewModel, oob: bool) -> Markup {
-    toast_region(data.toast.as_ref(), oob)
-}
-
-/// The corner of the window a settings page's toast shows in (the admin
-/// settings page's, the account page's), with `toast` in it.
-pub fn toast_region(toast: Option<&Toast>, oob: bool) -> Markup {
-    html! {
-        div id="settings-toasts" class="toasts" data-fx-oob[oob] {
-            @if let Some(toast) = toast {
-                @let (class, icon, role) = match toast.kind {
-                    ToastKind::Success => ("toast toast-success", "\u{2713}", "status"),
-                    ToastKind::Warning => ("toast toast-warning", "!", "status"),
-                    ToastKind::Error => ("toast toast-error", "!", "alert"),
-                    ToastKind::Neutral => ("toast toast-neutral", "\u{2022}", "status"),
-                };
-                div class=(class) role=(role) data-toast {
-                    span class="toast-icon" aria-hidden="true" { (icon) }
-                    div class="toast-text" {
-                        strong { (toast.title) }
-                        @for line in &toast.lines { span class="toast-line" { (line) } }
-                        @if let Some(group) = toast.show {
-                            a class="toast-show" href=(format!("#{}", group.card_id())) data-show-card=(group) { "Show" }
-                        }
-                    }
-                    button type="button" class="toast-close js-only" aria-label="Dismiss" data-toast-close { "\u{00D7}" }
-                }
-            }
-        }
-    }
+    super::settings::toast_region(data.toast.as_ref(), oob)
 }
 
 /// Each process's options file: where it is, whether the page can write
@@ -1423,7 +1361,7 @@ fn needs_attention(data: &AdminSettingsViewModel, tab: SettingsTab) -> bool {
 /// tabs say so in words as well as with the dot.
 pub fn tab_bar(data: &AdminSettingsViewModel, oob: bool) -> Markup {
     html! {
-        nav id="settings-tabs" class="tab-bar" aria-label="Settings sections" data-fx-oob[oob] {
+        nav id="settings-tabs" class="tab-bar" aria-label="Settings sections" data-leave-asks data-fx-oob[oob] {
             @for tab in SettingsTab::ALL.into_iter().filter(|tab| tab_shown(data, *tab)) {
                 @let href = tab.href();
                 a href=(href) fx-action=(href) fx-target="#settings-panel" fx-push-url aria-current=[(tab == data.tab).then_some("page")] {
@@ -1642,46 +1580,26 @@ fn owner_label(fields: &[&AdminScalarFieldView], data: &AdminSettingsViewModel) 
     }
 }
 
-/// A card's heading row: its name, whose settings these are, anything
-/// more (a network's stores), how the last save went for it, and (with
-/// JavaScript) its unsaved changes and a Discard button for them.
-fn card_header(
+/// A card as the save left it: its owner chip and any meta in its head,
+/// "Not saved" after a refusal, "Restart needed", "Saved" and when, and
+/// (with JavaScript) its unsaved changes and Discard.
+fn card<'a>(
     data: &AdminSettingsViewModel,
     group: Group,
+    name: &'a str,
     owner: &str,
     meta: Option<String>,
     fields: &[&AdminScalarFieldView],
-    readonly: bool,
-) -> Markup {
-    let failed = data.failure(group).is_some();
-    let saved_at = data.saved_at(group);
+) -> Card<'a> {
     let restart = fields.iter().any(|f| f.pending_restart);
-    html! {
-        header class="card-head" {
-            h3 id=(format!("{}-title", group.card_id())) { (group.title()) }
+    Card::new(name, group.title())
+        .head(html! {
             span class="owner-chip" { (owner) }
             @if let Some(meta) = meta { span class="card-meta" { (meta) } }
-            span class="card-state" data-card-state {
-                @if failed {
-                    span class="badge badge-error" { "Not saved" }
-                } @else if restart {
-                    span class="badge badge-warning" { "Restart needed" }
-                }
-            }
-            span class="card-spacer" {}
-            @if readonly {
-                span class="card-meta" { "Can't be changed here" }
-            } @else {
-                @if let (Some(at), false) = (saved_at, failed) {
-                    // After a save, focus lands on the first card it saved:
-                    // the save bar it was pressed in has gone.
-                    span class="card-meta card-saved" data-card-saved
-                        tabindex=[data.focus_saved(group).then_some("-1")] data-fx-focus[data.focus_saved(group)] { "Saved " (at) }
-                }
-                button type="button" class="card-discard js-only" data-card-discard hidden { "Discard" }
-            }
-        }
-    }
+        })
+        .badge(restart.then(|| html! { span class="badge badge-warning" { "Restart needed" } }))
+        .failed(data.failure(group).is_some(), None)
+        .saved(data.saved_at(group), data.focus_saved(group))
 }
 
 /// A card's settings, with any subheadings, and this site's own key entry
@@ -1730,21 +1648,26 @@ fn settings_card(data: &AdminSettingsViewModel, group: Group) -> Markup {
             .iter()
             .any(|(listed, on)| listed == backend && !on)
     });
+    let name = group.to_string();
     let failure = data.failure(group);
-    html! {
-        section id=(group.card_id()) class={ "settings-card" @if failure.is_some() { " is-failed" } }
-            data-card=(group) data-custody-backend=[backend] hidden[hidden]
-            aria-labelledby=(format!("{}-title", group.card_id())) {
-            (card_header(data, group, owner_label(&fields, data), None, &fields, readonly))
-            div class="card-body" {
-                @if let Some(failure) = failure {
-                    p class="error" role="alert" { (failure.message) }
-                }
-                @if let Some(hint) = group.hint() { p class="hint" { (hint) } }
-                (card_fields(group, &fields, data))
-            }
-        }
+    let mut card = card(
+        data,
+        group,
+        &name,
+        owner_label(&fields, data),
+        None,
+        &fields,
+    )
+    .failed(failure.is_some(), failure.map(|f| f.message.as_str()))
+    .readonly(readonly)
+    .hidden(hidden);
+    if let Some(backend) = backend {
+        card = card.shown_by(ENABLED_BACKENDS, backend);
     }
+    card.render(html! {
+        @if let Some(hint) = group.hint() { p class="hint" { (hint) } }
+        (card_fields(group, &fields, data))
+    })
 }
 
 /// One network's card: its nodes in order, each closed to a line, then a
@@ -1790,26 +1713,32 @@ fn network_card(
     };
     let open =
         count > 0 || network.tenant_count > 0 || network.error.is_some() || failure.is_some();
-    html! {
-        section id=(group.card_id()) class={ "settings-card node-network" @if failure.is_some() || network.error.is_some() { " is-failed" } }
-            data-card=(group) data-network=(n) data-tenant-count=(network.tenant_count) data-saved-count=(network.saved_count)
-            aria-labelledby=(format!("{}-title", group.card_id())) {
-            (card_header(data, group, "Engine", Some(used_by), &fields, false))
-            div class="card-body" {
-                @if open {
-                    @if let Some(scaling) = &network.scaling {
-                        (super::scaling::scanning_panel(n, scaling, active_node(network)))
-                    }
+    let name = group.to_string();
+    // An error the engine reports for the network marks the card too,
+    // without the "Not saved" a refused save gives it.
+    let class = if failure.is_none() && network.error.is_some() {
+        "node-network is-failed"
+    } else {
+        "node-network"
+    };
+    card(data, group, &name, "Engine", Some(used_by), &fields)
+        .class(class)
+        .data("data-network", n)
+        .data("data-tenant-count", network.tenant_count)
+        .data("data-saved-count", network.saved_count)
+        .render(html! {
+            @if open {
+                @if let Some(scaling) = &network.scaling {
+                    (super::scaling::scanning_panel(n, scaling, active_node(network)))
+                }
+                (rows)
+            } @else {
+                details class="node-network-closed" {
+                    summary { "Add a node for " (n) }
                     (rows)
-                } @else {
-                    details class="node-network-closed" {
-                        summary { "Add a node for " (n) }
-                        (rows)
-                    }
                 }
             }
-        }
-    }
+        })
 }
 
 /// One tab's cards (`tab_groups`). Where the engine's cards would be while
@@ -1856,34 +1785,12 @@ fn save_bar(data: &AdminSettingsViewModel) -> Markup {
             "Saving writes the changes on this tab to the options file and applies them."
         }
     };
-    save_bar_frame(
+    super::settings::save_bar(
         failure.is_some(),
         data.answers_save && failure.is_some(),
         message,
         &data.tab.href(),
     )
-}
-
-/// A settings page's one bottom save bar (the admin settings page's, the
-/// account page's): `message`, then Discard changes (a link back to
-/// `discard_href`, the page as saved) and Save. Red after a save that
-/// refused something (`failed`); `focus` gives its message focus after a
-/// save fixi swapped in. `static/admin-settings.js` shows it only while
-/// something is changed.
-pub fn save_bar_frame(failed: bool, focus: bool, message: Markup, discard_href: &str) -> Markup {
-    html! {
-        div id="save-bar" class={ "save-bar" @if failed { " is-failed" } } role="region" aria-label="Save changes" data-save-bar {
-          div class="wrap save-bar-inner" {
-            p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus[focus] {
-                (message)
-            }
-            div class="save-bar-actions" {
-                a class="btn" href=(discard_href) data-discard-all { "Discard changes" }
-                button type="submit" class="btn-primary" data-save { "Save" }
-            }
-          }
-        }
-    }
 }
 
 /// The open tab: its heading, its one form, its cards and the save bar.
@@ -1916,8 +1823,7 @@ pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
                 @if let (SettingsTab::Nodes, Some(resources)) = (tab, &data.resources) {
                     (super::scaling::resources_panel(resources, &tab.href()))
                 }
-                form method="post" action="/dashboard/admin/settings" id="settings-form"
-                    fx-action="/dashboard/admin/settings" fx-method="POST" fx-target="#settings-panel" {
+                (super::settings::form("/dashboard/admin/settings", Save::Fixi { target: "#settings-panel" }, tab.label(), html! {
                     input type="hidden" name="tab" value=(tab.id());
                     @if tab == SettingsTab::Nodes {
                         // Enter in a text box presses a form's first submit
@@ -1927,7 +1833,7 @@ pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
                     }
                     (tab_cards(data, tab))
                     (save_bar(data))
-                }
+                }))
             }
         }
     }
@@ -2725,7 +2631,7 @@ mod tests {
         assert!(
             html.contains(concat!(
                 r#"<span class="visually-hidden">From the options file, which saving here writes.</span></span><span class="changed-mark">changed</span></div>"#,
-                r#"<span class="field-help" id="setting-help-engine.url">Where the engine listens.</span>"#,
+                r#"<p class="field-help" id="setting-help-engine.url">Where the engine listens.</p>"#,
                 r#"<input type="url" name="engine.url" value="http://scanner.internal""#,
             )),
             "then what it is for, then its control: {html}"
@@ -2746,7 +2652,7 @@ mod tests {
         data.engine_networks[2].saved_count = 0;
         let html = page(&data);
         assert!(
-            html.contains(r#"<section id="card-network-mainnet" class="settings-card node-network" data-card="network-mainnet" data-network="mainnet" data-tenant-count="2" data-saved-count="1" aria-labelledby="card-network-mainnet-title"><header class="card-head"><h3 id="card-network-mainnet-title">Mainnet</h3><span class="owner-chip">Engine</span><span class="card-meta">Used by 2 stores</span>"#),
+            html.contains(r#"<mk-settings-card id="card-network-mainnet" class="settings-card node-network" name="network-mainnet" data-network="mainnet" data-tenant-count="2" data-saved-count="1" role="region" aria-labelledby="card-network-mainnet-title"><header class="card-head"><h3 id="card-network-mainnet-title">Mainnet</h3><span class="owner-chip">Engine</span><span class="card-meta">Used by 2 stores</span>"#),
             "{html}"
         );
         let testnet = &html[html.find(r#"data-network="testnet""#).unwrap()..];
@@ -3059,7 +2965,7 @@ mod tests {
         // The snp backend's device and minimum security version sit in its
         // own section, hidden while snp is off; plain has nothing to set.
         let snp = html
-            .find(r#"<section id="card-custody-snp" class="settings-card" data-card="custody-snp" data-custody-backend="snp" hidden"#)
+            .find(r#"<mk-settings-card id="card-custody-snp" class="settings-card" name="custody-snp" data-shown-by="key_custody.enabled_backends=snp" hidden"#)
             .expect(&html);
         assert!(
             html.find(r#"name="key_custody.snp_trusted_id_key""#)
@@ -3078,19 +2984,20 @@ mod tests {
             "{html}"
         );
         assert!(
-            !html.contains(r#"data-custody-backend="plain""#),
+            !html.contains(r#"data-shown-by="key_custody.enabled_backends=plain""#),
             "nothing to set up for plain: {html}"
         );
-        // Shown as soon as it's ticked, with JavaScript: the page's script.
+        // Shown as soon as it's ticked, with JavaScript: the settings
+        // components show a card as its data-shown-by says.
         assert!(
-            html.contains(&crate::assets::url("admin-settings.js")),
+            html.contains(&crate::assets::url("settings-form.js")),
             "{html}"
         );
-        assert!(include_str!("../../static/admin-settings.js")
-            .contains(r#"name === "key_custody.enabled_backends""#));
+        assert!(include_str!("../../static/settings-form.js")
+            .contains(r#"mk-settings-card[data-shown-by]"#));
 
         let html = page("plain,snp");
-        assert!(html.contains(r#"<section id="card-custody-snp" class="settings-card" data-card="custody-snp" data-custody-backend="snp" aria-labelledby="card-custody-snp-title"><header class="card-head"><h3 id="card-custody-snp-title">SEV-SNP</h3>"#), "{html}");
+        assert!(html.contains(r#"<mk-settings-card id="card-custody-snp" class="settings-card" name="custody-snp" data-shown-by="key_custody.enabled_backends=snp" role="region" aria-labelledby="card-custody-snp-title"><header class="card-head"><h3 id="card-custody-snp-title">SEV-SNP</h3>"#), "{html}");
         assert!(html.contains(r#"value="snp" checked"#), "{html}");
     }
 
@@ -3220,13 +3127,13 @@ mod tests {
         assert!(html.contains("restart needed"));
     }
 
-    /// A card, by id, as the page renders it: from its section to the next.
+    /// A card, by id, as the page renders it: from its start to its end.
     fn card<'a>(html: &'a str, group: &str) -> &'a str {
         let start = html
-            .find(&format!(r#"<section id="card-{group}""#))
+            .find(&format!(r#"<mk-settings-card id="card-{group}""#))
             .unwrap_or_else(|| panic!("card-{group} in {html}"));
         let rest = &html[start..];
-        &rest[..rest.find("</section>").unwrap()]
+        &rest[..rest.find("</mk-settings-card>").unwrap()]
     }
 
     #[test]
@@ -3313,9 +3220,9 @@ mod tests {
     fn the_save_bar_is_the_tabs_one_save_and_discard_loads_the_tab_again() {
         let html = page(&full_view(SettingsTab::Payments));
         let form = &html[html.find("<form ").unwrap()..html.find("</form>").unwrap()];
-        let bar = &form[form.find(r#"<div id="save-bar""#).expect(form)..];
+        let bar = &form[form.find(r#"<mk-save-bar id="save-bar""#).expect(form)..];
         assert!(
-            bar.starts_with(r#"<div id="save-bar" class="save-bar" role="region" aria-label="Save changes" data-save-bar>"#),
+            bar.starts_with(r#"<mk-save-bar id="save-bar" class="save-bar" role="region" aria-label="Save changes">"#),
             "{bar}"
         );
         assert!(bar.contains(
@@ -3326,7 +3233,9 @@ mod tests {
             "{bar}"
         );
         // After every card, last in the form.
-        assert!(form.rfind("</section>").unwrap() < form.find(r#"id="save-bar""#).unwrap());
+        assert!(
+            form.rfind("</mk-settings-card>").unwrap() < form.find(r#"id="save-bar""#).unwrap()
+        );
     }
 
     #[test]
@@ -3355,7 +3264,9 @@ mod tests {
 
         let webhooks = card(&html, "webhooks");
         assert!(
-            webhooks.starts_with(r#"<section id="card-webhooks" class="settings-card is-failed""#),
+            webhooks.starts_with(
+                r#"<mk-settings-card id="card-webhooks" class="settings-card is-failed""#
+            ),
             "{webhooks}"
         );
         assert!(
@@ -3380,7 +3291,7 @@ mod tests {
 
         // The bar is red, says why, links to the card, and takes focus.
         assert!(
-            html.contains(r#"<div id="save-bar" class="save-bar is-failed""#),
+            html.contains(r#"<mk-save-bar id="save-bar" class="save-bar is-failed""#),
             "{html}"
         );
         assert!(html.contains(r##"<p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus><strong>Changes partly saved.</strong> The engine refused the change: webhooks.max_attempts must be from 1 to 64. <a href="#card-webhooks" data-show-card="webhooks">Show</a></p>"##), "{html}");
@@ -3408,7 +3319,7 @@ mod tests {
                     kind,
                     title: "Webhooks saved and applied".into(),
                     lines: vec!["One more thing.".into()],
-                    show,
+                    show: show.map(|group| group.to_string()),
                 }),
                 ..full_view(SettingsTab::Payments)
             };
