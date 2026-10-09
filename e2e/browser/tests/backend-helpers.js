@@ -187,10 +187,16 @@ async function reloadUntil(page, url, check) {
     .toBe(true);
 }
 
-/** Completes the optional common settings form and returns the store path. */
+/**
+ * Ends store setup: from its Done page (or the store's page, when the store
+ * already existed) on to the store's page; returns the store's path,
+ * `/dashboard/stores/{id}`.
+ */
 async function finishStoreSetup(page) {
-  await expect(page.getByRole('heading', { name: 'Store connected' })).toBeVisible();
-  await page.getByRole('button', { name: 'Skip for now', exact: true }).click();
+  if (!/\/dashboard\/stores\/[^/]+$/.test(new URL(page.url()).pathname)) {
+    await expect(page.getByRole('heading', { name: /is set up$|is ready$|is connected$/ })).toBeVisible();
+    await page.getByRole('link', { name: /^Go to .*'s page$/ }).click();
+  }
   await expect(page).toHaveURL(/\/dashboard\/stores\/[^/]+$/);
   return new URL(page.url()).pathname;
 }
@@ -199,32 +205,43 @@ async function finishStoreSetup(page) {
 const WALLET_NAME = 'Dev stagenet';
 
 /**
- * Brings in the dev stagenet wallet ("Bring your own wallet"), unless this
- * account already has it. Stagenet needs a node first (saveNodes).
+ * Brings in the dev stagenet wallet ("Bring your own wallet") from the
+ * Account page, unless this account already has it. Stagenet needs a node
+ * first (saveNodes).
  */
 async function addWallet(page) {
   const { monokulo_url: base } = fixture();
-  await page.goto(base + '/account/wallets/import');
-  await page.locator('input[name="name"]').fill(WALLET_NAME);
+  await page.goto(base + `/account/wallets/import?name=${encodeURIComponent(WALLET_NAME)}&network=stagenet`);
+  // The name is checked first: taken means it's already here.
+  if (await page.getByText(`You already have a wallet called ${WALLET_NAME}`).count()) return;
   await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);
   await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
-  await page.locator('select[name="network"]').selectOption('stagenet');
   await page.getByRole('button', { name: 'Add wallet' }).click();
-  await expect(page.getByText(/You're ready to take payments|is added|already added this wallet/)).toBeVisible();
+  await expect(page.getByText(/is added|already added this wallet/)).toBeVisible();
 }
 
 /**
- * Fills the custom store form for `site` on the dev wallet (adding it
- * first) and submits it; the store setup step comes next.
+ * Sets up a website's store named and sited `site` on the dev wallet
+ * (adding it first) through `/setup`: the store step, then "Use a wallet you
+ * already added". Lands on the Done page, or on the store's page when this
+ * account's store already has the site; finishStoreSetup goes on from either.
  */
 async function createStore(page, site) {
   const { monokulo_url: base } = fixture();
   await addWallet(page);
-  await page.goto(base + '/dashboard/connect');
-  await page.locator('input[name="site_url"]').fill(`https://${site}`);
+  await page.goto(base + '/setup');
+  await page.locator('input[name="store_name"]').fill(site);
+  await page.locator('input[name="store_site"]').fill(site);
+  await page.getByRole('button', { name: 'Next', exact: true }).click();
+  const existing = page.locator('#store-site-error a');
+  if (await existing.count()) {
+    await existing.click();
+    return;
+  }
   const option = page.locator('select[name="wallet_id"] option', { hasText: WALLET_NAME });
   await page.locator('select[name="wallet_id"]').selectOption(await option.getAttribute('value'));
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('button', { name: 'Use this wallet' }).click();
+  await expect(page.getByRole('heading', { name: `${site} is set up` })).toBeVisible();
 }
 
 /** Connects a stagenet store for `site` (giving stagenet the fake node
