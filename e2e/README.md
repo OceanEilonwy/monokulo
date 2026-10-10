@@ -107,8 +107,11 @@ height the pair was made. After the tests, `cargo xtask live wallets keep`
 sweeps what the merchant received back to the spender, splits the spender's
 outputs when fewer than twelve can pay an order, and merges the ones too
 small to. The pair only loses the fees, a few hundredths of a stagenet XMR a
-month. When the spender can't pay a run, the check fails with its address:
-send it stagenet XMR from the faucet, and the next run's rescan finds it.
+month. Each run also starts by asking both stagenet faucets to pay the
+spender (`cargo xtask live wallets faucet`, which runs `wallet-cli faucet`
+for each); a faucet that won't pay doesn't fail the run. When the spender
+can't pay a run all the same, the check fails with its address: send it
+stagenet XMR from the faucet, and the next run's rescan finds it.
 
 ## Inspecting/driving a wallet by hand
 
@@ -249,12 +252,15 @@ cargo run -p cli-wallet --bin wallet-cli -- pocketchange
 If `wallets/spender.db`'s outputs ever run dry (everything spent, and
 change too small/young to help):
 
-1. Open https://stagenet-faucet.xmr-tw.org/ and send funds to the spender's
-   address (`wallet-cli address`; no need to generate a new wallet -
-   the same address can receive any number of faucet payouts).
-2. Record the faucet's txid: `cargo run -p cli-wallet --bin
-   wallet-cli -- add_output <txid>`. It stays pending until it
-   confirms, then resolves on the next `refresh` (or send).
+1. Ask a faucet to pay the spender: `cargo run -p cli-wallet --bin
+   wallet-cli -- faucet` (or `faucet --provider cypherfaucet`). No need
+   to generate a new wallet - the same address can receive any number of
+   faucet payouts.
+2. The command records the payout's txid itself. It stays pending until
+   it confirms, then resolves on the next `refresh` (or send). By hand
+   instead: open https://stagenet-faucet.xmr-tw.org/, send to the
+   spender's address (`wallet-cli address`), then `wallet-cli --
+   add_output <txid>`.
 3. Once it's spendable (10 confirmations), turn the one big faucet output
    into many test-sized ones: `pocketchange` (see above). Repeat on the
    resulting outputs if one round isn't enough.
