@@ -232,7 +232,10 @@ pub fn deliveries_table(
                             }
                             td data-label="Took" {
                                 @if delivery.last_status_code.is_none() && delivery.last_error.is_some() {
-                                    (short_error(delivery.last_error.as_deref().unwrap_or_default()))
+                                    // One word where it can be: the row stays narrow.
+                                    (short_error(delivery.last_error.as_deref().unwrap_or_default())
+                                        .trim_start_matches("connection ")
+                                        .to_string())
                                 } @else if let Some(ms) = delivery.last_duration_ms {
                                     (duration(ms))
                                 } @else {
