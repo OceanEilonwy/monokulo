@@ -245,10 +245,7 @@ fn a_round_s_lanes_are_drawn_to_scale() {
     assert_eq!(round.title, "Round 1,290");
     assert_eq!(round.state, "Running.", "the page's first round");
     assert_eq!(round.elapsed, "62ms");
-    assert_eq!(
-        round.scale_ms, MIN_SCALE_MS,
-        "a floor for a very short round"
-    );
+    assert_eq!(round.scale_ms, 71, "the round and 15 % more");
     let blocks = &round.lanes[1];
     assert_eq!((blocks.name, blocks.share.as_str()), ("Blocks", "40 %"));
     assert_eq!(
@@ -256,7 +253,22 @@ fn a_round_s_lanes_are_drawn_to_scale() {
         1,
         "pass 1 and pass 2 back to back: one segment"
     );
-    assert!(blocks.bars[0].leftover);
+    assert_eq!(
+        blocks.bars[0].shapes,
+        [
+            Shape::Fill {
+                from_ms: 2,
+                to_ms: 42,
+                leftover: false
+            },
+            Shape::Fill {
+                from_ms: 42,
+                to_ms: 62,
+                leftover: true
+            }
+        ],
+        "pass 2 striped after pass 1"
+    );
     assert_eq!(blocks.bars[0].label.as_deref(), Some("60ms"));
     assert_eq!(blocks.reserved, None);
     assert_eq!(round.lanes[0].outcome.as_ref().unwrap().text, "Idle");
@@ -346,23 +358,47 @@ fn a_round_s_parts_add_up_to_it() {
     );
     assert!(!round.lanes[0].bars[0].work, "not only the tip request");
     assert_eq!(
+        round.lanes[0].bars[0].shapes,
+        [
+            Shape::Work {
+                from_ms: 0,
+                to_ms: 403,
+                joined: false,
+                band_from: None
+            },
+            Shape::Fill {
+                from_ms: 403,
+                to_ms: 423,
+                leftover: false
+            }
+        ],
+        "the tip request outlined, then the unit solid"
+    );
+    assert_eq!(
         drawn(1),
         [(423, 42, Some("42ms"), true)],
-        "the unit and the cache carry after it are one shape; it finished last"
+        "the unit and the cache carry after it are one segment; it finished last"
     );
     let blocks = &round.lanes[1].bars[0];
     assert_eq!(
-        (blocks.span_ms, blocks.solid_ms, blocks.work),
-        (43, 40, false),
-        "outlined from the unit's start to the carry's end, solid for the unit"
-    );
-    assert_eq!(
+        (blocks.span_ms, &blocks.shapes[..]),
         (
-            round.lanes[0].bars[0].span_ms,
-            round.lanes[0].bars[0].solid_ms
+            43,
+            &[
+                Shape::Fill {
+                    from_ms: 423,
+                    to_ms: 463,
+                    leftover: false
+                },
+                Shape::Work {
+                    from_ms: 463,
+                    to_ms: 466,
+                    joined: true,
+                    band_from: None
+                }
+            ][..]
         ),
-        (423, 423),
-        "solid all through"
+        "1ms between them, well under the threshold: the outline starts where the unit ends"
     );
     assert_eq!(
         drawn(2),
@@ -371,8 +407,8 @@ fn a_round_s_parts_add_up_to_it() {
     );
     assert_eq!(
         drawn(3),
-        [(464, 0, Some("0ms"), false)],
-        "a lane with only 0ms keeps one"
+        [(464, 0, Some("<1ms"), false)],
+        "a lane with only 0ms keeps one, under a millisecond"
     );
     assert!(drawn(4).is_empty());
     let labelled: u64 = round
@@ -380,7 +416,10 @@ fn a_round_s_parts_add_up_to_it() {
         .iter()
         .flat_map(|lane| &lane.bars)
         .filter_map(|bar| bar.label.as_deref())
-        .map(|label| label.trim_end_matches("ms").parse::<u64>().unwrap())
+        .map(|label| match label {
+            "<1ms" => 0,
+            label => label.trim_end_matches("ms").parse::<u64>().unwrap(),
+        })
         .sum();
     assert_eq!(labelled, 466, "the labels add up to the round");
     assert_eq!(
@@ -734,4 +773,188 @@ fn many_short_round_operations_have_a_compact_tooltip_and_aggregated_details() {
     assert!(bar.title.len() < 100);
     assert!(bar.title.contains("1000 operations"));
     assert_eq!(bar.details, ["Block scan work: 1000, 1,000 ms total"]);
+}
+
+fn piece(start_ms: u64, ms: u64, solid: bool) -> Piece {
+    Piece {
+        start_ms,
+        ms,
+        solid,
+        leftover: false,
+    }
+}
+
+fn fill(from_ms: u64, to_ms: u64) -> Shape {
+    Shape::Fill {
+        from_ms,
+        to_ms,
+        leftover: false,
+    }
+}
+
+fn work(from_ms: u64, to_ms: u64, joined: bool, band_from: Option<u64>) -> Shape {
+    Shape::Work {
+        from_ms,
+        to_ms,
+        joined,
+        band_from,
+    }
+}
+
+fn thread(from_ms: u64, to_ms: u64, band: bool) -> Shape {
+    Shape::Thread {
+        from_ms,
+        to_ms,
+        band,
+    }
+}
+
+/// A unit and its tier's later work at a 1,000ms scale: a gap under 2.5 %
+/// of the scale is joined (the outline covers it); from 2.5 % to 5 % it is
+/// split on a wide track but joined on a narrow one (a band); 5 % or more
+/// is split everywhere, a thread crossing it to an outline over the work's
+/// own time.
+#[test]
+fn a_gap_is_joined_or_crossed_by_a_thread_by_its_share_of_the_scale() {
+    let at = |gap: u64| shapes(&[piece(100, 300, true), piece(400 + gap, 40, false)], 1_000);
+    assert_eq!(
+        at(0),
+        [fill(100, 400), work(400, 440, true, None)],
+        "back to back"
+    );
+    assert_eq!(
+        at(24),
+        [fill(100, 400), work(400, 464, true, None)],
+        "2.4 %: joined, the outline covering the gap"
+    );
+    assert_eq!(
+        at(25),
+        [
+            fill(100, 400),
+            thread(400, 425, true),
+            work(425, 465, false, Some(400))
+        ],
+        "2.5 %: split, but a band a narrow track joins"
+    );
+    assert_eq!(
+        at(49),
+        [
+            fill(100, 400),
+            thread(400, 449, true),
+            work(449, 489, false, Some(400))
+        ],
+        "4.9 %: still a band"
+    );
+    assert_eq!(
+        at(50),
+        [
+            fill(100, 400),
+            thread(400, 450, false),
+            work(450, 490, false, None)
+        ],
+        "5 %: split everywhere"
+    );
+}
+
+/// Joined outlined pieces in a row are one box, never two boxes meeting
+/// with a doubled edge; and a segment can be solid, a joined outline, a
+/// thread and another outline.
+#[test]
+fn joined_work_merges_into_one_outline_and_a_segment_can_be_split_after_a_join() {
+    assert_eq!(
+        shapes(
+            &[
+                piece(0, 200, true),
+                piece(200, 30, false),
+                piece(235, 10, false),
+                piece(245, 5, false)
+            ],
+            1_000
+        ),
+        [fill(0, 200), work(200, 250, true, None)],
+        "three pieces, gaps of 0, 5 and 0: one outline"
+    );
+    assert_eq!(
+        shapes(
+            &[
+                piece(80, 250, true),
+                piece(330, 40, false),
+                piece(520, 36, false)
+            ],
+            710
+        ),
+        [
+            fill(80, 330),
+            work(330, 370, true, None),
+            thread(370, 520, false),
+            work(520, 556, false, None)
+        ],
+        "solid, joined outline, thread, outline (scenario 2)"
+    );
+    assert_eq!(
+        shapes(&[piece(0, 80, false)], 710),
+        [work(0, 80, false, None)],
+        "work alone: an outline alone"
+    );
+}
+
+/// A round of a few milliseconds is drawn to a 10ms scale, not squeezed
+/// into the left of a long one, and a part under a millisecond says so.
+#[test]
+fn a_very_short_round_is_drawn_to_a_10ms_scale() {
+    let state = after([
+        snapshot(10, 10, &[(10, 1)]),
+        Event::RoundStarted {
+            round: 18_301,
+            budget_ms: 10_000,
+            tip: Some(10),
+        },
+        Event::Unit {
+            tier: Tier::Blocks,
+            pass: 1,
+            start_ms: 1,
+            ms: 1,
+            progress: UnitProgress::Idle,
+        },
+        Event::Unit {
+            tier: Tier::Settlement,
+            pass: 1,
+            start_ms: 2,
+            ms: 1,
+            progress: UnitProgress::Idle,
+        },
+        Event::Work {
+            tier: Tier::Blocks,
+            start_ms: 3,
+            ms: 0,
+            what: shared::activity::Work::CacheCarry,
+        },
+        Event::Unit {
+            tier: Tier::Upkeep,
+            pass: 1,
+            start_ms: 3,
+            ms: 0,
+            progress: UnitProgress::Idle,
+        },
+        Event::RoundFinished {
+            round: 18_301,
+            ms: 3,
+            backlogged: false,
+        },
+    ]);
+    let round = present(&state, &TUNING).round.unwrap();
+    assert_eq!((round.scale_ms, MIN_SCALE_MS), (10, 10), "the floor");
+    assert_eq!(round.elapsed, "2ms");
+    let blocks = &round.lanes[1].bars[0];
+    assert_eq!(
+        blocks.shapes,
+        [fill(1, 2), thread(2, 3, false), work(3, 3, false, None)],
+        "1ms is 10 % of the scale: split, the carry an outline under a millisecond"
+    );
+    assert_eq!(blocks.label.as_deref(), Some("1ms"));
+    let upkeep = &round.lanes[4].bars[0];
+    assert_eq!(upkeep.label.as_deref(), Some("<1ms"), "never 0ms");
+    assert!(upkeep.last, "the marker on the segment that finished last");
+    assert_eq!(lane_time(0), "<1ms");
+    assert_eq!(lane_time(1_200), "1,200ms");
 }

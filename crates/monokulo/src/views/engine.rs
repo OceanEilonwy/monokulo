@@ -10,7 +10,7 @@ use maud::{html, Markup, PreEscaped};
 use super::controls::Choice;
 use super::{layout_with_head, reload_button, script, Load, PageChrome};
 use crate::engine_view::present::{
-    Bar, ChainView, Lane, MarkView, Panel, Presented, RibbonMark, RoundView,
+    Bar, ChainView, Lane, MarkView, Panel, Presented, RibbonMark, RoundView, Shape,
 };
 use crate::views::scaling::{network_name, thousands, MachineView, ScanningView, Tile, TileChart};
 
@@ -215,17 +215,34 @@ const ENGINE_STYLE: &str = r#"
 .lanes { --row: 24px; --row-gap: var(--space-xs); display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; grid-auto-rows: var(--row); gap: var(--row-gap) 10px; align-items: center; }
 .lane-label { font-size: 0.7rem; font-weight: 700; display: flex; justify-content: space-between; }
 .lane-label small { color: var(--muted); font-weight: 600; }
-.track { position: relative; height: 20px; background: var(--surface-sunken); border-radius: 3px; overflow: hidden; }
+.track { position: relative; height: 20px; background: var(--surface-sunken); border-radius: 3px; overflow: hidden; container-type: inline-size; }
 .track-in { position: absolute; top: 0; bottom: 0; left: var(--space-sm); right: var(--space-sm); }
-.bar { position: absolute; top: calc(1.5px + var(--space-xs)); bottom: calc(1.5px + var(--space-xs)); min-width: 3px; border-radius: 2px; background: var(--tier); transition: left 0.3s, width 0.3s; }
-.bar.work { background: linear-gradient(to right, var(--tier) var(--solid, 0%), color-mix(in srgb, var(--tier) 30%, var(--paper-raised)) var(--solid, 0%)); box-shadow: inset 0 0 0 1.5px var(--tier); }
+/* A segment (D39): its units solid; the tier's work outside its units
+   outlined, the solid part's height, 1px, over only the time it took; a
+   1px thread across the time other tiers ran before it, or, for a short
+   gap, the outline starting where the shape before it ends. */
+.bar { position: absolute; top: calc(1.5px + var(--space-xs)); bottom: calc(1.5px + var(--space-xs)); min-width: 3px; transition: left 0.3s, width 0.3s; }
+.bar > i { position: absolute; display: block; }
+.bar .fill { top: 0; bottom: 0; min-width: 3px; background: var(--tier); border-radius: 2px; }
+.bar .fill.p2 { background: repeating-linear-gradient(135deg, var(--tier) 0 4px, color-mix(in srgb, var(--tier) 40%, var(--paper-raised)) 4px 7px); }
+.bar .thread { top: calc(50% - 0.5px); height: 1px; background: var(--tier); }
+.bar .work { top: 0; bottom: 0; min-width: 3px; box-sizing: border-box; box-shadow: inset 0 0 0 1px var(--tier); border-radius: 2px; }
+.bar .fill:has(+ .work.joined) { border-radius: 2px 0 0 2px; }
+.bar .work.joined { border-radius: 0 2px 2px 0; }
+/* A gap between the two thresholds: split on a wide track, joined on a
+   narrow one, where the same share is far fewer pixels. */
+@container (max-width: 480px) {
+  .bar .thread.band { display: none; }
+  .bar .fill:has(+ .thread.band) { border-radius: 2px 0 0 2px; }
+  .bar .work.band { left: var(--join) !important; width: var(--join-w) !important; border-radius: 0 2px 2px 0; }
+}
+.bar.sample { position: relative; display: inline-block; vertical-align: middle; top: auto; bottom: auto; width: 18px; height: 10px; }
 .lane-time { position: absolute; top: 0; line-height: 20px; margin-left: 5px; font-size: 0.62rem; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--ink); z-index: 1; }
 .lane-time.before { margin-left: -5px; transform: translateX(-100%); }
 .round-paused { flex: none; text-decoration: none; color: var(--ink); background: var(--tint-warning); border-color: var(--warning); cursor: pointer; }
 .round-paused:hover { border-color: var(--ink); }
 .rbar { cursor: pointer; }
 .rbar:hover, .rbar.pinned { outline: 2px solid var(--ink); outline-offset: 1px; }
-.bar.p2 { background: repeating-linear-gradient(135deg, var(--tier) 0 4px, color-mix(in srgb, var(--tier) 40%, var(--paper-raised)) 4px 7px); }
 .share { position: absolute; top: 0; bottom: 0; box-sizing: content-box; margin-left: calc(-1.5px - var(--space-xs)); padding-inline: var(--space-xs); border: 1.5px dashed var(--line-strong); border-radius: 3px; transition: left 0.3s, width 0.3s; }
 /* The outcome chip sits on its lane's own row, flush with the card's
    right edge, at every width. */
@@ -237,7 +254,11 @@ const ENGINE_STYLE: &str = r#"
 /* The round's end: a marker on the right edge of the segment that finished
    last, in its lane only, and the round's total under the lanes at the
    same place. */
-.bar.last::after { content: ""; position: absolute; right: -1px; top: calc(-1.5px - var(--space-xs)); bottom: calc(-1.5px - var(--space-xs)); width: 2px; background: var(--ink); }
+.bar.last::after { content: ""; position: absolute; right: -5px; top: calc(-1.5px - var(--space-xs)); bottom: calc(-1.5px - var(--space-xs)); width: 2px; background: var(--ink); }
+/* 3px clear of the segment, so the marker never covers its colour; its
+   time and the round's total move with it. */
+.bar.last + .lane-time { margin-left: 9px; }
+.ruler-label { margin-left: 4px; }
 .round-breakdown { margin-top: var(--space-lg); }
 .ribbon-row { display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 6px; }
 .ribbon { display: flex; justify-content: flex-end; align-items: flex-end; height: 30px; overflow: hidden; border-bottom: 1px solid var(--line); }
@@ -726,8 +747,8 @@ fn help() -> Markup {
                 dl {
                     dt { small { "40 %" } }
                     dd { "The tier's share of the round's budget." }
-                    dt { span class="bar" style="position:static;display:block;width:18px;height:10px;background:var(--viz-tier-blocks)" {} }
-                    dd { "A unit of work. Striped " span class="bar p2 t-blocks" style="position:static;display:inline-block;width:18px;height:10px" {} " ran on time left over (pass 2); pale with an edge " span class="bar work t-chain" style="position:static;display:inline-block;width:18px;height:10px" {} " is work for the tier outside its units, such as the tip request. A unit followed by such work is one shape, " span class="bar work t-blocks" style="position:static;display:inline-block;width:18px;height:10px;--solid:60%" {} ": solid for the unit, outlined on to the work's end. Hover over a bar for what it was. While stores catch up or a reorganisation is open, a dashed box shows the tier's reserved share." }
+                    dt { span class="bar sample t-blocks" { i class="fill" style="left:0;width:100%" {} } }
+                    dd { "A unit of work. Striped " span class="bar sample t-blocks" { i class="fill p2" style="left:0;width:100%" {} } " ran on time left over (pass 2). An outline " span class="bar sample t-chain" { i class="work" style="left:0;width:100%" {} } " is work for the tier outside its units, such as the tip request, drawn over only the time it took. When other tiers ran between a unit and that later work, a thin thread crosses the time between " span class="bar sample t-blocks" style="width:40px" { i class="fill" style="left:0;width:40%" {} i class="thread" style="left:40%;width:45%" {} i class="work" style="left:85%;width:15%" {} } "; when that time is short, the outline starts right where the unit ends instead. Hover over a bar for what it was. While stores catch up or a reorganisation is open, a dashed box shows the tier's reserved share." }
                     dt { span class="ruler-label" style="position:static;transform:none" { "s" } }
                     dd { "Each segment's time is written after it. The thin marker is on the right edge of the segment that finished last, and the label under it is the round's time: the sum of the segments'." }
                     dt { span class="engine-chip ok" style="font-size:0.6rem" { "Idle" } }
@@ -864,10 +885,10 @@ fn lane_row(lane: &Lane, scale_ms: u64) -> Markup {
     }
 }
 
-/// Where `bar` ends as drawn, in percent of the lane: a short one is drawn
-/// wider than its time.
+/// Where `bar` ends, in percent of the lane (one under a millisecond is
+/// drawn 3px wide, which its label's margin clears).
 fn bar_end(bar: &Bar, scale_ms: u64) -> f64 {
-    pct(bar.start_ms, scale_ms) + pct(bar.span_ms, scale_ms).max(0.5)
+    pct(bar.start_ms, scale_ms) + pct(bar.span_ms, scale_ms)
 }
 
 /// The round's total, under the lanes where the segment that finished last
@@ -887,32 +908,42 @@ fn end_marker(round: &RoundView) -> Markup {
     }
 }
 
-/// A segment: solid for its units, outlined for the tier's work outside
-/// them, one shape when it has both (the solid part from the left).
+/// A segment: its shapes placed in it, in percent of its drawn length.
 fn bar_div(bar: &Bar, scale_ms: u64) -> Markup {
-    let solid = if bar.span_ms == 0 {
-        100.0
-    } else {
-        bar.solid_ms as f64 / bar.span_ms as f64 * 100.0
+    let span = bar.span_ms;
+    let at = |ms: u64| {
+        if span == 0 {
+            0.0
+        } else {
+            ms.saturating_sub(bar.start_ms) as f64 / span as f64 * 100.0
+        }
     };
-    let class = match (solid >= 100.0, bar.leftover, bar.last) {
-        (true, true, false) => "bar p2",
-        (true, true, true) => "bar p2 last",
-        (true, false, false) => "bar",
-        (true, false, true) => "bar last",
-        (false, _, false) => "bar work",
-        (false, _, true) => "bar work last",
-    };
-    let style = if solid >= 100.0 {
-        span_style(bar.start_ms, bar.span_ms, scale_ms)
-    } else {
-        format!(
-            "{};--solid:{solid:.1}%",
-            span_style(bar.start_ms, bar.span_ms, scale_ms)
-        )
+    let place = |from: u64, to: u64| {
+        let left = at(from);
+        let width = if span == 0 { 100.0 } else { at(to) - left };
+        format!("left:{left:.2}%;width:{width:.2}%")
     };
     html! {
-        div class=(class) data-solid=(format!("{solid:.1}")) style=(style) title=(bar.title) {}
+        div class=(if bar.last { "bar last" } else { "bar" }) style=(format!("left:{:.2}%;width:{:.2}%", pct(bar.start_ms, scale_ms), pct(span, scale_ms))) title=(bar.title) {
+            @for shape in &bar.shapes {
+                @match shape {
+                    Shape::Fill { from_ms, to_ms, leftover } => {
+                        i class=(if *leftover { "fill p2" } else { "fill" }) style=(place(*from_ms, *to_ms)) {}
+                    }
+                    Shape::Thread { from_ms, to_ms, band } => {
+                        i class=(if *band { "thread band" } else { "thread" }) style=(place(*from_ms, *to_ms)) {}
+                    }
+                    Shape::Work { from_ms, to_ms, joined, band_from } => {
+                        @let class = match (joined, band_from) { (true, _) => "work joined", (false, Some(_)) => "work band", (false, None) => "work" };
+                        @let style = match band_from {
+                            Some(from) => format!("{};--join:{:.2}%;--join-w:{:.2}%", place(*from_ms, *to_ms), at(*from), at(*to_ms) - at(*from)),
+                            None => place(*from_ms, *to_ms),
+                        };
+                        i class=(class) style=(style) {}
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1139,36 +1170,70 @@ mod tests {
         .is_empty());
     }
 
-    /// A segment is one shape: solid for its units, outlined for the
-    /// tier's work after them, the solid part from the left.
+    /// A segment's shapes are placed in it in percent of its drawn
+    /// length: solid, a thread across the gap, the outline after it; a
+    /// band carries where a narrow track joins it; one under a millisecond
+    /// is 0 wide here and 3px on the page (its minimum width).
     #[test]
-    fn a_segment_is_one_shape_solid_then_outlined() {
-        let bar = |ms: u64, span_ms: u64, solid_ms: u64| Bar {
-            start_ms: 100,
-            ms,
+    fn a_segment_places_its_shapes_in_its_length() {
+        let bar = |start_ms: u64, span_ms: u64, shapes: Vec<Shape>| Bar {
+            start_ms,
+            ms: 0,
             span_ms,
-            solid_ms,
-            leftover: false,
-            work: solid_ms == 0,
+            shapes,
+            work: false,
             title: String::new(),
             details: Vec::new(),
             label: None,
             last: false,
         };
-        let both = bar_div(&bar(42, 43, 40), 1_000).into_string();
-        assert!(
-            both.contains(r#"class="bar work" data-solid="93.0" style="left:10.00%;width:4.30%;--solid:93.0%""#),
-            "{both}"
+        let split = bar_div(
+            &bar(
+                100,
+                200,
+                vec![
+                    Shape::Fill {
+                        from_ms: 100,
+                        to_ms: 200,
+                        leftover: false,
+                    },
+                    Shape::Thread {
+                        from_ms: 200,
+                        to_ms: 250,
+                        band: true,
+                    },
+                    Shape::Work {
+                        from_ms: 250,
+                        to_ms: 300,
+                        joined: false,
+                        band_from: Some(200),
+                    },
+                ],
+            ),
+            1_000,
+        )
+        .into_string();
+        assert_eq!(
+            split,
+            r#"<div class="bar" style="left:10.00%;width:20.00%" title=""><i class="fill" style="left:0.00%;width:50.00%"></i><i class="thread band" style="left:50.00%;width:25.00%"></i><i class="work band" style="left:75.00%;width:25.00%;--join:50.00%;--join-w:50.00%"></i></div>"#
         );
-        let solid = bar_div(&bar(40, 40, 40), 1_000).into_string();
+        let zero = bar_div(
+            &bar(
+                3,
+                0,
+                vec![Shape::Fill {
+                    from_ms: 3,
+                    to_ms: 3,
+                    leftover: false,
+                }],
+            ),
+            10,
+        )
+        .into_string();
         assert!(
-            solid.contains(r#"class="bar" data-solid="100.0" style="left:10.00%;width:4.00%""#),
-            "{solid}"
-        );
-        let outlined = bar_div(&bar(2, 2, 0), 1_000).into_string();
-        assert!(
-            outlined.contains(r#"class="bar work" data-solid="0.0""#),
-            "{outlined}"
+            zero.contains(r#"style="left:30.00%;width:0.00%""#)
+                && zero.contains(r#"<i class="fill" style="left:0.00%;width:100.00%"></i>"#),
+            "{zero}"
         );
     }
 }

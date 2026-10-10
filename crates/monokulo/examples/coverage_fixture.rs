@@ -52,7 +52,7 @@ async fn ready() -> &'static str {
 /// catching up, so the engine page has something to draw.
 fn record_baseline(engine: &TestEngineHandle) {
     let activity = engine.activity(monero::Network::Mainnet);
-    activity.record(Event::Snapshot(Box::new(Snapshot {
+    let snapshot = Snapshot {
         round: 0,
         tip: Some(3_412_880),
         high_water: Some(3_412_880),
@@ -97,16 +97,84 @@ fn record_baseline(engine: &TestEngineHandle) {
             max_run_us: 34_000,
         },
         ..Snapshot::default()
+    };
+    // First every store at the frontier, and a round of a few
+    // milliseconds, drawn to its own short scale; then three stores
+    // catching up.
+    activity.record(Event::Snapshot(Box::new(Snapshot {
+        groups: snapshot.groups[..1].to_vec(),
+        ..snapshot.clone()
     })));
+    for event in short_round(1) {
+        activity.record(event);
+    }
+    activity.record(Event::Snapshot(Box::new(snapshot)));
     // The node's whole pool, as the engine asks while the page is open.
     activity.record(Event::NodePool {
         txs: 23,
         bytes: Some(96_000),
         penalty_free: 300_000,
     });
-    for event in round(1, Some(3_412_880), false) {
+    for event in round(2, Some(3_412_880), false) {
         activity.record(event);
     }
+}
+
+/// A 3ms round with nothing to do: the tip request, Blocks' 1ms unit,
+/// Settlement's, then Blocks keeping its fetched blocks in under a
+/// millisecond.
+fn short_round(number: u64) -> Vec<Event> {
+    use shared::activity::Work;
+    let unit = |tier, start_ms, ms| Event::Unit {
+        tier,
+        pass: 1,
+        start_ms,
+        ms,
+        progress: UnitProgress::Idle,
+    };
+    let mut events = vec![
+        Event::RoundStarted {
+            round: number,
+            budget_ms: 10_000,
+            tip: Some(3_412_880),
+        },
+        Event::Work {
+            tier: Tier::Chain,
+            start_ms: 0,
+            ms: 1,
+            what: Work::TipRequest,
+        },
+        Event::ChainChecked {
+            agrees: true,
+            looked_up: false,
+        },
+        unit(Tier::Blocks, 1, 1),
+        unit(Tier::Mempool, 2, 0),
+        unit(Tier::Settlement, 2, 1),
+        Event::Work {
+            tier: Tier::Blocks,
+            start_ms: 3,
+            ms: 0,
+            what: Work::CacheCarry,
+        },
+        unit(Tier::Upkeep, 3, 0),
+    ];
+    for tier in Tier::ALL {
+        events.push(Event::TierEnded {
+            tier,
+            outcome: TierOutcome::Idle,
+        });
+    }
+    events.push(Event::RoundFinished {
+        round: number,
+        ms: 3,
+        backlogged: false,
+    });
+    events.push(Event::Slept {
+        ms: 1_000,
+        woken_by: shared::activity::Wake::Interval,
+    });
+    events
 }
 
 /// A round's own events: the chain checked, each tier's unit, its end.
@@ -132,7 +200,14 @@ fn round(number: u64, tip: Option<u64>, backlogged: bool) -> Vec<Event> {
     // Back to back from the tip request, as the engine records them.
     let mut at = 40;
     for tier in Tier::ALL {
-        let ms = if tier == Tier::Blocks { 160 } else { 3 };
+        // Settlement's 300ms puts 3 % of the round's 10s budget between
+        // Blocks' unit and its cache carry: split on a wide track, joined
+        // on a phone's (the engine page's band).
+        let ms = match tier {
+            Tier::Blocks => 160,
+            Tier::Settlement => 300,
+            _ => 3,
+        };
         events.push(Event::Unit {
             tier,
             pass: 1,
@@ -175,7 +250,7 @@ async fn engine_story(State(control): State<Controls>) -> StatusCode {
         ms: 1_000,
         woken_by: Wake::NewBlock,
     });
-    story.extend(round(2, Some(3_412_881), true));
+    story.extend(round(3, Some(3_412_881), true));
     story.extend([
         Event::Fetched {
             from: 3_412_881,
@@ -260,7 +335,7 @@ async fn engine_story(State(control): State<Controls>) -> StatusCode {
         },
         Event::ReorgRewound { fork: 3_412_881 },
     ]);
-    story.extend(round(3, Some(3_412_881), false));
+    story.extend(round(4, Some(3_412_881), false));
     tokio::spawn(async move {
         for event in story {
             activity.record(event);
