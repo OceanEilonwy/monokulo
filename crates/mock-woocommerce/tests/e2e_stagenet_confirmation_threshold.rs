@@ -186,7 +186,7 @@ async fn body_json(response: reqwest::Response) -> Value {
 // `e2e_stagenet_connect_flow.rs`'s own module doc comment gives for its own
 // identical attribute.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore]
+#[ignore = "needs the live stagenet node and the funded merchant and spender wallets"]
 async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_threshold() {
     // Same standard `e2e/*` layout every real suite in this repo uses - run
     // from the repository root, same as this file's own doc comment says.
