@@ -3854,9 +3854,26 @@ mod live_node_tests {
             }
         }
         assert!(transactions > 0, "blocks with transactions in them");
+        // The headers say the same about each block as the blocks do, but
+        // with the node's own weight for it, not the pruned block's size on
+        // the wire (as the stagenet replay test checks too).
+        let identity = |header: ChainHeader| {
+            (
+                header.height,
+                header.hash,
+                header.prev_hash,
+                header.timestamp,
+                header.tx_count,
+            )
+        };
+        let headers = c.get_chain_headers(start, count).await.unwrap();
+        assert!(headers.iter().all(|h| h.weight.is_some()), "{headers:?}");
         assert_eq!(
-            c.get_chain_headers(start, count).await.unwrap(),
-            chain.iter().map(ChainBlock::header).collect::<Vec<_>>()
+            headers.into_iter().map(identity).collect::<Vec<_>>(),
+            chain
+                .iter()
+                .map(|block| identity(block.header()))
+                .collect::<Vec<_>>()
         );
         // The genesis block, the ordinary way, then block 1 from the batch.
         let first = c.get_chain_blocks(0, 2).await.unwrap();
