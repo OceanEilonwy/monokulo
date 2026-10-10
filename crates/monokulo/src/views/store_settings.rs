@@ -56,16 +56,6 @@ pub struct ConfirmationThresholdView {
     pub confirmations_required: u64,
 }
 
-/// One row of the webhooks table - mirrors the engine's own `WebhookView`
-/// field-for-field. Formerly `views::webhooks::WebhookRowViewModel`, now
-/// that webhooks live on this page rather than their own.
-pub struct WebhookRowViewModel {
-    pub webhook_id: String,
-    pub url: String,
-    pub enabled: bool,
-    pub created_at: i64,
-}
-
 /// One verified-embed domain row (`http::embed_domains::domain_views`).
 pub struct EmbedDomainView {
     pub id: String,
@@ -117,15 +107,9 @@ pub struct StoreSettingsData {
     /// so this is implicit in whether a merchant has set a custom threshold
     /// above whatever amount they don't want 0-conf applied to.
     pub zero_conf_enabled: bool,
-    pub webhooks: Vec<WebhookRowViewModel>,
-    /// The engine couldn't be asked for the webhooks: the section says so
-    /// rather than showing none, and the rest of the page still works.
-    pub webhooks_unavailable: bool,
-    /// Set only immediately after a successful webhook creation - the
-    /// engine hands back a real signing secret exactly once, at creation
-    /// time, with no way to ever fetch it again after this moment. `None`
-    /// on a plain `GET`, and gone again the moment the page is reloaded.
-    pub created_webhook_signing_secret: Option<String>,
+    /// The store's webhooks and their deliveries (`views::webhooks`),
+    /// with a just-made webhook's signing secret, shown that once.
+    pub webhooks: super::webhooks::WebhooksCard,
     /// What the save or the action this page answers did. `None` on a
     /// plain load.
     pub outcome: Option<StoreOutcome>,
@@ -362,7 +346,7 @@ impl StoreSettingsData {
                     [StoreSection::Connections] => "Plugin disconnected",
                     [StoreSection::KeyStorage] => "Keys moved",
                     [StoreSection::Domains] => "Verified domains updated",
-                    [StoreSection::Webhooks] if self.created_webhook_signing_secret.is_some() => {
+                    [StoreSection::Webhooks] if self.webhooks.created_secret.is_some() => {
                         "Webhook created"
                     }
                     [StoreSection::Webhooks] => "Webhooks updated",
@@ -801,77 +785,10 @@ fn haveno_field(
         ))
 }
 
-/// "Webhooks", with a new webhook's signing secret right after it is made:
-/// actions of their own, not part of the settings form.
+/// "Webhooks" (`views::webhooks`): actions of their own, not part of the
+/// settings form.
 fn webhooks_card(store: &StoreSettingsData) -> Markup {
-    plain_card(
-        StoreSection::Webhooks.id(),
-        "Webhooks",
-        html! {
-            (action_error(store, StoreSection::Webhooks))
-            @if let Some(secret) = &store.created_webhook_signing_secret {
-                div class="box" data-webhook-secret {
-                    h3 { "Webhook created" }
-                    p {
-                        "Its signing secret (verify the " code { "X-Monokulo-Signature" } " header with this - shown once, right now, and never again):"
-                    }
-                    pre { (secret) }
-                    p class="hint" { "Store it somewhere safe before leaving this page. If you lose it, delete this webhook and create a new one." }
-                }
-            }
-            table class="table-stack" {
-                thead { tr { th { "URL" } th { "Enabled" } th { "Created" } th {} } }
-                tbody {
-                    @for webhook in &store.webhooks {
-                        tr {
-                            td data-label="URL" { (webhook.url) }
-                            td {
-                                @if webhook.enabled {
-                                    span class="tag tag-ok" { "enabled" }
-                                } @else {
-                                    span class="tag tag-unknown" { "disabled" }
-                                }
-                            }
-                            td data-label="Created" { (store.clock.time(webhook.created_at)) }
-                            td {
-                                form method="post"
-                                    action=(format!("/dashboard/stores/{}/settings/webhooks/{}/delete", store.connection_id, webhook.webhook_id))
-                                    onsubmit="return confirm('Delete this webhook? Anything relying on it will stop receiving events immediately.');" {
-                                    button type="submit" { "Delete" }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            @if store.webhooks_unavailable {
-                div class="error" role="alert" { "Couldn't reach the engine to list this store's webhooks. Reload the page to try again." }
-            } @else if store.webhooks.is_empty() {
-                p class="muted" { "No webhooks yet." }
-            }
-            h4 { "Add a webhook" }
-            form method="post" action=(format!("/dashboard/stores/{}/settings/webhooks", store.connection_id)) {
-                label {
-                    "URL"
-                    input type="url" name="url" placeholder="https://your-endpoint.example.com/monokulo-webhook" required;
-                    span class="field-help" {
-                        "A plain " code { "http(s)://" } " URL your endpoint controls. Private/loopback addresses are "
-                        "checked at delivery time, not registration - registering one won't error here, but nothing will ever actually be "
-                        "delivered to it."
-                    }
-                }
-                label {
-                    "Custom headers (optional)"
-                    textarea name="extra_headers" rows="3" placeholder="X-Api-Key: your-value\nAnother-Header: another-value" {}
-                    span class="field-help" {
-                        "One " code { "Header-Name: value" } " pair per line - sent with every delivery to this "
-                        "webhook, alongside the signature headers Monokulo always includes."
-                    }
-                }
-                button type="submit" { "Add webhook" }
-            }
-        },
-    )
+    super::webhooks::card(&store.webhooks, action_error(store, StoreSection::Webhooks))
 }
 
 /// "Diagnostics": whether this store's browsers, POS and plugin may send
@@ -954,6 +871,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                 (webhooks_card(store))
                 (toast_region(store.toast().as_ref(), false))
                 (super::store_site::dialogs(&store.sites))
+                (super::webhooks::dialogs(&store.webhooks))
                 (super::script("confirm-dialogs.js", super::Load::Defer))
             } @else {
                 h1 { "Store not found" }
@@ -1092,11 +1010,17 @@ mod tests {
             confirmation_thresholds: vec![],
             confirmation_thresholds_at_max: false,
             zero_conf_enabled: false,
-            webhooks: vec![],
-            created_webhook_signing_secret: None,
+            webhooks: super::super::webhooks::WebhooksCard {
+                store_id: "conn_1".into(),
+                store_name: "shop.example.com".into(),
+                clock: crate::views::time::Clock::utc(0),
+                max_attempts: 8,
+                webhooks: vec![],
+                unavailable: false,
+                created_secret: None,
+            },
             outcome: None,
             sent: None,
-            webhooks_unavailable: false,
             embed_domains: vec![],
             embed_restricted: false,
             embed_can_restrict: false,
@@ -1538,40 +1462,20 @@ mod tests {
     }
 
     #[test]
-    fn says_when_the_webhooks_could_not_be_listed() {
-        let store = StoreSettingsData {
-            webhooks_unavailable: true,
-            ..base_store()
-        };
+    fn says_when_the_webhooks_could_not_be_read() {
+        let mut store = base_store();
+        store.webhooks.unavailable = true;
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
-        assert!(html.contains("list this store's webhooks"), "{html}");
+        assert!(html.contains("read this store's webhooks"), "{html}");
         assert!(!html.contains("No webhooks yet."));
         assert!(html.contains("Add a webhook"), "the form still works");
     }
 
     #[test]
-    fn lists_webhooks_with_a_delete_form_each() {
-        let store = StoreSettingsData {
-            webhooks: vec![WebhookRowViewModel {
-                webhook_id: "wh_1".to_string(),
-                url: "https://example.com/hook".to_string(),
-                enabled: true,
-                created_at: 1000,
-            }],
-            ..base_store()
-        };
-        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
-        assert!(html.contains("https://example.com/hook"));
-        assert!(html.contains("tag-ok"));
-        assert!(html.contains(r#"action="/dashboard/stores/conn_1/settings/webhooks/wh_1/delete""#));
-    }
-
-    #[test]
     fn shows_the_webhook_signing_secret_exactly_once_after_creation() {
-        let store = StoreSettingsData {
-            created_webhook_signing_secret: Some("whsec_abc123".to_string()),
-            ..base_store()
-        };
+        let mut store = base_store();
+        store.webhooks.created_secret = Some("whsec_abc123".to_string());
+        store.outcome = Some(StoreOutcome::Saved(vec![StoreSection::Webhooks]));
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
         assert!(html.contains("whsec_abc123"));
         assert!(html.contains("Webhook created"));

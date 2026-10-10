@@ -73,6 +73,37 @@ impl Clock {
         self.automatic
     }
 
+    /// The moment the page was made.
+    pub fn now(&self) -> i64 {
+        self.now
+    }
+
+    /// How long from the page's moment to `unix`, roughly: `in 6 min`,
+    /// `2 min ago`, `just now`.
+    pub fn relative(&self, unix: i64) -> String {
+        let delta = unix - self.now;
+        let span = delta.unsigned_abs();
+        let amount = if span < 45 {
+            return if delta > 0 { "in a moment" } else { "just now" }.to_string();
+        } else if span < 90 * 60 {
+            format!("{} min", span.div_ceil(60).max(1))
+        } else if span < 36 * 3600 {
+            format!("{} h", (span + 1800) / 3600)
+        } else {
+            let days = (span + 43_200) / 86_400;
+            if days == 1 {
+                "1 day".to_string()
+            } else {
+                format!("{days} days")
+            }
+        };
+        if delta > 0 {
+            format!("in {amount}")
+        } else {
+            format!("{amount} ago")
+        }
+    }
+
     /// `28 Sep, 14:22` (with the year when it isn't this one), in a
     /// `<time>` that never wraps; the full date, seconds and zone are in
     /// its title.

@@ -240,10 +240,22 @@ impl<'a> Card<'a> {
 /// A card for what isn't saved with the bar (actions with buttons of their
 /// own: add a webhook, move the keys): the same look, nothing tracked.
 pub fn plain_card(name: &str, title: &str, body: Markup) -> Markup {
+    plain_card_with_meta(name, title, None, body)
+}
+
+/// [`plain_card`] with a line of meta at the end of its head ("3
+/// webhooks").
+pub fn plain_card_with_meta(name: &str, title: &str, meta: Option<&str>, body: Markup) -> Markup {
     let id = card_id(name);
     html! {
         section id=(id) class="settings-card" aria-labelledby=(format!("{id}-title")) {
-            header class="card-head" { h3 id=(format!("{id}-title")) { (title) } }
+            header class="card-head" {
+                h3 id=(format!("{id}-title")) { (title) }
+                @if let Some(meta) = meta {
+                    span class="card-spacer" {}
+                    span class="card-meta" { (meta) }
+                }
+            }
             div class="card-body" { (body) }
         }
     }

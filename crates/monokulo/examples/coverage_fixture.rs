@@ -436,28 +436,38 @@ fn store_secret(control: &Controls) -> Result<shared::auth::RawToken, StatusCode
 }
 
 /// The WooCommerce plugin connected to the fixture store
-/// (store-site.spec.js): its webhook registered in the engine, connected
-/// six days ago, its last order an hour ago.
+/// (store-site.spec.js): its webhook added, connected six days ago, its
+/// last order an hour ago.
 async fn connect_plugin(
     State(control): State<Controls>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let sk = store_secret(&control)?;
     let url = "https://shop.localhost/?wc-api=monokulo";
+    let store = shared::ids::ConnectionId::new("coverage-store");
     // As connecting again does: the earlier connection's webhook goes.
     let earlier = control
         .db
         .lock()
-        .active_integration(&shared::ids::ConnectionId::new("coverage-store"))
+        .active_integration(&store)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .and_then(|i| i.webhook_id);
     if let Some(earlier) = earlier {
-        let _ = control.client.delete_webhook(&sk, &earlier).await;
+        let _ = control
+            .db
+            .lock()
+            .delete_webhook(&store, &shared::ids::WebhookId::new(earlier));
     }
-    let (webhook_id, _) = control
-        .client
-        .create_webhook(&sk, url, &Default::default())
-        .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let webhook_id = monokulo::webhooks::create(
+        &control.db,
+        &ENCRYPTION_KEY,
+        &store,
+        url,
+        &Default::default(),
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .webhook
+    .id
+    .to_string();
     let now = monokulo::now_unix();
     let db = control.db.lock();
     let store = shared::ids::ConnectionId::new("coverage-store");

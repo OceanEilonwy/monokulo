@@ -79,6 +79,7 @@ pub(crate) mod test_support;
 mod tests;
 mod wallet_service;
 mod wallets;
+mod webhooks;
 
 use std::sync::Arc;
 
@@ -536,11 +537,27 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/dashboard/stores/{id}/settings/webhooks",
-            axum::routing::post(orders::webhooks_create),
+            axum::routing::post(webhooks::add),
         )
         .route(
             "/dashboard/stores/{id}/settings/webhooks/{webhook_id}/delete",
-            axum::routing::post(orders::webhooks_delete),
+            axum::routing::get(webhooks::delete_page).post(webhooks::delete),
+        )
+        .route(
+            "/dashboard/stores/{id}/settings/webhooks/{webhook_id}/retry-failed",
+            axum::routing::post(webhooks::retry_failed),
+        )
+        .route(
+            "/dashboard/stores/{id}/settings/webhooks/{webhook_id}/deliveries",
+            axum::routing::get(webhooks::all),
+        )
+        .route(
+            "/dashboard/stores/{id}/settings/webhooks/{webhook_id}/deliveries/{delivery_id}",
+            axum::routing::get(webhooks::detail),
+        )
+        .route(
+            "/dashboard/stores/{id}/settings/webhooks/{webhook_id}/deliveries/{delivery_id}/send-again",
+            axum::routing::post(webhooks::send_again),
         )
         .route(
             "/dashboard/stores/{id}/pos",

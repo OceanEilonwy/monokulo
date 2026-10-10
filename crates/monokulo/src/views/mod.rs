@@ -109,6 +109,7 @@ pub mod store_settings;
 pub mod store_site;
 pub mod time;
 pub mod wallets;
+pub mod webhooks;
 
 pub use shorten::{short_address, short_address_text, short_id, short_id_text};
 

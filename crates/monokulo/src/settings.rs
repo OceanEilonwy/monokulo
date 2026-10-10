@@ -1525,6 +1525,10 @@ mod tests {
         assert!(BootConfig::from_snapshot(&snapshot).is_ok());
         assert!(ServerConfig::from_snapshot(&snapshot).is_ok());
         assert!(DatabaseConfig::from_snapshot(&snapshot).is_ok());
+        assert_eq!(
+            WebhookConfig::from_snapshot(&snapshot).unwrap(),
+            WebhookConfig::default()
+        );
         // http_cache.max_mb is read by two (the engine client and the
         // exchange-rate providers).
         let covered: std::collections::BTreeSet<&str> = [
@@ -1540,6 +1544,7 @@ mod tests {
             DatabaseConfig::keys(),
             BootConfig::keys(),
             ServerConfig::keys(),
+            WebhookConfig::keys(),
         ]
         .iter()
         .flat_map(|keys| keys.iter().map(|setting| setting.key()))
