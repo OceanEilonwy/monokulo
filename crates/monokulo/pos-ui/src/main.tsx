@@ -48,6 +48,18 @@ function Shortened(props: { short: string; full: string }) {
     <span class="short-value" title={props.full}><span class="short-value-text" aria-hidden="true">{props.short}</span><span class="short-value-full">{props.full}</span></span>
   </Show>;
 }
+/** Copies `text` from a selection of it, off screen; whether the browser did. */
+function copyBySelection(text: string): boolean {
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.readOnly = true;
+  area.style.cssText = 'position: fixed; top: 0; left: 0; opacity: 0';
+  document.body.append(area);
+  area.select();
+  try { return document.execCommand('copy'); }
+  catch { return false; }
+  finally { area.remove(); }
+}
 /** An order's ID shortened, `#` first. */
 const OrderId = (props: { order: Order }) => <Shortened short={shortId(props.order)} full={props.order.order_id}/>;
 /** An order's name: its reference, or else its ID shortened. */
@@ -202,7 +214,7 @@ function Stage(props: { order: Order }) {
 function PaymentCard(props: { order: Order }) {
   // A memo, so an order refresh carrying the same QR doesn't rebuild it.
   const qr = createMemo(() => props.order.qr_svg);
-  const [copied, setCopied] = createSignal(false);
+  const [copied, setCopied] = createSignal<'copied' | 'failed' | null>(null);
   // Seeded once from the order: later edits are the merchant's, not the order's.
   const initialRefund = untrack(() => props.order.refund_address || '');
   const [refund, setRefund] = createSignal(initialRefund);
@@ -222,8 +234,15 @@ function PaymentCard(props: { order: Order }) {
   const partial = () => props.order.status === 'partial' && !props.order.cancelled_at;
 
   async function copy() {
-    try { await navigator.clipboard.writeText(props.order.address); setCopied(true); window.setTimeout(() => setCopied(false), 2000); }
-    catch { /* Without clipboard access the address stays selectable. */ }
+    let done: boolean;
+    try { await navigator.clipboard.writeText(props.order.address); done = true; }
+    // No clipboard API (a page reached over plain http, as a tablet on the
+    // shop's network may reach it) or no permission for it: copied the way
+    // pages did before it, from a selection. Failing that too, the button
+    // says so; the address stays selectable.
+    catch { done = copyBySelection(props.order.address); }
+    setCopied(done ? 'copied' : 'failed');
+    window.setTimeout(() => setCopied(null), 2000);
   }
   async function save(value: string) {
     if (!looksLikeAddress(value) || value === saved()) return;
@@ -293,7 +312,7 @@ function PaymentCard(props: { order: Order }) {
     <p class="pos-quiet-label">Payment address</p>
     <div class="pos-address">
       <code><Shortened short={props.order.address_short} full={props.order.address}/></code>
-      <Show when={awaiting()}><button type="button" onClick={() => void copy()} aria-label="Copy payment address">{copied() ? 'Copied' : 'Copy'}</button></Show>
+      <Show when={awaiting()}><button type="button" onClick={() => void copy()} aria-label="Copy payment address">{copied() === 'copied' ? 'Copied' : copied() === 'failed' ? 'Not copied' : 'Copy'}</button></Show>
     </div>
     <hr/>
     <label class="pos-field-label" for="pos-refund">Refund address <span>(optional)</span></label>
