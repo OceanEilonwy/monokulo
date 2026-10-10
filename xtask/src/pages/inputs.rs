@@ -82,7 +82,7 @@ impl Coverage {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum TestStatus {
+pub(crate) enum TestStatus {
     Passed,
     Failed,
     Skipped,
@@ -108,17 +108,17 @@ impl BrowserKind {
 }
 
 /// One test case of a `JUnit` report.
-pub(super) struct Test {
-    pub(super) class: String,
-    pub(super) name: String,
+pub(crate) struct Test {
+    pub(crate) class: String,
+    pub(crate) name: String,
     pub(super) secs: f64,
-    pub(super) status: TestStatus,
+    pub(crate) status: TestStatus,
     pub(super) kind: Option<BrowserKind>,
     /// The `hostname` of its testsuite: the Playwright project, or empty.
     pub(super) project: String,
 }
 
-fn junit(path: &Path) -> io::Result<Vec<Test>> {
+pub(crate) fn junit(path: &Path) -> io::Result<Vec<Test>> {
     let text = fs::read_to_string(path).map_err(|e| at(path, e))?;
     let doc = roxmltree::Document::parse(&text)
         .map_err(|e| at(path, io::Error::new(io::ErrorKind::InvalidData, e)))?;

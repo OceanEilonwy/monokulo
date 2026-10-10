@@ -13,7 +13,7 @@
 use crate::support::{write_json, Exit};
 use serde::Serialize;
 use std::{
-    io::{self, BufRead, BufReader, Read, Write},
+    io::{self, BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
     path::Path,
     process::Command,
@@ -125,8 +125,12 @@ fn forward(node: (&str, u16), request: &Message) -> io::Result<Message> {
     head.push_str("\r\n");
     stream.write_all(head.as_bytes())?;
     stream.write_all(&request.body)?;
-    read_message(&mut BufReader::new(stream), true)?
-        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "the node closed without answering"))
+    read_message(&mut BufReader::new(stream), true)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "the node closed without answering",
+        )
+    })
 }
 
 /// Answers the requests of one client connection by forwarding each to
@@ -194,7 +198,10 @@ pub(crate) fn record(root: &Path) -> io::Result<Exit> {
     let status = Command::new("cargo")
         .args(["test", "-p", "engine", "--test", "daemon_rpc_replay", "--"])
         .args(["--ignored", "--exact", TEST, "--nocapture"])
-        .env("ENGINE_LIVE_STAGENET_NODE", format!("http://127.0.0.1:{port}"))
+        .env(
+            "ENGINE_LIVE_STAGENET_NODE",
+            format!("http://127.0.0.1:{port}"),
+        )
         .current_dir(root)
         .status()?;
     if !status.success() {
@@ -225,7 +232,11 @@ mod tests {
                 let request = read_message(&mut BufReader::new(stream), false)
                     .unwrap()
                     .unwrap();
-                let body = format!("{}:{}", request.first, String::from_utf8_lossy(&request.body));
+                let body = format!(
+                    "{}:{}",
+                    request.first,
+                    String::from_utf8_lossy(&request.body)
+                );
                 write!(
                     writer,
                     "HTTP/1.1 200 Ok\r\nTransfer-Encoding: chunked\r\nContent-Type: application/json\r\n\r\n{:x}\r\n{body}\r\n0\r\n\r\n",
