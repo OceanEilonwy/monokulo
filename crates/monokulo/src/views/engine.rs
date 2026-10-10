@@ -185,7 +185,10 @@ const ENGINE_STYLE: &str = r#"
 .marks span::after { content: ""; position: absolute; top: 100%; height: calc(var(--cells-top) - 60px); border-left: 2px solid currentColor; }
 .marks .m-tip { transform: translateX(-10px); background: var(--paper-raised); border: 1px solid var(--line-strong); }
 .marks .m-tip::after { left: 9px; }
-.marks .m-hw { transform: translateX(calc(-100% + 10px)); color: var(--accent-text); }
+.marks .m-hw { transform: translateX(calc(-100% + 10px)); color: var(--accent-text); background: var(--paper-raised); }
+/* A mark's label covers a group's tick passing behind it. */
+.marks span { z-index: 2; }
+.pills { z-index: 1; }
 .marks .m-hw::after { right: 9px; }
 .marks .m-win { top: calc(var(--cells-top) - var(--space-sm) - 2px); height: 2px; padding: 0; background: var(--viz-tier-chain); }
 .marks .m-win::after { display: none; }
