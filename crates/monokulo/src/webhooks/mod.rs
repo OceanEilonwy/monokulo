@@ -139,7 +139,6 @@ pub async fn create(
         url,
         signing_secret_encrypted: encrypted,
         extra_headers,
-        enabled: true,
         created_at: crate::now_unix(),
     };
     let row = webhook.clone();

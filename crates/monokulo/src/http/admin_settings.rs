@@ -2219,6 +2219,8 @@ mod tests {
             ("webhooks.allow_private_urls", "true"),
             ("webhooks.delivery_timeout_ms", "10000"),
             ("webhooks.max_attempts", "12"),
+            ("webhooks.keep_delivered_days", "14"),
+            ("webhooks.keep_given_up_days", "60"),
         ];
         // Every monokulo setting the page can save must be covered here, or
         // this test would silently stop proving anything about a setting

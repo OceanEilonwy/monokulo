@@ -512,6 +512,62 @@ async fn seed_webhooks(
         return Ok(Json(serde_json::json!({ "webhooks": [] })));
     }
     let now = monokulo::now_unix();
+    // `?many=N`: one webhook with N deliveries, all delivered, a minute
+    // apart: enough to page through.
+    if let Some(many) = query.get("many").and_then(|n| n.parse::<i64>().ok()) {
+        let created = monokulo::webhooks::create(
+            &control.db,
+            &ENCRYPTION_KEY,
+            &store,
+            "https://bakery.example/hooks/monokulo",
+            &Default::default(),
+        )
+        .await
+        .map_err(failed)?;
+        let first = control.db.lock().order_event_position().map_err(failed)? + 1;
+        let db = control.db.lock();
+        for seq in first..first + many {
+            let at = now - 60 * (first + many - seq);
+            let event = LoggedEvent {
+                seq,
+                event_id: format!("evt_fixture{seq}"),
+                event_type: "order.paid".to_string(),
+                created_at: at,
+                tenant_public_key: control.public_key.clone(),
+                order_id: shared::ids::OrderId::new(format!("{seq:032x}")),
+                status: Some("paid".to_string()),
+                txid: None,
+                merchant_order_id: None,
+                xmr_amount_piconero: 81_245_310_000,
+            };
+            db.queue_order_event(&event, at, |store, metadata| {
+                monokulo::webhooks::body::body_v2(&event, store, metadata)
+            })
+            .map_err(failed)?;
+            let id = db
+                .recent_deliveries(&created.webhook.id, 1)
+                .map_err(failed)?[0]
+                .id;
+            db.record_delivery_attempt(
+                id,
+                &AttemptOutcome {
+                    attempt: Attempt {
+                        n: 1,
+                        at,
+                        status: Some(200),
+                        error: None,
+                        ms: 184,
+                        signature: String::new(),
+                    },
+                    delivered: true,
+                    response: None,
+                    next_attempt_at: None,
+                },
+            )
+            .map_err(failed)?;
+        }
+        return Ok(Json(serde_json::json!({ "webhook": created.webhook.id })));
+    }
     // (url, events: (event, order, attempts made, delivered, status, seconds ago))
     type Seed = (&'static str, &'static str, u32, bool, Option<u16>, i64);
     let webhooks: [(&str, &[Seed]); 3] = [
@@ -608,14 +664,16 @@ async fn seed_webhooks(
         )
         .await
         .map_err(failed)?;
-        // Only this webhook gets the events below.
-        let all = control.db.lock().list_webhooks(&store).map_err(failed)?;
-        for other in all {
-            control
-                .db
-                .lock()
-                .set_webhook_enabled_for_test(&other.id, other.id == created.webhook.id);
-        }
+        // Each event goes to every webhook of the store: the ones made
+        // before this one lose their copy, so only this one has it.
+        let earlier: Vec<_> = control
+            .db
+            .lock()
+            .list_webhooks(&store)
+            .map_err(failed)?
+            .into_iter()
+            .filter(|w| w.id != created.webhook.id)
+            .collect();
         for (event_type, order, attempts, delivered, status, ago) in events {
             seq += 1;
             let at = now - ago;
@@ -636,6 +694,10 @@ async fn seed_webhooks(
                 monokulo::webhooks::body::body_v2(&event, store, metadata)
             })
             .map_err(failed)?;
+            for other in &earlier {
+                let copy = db.recent_deliveries(&other.id, 1).map_err(failed)?[0].id;
+                db.delete_delivery_for_test(copy);
+            }
             let id = db
                 .recent_deliveries(&created.webhook.id, 1)
                 .map_err(failed)?[0]
@@ -669,13 +731,6 @@ async fn seed_webhooks(
             }
             ids.push(id);
         }
-    }
-    let all = control.db.lock().list_webhooks(&store).map_err(failed)?;
-    for webhook in all {
-        control
-            .db
-            .lock()
-            .set_webhook_enabled_for_test(&webhook.id, true);
     }
     Ok(Json(serde_json::json!({ "deliveries": ids })))
 }

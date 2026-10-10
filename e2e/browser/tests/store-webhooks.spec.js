@@ -100,6 +100,50 @@ test("a delivery's details open as a dialog, with its attempts, request and last
   await expect(dialog).toBeHidden();
 });
 
+test('a webhook with many deliveries pages through them in place, 20 at a time', async ({ page, context }) => {
+  await login(context);
+  const response = await fetch(`${fixture.base_url}/__coverage/webhooks?many=45`, { method: 'POST' });
+  expect(response.ok).toBe(true);
+  await page.goto(`${settings()}#card-webhooks`);
+  const hook = webhook(page, 'https://bakery.example/hooks/monokulo');
+  await hook.locator('details.wh-deliveries summary').click();
+  const rows = hook.locator('.deliveries-results tbody tr');
+  await expect(rows).toHaveCount(20);
+  const newest = await rows.first().locator('td[data-label="Order"]').innerText();
+  await hook.getByRole('link', { name: 'Older →' }).click();
+  // Swapped in place by fixi: still the settings page.
+  await expect(page).toHaveURL(/\/settings#card-webhooks$/);
+  await expect(hook.getByRole('link', { name: '← Newer' })).toBeVisible();
+  await expect(rows).toHaveCount(20);
+  await expect(rows.first().locator('td[data-label="Order"]')).not.toHaveText(newest);
+  await hook.getByRole('link', { name: 'Older →' }).click();
+  await expect(rows).toHaveCount(5);
+  await expect(hook.getByRole('link', { name: 'Older →' })).toHaveCount(0);
+  await hook.locator('.deliveries-results').scrollIntoViewIfNeeded();
+  await captureCoverageStage(page, 'store-webhooks-paged', test.info(), { group: GROUP });
+  await hook.getByRole('link', { name: '← Newer' }).click();
+  await expect(rows).toHaveCount(20);
+});
+
+test('without JavaScript the deliveries page through the All deliveries page', async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  await login(context);
+  const page = await context.newPage();
+  const response = await fetch(`${fixture.base_url}/__coverage/webhooks?many=25`, { method: 'POST' });
+  expect(response.ok).toBe(true);
+  await page.goto(`${settings()}#card-webhooks`);
+  // In the fold, closed while all is well.
+  const older = webhook(page, 'https://bakery.example/hooks/monokulo').locator('a[rel="next"]');
+  await expect(older).toHaveText('Older →');
+  await page.goto(fixture.base_url + await older.getAttribute('href'));
+  await expect(page).toHaveURL(/\/deliveries\?page=1$/);
+  await expect(page.locator('.deliveries-results tbody tr')).toHaveCount(5);
+  await page.getByRole('link', { name: '← Newer' }).click();
+  await expect(page).toHaveURL(/\/deliveries$/);
+  await expect(page.locator('.deliveries-results tbody tr')).toHaveCount(20);
+  await context.close();
+});
+
 test('a store with no webhooks offers to add one', async ({ page, context }) => {
   await login(context);
   await seed(true);

@@ -8,13 +8,14 @@
 -- like the store's own secret key (`crate::crypto`, bound to the webhook's
 -- id); shown to the merchant once, when the webhook is made.
 -- `extra_headers`: a JSON object of headers sent with every delivery.
+-- There is no switching one off: a webhook that shouldn't get events is
+-- deleted.
 CREATE TABLE webhooks (
     id                       TEXT PRIMARY KEY,
     store_id                 TEXT NOT NULL REFERENCES store_connections(id) ON DELETE CASCADE,
     url                      TEXT NOT NULL,
     signing_secret_encrypted TEXT NOT NULL,
     extra_headers            TEXT NOT NULL DEFAULT '{}',
-    enabled                  INTEGER NOT NULL DEFAULT 1,
     created_at_utc           INTEGER NOT NULL
 );
 CREATE INDEX webhooks_store ON webhooks (store_id, created_at_utc);
@@ -30,6 +31,8 @@ CREATE INDEX webhooks_store ON webhooks (store_id, created_at_utc);
 -- with their delivery, are written in the same statement as its outcome,
 -- and go with it. `last_response`: the start of the last answer (its
 -- status line, content type and first 512 bytes), shown as text.
+-- Delivered rows are deleted after `webhooks.keep_delivered_days` (30),
+-- given-up ones after `webhooks.keep_given_up_days` (90).
 CREATE TABLE webhook_deliveries (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     webhook_id          TEXT NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
@@ -54,6 +57,10 @@ CREATE TABLE webhook_deliveries (
 CREATE INDEX webhook_deliveries_due ON webhook_deliveries (next_attempt_at_utc)
     WHERE next_attempt_at_utc IS NOT NULL;
 CREATE INDEX webhook_deliveries_by_webhook ON webhook_deliveries (webhook_id, id);
+CREATE INDEX webhook_deliveries_delivered ON webhook_deliveries (delivered_at_utc)
+    WHERE delivered_at_utc IS NOT NULL;
+CREATE INDEX webhook_deliveries_gave_up ON webhook_deliveries (gave_up_at_utc)
+    WHERE gave_up_at_utc IS NOT NULL;
 
 -- Where monokulo has read the engine's order-event log up to: the last
 -- event whose deliveries are queued, saved in the same transaction as them.

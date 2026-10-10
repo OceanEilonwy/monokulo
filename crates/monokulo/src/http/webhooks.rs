@@ -5,12 +5,13 @@
 
 use std::collections::BTreeMap;
 
-use axum::extract::{Form, Path, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use shared::ids::WebhookId;
 
+use super::fx::FxRequest;
 use super::orders::{load_owned_connection, render_store_settings_page, saved};
 use super::{AppState, AuthedUser};
 use crate::db::{ConnectionId, DbError, StoreConnectionRow, UserRow};
@@ -34,7 +35,7 @@ pub(super) async fn card(
     );
     let read = state
         .db
-        .read(move |db| entries(db, &store_id, since, views::webhooks::RECENT))
+        .read(move |db| entries(db, &store_id, since, 0))
         .await;
     let (webhooks, unavailable) = match read {
         Ok(webhooks) => (webhooks, false),
@@ -54,20 +55,28 @@ pub(super) async fn card(
     }
 }
 
-/// The store's webhooks with `recent` deliveries each.
+/// The store's webhooks, each with page `page` of its deliveries.
 fn entries(
     db: &crate::db::Db,
     store_id: &ConnectionId,
     since: i64,
-    recent: usize,
+    page: usize,
 ) -> Result<Vec<WebhookEntry>, DbError> {
+    const PAGE: usize = views::webhooks::PAGE;
     let plugin = db.active_integration(store_id)?;
     db.list_webhooks(store_id)?
         .into_iter()
         .map(|webhook| {
+            // One more than a page: whether there are older ones.
+            let mut recent =
+                db.deliveries_page(&webhook.id, page.saturating_mul(PAGE), PAGE + 1)?;
+            let has_more = recent.len() > PAGE;
+            recent.truncate(PAGE);
             Ok(WebhookEntry {
                 health: db.webhook_health(&webhook.id, since)?,
-                recent: db.recent_deliveries(&webhook.id, recent)?,
+                recent,
+                page,
+                has_more,
                 plugin: plugin
                     .as_ref()
                     .filter(|p| p.webhook_id.as_deref() == Some(webhook.id.as_str()))
@@ -78,18 +87,18 @@ fn entries(
         .collect()
 }
 
-/// One of the store's webhooks with `recent` deliveries.
+/// One of the store's webhooks with page `page` of its deliveries.
 async fn entry(
     state: &AppState,
     store: &StoreConnectionRow,
     webhook: WebhookId,
-    recent: usize,
+    page: usize,
 ) -> Result<Option<WebhookEntry>, DbError> {
     let store_id = store.id.clone();
     state
         .db
         .read(move |db| {
-            Ok(entries(db, &store_id, 0, recent)?
+            Ok(entries(db, &store_id, 0, page)?
                 .into_iter()
                 .find(|e| e.webhook.id == webhook))
         })
@@ -184,14 +193,14 @@ async fn owned(
     user: &UserRow,
     id: &ConnectionId,
     webhook: &WebhookId,
-    recent: usize,
+    page: usize,
 ) -> Result<(super::OwnedStore, WebhookEntry), StatusCode> {
     let row = match load_owned_connection(&state.db, user, id).await {
         Ok(Some(row)) => row,
         Ok(None) => return Err(StatusCode::NOT_FOUND),
         Err(()) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
-    match entry(state, &row, webhook.clone(), recent).await {
+    match entry(state, &row, webhook.clone(), page).await {
         Ok(Some(entry)) => Ok((row, entry)),
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
@@ -257,29 +266,44 @@ pub async fn delete(
     }
 }
 
-/// `GET …/settings/webhooks/{webhook}/deliveries`: its latest deliveries.
+#[derive(Deserialize)]
+pub struct PageQuery {
+    #[serde(default)]
+    page: usize,
+}
+
+/// `GET …/settings/webhooks/{webhook}/deliveries[?page=N]`: a page of its
+/// deliveries, newest first. Asked by fixi (its Newer/Older links, here or
+/// in the settings page's fold), just that page's part.
 pub async fn all(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    FxRequest(fixi): FxRequest,
     Path((id, webhook)): Path<(ConnectionId, WebhookId)>,
+    Query(query): Query<PageQuery>,
 ) -> Response {
-    let (row, entry) = match owned(&state, &user, &id, &webhook, views::webhooks::ALL).await {
+    let (row, entry) = match owned(&state, &user, &id, &webhook, query.page).await {
         Ok(found) => found,
         Err(status) => return status.into_response(),
     };
+    let max_attempts = state.settings.webhooks.load().max_attempts;
+    if fixi {
+        let clock = views::time::Clock::for_user(&user);
+        return views::webhooks::deliveries_results(
+            &views::webhooks::Paths::new(id.as_str()),
+            &clock,
+            max_attempts,
+            &entry,
+        )
+        .into_response();
+    }
     let chrome = super::page_chrome(
         &state,
         Some(&user),
         views::webhooks::Paths::new(id.as_str()).all(webhook.as_str()),
     )
     .await;
-    views::webhooks::all_page(
-        &chrome,
-        &row.name,
-        state.settings.webhooks.load().max_attempts,
-        &entry,
-    )
-    .into_response()
+    views::webhooks::all_page(&chrome, &row.name, max_attempts, &entry).into_response()
 }
 
 /// `GET …/settings/webhooks/{webhook}/deliveries/{delivery}`: a delivery's
