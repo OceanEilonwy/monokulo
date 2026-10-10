@@ -594,11 +594,17 @@ Review round 1:
   units (Blocks keeping its fetched blocks) is **one shape**: outlined to
   the work's end, solid from the left for the unit (`Bar::span_ms`,
   `Bar::solid_ms`), so there is no gap between two shapes.
-- **The round's end marker** is a line from the right edge of the segment
-  that finished last down to the round's total, which sits under it. The
+- **The round's end marker** is on the right edge of the segment that
+  finished last, in its lane only (round 2: a line running down across the
+  lanes under it to the total read as part of every lane); the round's
+  total sits under the lanes at the same place. The
   lanes are a little taller (24px rows) so the outcome chips don't touch,
   with a `--space-lg` gap above Timing details; the playback control is
   centred in its card.
+- **Ticks that meet are one line** (round 2): every chain label's tick is
+  the same two pixels over its block, so where the frontier's and the
+  node's tip meet they draw one line of the normal width, not two side by
+  side.
 
 ## What differs from the design, and what is left
 
