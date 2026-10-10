@@ -728,7 +728,18 @@ mod tests {
             "out of order: {places:?}"
         );
         assert!(html.contains(r#"<label for="engine-network" class="visually-hidden">Network</label><mk-select compact><select id="engine-network" name="network">"#));
-        for gone in ["engine-side", "engine-main", "d-webhooks", ">Webhooks<"] {
+        // The breakdown's summary says what it is; the round is the card's
+        // heading.
+        assert!(
+            html.contains(r#"<details class="round-breakdown"><summary>Timing details</summary>"#)
+        );
+        for gone in [
+            "engine-side",
+            "engine-main",
+            "d-webhooks",
+            ">Webhooks<",
+            "(snapshot)",
+        ] {
             assert!(!html.contains(gone), "{gone} is gone");
         }
         // The strip's tiles, as loaded.

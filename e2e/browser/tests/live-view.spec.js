@@ -55,8 +55,8 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
 
   const timingDetails = page.locator('#engine-round .round-breakdown');
   await timingDetails.locator('summary').click();
-  const snapshotTitle = await timingDetails.locator('summary').textContent();
-  expect(snapshotTitle).toContain('(snapshot)');
+  // Just "Timing details": the round it is for is the card's heading.
+  await expect(timingDetails.locator('summary')).toHaveText('Timing details');
   await page.request.post(`${fixture.base_url}/__coverage/engine/story`);
   const events = page.locator('#engine-events');
   await expect(events).toContainText('Block 3,412,881 scanned for 41 stores and committed, 1 payment found in it.', { timeout: 20000 });
@@ -67,7 +67,7 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await expect(page.locator('#pills .pill.catchup')).toHaveCount(0);
   await expect(page.locator('#d-reorg')).not.toHaveAttribute('open', '');
   await expect(timingDetails).toHaveAttribute('open', '');
-  await expect(timingDetails.locator('summary')).toHaveText(snapshotTitle);
+  await expect(timingDetails.locator('summary')).toHaveText('Timing details');
   await timingDetails.locator('summary').click();
   await captureCoverageStage(page, 'engine-live', test.info(), shot);
 
