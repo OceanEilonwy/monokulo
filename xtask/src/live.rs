@@ -850,21 +850,9 @@ mod tests {
     /// The `#[ignore]`d tests the daily run leaves out, by the name
     /// `cargo xtask test-summary` lists them under (file › path in the file),
     /// and why.
-    const NOT_DAILY: [(&str, &str); 9] = [
-    (
-        "crates/engine/tests/backup_restore.rs › backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes",
-        "needs the sqlite3 CLI, not the network",
-    ),
-    (
-        "crates/engine/tests/backup_restore.rs › restore_refuses_to_overwrite_an_existing_destination_without_force",
-        "needs the sqlite3 CLI, not the network",
-    ),
+    const NOT_DAILY: [(&str, &str); 6] = [
     (
         "crates/engine/tests/verification/store/queue_scale_properties.rs › twelve_thousand_accepted_jobs_survive_sustained_saturation",
-        "a scale suite: the weekly engine-scale.yml runs it",
-    ),
-    (
-        "crates/engine/tests/verification/webhooks/scale.rs › thirteen_thousand_webhooks_recover_without_starving_healthy_merchants",
         "a scale suite: the weekly engine-scale.yml runs it",
     ),
     (
