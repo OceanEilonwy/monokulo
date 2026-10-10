@@ -1,5 +1,6 @@
 mod coverage;
 mod exploration;
+mod live;
 mod logo;
 mod mutations;
 mod pages;
@@ -26,6 +27,7 @@ Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|summar
        cargo xtask test-summary TITLE LABEL=JUNIT...
        cargo xtask test-timings [--db PATH] <run|load|report> [...]
        cargo xtask pages <build|fetch> [...]
+       cargo xtask live <tests|browser|probe|wallets|report> [...]
        cargo xtask record-stagenet-node
        cargo xtask serve DIR [PORT]
 ";
@@ -44,6 +46,7 @@ fn help() {
         summary::HELP,
         timings::HELP,
         pages::HELP,
+        live::HELP,
         recording::HELP,
     ] {
         println!("{text}");
@@ -96,6 +99,7 @@ fn main() -> ExitCode {
         ["pages", "fetch", rest @ ..] => pages::fetch(rest),
         ["pages", "docs", rest @ ..] => pages::docs(&root(), rest),
         ["serve", rest @ ..] => pages::serve(rest),
+        ["live", rest @ ..] => live::live(&root(), rest),
         ["record-stagenet-node"] => recording::record(&root()),
         _ => {
             help();

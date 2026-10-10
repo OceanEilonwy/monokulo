@@ -17,6 +17,32 @@ final-status-level = "slow"
 [profile.ci.junit]
 path = "junit.xml"
 
+# The daily live-network run (`cargo xtask live tests`, live-network.yml):
+# the #[ignore]d tests named live_, which need the outside world. A stagenet
+# payment waits on real blocks and Tor's bootstrap takes minutes, so a test
+# may run for half an hour before it is stopped. Like `ci`, no retries: a
+# service that fails a test once is what the run is there to show.
+[profile.live]
+slow-timeout = { period = "300s", terminate-after = 6 }
+fail-fast = false
+retries = 0
+failure-output = "immediate-final"
+status-level = "pass"
+final-status-level = "slow"
+
+[profile.live.junit]
+path = "junit.xml"
+
+# The public stagenet nodes allow about one connection per address at a
+# time, so the tests that talk to one take turns rather than reset each
+# other's connections.
+[test-groups.stagenet]
+max-threads = 1
+
+[[profile.live.overrides]]
+filter = 'test(/(^|::)live_stagenet_/)'
+test-group = 'stagenet'
+
 # Process-level watchdogs also catch blocking loops that Tokio cannot cancel.
 [profile.default]
 slow-timeout = { period = "120s", terminate-after = 10 }
