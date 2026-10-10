@@ -367,9 +367,23 @@ test('the chain strip labels its blocks from above, at the right blocks', async 
     const axis = [...document.querySelectorAll('#chain-axis span')].map((el) => box(el).top);
     const win = document.querySelector('#chain-marks .m-win');
     const catchup = document.querySelector('#pills .pill.catchup');
-    // The pill's tick: 2px wide, 10px in from its left edge.
-    const tick = catchup ? box(catchup).left + 11 : null;
-    return { cells, top, bottom: Math.max(...cells.map((c) => c.bottom)), labels, axis, win: win && box(win).bottom, tick };
+    // A label's tick (a pseudo-element): its left and right, from the
+    // label's box and the tick's offsets inside the label's border.
+    const tickOf = (el, pseudo) => {
+      if (!el) return null;
+      const r = box(el), style = getComputedStyle(el), tick = getComputedStyle(el, pseudo);
+      const width = parseFloat(tick.borderLeftWidth) || parseFloat(tick.width);
+      const left = tick.left !== 'auto'
+        ? r.left + parseFloat(style.borderLeftWidth) + parseFloat(tick.left)
+        : r.right - parseFloat(style.borderRightWidth) - parseFloat(tick.right) - width;
+      return { left, right: left + width, middle: left + width / 2 };
+    };
+    const ticks = {
+      catchup: tickOf(catchup, '::before'),
+      frontier: tickOf(document.querySelector('#pills .pill.frontier'), '::before'),
+      tip: tickOf(document.querySelector('#chain-marks .m-tip'), '::after'),
+    };
+    return { cells, top, bottom: Math.max(...cells.map((c) => c.bottom)), labels, axis, win: win && box(win).bottom, tick: ticks.catchup && ticks.catchup.middle, ticks };
   });
   // Wide: the catching-up stores' block is drawn (beyond the cut), and the
   // tick lands on it.
@@ -385,6 +399,10 @@ test('the chain strip labels its blocks from above, at the right blocks', async 
   const onto = l.cells.filter((c) => Math.abs(c.left + c.width / 2 - l.tick) <= 1.5);
   expect(onto.length, 'the tick lands on a block').toBe(1);
   expect(onto[0].h).toBeLessThan(Math.max(...l.cells.map((c) => c.h)) - 20);
+  // The frontier and the node's tip on one block: their ticks are the same
+  // two pixels, one line of the normal width, not two side by side.
+  expect(Math.abs(l.ticks.frontier.left - l.ticks.tip.left), JSON.stringify(l.ticks)).toBeLessThanOrEqual(0.5);
+  expect(Math.abs(l.ticks.frontier.right - l.ticks.tip.right), JSON.stringify(l.ticks)).toBeLessThanOrEqual(0.5);
   // Narrow: no cut, and the stores are behind the oldest block drawn: the
   // tick is at it, the left edge, not further right.
   await page.setViewportSize({ width: 800, height: 900 });
@@ -415,11 +433,14 @@ test('the round card has room: inset bars, its end marker, chips apart', async (
       chip: box(track.nextElementSibling.querySelector('.engine-chip')),
     }));
     const label = round.querySelector('.ruler-label');
-    const line = getComputedStyle(label, '::before');
+    const lastBar = round.querySelector('.bar.last');
+    const marker = getComputedStyle(lastBar, '::after');
     return {
       lanes,
       label: box(label),
-      lineHeight: parseFloat(line.height),
+      lasts: round.querySelectorAll('.bar.last').length,
+      marker: { height: parseFloat(marker.height), width: parseFloat(marker.width) },
+      ruleLine: getComputedStyle(label, '::before').content,
       lanesBox: box(round.querySelector('.lanes')),
       details: box(round.querySelector('.round-breakdown')),
     };
@@ -440,15 +461,20 @@ test('the round card has room: inset bars, its end marker, chips apart', async (
   // carry's end and solid from the left for the unit, no gap.
   const blocks = card.lanes[1].bars;
   expect(blocks).toHaveLength(1);
-  expect(blocks[0].cls).toBe('bar work');
+  expect(blocks[0].cls).toBe('bar work last');
   expect(blocks[0].solid).toBeGreaterThan(0);
   expect(blocks[0].solid).toBeLessThan(100);
   expect(blocks[0].background).toContain(`${blocks[0].solid}%`);
-  // The end marker: a line from the right edge of the segment that
-  // finished last (Blocks') down to the round's total, centred under it.
+  // The round's total under the right edge of the segment that finished
+  // last (Blocks').
   const end = blocks[0].right;
   expect(Math.abs(card.label.left + card.label.width / 2 - end), `label ${JSON.stringify(card.label)} end ${end}`).toBeLessThanOrEqual(1.5);
-  expect(card.label.top - card.lineHeight, 'the line reaches up to Blocks').toBeLessThanOrEqual(card.lanes[1].track.bottom);
+  // The marker is on that one segment, in its lane only: no line running
+  // across the other lanes to the total.
+  expect(card.lasts).toBe(1);
+  expect(card.marker.width).toBe(2);
+  expect(card.marker.height).toBeLessThanOrEqual(card.lanes[1].track.height);
+  expect(card.ruleLine).toBe('none');
   expect(card.label.top).toBeGreaterThan(card.lanes[4].track.bottom);
   // Room above Timing details.
   expect(Math.abs(card.details.top - card.lanesBox.bottom - lg), `${card.details.top} ${card.lanesBox.bottom}`).toBeLessThanOrEqual(1);
