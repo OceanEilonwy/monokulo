@@ -677,7 +677,6 @@ impl Drop for TestEngineHandle {
 pub struct TestEngineConfig {
     networks: Vec<Network>,
     background_loops: bool,
-    background_scan_loop: bool,
     /// `true` when [`TestEngineConfig::with_snp_backend`] has been used.
     #[cfg(feature = "snp")]
     snp_backend: bool,
@@ -815,27 +814,10 @@ impl TestEngineConfig {
     /// and tries to fetch every block one at a time from 1 up to the real chain tip
     /// (millions of blocks on stagenet), which looks exactly like an indefinite hang:
     /// node-independent, low-CPU (blocked on sequential network round-trips), and
-    /// unaffected by `reorg_check_depth`. See [`without_background_scan_loop`] for the
-    /// fix a caller in that situation needs.
-    ///
-    /// [`without_background_scan_loop`]: TestEngineConfig::without_background_scan_loop
+    /// unaffected by `reorg_check_depth`. A caller driving a real daemon through
+    /// `run_scan_tick_now` leaves this off.
     pub fn with_background_loops(mut self) -> Self {
         self.background_loops = true;
-        self.background_scan_loop = true;
-        self
-    }
-
-    /// Drops the `NoopDaemonClient`-driven scan-tick loop of
-    /// [`with_background_loops`] (leaving nothing in the background), for a caller
-    /// that drives scanning
-    /// itself against a real daemon via [`TestEngineHandle::run_scan_tick_now`] - see
-    /// the correction on [`with_background_loops`]'s own doc comment for why running
-    /// both against the same network poisons the real scan's watermark and makes it
-    /// try to walk the entire real chain from block 1.
-    ///
-    /// [`with_background_loops`]: TestEngineConfig::with_background_loops
-    pub fn without_background_scan_loop(mut self) -> Self {
-        self.background_scan_loop = false;
         self
     }
 
@@ -1024,7 +1006,7 @@ impl TestEngineConfig {
         });
 
         let mut background_tasks = Vec::new();
-        if self.background_loops && self.background_scan_loop {
+        if self.background_loops {
             let networks = self.networks.clone();
             let scan_store = store.clone();
             let scan_key_custody = key_custody.clone();

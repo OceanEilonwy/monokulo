@@ -1040,7 +1040,21 @@ mod tests {
     /// whether a shared crate is worth it yet.
     struct TestControlPlaneHandle {
         addr: SocketAddr,
+        /// monokulo's database, which holds stores' webhooks.
+        db: monokulo::db::Database,
         task: tokio::task::JoinHandle<()>,
+    }
+
+    impl TestControlPlaneHandle {
+        /// The webhooks of the store whose public key is `public_key`.
+        fn webhooks(&self, public_key: &str) -> Vec<monokulo::db::WebhookRow> {
+            let db = self.db.lock();
+            let store = db
+                .get_store_connection_by_public_key(public_key)
+                .unwrap()
+                .expect("the store the flow made");
+            db.list_webhooks(&store.id).unwrap()
+        }
     }
 
     impl Drop for TestControlPlaneHandle {
@@ -1078,16 +1092,42 @@ mod tests {
             // public. Without it, `signup_submit` silently re-renders the
             // signup form (a plain `200`, not an error status), and every
             // later step fails with a confusing `401`, far from the cause.
-            settings: AppState::test_settings(Some(&format!("http://{addr}"))),
+            // This driver's webhook receiver is on this machine.
+            settings: AppState::test_settings(Some(&format!("http://{addr}"))).with_webhooks(
+                monokulo::settings::WebhookConfig {
+                    allow_private_urls: true,
+                    ..Default::default()
+                },
+            ),
             ..AppState::for_tests_with_db(db.into_shared())
         };
+        let db = state.db.clone();
+        // monokulo's own webhook pipeline, as it runs in production: the
+        // engine's order events read into deliveries, and those sent.
+        let subscriber = monokulo::webhooks::subscriber::run_subscriber(
+            state.db.clone(),
+            state.engine.client.clone(),
+            state.webhooks.clone(),
+        );
+        let worker = monokulo::webhooks::delivery::run_delivery_loop(
+            state.db.clone(),
+            state.encryption_key.clone(),
+            state.settings.clone(),
+            state.webhooks.clone(),
+        );
         let router = build_router(state);
 
         let task = tokio::spawn(async move {
-            let _ = axum::serve(listener, router).await;
+            tokio::join!(
+                async {
+                    let _ = axum::serve(listener, router).await;
+                },
+                subscriber,
+                worker
+            );
         });
 
-        TestControlPlaneHandle { addr, task }
+        TestControlPlaneHandle { addr, db, task }
     }
 
     fn parse_query_params(url: &str) -> HashMap<String, String> {
@@ -1143,12 +1183,7 @@ mod tests {
         // driver's own receiver - not just a plausibly-shaped secret in the
         // response.
         assert!(!credentials.webhook_signing_secret.is_empty());
-        let webhooks = engine_client
-            .list_webhooks(&shared::auth::RawToken::presented(
-                &credentials.secret_token,
-            ))
-            .await
-            .expect("list_webhooks against the real engine should succeed");
+        let webhooks = monokulo.webhooks(&credentials.public_key);
         assert_eq!(webhooks.len(), 1);
         assert_eq!(
             webhooks[0].url,
@@ -1173,14 +1208,7 @@ mod tests {
         let credentials = run_connect_flow_without_webhook(&monokulo_base_url)
             .await
             .unwrap();
-        let engine_client =
-            monokulo::engine_client::EngineClient::embedded_for_tests(engine.router());
-        let webhooks = engine_client
-            .list_webhooks(&shared::auth::RawToken::presented(
-                &credentials.secret_token,
-            ))
-            .await
-            .unwrap();
+        let webhooks = monokulo.webhooks(&credentials.public_key);
         assert!(
             webhooks.is_empty(),
             "the CLI exits after printing, so nothing could receive deliveries"
@@ -1680,13 +1708,11 @@ mod tests {
     /// creates an order on monokulo with the store's secret key, the
     /// customer's browser opens monokulo's checkout page, the order is paid
     /// on the test engine, and the plugin receives the signed `order.paid`
-    /// webhook straight from the engine. Also checks a wrong key is refused.
+    /// webhook from monokulo. Also checks a wrong key is refused.
     #[tokio::test]
     async fn a_full_woocommerce_checkout_is_created_with_the_key_opened_and_paid() {
         let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
-            .with_background_loops()
-            .without_background_scan_loop()
             .spawn()
             .await;
         let monokulo = spawn_test_monokulo(&engine).await;

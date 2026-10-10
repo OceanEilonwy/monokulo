@@ -40,13 +40,13 @@ Monokulo's address from its own URL.
 +      publicKey: "pk_3f9a…c21e",
 +      amount: receipt.total,          // "13.50"
 +      currency: "EUR",
-+      merchantOrderId: receipt.id,    // "gm-1042"
++      merchantOrderId: receipt.id,    // "gm-1042", for step 5
 +    });
-+    await fakeApi.linkPayment(receipt.id, order.orderId);   // for step 5
 ```
 
-Geomart keeps Monokulo's `orderId` with its own order: the webhook in step 5
-names Monokulo's order, and this is how the shop finds its own.
+`merchantOrderId` is Geomart's own order id. The webhook in step 5 carries
+it back as `merchant_order_id`, so the shop finds its order without keeping
+Monokulo's.
 
 ### Step 4 · Show the checkout
 
@@ -71,22 +71,26 @@ Geomart's fake API shows the handler a real server needs:
 ```diff
 # examples/geomart/index.html · fakeApi (stands in for your server)
 +  // POST /hooks/monokulo   X-Monokulo-Signature: t=…,v1=…
-+  // body: {"event":"order.paid","order_id":"pay_…","status":"paid",
-+  //        "event_id":"evt_…","created_at":…}
++  // body: {"api_version":2,"event_id":"evt_…","event":"order.paid",
++  //        "order_id":"…","status":"paid","merchant_order_id":"gm-1042",
++  //        "amount":"13.50","currency":"EUR",…}
 +  async onMonokuloWebhook(headers, body) {
 +    if (!(await signatureOk(headers["x-monokulo-signature"], body, WEBHOOK_SECRET))) return 400;
 +    const event = JSON.parse(body);
 +    if (seen.has(event.event_id)) return 200;          // deliveries can repeat
 +    seen.add(event.event_id);
-+    if (event.event === "order.paid") this.markPaid(this.orderFor(event.order_id));
++    if (event.event === "order.paid") this.markPaid(event.merchant_order_id);
 +    return 200;
 +  },
 ```
 
 The signature is HMAC-SHA256 of `"<t>.<body>"` with the signing secret;
-accept it only within five minutes of `t`. The body names Monokulo's
-`order_id`; the handler finds Geomart's own order from the link it kept in
-step 3. Richer fields (the shop's own order id, the fiat price with its exchange-rate source and rate, the store) arrive when Monokulo takes over webhook delivery from the engine, which is planned.
+accept it only within five minutes of `t`. The handler finds Geomart's
+order by `merchant_order_id`, the id it passed in step 3. The body also
+carries the price as Geomart set it (`amount`, `currency`), what the
+customer paid in XMR, the exchange rate and the store: every field is on
+[Webhooks](../webhooks/). If a delivery fails, Monokulo tries again for
+about two hours; the store's settings, *Webhooks*, show each one.
 
 > **No server? (Geomart is one HTML file.)** A webhook needs somewhere to
 > arrive, and `onPaid` runs in the customer's browser, so it can be faked. A

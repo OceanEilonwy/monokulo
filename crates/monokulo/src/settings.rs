@@ -1223,6 +1223,21 @@ impl MonokuloSettings {
         })
     }
 
+    /// These settings with `webhooks` in place of their webhook settings:
+    /// for tests that deliver to an endpoint on this machine.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_webhooks(&self, webhooks: WebhookConfig) -> Arc<Self> {
+        Arc::new(MonokuloSettings {
+            registry: None,
+            server: self.server.clone(),
+            per_request: self.per_request.clone(),
+            cli_links: self.cli_links.clone(),
+            snp_entry: self.snp_entry.clone(),
+            snp_bundle_limits: self.snp_bundle_limits.clone(),
+            webhooks: live_settings::Live::new(webhooks),
+        })
+    }
+
     /// This instance's current signup mode.
     pub fn signup_mode(&self) -> SignupMode {
         self.per_request.load().signup_mode

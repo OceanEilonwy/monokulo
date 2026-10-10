@@ -29,8 +29,10 @@ testable chunks), see `docs/WOOCOMMERCE_WBS.md`.
 >   verified domains, gives it its own rate limit, and is never challenged.
 > - **Checkout**: the customer is redirected to monokulo's
 >   `{endpoint}/pay/{pk}/orders/{order_id}`.
-> - **Webhooks**: unchanged - registered by monokulo during connect, sent by
->   the engine straight to the shop, signed with `X-Monokulo-Signature`.
+> - **Webhooks**: registered by monokulo during connect (one of the store's
+>   webhooks, `store_integrations.webhook_id`) and sent by monokulo, from the
+>   engine's order-event log, straight to the shop, signed with
+>   `X-Monokulo-Signature` (`docs/DESIGN.md` §11). Disconnecting deletes it.
 >
 > Stages 1 and 7 below describe the earlier design (public engine routes,
 > `/pay/v1/...` engine checkout); they are kept for history.

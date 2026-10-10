@@ -1,8 +1,9 @@
 # Running Monokulo
 
 A self-hosted Monero payment processor in two parts: the engine (chain
-scanning, stores, webhooks and its admin API) and `monokulo` (the control
-plane: the merchant dashboard and the checkout-facing HTTP surface), which
+scanning, stores, a log of order events and its admin API) and `monokulo`
+(the control plane: the merchant dashboard, the checkout-facing HTTP surface
+and stores' webhooks, which it sends from the engine's order events), which
 uses the engine only through its admin API. By default the engine runs inside
 monokulo, as a library on threads of its own: one binary, one process, one
 options file ([engine_as_library.md](https://github.com/OceanEilonwy/monokulo/blob/main/docs/engine_as_library.md)). It can also run on its own

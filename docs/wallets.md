@@ -237,7 +237,8 @@ A3, B1, C1):
 
 A connection is recorded when `/connect/{plugin}/finish` succeeds, with
 the plugin's version from its `Monokulo-Client` header and the webhook it
-registered; each order carrying the header updates its version and last
+registered (one of the store's webhooks, kept by monokulo:
+`store_integrations.webhook_id`); each order carrying the header updates its version and last
 order. Connecting again adds a new row.
 
 ## A wallet's page
