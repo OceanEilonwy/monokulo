@@ -277,9 +277,6 @@ async fn recompute_page(round: &mut Round<'_>, tip: u64) -> Result<usize, Scanne
             transitions,
         });
     }
-    if succeeded > 0 {
-        round.state.wake_webhooks();
-    }
     match first_failure {
         // Only when nothing in the page went through does the tier stop.
         Some(error) if succeeded == 0 => Err(error),

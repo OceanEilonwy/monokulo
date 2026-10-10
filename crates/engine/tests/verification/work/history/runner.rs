@@ -144,7 +144,7 @@ pub(crate) struct Snapshot {
     pub(crate) checkpoint: Option<crate::store::BlockCheckpoint>,
     pub(crate) reorg: Option<crate::store::ReorgJob>,
     pub(crate) reorg_work: (u64, Option<i64>),
-    pub(crate) webhook_events: Vec<String>,
+    pub(crate) order_events: Vec<String>,
 }
 
 pub(crate) struct Harness {
@@ -167,15 +167,6 @@ impl Harness {
         let (store, path) = file_store();
         let custody = FlakyKeyCustody::default();
         let (tenant, handle, order) = fixture_tenant(&store, &custody, i64::MAX).await;
-        store
-            .create_webhook(
-                &tenant,
-                "https://merchant.example/hook",
-                "{}",
-                "secret",
-                1000,
-            )
-            .unwrap();
         let store = store.into_shared();
         let db = Db::over_shared(Arc::clone(&store));
         let daemon = ScriptedDaemon::new();
@@ -261,11 +252,14 @@ impl Harness {
             checkpoint: store.block_checkpoint(NETWORK, &self.tenants[0].0).unwrap(),
             reorg: store.reorg_job(NETWORK).unwrap(),
             reorg_work: store.reorg_work_remaining(NETWORK).unwrap(),
-            webhook_events: store
-                .due_webhook_deliveries_for_test(i64::MAX, 1000)
+            order_events: store
+                .order_events_for_test()
                 .unwrap()
                 .into_iter()
-                .map(|delivery| delivery.event_type)
+                // The harness's store's events: another store (on another
+                // network, say) has its own.
+                .filter(|event| event.tenant_id == self.tenants[0].0)
+                .map(|event| event.event_type)
                 .collect(),
         }
     }

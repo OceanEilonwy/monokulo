@@ -4,7 +4,7 @@
 //!
 //! Callers are sorted into [`Class`]es, each with its own bounded queue,
 //! served round-robin: a flood of one kind of work (a scanner catching up,
-//! a webhook backlog) delays each other kind by at most one job per turn,
+//! the API's requests) delays each other kind by at most one job per turn,
 //! and a full queue makes its callers wait (backpressure) instead of
 //! growing without bound.
 //!
@@ -23,14 +23,14 @@ use super::{Result, SharedStore, Store, StoreError};
 pub enum Class {
     /// The chain scanner's work units.
     Scanner,
-    /// Webhook delivery bookkeeping.
-    Webhook,
     /// API and admin requests.
     Admin,
 }
 
 impl Class {
-    pub const ALL: [Self; 3] = [Self::Scanner, Self::Webhook, Self::Admin];
+    /// How many classes there are.
+    pub const COUNT: usize = 2;
+    pub const ALL: [Self; Self::COUNT] = [Self::Scanner, Self::Admin];
 
     pub(crate) fn index(self) -> usize {
         self as usize
@@ -89,7 +89,7 @@ pub struct Db {
 enum Inner {
     /// A worker thread with its own connection.
     Worker {
-        senders: Arc<[tokio::sync::mpsc::Sender<Job>; 3]>,
+        senders: Arc<[tokio::sync::mpsc::Sender<Job>; Class::COUNT]>,
         wake: std::sync::mpsc::SyncSender<()>,
     },
     /// Jobs run on the caller, on the store everything else shares. With
@@ -137,7 +137,7 @@ impl Db {
 
     fn start(store: Store, faults: Faults) -> Result<Self> {
         let mut receivers = Vec::new();
-        let senders: [tokio::sync::mpsc::Sender<Job>; 3] = std::array::from_fn(|_| {
+        let senders: [tokio::sync::mpsc::Sender<Job>; Class::COUNT] = std::array::from_fn(|_| {
             let (sender, receiver) = tokio::sync::mpsc::channel(QUEUE_CAPACITY);
             receivers.push(receiver);
             sender

@@ -4,7 +4,7 @@
 //! - [`fast_pass`] runs on its own every fraction of a second
 //!   (`loops::run_fast_mempool_loop`). It looks only at transactions it
 //!   hasn't seen, scans each against every store with something in scope,
-//!   and records, recomputes and wakes webhook delivery for what they pay,
+//!   and records and recomputes what they pay,
 //!   in one go. A per-pass scan budget keeps a flood of new transactions
 //!   from taking the CPU: what doesn't fit is left to the rotation.
 //! - The round's mempool tier ([`step`]) is the safety net: a fair rotating
@@ -487,9 +487,6 @@ pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<Fa
         report.paid_orders += outcome.touched;
         failed.extend(outcome.failed);
     }
-    if report.paid_orders > 0 {
-        state.wake_webhooks();
-    }
     state.activity().record(Event::PoolScanned {
         path: PoolPath::Fast,
         pool: count(in_pool.len()),
@@ -510,7 +507,7 @@ struct ScanOutcome {
 }
 
 /// Scans `tx` for `due` and records each match. With a `tip`, the orders it
-/// pays are recomputed in the same database job (status, webhook), so a
+/// pays are recomputed in the same database job (status, order event), so a
 /// payment is settled as soon as it is seen; without, their recompute
 /// obligations are left to the settlement tier. A scan that found nothing
 /// costs no database job at all. A store whose scan failed is backed off.

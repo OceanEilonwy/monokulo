@@ -679,8 +679,8 @@ mod tests {
         use std::sync::Arc;
 
         /// Spins up a real local HTTP server standing in for Coingecko - same
-        /// no-mocking-library pattern `webhook_delivery.rs`'s own
-        /// `spawn_test_server` uses. Serves both real Coingecko endpoints this
+        /// no-mocking-library pattern the webhook delivery
+        /// tests use. Serves both real Coingecko endpoints this
         /// provider calls (`/api/v3/simple/price` and `/api/v3/simple/
         /// supported_vs_currencies`) from the same handler, keyed by path, so
         /// one server can stand in for a whole test regardless of which calls

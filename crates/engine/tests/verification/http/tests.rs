@@ -549,48 +549,6 @@ async fn the_engine_serves_no_public_order_routes_and_no_cors() {
 }
 
 #[tokio::test]
-async fn webhook_lifecycle_is_scoped_to_the_owning_tenant() {
-    let router = test_router();
-    let tenant_a = create_tenant(&router, 7).await;
-    let tenant_b = create_tenant(&router, 8).await;
-
-    let req = json_request(
-        "POST",
-        "/api/v1/admin/tenant/webhooks",
-        Some(&tenant_b.secret_token),
-        &serde_json::json!({ "url": "https://b.example/hook" }),
-    );
-    let response = router.clone().oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = body_json(response).await;
-    let webhook_id = body["webhook_id"].as_str().unwrap().to_owned();
-    assert!(body["signing_secret"]
-        .as_str()
-        .unwrap()
-        .starts_with("whsec_"));
-
-    // Tenant A cannot delete tenant B's webhook.
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/api/v1/admin/tenant/webhooks/{webhook_id}"))
-        .header("authorization", format!("Bearer {}", tenant_a.secret_token))
-        .body(Body::empty())
-        .unwrap();
-    let response = router.clone().oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-
-    // Tenant B can.
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/api/v1/admin/tenant/webhooks/{webhook_id}"))
-        .header("authorization", format!("Bearer {}", tenant_b.secret_token))
-        .body(Body::empty())
-        .unwrap();
-    let response = router.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-}
-
-#[tokio::test]
 async fn a_zero_or_malformed_xmr_amount_is_rejected_with_bad_request() {
     // This engine no longer has any concept of fiat/exchange rates
     // (`docs/fx_refactor.md` decision 2) - a caller supplies the exact
@@ -717,78 +675,6 @@ async fn an_xmr_amount_above_the_cap_is_rejected_with_bad_request() {
         StatusCode::OK,
         "the cap itself is allowed"
     );
-}
-
-/// Extra webhook headers are checked when the webhook is saved: a name or
-/// value no HTTP client would send, or one the engine sets itself, would
-/// otherwise fail every delivery of that webhook until it was deleted.
-#[tokio::test]
-async fn webhook_extra_headers_are_validated_when_saved() {
-    let router = test_router();
-    let tenant = create_tenant(&router, 7).await;
-    let create = |extra_headers: serde_json::Value| {
-        let router = router.clone();
-        let token = tenant.secret_token.clone();
-        async move {
-            let response = router
-                .oneshot(json_request(
-                    "POST",
-                    "/api/v1/admin/tenant/webhooks",
-                    Some(&token),
-                    &serde_json::json!({ "url": "https://b.example/hook", "extra_headers": extra_headers }),
-                ))
-                .await
-                .unwrap();
-            (response.status(), body_json(response).await)
-        }
-    };
-    for (refused, why) in [
-        (serde_json::json!(["x"]), "not an object"),
-        (serde_json::json!({ "x-count": 3 }), "not a string"),
-        (
-            serde_json::json!({ "bad header": "v" }),
-            "a space in the name",
-        ),
-        (
-            serde_json::json!({ "x-note": "line\nbreak" }),
-            "a newline in the value",
-        ),
-        (serde_json::json!({ "Host": "evil.example" }), "the host"),
-        (serde_json::json!({ "Content-Length": "0" }), "the length"),
-        (
-            serde_json::json!({ "X-Monokulo-Signature": "forged" }),
-            "the engine's own",
-        ),
-        (
-            serde_json::json!({ "x-long": "v".repeat(5 * 1024) }),
-            "too many bytes",
-        ),
-    ] {
-        let (status, body) = create(refused).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{why}: {body}");
-    }
-    let too_many: serde_json::Map<String, serde_json::Value> = (0..21)
-        .map(|i| (format!("x-h{i}"), serde_json::Value::String("v".into())))
-        .collect();
-    let (status, _) = create(serde_json::Value::Object(too_many)).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "too many headers");
-
-    // Valid ones are kept, with their names in lowercase.
-    let (status, body) = create(serde_json::json!({ "X-Api-Key": "k", "x-shop": "main" })).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let stored = router
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            "/api/v1/admin/tenant/webhooks",
-            Some(&tenant.secret_token),
-            &serde_json::Value::Null,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(stored.status(), StatusCode::OK);
-    let (status, _) = create(serde_json::Value::Null).await;
-    assert_eq!(status, StatusCode::OK, "no extra headers at all");
 }
 
 #[tokio::test]
@@ -1262,7 +1148,7 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
     let a = create_tenant(&router, 50).await;
     let b = create_tenant(&router, 52).await;
 
-    // Give A an order and a webhook to try to reach.
+    // Give A an order to try to reach.
     let order = body_json(
         router
             .clone()
@@ -1277,21 +1163,6 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
     )
     .await;
     let a_order_id = order["order_id"].as_str().unwrap().to_owned();
-    let a_webhook = body_json(
-        router
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v1/admin/tenant/webhooks",
-                Some(&a.secret_token),
-                &serde_json::json!({ "url": "https://a.example/hook" }),
-            ))
-            .await
-            .unwrap(),
-    )
-    .await;
-    let a_webhook_id = a_webhook["webhook_id"].as_str().unwrap().to_owned();
-
     // B's token against A's identifiers: every one must miss.
     let response = router
         .clone()
@@ -1299,20 +1170,6 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
             Request::builder()
                 .method("GET")
                 .uri(format!("/api/v1/admin/tenant/orders/{a_order_id}"))
-                .header("authorization", format!("Bearer {}", b.secret_token))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(format!("/api/v1/admin/tenant/webhooks/{a_webhook_id}"))
                 .header("authorization", format!("Bearer {}", b.secret_token))
                 .body(Body::empty())
                 .unwrap(),
@@ -1339,41 +1196,6 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
     .await;
     assert_eq!(orders.as_array().unwrap().len(), 0);
 
-    let webhooks = body_json(
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/api/v1/admin/tenant/webhooks")
-                    .header("authorization", format!("Bearer {}", b.secret_token))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(webhooks.as_array().unwrap().len(), 0);
-
-    // A's own view is untouched by any of the above.
-    let webhooks = body_json(
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/api/v1/admin/tenant/webhooks")
-                    .header("authorization", format!("Bearer {}", a.secret_token))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(webhooks.as_array().unwrap().len(), 1);
-
     // And rotating B's secret can't be aimed at A either - A's token keeps working.
     let response = router
         .clone()
@@ -1398,76 +1220,6 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-}
-
-#[tokio::test]
-async fn every_path_that_can_set_a_webhook_url_validates_the_scheme() {
-    // Webhook creation is currently the only route that writes a URL, and this is
-    // what proves it - if a second one is ever added without its own check, the
-    // sweep below over every route in the router stops matching reality.
-    let router = test_router();
-    let tenant = create_tenant(&router, 60).await;
-
-    for bad_url in [
-        "file:///etc/passwd",
-        "gopher://example.com/",
-        "ftp://example.com/hook",
-        "javascript:alert(1)",
-        "not a url at all",
-        "",
-    ] {
-        let response = router
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v1/admin/tenant/webhooks",
-                Some(&tenant.secret_token),
-                &serde_json::json!({ "url": bad_url }),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::BAD_REQUEST,
-            "accepted {bad_url:?}"
-        );
-    }
-
-    // The tenant-patch route must not offer a back door for any webhook field.
-    let response = router
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            "/api/v1/admin/tenant",
-            Some(&tenant.secret_token),
-            &serde_json::json!({ "webhook_url": "file:///etc/passwd", "url": "file:///etc/passwd" }),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        response.status(),
-        StatusCode::OK,
-        "unknown fields are ignored, not applied"
-    );
-    let webhooks = body_json(
-        router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/api/v1/admin/tenant/webhooks")
-                    .header("authorization", format!("Bearer {}", tenant.secret_token))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(
-        webhooks.as_array().unwrap().len(),
-        0,
-        "no webhook may have been created by a patch"
-    );
 }
 
 /// /status reports the engine's CPU and memory, and each network's scaling
@@ -1539,7 +1291,6 @@ async fn status_endpoint_is_reachable_with_no_authentication_at_all() {
         body["loop_restarts"].is_array(),
         "restart counts are reported (task 7.9), got: {body}"
     );
-    assert_eq!(body["webhook_backlog"]["due"], 0, "got: {body}");
 }
 
 #[tokio::test]

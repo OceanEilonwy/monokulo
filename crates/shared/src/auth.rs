@@ -179,8 +179,8 @@ pub fn generate_invite_token() -> RawToken {
     RawToken(format!("invite_{}", random_hex(32)))
 }
 
-/// A webhook's HMAC signing secret. Unlike `sk_`, this is stored reversibly (see
-/// `webhooks.signing_secret` in the schema) since it's needed on every delivery, not
+/// A webhook's HMAC signing secret. Unlike `sk_`, this is stored reversibly
+/// (encrypted, in monokulo's `webhooks` table) since it's needed on every delivery, not
 /// just checked once - "shown once" for this value is an API convention, not a
 /// hashing guarantee.
 pub fn generate_webhook_secret() -> String {

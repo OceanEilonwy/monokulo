@@ -21,7 +21,7 @@ use std::sync::Arc;
 use rusqlite::{params, Connection, OptionalExtension as _};
 use uuid::Uuid;
 
-pub use shared::ids::{OrderId, TenantId, WebhookId};
+pub use shared::ids::{OrderId, TenantId};
 
 use crate::auth::{generate_public_key, generate_secret_token, RawToken};
 use crate::status::{derive_status, OrderStatus, PaymentView, StatusInputs};
@@ -150,6 +150,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (28, include_str!("../../migrations/0028_wallets.sql")),
     (29, include_str!("../../migrations/0029_wallet_changes.sql")),
     (30, include_str!("../../migrations/0030_order_events.sql")),
+    (31, include_str!("../../migrations/0031_drop_webhooks.sql")),
 ];
 
 /// The engine's writing connections (the shared store and the database
@@ -293,7 +294,7 @@ impl Database {
     }
 
     /// Runs a write (or a read that must see this connection's own writes)
-    /// on the database worker, in turn with the scanner's and webhooks' work
+    /// on the database worker, in turn with the scanner's work
     /// (the `Admin` class), never on a Tokio worker: a slow disk or a write
     /// lock held by the scanner delays this request, not every task sharing
     /// its worker.
@@ -638,18 +639,6 @@ pub struct StagedMatch<'a> {
     pub output_key: Option<&'a str>,
 }
 
-#[derive(Debug, Clone)]
-pub struct Webhook {
-    pub id: WebhookId,
-    pub tenant_id: TenantId,
-    pub url: String,
-    pub extra_headers: String,
-    /// Hidden in `Debug`; `expose` it only to sign a delivery.
-    pub signing_secret: live_settings::Secret,
-    pub enabled: bool,
-    pub created_at: i64,
-}
-
 fn status_to_str(s: OrderStatus) -> &'static str {
     s.as_str()
 }
@@ -730,7 +719,7 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
     );
     // While the tenant is behind the network, an order mustn't become
     // expired: its payment may be in a block not yet scanned for it, and an
-    // `order.expired` webhook can make a shop cancel an order that turns out
+    // `order.expired` event can make a shop cancel an order that turns out
     // to be paid. It expires once the tenant has caught up.
     let expiry_held = derived == OrderStatus::Expired
         && order.status != OrderStatus::Expired
@@ -1021,12 +1010,12 @@ impl Store {
     /// Runs `f` inside one SQLite transaction against this same connection, so a
     /// group of writes that only makes sense together either all land or none do.
     ///
-    /// Exists because "persist a status change" and "enqueue the webhook announcing
+    /// Exists because "persist a status change" and "write the order event announcing
     /// it" are two separate statements that must not be able to come apart: the new
     /// status commits first, and `recompute_order_status` derives "did anything
     /// change" by comparing against the *stored* status, so once the status write is
     /// visible the transition can never be re-detected. A failure (or a crash)
-    /// between the two therefore didn't delay the webhook, it deleted it - the
+    /// between the two therefore didn't delay the event, it deleted it - the
     /// merchant's `order.paid` never fires, for an order that is `paid`.
     ///
     /// Nested calls are not supported (SQLite has no nested `BEGIN`); every caller
@@ -1957,7 +1946,7 @@ impl Store {
         Ok(rows)
     }
 
-    /// Payment changes whose status/webhook transaction has not committed yet
+    /// Payment changes whose status/event transaction has not committed yet
     /// (unlike the live scan window this includes old, closed orders): a
     /// bounded, stable page for background status work. Keyset pagination
     /// avoids an OFFSET walk over a large backlog on every tick.
@@ -1981,7 +1970,7 @@ impl Store {
         Ok(rows)
     }
 
-    /// Call inside the same transaction as the status update and webhook enqueue.
+    /// Call inside the same transaction as the status update and the order event.
     pub fn clear_pending_payment_recompute(&self, order_id: &OrderId) -> Result<()> {
         self.conn.execute(
             "DELETE FROM pending_payment_recomputes WHERE order_id = ?1",
@@ -2552,7 +2541,7 @@ impl Store {
     /// order's currently-valid payments and persists the result. This is the *only*
     /// place `orders.status` is written - see `docs/DESIGN.md` §7.6. Returns
     /// `(old_status, new_status)` so the caller can decide whether a status-transition
-    /// webhook event is warranted.
+    /// order event is warranted.
     /// Uses `order.confirmations_required_override` when the order has one
     /// (set once, at creation, by a caller like monokulo that already
     /// resolved an amount-tiered confirmation requirement of its own),
@@ -2736,7 +2725,7 @@ impl Store {
     }
 
     /// Not scoped by tenant - internal orchestration use only (the scanner needs to
-    /// route a bare `order_id` back to its tenant to look up webhooks). Never
+    /// route a bare `order_id` back to its tenant). Never
     /// expose this through the HTTP layer; every externally-reachable order lookup
     /// must go through `get_order`'s tenant-scoped query instead.
     pub fn get_order_tenant_id(&self, order_id: &OrderId) -> Result<Option<TenantId>> {
@@ -3018,307 +3007,6 @@ impl Store {
         rows.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()
             .map_err(Into::into)
     }
-
-    // -- Webhooks -------------------------------------------------------
-
-    pub fn create_webhook(
-        &self,
-        tenant_id: &TenantId,
-        url: &str,
-        extra_headers_json: &str,
-        signing_secret: &str,
-        now: i64,
-    ) -> Result<Webhook> {
-        let id = WebhookId::new(new_id("wh"));
-        self.conn.execute(
-            "INSERT INTO webhooks (id, tenant_id, url, extra_headers, signing_secret, created_at_utc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, tenant_id, url, extra_headers_json, signing_secret, now],
-        )?;
-        Ok(Webhook {
-            id,
-            tenant_id: tenant_id.clone(),
-            url: url.to_owned(),
-            extra_headers: extra_headers_json.to_owned(),
-            signing_secret: live_settings::Secret::new(signing_secret),
-            enabled: true,
-            created_at: now,
-        })
-    }
-
-    pub fn list_webhooks(&self, tenant_id: &TenantId) -> Result<Vec<Webhook>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT * FROM webhooks WHERE tenant_id = ?1 ORDER BY created_at_utc, id",
-        )?;
-        let rows = stmt
-            .query_map(params![tenant_id], |row| {
-                Ok(Webhook {
-                    id: row.get("id")?,
-                    tenant_id: row.get("tenant_id")?,
-                    url: row.get("url")?,
-                    extra_headers: row.get("extra_headers")?,
-                    signing_secret: live_settings::Secret::new(
-                        row.get::<_, String>("signing_secret")?,
-                    ),
-                    enabled: row.get::<_, i64>("enabled")? != 0,
-                    created_at: row.get("created_at_utc")?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    /// Scoped by `tenant_id`, same IDOR-prevention rule as `get_order`. Returns
-    /// `false` (not an error) if the webhook doesn't exist or belongs to a different
-    /// tenant - the two are indistinguishable from the caller's perspective.
-    pub fn delete_webhook(&self, tenant_id: &TenantId, webhook_id: &WebhookId) -> Result<bool> {
-        self.in_transaction(|_| {
-            // Scope the children too: another tenant must not cancel deliveries.
-            self.conn.execute(
-                "DELETE FROM webhook_deliveries WHERE webhook_id = ?1
-                 AND EXISTS (SELECT 1 FROM webhooks WHERE id = ?1 AND tenant_id = ?2)",
-                params![webhook_id, tenant_id],
-            )?;
-            let changed = self.conn.execute(
-                "DELETE FROM webhooks WHERE id = ?1 AND tenant_id = ?2",
-                params![webhook_id, tenant_id],
-            )?;
-            Ok(changed > 0)
-        })
-    }
-
-    pub fn enqueue_webhook_delivery(
-        &self,
-        webhook_id: &WebhookId,
-        order_id: &OrderId,
-        event_type: &str,
-        payload_json: &str,
-        next_attempt_at: i64,
-    ) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO webhook_deliveries (webhook_id, order_id, event_type, payload_json, next_attempt_at_utc)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![webhook_id, order_id, event_type, payload_json, next_attempt_at],
-        )?;
-        Ok(self.conn.last_insert_rowid())
-    }
-
-    /// One delivery attempt's worth of everything the delivery worker needs,
-    /// joined from `webhook_deliveries` and `webhooks` in one query so the worker
-    /// never has to look up the owning webhook separately per row.
-    /// Due deliveries, oldest first, picked fairly for concurrent sending
-    /// (`webhook_delivery::run_delivery_tick`):
-    /// - at most one per (webhook, order), the oldest *enqueued* among every
-    ///   undelivered one (due or waiting out a retry), so two events for the
-    ///   same order are never in flight at once and a later event never
-    ///   overtakes an earlier one that is between attempts; a given-up
-    ///   delivery holds nothing back;
-    /// - at most `per_tenant` per store, counted after that, so one store
-    ///   with a big backlog (or a slow endpoint) can't fill the batch and
-    ///   hold up every other store, and one order's backlog doesn't use up
-    ///   the store's share.
-    pub fn due_webhook_deliveries_fair(
-        &self,
-        now: i64,
-        per_tenant: u32,
-        limit: u32,
-    ) -> Result<Vec<DueDelivery>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT id, webhook_id, order_id, event_type, payload_json, attempt_count, url, extra_headers, signing_secret
-             FROM (
-                SELECT *, ROW_NUMBER() OVER (PARTITION BY tenant_id ORDER BY due_at, id) AS per_tenant_rank
-                FROM (
-                    SELECT d.id, d.webhook_id, d.order_id, d.event_type, d.payload_json, d.attempt_count,
-                           w.url, w.extra_headers, w.signing_secret, w.tenant_id, d.next_attempt_at_utc AS due_at,
-                           ROW_NUMBER() OVER (PARTITION BY d.webhook_id, d.order_id ORDER BY d.id) AS per_order
-                    FROM webhook_deliveries d
-                    JOIN webhooks w ON w.id = d.webhook_id
-                    WHERE d.delivered_at_utc IS NULL AND d.gave_up_at_utc IS NULL AND w.enabled = 1
-                )
-                WHERE per_order = 1 AND due_at <= ?1
-             )
-             WHERE per_tenant_rank <= ?2
-             ORDER BY due_at, id
-             LIMIT ?3",
-        )?;
-        let rows = stmt
-            .query_map(params![now, per_tenant, limit], |row| {
-                Ok(DueDelivery {
-                    delivery_id: row.get(0)?,
-                    webhook_id: row.get(1)?,
-                    order_id: row.get(2)?,
-                    event_type: row.get(3)?,
-                    payload_json: row.get(4)?,
-                    attempt_count: row.get::<_, shared::sqlite::Unsigned<u32>>(5)?.0,
-                    url: row.get(6)?,
-                    extra_headers_json: row.get(7)?,
-                    signing_secret: live_settings::Secret::new(row.get::<_, String>(8)?),
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    /// How many webhook deliveries are due and waiting, and since when the
-    /// oldest has been (task 7.13). Given-up deliveries aren't counted.
-    pub fn webhook_backlog(&self, now: i64) -> Result<(u64, Option<i64>)> {
-        self.conn
-            .query_row(
-                "SELECT COUNT(*), MIN(next_attempt_at_utc) FROM webhook_deliveries
-                 WHERE delivered_at_utc IS NULL AND gave_up_at_utc IS NULL AND next_attempt_at_utc <= ?1",
-                params![now],
-                |row| {
-                    Ok((
-                        row.get::<_, shared::sqlite::Unsigned<u64>>(0)?.0,
-                        row.get::<_, Option<i64>>(1)?,
-                    ))
-                },
-            )
-            .map_err(Into::into)
-    }
-
-    /// Every undelivered, not given-up delivery due by `now`, oldest first,
-    /// for tests that assert on what was enqueued. The engine picks what to
-    /// send with [`Self::due_webhook_deliveries_fair`].
-    #[cfg(any(test, feature = "fuzzing"))]
-    pub fn due_webhook_deliveries_for_test(
-        &self,
-        now: i64,
-        limit: u32,
-    ) -> Result<Vec<DueDelivery>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT d.id, d.webhook_id, d.order_id, d.event_type, d.payload_json, d.attempt_count,
-                    w.url, w.extra_headers, w.signing_secret
-             FROM webhook_deliveries d
-             JOIN webhooks w ON w.id = d.webhook_id
-             WHERE d.delivered_at_utc IS NULL AND d.gave_up_at_utc IS NULL AND d.next_attempt_at_utc <= ?1 AND w.enabled = 1
-             ORDER BY d.next_attempt_at_utc, d.id
-             LIMIT ?2",
-        )?;
-        let rows = stmt
-            .query_map(params![now, limit], |row| {
-                Ok(DueDelivery {
-                    delivery_id: row.get(0)?,
-                    webhook_id: row.get(1)?,
-                    order_id: row.get(2)?,
-                    event_type: row.get(3)?,
-                    payload_json: row.get(4)?,
-                    attempt_count: row.get::<_, shared::sqlite::Unsigned<u32>>(5)?.0,
-                    url: row.get(6)?,
-                    extra_headers_json: row.get(7)?,
-                    signing_secret: live_settings::Secret::new(row.get::<_, String>(8)?),
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    pub fn mark_webhook_delivered(
-        &self,
-        delivery_id: i64,
-        response_status: u16,
-        at: i64,
-    ) -> Result<()> {
-        #[cfg(test)]
-        crash_checkpoint("webhooks.delivered.before_commit");
-        self.conn.execute(
-            "UPDATE webhook_deliveries
-             SET attempt_count = MIN(attempt_count + 1, 4294967295), delivered_at_utc = ?2, last_attempted_at_utc = ?2,
-                 last_response_status = ?3, last_error = NULL, gave_up_at_utc = NULL
-             WHERE id = ?1 AND delivered_at_utc IS NULL",
-            params![delivery_id, at, response_status as i64],
-        )?;
-        #[cfg(test)]
-        crash_checkpoint("webhooks.delivered.after_commit");
-        Ok(())
-    }
-
-    /// Records a final failed attempt: the delivery is never retried, holds
-    /// no later event for its order back, and stays in the table for
-    /// inspection.
-    pub fn give_up_webhook_delivery(
-        &self,
-        delivery_id: i64,
-        response_status: Option<u16>,
-        error: Option<&str>,
-        at: i64,
-    ) -> Result<()> {
-        #[cfg(test)]
-        crash_checkpoint("webhooks.give_up.before_commit");
-        self.conn.execute(
-            "UPDATE webhook_deliveries
-             SET attempt_count = MIN(attempt_count + 1, 4294967295),
-                 gave_up_at_utc = ?2,
-                 last_attempted_at_utc = ?2,
-                 last_response_status = ?3,
-                 last_error = ?4
-             WHERE id = ?1 AND delivered_at_utc IS NULL AND gave_up_at_utc IS NULL",
-            params![delivery_id, at, response_status.map(|s| s as i64), error],
-        )?;
-        #[cfg(test)]
-        crash_checkpoint("webhooks.give_up.after_commit");
-        Ok(())
-    }
-
-    /// A lowered live retry budget may already be exhausted. Retire the row
-    /// without claiming an HTTP attempt occurred or erasing the last failure.
-    pub fn retire_exhausted_webhook_delivery(&self, delivery_id: i64, at: i64) -> Result<()> {
-        #[cfg(test)]
-        crash_checkpoint("webhooks.exhausted.before_commit");
-        self.conn.execute(
-            "UPDATE webhook_deliveries SET gave_up_at_utc = ?2
-             WHERE id = ?1 AND delivered_at_utc IS NULL AND gave_up_at_utc IS NULL",
-            params![delivery_id, at],
-        )?;
-        #[cfg(test)]
-        crash_checkpoint("webhooks.exhausted.after_commit");
-        Ok(())
-    }
-
-    pub fn schedule_webhook_retry(
-        &self,
-        delivery_id: i64,
-        next_attempt_at: i64,
-        response_status: Option<u16>,
-        error: Option<&str>,
-        at: i64,
-    ) -> Result<()> {
-        #[cfg(test)]
-        crash_checkpoint("webhooks.retry.before_commit");
-        self.conn.execute(
-            "UPDATE webhook_deliveries
-             SET attempt_count = MIN(attempt_count + 1, 4294967295),
-                 next_attempt_at_utc = ?2,
-                 last_attempted_at_utc = ?3,
-                 last_response_status = ?4,
-                 last_error = ?5
-             WHERE id = ?1 AND delivered_at_utc IS NULL AND gave_up_at_utc IS NULL",
-            params![
-                delivery_id,
-                next_attempt_at,
-                at,
-                response_status.map(|s| s as i64),
-                error
-            ],
-        )?;
-        #[cfg(test)]
-        crash_checkpoint("webhooks.retry.after_commit");
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct DueDelivery {
-    pub delivery_id: i64,
-    pub webhook_id: WebhookId,
-    pub order_id: OrderId,
-    pub event_type: String,
-    pub payload_json: String,
-    pub attempt_count: u32,
-    pub url: String,
-    pub extra_headers_json: String,
-    /// Hidden in `Debug`; `expose` it only to sign a delivery.
-    pub signing_secret: live_settings::Secret,
 }
 
 #[cfg(test)]
@@ -4194,31 +3882,6 @@ mod tests {
     }
 
     #[test]
-    fn delete_webhook_is_scoped_by_tenant() {
-        let store = Store::open_in_memory().unwrap();
-        let tenant_a = new_tenant(&store);
-        let tenant_b = new_tenant(&store);
-        let webhook_b = store
-            .create_webhook(
-                &tenant_b.tenant.id,
-                "https://b.example/hook",
-                "{}",
-                "secret",
-                1000,
-            )
-            .unwrap();
-
-        assert!(!store
-            .delete_webhook(&tenant_a.tenant.id, &webhook_b.id)
-            .unwrap());
-        assert_eq!(store.list_webhooks(&tenant_b.tenant.id).unwrap().len(), 1);
-        assert!(store
-            .delete_webhook(&tenant_b.tenant.id, &webhook_b.id)
-            .unwrap());
-        assert_eq!(store.list_webhooks(&tenant_b.tenant.id).unwrap().len(), 0);
-    }
-
-    #[test]
     fn duplicate_payment_match_is_idempotent() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
@@ -4676,89 +4339,6 @@ mod tests {
         store.conn.execute("UPDATE orders SET status = 'expired', closed_at_utc = expires_at_utc WHERE id = ?1", params![expired_past_grace.id]).unwrap();
         assert!(!read(&expired_past_grace.id).in_scan_window(2601, 600));
         assert!(!selected(&expired_past_grace.id, 2601, 600));
-    }
-
-    #[test]
-    fn webhook_delivery_queue_lifecycle() {
-        let store = Store::open_in_memory().unwrap();
-        let tenant = new_tenant(&store);
-        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
-        let webhook = store
-            .create_webhook(
-                &tenant.tenant.id,
-                "https://merchant.example/hook",
-                "{}",
-                "whsec_x",
-                1000,
-            )
-            .unwrap();
-
-        let id = store
-            .enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{\"a\":1}", 1000)
-            .unwrap();
-
-        // Not due yet if next_attempt_at is in the future.
-        assert!(store
-            .due_webhook_deliveries_for_test(999, 10)
-            .unwrap()
-            .is_empty());
-        let due = store.due_webhook_deliveries_for_test(1000, 10).unwrap();
-        assert_eq!(due.len(), 1);
-        assert_eq!(due[0].delivery_id, id);
-        assert_eq!(due[0].url, "https://merchant.example/hook");
-        assert_eq!(due[0].signing_secret.expose(), "whsec_x");
-        assert_eq!(due[0].attempt_count, 0);
-
-        // A failed attempt reschedules and increments attempt_count; it stays due
-        // once the new next_attempt_at has passed.
-        store
-            .schedule_webhook_retry(id, 2000, Some(500), Some("server error"), 1000)
-            .unwrap();
-        assert!(store
-            .due_webhook_deliveries_for_test(1500, 10)
-            .unwrap()
-            .is_empty());
-        let due = store.due_webhook_deliveries_for_test(2000, 10).unwrap();
-        assert_eq!(due[0].attempt_count, 1);
-
-        // A successful delivery removes it from the due set permanently, even if
-        // asked about at a much later time.
-        store.mark_webhook_delivered(id, 200, 2000).unwrap();
-        assert!(store
-            .due_webhook_deliveries_for_test(999_999, 10)
-            .unwrap()
-            .is_empty());
-    }
-
-    #[test]
-    fn disabling_a_webhook_removes_its_deliveries_from_the_due_set() {
-        let store = Store::open_in_memory().unwrap();
-        let tenant = new_tenant(&store);
-        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
-        let webhook = store
-            .create_webhook(
-                &tenant.tenant.id,
-                "https://merchant.example/hook",
-                "{}",
-                "whsec_x",
-                1000,
-            )
-            .unwrap();
-        store
-            .enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", 1000)
-            .unwrap();
-
-        store
-            .conn
-            .execute(
-                "UPDATE webhooks SET enabled = 0 WHERE id = ?1",
-                params![webhook.id],
-            )
-            .unwrap();
-        assert!(store
-            .due_webhook_deliveries_for_test(1000, 10)
-            .unwrap()
-            .is_empty());
     }
 
     #[test]

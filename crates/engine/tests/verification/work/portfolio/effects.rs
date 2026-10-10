@@ -16,10 +16,7 @@ use crate::work::{fast_pass, run_round_at, ScanState};
 use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::{atomic::Ordering, Arc},
     time::Duration,
 };
 
@@ -28,16 +25,6 @@ pub(super) fn hash(epoch: u64, height: u64) -> String {
     bytes[..8].copy_from_slice(&epoch.to_le_bytes());
     bytes[8..16].copy_from_slice(&height.to_le_bytes());
     hex::encode(bytes)
-}
-struct Receiver {
-    failing: AtomicBool,
-    bodies: parking_lot::Mutex<Vec<String>>,
-}
-struct Server(tokio::task::JoinHandle<()>);
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
 }
 #[derive(Clone, Copy, Default)]
 pub(super) struct SqlFailure {
@@ -54,16 +41,12 @@ pub(super) struct World {
     pub(super) now: Cell<i64>,
     pub(super) ceiling: Cell<u64>,
     pub(super) mismatch: Cell<bool>,
-    pub(super) url: String,
-    receiver: Arc<Receiver>,
     expected_events: RefCell<BTreeMap<String, String>>,
     last_status: RefCell<BTreeMap<crate::store::OrderId, (i64, String)>>,
-    failed_deliveries: Cell<usize>,
     pub(super) hits: RefCell<BTreeMap<String, u64>>,
-    _server: Server,
 }
 impl World {
-    pub(super) async fn new() -> Self {
+    pub(super) fn new() -> Self {
         let nodes = std::array::from_fn(|_| Arc::new(AdversarialNode::new()));
         let client = FallbackDaemonClient::new(
             nodes
@@ -75,31 +58,6 @@ impl World {
                 })
                 .collect(),
         );
-        let receiver = Arc::new(Receiver {
-            failing: AtomicBool::new(false),
-            bodies: parking_lot::Mutex::default(),
-        });
-        let app = axum::Router::new()
-            .route(
-                "/",
-                axum::routing::post(
-                    async |axum::extract::State(r): axum::extract::State<Arc<Receiver>>,
-                           body: String| {
-                        r.bodies.lock().push(body);
-                        if r.failing.load(Ordering::Relaxed) {
-                            axum::http::StatusCode::SERVICE_UNAVAILABLE
-                        } else {
-                            axum::http::StatusCode::OK
-                        }
-                    },
-                ),
-            )
-            .with_state(Arc::clone(&receiver));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/", listener.local_addr().unwrap());
-        let server = Server(tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        }));
         Self {
             client,
             nodes,
@@ -110,13 +68,9 @@ impl World {
             now: Cell::new(crate::now_unix()),
             ceiling: Cell::new(0),
             mismatch: Cell::new(false),
-            url,
-            receiver,
             expected_events: RefCell::default(),
             last_status: RefCell::default(),
-            failed_deliveries: Cell::new(0),
             hits: RefCell::default(),
-            _server: server,
         }
     }
     pub(super) fn hit(&self, name: &str) {
@@ -520,35 +474,33 @@ impl World {
     }
     pub(super) fn check_events(&self, store: &Store, invoices: &[Invoice]) {
         let mut last_status = self.last_status.borrow_mut();
-        let mut events = store
-            .due_webhook_deliveries_for_test(i64::MAX, 1000)
-            .unwrap();
-        // FIFO is enqueue-ID order, not retry/attempt timestamp order. Fast
-        // scans use wall time while history rounds deliberately use virtual UTC.
-        events.sort_unstable_by_key(|d| d.delivery_id);
+        // The log's order is its sequence, not any timestamp: fast scans
+        // use wall time while history rounds deliberately use virtual UTC.
+        let events = store.order_events_for_test().unwrap();
         for d in events {
-            let invoice = invoices.iter().find(|i| i.id == d.order_id).unwrap();
-            let hook = store.list_webhooks(&invoice.tenant).unwrap();
-            let owner = hook.iter().find(|h| h.id == d.webhook_id).unwrap();
-            assert_eq!(owner.url, self.url);
+            // Orders outside the ledger (a store's second address) have
+            // events too; the ledger checks its own invoices.
+            let Some(invoice) = invoices.iter().find(|i| i.id == d.order_id) else {
+                continue;
+            };
+            assert_eq!(d.tenant_id, invoice.tenant);
             let v: serde_json::Value = serde_json::from_str(&d.payload_json).unwrap();
             assert_eq!(v["order_id"], invoice.id.as_str());
-            assert_eq!(v["event"], d.event_type);
-            let id = v["event_id"].as_str().unwrap();
-            assert!(id.starts_with("evt_"));
+            assert!(d.event_id.starts_with("evt_"));
             if let Some(previous) = self
                 .expected_events
                 .borrow_mut()
-                .insert(id.to_owned(), d.payload_json.clone())
+                .insert(d.event_id.clone(), d.payload_json.clone())
             {
                 assert_eq!(previous, d.payload_json);
             }
             if let Some(status) = v["status"].as_str() {
+                assert_eq!(d.event_type, format!("order.{status}"));
                 let entry = last_status
                     .entry(d.order_id.clone())
-                    .or_insert_with(|| (d.delivery_id, status.to_owned()));
-                if d.delivery_id >= entry.0 {
-                    *entry = (d.delivery_id, status.to_owned());
+                    .or_insert_with(|| (d.seq, status.to_owned()));
+                if d.seq >= entry.0 {
+                    *entry = (d.seq, status.to_owned());
                 }
             }
         }
@@ -569,77 +521,44 @@ impl World {
             }
         }
     }
-    pub(super) async fn deliver(&self, db: &Db, store: &SharedStore, fail: bool) {
-        if store
-            .lock()
-            .due_webhook_deliveries_for_test(i64::MAX, 1000)
-            .unwrap()
-            .is_empty()
-        {
+    /// What monokulo does with the order-event log: reads it from the
+    /// start, or (`cut_off`) is cut off after the first event and resumes
+    /// from its id. Either way it reads every event once, in order, with
+    /// the bytes it was written with.
+    pub(super) fn deliver(&self, store: &SharedStore, cut_off: bool) {
+        let store = store.lock();
+        let all = store.order_events_for_test().unwrap();
+        if all.is_empty() {
             self.hit("delivery-empty");
             return;
         }
-        self.receiver.failing.store(fail, Ordering::Relaxed);
-        let client = crate::webhook_delivery::WebhookClient::build().unwrap();
-        client.set_allow_private(true);
-        let now = self.now.get() + if fail { 0 } else { 10_000 };
-        let before = self.receiver.bodies.lock().len();
-        let limit = if fail { 1 } else { 128 };
-        for _ in 0..limit {
-            let count = crate::webhook_delivery::run_delivery_tick_on(
-                db,
-                &client,
-                Duration::from_secs(2),
-                8,
-                now,
-            )
-            .await
-            .unwrap();
-            if count == 0 {
-                break;
-            }
-        }
-        if fail {
-            assert!(
-                self.receiver.bodies.lock().len() > before,
-                "delivery failure must reach HTTP"
-            );
-            self.failed_deliveries.set(self.failed_deliveries.get() + 1);
-            self.hit("http-503-reached");
+        let read = if cut_off {
+            let first = store.order_events_after(0, 1).unwrap();
+            let rest = store
+                .order_events_after(first[0].seq, usize::MAX >> 1)
+                .unwrap();
+            first.into_iter().chain(rest).collect()
         } else {
-            assert!(
-                store
-                    .lock()
-                    .due_webhook_deliveries_for_test(i64::MAX, 1000)
-                    .unwrap()
-                    .is_empty(),
-                "all events must eventually deliver"
-            );
-            let bodies = self.receiver.bodies.lock();
-            let mut stable = BTreeMap::new();
-            for body in bodies.iter() {
-                let v: serde_json::Value = serde_json::from_str(body).unwrap();
-                let id = v["event_id"].as_str().unwrap().to_owned();
-                if let Some(old) = stable.insert(id, body) {
-                    assert_eq!(old, body, "retry changed event bytes");
-                }
-            }
-            assert_eq!(
-                stable.len(),
-                self.expected_events.borrow().len(),
-                "missing HTTP events"
-            );
-            if self.failed_deliveries.get() > 0 {
-                assert!(bodies.len() > stable.len(), "failed event must be retried");
-            }
-            self.hit("http-retry-stable-bytes-and-drained");
-            for (id, expected) in self.expected_events.borrow().iter() {
-                assert_eq!(
-                    stable.get(id).copied(),
-                    Some(expected),
-                    "wrong delivered bytes"
-                );
+            all.clone()
+        };
+        assert_eq!(read, all, "resuming lost or repeated events");
+        assert!(
+            read.windows(2).all(|pair| pair[0].seq < pair[1].seq),
+            "the log reads in sequence"
+        );
+        let expected = self.expected_events.borrow();
+        let mut seen = 0;
+        for event in &read {
+            if let Some(bytes) = expected.get(&event.event_id) {
+                assert_eq!(bytes, &event.payload_json, "an event's bytes changed");
+                seen += 1;
             }
         }
+        assert_eq!(seen, expected.len(), "missing logged events");
+        self.hit(if cut_off {
+            "log-read-resumed"
+        } else {
+            "log-replay-stable-bytes"
+        });
     }
 }

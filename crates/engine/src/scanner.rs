@@ -568,45 +568,6 @@ pub(crate) async fn check_vanished_candidates(
     })
 }
 
-/// Adds an event to the order-event log and, until monokulo delivers the
-/// log's events itself, queues the engine's own webhook delivery of it too
-/// (with the same `event_id`), in the caller's transaction.
-fn record_order_event(
-    store: &Store,
-    order_id: &crate::store::OrderId,
-    event_type: &str,
-    fields: &[(&str, &str)],
-    now: i64,
-) -> Result<()> {
-    let seq = store.append_order_event(order_id, event_type, fields, now)?;
-    let event = store
-        .order_events_after(seq - 1, 1)?
-        .into_iter()
-        .next()
-        .ok_or(StoreError::NotFound)?;
-    let webhooks: Vec<_> = store
-        .list_webhooks(&event.tenant_id)?
-        .into_iter()
-        .filter(|w| w.enabled)
-        .collect();
-    if webhooks.is_empty() {
-        return Ok(());
-    }
-    let mut envelope: serde_json::Map<String, serde_json::Value> = fields
-        .iter()
-        .map(|(name, value)| ((*name).to_owned(), serde_json::Value::from(*value)))
-        .collect();
-    envelope.insert("order_id".into(), serde_json::json!(order_id.as_str()));
-    envelope.insert("event_id".into(), serde_json::json!(event.event_id));
-    envelope.insert("event".into(), serde_json::json!(event_type));
-    envelope.insert("created_at".into(), serde_json::json!(now));
-    let body = serde_json::Value::Object(envelope).to_string();
-    for webhook in webhooks {
-        store.enqueue_webhook_delivery(&webhook.id, order_id, event_type, &body, now)?;
-    }
-    Ok(())
-}
-
 /// Recomputes an order's status and, on an actual transition, adds an
 /// `order.<status>` event to the order-event log, which monokulo delivers
 /// to the store's webhooks.
@@ -655,8 +616,7 @@ pub(crate) fn recompute_and_notify_in_tx(
     if old_status == new_status {
         return Ok(None);
     }
-    record_order_event(
-        store,
+    store.append_order_event(
         order_id,
         &format!("order.{new_status}"),
         &[("status", new_status.as_str())],
@@ -793,8 +753,7 @@ pub(crate) fn void_and_notify_in_tx(
     recompute_and_notify_in_tx(store, order_id, current_height, now)?;
     // One event per voided payment row (docs/DESIGN.md §11), independent of
     // whatever status transition the recompute above may also have announced.
-    record_order_event(
-        store,
+    store.append_order_event(
         order_id,
         "order.double_spend_detected",
         &[("txid", txid)],
@@ -847,8 +806,7 @@ fn unvoid_as_false_positive(
             store.clear_double_spend_flag(order_id)?;
         }
         recompute_and_notify_in_tx(store, order_id, current_height, now)?;
-        record_order_event(
-            store,
+        store.append_order_event(
             order_id,
             "order.double_spend_reversed",
             &[("txid", txid)],

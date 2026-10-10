@@ -279,7 +279,7 @@ proptest! {
                     && s.get_all_payments(&h.order).unwrap()[0].block_height == Some(3)
             }).await;
             assert_eq!(payment_identities(&w.h, std::slice::from_ref(&w.h.order)), ids);
-            assert_eq!(w.h.store().lock().due_webhook_deliveries_for_test(i64::MAX, 1000).unwrap().iter().filter(|d| d.event_type == "order.paid").count(), 1);
+            assert_eq!(w.h.store().lock().order_events_for_test().unwrap().iter().filter(|d| d.event_type == "order.paid").count(), 1);
         });
     }
 }
@@ -467,7 +467,7 @@ proptest! {
                 o.amount_received_piconero == totals[i] && o.status == OrderStatus::Paid
             })).await;
             assert_eq!(payment_identities(&w.h,&orders), ids);
-            let deliveries = w.h.store().lock().due_webhook_deliveries_for_test(i64::MAX,1000).unwrap();
+            let deliveries = w.h.store().lock().order_events_for_test().unwrap();
             assert_eq!(deliveries.iter().filter(|d| d.event_type == "order.paid").count(), 3);
         });
     }
@@ -831,7 +831,7 @@ proptest! {
             let counts = w.nodes[0].counts(operation);
             assert!(counts.completed > 0);
             let s = w.h.store().lock();
-            let events = s.due_webhook_deliveries_for_test(i64::MAX,1000).unwrap();
+            let events = s.order_events_for_test().unwrap();
             assert_eq!(events.iter().filter(|e| e.event_type == "order.double_spend_detected").count(),1);
         });
     }
@@ -1149,7 +1149,7 @@ fn reconcile_across_forks_and_restarts(
             Some((base.tip().height + required + 3) as i64)
         );
         assert_eq!(
-            s.due_webhook_deliveries_for_test(i64::MAX, 1000)
+            s.order_events_for_test()
                 .unwrap()
                 .iter()
                 .filter(|e| e.event_type == "order.paid")

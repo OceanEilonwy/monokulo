@@ -21,7 +21,7 @@ const COMMANDS: [(&str, &str); 12] = [
     ("Proof", "Payment proof supplied"),
     ("Advance", "Clock advanced"),
     ("Round", "Engine scan round"),
-    ("Deliver", "Webhook delivery attempted"),
+    ("Deliver", "Order-event log read"),
     ("Restart", "Engine restarted"),
     ("Fault", "Fault injected"),
 ];
@@ -41,7 +41,7 @@ const FAULTS: Observed = Observed {
         ("rpc-timeout-cancelled", "Node request timed out"),
         ("custody-error-reached", "Key custody failed"),
         ("all-node-outage-preserves-money-and-cursors", "Every node down at once"),
-        ("http-503-reached", "Shop answered 503"),
+        ("log-read-resumed", "Log read resumed after a cut-off"),
         ("worker-restarted-mid-history", "Scan worker restarted mid-history"),
         ("connection-reopened-mid-history", "Database reopened mid-history"),
         ("custody-handle-replaced", "Custody handle replaced"),
@@ -78,8 +78,8 @@ const RULES: Observed = Observed {
             "Voided output restored after reorg",
         ),
         (
-            "http-retry-stable-bytes-and-drained",
-            "Webhook retries resend identical bytes",
+            "log-replay-stable-bytes",
+            "Order events read back with identical bytes",
         ),
         ("expiry-derived", "Order expiry derived"),
         (

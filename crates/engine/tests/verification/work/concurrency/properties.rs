@@ -64,15 +64,6 @@ async fn overlap(ordering: usize, cancelled: u8, change: u8, repeats: usize) {
             rusqlite::params![order,FIXTURE_AMOUNT_PICONERO as i64],
         )
         .unwrap();
-    store
-        .create_webhook(
-            &tenant,
-            "https://merchant.example/hook",
-            "{}",
-            "secret",
-            1000,
-        )
-        .unwrap();
     let mut token = store
         .rotate_tenant_secret(&tenant)
         .unwrap()
@@ -304,13 +295,13 @@ async fn overlap(ordering: usize, cancelled: u8, change: u8, repeats: usize) {
         }
         identities = Some(ids);
         assert_eq!(
-            s.due_webhook_deliveries_for_test(i64::MAX, 1000)
+            s.order_events_for_test()
                 .unwrap()
                 .iter()
                 .filter(|d| d.event_type == "order.paid")
                 .count(),
             1,
-            "BOUNDARY: paid-webhook"
+            "BOUNDARY: paid-event"
         );
     }
     let reopened = Store::open_file(&path.0).unwrap();
@@ -354,15 +345,6 @@ async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_c
         .execute(
             "UPDATE orders SET xmr_amount_piconero=?1 WHERE id=?2",
             rusqlite::params![FIXTURE_AMOUNT_PICONERO as i64, order],
-        )
-        .unwrap();
-    store
-        .create_webhook(
-            &tenant,
-            "https://merchant.example/hook",
-            "{}",
-            "secret",
-            1000,
         )
         .unwrap();
     let db = Db::open(&path.0, &store).unwrap();
@@ -534,7 +516,7 @@ async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_c
     assert_eq!(payments[0].block_height, Some(3));
     assert!(payments[0].voided_at.is_none());
     assert!(store
-        .due_webhook_deliveries_for_test(i64::MAX, 100)
+        .order_events_for_test()
         .unwrap()
         .iter()
         .all(|d| d.event_type != "order.paid"));
@@ -586,7 +568,7 @@ async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_c
         .is_empty());
     assert_eq!(
         store
-            .due_webhook_deliveries_for_test(i64::MAX, 100)
+            .order_events_for_test()
             .unwrap()
             .iter()
             .filter(|d| d.event_type == "order.paid")

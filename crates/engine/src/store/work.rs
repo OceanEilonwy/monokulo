@@ -1058,24 +1058,19 @@ pub struct ActivityFacts {
     pub reorg: Option<(u64, bool, u64)>,
     pub recomputes_pending: u64,
     pub orders_due: u64,
-    pub webhooks_due: u64,
-    /// When each delivery since the time asked for was made.
-    pub delivered_at: Vec<i64>,
 }
 
 impl Store {
     /// The engine page's database facts for `network`: groups of stores by
     /// cursor (up to `groups`), saved partial scans, the reorg job, what
-    /// settlement has waiting, and webhook deliveries due and made since
-    /// `delivered_since`. `tip` is the node's height, for orders due by
-    /// height.
+    /// settlement has waiting. `tip` is the node's height, for orders due
+    /// by height.
     pub fn activity_facts(
         &self,
         network: monero::Network,
         now: i64,
         tip: Option<u64>,
         groups: usize,
-        delivered_since: i64,
     ) -> Result<ActivityFacts> {
         let net = shared::network::SqlNetwork(network);
         let count = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Result<u64> {
@@ -1130,21 +1125,6 @@ impl Store {
                  WHERE o.next_due_height IS NOT NULL AND o.next_due_height <= ?2 AND t.network = ?1
                    AND (o.next_due_at_utc IS NULL OR o.next_due_at_utc > ?3)",
                 &[&net, &tip, &now],
-            )?,
-            webhooks_due: count(
-                "SELECT COUNT(*) FROM webhook_deliveries d
-                 JOIN orders o ON o.id = d.order_id JOIN tenants t ON t.id = o.tenant_id
-                 WHERE d.delivered_at_utc IS NULL AND d.gave_up_at_utc IS NULL
-                   AND d.next_attempt_at_utc <= ?2 AND t.network = ?1",
-                &[&net, &now],
-            )?,
-            delivered_at: self.rows(
-                "SELECT d.delivered_at_utc FROM webhook_deliveries d
-                 JOIN orders o ON o.id = d.order_id JOIN tenants t ON t.id = o.tenant_id
-                 WHERE d.delivered_at_utc IS NOT NULL AND d.delivered_at_utc >= ?2 AND t.network = ?1
-                 ORDER BY d.delivered_at_utc",
-                params![net, delivered_since],
-                |row| row.get(0),
             )?,
         })
     }

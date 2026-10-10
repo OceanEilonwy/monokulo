@@ -553,11 +553,16 @@ fn the_scanners_hot_queries_use_their_indexes() {
             "tenants_network_cursor_idx",
         ),
         (
-            "the engine page's webhook deliveries",
-            "SELECT d.delivered_at_utc FROM webhook_deliveries d JOIN orders o ON o.id = d.order_id \
-             JOIN tenants t ON t.id = o.tenant_id WHERE d.delivered_at_utc IS NOT NULL AND d.delivered_at_utc >= 5 \
-             AND t.network = 'mainnet' ORDER BY d.delivered_at_utc",
-            "webhook_deliveries_delivered_idx",
+            "the order-event stream",
+            "SELECT e.seq, e.event_id, e.tenant_id, t.public_key, e.order_id, e.event_type, e.payload_json, \
+             e.created_at_utc FROM order_events e JOIN tenants t ON t.id = e.tenant_id \
+             WHERE e.seq > 5 ORDER BY e.seq LIMIT 256",
+            "INTEGER PRIMARY KEY",
+        ),
+        (
+            "pruning order events",
+            "SELECT seq FROM order_events WHERE created_at_utc < 5",
+            "order_events_created_idx",
         ),
         (
             "due by time",
@@ -1273,32 +1278,12 @@ fn the_engine_page_s_facts_count_each_thing_once_on_its_network() {
             },
         )
         .unwrap();
-    let hook = store
-        .create_webhook(
-            &TenantId::new(a),
-            "https://shop.example/hook",
-            "{}",
-            "whsec_x",
-            90,
-        )
-        .unwrap();
-    let order_id = OrderId::new(both);
-    for _ in 0..2 {
-        store
-            .enqueue_webhook_delivery(&hook.id, &order_id, "order.paid", "{}", 90)
-            .unwrap();
-    }
-    store
-        .execute_raw_for_test(
-            "UPDATE webhook_deliveries SET delivered_at_utc = 95 WHERE id = (SELECT MIN(id) FROM webhook_deliveries)",
-        )
-        .unwrap();
     store
         .open_reorg_job(monero::Network::Mainnet, 11, 100)
         .unwrap();
 
     let facts = store
-        .activity_facts(monero::Network::Mainnet, 100, Some(10), 32, 0)
+        .activity_facts(monero::Network::Mainnet, 100, Some(10), 32)
         .unwrap();
     assert_eq!(
         facts,
@@ -1310,17 +1295,14 @@ fn the_engine_page_s_facts_count_each_thing_once_on_its_network() {
             reorg: Some((11, true, 0)),
             recomputes_pending: 1,
             orders_due: 2,
-            webhooks_due: 1,
-            delivered_at: vec![95],
         }
     );
     let one = store
-        .activity_facts(monero::Network::Mainnet, 100, Some(10), 1, 96)
+        .activity_facts(monero::Network::Mainnet, 100, Some(10), 1)
         .unwrap();
     assert_eq!((one.groups, one.all_groups), (vec![(12, 1)], 2));
-    assert!(one.delivered_at.is_empty(), "made before the time asked");
     let none_due = store
-        .activity_facts(monero::Network::Mainnet, 40, Some(6), 32, 0)
+        .activity_facts(monero::Network::Mainnet, 40, Some(6), 32)
         .unwrap();
     assert_eq!(none_due.orders_due, 0, "not yet due by time or height");
 }

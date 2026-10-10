@@ -631,7 +631,7 @@ pub(crate) fn decide(voided: bool, location: TxLocation, double_spend_proven: bo
 /// What one unit of the reorg job did. Each variant is a different next
 /// move for the caller: after `Collected` there is nothing to apply (the
 /// candidates are only queued); `Processed` carries changes to act on (and
-/// wake webhooks for); `Waiting` means stop for now; `Rewound` means the
+/// announce); `Waiting` means stop for now; `Rewound` means the
 /// job is over and blocks must wait for a fresh chain read.
 pub(crate) enum JobStep {
     /// A page of candidates was queued.
@@ -720,10 +720,6 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Progress {
                 changed: count(reconciled.dirty_orders.len()),
                 voided: count(reconciled.double_spent_orders.len()),
             });
-            // A void enqueues its webhook in the same transaction.
-            if !reconciled.double_spent_orders.is_empty() {
-                round.state.wake_webhooks();
-            }
             match failure {
                 Some(error) => Progress::Failed(error),
                 None => Progress::Advanced,

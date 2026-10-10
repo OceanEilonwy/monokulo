@@ -105,34 +105,54 @@ fn seed(conn: &Connection, version: usize, amount: i64, payload: &str) {
             ("block_hash", text("parent")),
         ],
     );
-    insert(
-        conn,
-        "webhooks",
-        &[
-            ("id", text("webhook")),
-            ("tenant_id", text("tenant")),
-            ("url", text("https://merchant.example/hook")),
-            ("headers_json", text("{}")),
-            ("signing_secret", text("secret")),
-            ("created_at", number(1000)),
-            ("created_at_utc", number(1000)),
-        ],
-    );
-    insert(
-        conn,
-        "webhook_deliveries",
-        &[
-            ("id", number(1)),
-            ("webhook_id", text("webhook")),
-            ("order_id", text("order")),
-            ("event_type", text("order.confirming")),
-            ("payload_json", text(payload)),
-            ("attempt_count", number(2)),
-            ("next_attempt_at", number(1100)),
-            ("next_attempt_at_utc", number(1100)),
-            ("last_error", text("retry")),
-        ],
-    );
+    // The engine's own webhook queue, until migration 31 drops it: an
+    // upgrade must drop it full.
+    if version < 31 {
+        insert(
+            conn,
+            "webhooks",
+            &[
+                ("id", text("webhook")),
+                ("tenant_id", text("tenant")),
+                ("url", text("https://merchant.example/hook")),
+                ("headers_json", text("{}")),
+                ("signing_secret", text("secret")),
+                ("created_at", number(1000)),
+                ("created_at_utc", number(1000)),
+            ],
+        );
+        insert(
+            conn,
+            "webhook_deliveries",
+            &[
+                ("id", number(1)),
+                ("webhook_id", text("webhook")),
+                ("order_id", text("order")),
+                ("event_type", text("order.confirming")),
+                ("payload_json", text(payload)),
+                ("attempt_count", number(2)),
+                ("next_attempt_at", number(1100)),
+                ("next_attempt_at_utc", number(1100)),
+                ("last_error", text("retry")),
+            ],
+        );
+    }
+    // The order-event log, from migration 30.
+    if version >= 30 {
+        insert(
+            conn,
+            "order_events",
+            &[
+                ("seq", number(1)),
+                ("event_id", text("evt_old")),
+                ("tenant_id", text("tenant")),
+                ("order_id", text("order")),
+                ("event_type", text("order.confirming")),
+                ("payload_json", text(payload)),
+                ("created_at_utc", number(1001)),
+            ],
+        );
+    }
     if version >= 18 {
         insert(
             conn,
@@ -216,6 +236,20 @@ fn historic_file(image: &[u8]) -> TempFile {
     path
 }
 
+/// The order-event log after an upgrade from `version`: the seeded event,
+/// as it was, when the log existed then; empty when it didn't (the
+/// engine's old webhook queue is dropped, not carried over).
+fn assert_order_events_kept(store: &Store, version: usize, payload: &str) {
+    let events = store.order_events_for_test().unwrap();
+    if version >= 30 {
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload_json, payload);
+        assert_eq!(events[0].event_type, "order.confirming");
+    } else {
+        assert!(events.is_empty(), "{events:?}");
+    }
+}
+
 fn upgrade(version: usize, amount: i64, payload: &str, fault: Option<usize>) -> usize {
     upgrade_from(
         &historic(version, amount, payload),
@@ -279,10 +313,7 @@ fn upgrade_from(
     assert_eq!(payments.len(), 1);
     assert_eq!(payments[0].amount_piconero, amount as u64);
     assert_eq!(payments[0].block_height, Some(3));
-    let delivery = store.due_webhook_deliveries_for_test(1200, 10).unwrap();
-    assert_eq!(delivery.len(), 1);
-    assert_eq!(delivery[0].payload_json, payload);
-    assert_eq!(delivery[0].attempt_count, 2);
+    assert_order_events_kept(&store, version, payload);
     assert_eq!(
         store
             .pending_payment_recomputes_page(monero::Network::Mainnet, "", 10)
@@ -434,10 +465,7 @@ async fn crash_upgrade(version: usize, amount: i64, payload: &str, point: &str) 
         store.get_all_payments(&OrderId::new("order")).unwrap()[0].amount_piconero,
         amount as u64
     );
-    assert_eq!(
-        store.due_webhook_deliveries_for_test(1200, 10).unwrap()[0].payload_json,
-        payload
-    );
+    assert_order_events_kept(&store, version, payload);
     assert_eq!(
         store
             .conn_for_test()

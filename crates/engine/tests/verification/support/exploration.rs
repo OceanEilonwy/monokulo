@@ -149,7 +149,6 @@ pub fn inputs(data: &[u8]) {
     let _ = crate::engine_settings::SERVER_CPUS.parse(&text);
     let _ = crate::engine_settings::PAYMENT_CONFIRMATIONS_REQUIRED.parse(&text);
     let _ = crate::engine_settings::PAYMENT_REORG_CHECK_DEPTH.parse(&text);
-    let _ = crate::webhook_delivery::is_reserved_webhook_header(&text);
     // These identifiers deliberately preserve arbitrary strings. Test the
     // application serialization contract, including NUL and Unicode.
     let id = crate::store::OrderId::new(text.as_ref());
@@ -161,7 +160,7 @@ pub fn inputs(data: &[u8]) {
         );
     }
     let _ = url::Url::parse(&text);
-    let _ = crate::webhook_sign::verify_signature("fuzz-secret", data, &text, 0);
+    let _ = shared::webhook_sign::verify_signature("fuzz-secret", data, &text, 0);
 }
 
 #[cfg(test)]
@@ -179,18 +178,18 @@ pub fn queue(data: &[u8]) {
         dispatch::Dispatch,
     };
     let mut policy = Dispatch::default();
-    let mut buffers: [std::collections::VecDeque<usize>; 3] =
+    let mut buffers: [std::collections::VecDeque<usize>; Class::COUNT] =
         std::array::from_fn(|_| std::collections::VecDeque::new());
-    let mut accepted: [Vec<usize>; 3] = std::array::from_fn(|_| Vec::new());
-    let mut completed: [Vec<usize>; 3] = std::array::from_fn(|_| Vec::new());
-    let mut closed = [false; 3];
-    let mut previous = 2;
+    let mut accepted: [Vec<usize>; Class::COUNT] = std::array::from_fn(|_| Vec::new());
+    let mut completed: [Vec<usize>; Class::COUNT] = std::array::from_fn(|_| Vec::new());
+    let mut closed = [false; Class::COUNT];
+    let mut previous = Class::COUNT - 1;
     let serve = |policy: &mut Dispatch,
-                 buffers: &mut [std::collections::VecDeque<usize>; 3],
-                 completed: &mut [Vec<usize>; 3],
+                 buffers: &mut [std::collections::VecDeque<usize>; Class::COUNT],
+                 completed: &mut [Vec<usize>; Class::COUNT],
                  previous: &mut usize| {
-        let expected = (1..=3)
-            .map(|offset| (*previous + offset) % 3)
+        let expected = (1..=Class::COUNT)
+            .map(|offset| (*previous + offset) % Class::COUNT)
             .find(|&i| !buffers[i].is_empty());
         let actual = policy
             .order()

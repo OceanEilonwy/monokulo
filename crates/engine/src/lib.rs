@@ -65,8 +65,6 @@ pub mod threads;
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[path = "../tests/verification/support/temp_db.rs"]
 pub(crate) mod verification_temp_db;
-pub mod webhook_delivery;
-pub mod webhook_sign;
 pub mod work;
 
 /// Seconds since the Unix epoch: the one clock both services share.

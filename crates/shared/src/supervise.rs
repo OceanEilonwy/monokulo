@@ -183,8 +183,7 @@ mod tests {
 
     use super::*;
 
-    /// A background loop (the scanner's, webhook delivery's, the rate
-    /// refresh) that panics is started again after the backoff, and one that
+    /// A background loop (the scanner's, the rate refresh) that panics is started again after the backoff, and one that
     /// returns is too: nothing stays silently stopped.
     #[tokio::test(start_paused = true)]
     async fn a_loop_that_panics_or_returns_is_started_again() {

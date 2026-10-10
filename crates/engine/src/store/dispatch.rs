@@ -7,10 +7,10 @@ pub struct Dispatch {
     next: usize,
 }
 impl Dispatch {
-    pub fn order(self) -> [Class; 3] {
-        std::array::from_fn(|offset| Class::ALL[(self.next + offset) % 3])
+    pub fn order(self) -> [Class; Class::COUNT] {
+        std::array::from_fn(|offset| Class::ALL[(self.next + offset) % Class::COUNT])
     }
     pub fn served(&mut self, class: Class) {
-        self.next = (class.index() + 1) % 3;
+        self.next = (class.index() + 1) % Class::COUNT;
     }
 }
