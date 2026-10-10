@@ -17,8 +17,10 @@
 # newest copy is kept in the Actions cache; a run that finds no copy rescans
 # the chain from the day the pair was made instead. After the tests, the
 # merchant's takings go back to the spender, so the pair keeps itself funded
-# but for the fees. If the spender runs short, the wallet check fails and
-# says where to send more stagenet coins.
+# but for the fees. Each run also starts by asking the public stagenet
+# faucets to pay the spender (wallet-cli faucet). If the spender runs short
+# all the same, the wallet check fails and says where to send more stagenet
+# coins.
 
 name: Live network
 
@@ -58,6 +60,19 @@ jobs:
           npm-lockfiles: |
             e2e/browser/package-lock.json
             crates/monokulo/pos-ui/package-lock.json
+      - name: Restore the CI wallets
+        id: wallets-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: e2e/wallets/ci/*.db
+          key: live-wallets-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: live-wallets-
+      # First, so a payout has the run's length to confirm. The faucets
+      # pay an address or IP only so often, so this step may fail without
+      # failing the run.
+      - name: Ask the faucets for coins
+        continue-on-error: true
+        run: cargo xtask live wallets faucet
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
@@ -83,13 +98,6 @@ jobs:
           else
             npx playwright install --with-deps chromium
           fi
-      - name: Restore the CI wallets
-        id: wallets-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: e2e/wallets/ci/*.db
-          key: live-wallets-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: live-wallets-
       - name: Probe the services
         run: cargo xtask live probe
       - name: Check the wallets

@@ -87,6 +87,9 @@ wallet-setup = { path = "../wallet-setup" }
 # A node that hangs up on every request (`shared::unreachable`), for the
 # tests where none can be reached.
 shared = { path = "../shared", features = ["test-support"] }
+# A stand-in faucet for src/faucet.rs's tests: one canned HTTP answer on a
+# local socket.
+tokio = { version = "1.53.1", features = ["net", "io-util"] }
 
 [lints]
 workspace = true

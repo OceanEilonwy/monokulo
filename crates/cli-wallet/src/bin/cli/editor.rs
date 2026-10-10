@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use clap::Subcommand;
 use cli_wallet::amount::{format_amount, Unit};
+use cli_wallet::faucet::Faucet;
 use cli_wallet::WalletKeys;
 use nu_ansi_term::{Color as AnsiColor, Style};
 use reedline::Color;
@@ -313,6 +314,8 @@ pub fn candidates(
             ("always-confirm-transfers", "ask before sending"),
             ("default-ring-size", "always 16"),
         ]),
+        ("faucet", []) => described(&[("--provider", "xmr-tw (default) or cypherfaucet")]),
+        ("faucet", ["--provider"]) => words(&Faucet::ALL.map(Faucet::name)),
         ("set", ["priority"]) => priorities(),
         ("set", ["unit"]) => words(&["monero", "millinero", "micronero", "nanonero", "piconero"]),
         ("set", ["always-confirm-transfers"]) => words(&["1", "0"]),

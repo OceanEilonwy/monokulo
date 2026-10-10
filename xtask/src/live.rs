@@ -34,6 +34,9 @@ pub(crate) const HELP: &str = "\
         live wallets check [--from HEIGHT]\n\
                       Rescan the test wallets (the last 1500 blocks, or from HEIGHT) and stop, saying what to\n\
                       do, unless the spender can pay one run's orders (target/live/wallets.json)\n\
+        live wallets faucet\n\
+                      Ask each stagenet faucet (wallet-cli faucet) to pay the spender; fails when one\n\
+                      doesn't, which a faucet's rate limit makes routine\n\
         live wallets keep\n\
                       Sweep the merchant's unlocked balance back to the spender, and split or merge the\n\
                       spender's outputs so the next run has enough of the right size\n\
@@ -174,11 +177,12 @@ pub(crate) fn live(root: &Path, args: &[&str]) -> io::Result<Exit> {
             })?;
             check_wallets(root, &out, Some(height))
         }
+        ["wallets", "faucet"] => faucet(root),
         ["wallets", "keep"] => keep_wallets(root, &out),
         ["report"] => report(root, &out),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: cargo xtask live <tests|browser|probe|wallets check|wallets keep|report>",
+            "usage: cargo xtask live <tests|browser|probe|wallets check|wallets faucet|wallets keep|report>",
         )),
     }
 }
@@ -517,7 +521,8 @@ fn shortfall(spender: &Wallet) -> Option<String> {
         if spender.balance < MIN_UNLOCKED + PAYMENTS as u64 * PIECE {
             format!(
                 "fund the CI spender at {}: it holds {} XMR and {need}. Send it stagenet XMR \
-             (the faucet: {FAUCET}); the next run's rescan finds the payment.",
+             (each run asks the faucets; by hand: {FAUCET}); the next run's rescan finds the \
+             payment.",
                 spender.address,
                 Xmr(spender.balance)
             )
@@ -646,6 +651,26 @@ fn keep_wallets(root: &Path, out: &Path) -> io::Result<Exit> {
         .map(|role| read_wallet(root, role))
         .collect::<io::Result<Vec<_>>>()?;
     write_json(&path, &wallets)?;
+    Ok(Exit::passed(ok))
+}
+
+/// The faucets `wallet-cli faucet --provider` asks.
+const FAUCETS: [&str; 2] = ["xmr-tw", "cypherfaucet"];
+
+/// Asks each faucet to pay the spender; wallet-cli records each payout,
+/// which a later rescan or refresh resolves once it confirms. Each faucet
+/// pays an address or IP only so often, so one refusing is routine.
+fn faucet(root: &Path) -> io::Result<Exit> {
+    let mut ok = true;
+    for provider in FAUCETS {
+        match wallet_cli(root, "spender", &["faucet", "--provider", provider]) {
+            Ok(out) => eprint!("{out}"),
+            Err(e) => {
+                eprintln!("{e}");
+                ok = false;
+            }
+        }
+    }
     Ok(Exit::passed(ok))
 }
 

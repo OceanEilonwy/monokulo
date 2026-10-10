@@ -9,6 +9,7 @@ use std::sync::Arc;
 use clap::Subcommand;
 use cli_wallet::amount::{format_amount, parse_amount, Unit};
 use cli_wallet::block_range::BlockRange;
+use cli_wallet::faucet::{self, Faucet};
 use cli_wallet::file::{default_busy_handler, BusyChoice, BusyHandler, LockHolder, WalletData};
 use cli_wallet::meta::AddressBookEntry;
 use cli_wallet::{
@@ -223,6 +224,13 @@ pub enum Command {
     /// Not in the reference wallet: record a transaction that pays this
     /// wallet (a faucet payout) and resolve it once it confirms.
     AddOutput { txid: String },
+    /// Not in the reference wallet: ask a public faucet to pay this
+    /// wallet's primary address, then record the payout as add_output does.
+    #[command(override_usage = "faucet [--provider xmr-tw|cypherfaucet]")]
+    Faucet {
+        #[arg(long, default_value = "xmr-tw", value_parser = Faucet::ALL.map(Faucet::name))]
+        provider: String,
+    },
 }
 
 #[derive(Debug)]
@@ -685,17 +693,38 @@ pub async fn run(session: &mut Session, command: Command) -> Result<(), CliError
             })
             .await
         }
-        Command::AddOutput { txid } => {
-            session.wallet().await?.add_output(&txid).await?;
-            let data = session.data()?;
-            if data.pending.iter().any(|p| p.txid == txid) {
-                println!("Added {txid}; it isn't confirmed yet - refresh picks it up once it is");
-            } else {
-                println!("Added {txid}");
+        Command::AddOutput { txid } => add_output(session, &txid).await,
+        Command::Faucet { provider } => {
+            let faucet = Faucet::parse(&provider)?;
+            let payout = faucet::claim(
+                faucet,
+                faucet.url(),
+                session.keys.network(),
+                &session.keys.address(),
+            )
+            .await?;
+            let txid = payout.txid;
+            match payout.amount {
+                Some(amount) => println!("The {provider} faucet sent {amount} XMR in {txid}"),
+                None => println!("The {provider} faucet sent {txid}"),
             }
-            Ok(())
+            add_output(session, &txid).await.inspect_err(|_| {
+                eprintln!("Record it once the node answers: add_output {txid}");
+            })
         }
     }
+}
+
+/// `add_output <txid>`, and the second half of `faucet`.
+async fn add_output(session: &mut Session, txid: &str) -> Result<(), CliError> {
+    session.wallet().await?.add_output(txid).await?;
+    let data = session.data()?;
+    if data.pending.iter().any(|p| p.txid == txid) {
+        println!("Added {txid}; it isn't confirmed yet - refresh picks it up once it is");
+    } else {
+        println!("Added {txid}");
+    }
+    Ok(())
 }
 
 /// `rescan <blocks>` (a [`BlockRange`]): progress on stderr at a terminal, then one line per

@@ -29,8 +29,10 @@ On testnet:
   fetches the distribution from the node (a single large request) before
   a send. To avoid that, write a snapshot with `refresh-decoy-pool`
   against a testnet node and pass it with `--decoy-distribution-path`.
-- No faucet is assumed. Send testnet XMR to the wallet from another wallet
-  (or mine to it), then record the txid with `add_output <txid>`.
+- `faucet --provider cypherfaucet` asks cypherfaucet.com for 0.01 testnet
+  XMR (xmr-tw, the default, pays stagenet only). Otherwise send testnet XMR
+  to the wallet from another wallet (or mine to it), then record the txid
+  with `add_output <txid>`.
 
 ## One file per wallet
 
@@ -206,6 +208,13 @@ Not in the reference wallet:
   enough separate mature outputs to run fast; see `e2e/README.md`, "Keeping
   enough outputs". (`split` still works as an alias.)
 - `add_output <txid>` records a payment received, e.g. from the faucet.
+- `faucet [--provider xmr-tw|cypherfaucet]` asks a public faucet to pay
+  the primary address, then records the payout as `add_output` does.
+  `xmr-tw` (the default, https://stagenet-faucet.xmr-tw.org/) pays
+  stagenet only; `cypherfaucet` (https://cypherfaucet.com/xmr-stagenet,
+  through its API) pays 0.01 XMR on stagenet or testnet, once an hour per
+  address and per IP. A faucet that won't pay says why, and the command
+  fails.
 - `rescan <blocks>` is the one chain scan, and only runs when asked: it
   scans a range of blocks on the configured node (`--daemon-address`, or
   the network's default nodes) for outputs paying any address the wallet

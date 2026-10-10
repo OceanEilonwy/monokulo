@@ -59,6 +59,7 @@
 
 pub mod amount;
 pub mod block_range;
+pub mod faucet;
 pub mod file;
 pub mod meta;
 mod store;
@@ -135,7 +136,8 @@ pub fn parse_network(name: &str) -> Result<Network, WalletError> {
 fn funding_steps(network: Network, address: &str) -> String {
     match network {
         Network::Stagenet => format!(
-            "fund the wallet from the stagenet faucet:\n\
+            "fund the wallet from a stagenet faucet: wallet-cli faucet (or --provider \
+             cypherfaucet) asks one and records the payout; or by hand:\n\
              1. open https://stagenet-faucet.xmr-tw.org/\n\
              2. send to: {address}\n\
              3. record the faucet's txid: wallet-cli add_output <txid>"
@@ -205,6 +207,13 @@ pub enum WalletError {
     /// impossible fee split) - the message says why.
     #[error("{0}")]
     Invalid(String),
+    /// A faucet that didn't pay (see [`faucet::claim`]); the message is
+    /// its own when it gave one.
+    #[error("the {faucet} faucet sent nothing: {message}")]
+    Faucet {
+        faucet: &'static str,
+        message: String,
+    },
 }
 
 /// `monero-daemon-rpc`'s `HttpTransport` over a plain `reqwest::Client` -
