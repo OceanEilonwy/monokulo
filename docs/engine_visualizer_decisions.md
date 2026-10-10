@@ -644,6 +644,31 @@ big.
   drawn to their own, so it no longer overrides it. (A catching-up round
   is drawn to its budget by the server anyway.)
 
+## D40. The chain's labels take as few levels as they can
+
+PR #76 review round 4. Round 1 put each kind of label on its own row (stores
+catching up, the frontier, then the node's tip), so the strip was always
+three rows tall however far apart they were, and the leaders were 2px.
+
+- **Each label starts on the lowest level**, right above the blocks, and
+  goes up one only where it would overlap a label already there (4px
+  between labels). Labels are placed in order: the node's tip, the
+  high-water mark, then each group of stores; so where the frontier and the
+  node's tip share a block, the frontier goes up and stores catching up far
+  to the left stay down.
+- **The strip is as tall as the levels used**: one level, a short strip.
+- **Leaders are 1px**, in the label's colour, all on the same pixel over a
+  block, so two that meet draw one line.
+- **One rule, in two places.** The server places the labels for the page
+  without JavaScript (`views::engine::label_levels`, from each label's
+  width estimated from its text). The script places them again as drawn
+  (`stackLabels`), with each label's measured width, because which blocks
+  show, and so where each label goes, depends on the strip's width in the
+  browser, which the server never knows, and changes with every frame and
+  resize. The rule is a dozen lines in each, and both are tested against
+  the same cases (`views/label_levels.json`): the Rust test reads them, and
+  the browser test runs the script's function on them.
+
 ## What differs from the design, and what is left
 
 - **Simplified time lens.** The design asked for minimum animation lengths,
