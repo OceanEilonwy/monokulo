@@ -577,6 +577,29 @@ The Monero nodes tab keeps each node's settings and one-line status, and
 each network's card links to the engine page ("See it on the engine
 page").
 
+Review round 1:
+
+- **Every chain label is above the blocks**, in three rows (stores catching
+  up, the frontier, then the node's tip and the high-water mark), each with
+  a tick down to its block, so none covers the block numbers under them.
+  A group of stores behind the oldest block drawn points at that block,
+  the left edge. The reorg window's blue line is a `--space-sm` step above
+  the blocks.
+- **The node list is the network's nodes and nothing else**: the last call
+  to the node, which had a box of its own (a "–" before any call), is under
+  the node in use.
+- **A round's segments sit inside their reserved share** with a
+  `--space-xs` gap all round, so the dashed outline shows; the share starts
+  with the tier's first segment. A unit followed by the tier's work outside
+  units (Blocks keeping its fetched blocks) is **one shape**: outlined to
+  the work's end, solid from the left for the unit (`Bar::span_ms`,
+  `Bar::solid_ms`), so there is no gap between two shapes.
+- **The round's end marker** is a line from the right edge of the segment
+  that finished last down to the round's total, which sits under it. The
+  lanes are a little taller (24px rows) so the outcome chips don't touch,
+  with a `--space-lg` gap above Timing details; the playback control is
+  centred in its card.
+
 ## What differs from the design, and what is left
 
 - **Simplified time lens.** The design asked for minimum animation lengths,

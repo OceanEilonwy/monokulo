@@ -174,7 +174,8 @@ Top to bottom:
    the link to the node in use, the blocks' size; docs/engine_scaling.md
    section 6), then the animation and the panels.
    - The **chain strip** (blocks as fixed-size cells, as many as fit, the
-     newest at the right; the node cards beside it, group pills under it)
+     newest at the right; the node cards beside it, group pills and the
+     tip marks above it, block numbers under it)
      and the **round** (five lanes,
      each 18 px high, with the reserved share, the units, the playhead and
      the outcome chip; under the lanes, the playhead carries the round's
