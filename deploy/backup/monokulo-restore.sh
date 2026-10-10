@@ -70,9 +70,13 @@ if [[ ${#DATABASES[@]} -eq 0 ]]; then
 fi
 
 # Transfer corruption is caught before anything is written.
-if [[ -f "$BACKUP/SHA256SUMS" ]] && command -v sha256sum >/dev/null 2>&1; then
+SHA256_CHECK=""
+if command -v sha256sum >/dev/null 2>&1; then SHA256_CHECK="sha256sum -c"
+elif command -v shasum >/dev/null 2>&1; then SHA256_CHECK="shasum -a 256 -c"  # macOS
+fi
+if [[ -f "$BACKUP/SHA256SUMS" ]] && [[ -n "$SHA256_CHECK" ]]; then
     echo "==> checking $BACKUP/SHA256SUMS"
-    if ! (cd "$BACKUP" && sha256sum -c SHA256SUMS) >/dev/null; then
+    if ! (cd "$BACKUP" && $SHA256_CHECK SHA256SUMS) >/dev/null; then
         echo "error: checksum mismatch in $BACKUP (corrupted in transit?)" >&2
         exit 1
     fi
