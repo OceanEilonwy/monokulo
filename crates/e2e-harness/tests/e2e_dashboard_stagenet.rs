@@ -144,8 +144,8 @@ async fn body_json(response: axum::response::Response) -> Value {
 }
 
 #[tokio::test]
-#[ignore = "needs the live stagenet node and a funded test wallet"]
-async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_received() {
+#[ignore = "needs the live stagenet node and the funded test wallets"]
+async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_received() {
     // ---- load the same real fixture + reusable wallet fixtures e2e_stagenet.rs uses ----
     use support::e2e_fixture;
 

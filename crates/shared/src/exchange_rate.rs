@@ -1093,12 +1093,10 @@ mod tests {
         }
 
         #[tokio::test]
-        #[ignore = "hits the real Coingecko API over the network - run manually \
-                    (`cargo test -p shared --lib \
-                    exchange_rate::tests::coingecko::manual_smoke_test_against_the_real_coingecko_api \
-                    -- --ignored --nocapture`), never as part of the default `cargo test` suite, per \
-                    WBS 1.7.1's own \"no live network call in CI\" requirement"]
-        async fn manual_smoke_test_against_the_real_coingecko_api() {
+        // Run daily by `cargo xtask live` (live-network.yml), never per change:
+        // WBS 1.7.1 keeps live network calls out of the per-change suite.
+        #[ignore = "needs the live Coingecko API"]
+        async fn live_coingecko_api_quotes_usd_and_lists_it_as_supported() {
             let provider = CoingeckoRateProvider::new("https://api.coingecko.com");
             let usd = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))

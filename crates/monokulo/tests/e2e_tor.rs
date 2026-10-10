@@ -432,8 +432,8 @@ fn circuits(state: &AppState) -> Vec<u32> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a real tor and the live Tor network; see the module doc comment"]
-async fn tor_visitors_are_told_apart_by_circuit_and_only_the_abusive_one_is_slowed() {
+#[ignore = "needs tor and the live Tor network"]
+async fn live_tor_visitors_are_told_apart_by_circuit_and_only_the_abusive_one_is_slowed() {
     let engine =
         engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
     let (state, onion_listener, store) = start_monokulo(&engine).await;
