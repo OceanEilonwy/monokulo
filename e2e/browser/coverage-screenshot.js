@@ -95,8 +95,13 @@ async function save(testInfo, name, { group, stage, shape, theme }, body) {
   await testInfo.attach(name, { body: `images/${filename}`, contentType: 'text/plain' });
 }
 
+/** Whether a test's browser feeds the gallery: Chromium's only. Firefox and
+ * WebKit run the POS's tests to check how it behaves there, not to show it
+ * again. */
+const photographs = project => (project.use.browserName || 'chromium') === 'chromium';
+
 async function captureCoverageStage(target, stage, testInfo, options = {}) {
-  if (!enabled) return;
+  if (!enabled || !photographs(testInfo.project)) return;
   if (!NAME.test(stage)) throw new Error(`invalid coverage stage: ${stage}`);
   const group = options.group || '';
   if (group && !GROUP.test(group)) throw new Error(`invalid coverage group: ${group}`);
@@ -130,4 +135,4 @@ async function captureCoverageStage(target, stage, testInfo, options = {}) {
   if (original) await target.setViewportSize(original);
 }
 
-module.exports = { captureCoverageStage, guessGroup, gallery, SHAPES, THEMES };
+module.exports = { captureCoverageStage, photographs, guessGroup, gallery, SHAPES, THEMES };

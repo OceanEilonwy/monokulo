@@ -1,7 +1,6 @@
 const { test, expect } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
-const { webkit } = require('playwright');
 
 const sizes = [
   ['iPhone SE', 375, 667], ['iPhone 14', 390, 844], ['iPad', 768, 1024],
@@ -18,7 +17,9 @@ async function assertNoOuterScroll(page, stage) {
 
 /** Loads the POS at `w`x`h`, then checks the keypad, a filled keypad and the
  * payment screen each fit with no outer scrolling. `captures` names the
- * screenshot checkpoints to take (Chromium only), at this size. */
+ * screenshot checkpoints to take at this size (the gallery is Chromium's).
+ * Each project's browser runs every size: WebKit, the engine of iPhone and
+ * iPad Safari, sizes flex and grid differently enough to check directly. */
 async function checkFit(page, context, label, w, h, captures = {}) {
   const fixture = await startCoverageFixture();
   try {
@@ -59,38 +60,6 @@ for (const [name, width, height] of sizes) {
       const captures = name === 'iPhone SE' && orientation === 'landscape'
         ? { keypad: 'pos-narrow-keypad', payment: 'pos-narrow-payment' } : {};
       await checkFit(page, context, `${name} ${orientation}`, w, h, captures);
-    });
-  }
-}
-
-// The same sizes on WebKit, the engine iPhone and iPad Safari use, whose
-// flex/grid sizing differs enough from Chromium's to check directly. WebKit
-// needs its own system libraries (`npx playwright install-deps webkit`, as
-// root); where it can't launch these are skipped, saying why, rather than
-// failing. Its coverage isn't collected (the collector reads Chromium).
-let webkitUnavailable;
-async function webkitSkipReason() {
-  if (webkitUnavailable !== undefined) return webkitUnavailable;
-  try {
-    const browser = await webkit.launch();
-    await browser.close();
-    webkitUnavailable = null;
-  } catch (e) {
-    webkitUnavailable = `WebKit can't launch here (${e.message.split('\n')[0]}); run "npx playwright install-deps webkit" as root to enable these`;
-  }
-  return webkitUnavailable;
-}
-
-for (const [name, width, height] of sizes) {
-  for (const [orientation, w, h] of orientations(width, height)) {
-    test(`real POS fits ${name} ${orientation} (${w}x${h}) on WebKit`, async () => {
-      const reason = await webkitSkipReason();
-      test.skip(reason !== null, reason || '');
-      const browser = await webkit.launch();
-      try {
-        const context = await browser.newContext();
-        await checkFit(await context.newPage(), context, `WebKit ${name} ${orientation}`, w, h);
-      } finally { await browser.close(); }
     });
   }
 }

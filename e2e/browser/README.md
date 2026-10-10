@@ -6,16 +6,22 @@ checkout, and POS. The configurations select separate environments and workloads
 | Configuration | Coverage | Environment |
 | --- | --- | --- |
 | `surface.config.js` | Client challenge protocol | Local mocked server |
-| `coverage-browser.config.js` | Checkout, challenge, camera, client, POS, layout, live view, store setup and settings, dropdowns, order resubmission, JavaScript-disabled pages and the account page; and the `real-binaries.config.js` specs as a second project | Local rendered-UI fixture with coverage reporting |
+| `coverage-browser.config.js` | Checkout, challenge, camera, client, POS, layout, live view, store setup and settings, dropdowns, order resubmission, JavaScript-disabled pages and the account page; the `real-binaries.config.js` specs as a second project; and the POS specs again in Firefox and WebKit | Local rendered-UI fixture with coverage reporting |
 | `real-binaries.config.js` | Admin setup and settings, store keys, logs, themes, crash recovery, sections, and POS timeline | Real binaries and a local fake node |
 | `playwright.config.js` | POS payments and confirmations | Public stagenet and funded test wallet |
 
-Install dependencies and Chromium from this directory:
+Install dependencies and the browsers from this directory:
 
 ```sh
 npm ci
-npx playwright install chromium
+npx playwright install chromium firefox webkit
 ```
+
+Chromium runs every test in `coverage-browser.config.js`; Firefox and WebKit run
+the POS's (`fixture-firefox`, `real-binaries-webkit` and so on). WebKit needs
+system libraries of its own (`npx playwright install-deps webkit`, as root, on
+Debian or Ubuntu). Off CI, a browser that can't start leaves its projects out of
+the run, saying why; on CI (`CI` set) it fails the run.
 
 Run a selected suite with `npx playwright test -c <configuration>`. For example,
 `npx playwright test -c coverage-browser.config.js` runs every offline browser

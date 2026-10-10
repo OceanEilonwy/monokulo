@@ -18,7 +18,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { guessGroup, gallery } = require('./coverage-screenshot.js');
+const { guessGroup, gallery, photographs } = require('./coverage-screenshot.js');
 
 const enabled = process.env.COVERAGE_SCREENSHOTS === '1' && process.env.COVERAGE_OUTPUT;
 const stagenet = process.env.COVERAGE_PROFILE === 'stagenet';
@@ -176,7 +176,9 @@ class CoverageGalleryReporter {
   }
   onBegin() { if (enabled) fs.mkdirSync(images, { recursive: true }); }
   onTestEnd(test, result) {
-    if (!enabled) return;
+    // Chromium's tests only, failures included: the gallery is one browser's.
+    const project = test.parent.project();
+    if (!enabled || (project && !photographs(project))) return;
     const guessed = guessGroup(test.location.file);
     let sequence = 0;
     for (const attachment of result.attachments) {

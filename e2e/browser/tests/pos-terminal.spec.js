@@ -121,8 +121,14 @@ test('real POS shows pending, partial, confirming, and terminal badge symbols', 
   }
 });
 
-test('real POS payment card copies the address and saves a refund address', async ({ page, context }) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+// What a copy needs granted, per browser, for the test to read the clipboard
+// back as the merchant's next paste would. Chromium: writing too (a real
+// Chrome lets the page in front write unasked; Playwright's asks). WebKit:
+// reading only. Firefox: nothing, and it knows neither permission.
+const CLIPBOARD_PERMISSIONS = { chromium: ['clipboard-read', 'clipboard-write'], webkit: ['clipboard-read'], firefox: [] };
+
+test('real POS payment card copies the address and saves a refund address', async ({ page, context, browserName }) => {
+  await context.grantPermissions(CLIPBOARD_PERMISSIONS[browserName]);
   await page.goto(posUrl());
   const card = page.locator('.pos-pay-card');
   await expect(card.locator('.pos-stage-msg')).toContainText(/(59m|1h) left/);
