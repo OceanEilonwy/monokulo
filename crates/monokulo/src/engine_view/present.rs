@@ -266,7 +266,6 @@ pub struct Side {
     pub orders: Panel,
     pub upkeep: Panel,
     pub database: Panel,
-    pub webhooks: Panel,
     pub restart: Panel,
     /// Steps of an open reorg job: found, collect, process (rewind is the
     /// job ending).
@@ -275,10 +274,8 @@ pub struct Side {
     /// The last status changes, newest first: `(from, to)`.
     pub transitions: Vec<(&'static str, &'static str)>,
     /// Queued jobs per database class, and the capacity.
-    pub queues: [u64; 3],
+    pub queues: [u64; 2],
     pub queue_capacity: u64,
-    /// Webhook deliveries per 10 s over five minutes, oldest first.
-    pub sent: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -437,12 +434,12 @@ pub fn mark_text(what: &MarkKind) -> String {
             from,
             to,
         } => format!(
-            "An order went from {} to {}; its webhook is queued.",
+            "An order went from {} to {}; its order event is written.",
             from.as_str(),
             to.as_str()
         ),
         MarkKind::Recomputed { orders, from, to } => format!(
-            "{} orders changed status (one from {} to {}); their webhooks are queued.",
+            "{} orders changed status (one from {} to {}); their order events are written.",
             thousands(*orders),
             from.as_str(),
             to.as_str()
@@ -851,15 +848,6 @@ fn side(state: &State) -> Side {
     let orders = &state.orders;
     let waiting = orders.pending + orders.due;
     let fast_passes = state.pool.fast_passes.count();
-    let sent: u64 = state.webhooks.sent.iter().map(|n| u64::from(*n)).sum();
-    let last_minute: u64 = state
-        .webhooks
-        .sent
-        .iter()
-        .rev()
-        .take(6)
-        .map(|n| u64::from(*n))
-        .sum();
     let queued: u64 = state.database.queued.iter().sum();
     let saves = state.saves.count();
     Side {
@@ -1009,34 +997,14 @@ fn side(state: &State) -> Side {
                     queue(state.database.queued[0], state.database.capacity),
                 ),
                 (
-                    "Webhook queue".to_owned(),
-                    queue(state.database.queued[1], state.database.capacity),
-                ),
-                (
                     "Admin queue".to_owned(),
-                    queue(state.database.queued[2], state.database.capacity),
+                    queue(state.database.queued[1], state.database.capacity),
                 ),
                 (
                     "Longest wait for a turn".to_owned(),
                     micros(state.database.max_queue_wait_us),
                 ),
                 ("Longest job".to_owned(), micros(state.database.max_run_us)),
-            ],
-        },
-        webhooks: Panel {
-            summary: format!(
-                "{} a minute{}",
-                thousands(last_minute),
-                if state.webhooks.due > 0 {
-                    format!(", {} due", thousands(state.webhooks.due))
-                } else {
-                    String::new()
-                }
-            ),
-            alert: false,
-            rows: vec![
-                ("Due now".to_owned(), thousands(state.webhooks.due)),
-                ("Sent, last five minutes".to_owned(), thousands(sent)),
             ],
         },
         restart: Panel {
@@ -1098,7 +1066,6 @@ fn side(state: &State) -> Side {
             .collect(),
         queues: state.database.queued,
         queue_capacity: state.database.capacity,
-        sent: state.webhooks.sent.clone(),
     }
 }
 

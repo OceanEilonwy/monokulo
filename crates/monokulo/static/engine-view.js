@@ -32,7 +32,7 @@
   const REPLAY_MS = 10000;
   const CELL_PX = 26;
   // How long things take to cross the page: slow enough to follow by eye.
-  const FLY_MS = 1600; // a payment, an envelope, stores moving
+  const FLY_MS = 1600; // a payment, stores moving
   const CALL_MS = 1300; // a call to the node
   const SAVE_MS = 1100; // a save flying to the database
   const DROP_MS = 1400; // a rewound block falling away
@@ -483,12 +483,6 @@
     panel("d-database", side.database, (d) => {
       d.querySelectorAll(".minibars i").forEach((bar, i) => { bar.style.height = `${2 + Math.min(2, side.queues[i] || 0) * 6}px`; });
     });
-    panel("d-webhooks", side.webhooks, () => {
-      const most = Math.max(3, ...side.sent);
-      const points = side.sent.map((n, i) => `${1 + i * 3},${(16 - (n / most) * 14).toFixed(1)}`).join(" ");
-      const svg = $("hooks-sum").querySelector("svg");
-      if (svg) svg.innerHTML = `<line x1="1" y1="16.5" x2="89" y2="16.5" stroke="var(--line)" stroke-width="1"></line>` + (points ? `<polyline points="${points}" stroke="var(--ink)" stroke-width="1.5" fill="none" stroke-linejoin="round"></polyline>` : "");
-    });
     panel("d-restart", side.restart);
   }
 
@@ -519,7 +513,6 @@
       case "pool": return $("pool-dots");
       case "reorg": return document.querySelector("#d-reorg summary");
       case "orders": return $("orders-sum");
-      case "webhooks": return $("hooks-sum");
       case "database": return $("db-sum");
       case "upkeep": return $("upd");
       default: return null;

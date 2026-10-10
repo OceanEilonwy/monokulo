@@ -237,7 +237,6 @@ details.mini.alert { border-color: var(--error); }
 .token.pkt.chain { background: var(--viz-tier-chain); }
 .token.pkt.mempool { background: var(--viz-tier-mempool); }
 .token.save { width: 10px; height: 10px; border-radius: 2px; background: var(--viz-saved); border: 1.5px solid var(--paper-raised); box-shadow: none; }
-.token.envelope { width: 15px; height: 10px; border-radius: 2px; background: var(--paper-raised); border: 1.5px solid var(--ink); box-shadow: none; }
 .token.payment { border-radius: 50%; background: var(--accent); }
 .token.token-stores { background: var(--viz-tier-blocks); border-radius: 99px; width: 18px; }
 .ghostcell { position: absolute; z-index: 15; pointer-events: none; }
@@ -571,7 +570,7 @@ fn help() -> Markup {
                     dt { (tier("mempool")) }
                     dd { b { "Mempool" } " scans transactions still in the pool, so a payment is seen before it is mined. It runs only while an order waits to be paid." }
                     dt { (tier("settlement")) }
-                    dd { b { "Settlement" } " turns what the chain and the pool say into each order's status (paid, confirming, expired) and queues the store's webhook." }
+                    dd { b { "Settlement" } " turns what the chain and the pool say into each order's status (paid, confirming, expired) and writes the order event Monokulo sends the store's webhooks from." }
                     dt { (tier("upkeep")) }
                     dd { b { "Upkeep" } " does a little housekeeping each round: pruning old block hashes, rechecking voided payments." }
                 }
@@ -610,11 +609,11 @@ fn help() -> Markup {
                 }
                 dl {
                     dt { span class="token payment" style="position:static;display:inline-block" {} }
-                    dd { "A payment found, on its way to the order's status. An envelope " span class="token envelope" style="position:static;display:inline-block" {} " is a webhook queued for the store." }
+                    dd { "A payment found, on its way to the order's status." }
                     dt { span class="saved-glyph" aria-hidden="true" {} }
                     dd { "Something saved to disk. A restart carries on from there." }
                 }
-                p class="wide" { "The panels on the right sum up the reorg check, the pool, orders, upkeep, the database worker, webhooks and what a restart would lose. Click one for its figures." }
+                p class="wide" { "The panels on the right sum up the reorg check, the pool, orders, upkeep, the database worker and what a restart would lose. Click one for its figures." }
             }
         }
     }
@@ -771,7 +770,7 @@ fn side(view: &Presented) -> Markup {
                     }
                 }
                 div class="body" {
-                    p class="explain" { "The settlement tier: it turns what the chain and the pool say into each order's status, and queues the shop's webhook. An order is recomputed when one of its payments changed, when it expires, and on each new block while it is confirming." }
+                    p class="explain" { "The settlement tier: it turns what the chain and the pool say into each order's status, and writes the order event Monokulo sends the shop's webhooks from. An order is recomputed when one of its payments changed, when it expires, and on each new block while it is confirming." }
                     (rows(&side.orders))
                     @for (from, to) in &side.transitions {
                         div { span class=(format!("engine-state state-{from}")) { (from) } " to " span class=(format!("engine-state state-{to}")) { (to) } }
@@ -786,7 +785,7 @@ fn side(view: &Presented) -> Markup {
                 summary {
                     span class="tierchip t-other" { "Database" }
                     span class="sum" id="db-sum" {
-                        span class="minibars" title="Scanner, Webhook and Admin queues" {
+                        span class="minibars" title="Scanner and Admin queues" {
                             @for queued in side.queues {
                                 i style=(format!("height:{}px", (2 + queued.min(2) * 6))) {}
                             }
@@ -795,10 +794,6 @@ fn side(view: &Presented) -> Markup {
                     }
                 }
                 (panel_body(&side.database, "One thread runs every database job; each queue gets a turn in rotation, so no kind of work waits behind another for more than one job."))
-            }
-            details class="mini" id="d-webhooks" {
-                summary { span class="tierchip t-other" { "Webhooks" } span class="sum" id="hooks-sum" { (sparkline(&side.sent)) span { (side.webhooks.summary) } } }
-                (panel_body(&side.webhooks, ""))
             }
             details class="mini" id="d-restart" {
                 summary { span class="tierchip t-other" { "Restart safety" } span class="sum" { span class="saved-glyph" aria-hidden="true" {} span { (side.restart.summary) } } }
@@ -821,31 +816,6 @@ fn rows(panel: &Panel) -> Markup {
     html! {
         div class="kv" {
             @for (label, value) in &panel.rows { span { (label) } b { (value) } }
-        }
-    }
-}
-
-/// Deliveries per 10 s as a small line, oldest left.
-pub fn sparkline(sent: &[u32]) -> Markup {
-    let most = sent.iter().copied().max().unwrap_or(0).max(3);
-    let points: Vec<String> = sent
-        .iter()
-        .enumerate()
-        .map(|(i, n)| {
-            format!(
-                "{},{:.1}",
-                1 + i * 3,
-                16.0 - f64::from(*n) / f64::from(most) * 14.0
-            )
-        })
-        .collect();
-    let line = points.join(" ");
-    html! {
-        svg class="spark" width="90" height="18" viewBox="0 0 90 18" aria-hidden="true" {
-            line x1="1" y1="16.5" x2="89" y2="16.5" stroke="var(--line)" stroke-width="1" {}
-            @if !points.is_empty() {
-                polyline points=(line) stroke="var(--ink)" stroke-width="1.5" fill="none" stroke-linejoin="round" {}
-            }
         }
     }
 }
@@ -947,12 +917,5 @@ mod tests {
             40
         )
         .is_empty());
-    }
-
-    #[test]
-    fn the_sparkline_draws_one_point_per_ten_seconds() {
-        let svg = sparkline(&[0, 3, 6]).into_string();
-        assert!(svg.contains("points=\"1,16.0 4,9.0 7,2.0\""), "{svg}");
-        assert!(!sparkline(&[]).into_string().contains("polyline"));
     }
 }
