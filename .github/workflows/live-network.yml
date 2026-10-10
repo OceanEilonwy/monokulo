@@ -1,0 +1,159 @@
+# The live-network tests, once a day: every #[ignore]d test named live_,
+# which needs something outside the repository to work (a Monero mainnet or
+# stagenet node, the Coingecko, CoinMarketCap and haveno.markets APIs, DNS,
+# the Tor network, or a stagenet wallet with coins in it), and the paid
+# stagenet browser tests. `cargo xtask live` runs each part; xtask/src/live.rs
+# says how the tests are chosen and checks none is left out by accident.
+#
+# A failure here is news about a service as often as about the code, so
+# nothing waits on this workflow, and each service is probed before the
+# tests run: the summary and the quality site's Live network page say which
+# failures came while a service a test needs wasn't answering.
+#
+# The payments come from a pair of stagenet wallets of the run's own
+# (e2e/wallets/ci/, through E2E_WALLET_DIR), never the ones developers spend
+# from, so a local run can't race this one for the same outputs. The wallet
+# files change with every payment, and the run can't commit them, so the
+# newest copy is kept in the Actions cache; a run that finds no copy rescans
+# the chain from the day the pair was made instead. After the tests, the
+# merchant's takings go back to the spender, so the pair keeps itself funded
+# but for the fees. If the spender runs short, the wallet check fails and
+# says where to send more stagenet coins.
+
+name: Live network
+
+on:
+  schedule:
+    # 16:00 UTC: the nightly property, fuzz and scale runs start from 17:00.
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run at a time: two would spend the same wallet's outputs. A run that
+# starts while another is going waits for it rather than cancel its
+# payments half way.
+concurrency:
+  group: live-network
+  cancel-in-progress: false
+
+jobs:
+  live:
+    name: Live network tests
+    runs-on: ubuntu-24.04
+    # A cold build of every live test, Tor's bootstrap and stagenet
+    # payments that wait on real blocks.
+    timeout-minutes: 180
+    env:
+      E2E_WALLET_DIR: e2e/wallets/ci
+      # The height the CI wallets were made at: where a rescan starts when
+      # no cached copy of them is left.
+      CI_WALLETS_BORN: 2225990
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: live
+          npm-lockfiles: |
+            e2e/browser/package-lock.json
+            crates/monokulo/pos-ui/package-lock.json
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Install tor
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tor
+          tor --version
+          tor --list-modules
+      - name: Install the browser tests' dependencies
+        run: npm ci --prefix e2e/browser --no-audit --no-fund
+      - name: Cache Playwright's Chromium
+        id: chromium
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/browser/package-lock.json') }}
+      - name: Install Chromium
+        working-directory: e2e/browser
+        run: |
+          if test '${{ steps.chromium.outputs.cache-hit }}' = true; then
+            npx playwright install-deps chromium
+          else
+            npx playwright install --with-deps chromium
+          fi
+      - name: Restore the CI wallets
+        id: wallets-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: e2e/wallets/ci/*.db
+          key: live-wallets-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: live-wallets-
+      - name: Probe the services
+        run: cargo xtask live probe
+      - name: Check the wallets
+        id: wallets
+        continue-on-error: true
+        run: |
+          if test -n '${{ steps.wallets-cache.outputs.cache-matched-key }}'; then
+            cargo xtask live wallets check
+          else
+            cargo xtask live wallets check --from "$CI_WALLETS_BORN"
+          fi
+      - name: Run the Rust tests
+        id: rust
+        continue-on-error: true
+        run: cargo xtask live tests
+      - name: Run the browser tests
+        id: browser
+        continue-on-error: true
+        run: cargo xtask live browser
+      - name: Keep the wallets funded
+        id: keep
+        if: always()
+        continue-on-error: true
+        run: cargo xtask live wallets keep
+      - name: Save the CI wallets
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: e2e/wallets/ci/*.db
+          key: live-wallets-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Summarize
+        if: always()
+        run: |
+          cargo xtask live report >> "$GITHUB_STEP_SUMMARY"
+          cargo xtask test-summary 'Live network tests' \
+            rust=target/live/rust-junit.xml browser=target/live/browser-junit.xml >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: live-network-${{ github.run_id }}
+          path: target/live/
+          if-no-files-found: warn
+      - name: Fail on a failed step
+        if: always()
+        run: |
+          for outcome in '${{ steps.wallets.outcome }}' '${{ steps.rust.outcome }}' \
+            '${{ steps.browser.outcome }}' '${{ steps.keep.outcome }}'; do
+            test "$outcome" = success
+          done
+
+  pages:
+    # This run's Live network page, with every other part of the site as it
+    # is live (pages.yml). On main only; a run that didn't finish shows
+    # nothing new.
+    name: Pages
+    needs: live
+    if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success", "failure"]'), needs.live.result)
+    permissions:
+      contents: read
+      actions: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
+    with:
+      part: live
+      conclusion: ${{ needs.live.result }}
