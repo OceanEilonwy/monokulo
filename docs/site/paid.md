@@ -12,25 +12,33 @@ ship on them: anyone can call `onPaid` from their browser's console.
 ## On your server: the signed webhook
 
 In the store's settings, under *Webhooks*, add your server's address. Monokulo
-then sends a `POST` for every change of an order's status
+then sends a signed `POST` for every change of an order's status
 (`order.confirming`, `order.paid`, `order.expired`, …) with a JSON body:
 
 ```json
 {
+  "api_version": 2,
+  "event_id": "evt_4be2d07a85c113e9",
   "event": "order.paid",
-  "event_id": "evt_6f1c…",
-  "order_id": "pay_91b2…",
+  "created_at": 1760020320,
+  "order_id": "5f01c9a7d2e14b88a3e0f9c6d1e21b07",
   "status": "paid",
-  "created_at": 1791400000
+  "merchant_order_id": "gm-1042",
+  "amount": "12.50",
+  "currency": "EUR",
+  "xmr_amount": "0.081245310000",
+  "fx_source": "coingecko",
+  "fx_rate": "153.84615385",
+  "store": { "id": "917701c2-15c7-4bcb-bbc8-72d9ab28e785", "name": "Bakery" }
 }
 ```
 
-- `order_id` is Monokulo's id for the order: `createOrder` gave it to your
-  page as `orderId`. Keep it with your own order when you make one, so the
-  webhook can find it.
+- `merchant_order_id` is your own order id, when you passed one to
+  `createOrder` (`merchantOrderId`): find your order by it. `order_id` is
+  Monokulo's.
 - A double-spend later gets its own `order.double_spend_detected` event (and
-  `order.double_spend_reversed`, with the `txid`, if it was wrong).
-- Richer fields (the shop's own order id, the fiat price with its exchange-rate source and rate, the store) arrive when Monokulo takes over webhook delivery from the engine, which is planned.
+  `order.double_spend_reversed` if it was wrong), each with the `txid`.
+- Every field, and the retries, are on [Webhooks](../webhooks/).
 
 Before trusting a delivery:
 
@@ -43,7 +51,8 @@ Before trusting a delivery:
 4. **Then ship** on `order.paid` (or `order.overpaid`).
 
 Answer with any `2xx` once it's handled; anything else is retried with
-growing gaps.
+growing gaps for about two hours, then given up on. The store's settings,
+under *Webhooks*, show each delivery and can send one again.
 
 ## No server: the dashboard
 

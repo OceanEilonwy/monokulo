@@ -24,7 +24,7 @@ pub(super) struct Page {
 }
 
 /// The docs, in the order of their tabs.
-pub(super) const PAGES: [Page; 5] = [
+pub(super) const PAGES: [Page; 6] = [
     Page {
         source: "index.md",
         dir: "",
@@ -44,6 +44,11 @@ pub(super) const PAGES: [Page; 5] = [
         source: "paid.md",
         dir: "paid",
         tab: "When is it paid?",
+    },
+    Page {
+        source: "webhooks.md",
+        dir: "webhooks",
+        tab: "Webhooks",
     },
     Page {
         source: "woocommerce.md",

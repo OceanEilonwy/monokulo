@@ -53,7 +53,9 @@ store's Orders page shows those orders as *WooCommerce*. Orders made with
 the secret key by anything else show as *Store API*.
 
 The paid webhook is signed; the plugin checks it before it marks an order
-paid. See [When is an order really paid?](../paid/)
+paid. It's listed with the store's other webhooks in its settings, under
+*Webhooks*, with how its deliveries went. See
+[When is an order really paid?](../paid/)
 
 ## Test first
 

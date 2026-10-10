@@ -401,7 +401,8 @@ catch-up.**
   15 ms on an A53. A new payment waits at most one batch for a slot.
 - Under load, the scheduler's 10 s round still splits the time between tiers
   (`ScanTuning::DEFAULT`: blocks 40 %, settlement 20 %, chain 20 %, pool 15 %,
-  upkeep 5 %), so settlement and webhooks keep running during catch-up.
+  upkeep 5 %), so settlement (and the order events monokulo sends webhooks
+  from) keeps running during catch-up.
 
 **How, without a code change.** Rust's `available_parallelism()` counts the
 CPUs the process is allowed to run on (its affinity mask) and respects a
@@ -434,7 +435,8 @@ For roughly 5 to 20 stores the Flint 2 is not the limit:
   well under 150 MB of the router's 1 GB. Measure on the device to confirm.
   (Added after this was written: proof-of-work checking, on by default for
   mainnet, holds a 256 MiB RandomX cache on top of that; see "As built".)
-- **Storage**: orders, payments and webhooks grow slowly. The log stores are
+- **Storage**: orders, payments and webhook deliveries grow slowly (the
+  engine's order events are pruned after a week). The log stores are
   capped by `logging.max_mb`. Several years of a handful of small stores'
   orders fit in hundreds of MB, not GB.
 - **The node**: all stores share one node connection and one block cache, so

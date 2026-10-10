@@ -243,12 +243,11 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
 
     // A real engine, stagenet-configured - no background scan loop (this
     // test drives scanning itself via `run_scan_tick_now`, same
-    // `without_background_scan_loop` reasoning as
+    // reasoning as
     // `e2e_stagenet_connect_flow.rs`'s own module doc comment), no
     // background webhook loop either (this test doesn't need one).
     let engine = engine_test_support::TestEngineConfig::new()
         .with_networks(&[Network::Stagenet])
-        .without_background_scan_loop()
         .spawn()
         .await;
     let monokulo = spawn_test_monokulo(&engine).await;

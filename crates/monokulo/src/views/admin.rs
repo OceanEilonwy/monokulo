@@ -2595,7 +2595,7 @@ mod tests {
                     "{tab:?}"
                 );
                 assert!(
-                    !html.contains(">Webhooks</h3>"),
+                    !html.contains(">Orders</h3>"),
                     "one message, not a card per group: {html}"
                 );
             }
@@ -2605,6 +2605,13 @@ mod tests {
             payments.contains(r#"name="exchange_rate.cache_seconds""#),
             "{payments}"
         );
+        // Webhooks are monokulo's own: their card stays, without the
+        // engine's retention.
+        assert!(
+            payments.contains(r#"name="webhooks.max_attempts""#),
+            "{payments}"
+        );
+        assert!(!payments.contains(r#"name="order_events.retention_days""#));
         let logging = page(&unreachable(SettingsTab::Logging));
         assert!(
             logging.find(">Monokulo</h3>").unwrap() < logging.find("Could not reach").unwrap()
@@ -3158,7 +3165,12 @@ mod tests {
                 "Engine",
                 "payment.reorg_check_depth",
             ),
-            ("webhooks", "Webhooks", "Engine", "webhooks.max_attempts"),
+            (
+                "webhooks",
+                "Webhooks",
+                "Engine and monokulo",
+                "order_events.retention_days",
+            ),
             (
                 "exchange-rates",
                 "Exchange rates",
@@ -3250,15 +3262,16 @@ mod tests {
         let attempts = data
             .engine_fields
             .iter_mut()
-            .find(|f| f.key == "webhooks.max_attempts")
+            .find(|f| f.key == "order_events.retention_days")
             .unwrap();
-        attempts.value = "100".into();
-        attempts.saved_value = Some("8".into());
-        attempts.problem = Some("must be from 1 to 64".into());
+        attempts.value = "900".into();
+        attempts.saved_value = Some("7".into());
+        attempts.problem = Some("must be from 1 to 365".into());
         let failures = vec![Failure {
             group: Some(Group::Webhooks),
-            message: "The engine refused the change: webhooks.max_attempts must be from 1 to 64."
-                .into(),
+            message:
+                "The engine refused the change: order_events.retention_days must be from 1 to 365."
+                    .into(),
         }];
         data.outcome = Some(SaveOutcome::PartlySaved {
             saved: vec![Group::ExchangeRates],
@@ -3279,14 +3292,14 @@ mod tests {
             webhooks.contains(r#"<span class="badge badge-error">Not saved</span>"#),
             "{webhooks}"
         );
-        assert!(webhooks.contains(r#"<p class="error" role="alert">The engine refused the change: webhooks.max_attempts must be from 1 to 64.</p>"#), "{webhooks}");
+        assert!(webhooks.contains(r#"<p class="error" role="alert">The engine refused the change: order_events.retention_days must be from 1 to 365.</p>"#), "{webhooks}");
         // What was typed, still to fix, with the saved value for Discard.
         assert!(
-            webhooks.contains(r#"name="webhooks.max_attempts" value="100""#),
+            webhooks.contains(r#"name="order_events.retention_days" value="900""#),
             "{webhooks}"
         );
-        assert!(webhooks.contains(r#"data-saved="8""#), "{webhooks}");
-        assert!(webhooks.contains("must be from 1 to 64"), "{webhooks}");
+        assert!(webhooks.contains(r#"data-saved="7""#), "{webhooks}");
+        assert!(webhooks.contains("must be from 1 to 365"), "{webhooks}");
         assert!(!webhooks.contains("Saved 8 Oct"), "{webhooks}");
 
         // The card that was saved says when; the others say nothing.
@@ -3300,7 +3313,7 @@ mod tests {
             html.contains(r#"<mk-save-bar id="save-bar" class="save-bar is-failed""#),
             "{html}"
         );
-        assert!(html.contains(r##"<p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus><strong>Changes partly saved.</strong> The engine refused the change: webhooks.max_attempts must be from 1 to 64. <a href="#card-webhooks" data-show-card="webhooks">Show</a></p>"##), "{html}");
+        assert!(html.contains(r##"<p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus><strong>Changes partly saved.</strong> The engine refused the change: order_events.retention_days must be from 1 to 365. <a href="#card-webhooks" data-show-card="webhooks">Show</a></p>"##), "{html}");
         // Nothing saved: no card says it was.
         data.outcome = Some(SaveOutcome::Refused { failures });
         let html = page(&data);

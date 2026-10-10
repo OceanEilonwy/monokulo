@@ -4,8 +4,9 @@ Monokulo, the engine (`scanner`) and the key-custody server write structured
 logs: every line has a level, a message and named properties (`store.id`,
 `order.id`, `network`, `http.route` and so on), and every line written while
 handling a request carries that request's OpenTelemetry trace id. A request
-can be followed from the WooCommerce plugin, through monokulo, to the engine
-and on to a merchant's webhook endpoint.
+can be followed from the WooCommerce plugin, through monokulo, to the engine.
+Each webhook delivery is a `webhook delivery` span of its own in monokulo,
+and sends a `traceparent` header, so a merchant's endpoint can join it.
 
 Secrets never reach any output, in any mode: fields named like secrets
 (tokens, keys, passwords) are replaced by `[redacted]`, client IP addresses
@@ -33,10 +34,12 @@ Optionally, **an OpenTelemetry collector** as well (below).
 A JSON line looks like this:
 
 ```json
-{"timestamp":"2026-09-28T12:00:00.123456Z","level":"WARN","service":"engine","target":"engine::webhook_delivery",
+{"timestamp":"2026-09-28T12:00:00.123456Z","level":"INFO","service":"monokulo","target":"monokulo::webhooks::delivery",
  "trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","span_id":"00f067aa0ba902b7",
  "message":"webhook delivery failed; will retry",
- "attributes":{"webhook.id":"wh_1","order.id":"o_9","attempt":2,"http.response.status_code":502},
+ "attributes":{"store.id":"917701c2-15c7-4bcb-bbc8-72d9ab28e785","webhook.id":"wh_1","order.id":"o_9",
+  "webhook.event":"order.paid","webhook.event_id":"evt_4be2d07a85c113e9","attempt":2,
+  "http.response.status_code":502,"duration_ms":143},
  "spans":["webhook delivery"]}
 ```
 

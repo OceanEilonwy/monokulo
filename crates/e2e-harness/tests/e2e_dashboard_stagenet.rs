@@ -227,6 +227,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
             "DNS is not available in tests".to_owned(),
         )),
         log_store: None,
+        webhooks: Arc::default(),
         // Public signup: `signup.mode` defaults to invite-only, which would
         // refuse the plain `/dashboard/signup` below (a re-rendered `200`
         // form, not the `302` it asserts on).

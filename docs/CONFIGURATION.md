@@ -38,3 +38,12 @@ silently replaced. So does a setting that only the other engine mode uses
 (an engine URL or token with the engine inside monokulo, the standalone
 engine's own server and logging settings under `[engine.*]`, or
 `[engine.*]` tables with a remote engine), and a missing encryption key.
+
+Webhooks are monokulo's: it delivers them, so `webhooks.max_attempts`,
+`webhooks.delivery_timeout_ms` and `webhooks.allow_private_urls` are
+monokulo settings (admin settings page, Payments tab, Webhooks card), not
+under `[engine.*]`. The engine only keeps the order events they are made
+from, for `order_events.retention_days` (default 7, an engine setting, so
+`[engine.order_events]` or `--engine-order-events-retention-days`). If
+monokulo can't reach the engine for longer than that, the events it missed
+are gone and their webhooks are never sent; monokulo logs an error saying so.

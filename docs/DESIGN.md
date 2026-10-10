@@ -121,7 +121,9 @@ regardless of the directory `monokulo-engine` happens to be launched from.
 Two processes, one public:
 
 - **The engine** (`crates/engine`, private) watches the chain, stores orders and
-  payments, and sends webhooks out to shops. It listens on loopback by default, has
+  payments, and keeps a log of order events (an order paid, expired,
+  double-spent) for monokulo to read; it sends nothing to shops itself (§11).
+  It listens on loopback by default, has
   no public routes, no CORS and no origin lists, and is reached only by monokulo:
   through its admin API (§10.2) plus `GET /status`. Every request must carry the
   engine token (`ENGINE_TOKEN`, sent as `X-Engine-Token`), whatever
@@ -134,8 +136,10 @@ Two processes, one public:
 - **Monokulo** (`crates/monokulo`, public) is everything people and plugins touch:
   pricing (fiat → XMR), the checkout and share pages, the POS, the dashboard, the
   embed library, verified embed domains, embed policy and CORS, rate limits and
-  challenges. It is the only public address, on clearnet, Tor or both
-  (`public_url` is what plugins are given).
+  challenges, and stores' webhooks: it follows the engine's order-event log and
+  delivers each event, signed, to the store's endpoints (§11). It is the only
+  public address, on clearnet, Tor or both (`public_url` is what plugins are
+  given).
 
 **Order creation** goes through monokulo's `POST /pay/{pk}/orders`, from a browser
 page (the embed library) or a shop's server with `Authorization: Bearer sk_...` (the
@@ -195,8 +199,8 @@ are never challenged. Details, response shapes and settings:
                                         │  └───────────┘         └─────────────┘      │
                                         │                                              │
                                         │  ┌────────────────┐   ┌──────────────────┐  │
-                                        │  │ KeyCustody      │   │ Webhook Delivery  │  │
-                                        │  │ (PlainKeyCustody)│   │ Worker            │  │
+                                        │  │ KeyCustody      │   │ Order-event log   │  │
+                                        │  │ (PlainKeyCustody)│   │ (SSE to monokulo) │  │
                                         │  └────────────────┘   └──────────────────┘  │
                                         └──────────────┬───────────────────────────────┘
                                                         │ RPC (rustls)
@@ -211,9 +215,9 @@ Components, each with one clear owner of state:
 | HTTP API layer | Request/response, auth resolution (the engine is private: no CORS, no Origin checks) | Direct SQLite writes; talks to the writer actor and read pool only |
 | `KeyCustody` | Private view keys, scan/derive crypto | Anything involving a spend key; never returns key material to a caller |
 | Chain Scanner | Polling monerod, matching outputs, reorg detection | SQLite access — sends match/void events to the writer actor |
-| Writer Actor | The single SQLite write connection; all mutations | Outbound HTTP (webhooks go through the delivery worker) |
+| Writer Actor | The single SQLite write connection; all mutations, including each order event, written in the same transaction as the change it announces | Outbound HTTP (the engine sends no webhooks; monokulo does, §11) |
 | Read pool | Pooled read-only SQLite connections (WAL) | Any write |
-| Webhook Delivery Worker | Outbound HTTP to merchant endpoints | Order/tenant state mutation beyond its own delivery-log rows |
+| Order-event stream | `GET /api/v1/admin/order-events`: replays the kept `order_events` after monokulo's position, then streams new ones | Any write; any request to a merchant endpoint |
 
 The diagram's "Static site (GH Pages) + client lib" box describes a self-hoster's own
 direct integration against this engine's plain JSON API (§10.3) - real, still
@@ -223,8 +227,8 @@ library off this engine entirely: a merchant using monokulo has *that* service
 sitting where this diagram shows the static site talking to the engine directly, and
 monokulo is the one that talks to this engine's API on the merchant's behalf
 (§10.4, §14). This engine's own diagram and JSON API are otherwise unchanged - it
-still just watches the chain and manages orders/tenants/webhooks; fiat/checkout is
-simply no longer any part of what it does.
+still just watches the chain and manages orders/tenants and its order-event log;
+fiat/checkout and webhook delivery are simply no longer any part of what it does.
 
 ## 6. The `KeyCustody` Boundary
 
@@ -622,9 +626,9 @@ reorged range):
 
 **On confirmed double-spend**: set `order_payments.voided_at`, recompute the owning
 order's `status` (§7.6) and `amount_received_piconero` from the remaining non-voided
-rows, stamp `orders.double_spend_detected_at` if not already set, enqueue an
-`order.double_spend_detected` webhook (independent of whatever `order.<status>`
-webhook, if any, results from the recompute — see §11).
+rows, stamp `orders.double_spend_detected_at` if not already set, log an
+`order.double_spend_detected` order event (independent of whatever `order.<status>`
+event, if any, results from the recompute — see §11).
 
 All of that is **one transaction** (`scanner::void_and_notify`), not a void followed
 by bookkeeping. A void is a committed write whose consequences cannot be re-derived
@@ -826,7 +830,7 @@ explicitly, both pinned by tests rather than left as unverified worry:
     `double_spend_detected_at` flag (once every voided payment on the order has
     been cleared, not as a side effect of clearing just one of several -
     `the_void_recheck_keeps_the_flag_set_while_another_voided_payment_still_justifies_it`)
-    and fires a distinct `order.double_spend_reversed` webhook, unlike the
+    and logs a distinct `order.double_spend_reversed` order event, unlike the
     reorg-driven reversal path, which deliberately leaves both alone (a real
     conflicting transaction genuinely existed there for a time in that story, even
     though it was later reorged away - this path exists specifically because the
@@ -962,32 +966,23 @@ CREATE TABLE scanned_blocks (
     block_hash TEXT NOT NULL
 );
 
-CREATE TABLE webhooks (
-    id             TEXT PRIMARY KEY,
+-- migration 0030: what stores' webhooks announce, read by monokulo (§11)
+CREATE TABLE order_events (
+    seq            INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id       TEXT NOT NULL UNIQUE,
     tenant_id      TEXT NOT NULL REFERENCES tenants(id),
-    url            TEXT NOT NULL,
-    extra_headers  TEXT NOT NULL DEFAULT '{}',
-    signing_secret TEXT NOT NULL,
-    enabled        INTEGER NOT NULL DEFAULT 1,
-    created_at     INTEGER NOT NULL
+    order_id       TEXT NOT NULL REFERENCES orders(id),
+    event_type     TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    created_at_utc INTEGER NOT NULL
 );
-CREATE INDEX webhooks_tenant_idx ON webhooks (tenant_id);
-
-CREATE TABLE webhook_deliveries (
-    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    webhook_id           TEXT NOT NULL REFERENCES webhooks(id),
-    order_id             TEXT NOT NULL REFERENCES orders(id),
-    event_type           TEXT NOT NULL,
-    payload_json         TEXT NOT NULL,
-    attempt_count        INTEGER NOT NULL DEFAULT 0,
-    next_attempt_at      INTEGER NOT NULL,
-    delivered_at         INTEGER,
-    last_attempted_at    INTEGER,
-    last_response_status INTEGER,
-    last_error           TEXT
-);
-CREATE INDEX webhook_deliveries_due_idx ON webhook_deliveries (next_attempt_at) WHERE delivered_at IS NULL;
+CREATE INDEX order_events_created_idx ON order_events (created_at_utc);
 ```
+
+The engine has no webhook tables: stores' webhooks, their deliveries and how far
+monokulo has read the order-event log are monokulo's (`webhooks`,
+`webhook_deliveries`, `order_event_position`, in
+`crates/monokulo/migrations/0038_webhooks.sql`; see §11).
 
 ### 8.1 Design notes
 
@@ -1000,10 +995,13 @@ CREATE INDEX webhook_deliveries_due_idx ON webhook_deliveries (next_attempt_at) 
 - **`order_payments` is append-mostly, never deleted.** Voided rows are kept
   (`voided_at` set) as the audit trail for "why does this order show partial" or "when
   was this order double-spent" — both answerable without reading logs.
-- **`webhook_deliveries` is a queue-as-table**, not a separate broker — matters for
-  staying a single small binary. The partial index on `next_attempt_at` is what the
-  delivery worker's claim query uses; this has been verified live to be selected by
-  SQLite's query planner for that exact query shape.
+- **`order_events` is a log, not a queue.** The engine never learns whether an
+  event was delivered. `seq` is `AUTOINCREMENT` so a number is never handed out
+  twice, even after the newest rows are pruned; that is how a reader asking from
+  before the oldest kept row is told it missed some. Rows are kept for
+  `order_events.retention_days` (default 7) and pruned by the scanner's upkeep
+  tier. `payload_json` holds the event's own fields: `order_id`,
+  `merchant_order_id`, `xmr_amount_piconero`, and `status` or `txid`.
 
 ### 8.2 Why minor indices are never recycled (v1)
 
@@ -1039,7 +1037,7 @@ live-scanning-only bookkeeping.
   effectively free as parked tasks, whereas each would pin a full OS thread otherwise.
 - **Writer actor**: a single task owning the one SQLite write connection. All mutations
   — minor-index allocation, order creation, payment matches, reorg-driven updates and
-  voids, webhook-delivery enqueueing — funnel through one `mpsc` channel to it, so
+  voids, order-event logging — funnel through one `mpsc` channel to it, so
   SQLite's single-writer constraint is satisfied by construction rather than by
   discipline. It is also the natural point to push SSE updates to subscribers, since it
   already knows exactly what changed.
@@ -1050,9 +1048,10 @@ live-scanning-only bookkeeping.
   status poll. Sized by `database.read_connections` (default 4, applied at start);
   every connection takes from one queue (`shared::sqlite::Pool`), so a read waits
   only for a free connection. Monokulo's database has the same shape (`db::Database`).
-- **Webhook delivery worker**: separate async task(s) polling due `webhook_deliveries`
-  rows and performing outbound HTTP — isolated so a slow or hostile merchant endpoint
-  can never stall order-state commits.
+- **No webhook work in the engine.** Monokulo's subscriber and delivery worker
+  (§11) are tasks of their own in monokulo, so a slow or hostile merchant endpoint
+  can never stall order-state commits, in either process. The engine's only part is
+  one SSE stream per monokulo, served from the read pool.
 
 ## 10. HTTP API Surface
 
@@ -1117,9 +1116,7 @@ Every route below, and `GET /status`, also requires the engine token in
 | `POST` | `/api/v1/admin/tenant/orders/{order_id}/refund-address` | `sk_` | `{refund_address}` → `200`, or `404` if the order isn't this tenant's. Stored verbatim; nothing ever sends it. Monokulo's checkout calls this on the customer's behalf after checking the address parses for the order's network |
 | `GET` | `/api/v1/admin/tenant/events` | `sk_` | Server-Sent Events: `ready` on connect, `order` `{order_id}` whenever one of this tenant's orders visibly changes (status, confirmations, amount, payments, double-spend flag, refund address), `resync` if the subscriber fell behind. Hints only - the client re-reads the order. Published after the write commits |
 | `POST` | `/api/v1/admin/tenant/payments/lookup` | `sk_` | `{txid}` → looks up one transaction on chain and records/recomputes a match against this tenant's orders if it belongs to one (§7.8) |
-| `POST` | `/api/v1/admin/tenant/webhooks` | `sk_` | `{url, extra_headers?}` → `{webhook_id, signing_secret}` (shown once — an API convention here, not a hashing guarantee, since HMAC signing needs the real bytes on every delivery) |
-| `GET` | `/api/v1/admin/tenant/webhooks` | `sk_` | List (never re-shows `signing_secret`) |
-| `DELETE` | `/api/v1/admin/tenant/webhooks/{id}` | `sk_` | Rotation is delete+recreate in v1 |
+| `GET` | `/api/v1/admin/order-events` | engine token only (every store's events) | Server-Sent Events: the order-event log (§11). Resumes after the `Last-Event-ID` header, else `?after=<seq>`, else from the start; replays every kept event after that, then streams new ones. Each is `event: order_event`, `id: <seq>`. `events_lost` first if some after the position were pruned. Keep-alive comment every 15 s |
 
 ### 10.3 No public API
 
@@ -1155,52 +1152,129 @@ in front of customers.
 
 ## 11. Webhook Delivery
 
-- One row is inserted into `webhook_deliveries` per enabled webhook, per **event**, for
-  two independent event families:
-  - `order.<status>` — fired on a `status` *transition* (recompute produced a different
+The engine keeps a log of order events; monokulo reads it and delivers stores'
+webhooks. The engine never makes a request to a merchant's endpoint.
+
+```
+engine   order change ──(same transaction)──▶ order_events (seq, event_id, …)
+                                                   │
+                                                   │ GET /api/v1/admin/order-events
+                                                   │ (SSE, resumes after a seq)
+                                                   ▼
+monokulo subscriber ──(same transaction)──▶ webhook_deliveries + order_event_position
+                                                   │
+                                                   ▼
+         delivery worker ── POST, X-Monokulo-Signature ──▶ the store's endpoint
+                          (retries, gives up, kept for the store settings page)
+```
+
+**The engine's order-event log** (`order_events`, §8; `store::order_events`).
+
+- An event is written in the same transaction as the change it announces, for two
+  independent event families:
+  - `order.<status>` — on a `status` *transition* (recompute produced a different
     value than before), never on a same-status recompute (e.g. a confirmation count
     ticking up without crossing the threshold).
-  - `order.double_spend_detected` — fired once per voided `order_payments` row,
-    independent of whether that same recompute also produced a status transition. A
-    single reorg can legitimately enqueue both, or the double-spend event alone if the
-    order's aggregate status didn't move (e.g. a redundant payment still covers it).
-- The writer actor enqueues; a separate delivery worker claims due rows
-  (`delivered_at IS NULL AND next_attempt_at <= now()`) and performs the HTTP call —
-  never the writer itself, so a slow or unresponsive merchant endpoint cannot stall
-  order-state commits.
-- Each delivery attempt is signed when sent: `X-Monokulo-Signature:
-  t=<unix seconds>,v1=<hex>`, where `<hex>` is HMAC-SHA256, keyed by the
-  webhook's `signing_secret`, of `"<t>.<body>"`. A receiver accepts it only
-  while `t` is within five minutes of its own clock, so a captured delivery
-  can't be replayed after that (and within it, `event_id` dedupe refuses it).
-- Every payload carries a common envelope alongside its event-specific fields:
-  `event_id` (`evt_…`, minted once per *event* — every retry of that delivery re-sends
-  the same id, freshly signed), `event` (the event type, mirroring
-  `X-Monokulo-Event`), and `created_at` (unix seconds). `event_id` is also sent as
-  `X-Monokulo-Event-Id`, read back out of the signed body so header and body can
-  never disagree. Both fields are *inside* the signed body deliberately: without an
-  id, a retry of a lost-ack delivery is byte-identical to a genuine second transition
-  to the same status, and `created_at` tells the merchant when the event happened
-  (the signed `t` tells them when this attempt was sent).
-- A status event's own fields are `order_id` and `status`; the double-spend
-  events carry `order_id` (and `txid` when one is reversed). Richer fields (the shop's own order id, the fiat price with its exchange-rate source and rate, the store) arrive when Monokulo takes over webhook delivery from the engine, which is planned.
-  The public guide is `docs/site/paid.md`.
-- Failure handling: short timeout (a few seconds), exponential backoff via
-  `attempt_count`/`next_attempt_at`, giving up after a bounded number of attempts (row
-  stays for inspection via the admin API, retries just stop).
+  - `order.double_spend_detected` — once per voided `order_payments` row, with its
+    `txid`, independent of whether that same recompute also produced a status
+    transition. A single reorg can legitimately log both, or the double-spend event
+    alone if the order's aggregate status didn't move (e.g. a redundant payment still
+    covers it). `order.double_spend_reversed`, with the `txid`, when the void
+    recheck (§7) clears one.
+- Each row has a monotonic `seq`, an `event_id` (`evt_` + a UUID, minted once per
+  event), the store, the order, the event type and its fields (`order_id`,
+  `merchant_order_id`, `xmr_amount_piconero`, and `status` or `txid`). Rows are kept
+  for `order_events.retention_days` (engine setting, default 7, 1–365), then pruned
+  by the scanner's upkeep tier.
+- `GET /api/v1/admin/order-events` (§10.2, engine token only) serves the log as
+  server-sent events. It starts after the `Last-Event-ID` header, else `?after=<seq>`,
+  else `0`; sends every kept event after that, oldest first, then each new one as it
+  commits; and a keep-alive comment every 15 s. Each event is `event: order_event`,
+  `id: <seq>`, with data `{event_id, event, created_at, tenant (the store's public
+  key), order_id, merchant_order_id, xmr_amount_piconero, status?, txid?}`. If events
+  after the position were pruned, or the position is past anything the log handed
+  out, it first sends `event: events_lost`, `id: <resume_after>`, data
+  `{"requested_after": n, "resume_after": m}`.
+
+**Monokulo's subscriber** (`crates/monokulo/src/webhooks/subscriber.rs`).
+
+- Follows the stream from its saved position (`order_event_position`, one row). For
+  each event it makes the body (below) and queues one `webhook_deliveries` row per
+  enabled webhook of the event's store, saving the new position in the same
+  transaction, so a restart neither repeats nor skips an event. A store with no
+  webhook queues nothing; a webhook added later doesn't get earlier events.
+- Reconnects after any failure, waiting 1 s and doubling up to 60 s.
+- On `events_lost` it moves to `resume_after` and logs an error: those events'
+  webhooks were never sent. Only a warning if it had never read the log before.
+
+**Monokulo's delivery worker** (`crates/monokulo/src/webhooks/delivery.rs`).
+
+- Sends due deliveries on a task of its own, so a slow or unresponsive endpoint
+  delays only its own deliveries. One delivery per (webhook, order) in flight at a
+  time, oldest first, so a receiver sees an order's events in order; at most 4 per
+  store in each batch of 50, 16 sent at once.
+- Each attempt is `POST` with `Content-Type: application/json`, the webhook's extra
+  headers, `X-Monokulo-Event`, `X-Monokulo-Event-Id`, `traceparent`, and
+  `X-Monokulo-Signature: t=<unix seconds>,v1=<hex>`, where `<hex>` is
+  HMAC-SHA256, keyed by the webhook's signing secret, of `"<t>.<body>"`. A receiver
+  accepts it only while `t` is within five minutes of its own clock, so a captured
+  delivery can't be replayed after that (and within it, `event_id` dedupe refuses
+  it). The body is made once, when the delivery is queued, and every attempt sends
+  the same bytes under a fresh signature.
+- Schedule: up to `webhooks.max_attempts` attempts (default 8), each allowed
+  `webhooks.delivery_timeout_ms` (default 5000), waiting 1, 2, 4, 8, 16, 32 and 64
+  minutes between them, so the last is about 2 h 7 min after the first. Any `2xx`
+  is delivered. After the last failed attempt the delivery is given up on: kept,
+  never tried again by itself. A merchant can send it again from the store's
+  settings ("Send again", or "Retry failed" for all of a webhook's given-up ones).
+- Each delivery keeps its last status, error, duration, the first 512 bytes of the
+  last response, and its last 20 attempts. The store settings page shows them per
+  webhook; the engine knows nothing of them.
 - Delivery is **at-least-once, not exactly-once** — a merchant's endpoint may see a
   duplicate if a 2xx response is lost after being sent. This is a documented contract,
-  not an oversight: webhook handlers are expected to be idempotent, and the payload's
+  not an oversight: webhook handlers are expected to be idempotent, and the body's
   `event_id` is the value to dedupe on (it is stable across retries of one event and
   distinct between genuinely separate ones).
 - **SSRF mitigation is mandatory, on by default.** A merchant-supplied webhook URL is
-  an outbound-request vector this server would otherwise make on the operator's
+  an outbound-request vector monokulo would otherwise make on the operator's
   network — relevant to a home-router self-hoster but critical for a hosted
-  multi-tenant operator. The delivery worker must resolve the hostname and reject
-  private/loopback/link-local ranges **at connect time**, not just at registration
-  (DNS can change between the two), and must not follow redirects blindly. A config
-  escape hatch for a self-hoster testing against their own LAN is acceptable; the
-  default must be closed.
+  multi-tenant operator. Private, loopback, link-local and other internal addresses
+  are refused at every attempt, not just when the webhook is added (DNS can change in
+  between): by a checking DNS resolver, the same lookup the connection is made from,
+  plus a check of IP-literal URLs. Redirects aren't followed and no proxy is used.
+  `webhooks.allow_private_urls` (default false) turns the check off, for a
+  self-hoster testing against their own network.
+
+**Webhooks themselves** (`webhooks`, `crates/monokulo/migrations/0038_webhooks.sql`)
+belong to a store: a URL, optional extra headers, and a signing secret encrypted at
+rest with `MONOKULO_ENCRYPTION_KEY`, like the store's own secret key, and shown to
+the merchant once, when the webhook is added. They are added and deleted on the
+store's settings page (Webhooks card), or by the WooCommerce plugin's connect flow
+(`/connect/{platform}/finish` with a `webhook_url`), which disconnecting the plugin
+deletes again (`store_integrations.webhook_id`). Rotation is delete and add again.
+
+**The body, version 2** (`crates/monokulo/src/webhooks/body.rs`). Fields in this
+order; a value that doesn't exist is left out, never `null`:
+
+| Field | |
+|---|---|
+| `api_version` | `2` |
+| `event_id` | `evt_…`, the same on every attempt; also sent as `X-Monokulo-Event-Id` |
+| `event` | `order.<status>`, `order.double_spend_detected` or `order.double_spend_reversed`; also sent as `X-Monokulo-Event` |
+| `created_at` | Unix seconds when the event happened (the signature's `t` says when this attempt was sent) |
+| `order_id` | Monokulo's order id |
+| `status` | On `order.<status>` events only |
+| `txid` | On the two double-spend events only |
+| `merchant_order_id` | The shop's own id, when it passed one |
+| `amount`, `currency` | The price as the shop set it, fiat or XMR, a decimal string, as recorded when the order was made; absent if monokulo has no record |
+| `xmr_amount` | What the customer was asked to pay, XMR with 12 decimals |
+| `fx_source`, `fx_rate` | The provider that priced the order and its rate (1 XMR in `currency`, up to 8 decimals); absent for orders priced in XMR |
+| `store` | `{id, name}` |
+
+`event_id` and `created_at` are *inside* the signed body deliberately: without an id,
+a retry of a lost-ack delivery is byte-identical to a genuine second transition to
+the same status. The public guide is `docs/site/webhooks.md`; when to ship is
+`docs/site/paid.md`.
 
 ## 12. DDoS Protections
 
@@ -1263,6 +1337,14 @@ dir = "/etc/moneropay/templates"   # overridable with --templates-dir
 rate_limit_per_token_per_min = 120   # per sk_ (per address for token-less routes); no per-IP limit, the engine is private
 max_body_bytes = 8192
 
+[order_events]
+retention_days = 7            # how long monokulo can be away without missing webhooks (§11)
+```
+
+The `[webhooks]` settings are monokulo's, in its own options file (or on its admin
+settings page, Payments tab, Webhooks card), since monokulo delivers webhooks:
+
+```toml
 [webhooks]
 allow_private_urls = false    # SSRF escape hatch, self-hosted LAN testing only
 delivery_timeout_ms = 5000

@@ -17,8 +17,9 @@ anything.
    A server can make the order itself instead, with the store's secret key.
 4. **Show the checkout**: `Monokulo.mount("#pay", order, { onPaid })` puts
    Monokulo's payment page in yours.
-5. **Handle the paid webhook** on your server: `order.paid`, signed. Ship on
-   this, never on the browser's word. See
+5. **Handle the paid webhook** on your server: `order.paid`, signed, with
+   your own order id in `merchant_order_id`. Ship on this, never on the
+   browser's word. See [Webhooks](webhooks/) and
    [When is an order really paid?](paid/)
 6. **Verify your domain** with a DNS record, in the store's settings, so
    only your site can show the checkout. Subdomains (`pay.shop.example`)
@@ -36,3 +37,4 @@ for your store's public key.
   time, on a small shop that sells shapes.
 - [JS library](js-library/): everything `monokulo-client.js` does.
 - [When is an order really paid?](paid/)
+- [Webhooks](webhooks/): every field, the signature, retries.

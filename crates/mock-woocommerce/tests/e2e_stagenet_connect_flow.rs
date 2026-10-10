@@ -183,13 +183,38 @@ async fn spawn_test_monokulo(
         engine: monokulo::http::Engine::new(EngineClient::embedded_for_tests(engine.router())),
         // Public signup, as `mock_woocommerce::spawn_test_monokulo`
         // (`src/lib.rs`) needs - see that call site's own comment.
-        settings: AppState::test_settings(Some(&format!("http://{addr}"))),
+        // The driver's webhook receiver is on this machine.
+        settings: AppState::test_settings(Some(&format!("http://{addr}"))).with_webhooks(
+            monokulo::settings::WebhookConfig {
+                allow_private_urls: true,
+                ..Default::default()
+            },
+        ),
         ..AppState::for_tests_with_db(db.into_shared())
     };
+    // monokulo delivers the webhook: its order-event subscriber and its
+    // delivery worker, as in production.
+    let subscriber = monokulo::webhooks::subscriber::run_subscriber(
+        state.db.clone(),
+        state.engine.client.clone(),
+        state.webhooks.clone(),
+    );
+    let worker = monokulo::webhooks::delivery::run_delivery_loop(
+        state.db.clone(),
+        state.encryption_key.clone(),
+        state.settings.clone(),
+        state.webhooks.clone(),
+    );
     let router = build_router(state);
 
     let task = tokio::spawn(async move {
-        let _ = axum::serve(listener, router).await;
+        tokio::join!(
+            async {
+                let _ = axum::serve(listener, router).await;
+            },
+            subscriber,
+            worker
+        );
     });
 
     TestControlPlaneHandle { addr, task }
@@ -211,8 +236,8 @@ async fn spawn_test_monokulo(
 // always reports height 0, so its first tick poisoned the watermark to
 // `Some(0)`, making the real scan try to walk every stagenet block one at a
 // time from block 1 up to the real chain tip (millions of blocks). Fixed by
-// `.without_background_scan_loop()` below, not by this attribute - see
-// `TestEngineConfig::without_background_scan_loop`'s doc comment.
+// leaving the engine's background loops off, not by this attribute - see
+// `TestEngineConfig::with_background_loops`'s doc comment.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
@@ -285,10 +310,9 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     }
     println!("spender wallet balance check passed: {balance:?}");
 
-    // A real engine, stagenet-configured. `with_background_loops` is used for its
-    // webhook-delivery-tick loop only (it's what actually POSTs the real, signed
-    // webhook once an order is recomputed as paid) - its own scan-tick loop is
-    // explicitly disabled via `without_background_scan_loop`. That loop's inert
+    // A real engine, stagenet-configured, with no background scan loop
+    // (monokulo, below, delivers the
+    // webhook from the engine's order-event log). That loop's inert
     // `NoopDaemonClient` was *not* harmless here as originally assumed: it shares
     // this network's scanned-height watermark in `Store` with the real daemon this
     // test drives directly below via `run_scan_tick_now`, and `NoopDaemonClient`
@@ -297,11 +321,9 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // from block 1 up to the real chain tip (millions of blocks). That is what was
     // actually behind this test's reliable, node-independent, multi-minute-plus
     // stalls on its first `run_scan_tick_now` call - not a bad node, not a mutex
-    // deadlock. See `TestEngineConfig::without_background_scan_loop`'s doc comment.
+    // deadlock. See `TestEngineConfig::with_background_loops`'s doc comment.
     let engine = engine_test_support::TestEngineConfig::new()
         .with_networks(&[Network::Stagenet])
-        .with_background_loops()
-        .without_background_scan_loop()
         .spawn()
         .await;
     let monokulo = spawn_test_monokulo(&engine).await;

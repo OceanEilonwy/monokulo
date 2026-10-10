@@ -2294,9 +2294,7 @@ mod tests {
             ("server.max_body_bytes", "16384"),
             // The same key as monokulo's own, so sent as `engine:<key>`.
             ("engine:database.read_connections", "6"),
-            ("webhooks.allow_private_urls", "true"),
-            ("webhooks.delivery_timeout_ms", "10000"),
-            ("webhooks.max_attempts", "12"),
+            ("order_events.retention_days", "14"),
             // Monokulo has settings with these keys too: the page sends the
             // engine's as `engine:<key>`.
             ("engine:logging.level", "warn,engine::loops=debug"),
@@ -3519,7 +3517,7 @@ mod tests {
                 ("payment.confirmations_required", "5"),
                 // Sent, but the engine's check doesn't name it as changed:
                 // its card wasn't saved.
-                ("webhooks.max_attempts", "8"),
+                ("order_events.retention_days", "7"),
                 ("exchange_rate.cache_seconds", "45"),
             ],
         )
@@ -4246,9 +4244,7 @@ mod tests {
             ("server.max_body_bytes", "16384"),
             // The same key as monokulo's own, so sent as `engine:<key>`.
             ("engine:database.read_connections", "6"),
-            ("webhooks.allow_private_urls", "true"),
-            ("webhooks.delivery_timeout_ms", "10000"),
-            ("webhooks.max_attempts", "12"),
+            ("order_events.retention_days", "14"),
         ];
         assert_eq!(
             new_values.len(),

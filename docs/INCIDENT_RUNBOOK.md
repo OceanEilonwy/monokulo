@@ -30,7 +30,8 @@ finding, since not every read the attacker got is equally bad.
 | View keys (`plain` backend) | **Full.** `PlainKeyCustody` holds unwrapped key material in-process, in cleartext memory, for as long as the process runs (`src/key_custody/plain.rs`). | This is the *documented, accepted* default for self-hosted single-tenant, where host compromise already means "the attacker owns the one wallet" regardless of `KeyCustody`. On a hosted multi-tenant box it is the worst case: every connected tenant's key at once. |
 | View keys (`snp` backend) | **None from a host or hypervisor compromise** outside the confidential VM: memory is encrypted by the hardware, keys at rest are sealed to the engine image's measurement, and keys arrive encrypted to the backend. **Full from a compromise inside the guest** (code execution in the engine's VM reads what the engine reads). Keys entered through a monokulo whose *served page* was compromised at the time are exposed too, unless the merchant used key-custody-cli. | `docs/DESIGN.md` §6.3/§6.5. Before calling an incident "contained by SEV-SNP", establish where the foothold was: host, guest, or monokulo. |
 | `tenants.sealed_key_material` (at rest, in the SQLite file) | Depends entirely on the backend that wrote it. For `plain` it is the keys in the clear. For `snp` it is encrypted under a master key only a trusted engine image on that chip can unwrap: a stolen database file alone gives nothing; a compromise inside the guest gives everything. | Never assume "it's sealed" means "it's safe" once the box that can unseal it is the box that was compromised. |
-| `tenants.secret_token`, webhook signing secrets | **Full**, plaintext in the same database. | `src/store.rs` schema — these are not hashed at rest (unlike merchant-facing login passwords elsewhere in this codebase — see `src/password.rs`, which is not used for these fields). |
+| `tenants.secret_token` | **Full**, plaintext in the same database. | `src/store.rs` schema — not hashed at rest (unlike merchant-facing login passwords elsewhere in this codebase — see `src/password.rs`, which is not used for this field). |
+| Webhook signing secrets | **Full** if the attacker has monokulo's database and `MONOKULO_ENCRYPTION_KEY` (its environment, or the memory of a running monokulo); a stolen database file alone gives nothing. | Monokulo keeps webhooks, not the engine (`crates/monokulo/migrations/0038_webhooks.sql`), each secret encrypted at rest with `MONOKULO_ENCRYPTION_KEY`, like stores' own secret keys. |
 | Order metadata (fiat amounts, `merchant_order_id`, `description`) | **Full**, plaintext, no PII by design (this system deliberately never collects buyer identity — §2/§3 non-goals) but a merchant's own `description` field is merchant-controlled free text and could contain more than intended. | Worth calling out to affected merchants explicitly, not assumed benign. |
 | Funds already sent to a watch-only address | **None at risk.** The attacker can *see* these outputs (once they have the view key) but cannot spend them, redirect them, or reverse them. | Same watch-only guarantee as row 1. |
 
@@ -56,7 +57,10 @@ finding, since not every read the attacker got is equally bad.
      it to the plugin. (Rotating it on the engine alone, through
      `POST /api/v1/admin/tenant/rotate-secret`, would leave monokulo and the
      plugin holding the old one; monokulo has no rotate action yet.)
-   - Every webhook signing secret (same admin surface).
+   - Every webhook signing secret: delete each webhook and add it again on
+     the store's settings page (*Webhooks*), and have the merchant put the
+     new secret on their receiver. A plugin's webhook is replaced by
+     reconnecting the plugin.
    - Any monokulo-issued OAuth/connect-flow tokens still outstanding
      (`monokulo`'s `connect_tokens` — these are already single-use with
      a 10-minute TTL per `docs/WOOCOMMERCE_WBS.md`'s connect-flow spec, so

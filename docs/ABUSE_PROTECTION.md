@@ -32,7 +32,7 @@ Each anonymous client is counted over a rolling minute:
 soft limit (streams are unaffected). Signed-in merchants
 (`abuse.signed_in_per_min`, 600) and store keys
 (`rate_limit.per_store_key_per_min`, 600) only ever get `429` past their limit.
-Static files (`/static/...`), webhooks (sent by the engine) and the status
+Static files (`/static/...`), webhooks (outgoing, sent by monokulo) and the status
 indicator's `/status/summary` poll are never counted.
 
 | | Pages (checkout, share, landing, login, sign-up, status) | JSON API (create order, order status) | Live updates (SSE) |
