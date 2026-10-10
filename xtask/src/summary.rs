@@ -2,7 +2,7 @@
 //! reports with their failures, and `cargo xtask coverage summary`, the
 //! coverage components' table. Both print Markdown for `$GITHUB_STEP_SUMMARY`.
 
-use crate::support::{escape_html, files_under, read_json, root};
+use crate::support::{escape_html, files_under, project_browser, read_json, root};
 use serde_json::Value;
 use std::{fmt::Write, fs, io, path::Path};
 use syn::visit::{self, Visit};
@@ -193,12 +193,17 @@ fn read(
     let mut counts = Counts::default();
     for case in cases {
         let child = |tag: &str| case.children().find(|c| c.has_tag_name(tag));
-        let name = [case.attribute("classname"), case.attribute("name")]
+        let mut name = [case.attribute("classname"), case.attribute("name")]
             .into_iter()
             .flatten()
             .filter(|p| !p.is_empty())
             .collect::<Vec<_>>()
             .join(" › ");
+        // A POS test fails in one browser or another under the same name.
+        let project = case.parent().and_then(|suite| suite.attribute("hostname"));
+        if let Some(browser) = project.and_then(project_browser) {
+            write!(name, " ({browser})").unwrap();
+        }
         let record = |list: &mut Vec<Failure>, node| {
             list.push(Failure {
                 label: label.to_string(),
@@ -569,6 +574,30 @@ mod tests {
         assert!(
             bare.is_empty(),
             "give each #[ignore] a reason (#[ignore = \"needs ...\"]), for the job summary: {bare:?}"
+        );
+    }
+
+    #[test]
+    fn a_failure_in_another_browser_says_which() {
+        let mut failures = Vec::new();
+        read(
+            "browser",
+            r#"<testsuites>
+                <testsuite hostname="fixture"><testcase classname="pos-terminal.spec.js" name="copies"><failure message="a"/></testcase></testsuite>
+                <testsuite hostname="fixture-webkit"><testcase classname="pos-terminal.spec.js" name="copies"><failure message="b"/></testcase></testsuite>
+            </testsuites>"#,
+            &mut failures,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let names: Vec<&str> = failures.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "pos-terminal.spec.js › copies",
+                "pos-terminal.spec.js › copies (WebKit)"
+            ]
         );
     }
 

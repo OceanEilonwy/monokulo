@@ -165,6 +165,18 @@ pub(crate) fn files_under(
     Ok(found)
 }
 
+/// The browser a Playwright project of the browser run names, past
+/// Chromium, whose projects name none: `fixture-firefox`,
+/// `real-binaries-webkit` (e2e/browser/coverage-browser.config.js). It
+/// tells apart a POS test's runs, which share the test's name.
+pub(crate) fn project_browser(project: &str) -> Option<&'static str> {
+    match project.rsplit_once('-')?.1 {
+        "firefox" => Some("Firefox"),
+        "webkit" => Some("WebKit"),
+        _ => None,
+    }
+}
+
 pub(crate) fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")

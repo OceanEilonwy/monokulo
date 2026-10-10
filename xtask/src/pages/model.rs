@@ -7,6 +7,7 @@ use super::format::{capitalised, sentence};
 use super::inputs::{
     BrowserKind, CoverageRun, FuzzTarget, Gallery, Properties, Stress, Test, TestStatus,
 };
+use crate::support::project_browser;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -247,15 +248,20 @@ fn rust_case(t: &Test) -> Case {
 
 fn browser_case(t: &Test) -> Case {
     let spec = t.class.strip_suffix(".spec.js").unwrap_or(&t.class);
-    let real = if t.kind == Some(BrowserKind::RealBinaries) {
-        " (real binaries)"
+    let notes: Vec<&str> = (t.kind == Some(BrowserKind::RealBinaries))
+        .then_some("real binaries")
+        .into_iter()
+        .chain(project_browser(&t.project))
+        .collect();
+    let group = if notes.is_empty() {
+        spec.to_string()
     } else {
-        ""
+        format!("{spec} ({})", notes.join(", "))
     };
     Case {
         suite: Suite::Browser,
         krate: "browser".into(),
-        group: format!("{spec}{real}"),
+        group,
         label: capitalised(&t.name),
         leaf: t.name.clone(),
         raw: t.class.clone(),
@@ -432,5 +438,14 @@ mod tests {
         let case = browser_case(&t);
         assert_eq!(case.group, "checkout (real binaries)");
         assert_eq!(case.label, "Shows the amount");
+        // The POS's tests run in Firefox and WebKit too, under the same names.
+        t.project = "real-binaries-webkit".into();
+        assert_eq!(browser_case(&t).group, "checkout (real binaries, WebKit)");
+        let mut t = test("pos-terminal.spec.js", "copies the address");
+        t.kind = Some(BrowserKind::Fixture);
+        t.project = "fixture-firefox".into();
+        assert_eq!(browser_case(&t).group, "pos-terminal (Firefox)");
+        t.project = "fixture".into();
+        assert_eq!(browser_case(&t).group, "pos-terminal");
     }
 }

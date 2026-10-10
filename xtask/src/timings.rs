@@ -25,7 +25,7 @@
 //! run's wall time, which `runs.wall_s` records.
 
 use crate::stress::target_dir;
-use crate::support::{at, root, Exit};
+use crate::support::{at, project_browser, root, Exit};
 use rusqlite::{params, types::ValueRef, Connection};
 use std::{
     fmt, fs, io,
@@ -174,13 +174,18 @@ fn status_of(case: roxmltree::Node) -> Status {
 }
 
 /// A report's rows: `name` names each suite's binary and its kind.
-fn rows(path: &Path, name: impl Fn(&str) -> (String, Kind, String)) -> io::Result<Vec<Row>> {
+/// Each testsuite's rows, `name` placing a suite by its name and its
+/// `hostname` (Playwright's project; nextest names none).
+fn rows(path: &Path, name: impl Fn(&str, &str) -> (String, Kind, String)) -> io::Result<Vec<Row>> {
     let text = fs::read_to_string(path).map_err(|e| at(path, e))?;
     let doc = roxmltree::Document::parse(&text)
         .map_err(|e| at(path, io::Error::new(io::ErrorKind::InvalidData, e)))?;
     let mut rows = Vec::new();
     for suite in doc.descendants().filter(|n| n.has_tag_name("testsuite")) {
-        let (krate, kind, binary) = name(suite.attribute("name").unwrap_or(""));
+        let (krate, kind, binary) = name(
+            suite.attribute("name").unwrap_or(""),
+            suite.attribute("hostname").unwrap_or(""),
+        );
         for case in suite.children().filter(|n| n.has_tag_name("testcase")) {
             rows.push(Row {
                 krate: krate.clone(),
@@ -215,9 +220,14 @@ fn rust_binary(binary: &str) -> (String, Kind, String) {
 
 fn read_report(label: &Label, path: &Path) -> io::Result<Vec<Row>> {
     match label {
-        Label::Rust => rows(path, rust_binary),
-        Label::Browser(config) => rows(path, |spec| {
-            ("e2e/browser".into(), Kind::E2e, format!("{config}:{spec}"))
+        Label::Rust => rows(path, |binary, _| rust_binary(binary)),
+        // A POS spec's Firefox and WebKit runs are binaries of their own.
+        Label::Browser(config) => rows(path, |spec, project| {
+            let binary = match project_browser(project) {
+                Some(browser) => format!("{config}:{spec} ({browser})"),
+                None => format!("{config}:{spec}"),
+            };
+            ("e2e/browser".into(), Kind::E2e, binary)
         }),
     }
 }
@@ -655,6 +665,31 @@ mod tests {
             ]
         );
         assert_eq!(rows[1].krate, "engine");
+    }
+
+    #[test]
+    fn a_pos_specs_other_browsers_are_binaries_of_their_own() {
+        let scratch = Scratch::new("timings-browsers");
+        let junit = scratch.join("junit.xml");
+        fs::write(
+            &junit,
+            r#"<testsuites>
+                <testsuite name="pos-terminal.spec.js" hostname="fixture"><testcase name="copies" time="1"/></testsuite>
+                <testsuite name="pos-terminal.spec.js" hostname="fixture-webkit"><testcase name="copies" time="2"/></testsuite>
+                <testsuite name="pos-session-diagnostics.spec.js" hostname="real-binaries-firefox"><testcase name="timeline" time="3"/></testsuite>
+            </testsuites>"#,
+        )
+        .unwrap();
+        let rows = read_report(&Label::Browser("coverage-browser".into()), &junit).unwrap();
+        let binaries: Vec<&str> = rows.iter().map(|r| r.binary.as_str()).collect();
+        assert_eq!(
+            binaries,
+            [
+                "coverage-browser:pos-terminal.spec.js",
+                "coverage-browser:pos-terminal.spec.js (WebKit)",
+                "coverage-browser:pos-session-diagnostics.spec.js (Firefox)",
+            ]
+        );
     }
 
     #[test]
