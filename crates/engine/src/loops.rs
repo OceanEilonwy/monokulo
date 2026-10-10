@@ -2,8 +2,7 @@
 //!
 //! One scheduler loop and one fast mempool loop per network with a node
 //! configured (the double-spend void recheck is the scheduler's upkeep tier),
-//! started and stopped as node settings are saved, and the webhook delivery
-//! loop.
+//! started and stopped as node settings are saved.
 //!
 //! `main` supervises them; they live here so they can be tested.
 
@@ -21,58 +20,6 @@ use crate::http::now_unix;
 use crate::key_custody::{KeyCustody, WalletHandle};
 use crate::scanner_status::{self, ScannerStatusMap};
 use crate::store::Db;
-use crate::webhook_delivery::run_delivery_tick_on;
-
-/// Delivers due webhooks, waking as soon as the scanner enqueues one (`wake`)
-/// and otherwise every few seconds (retries fall due with time).
-#[expect(
-    clippy::infinite_loop,
-    reason = "a supervised loop: `shared::supervise` restarts one that returns"
-)]
-pub async fn run_webhook_delivery_loop(
-    db: Db,
-    settings: Arc<EngineSettings>,
-    wake: Arc<tokio::sync::Notify>,
-) {
-    // Building the client can only fail if the TLS backend can't initialise.
-    // Retry rather than panic, so the supervisor isn't left in a crash loop.
-    let client = loop {
-        match crate::webhook_delivery::WebhookClient::build() {
-            Ok(client) => break client,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to build the webhook HTTP client, retrying in 30s");
-                tokio::time::sleep(Duration::from_secs(30)).await;
-            }
-        }
-    };
-
-    loop {
-        // Read every tick, so saved webhook settings apply to the next
-        // attempt (task 2.4).
-        let config = settings.webhooks.load();
-        client.set_allow_private(config.allow_private_urls);
-        let sent = match run_delivery_tick_on(
-            &db,
-            &client,
-            config.delivery_timeout,
-            config.max_attempts,
-            now_unix(),
-        )
-        .await
-        {
-            Ok(sent) => sent,
-            Err(e) => {
-                tracing::warn!(error = %e, "webhook delivery tick failed");
-                0
-            }
-        };
-        // A full batch means a backlog: carry on straight away rather than
-        // waiting, so it drains steadily.
-        if sent < crate::webhook_delivery::DELIVERY_BATCH as usize {
-            let _ = tokio::time::timeout(Duration::from_secs(5), wake.notified()).await;
-        }
-    }
-}
 
 /// A `'static` name per (loop, network) for `supervise`, which labels logs
 /// and restart counts with it.
@@ -241,7 +188,6 @@ impl Drop for RunningNetwork {
 /// Runs for the life of the process.
 pub async fn manage_network_loops(
     db: Db,
-    webhooks: Arc<tokio::sync::Notify>,
     key_custody: Arc<dyn KeyCustody>,
     daemons: Daemons,
     wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>>,
@@ -287,7 +233,7 @@ pub async fn manage_network_loops(
             }
             // Shared by the network's round loop and its fast mempool loop.
             let scan_state = Arc::new(
-                crate::work::ScanState::waking(Arc::clone(&webhooks))
+                crate::work::ScanState::default()
                     .with_progress(scanner_status::progress_of(&scanner_status, network))
                     .with_wakes(scanner_status::wakes_of(&scanner_status, network))
                     .with_activity(scanner_status::activity_of(&scanner_status, network)),
@@ -669,78 +615,6 @@ mod tests {
         panic!("timed out waiting for: {what}");
     }
 
-    /// Webhook delivery acts on a newly enqueued webhook as soon as it is
-    /// woken, not on its next few-second poll.
-    #[tokio::test]
-    async fn webhook_delivery_runs_as_soon_as_it_is_woken() {
-        let store = Store::open_in_memory().unwrap();
-        let tenant = store
-            .create_tenant(
-                &NewTenant {
-                    key_custody_backend: "plain".into(),
-                    sealed_key_material: vec![],
-                    primary_address: "4wake".into(),
-                    network: "mainnet".into(),
-                    confirmations_required: None,
-                    order_expiry_seconds: None,
-                },
-                1000,
-            )
-            .unwrap()
-            .tenant;
-        let index = store.allocate_minor_index(&tenant.id).unwrap();
-        let order = store
-            .create_order(&crate::store::NewOrder {
-                idempotency_key: None,
-                confirmations_required_override: None,
-                tenant_id: tenant.id.clone(),
-                merchant_order_id: None,
-                minor_index: index,
-                address: "a".into(),
-                xmr_amount_piconero: 1,
-                description: None,
-                created_at: 1000,
-                expires_at: i64::MAX / 4,
-            })
-            .unwrap();
-        // A private address: refused, so the attempt is recorded at once
-        // without any network wait.
-        let webhook = store
-            .create_webhook(&tenant.id, "http://127.0.0.1:9/hook", "{}", "secret", 1000)
-            .unwrap();
-        let store = store.into_shared();
-        let wake = Arc::new(tokio::sync::Notify::new());
-        let delivery = tokio::spawn(run_webhook_delivery_loop(
-            Db::over_shared(Arc::clone(&store)),
-            EngineSettings::defaults(),
-            Arc::clone(&wake),
-        ));
-        // Let its first pass find nothing and go to sleep.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        let now = now_unix();
-        store
-            .lock()
-            .enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", now)
-            .unwrap();
-        let woken_at = tokio::time::Instant::now();
-        wake.notify_one();
-        while !store
-            .lock()
-            .due_webhook_deliveries_for_test(now + 1, 10)
-            .unwrap()
-            .is_empty()
-        {
-            // Sooner than the loop's own 5 s idle wait could have run it:
-            // only the wake explains it, however slow the machine.
-            assert!(
-                woken_at.elapsed() < Duration::from_millis(4500),
-                "not attempted before the idle wait ran out, so the wake did nothing"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        delivery.abort();
-    }
-
     #[tokio::test]
     async fn saving_a_node_starts_its_networks_loops_and_clearing_it_stops_them() {
         let store = Store::open_in_memory().unwrap().into_shared();
@@ -783,7 +657,6 @@ mod tests {
         let db = Db::over_shared(Arc::clone(&store));
         let manager = tokio::spawn(manage_network_loops(
             db,
-            Arc::default(),
             key_custody,
             daemons,
             wallet_handles,
@@ -863,7 +736,6 @@ mod tests {
             env: live_settings::Env::fixed(Vec::<(String, String)>::new()),
             nodes: defaults.nodes.clone(),
             scan: live_settings::Live::new(scan),
-            webhooks: defaults.webhooks.clone(),
             limits: defaults.limits.clone(),
             tenant_defaults: defaults.tenant_defaults.clone(),
             runtime: defaults.runtime.clone(),

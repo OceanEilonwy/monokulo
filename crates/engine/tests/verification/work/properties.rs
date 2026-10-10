@@ -632,8 +632,8 @@ fn combined_portfolio_interactions_have_fixed_positive_controls() {
                 "proven-settlement-released",
                 "applied-transition:Rebuild",
                 "applied-transition:FastPass",
-                "http-503-reached",
-                "http-retry-stable-bytes-and-drained",
+                "log-read-resumed",
+                "log-replay-stable-bytes",
                 "connection-reopened-final-ledger",
             ] {
                 assert!(

@@ -24,7 +24,7 @@
 //! its versioned API.
 //!
 //! A database that can't be read makes this `503`, not a page of zeros: the
-//! counts here (stores lagging, webhooks due, stores unserved) are what an
+//! counts here (stores lagging, stores unserved) are what an
 //! operator looks at during an outage, and "nothing is wrong" from a store
 //! that didn't answer would be the one wrong thing to say then.
 //!
@@ -150,8 +150,6 @@ pub(super) struct EngineStatusResponse {
     /// or an unexpected return since the engine started (task 7.9). Empty
     /// while nothing has failed.
     pub loop_restarts: Vec<LoopRestarts>,
-    /// Webhook deliveries due and not yet sent (task 7.13).
-    pub webhook_backlog: WebhookBacklog,
     /// Every store that can't be scanned right now, and why (task 3.7):
     /// monokulo shows each one's owner an alert.
     pub unserved_tenants: Vec<UnservedTenant>,
@@ -195,13 +193,6 @@ pub(super) struct UnservedTenant {
     pub reason: &'static str,
     /// For `catching_up`: how many blocks behind.
     pub blocks_behind: Option<u64>,
-}
-
-#[derive(Serialize)]
-pub(super) struct WebhookBacklog {
-    pub due: u64,
-    /// How long the oldest due delivery has been waiting, in seconds.
-    pub oldest_waiting_secs: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -348,10 +339,6 @@ pub(super) async fn status_page(
         .into_iter()
         .map(|(name, restarts)| LoopRestarts { name, restarts })
         .collect();
-    let (due, oldest) = state
-        .db
-        .read(move |store| store.webhook_backlog(now))
-        .await?;
     let key_custody: Vec<CustodyBackendStatus> = state
         .custody
         .backends
@@ -377,10 +364,6 @@ pub(super) async fn status_page(
         poll_interval_secs,
         generated_at: now,
         loop_restarts,
-        webhook_backlog: WebhookBacklog {
-            due,
-            oldest_waiting_secs: oldest.map(|at| now - at),
-        },
         unserved_tenants,
         key_custody_default: (!key_custody.is_empty())
             .then(|| state.settings.custody.load().default.as_str().to_owned()),

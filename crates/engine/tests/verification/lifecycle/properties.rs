@@ -139,7 +139,7 @@ proptest! {
                 networks:crate::http::Networks { daemons:daemons.clone(),scanner_status:Arc::clone(&status) },
             };
             let router = crate::http::build_router(state,1<<20);
-            let manager = tokio::spawn(manage_network_loops(Db::over_shared(Arc::clone(&store)),Arc::default(),custody,daemons.clone(),wallet_handles,Arc::clone(&status),settings));
+            let manager = tokio::spawn(manage_network_loops(Db::over_shared(Arc::clone(&store)),custody,daemons.clone(),wallet_handles,Arc::clone(&status),settings));
             let networks = [Network::Mainnet,Network::Stagenet,Network::Testnet];
             let mut previous = 0u8;
             for (mask,fallback) in actions.into_iter().chain([(0,false)]) {

@@ -250,9 +250,6 @@ impl<K: Clone + Eq + std::hash::Hash> Backoff<K> {
 /// the durable state is in SQLite.
 #[derive(Default)]
 pub struct ScanState {
-    /// Wakes webhook delivery when something was just enqueued, so a
-    /// settlement's webhook goes out at once rather than on the next poll.
-    webhooks: std::sync::Arc<tokio::sync::Notify>,
     /// Wakes the network's loops when its node announces a block or a pool
     /// transaction (`docs/monero_zmq.md`).
     node_wakes: std::sync::Arc<crate::node_events::NodeWakes>,
@@ -273,14 +270,6 @@ pub struct ScanState {
 }
 
 impl ScanState {
-    /// State that wakes `webhooks` whenever it enqueues webhook deliveries.
-    pub fn waking(webhooks: std::sync::Arc<tokio::sync::Notify>) -> Self {
-        Self {
-            webhooks,
-            ..Self::default()
-        }
-    }
-
     /// This state, keeping its block scan's progress in `progress`, which
     /// `/status` reads (`docs/engine_scaling.md` section 6).
     #[must_use = "the state with progress reporting is returned, not changed in place"]
@@ -334,10 +323,6 @@ impl ScanState {
     /// node subscriber pokes it.
     pub fn node_wakes(&self) -> &std::sync::Arc<crate::node_events::NodeWakes> {
         &self.node_wakes
-    }
-
-    pub(crate) fn wake_webhooks(&self) {
-        self.webhooks.notify_one();
     }
 }
 

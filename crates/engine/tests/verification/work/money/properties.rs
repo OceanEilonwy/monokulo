@@ -171,7 +171,7 @@ async fn converge(
             assert_eq!(
                 money_fingerprint(h, orders),
                 before,
-                "stable replay changed money or emitted a duplicate webhook"
+                "stable replay changed money or emitted a duplicate order event"
             );
             return;
         }
@@ -226,7 +226,7 @@ fn money_fingerprint(h: &Harness, orders: &[OrderId]) -> String {
         .collect();
     format!(
         "{orders:?} {:?}",
-        s.due_webhook_deliveries_for_test(i64::MAX, 1000)
+        s.order_events_for_test()
             .unwrap()
             .into_iter()
             .map(|d| d.event_type)
@@ -1202,7 +1202,7 @@ proptest! {
             let previous_events = h
                 .store()
                 .lock()
-                .due_webhook_deliveries_for_test(i64::MAX, 1000)
+                .order_events_for_test()
                 .unwrap()
                 .len();
             let late = payment_tx(2, 1, extra);
@@ -1250,7 +1250,7 @@ proptest! {
             let deliveries = h
                 .store()
                 .lock()
-                .due_webhook_deliveries_for_test(i64::MAX, 1000)
+                .order_events_for_test()
                 .unwrap();
             assert!(
                 deliveries[previous_events..]
@@ -1620,7 +1620,7 @@ proptest! {
             let deliveries = h
                 .store()
                 .lock()
-                .due_webhook_deliveries_for_test(i64::MAX, 1000)
+                .order_events_for_test()
                 .unwrap();
             for order in &orders {
                 assert_eq!(
@@ -1669,7 +1669,7 @@ async fn drain_worker(
                 assert_eq!(
                     money_fingerprint(h, orders),
                     before,
-                    "stable concurrent recovery emitted duplicate credit or webhooks"
+                    "stable concurrent recovery emitted duplicate credit or order events"
                 );
                 return;
             }

@@ -3,9 +3,9 @@
 //! [`Engine::shutdown`], without owning the process.
 //!
 //! [`Engine::start`] opens storage, loads every setting, registers every
-//! store's wallet with key custody, and starts the webhook delivery loop and
-//! the network loop manager (which starts a scanner, proof and node event
-//! loop per configured network). It returns the admin API as a router.
+//! store's wallet with key custody, and starts the network loop manager
+//! (which starts a scanner, proof and node event loop per configured
+//! network). It returns the admin API as a router.
 //! Serving that router, handling signals, logging and sampling the process's
 //! resources belong to whoever hosts the engine: today the standalone
 //! `monokulo-engine` binary (`main.rs`), which serves it on `server.bind`.
@@ -224,7 +224,7 @@ impl Engine {
         ));
 
         // The database worker: its own connection, on its own thread, for
-        // the scanner, webhook delivery and API writes
+        // the scanner and API writes
         // (docs/scanner_microtasks.md).
         let db =
             crate::store::Db::open(&db_file, &store.lock()).map_err(StartError::DatabaseWorker)?;
@@ -251,23 +251,6 @@ impl Engine {
 
         let (stop, stopped) = tokio::sync::watch::channel(false);
         let mut loops = Vec::new();
-
-        let delivery_db = db.clone();
-        let delivery_settings = Arc::clone(&settings);
-        // Woken by the scanner as soon as it enqueues a webhook.
-        let webhook_wake = Arc::new(tokio::sync::Notify::new());
-        let delivery_wake = Arc::clone(&webhook_wake);
-        loops.push(shared::supervise::supervise_until(
-            "webhook delivery",
-            stopped.clone(),
-            move || {
-                crate::loops::run_webhook_delivery_loop(
-                    delivery_db.clone(),
-                    Arc::clone(&delivery_settings),
-                    Arc::clone(&delivery_wake),
-                )
-            },
-        ));
 
         // AMD's certificates for the snp backend's report, and the handoff
         // of its master key when it runs a new image.
@@ -301,7 +284,6 @@ impl Engine {
             move || {
                 crate::loops::manage_network_loops(
                     db.clone(),
-                    Arc::clone(&webhook_wake),
                     Arc::clone(&key_custody),
                     daemons.clone(),
                     Arc::clone(&wallet_handles),
@@ -334,8 +316,8 @@ impl Engine {
     /// Stops the engine's loops and waits up to `grace` for them to end.
     /// Every step they take is safe to interrupt (payments are recorded
     /// idempotently, a block is only marked scanned after everything in it
-    /// is recorded, webhooks are marked delivered only after they went
-    /// out), so the next start carries on where they stopped.
+    /// is recorded, an order event is written with the change it announces),
+    /// so the next start carries on where they stopped.
     pub async fn shutdown(self, grace: Duration) -> Stopped {
         let _ = self.stop.send(true);
         let all = futures_util::future::join_all(self.loops);

@@ -128,7 +128,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             let txids = transactions.iter().map(tx_id_hex).collect::<Vec<_>>();
             let (store, path) = super::history_fixture::file_store();
             let custody = FlakyKeyCustody::default();
-            let daemon = World::new().await;
+            let daemon = World::new();
             daemon.body_variant(recorded && first & 64 != 0);
             daemon.hit(if recorded {
                 "fixture:recorded-and-synthetic"
@@ -162,9 +162,6 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                     )
                     .unwrap();
                 let tenant = created.tenant.id;
-                store
-                    .create_webhook(&tenant, &daemon.url, "{}", "secret", 1000)
-                    .unwrap();
                 tenants.push((tenant.clone(), handle));
                 for minor in 1..=2 {
                     assert_eq!(store.allocate_minor_index(&tenant).unwrap(), minor);
@@ -393,7 +390,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                             .await;
                     }
                     Command::Deliver(failing) => {
-                        daemon.deliver(backend.db(), backend.store(), failing).await;
+                        daemon.deliver(backend.store(), failing);
                     }
                     Command::Round => {}
                     Command::Rebuild {
@@ -514,8 +511,8 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             if restored > 0 {
                 daemon.hit("void-restored-to-canonical-block");
             }
-            daemon.deliver(backend.db(), backend.store(), true).await;
-            daemon.deliver(backend.db(), backend.store(), false).await;
+            daemon.deliver(backend.store(), true);
+            daemon.deliver(backend.store(), false);
             backend.reopen().await;
             let reopened = backend.store().lock();
             for invoice in &invoices {

@@ -48,9 +48,11 @@ async fn waves(count: usize) {
         assert!(Class::ALL.iter().all(|&c| db.queued(c) == 0));
     }
     let expected: Vec<_> = (0..count)
-        .flat_map(|wave| (0..QUEUE_CAPACITY).flat_map(move |i| (0..3).map(move |c| (wave, c, i))))
+        .flat_map(|wave| {
+            (0..QUEUE_CAPACITY).flat_map(move |i| (0..Class::COUNT).map(move |c| (wave, c, i)))
+        })
         .collect();
-    assert_eq!(*trace.lock(),expected,"all three continuously queued classes must get one turn per three jobs, with FIFO preserved");
+    assert_eq!(*trace.lock(),expected,"every continuously queued class must get one turn per round of classes, with FIFO preserved");
     for (wave, c, i) in expected {
         assert_eq!(
             store
@@ -61,7 +63,7 @@ async fn waves(count: usize) {
         );
     }
     for wave in 0..count {
-        for c in 0..3 {
+        for c in 0..Class::COUNT {
             assert!(store
                 .get_setting(&format!("unaccepted-wave-{wave}-{c}"))
                 .unwrap()
@@ -70,7 +72,7 @@ async fn waves(count: usize) {
     }
     println!(
         "ENGINE_SCALE_RESULT queue_waves={count} committed_jobs={}",
-        count * 3 * QUEUE_CAPACITY
+        count * Class::COUNT * QUEUE_CAPACITY
     );
 }
 

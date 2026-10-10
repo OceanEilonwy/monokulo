@@ -499,7 +499,7 @@ pub(crate) struct ReconcileReport {
     /// The subset of `dirty_orders` where the change was specifically a proven
     /// double-spend (a payment voided because its key image was confirmed spent by
     /// a different transaction) - callers use this to enqueue the independent
-    /// `order.double_spend_detected` webhook event (see `docs/DESIGN.md` §11),
+    /// `order.double_spend_detected` order event (see `docs/DESIGN.md` §11),
     /// separate from whatever `order.<status>` event the recompute may also imply.
     pub double_spent_orders: Vec<crate::store::OrderId>,
 }
@@ -573,7 +573,7 @@ pub(crate) async fn check_for_reorg_and_reconcile(
     }
     // The notifying recompute: a reorg-driven transition (`paid` ->
     // `confirming` when a tx falls back to the mempool, say) is as
-    // webhook-worthy as a forward-scan-driven one. While the job is still
+    // event-worthy as a forward-scan-driven one. While the job is still
     // open, the store holds back any new settlement.
     {
         let s = store.lock();
@@ -1507,22 +1507,13 @@ async fn no_reorg_when_hashes_still_match_is_a_cheap_no_op() {
 }
 
 #[tokio::test]
-async fn run_scan_tick_matches_mempool_tx_recomputes_status_and_enqueues_a_webhook() {
+async fn run_scan_tick_matches_mempool_tx_recomputes_status_and_writes_an_order_event() {
     // End-to-end proof of the composed orchestration, not just its pieces: a
     // real transaction sitting in a fake daemon's mempool gets matched, the
     // owning order's status transitions (pending -> unconfirmed, since this is
     // a 0-conf-only match with a nonzero confirmation requirement), and
-    // exactly one webhook delivery is enqueued for that transition.
+    // exactly one order event is written for that transition.
     let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-    let webhook = store
-        .create_webhook(
-            &shared::ids::TenantId::new(tenant_id.clone()),
-            "https://merchant.example/hook",
-            "{}",
-            "whsec_x",
-            1000,
-        )
-        .unwrap();
     let store = store.into_shared();
 
     let daemon = FakeDaemonClient::new();
@@ -1552,11 +1543,9 @@ async fn run_scan_tick_matches_mempool_tx_recomputes_status_and_enqueues_a_webho
     assert_eq!(order.status, OrderStatus::Unconfirmed);
     assert!(order.amount_received_piconero > 0);
 
-    let due = s
-        .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
-        .unwrap();
+    let due = s.order_events_for_test().unwrap();
     assert_eq!(due.len(), 1);
-    assert_eq!(due[0].webhook_id, webhook.id);
+    assert_eq!(due[0].tenant_id.as_str(), tenant_id);
     assert_eq!(due[0].event_type, "order.unconfirmed");
 }
 
@@ -2114,15 +2103,6 @@ async fn an_order_reaches_paid_as_the_chain_advances_without_any_new_payment_arr
     // `confirming` forever no matter how deeply its payment was buried, with the
     // `order.paid` webhook the merchant is waiting on never firing.
     let (store, key_custody, handle, tenant_id, order_id) = setup().await; // confirmations_required = 10
-    let webhook = store
-        .create_webhook(
-            &shared::ids::TenantId::new(tenant_id.clone()),
-            "https://merchant.example/hook",
-            "{}",
-            "whsec_x",
-            1000,
-        )
-        .unwrap();
     let store = store.into_shared();
 
     let daemon = FakeDaemonClient::new();
@@ -2189,10 +2169,10 @@ async fn an_order_reaches_paid_as_the_chain_advances_without_any_new_payment_arr
 
     // And the transition the merchant is actually waiting on was announced.
     let events: Vec<String> = s
-        .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
+        .order_events_for_test()
         .unwrap()
         .into_iter()
-        .inspect(|d| assert_eq!(d.webhook_id, webhook.id))
+        .inspect(|d| assert_eq!(d.tenant_id.as_str(), tenant_id))
         .map(|d| d.event_type)
         .collect();
     assert_eq!(
@@ -2209,15 +2189,6 @@ async fn an_unpaid_order_past_its_deadline_becomes_expired_on_a_tick_that_matche
     // is never in the `touched` set, so it was never recomputed and stayed
     // `pending` indefinitely.
     let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
-    let webhook = store
-        .create_webhook(
-            &shared::ids::TenantId::new(tenant_id.clone()),
-            "https://merchant.example/hook",
-            "{}",
-            "whsec_x",
-            1000,
-        )
-        .unwrap();
 
     // A second order on the same tenant, already past its deadline and never paid.
     let stale = store
@@ -2263,21 +2234,21 @@ async fn an_unpaid_order_past_its_deadline_becomes_expired_on_a_tick_that_matche
         OrderStatus::Expired
     );
     let expired_events = s
-        .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
+        .order_events_for_test()
         .unwrap()
         .into_iter()
-        .filter(|d| d.order_id == stale.id && d.webhook_id == webhook.id)
+        .filter(|d| d.order_id == stale.id)
         .map(|d| d.event_type)
         .collect::<Vec<_>>();
     assert_eq!(
         expired_events,
         vec!["order.expired".to_owned()],
-        "queued for the store's own webhook"
+        "written once, for the expired order"
     );
 }
 
 #[tokio::test]
-async fn a_reorg_driven_status_change_enqueues_a_webhook_just_like_a_forward_scan_one() {
+async fn a_reorg_driven_status_change_writes_an_order_event_just_like_a_forward_scan_one() {
     // Reorg reconciliation called the bare `Store::recompute_order_status`
     // instead of the notifying wrapper the normal payment path uses, and
     // `run_scan_tick` then threw `dirty_orders` away entirely - so an order
@@ -2285,15 +2256,6 @@ async fn a_reorg_driven_status_change_enqueues_a_webhook_just_like_a_forward_sca
     // remined shallower updated silently, and the merchant's only way to find
     // out was to poll.
     let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-    let webhook = store
-        .create_webhook(
-            &shared::ids::TenantId::new(tenant_id.clone()),
-            "https://merchant.example/hook",
-            "{}",
-            "whsec_x",
-            1000,
-        )
-        .unwrap();
     let tx = fixture_tx();
 
     scan_transaction_for_tenant(
@@ -2353,16 +2315,13 @@ async fn a_reorg_driven_status_change_enqueues_a_webhook_just_like_a_forward_sca
         .status,
         OrderStatus::Confirming
     );
-    let due = s
-        .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
-        .unwrap();
+    let due = s.order_events_for_test().unwrap();
     assert_eq!(
         due.len(),
         1,
         "the paid -> confirming transition must be announced exactly once"
     );
     assert_eq!(due[0].event_type, "order.confirming");
-    assert_eq!(due[0].webhook_id, webhook.id);
 }
 
 #[tokio::test]
@@ -2612,22 +2571,13 @@ async fn a_voided_payment_is_restored_when_its_transaction_returns_to_the_chain(
 }
 
 #[tokio::test]
-async fn every_webhook_payload_carries_a_stable_event_id_and_a_timestamp() {
-    // The payload used to be just `{order_id, status}`, which gives a receiver
-    // nothing to dedupe on (a retry of a lost-ack delivery is byte-identical to a
-    // genuine second transition to the same status) and nothing to bound a replay
-    // with (a captured delivery stays valid forever). Both the id and the
-    // timestamp live *inside* the signed body, not only in headers.
+async fn every_order_event_carries_a_stable_event_id_and_a_timestamp() {
+    // A webhook payload used to be just `{order_id, status}`, which gives a
+    // receiver nothing to dedupe on (a retry of a lost-ack delivery is
+    // byte-identical to a genuine second transition to the same status) and
+    // nothing to bound a replay with. Each logged event has its own id and
+    // time, and reads back the same every time (monokulo resends it as is).
     let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-    store
-        .create_webhook(
-            &shared::ids::TenantId::new(tenant_id.clone()),
-            "https://merchant.example/hook",
-            "{}",
-            "whsec_x",
-            1000,
-        )
-        .unwrap();
     let store = store.into_shared();
 
     let daemon = FakeDaemonClient::new();
@@ -2645,53 +2595,31 @@ async fn every_webhook_payload_carries_a_stable_event_id_and_a_timestamp() {
     .await
     .unwrap();
 
-    let first_payload: serde_json::Value = {
+    let first = {
         let s = store.lock();
-        let due = s
-            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
-            .unwrap();
-        assert_eq!(due.len(), 1);
-        serde_json::from_str(&due[0].payload_json).unwrap()
+        let events = s.order_events_for_test().unwrap();
+        assert_eq!(events.len(), 1);
+        events[0].clone()
     };
-    assert_eq!(first_payload["order_id"], serde_json::json!(order_id));
-    assert_eq!(first_payload["status"], serde_json::json!("confirming"));
-    assert_eq!(
-        first_payload["event"],
-        serde_json::json!("order.confirming")
-    );
+    let wire: serde_json::Value = serde_json::from_str(&first.wire_json()).unwrap();
+    assert_eq!(wire["order_id"], serde_json::json!(order_id));
+    assert_eq!(wire["status"], serde_json::json!("confirming"));
+    assert_eq!(wire["event"], serde_json::json!("order.confirming"));
     assert!(
-        first_payload["event_id"]
+        wire["event_id"]
             .as_str()
             .is_some_and(|id| id.starts_with("evt_")),
-        "every event needs an id a receiver can dedupe on: {first_payload}"
+        "every event needs an id a receiver can dedupe on: {wire}"
     );
     assert!(
-        first_payload["created_at"].as_i64().is_some(),
+        wire["created_at"].as_i64().is_some(),
         "and a timestamp to bound replays with"
     );
 
-    // A retry of the same delivery re-sends the identical, identically-signed
-    // body - the id must identify the *event*, not the attempt.
-    {
-        let s = store.lock();
-        let due = s
-            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
-            .unwrap();
-        s.schedule_webhook_retry(
-            due[0].delivery_id,
-            0,
-            Some(500),
-            Some("boom"),
-            crate::now_unix(),
-        )
-        .unwrap();
-        let retried = s
-            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
-            .unwrap();
-        let retried_payload: serde_json::Value =
-            serde_json::from_str(&retried[0].payload_json).unwrap();
-        assert_eq!(retried_payload["event_id"], first_payload["event_id"]);
-    }
+    // Read again, the same event is the same bytes: the id identifies the
+    // event, not the read.
+    let again = store.lock().order_events_after(first.seq - 1, 1).unwrap();
+    assert_eq!(again, vec![first.clone()]);
 
     // A genuinely different transition gets a genuinely different id.
     for i in 3..=11 {
@@ -2710,13 +2638,13 @@ async fn every_webhook_payload_carries_a_stable_event_id_and_a_timestamp() {
     .unwrap();
     let s = store.lock();
     let paid = s
-        .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
+        .order_events_for_test()
         .unwrap()
         .into_iter()
         .find(|d| d.event_type == "order.overpaid")
-        .expect("the settled transition must have been enqueued");
-    let settled_payload: serde_json::Value = serde_json::from_str(&paid.payload_json).unwrap();
-    assert_ne!(settled_payload["event_id"], first_payload["event_id"]);
+        .expect("the settled transition must have been written");
+    assert_ne!(paid.event_id, first.event_id);
+    assert!(paid.seq > first.seq);
 }
 
 #[tokio::test]
@@ -2915,7 +2843,7 @@ async fn a_reorg_whose_common_ancestor_hash_cannot_be_read_leaves_the_scanned_wi
 async fn a_store_failure_marking_a_block_scanned_does_not_discard_the_ticks_mempool_matches() {
     // Every failure inside the height loop is documented as a `break`, never a
     // `return`, for one specific reason: the mempool matches gathered earlier in
-    // the same tick still need their status recompute and their webhooks, and
+    // the same tick still need their status recompute and their order events, and
     // returning here throws both away. Writing the scanned-block row was the one
     // remaining step that still used `?`, so a transient store error there didn't
     // just skip the block - it silently swallowed a real, already-recorded
@@ -2930,17 +2858,6 @@ async fn a_store_failure_marking_a_block_scanned_does_not_discard_the_ticks_memp
     store
         .lock()
         .set_scanned_block(Network::Mainnet, 1, "h1")
-        .unwrap();
-
-    let webhook = store
-        .lock()
-        .create_webhook(
-            &shared::ids::TenantId::new(tenant_id.clone()),
-            "https://merchant.example/hook",
-            "{}",
-            "whsec_x",
-            1000,
-        )
         .unwrap();
 
     // Fail only writes to `scanned_blocks`, leaving every other table (and every
@@ -2998,13 +2915,10 @@ async fn a_store_failure_marking_a_block_scanned_does_not_discard_the_ticks_memp
             OrderStatus::Pending,
             "the mempool match's status recompute must not have been discarded"
         );
-        let due = s
-            .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
-            .unwrap();
+        let due = s.order_events_for_test().unwrap();
         assert!(
-            due.iter()
-                .any(|d| d.webhook_id == webhook.id && d.event_type.starts_with("order.")),
-            "the mempool match's status-transition webhook must not have been discarded"
+            due.iter().any(|d| d.event_type.starts_with("order.")),
+            "the mempool match's status-transition event must not have been discarded"
         );
     }
 
@@ -3110,15 +3024,6 @@ async fn a_tick_that_detects_a_reorg_never_announces_paid_from_the_chain_it_is_a
     // before the same tick voided that payment and fired the retraction - and a
     // merchant who acted on `order.paid` has already shipped.
     let (store, key_custody, handle, tenant_id, order_id) = setup().await; // confirmations_required = 10
-    store
-        .create_webhook(
-            &shared::ids::TenantId::new(tenant_id.clone()),
-            "https://merchant.example/hook",
-            "{}",
-            "whsec_x",
-            1000,
-        )
-        .unwrap();
     let tx = fixture_tx();
     let key_images = key_images_of(&tx);
 
@@ -3195,7 +3100,7 @@ async fn a_tick_that_detects_a_reorg_never_announces_paid_from_the_chain_it_is_a
     assert!(order.double_spend_detected_at.is_some());
 
     let events: Vec<String> = s
-        .due_webhook_deliveries_for_test(crate::now_unix() + 1, 20)
+        .order_events_for_test()
         .unwrap()
         .into_iter()
         .map(|d| d.event_type)
@@ -3637,15 +3542,6 @@ async fn a_settled_order_is_walked_back_when_a_reorg_deeper_than_confirmations_r
     // reached a terminal, shipped-against status is walked back, and the merchant
     // is told, rather than the retraction being visible only to a poller.
     let (store, key_custody, handle, tenant_id, order_id) = setup().await; // confirmations_required = 10
-    store
-        .create_webhook(
-            &shared::ids::TenantId::new(tenant_id.clone()),
-            "https://merchant.example/hook",
-            "{}",
-            "whsec_x",
-            1000,
-        )
-        .unwrap();
     let tx = fixture_tx();
     let daemon = chain_scanned_to(&store, 100, 70, "old");
     // Payment 18 blocks deep - comfortably "final" at ten confirmations.
@@ -3699,7 +3595,7 @@ async fn a_settled_order_is_walked_back_when_a_reorg_deeper_than_confirmations_r
     assert_eq!(order.status, OrderStatus::Pending);
     assert!(order.double_spend_detected_at.is_some());
     let events: Vec<String> = s
-        .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
+        .order_events_for_test()
         .unwrap()
         .into_iter()
         .map(|d| d.event_type)
@@ -4466,18 +4362,9 @@ async fn a_zero_conf_order_double_spent_out_of_the_mempool_is_voided_with_no_reo
     // reconciliation - the only thing that ever re-examined an existing payment
     // - never runs. The payment sat at `block_height IS NULL` forever, counting
     // in full towards an order that was never paid, and no
-    // `order.double_spend_detected` webhook ever fired.
+    // `order.double_spend_detected` event ever written.
     let (store, key_custody, handle, tenant_id, order_id) =
         setup_with_confirmations_override(Some(0)).await;
-    store
-        .create_webhook(
-            &shared::ids::TenantId::new(tenant_id.clone()),
-            "https://merchant.example/hook",
-            "{}",
-            "whsec_x",
-            1000,
-        )
-        .unwrap();
     let tx = fixture_tx();
     let store = store.into_shared();
 
@@ -4551,7 +4438,7 @@ async fn a_zero_conf_order_double_spent_out_of_the_mempool_is_voided_with_no_reo
     assert_eq!(order.status, OrderStatus::Pending);
     assert!(order.double_spend_detected_at.is_some());
     let events: Vec<String> = s
-        .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
+        .order_events_for_test()
         .unwrap()
         .into_iter()
         .map(|d| d.event_type)
@@ -4585,15 +4472,6 @@ fn chain_replica() -> FakeDaemonClient {
 async fn setup_with_one_voided_double_spend() -> (crate::store::SharedStore, String, String) {
     let (store, key_custody, handle, tenant_id, order_id) =
         setup_with_confirmations_override(Some(0)).await;
-    store
-        .create_webhook(
-            &shared::ids::TenantId::new(tenant_id.clone()),
-            "https://merchant.example/hook",
-            "{}",
-            "whsec_x",
-            1000,
-        )
-        .unwrap();
     let tx = fixture_tx();
     let store = store.into_shared();
 
@@ -4704,7 +4582,7 @@ async fn the_void_recheck_reverses_a_void_no_longer_supported_by_fresh_evidence(
         "the only voided payment on the order was cleared - the sticky flag should clear too"
     );
     let events: Vec<String> = s
-        .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
+        .order_events_for_test()
         .unwrap()
         .into_iter()
         .map(|d| d.event_type)
@@ -5086,15 +4964,6 @@ async fn a_fallback_daemon_that_disagrees_with_the_primary_prevents_the_wrongful
     // one is configured to disagree with it.
     let (store, key_custody, handle, tenant_id, order_id) =
         setup_with_confirmations_override(Some(0)).await;
-    store
-        .create_webhook(
-            &shared::ids::TenantId::new(tenant_id.clone()),
-            "https://merchant.example/hook",
-            "{}",
-            "whsec_x",
-            1000,
-        )
-        .unwrap();
     let tx = fixture_tx();
     let store = store.into_shared();
 
@@ -5202,14 +5071,14 @@ async fn a_fallback_daemon_that_disagrees_with_the_primary_prevents_the_wrongful
         "no incident occurred - nothing should be stamped"
     );
     let events: Vec<String> = s
-        .due_webhook_deliveries_for_test(crate::now_unix() + 1, 10)
+        .order_events_for_test()
         .unwrap()
         .into_iter()
         .map(|d| d.event_type)
         .collect();
     assert!(
         !events.contains(&"order.double_spend_detected".to_owned()),
-        "no false double-spend webhook should ever be sent to the merchant: {events:?}"
+        "no false double-spend event should ever be written: {events:?}"
     );
 }
 
@@ -7435,7 +7304,7 @@ async fn a_void_that_lands_before_the_node_fails_still_updates_the_order_it_belo
     // steps a failure can land between.
     //
     // A void is a *committed* write. Everything that makes it visible - the
-    // order's status and received total, the retraction webhook, the
+    // order's status and received total, the retraction event, the
     // double-spend event - used to happen only after the whole sweep finished,
     // so a node failure on a later payment discarded all of it. That is
     // unrecoverable rather than merely delayed: the voided row is excluded from
@@ -7445,15 +7314,6 @@ async fn a_void_that_lands_before_the_node_fails_still_updates_the_order_it_belo
     // order whose money was double-spent, permanently, with no event ever sent.
     let (store, key_custody, handle, tenant_id, order_id) =
         setup_with_confirmations_override(Some(0)).await;
-    store
-        .create_webhook(
-            &shared::ids::TenantId::new(tenant_id.clone()),
-            "https://merchant.example/hook",
-            "{}",
-            "whsec_x",
-            1000,
-        )
-        .unwrap();
     let first = fixture_tx();
     let second = independent_payment_tx(8);
     let per_tx = {
@@ -7563,7 +7423,7 @@ async fn a_void_that_lands_before_the_node_fails_still_updates_the_order_it_belo
     );
     assert!(order.double_spend_detected_at.is_some());
     let events: Vec<String> = s
-        .due_webhook_deliveries_for_test(crate::now_unix() + 1, 20)
+        .order_events_for_test()
         .unwrap()
         .into_iter()
         .map(|d| d.event_type)
@@ -7840,7 +7700,7 @@ async fn a_lagging_tenants_order_does_not_expire_until_it_has_caught_up() {
     );
     let expired_events = store
         .lock()
-        .due_webhook_deliveries_for_test(crate::now_unix() + 1, 100)
+        .order_events_for_test()
         .unwrap()
         .into_iter()
         .filter(|d| d.order_id == c_order && d.event_type == "order.expired")
@@ -9074,8 +8934,7 @@ async fn run_until_killed<F: std::future::Future>(future: F, polls: usize) -> Op
 }
 
 #[tokio::test]
-async fn cancellation_after_a_closed_orders_payment_is_written_does_not_lose_its_status_or_webhook()
-{
+async fn cancellation_after_a_closed_orders_payment_is_written_does_not_lose_its_status_or_event() {
     use std::future::Future as _;
     let store = Store::open_in_memory().unwrap();
     let custody = PlainKeyCustody::default();
@@ -9085,15 +8944,6 @@ async fn cancellation_after_a_closed_orders_payment_is_written_does_not_lose_its
         .execute_raw_for_test(&format!(
             "UPDATE orders SET confirmations_required_override = 0 WHERE id = '{order}'"
         ))
-        .unwrap();
-    store
-        .create_webhook(
-            &shared::ids::TenantId::new(tenant.to_string()),
-            "https://shop.example/hook",
-            "{}",
-            "whsec",
-            now,
-        )
         .unwrap();
     store
         .record_payment_match(
@@ -9187,10 +9037,7 @@ async fn cancellation_after_a_closed_orders_payment_is_written_does_not_lose_its
         ),
         OrderStatus::Overpaid
     );
-    let events = store
-        .lock()
-        .due_webhook_deliveries_for_test(i64::MAX / 2, 100)
-        .unwrap();
+    let events = store.lock().order_events_for_test().unwrap();
     assert_eq!(
         events
             .iter()
@@ -9201,7 +9048,7 @@ async fn cancellation_after_a_closed_orders_payment_is_written_does_not_lose_its
 }
 
 #[tokio::test]
-async fn killing_the_engine_at_any_point_in_a_tick_never_loses_or_duplicates_a_payment_or_its_webhook(
+async fn killing_the_engine_at_any_point_in_a_tick_never_loses_or_duplicates_a_payment_or_its_event(
 ) {
     for seed in 1..=12u64 {
         let mut rng = seed;
@@ -9218,15 +9065,6 @@ async fn killing_the_engine_at_any_point_in_a_tick_never_loses_or_duplicates_a_p
         for _ in 0..3 {
             let (id, handle, order) =
                 fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
-            store
-                .create_webhook(
-                    &shared::ids::TenantId::new(id.to_string()),
-                    "https://shop.example/hook",
-                    "{}",
-                    "whsec",
-                    1,
-                )
-                .unwrap();
             tenants.push((id, handle));
             orders.push(order);
         }
@@ -9272,10 +9110,7 @@ async fn killing_the_engine_at_any_point_in_a_tick_never_loses_or_duplicates_a_p
         }
 
         let high_water = store.lock().max_scanned_height(Network::Mainnet).unwrap();
-        let events = store
-            .lock()
-            .due_webhook_deliveries_for_test(i64::MAX / 2, 10_000)
-            .unwrap();
+        let events = store.lock().order_events_for_test().unwrap();
         for ((tenant_id, _), order_id) in tenants.iter().zip(&orders) {
             assert_eq!(
                 cursor_of(&store, tenant_id.as_str()),
@@ -9296,7 +9131,7 @@ async fn killing_the_engine_at_any_point_in_a_tick_never_loses_or_duplicates_a_p
                     );
                     assert!(
                         events.iter().any(|d| &d.order_id == order_id && d.event_type == format!("order.{status}")),
-                        "seed {seed}: the webhook for the order's current status ({status}) was enqueued"
+                        "seed {seed}: the event for the order's current status ({status}) was written"
                     );
                 }
                 None => assert!(payments.is_empty(), "seed {seed}"),
@@ -10413,7 +10248,7 @@ async fn a_void_restored_while_rechecked_is_not_restored_twice() {
     assert!(!restored, "already restored by the time it was applied");
     let events: Vec<String> = store
         .lock()
-        .due_webhook_deliveries_for_test(i64::MAX / 2, 10)
+        .order_events_for_test()
         .unwrap()
         .into_iter()
         .map(|d| d.event_type)
@@ -10517,7 +10352,7 @@ async fn a_void_whose_transaction_is_mined_after_all_is_restored_at_its_block() 
     assert_eq!((payment.voided_at, payment.block_height), (None, Some(3)));
     let events: Vec<String> = store
         .lock()
-        .due_webhook_deliveries_for_test(i64::MAX / 2, 10)
+        .order_events_for_test()
         .unwrap()
         .into_iter()
         .map(|d| d.event_type)

@@ -143,7 +143,7 @@ proptest! {
                         && rows.len() == 1 && rows[0].block_height == Some(3)
                 })
             }).await;
-            let deliveries = h.store().lock().due_webhook_deliveries_for_test(i64::MAX, 1000).unwrap();
+            let deliveries = h.store().lock().order_events_for_test().unwrap();
             assert_eq!(deliveries.iter().filter(|d| d.event_type == "order.paid").count(), count);
         });
     }
@@ -479,10 +479,7 @@ async fn assert_unrepresentable_amount(excess: u64, aggregate: bool) {
     );
     assert_eq!(after.status, before.status);
     assert!(s.get_all_payments(&h.order).unwrap().is_empty());
-    assert!(s
-        .due_webhook_deliveries_for_test(i64::MAX, 1000)
-        .unwrap()
-        .is_empty());
+    assert!(s.order_events_for_test().unwrap().is_empty());
 }
 
 #[test]
@@ -578,7 +575,7 @@ async fn crash_history_on(phase: u8, steps: usize, amount: u64, point: Option<&s
         let rows = s.get_all_payments(&h.order).unwrap();
         let order = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
         let paid = s
-            .due_webhook_deliveries_for_test(i64::MAX, 1000)
+            .order_events_for_test()
             .unwrap()
             .iter()
             .filter(|event| event.event_type == "order.paid")
@@ -627,11 +624,7 @@ async fn crash_history_on(phase: u8, steps: usize, amount: u64, point: Option<&s
     if let Some(ids) = ids {
         assert_eq!(payment_identities(&h, &orders), ids);
     }
-    let paid = h
-        .store()
-        .lock()
-        .due_webhook_deliveries_for_test(i64::MAX, 1000)
-        .unwrap();
+    let paid = h.store().lock().order_events_for_test().unwrap();
     assert_eq!(
         paid.iter().filter(|d| d.event_type == "order.paid").count(),
         1
@@ -757,7 +750,7 @@ async fn crash_pipeline(prefix: usize, amount: u64) {
         identities = Some(ids);
         let invoice = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
         let paid = s
-            .due_webhook_deliveries_for_test(i64::MAX, 100)
+            .order_events_for_test()
             .unwrap()
             .iter()
             .filter(|e| e.event_type == "order.paid")
@@ -798,7 +791,7 @@ async fn crash_pipeline(prefix: usize, amount: u64) {
         .unwrap()
         .is_empty());
     assert_eq!(
-        s.due_webhook_deliveries_for_test(i64::MAX, 100)
+        s.order_events_for_test()
             .unwrap()
             .iter()
             .filter(|e| e.event_type == "order.paid")

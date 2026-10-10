@@ -359,15 +359,6 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     let (store, path) = file_store();
     let custody = FlakyKeyCustody::default();
     let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
-    store
-        .create_webhook(
-            &shared::ids::TenantId::new(tenant.to_string()),
-            "https://merchant.example/hook",
-            "{}",
-            "secret",
-            1000,
-        )
-        .unwrap();
     let fake = FakeDaemonClient::new();
     for h in 1..=60 {
         let txs = if h == 30 { vec![fixture_tx()] } else { vec![] };
@@ -446,7 +437,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     let paid_events = |store: &SharedStore| {
         store
             .lock()
-            .due_webhook_deliveries_for_test(i64::MAX, 100)
+            .order_events_for_test()
             .unwrap()
             .iter()
             .filter(|d| d.event_type == "order.paid")
@@ -1748,28 +1739,20 @@ async fn the_next_block_is_fetched_while_this_one_is_scanned_and_used() {
 }
 
 /// A payment is settled from the pool without waiting for a round: the fast
-/// pass records it, recomputes its order, enqueues the webhook and wakes
-/// delivery, and the round's rotation then has nothing left to do for it.
+/// pass records it, recomputes its order, writes the order event and wakes
+/// the event log's readers, and the round's rotation then has nothing left
+/// to do for it.
 #[tokio::test]
 async fn the_fast_path_settles_a_new_pool_payment_at_once() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
     let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
-    store
-        .create_webhook(
-            &shared::ids::TenantId::new(tenant.to_string()),
-            "https://merchant.example/hook",
-            "{}",
-            "secret",
-            1000,
-        )
-        .unwrap();
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
     fake.set_mempool(vec![fixture_tx()]);
-    let wake = Arc::new(tokio::sync::Notify::new());
-    let state = ScanState::waking(Arc::clone(&wake));
+    let appended = store.lock().subscribe_order_events();
+    let state = ScanState::default();
     let tenants = [(tenant.clone(), handle)];
     let db = Db::over_shared(Arc::clone(&store));
     let report = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants))
@@ -1792,13 +1775,14 @@ async fn the_fast_path_settles_a_new_pool_payment_at_once() {
     );
     assert!(store
         .lock()
-        .due_webhook_deliveries_for_test(i64::MAX / 2, 10)
+        .order_events_for_test()
         .unwrap()
         .iter()
         .any(|d| d.event_type == "order.unconfirmed"));
-    tokio::time::timeout(Duration::from_millis(100), wake.notified())
-        .await
-        .expect("delivery was woken");
+    assert!(
+        appended.has_changed().unwrap(),
+        "the event log's readers were woken"
+    );
     // The engine page sees the pass, the match and the status change.
     let first = recorded(&state);
     assert!(
@@ -1921,7 +1905,7 @@ async fn the_fast_path_leaves_the_node_alone_while_no_store_has_an_order_in_scop
 // may report the failure or wait it out, but it must not panic, and it must
 // leave nothing a later clean round can't finish. The database has to end
 // exactly where a run without the fault ends. A failure that left a cursor
-// moved without its matches, a job half-open or a webhook sent twice shows
+// moved without its matches, a job half-open or an order event written twice shows
 // up as a difference.
 
 /// One run of a sweep's story: a tenant with one order, a chain and a pool
@@ -1941,15 +1925,6 @@ impl Story {
         let custody = FlakyKeyCustody::default();
         let (tenant, handle, order) =
             fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
-        store
-            .create_webhook(
-                &shared::ids::TenantId::new(tenant.to_string()),
-                "https://merchant.example/hook",
-                "{}",
-                "whsec_x",
-                1000,
-            )
-            .unwrap();
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
@@ -2020,13 +1995,13 @@ impl Story {
             rows
         };
         format!(
-            "orders {:?}\npayments {:?}\ncursors {:?}\nblocks {:?}\nreorg {:?}\nwebhooks {:?}\npartial {:?}",
+            "orders {:?}\npayments {:?}\ncursors {:?}\nblocks {:?}\nreorg {:?}\nevents {:?}\npartial {:?}",
             rows("SELECT status, amount_received_piconero, double_spend_detected_at_utc IS NOT NULL FROM orders"),
             rows("SELECT txid, output_index, amount_piconero, block_height, voided_at_utc IS NOT NULL FROM order_payments"),
             rows("SELECT scanned_through_height FROM tenants"),
             rows("SELECT height, block_hash FROM scanned_blocks"),
             rows("SELECT (SELECT COUNT(*) FROM reorg_jobs), (SELECT COUNT(*) FROM reorg_work)"),
-            rows("SELECT event_type FROM webhook_deliveries"),
+            rows("SELECT event_type FROM order_events"),
             rows("SELECT (SELECT COUNT(*) FROM partial_block_progress), (SELECT COUNT(*) FROM partial_block_matches)"),
         )
     }
@@ -4016,16 +3991,6 @@ async fn every_sql_failure_in_a_void_recheck_is_recovered_from() {
     let mut faults = 0;
     for fault in 0.. {
         let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
-        store
-            .lock()
-            .create_webhook(
-                &shared::ids::TenantId::new(tenants[0].0.to_string()),
-                "https://merchant.example/hook",
-                "{}",
-                "whsec_x",
-                1000,
-            )
-            .unwrap();
         voided_payments(&store, &orders[0], 1);
         void_recheck_due(&store);
         let db = Db::over_shared(Arc::clone(&store));
@@ -4058,7 +4023,7 @@ async fn every_sql_failure_in_a_void_recheck_is_recovered_from() {
         assert_eq!(payment.voided_at, None, "fault {fault}");
         let reversed = store
             .lock()
-            .due_webhook_deliveries_for_test(i64::MAX / 2, 100)
+            .order_events_for_test()
             .unwrap()
             .into_iter()
             .filter(|d| d.event_type == "order.double_spend_reversed")
@@ -5599,7 +5564,7 @@ async fn the_activity_record_tells_the_paid_story_in_order() {
 }
 
 /// The snapshot after the story: one store at the high-water mark, no
-/// reorg left, the webhooks it caused waiting (nothing delivers them here).
+/// reorg left.
 #[tokio::test]
 async fn a_snapshot_after_the_paid_story_shows_where_it_ended() {
     let story = Story::new().await;
@@ -5653,11 +5618,6 @@ async fn a_snapshot_after_the_paid_story_shows_where_it_ended() {
     assert_eq!(snapshot.reorg, None);
     assert!(snapshot.checkpoints.is_empty());
     assert_eq!(snapshot.recomputes_pending, 0);
-    assert!(snapshot.webhooks.due >= 2, "{snapshot:?}");
-    assert_eq!(
-        snapshot.webhooks.sent,
-        vec![0; shared::activity::Webhooks::BUCKETS]
-    );
     assert_eq!(snapshot.cache_budget_bytes, 16 * 1024 * 1024);
     assert_eq!(snapshot.database.capacity, 64);
     assert_eq!(snapshot.nodes, nodes);

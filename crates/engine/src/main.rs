@@ -1,6 +1,6 @@
 //! The standalone engine: read the command line and the options file, start
 //! logging and the async runtime, start the engine (`engine::run::Engine`:
-//! storage, settings, key custody, the scan and webhook loops), and serve
+//! storage, settings, key custody, the scan loops), and serve
 //! its admin API on `server.bind` until SIGTERM or Ctrl-C.
 //!
 //! Every setting is declared once (`engine::engine_settings`). Configuration

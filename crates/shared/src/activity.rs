@@ -389,7 +389,6 @@ pub struct Snapshot {
     pub recomputes_pending: u64,
     /// Orders due a recompute by time or height.
     pub orders_due: u64,
-    pub webhooks: Webhooks,
     pub database: Database,
     pub nodes: Vec<Node>,
 }
@@ -433,25 +432,12 @@ pub struct Pool {
     pub txids: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Webhooks {
-    /// Deliveries due and not yet sent.
-    pub due: u64,
-    /// Deliveries made in each 10 s of the last five minutes, oldest first.
-    pub sent: Vec<u32>,
-}
-
-impl Webhooks {
-    pub const BUCKET_SECS: i64 = 10;
-    pub const BUCKETS: usize = 30;
-}
-
 /// The engine's database worker (docs/scanner_microtasks.md, "Database
 /// access").
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Database {
-    /// Jobs queued for the Scanner, Webhook and Admin classes.
-    pub queued: [u64; 3],
+    /// Jobs queued for the Scanner and Admin classes.
+    pub queued: [u64; 2],
     /// Jobs each class may queue before callers wait.
     pub capacity: u64,
     pub completed: u64,

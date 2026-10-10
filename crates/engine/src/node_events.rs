@@ -442,7 +442,6 @@ mod tests {
                     strict_tls: false,
                 }),
                 scan: defaults.scan.clone(),
-                webhooks: defaults.webhooks.clone(),
                 limits: defaults.limits.clone(),
                 tenant_defaults: defaults.tenant_defaults.clone(),
                 runtime: defaults.runtime.clone(),

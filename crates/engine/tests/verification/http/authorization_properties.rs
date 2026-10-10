@@ -9,7 +9,6 @@ struct Principal {
     enabled: bool,
     id: TenantId,
     order: String,
-    webhook: String,
 }
 struct World {
     router: Router,
@@ -57,21 +56,6 @@ impl World {
                 .as_str()
                 .unwrap()
                 .to_owned();
-            let hook = setup
-                .clone()
-                .oneshot(json_request(
-                    "POST",
-                    "/api/v1/admin/tenant/webhooks",
-                    Some(&tenant.secret_token),
-                    &serde_json::json!({"url":format!("https://merchant-{i}.example/hook")}),
-                ))
-                .await
-                .unwrap();
-            assert_eq!(hook.status(), StatusCode::OK);
-            let webhook = body_json(hook).await["webhook_id"]
-                .as_str()
-                .unwrap()
-                .to_owned();
             principals.push(Principal {
                 public: tenant.public_key,
                 secret: tenant.secret_token,
@@ -79,7 +63,6 @@ impl World {
                 enabled: true,
                 id,
                 order,
-                webhook,
             });
         }
         Self {
@@ -188,12 +171,6 @@ fn routes(p: &Principal) -> Vec<Route> {
             format!("/api/v1/admin/tenant/orders/{}/refund-address", p.order),
         ),
         ("POST", "/api/v1/admin/tenant/payments/lookup".into()),
-        ("GET", "/api/v1/admin/tenant/webhooks".into()),
-        ("POST", "/api/v1/admin/tenant/webhooks".into()),
-        (
-            "DELETE",
-            format!("/api/v1/admin/tenant/webhooks/{}", p.webhook),
-        ),
         ("GET", "/api/v1/admin/tenant/events".into()),
     ];
     let global = [
@@ -209,6 +186,7 @@ fn routes(p: &Principal) -> Vec<Route> {
         ("GET", "/api/v1/admin/logs/histogram"),
         ("GET", "/api/v1/admin/logs/attributes"),
         ("GET", "/api/v1/admin/engine/activity"),
+        ("GET", "/api/v1/admin/order-events"),
     ];
     tenant
         .into_iter()
@@ -244,7 +222,6 @@ async fn denied(
     for p in &w.principals {
         assert!(!text.contains(&p.secret));
         assert!(!text.contains(&p.order));
-        assert!(!text.contains(&p.webhook));
     }
     assert_eq!(
         w.snapshot(),
@@ -256,7 +233,7 @@ async fn denied(
 proptest! {
     #![proptest_config(persisted_config(config()))]
     #[test]
-    fn permission_matrix_rejects_credentials_without_data_or_writes(route in 0usize..25,engine_kind in 0u8..5,credential in 0u8..8,noise in "[ -~]{0,128}",worker in any::<bool>()) {
+    fn permission_matrix_rejects_credentials_without_data_or_writes(route in 0usize..24,engine_kind in 0u8..5,credential in 0u8..8,noise in "[ -~]{0,128}",worker in any::<bool>()) {
         runtime().block_on(async {
             let mut w=World::new(3,worker).await;
             w.rotate(0).await;
@@ -440,20 +417,16 @@ proptest! {
         runtime().block_on(ownership_history(count,worker,events));
     }
     #[test]
-    fn cross_tenant_webhook_deletion_and_refund_writes_are_atomic(actor in 0usize..4,count in 2usize..5,worker in any::<bool>()) {
+    fn cross_tenant_refund_writes_are_atomic(actor in 0usize..4,count in 2usize..5,worker in any::<bool>()) {
         runtime().block_on(async {
             let w=World::new(count,worker).await;
             let actor=actor%count;let target=(actor+1)%count;
             let before=w.snapshot();
-            for (method,uri,body) in [
-                ("DELETE",format!("/api/v1/admin/tenant/webhooks/{}",w.principals[target].webhook),serde_json::json!({"tenant_id":w.principals[target].id})),
-                ("POST",format!("/api/v1/admin/tenant/orders/{}/refund-address",w.principals[target].order),serde_json::json!({"refund_address":"forbidden","tenant_id":w.principals[target].id})),
-            ] {
-                let response=w.send(method,&uri,Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[actor].secret)),&body).await;
-                assert_eq!(response.status(),StatusCode::NOT_FOUND);assert_eq!(w.snapshot(),before);
-            }
-            let response=w.send("DELETE",&format!("/api/v1/admin/tenant/webhooks/{}",w.principals[target].webhook),Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[target].secret)),&serde_json::json!({})).await;
-            assert_eq!(response.status(),StatusCode::NO_CONTENT,"owner must retain legitimate access");
+            let uri=format!("/api/v1/admin/tenant/orders/{}/refund-address",w.principals[target].order);
+            let response=w.send("POST",&uri,Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[actor].secret)),&serde_json::json!({"refund_address":"forbidden","tenant_id":w.principals[target].id})).await;
+            assert_eq!(response.status(),StatusCode::NOT_FOUND);assert_eq!(w.snapshot(),before);
+            let response=w.send("POST",&uri,Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[target].secret)),&serde_json::json!({"refund_address":"owner"})).await;
+            assert_eq!(response.status(),StatusCode::OK,"owner must retain legitimate access");
         });
     }
     #[test]
@@ -559,15 +532,12 @@ proptest! {
             let actor=actor%count;
             let other=(actor+1)%count;
             let auth=format!("Bearer {}",w.principals[actor].secret);
-            for (uri,key,expected) in [
-                ("/api/v1/admin/tenant/orders","order_id",w.principals[actor].order.as_str()),
-                ("/api/v1/admin/tenant/webhooks","webhook_id",w.principals[actor].webhook.as_str()),
-            ] {
-                let response=w.send("GET",uri,Some(TEST_ENGINE_TOKEN),Some(&auth),&serde_json::json!({"tenant_id":w.principals[other].id})).await;
+            {
+                let response=w.send("GET","/api/v1/admin/tenant/orders",Some(TEST_ENGINE_TOKEN),Some(&auth),&serde_json::json!({"tenant_id":w.principals[other].id})).await;
                 assert_eq!(response.status(),StatusCode::OK);
                 let body=body_json(response).await;
                 assert_eq!(body.as_array().unwrap().len(),1);
-                assert_eq!(body[0][key],expected);
+                assert_eq!(body[0]["order_id"],w.principals[actor].order.as_str());
             }
             for (uri,expected) in [
                 (format!("/api/v1/admin/tenant/orders?ids={},{}",w.principals[other].order,w.principals[actor].order),Some(w.principals[actor].order.as_str())),

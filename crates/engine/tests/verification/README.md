@@ -17,7 +17,7 @@ here too because the properties share their fixtures.
 - `work/money/`, `work/nodes/`, `work/concurrency/`, `work/lifecycle/`: composed effect scenarios.
 - `store/`: migrations, worker queue, durable reorg work and scale scenarios.
 - `http/`, `proof/`, `status/`: authorization, verifier histories and status derivation.
-- `notifications/`, `lifecycle/`, `resources/`, `inputs/`, `webhooks/`: their domain checks.
+- `notifications/`, `lifecycle/`, `resources/`, `inputs/`: their domain checks.
 - `daemon/`, `scanner/`: reusable daemon and scanner fixtures/scenarios.
 - `support/`: shared runtime/config, temporary database ownership, backend replacement,
   rendezvous, RPC and fuzz adapters.

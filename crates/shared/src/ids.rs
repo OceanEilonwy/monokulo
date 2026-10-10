@@ -104,7 +104,7 @@ id!(
     TenantId
 );
 id!(
-    /// An engine webhook (`webhooks.id`).
+    /// A store's webhook (monokulo's `webhooks.id`).
     WebhookId
 );
 id!(

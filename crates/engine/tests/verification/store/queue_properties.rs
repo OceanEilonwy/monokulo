@@ -49,11 +49,11 @@ async fn held(db: &Db) -> (Release, tokio::task::JoinHandle<Result<()>>) {
 proptest! {
     #![proptest_config(persisted_config(config()))]
     #[test]
-    fn class_selection_matches_independent_round_robin_model(masks in prop::collection::vec(0u8..8, 1..512)) {
+    fn class_selection_matches_independent_round_robin_model(masks in prop::collection::vec(0u8..(1 << Class::COUNT), 1..512)) {
         let mut policy = Dispatch::default();
-        let mut previous = 2usize;
+        let mut previous = Class::COUNT - 1;
         for mask in masks {
-            let expected = (1..=3).map(|offset| (previous + offset) % 3).find(|&i| mask & (1 << i) != 0);
+            let expected = (1..=Class::COUNT).map(|offset| (previous + offset) % Class::COUNT).find(|&i| mask & (1 << i) != 0);
             let actual = policy.order().into_iter().find(|c| mask & (1 << c.index()) != 0);
             prop_assert_eq!(actual.map(Class::index), expected);
             if let Some(class) = actual { policy.served(class); previous = class.index(); }
@@ -62,8 +62,8 @@ proptest! {
 
     #[test]
     fn bounded_queues_preserve_fifo_fairness_and_accepted_work(
-        lengths in prop::array::uniform3(1usize..=66), cancelled in prop::collection::vec(any::<bool>(), 3*66),
-        panic_class in 0usize..4,
+        lengths in prop::array::uniform2(1usize..=66), cancelled in prop::collection::vec(any::<bool>(), 2*66),
+        panic_class in 0usize..3,
     ) {
         runtime().block_on(async {
             let path = TempFile::new();
@@ -129,7 +129,7 @@ proptest! {
     }
 
     #[test]
-    fn closing_all_senders_drains_accepted_jobs(lengths in prop::array::uniform3(1usize..=64)) {
+    fn closing_all_senders_drains_accepted_jobs(lengths in prop::array::uniform2(1usize..=64)) {
         runtime().block_on(async {
             let path = TempFile::new();
             let store = Store::create_file(&path.0).unwrap();
@@ -165,15 +165,17 @@ proptest! {
 }
 
 #[test]
-fn continuously_ready_classes_are_served_within_three_turns() {
-    // Exhaust every readiness history of length six (8^6). Each continuously
-    // ready class gets a turn within three accepted jobs, whatever peers do.
-    for encoded in 0..(1u32 << 18) {
-        for protected in 0..3 {
+fn continuously_ready_classes_are_served_within_one_turn_each() {
+    // Exhaust every readiness history of length six. Each continuously ready
+    // class gets a turn within as many accepted jobs as there are classes,
+    // whatever peers do.
+    let bits = Class::COUNT;
+    for encoded in 0..(1u32 << (bits * 6)) {
+        for protected in 0..bits {
             let mut policy = Dispatch::default();
             let mut age = 0;
             for step in 0..6 {
-                let mask = ((encoded >> (step * 3)) & 7) | (1 << protected);
+                let mask = ((encoded >> (step * bits)) & ((1 << bits) - 1)) | (1 << protected);
                 let class = policy
                     .order()
                     .into_iter()
@@ -185,7 +187,7 @@ fn continuously_ready_classes_are_served_within_three_turns() {
                 } else {
                     age + 1
                 };
-                assert!(age < 3);
+                assert!(age < bits);
             }
         }
     }

@@ -4,7 +4,6 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::auth::generate_webhook_secret;
 use crate::daemon::MoneroDaemonClient as _;
 use crate::engine_settings::EngineSettings;
 #[cfg(feature = "snp")]
@@ -14,7 +13,7 @@ use crate::key_custody::{
     remove_wallet_logged, KeyCustodyError, SubaddressIndex, WalletHandle, WalletMaterial,
 };
 use crate::status::OrderStatus;
-use crate::store::{Database, NewTenant, Order, OrderPaymentRow, TenantConfigPatch, Webhook};
+use crate::store::{Database, NewTenant, Order, OrderPaymentRow, TenantConfigPatch};
 
 use super::{
     network_str, now_unix, parse_network, parse_status_query, resolve_wallet_handle, ApiError,
@@ -1333,155 +1332,6 @@ pub(super) async fn set_order_refund_address(
         .await?;
     if updated {
         Ok(())
-    } else {
-        Err(ApiError::NotFound)
-    }
-}
-
-#[derive(Deserialize)]
-pub(super) struct CreateWebhookRequest {
-    url: String,
-    extra_headers: Option<serde_json::Value>,
-}
-
-/// Most extra headers one webhook may carry, and most bytes of names and
-/// values together.
-const MAX_EXTRA_HEADERS: usize = 20;
-const MAX_EXTRA_HEADER_BYTES: usize = 4 * 1024;
-
-/// The `extra_headers` a webhook is saved with: a JSON object of string
-/// values, each a valid header name and value (what `reqwest` would
-/// otherwise refuse at every delivery, failing them all with a cryptic
-/// error until the webhook is deleted), none of them the engine's own, in
-/// lowercase. Nothing given is an empty object.
-fn validate_extra_headers(extra_headers: Option<serde_json::Value>) -> Result<String, ApiError> {
-    let Some(extra_headers) = extra_headers else {
-        return Ok("{}".to_owned());
-    };
-    let serde_json::Value::Object(map) = extra_headers else {
-        return Err(ApiError::BadRequest(
-            "extra_headers must be an object of string values".into(),
-        ));
-    };
-    if map.len() > MAX_EXTRA_HEADERS {
-        return Err(ApiError::BadRequest(format!(
-            "extra_headers may hold at most {MAX_EXTRA_HEADERS} headers"
-        )));
-    }
-    let mut checked = serde_json::Map::with_capacity(map.len());
-    let mut bytes = 0;
-    for (name, value) in map {
-        let Some(value) = value.as_str() else {
-            return Err(ApiError::BadRequest(format!(
-                "extra header {name:?} must be a string"
-            )));
-        };
-        let name = axum::http::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
-            ApiError::BadRequest(format!("{name:?} is not a valid header name: {e}"))
-        })?;
-        axum::http::HeaderValue::from_str(value).map_err(|e| {
-            ApiError::BadRequest(format!(
-                "the value of extra header {name} is not valid: {e}"
-            ))
-        })?;
-        let name = name.as_str();
-        if crate::webhook_delivery::is_reserved_webhook_header(name) {
-            return Err(ApiError::BadRequest(format!(
-                "extra header {name} is set by the engine itself"
-            )));
-        }
-        bytes += name.len() + value.len();
-        if bytes > MAX_EXTRA_HEADER_BYTES {
-            return Err(ApiError::BadRequest(format!(
-                "extra_headers may hold at most {MAX_EXTRA_HEADER_BYTES} bytes"
-            )));
-        }
-        checked.insert(name.to_owned(), serde_json::Value::String(value.to_owned()));
-    }
-    Ok(serde_json::Value::Object(checked).to_string())
-}
-
-#[derive(Serialize)]
-pub(super) struct CreateWebhookResponse {
-    webhook_id: crate::store::WebhookId,
-    signing_secret: String,
-}
-
-pub(super) async fn create_webhook(
-    AuthedTenant(tenant): AuthedTenant,
-    State(db): State<Database>,
-    Json(req): Json<CreateWebhookRequest>,
-) -> Result<Json<CreateWebhookResponse>, ApiError> {
-    let parsed =
-        url::Url::parse(&req.url).map_err(|e| ApiError::BadRequest(format!("invalid url: {e}")))?;
-    if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err(ApiError::BadRequest(
-            "only http/https URLs are allowed".into(),
-        ));
-    }
-    // Resolved-IP SSRF validation (see webhook_sign::is_disallowed_address) happens
-    // at delivery time in the not-yet-built delivery worker, not here - DNS can
-    // change between registration and delivery, so a registration-time-only check
-    // would be insufficient on its own regardless.
-    let extra_headers_json = validate_extra_headers(req.extra_headers)?;
-    let secret = generate_webhook_secret();
-    let (tenant_id, url, signing_secret) = (tenant.id.clone(), req.url.clone(), secret.clone());
-    let webhook = db
-        .write(move |store| {
-            store.create_webhook(
-                &tenant_id,
-                &url,
-                &extra_headers_json,
-                &signing_secret,
-                now_unix(),
-            )
-        })
-        .await?;
-    Ok(Json(CreateWebhookResponse {
-        webhook_id: webhook.id,
-        signing_secret: secret,
-    }))
-}
-
-#[derive(Serialize)]
-pub(super) struct WebhookView {
-    webhook_id: crate::store::WebhookId,
-    url: String,
-    enabled: bool,
-    created_at: i64,
-}
-
-impl From<Webhook> for WebhookView {
-    fn from(w: Webhook) -> Self {
-        Self {
-            webhook_id: w.id,
-            url: w.url,
-            enabled: w.enabled,
-            created_at: w.created_at,
-        }
-    }
-}
-
-pub(super) async fn list_webhooks(
-    AuthedTenant(tenant): AuthedTenant,
-    State(db): State<Database>,
-) -> Result<Json<Vec<WebhookView>>, ApiError> {
-    let id = tenant.id.clone();
-    let webhooks = db.read(move |s| s.list_webhooks(&id)).await?;
-    Ok(Json(webhooks.into_iter().map(WebhookView::from).collect()))
-}
-
-pub(super) async fn delete_webhook(
-    AuthedTenant(tenant): AuthedTenant,
-    Path(webhook_id): Path<crate::store::WebhookId>,
-    State(db): State<Database>,
-) -> Result<StatusCode, ApiError> {
-    let id = tenant.id.clone();
-    let deleted = db
-        .write(move |s| s.delete_webhook(&id, &webhook_id))
-        .await?;
-    if deleted {
-        Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::NotFound)
     }

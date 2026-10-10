@@ -277,26 +277,6 @@ settings! {
         description: "Largest request body the engine accepts, in bytes.",
         example: "8192",
     },
-    WEBHOOKS_ALLOW_PRIVATE_URLS: bool {
-        key: "webhooks.allow_private_urls",
-        default: false,
-        description: "Whether webhooks may be sent to private or loopback addresses. Only for testing against your own network.",
-        example: "false",
-    },
-    WEBHOOKS_DELIVERY_TIMEOUT_MS: u64 {
-        key: "webhooks.delivery_timeout_ms",
-        default: 5000,
-        check: range(100, 300_000),
-        description: "Milliseconds a store's webhook endpoint has to answer before the attempt counts as failed.",
-        example: "5000",
-    },
-    WEBHOOKS_MAX_ATTEMPTS: u32 {
-        key: "webhooks.max_attempts",
-        default: 8,
-        check: range(1, 64),
-        description: "Attempts per webhook delivery before giving up, with the wait doubling from 1 minute up to 1 hour between them.",
-        example: "8",
-    },
     LOGGING_LEVEL: String {
         key: "logging.level",
         default: telemetry::DEFAULT_LEVEL.to_owned(),
@@ -593,32 +573,6 @@ fn human_bytes(bytes: u64) -> String {
         format!("{:.1} GB", mb / 1024.0)
     } else {
         format!("{} MB", mb.round())
-    }
-}
-
-/// What each webhook delivery attempt reads (task 2.4).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WebhookConfig {
-    pub allow_private_urls: bool,
-    pub delivery_timeout: Duration,
-    pub max_attempts: u32,
-}
-
-impl Section for WebhookConfig {
-    const NAME: &'static str = "webhooks";
-    fn keys() -> &'static [&'static dyn AnySetting] {
-        &[
-            &WEBHOOKS_ALLOW_PRIVATE_URLS,
-            &WEBHOOKS_DELIVERY_TIMEOUT_MS,
-            &WEBHOOKS_MAX_ATTEMPTS,
-        ]
-    }
-    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
-        Ok(Self {
-            allow_private_urls: snapshot.get(&WEBHOOKS_ALLOW_PRIVATE_URLS),
-            delivery_timeout: Duration::from_millis(snapshot.get(&WEBHOOKS_DELIVERY_TIMEOUT_MS)),
-            max_attempts: snapshot.get(&WEBHOOKS_MAX_ATTEMPTS),
-        })
     }
 }
 
@@ -1018,7 +972,6 @@ pub struct EngineSettings {
     pub env: live_settings::Env,
     pub nodes: Live<NodeConfig>,
     pub scan: Live<ScanConfig>,
-    pub webhooks: Live<WebhookConfig>,
     pub limits: Live<ApiLimits>,
     pub tenant_defaults: Live<TenantDefaults>,
     pub runtime: Live<RuntimeConfig>,
@@ -1059,7 +1012,6 @@ impl EngineSettings {
             env: live_settings::Env::fixed(Vec::<(String, String)>::new()),
             nodes: Live::new(NodeConfig::default()),
             scan: Live::new(defaults_of()),
-            webhooks: Live::new(defaults_of()),
             limits: Live::new(defaults_of()),
             tenant_defaults: Live::new(defaults_of()),
             runtime: Live::new(defaults_of()),
@@ -1277,7 +1229,6 @@ impl EngineSettings {
         };
         let limits = builder.reloadable(LimitsReloadable { rate_limiter });
         let scan = builder.section::<ScanConfig>();
-        let webhooks = builder.section::<WebhookConfig>();
         let tenant_defaults = builder.section::<TenantDefaults>();
         let runtime = builder.section::<RuntimeConfig>();
         // Read at start, before the store opened (`main`); registered so it
@@ -1315,7 +1266,6 @@ impl EngineSettings {
             env,
             nodes,
             scan,
-            webhooks,
             limits,
             tenant_defaults,
             runtime,

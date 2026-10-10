@@ -101,7 +101,7 @@ pub struct Networks {
 #[derive(Clone, FromRef)]
 pub struct AppState {
     /// The database: reads on the read pool, writes on the database worker
-    /// (the `Admin` class, in turn with the scanner's and webhooks' work),
+    /// (the `Admin` class, in turn with the scanner's work),
     /// and order-change notifications. Handlers never hold the shared store.
     pub db: crate::store::Database,
     /// Key custody: the backends, which one new stores use, and the
@@ -255,14 +255,6 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         .route(
             "/api/v1/admin/tenant/payments/lookup",
             post(admin::lookup_payment),
-        )
-        .route(
-            "/api/v1/admin/tenant/webhooks",
-            get(admin::list_webhooks).post(admin::create_webhook),
-        )
-        .route(
-            "/api/v1/admin/tenant/webhooks/{webhook_id}",
-            delete(admin::delete_webhook),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),

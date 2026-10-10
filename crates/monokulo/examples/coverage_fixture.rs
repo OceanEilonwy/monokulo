@@ -90,7 +90,7 @@ fn record_baseline(engine: &TestEngineHandle) {
             },
         ],
         database: shared::activity::Database {
-            queued: [1, 0, 0],
+            queued: [1, 0],
             capacity: 64,
             completed: 4_210,
             max_queue_wait_us: 1_700,

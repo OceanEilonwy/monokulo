@@ -5,7 +5,7 @@
 //! ## Why this is its own crate, not `shared`
 //!
 //! `shared` is a *dependency of* `engine` (`shared::auth`,
-//! `shared::webhook_sign`, `shared::password`, `shared::migrations` are all
+//! `shared::password`, `shared::migrations` are all
 //! pulled in by the engine crate). A helper that boots a real
 //! `engine` engine instance necessarily needs `engine` itself
 //! as a dependency - even as a dev-dependency, that would make `shared`
@@ -44,7 +44,6 @@ use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle};
 use engine::network::network_str;
 use engine::scanner::run_scan_tick;
 use engine::store::Store;
-use engine::webhook_delivery::{run_delivery_tick, DEFAULT_MAX_ATTEMPTS};
 use monero::Network;
 
 /// The engine token every engine this crate spawns accepts: what a
@@ -67,7 +66,7 @@ pub fn engine_http_client() -> reqwest::Client {
 
 /// How often the background loops (see [`TestEngineConfig::with_background_loops`])
 /// re-run, when enabled. Real deployments poll on the order of seconds (see
-/// `main.rs`'s `mempool_poll_interval_ms`/webhook delivery's own 5s sleep) - a test
+/// `main.rs`'s `mempool_poll_interval_ms`) - a test
 /// harness can afford to poll far more aggressively than that so a test forcing a
 /// real event (e.g. an order crossing its `expires_at`) doesn't have to wait long for
 /// it to actually happen.
@@ -278,11 +277,11 @@ pub struct TestEngineHandle {
     /// instead of over `addr`. Both reach one engine.
     router: axum::Router,
     server_task: tokio::task::JoinHandle<()>,
-    /// The scanner-tick and webhook-delivery-tick background loops, present only when
+    /// The scanner-tick background loop, present only when
     /// [`TestEngineConfig::with_background_loops`] was used. Empty otherwise, so
     /// `Drop` has nothing extra to abort for every other caller (the overwhelming
-    /// majority of this crate's existing use, which never touches the scanner or
-    /// delivery worker at all).
+    /// majority of this crate's existing use, which never touches the scanner at
+    /// all).
     background_tasks: Vec<tokio::task::JoinHandle<()>>,
     /// This engine's own store/key-custody/wallet-handles registry - kept so
     /// [`TestEngineHandle::run_scan_tick_now`] can drive a real, one-off scan tick
@@ -502,13 +501,11 @@ impl TestEngineHandle {
 
     /// Pays `order_id` in full, the way a real scan would record it: a
     /// synthetic confirmed payment of exactly the order's amount, then the
-    /// same status recompute-and-enqueue a scan tick does
+    /// same status recompute a scan tick does
     /// (`engine::scanner::recompute_and_notify`), so the order reads `paid`
-    /// and an `order.paid` webhook is queued for delivery. For end-to-end
-    /// tests that need a paid order without a real chain: pair it with
-    /// [`TestEngineConfig::with_background_loops`] (and usually
-    /// [`TestEngineConfig::without_background_scan_loop`]) so the webhook is
-    /// actually delivered.
+    /// and an `order.paid` event is written to the order-event log, which
+    /// monokulo delivers to the store's webhooks. For end-to-end tests that
+    /// need a paid order without a real chain.
     ///
     /// The payment is recorded at height 1000 and the recompute runs as if
     /// the chain tip were 100 blocks later, comfortably past any
@@ -625,7 +622,7 @@ impl TestEngineHandle {
 
     /// Expires `order_id` the way a scan tick after its deadline would: the
     /// same status recompute, run as if the clock were past `expires_at`, so
-    /// the order reads `expired` and an `order.expired` webhook is queued.
+    /// the order reads `expired` and an `order.expired` event is written.
     /// For tests of a customer who never pays.
     pub fn mark_order_expired(&self, order_id: &str) -> Result<(), engine::store::StoreError> {
         let store = self.store.lock();
@@ -653,8 +650,8 @@ impl TestEngineHandle {
 }
 
 impl Drop for TestEngineHandle {
-    /// Aborts the background `axum::serve` task (and, if spawned, the scanner/
-    /// webhook-delivery loops) so the port and tasks don't outlive the test. A hard
+    /// Aborts the background `axum::serve` task (and, if spawned, the scanner
+    /// loop) so the port and tasks don't outlive the test. A hard
     /// `abort()` rather than a graceful shutdown handshake is deliberately simple and
     /// sufficient at this scale: each test gets its own ephemeral port and its own
     /// tasks, there are no persistent connections worth draining, and the in-memory
@@ -764,13 +761,13 @@ impl TestEngineConfig {
         self
     }
 
-    /// Opts into running the real scanner-tick and webhook-delivery-tick loops in
-    /// the background against the spawned engine's own store - `main.rs`'s
-    /// `run_scanner_loop`/`run_webhook_delivery_loop`, minus the supervisor restart
+    /// Opts into running the real scanner-tick loop in the background against
+    /// the spawned engine's own store - `main.rs`'s `run_scanner_loop`, minus the
+    /// supervisor restart
     /// wrapper (a test that panics here should fail loudly, not get quietly
     /// restarted) and on a much shorter interval (see [`BACKGROUND_LOOP_INTERVAL`]).
     ///
-    /// This is what lets a caller force a *genuine* webhook delivery in a test
+    /// This is what lets a caller force a *genuine* order event in a test
     /// (WBS 1.4.4/1.4.5): create a tenant with a short `order_expiry_seconds`, create
     /// an order against it, and simply wait - the real `run_scan_tick` recomputes
     /// every non-terminal order's status every tick regardless of whether anything
@@ -779,11 +776,11 @@ impl TestEngineConfig {
     /// `an_unpaid_order_past_its_deadline_becomes_expired_on_a_tick_that_matches_nothing`
     /// test, and against the fact that its non-terminal-order recompute sweep is keyed
     /// off `network` alone, not off the `tenants`/watchlist parameter that gates
-    /// payment-matching), so an order past its deadline flips to `expired` and enqueues
-    /// a real `order.expired` webhook purely from wall-clock time passing - no real
-    /// Monero payment, node, or even a non-trivial `MoneroDaemonClient` required. The
-    /// real `run_delivery_tick` then picks that delivery up and performs a genuine
-    /// outbound HTTP call, signed exactly like a production delivery.
+    /// payment-matching), so an order past its deadline flips to `expired` and writes
+    /// a real `order.expired` event to the order-event log purely from wall-clock
+    /// time passing - no real Monero payment, node, or even a non-trivial
+    /// `MoneroDaemonClient` required. Monokulo, subscribed to
+    /// `GET /api/v1/admin/order-events`, delivers it to the store's webhooks.
     ///
     /// Chain scanning for payment *matches* is deliberately not exercised by this
     /// path: [`NoopDaemonClient`] is inert, and `run_scan_tick` is always called with
@@ -793,10 +790,6 @@ impl TestEngineConfig {
     /// needs genuine payment detection needs a real `MoneroDaemonClient` and wallet
     /// handles, neither of which this harness provides; that is out of scope for
     /// what this opt-in exists for.
-    ///
-    /// `allow_private_urls` is unconditionally `true` for these loops - a test's own
-    /// webhook receiver is essentially always `127.0.0.1`, and there is no
-    /// SSRF-relevant "real merchant network" for a test harness to protect.
     ///
     /// A caller that instead needs genuine payment-*matching* chain scanning against a
     /// real daemon (WBS 1.4.5's real stagenet connect-flow test) should drive that
@@ -832,8 +825,9 @@ impl TestEngineConfig {
         self
     }
 
-    /// Keeps the webhook-delivery-tick loop from [`with_background_loops`] but drops
-    /// its `NoopDaemonClient`-driven scan-tick loop, for a caller that drives scanning
+    /// Drops the `NoopDaemonClient`-driven scan-tick loop of
+    /// [`with_background_loops`] (leaving nothing in the background), for a caller
+    /// that drives scanning
     /// itself against a real daemon via [`TestEngineHandle::run_scan_tick_now`] - see
     /// the correction on [`with_background_loops`]'s own doc comment for why running
     /// both against the same network poisons the real scan's watermark and makes it
@@ -1030,67 +1024,45 @@ impl TestEngineConfig {
         });
 
         let mut background_tasks = Vec::new();
-        if self.background_loops {
-            if self.background_scan_loop {
-                let networks = self.networks.clone();
-                let scan_store = store.clone();
-                let scan_key_custody = key_custody.clone();
-                let scan_wallet_handles = wallet_handles.clone();
-                background_tasks.push(tokio::spawn(async move {
-                    let daemon = NoopDaemonClient;
-                    loop {
-                        // Rebuilt fresh every tick (not a boot-time snapshot) so a tenant
-                        // created at runtime - e.g. via a real connect flow through
-                        // monokulo - is picked up without needing a restart, exactly
-                        // like `main.rs`'s own `run_scanner_loop` re-reads its production
-                        // `wallet_handles` registry every round. Harmless either way here -
-                        // `NoopDaemonClient` never finds a payment match regardless of the
-                        // tenant list - but this keeps the loop's own watchlist-building
-                        // logic faithful to production, for a caller that later swaps in a
-                        // real daemon via `run_scan_tick_now` instead.
-                        let tenants: Vec<(engine::store::TenantId, WalletHandle)> =
-                            scan_wallet_handles
-                                .read()
-                                .iter()
-                                .map(|(id, h)| (id.clone(), *h))
-                                .collect();
-                        for network in &networks {
-                            // Errors are deliberately swallowed here, exactly like
-                            // `main.rs`'s own supervised loop logs and continues rather
-                            // than dying - a test relying on this loop observes its
-                            // effect (a status transition, a delivered webhook), not its
-                            // per-tick `Result`.
-                            let _ = run_scan_tick(
-                                &scan_store,
-                                scan_key_custody.as_ref(),
-                                &daemon,
-                                network_str(*network),
-                                &tenants,
-                                20,
-                                0,
-                            )
-                            .await;
-                        }
-                        tokio::time::sleep(BACKGROUND_LOOP_INTERVAL).await;
-                    }
-                }));
-            }
-
-            let delivery_store = store.clone();
+        if self.background_loops && self.background_scan_loop {
+            let networks = self.networks.clone();
+            let scan_store = store.clone();
+            let scan_key_custody = key_custody.clone();
+            let scan_wallet_handles = wallet_handles.clone();
             background_tasks.push(tokio::spawn(async move {
-                let client = engine::webhook_delivery::WebhookClient::build()
-                    .expect("failed to build the test engine's webhook delivery HTTP client");
-                // allow_private_urls - see with_background_loops's doc comment
-                client.set_allow_private(true);
+                let daemon = NoopDaemonClient;
                 loop {
-                    let _ = run_delivery_tick(
-                        &delivery_store,
-                        &client,
-                        Duration::from_secs(5),
-                        DEFAULT_MAX_ATTEMPTS,
-                        engine::now_unix(),
-                    )
-                    .await;
+                    // Rebuilt fresh every tick (not a boot-time snapshot) so a tenant
+                    // created at runtime - e.g. via a real connect flow through
+                    // monokulo - is picked up without needing a restart, exactly
+                    // like `main.rs`'s own `run_scanner_loop` re-reads its production
+                    // `wallet_handles` registry every round. Harmless either way here -
+                    // `NoopDaemonClient` never finds a payment match regardless of the
+                    // tenant list - but this keeps the loop's own watchlist-building
+                    // logic faithful to production, for a caller that later swaps in a
+                    // real daemon via `run_scan_tick_now` instead.
+                    let tenants: Vec<(engine::store::TenantId, WalletHandle)> = scan_wallet_handles
+                        .read()
+                        .iter()
+                        .map(|(id, h)| (id.clone(), *h))
+                        .collect();
+                    for network in &networks {
+                        // Errors are deliberately swallowed here, exactly like
+                        // `main.rs`'s own supervised loop logs and continues rather
+                        // than dying - a test relying on this loop observes its
+                        // effect (a status transition, an order event), not its
+                        // per-tick `Result`.
+                        let _ = run_scan_tick(
+                            &scan_store,
+                            scan_key_custody.as_ref(),
+                            &daemon,
+                            network_str(*network),
+                            &tenants,
+                            20,
+                            0,
+                        )
+                        .await;
+                    }
                     tokio::time::sleep(BACKGROUND_LOOP_INTERVAL).await;
                 }
             }));
@@ -1181,64 +1153,20 @@ mod tests {
     const TEST_SPEND_PUBKEY_HEX: &str =
         "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 
-    /// Binds a tiny local receiver recording every POST body it gets, alongside the
-    /// `X-Monokulo-Signature` header - just enough to prove a real webhook delivery
-    /// actually arrived, without pulling in anything from `mock-woocommerce` (this
-    /// crate sits *below* it in the dependency graph, and `with_background_loops`
-    /// needs to be provably useful entirely on its own).
-    /// Each webhook the receiver got: its signature header and JSON body.
-    /// Each delivery's signature header, parsed body, and the body's exact
-    /// bytes (what the signature covers).
-    type Received = Arc<parking_lot::Mutex<Vec<(Option<String>, serde_json::Value, Vec<u8>)>>>;
-
-    async fn spawn_recording_receiver() -> (SocketAddr, Received, tokio::task::JoinHandle<()>) {
-        use axum::extract::State as AxumState;
-        use axum::http::HeaderMap;
-
-        let received: Received = Arc::new(parking_lot::Mutex::new(Vec::new()));
-        let received_for_state = received.clone();
-
-        async fn hook(
-            AxumState(received): AxumState<Received>,
-            headers: HeaderMap,
-            body: axum::body::Bytes,
-        ) -> axum::http::StatusCode {
-            let signature = headers
-                .get("X-Monokulo-Signature")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
-            if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) {
-                received.lock().push((signature, parsed, body.to_vec()));
-            }
-            axum::http::StatusCode::OK
-        }
-
-        let router = axum::Router::new()
-            .route("/hook", axum::routing::post(hook))
-            .with_state(received_for_state);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let task = tokio::spawn(async move {
-            let _ = axum::serve(listener, router).await;
-        });
-        (addr, received, task)
-    }
-
     /// Direct proof that [`TestEngineConfig::with_background_loops`] genuinely runs
-    /// the real scanner-tick and webhook-delivery-tick machinery, entirely through
-    /// the engine's own public/admin HTTP API - no `mock-woocommerce`/`monokulo`
-    /// involved, since this crate sits below both of them and this capability needs
-    /// to stand on its own.
+    /// the real scanner-tick machinery, entirely through the engine's own admin HTTP
+    /// API - no `mock-woocommerce`/`monokulo` involved, since this crate sits below
+    /// both of them and this capability needs to stand on its own.
     ///
     /// Forces the event the same way WBS 1.4.4's real test does: a tenant created
     /// with `order_expiry_seconds: 1`, then an order created against it with no
     /// payment ever made. `run_scan_tick`'s non-terminal-order recompute sweep is
     /// unconditional (see `with_background_loops`'s doc comment) - once one second of
     /// wall-clock time passes, the very next tick must flip the order to `expired`
-    /// and enqueue a real, signed `order.expired` webhook, which the delivery loop
-    /// then genuinely POSTs to the receiver below.
+    /// and write a real `order.expired` event, which the order-event stream
+    /// (`GET /api/v1/admin/order-events`, what monokulo reads) then sends.
     #[tokio::test]
-    async fn background_loops_genuinely_deliver_a_real_expired_webhook() {
+    async fn background_loops_genuinely_write_a_real_expired_order_event() {
         let engine = TestEngineConfig::new()
             .with_networks(&[Network::Mainnet])
             .with_background_loops()
@@ -1263,19 +1191,6 @@ mod tests {
             .expect("create_tenant response was not valid JSON");
         let secret_token = created["secret_token"].as_str().unwrap().to_string();
 
-        let (receiver_addr, received, receiver_task) = spawn_recording_receiver().await;
-        let webhook: serde_json::Value = client
-            .post(format!("{base_url}/api/v1/admin/tenant/webhooks"))
-            .bearer_auth(&secret_token)
-            .json(&serde_json::json!({ "url": format!("http://{receiver_addr}/hook") }))
-            .send()
-            .await
-            .expect("create_webhook request failed")
-            .json()
-            .await
-            .expect("create_webhook response was not valid JSON");
-        let signing_secret = webhook["signing_secret"].as_str().unwrap().to_string();
-
         let order: serde_json::Value = client
             .post(format!("{base_url}/api/v1/admin/tenant/orders"))
             .bearer_auth(&secret_token)
@@ -1288,53 +1203,43 @@ mod tests {
             .expect("create_order response was not valid JSON");
         let order_id = order["order_id"].as_str().unwrap().to_string();
 
-        // Poll rather than a fixed sleep: the background loop runs every
-        // `BACKGROUND_LOOP_INTERVAL`, and this only needs to wait for the first tick
-        // after the order's 1-second `expires_at` has actually passed.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60); // bounds only a hung run
-        let matched = loop {
-            let found = received
-                .lock()
-                .iter()
-                .find(|(_, body, _)| {
-                    body.get("order_id").and_then(|v| v.as_str()) == Some(order_id.as_str())
+        // The stream sends the event as it commits; the deadline bounds only a
+        // hung run.
+        let mut stream = client
+            .get(format!("{base_url}/api/v1/admin/order-events?after=0"))
+            .send()
+            .await
+            .expect("opening the order-event stream failed");
+        assert_eq!(stream.status(), reqwest::StatusCode::OK);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut text = String::new();
+        let event = loop {
+            if let Some(event) = text
+                .split("\n\n")
+                .filter_map(|block| {
+                    block
+                        .lines()
+                        .find_map(|line| line.strip_prefix("data: "))
+                        .and_then(|data| serde_json::from_str::<serde_json::Value>(data).ok())
                 })
-                .cloned();
-            if let Some(found) = found {
-                break Some(found);
+                .find(|event| {
+                    event["order_id"] == order_id.as_str() && event["event"] == "order.expired"
+                })
+            {
+                break event;
             }
-            if tokio::time::Instant::now() >= deadline {
-                break None;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            let chunk = tokio::time::timeout_at(deadline, stream.chunk())
+                .await
+                .expect("expected a real order.expired event within the deadline")
+                .expect("reading the order-event stream failed")
+                .expect("the order-event stream ended");
+            text.push_str(std::str::from_utf8(&chunk).unwrap());
         };
-
-        let (signature, payload, raw_payload) =
-            matched.expect("expected a real order.expired webhook delivery within the deadline");
-        assert_eq!(payload["event"], serde_json::json!("order.expired"));
-        assert_eq!(payload["status"], serde_json::json!("expired"));
-        assert!(payload["event_id"]
+        assert_eq!(event["status"], serde_json::json!("expired"));
+        assert_eq!(event["tenant"], created["public_key"]);
+        assert!(event["event_id"]
             .as_str()
             .is_some_and(|id| id.starts_with("evt_")));
-
-        // Strong proof this is a genuine, correctly-signed delivery, not just a
-        // request that happened to arrive: the HMAC over the exact bytes this
-        // test received (not a re-serialisation of them, which a key order
-        // or spacing change would break) must match what was sent, using
-        // *this tenant's real* `signing_secret` handed back by `create_webhook`
-        // above - a signature computed with any other secret must not verify.
-        let signature = signature.expect("a real delivery must carry X-Monokulo-Signature");
-        assert!(
-            engine::webhook_sign::verify_signature(
-                &signing_secret,
-                &raw_payload,
-                &signature,
-                shared::time::now_unix()
-            ),
-            "the delivered signature must verify against this tenant's real signing_secret"
-        );
-
-        receiver_task.abort();
     }
 
     /// The snp backend: the same outcomes as plain, through encrypted keys.
@@ -1351,7 +1256,7 @@ mod tests {
         /// this... just swapping which backend answers"). Height stuck at 1 with one
         /// already-seeded empty block, tx served from the mempool - mirrors
         /// `src/scanner.rs`'s own
-        /// `run_scan_tick_matches_mempool_tx_recomputes_status_and_enqueues_a_webhook`
+        /// `run_scan_tick_matches_mempool_tx_recomputes_status_and_writes_an_order_event`
         /// setup exactly (`daemon.push_block("h1", vec![])` then
         /// `daemon.set_mempool(vec![fixture_tx()])`), not a fresh scenario.
         struct FixtureTxDaemonClient;
@@ -1484,7 +1389,7 @@ mod tests {
         /// Runs the real order-creation-plus-chain-scan scenario against a freshly
         /// spawned engine built from `engine_config`, entirely through the engine's
         /// own public/admin HTTP API plus one real `run_scan_tick_now` call - exactly
-        /// the pattern `background_loops_genuinely_deliver_a_real_expired_webhook`
+        /// the pattern `background_loops_genuinely_write_a_real_expired_order_event`
         /// above already established for this crate, generalized to take the
         /// `KeyCustody` backend as a parameter instead of hardcoding it. Returns
         /// `(status, amount_received_piconero)` so the caller can compare two runs for
