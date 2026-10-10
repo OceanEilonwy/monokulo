@@ -82,9 +82,11 @@ const ENGINE_STYLE: &str = r#"
 .engine-chip.warn { background: var(--tint-warning); border-color: var(--warning); }
 .engine-chip.err { background: var(--tint-error); border-color: var(--error); }
 .engine-chip.hi { background: var(--tint-highlight); border-color: var(--accent); }
-.engine-timeline { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--space-md); align-items: start; }
-.engine-timeline .tl-track { position: relative; display: grid; gap: 3px; }
-.engine-timeline .tl-read { align-self: center; }
+/* The scrub bar takes the row up to the playback control, a --space-xl
+   step short of it: room for the window's right handle, which sits 16px
+   outside the window, with a --space-sm gap still clear of the control. */
+.engine-timeline { display: flex; align-items: center; gap: var(--space-sm) var(--space-xl); }
+.engine-timeline .tl-track { position: relative; display: grid; gap: 3px; flex: 1 1 0; min-width: 0; }
 .tl-modes { display: inline-flex; gap: .5rem; align-self: center; height: 28px; border: 1px solid var(--btn-border); border-radius: var(--radius-sm); overflow: hidden; }
 .tl-modes label { position: relative; display: flex; align-items: center; padding: 0 12px; font-size: 0.8rem; font-weight: 700; cursor: pointer; color: var(--btn-ink); background: var(--btn-bg); }
 .tl-modes label + label { border-left: 1px solid var(--btn-border); }
@@ -109,7 +111,8 @@ const ENGINE_STYLE: &str = r#"
 .tl-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 .tl-axis span.edge { transform: none; }
 .tl-axis span.end { transform: translateX(-100%); }
-.tl-read { font-size: 0.75rem; font-weight: 700; display: flex; align-items: center; justify-content: flex-end; white-space: nowrap; min-width: 9rem; height: 32px; font-variant-numeric: tabular-nums; }
+.tl-modes { position: relative; }
+.tl-read { position: absolute; top: 100%; right: 0; font-size: 0.68rem; font-weight: 700; white-space: nowrap; line-height: 1.4; color: var(--muted); font-variant-numeric: tabular-nums; }
 .tl-tip { position: absolute; z-index: 30; pointer-events: none; transform: translate(-50%, -100%); top: -4px; background: var(--ink); color: var(--paper-raised); font-size: 0.7rem; font-weight: 700; padding: 3px 7px; border-radius: 4px; white-space: nowrap; max-width: 30rem; overflow: hidden; text-overflow: ellipsis; }
 .engine-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); padding: 0; }
 .engine-summary > div { padding: 5px var(--space-md); border-left: 1px solid var(--line); min-width: 0; display: grid; grid-template-columns: auto 1fr; column-gap: var(--space-sm); align-items: baseline; }
@@ -350,7 +353,8 @@ details.mini.alert { border-color: var(--error); }
   .lanes { grid-template-columns: 64px minmax(0, 1fr) auto; gap: 2px var(--space-xs); }
   .lane-label .tierchip { font-size: 0.65rem; }
   .lane-label small { display: none; }
-  .engine-timeline { grid-template-columns: minmax(0, 1fr); }
+  .engine-timeline { flex-wrap: wrap; }
+  .engine-timeline .tl-track { flex-basis: 100%; }
   .help-body { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -497,7 +501,6 @@ fn timeline() -> Markup {
                 div class="tl-head" id="tl-head" role="slider" aria-label="Playback position" {}
                 div class="tl-axis" id="tl-axis" {}
             }
-            div class="tl-read" id="tl-read" { span id="tl-text" {} }
             div class="tl-modes" id="tl-modes" {
                 label for="tl-mode" { "Playback" }
                 mk-select compact {
@@ -507,6 +510,9 @@ fn timeline() -> Markup {
                         option value="paused" { "Pause" }
                     }
                 }
+                // How far behind live, under the control: it takes no room
+                // in the row, so the bar never changes width.
+                div class="tl-read" id="tl-read" { span id="tl-text" {} }
             }
         }
     }

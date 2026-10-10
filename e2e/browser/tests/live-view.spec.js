@@ -590,6 +590,51 @@ test('the chain strip labels take as few levels as they can, with 1px leaders', 
   expect(s.labels).toEqual([]);
 });
 
+test('the timeline scrub bar reaches the playback control', async ({ page, context }) => {
+  await openAsAdmin(page, context);
+  await expect(page.locator('#engine-timeline')).toBeVisible();
+  const xl = await space(page, 'xl');
+  const xs = await space(page, 'xs');
+  const measure = () => page.evaluate(() => {
+    const box = (el) => el.getBoundingClientRect();
+    const card = document.getElementById('engine-timeline');
+    const style = getComputedStyle(card);
+    return {
+      bar: box(document.getElementById('tl')),
+      win: box(document.getElementById('tl-win')),
+      handle: box(document.getElementById('tl-to')),
+      head: box(document.getElementById('tl-head')),
+      modes: box(document.getElementById('tl-modes')),
+      inner: box(card).right - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth),
+      innerLeft: box(card).left + parseFloat(style.paddingLeft) + parseFloat(style.borderLeftWidth),
+    };
+  });
+  for (const mode of ['live', 'paused']) {
+    // Pause is the control's longest option, and paused the readout shows.
+    if (mode === 'paused') await page.locator('#tl-mode').selectOption('paused');
+    for (const width of [1280, 820]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.waitForTimeout(300);
+      const m = await measure();
+      expect(Math.abs(m.modes.left - m.bar.right - xl), `${mode} ${width}px: ${m.bar.right} to ${m.modes.left}`).toBeLessThanOrEqual(1);
+      // The window ends at the bar's new right edge, its right handle
+      // (16px outside the window) still clear of the control.
+      if (mode === 'live') {
+        expect(Math.abs(m.win.right - m.bar.right), `${width}px`).toBeLessThanOrEqual(3);
+        expect(Math.abs(m.head.left + m.head.width / 2 - m.bar.right), `${width}px: the head marker at now, 1.5s behind`).toBeLessThanOrEqual(3);
+      }
+      expect(m.modes.left - m.handle.right, `${mode} ${width}px: the handle clear of the control`).toBeGreaterThanOrEqual(xs);
+    }
+  }
+  // A phone: the bar takes the card's whole width, the control under it.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(300);
+  const m = await measure();
+  expect(Math.abs(m.bar.right - m.inner)).toBeLessThanOrEqual(1);
+  expect(Math.abs(m.bar.left - m.innerLeft)).toBeLessThanOrEqual(1);
+  expect(m.modes.top).toBeGreaterThan(m.bar.bottom);
+});
+
 test('without JavaScript the engine page is the network as of now', async ({ browser }) => {
   const context = await browser.newContext({ javaScriptEnabled: false });
   await context.addCookies([{ name: 'session', value: fixture.admin_session, url: fixture.base_url }]);
