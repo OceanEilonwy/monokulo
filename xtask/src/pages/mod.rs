@@ -43,13 +43,14 @@ const BADGE_BANDS: [(f64, &str); 3] = [(90.0, "brightgreen"), (80.0, "green"), (
 const BADGE_BELOW_BANDS: &str = "orange";
 const BADGE_UNKNOWN: &str = "lightgrey";
 /// What a build writes into `--out`, and so what a rebuild replaces there.
-const OUTPUTS: [&str; 11] = [
+const OUTPUTS: [&str; 12] = [
     "index.html",
     "tests.html",
     "coverage.html",
     "properties.html",
     "fuzzing.html",
     "scale.html",
+    "live.html",
     "screens.html",
     "badge.json",
     "assets",
@@ -63,13 +64,15 @@ const DEFAULT_REPO_URL: &str = "https://github.com/OceanEilonwy/monokulo";
 
 pub(crate) const HELP: &str = "\
         pages build --out DIR [--coverage DIR] [--properties DIR] [--fuzz DIR] [--scale DIR]\n\
-                     [--sources FILE] [--feature zmq|default] [--repo-url URL]\n\
+                     [--live DIR] [--sources FILE] [--feature zmq|default] [--repo-url URL]\n\
                       Build the quality report (GitHub Pages /quality/) from CI artifacts: the joined\n\
                       coverage artifact (or target/coverage), an engine-properties artifact, a folder of\n\
-                      engine-fuzz artifacts, an engine-scale-measurements artifact, and a JSON file naming\n\
-                      the run behind each (docs/COVERAGE.md); replaces its own files in DIR\n\
+                      engine-fuzz artifacts, an engine-scale-measurements artifact, a live-network artifact,\n\
+                      and a JSON file naming the run behind each (docs/COVERAGE.md); replaces its own files\n\
+                      in DIR\n\
         pages fetch DIR [--repo OWNER/NAME] [--feature zmq|default]\n\
-                      Download main's newest OpenWrt site, coverage, property, fuzz and scale artifacts\n\
+                      Download main's newest OpenWrt site, coverage, property, fuzz, scale and live-network\n\
+                      artifacts\n\
                       into DIR, with DIR/sources.json naming their runs (needs the gh CLI)\n\
         pages docs --out DIR
                       Build the docs (GitHub Pages /docs/) from docs/site/*.md, with the Geomart sample
@@ -112,6 +115,7 @@ struct SiteArgs {
     properties: Option<PathBuf>,
     fuzz: Option<PathBuf>,
     scale: Option<PathBuf>,
+    live: Option<PathBuf>,
     sources: Option<PathBuf>,
     build: Build,
     repo_url: String,
@@ -119,8 +123,8 @@ struct SiteArgs {
 
 fn parse(args: &[&str]) -> io::Result<SiteArgs> {
     let bad = |what: String| io::Error::new(io::ErrorKind::InvalidInput, what);
-    let (mut out, mut coverage, mut properties, mut fuzz, mut scale, mut sources) =
-        (None, None, None, None, None, None);
+    let (mut out, mut coverage, mut properties, mut fuzz, mut scale, mut live, mut sources) =
+        (None, None, None, None, None, None, None);
     // The default build is the one that ships: zmq is a default feature.
     let mut build = Build::Default;
     let mut repo_url = DEFAULT_REPO_URL.to_string();
@@ -136,6 +140,7 @@ fn parse(args: &[&str]) -> io::Result<SiteArgs> {
             "--properties" => properties = path,
             "--fuzz" => fuzz = path,
             "--scale" => scale = path,
+            "--live" => live = path,
             "--sources" => sources = path,
             "--feature" => {
                 build =
@@ -151,6 +156,7 @@ fn parse(args: &[&str]) -> io::Result<SiteArgs> {
         properties,
         fuzz,
         scale,
+        live,
         sources,
         build,
         repo_url,
@@ -226,7 +232,7 @@ fn read_inputs(args: &SiteArgs, out: &Path) -> io::Result<Report> {
     Ok(report)
 }
 
-/// The fuzz and scale runs.
+/// The fuzz, scale and live-network runs.
 fn read_nightly(args: &SiteArgs, report: &mut Report) -> io::Result<()> {
     if let Some(src) = &args.fuzz {
         report.fuzz = inputs::fuzz(src, args.build)?;
@@ -238,6 +244,9 @@ fn read_nightly(args: &SiteArgs, report: &mut Report) -> io::Result<()> {
         {
             report.scale = Some(inputs::stress(&run)?);
         }
+    }
+    if let Some(src) = &args.live {
+        report.live = inputs::live(src)?;
     }
     Ok(())
 }
@@ -261,6 +270,7 @@ pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
         ("properties", report.properties.is_some()),
         ("fuzz", !report.fuzz.is_empty()),
         ("scale", report.scale.is_some()),
+        ("live", report.live.is_some()),
     ]
     .into_iter()
     .filter_map(|(name, present)| present.then_some(name))

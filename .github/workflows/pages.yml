@@ -2,7 +2,8 @@
 #   /           the landing page and the signed apk repository (the OpenWrt
 #               package's site artifact)
 #   /quality/   the quality report (`cargo xtask pages build`): tests,
-#               coverage, screenshots, property tests, fuzzing and scale
+#               coverage, screenshots, property tests, fuzzing, scale and the
+#               live-network tests
 #   /docs/      the guides for adding Monokulo to a site (`cargo xtask
 #               pages docs`, from docs/site/), and the Geomart sample shop
 #
@@ -14,6 +15,7 @@
 #   properties  the nightly engine property exploration
 #   fuzz        the nightly engine fuzz exploration
 #   scale       the weekly engine scale measurements
+#   live        the daily live-network tests (live-network.yml)
 # The calling workflow names its part: that part comes from its own run, and
 # every other part from that part's newest run on main, which is what the
 # live site already shows. Each page names the run and commit it is from.
@@ -29,7 +31,7 @@ on:
   workflow_call:
     inputs:
       part:
-        description: The part this run made - release, properties, fuzz or scale
+        description: The part this run made - release, properties, fuzz, scale or live
         required: true
         type: string
       conclusion:
@@ -78,7 +80,7 @@ jobs:
       - name: Build the quality report beside the landing page
         run: |
           args=(--out target/pages/site/quality --sources target/pages/sources.json --repo-url "https://github.com/$GITHUB_REPOSITORY")
-          for source in coverage properties fuzz scale; do
+          for source in coverage properties fuzz scale live; do
             if test -d "target/pages/$source"; then args+=("--$source" "target/pages/$source"); fi
           done
           cargo xtask pages build "${args[@]}"

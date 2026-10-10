@@ -1,10 +1,13 @@
-//! The nightly runs: property tests and fuzzing, with the scenarios each
-//! one's generated histories reached.
+//! The scheduled runs: property tests and fuzzing, with the scenarios each
+//! one's generated histories reached, and the daily live-network tests.
 
 use super::{heading, key_figure, mark, meter, run_pill};
 use crate::exploration::Status;
-use crate::pages::format::{count, duration, int, maybe_int, per_case, sentence, share, NONE};
-use crate::pages::inputs::{FuzzTarget, Observations, Test, TestStatus};
+use crate::live;
+use crate::pages::format::{
+    capitalised, count, duration, int, maybe_int, per_case, plural, sentence, share, NONE,
+};
+use crate::pages::inputs::{FuzzTarget, LiveTest, Observations, Test, TestStatus};
 use crate::pages::model::{property_group, Report};
 use maud::{html, Markup};
 use std::collections::BTreeMap;
@@ -388,5 +391,149 @@ pub(super) fn fuzzing(report: &Report) -> Markup {
                 }
             }
         }
+    }
+}
+
+/// A live test's result in words: a failure while a service it needs was
+/// down is put down to that service.
+fn live_result(t: &LiveTest) -> Markup {
+    match (t.test.status, &t.unreachable) {
+        (TestStatus::Passed, _) => html! { "Passed" },
+        (TestStatus::Skipped, _) => html! { "Skipped" },
+        (TestStatus::Failed, Some(service)) => {
+            html! { span.lowtag { "Service unreachable" } span.muted.desc { (service) " didn’t answer" } }
+        }
+        (TestStatus::Failed, None) => html! { b { "Failed" } },
+    }
+}
+
+/// A wallet's figures, in XMR.
+fn wallet_row(w: &live::Wallet) -> Markup {
+    html! {
+        tr {
+            td { b { (capitalised(&w.role)) } span.muted.desc.mono { (w.address) } }
+            td.r { (live::Xmr(w.balance).to_string()) }
+            td.r { (live::Xmr(w.unlocked).to_string()) }
+            td.r { (int(w.outputs as u64)) }
+            td.r { (int(w.ready as u64)) }
+        }
+    }
+}
+
+pub(super) fn live(report: &Report) -> Markup {
+    let Some(run) = &report.live else {
+        return html! {};
+    };
+    let intro = html! {
+        "Once a day, the tests that need the outside world run against it: real Monero nodes on mainnet and stagenet, the exchange-rate services Monokulo can price with, DNS, the Tor network, and real stagenet payments from a pair of test wallets. None of these is Monokulo’s, so each is checked just before the tests start. A test that failed while a service it needs wasn’t answering is shown as that service’s outage, not as a failure of the code."
+    };
+    let count_of = |status| run.tests.iter().filter(|t| t.test.status == status).count();
+    let failed = run.failures().count();
+    let outages = count_of(TestStatus::Failed) - failed;
+    let probed: Vec<_> = run
+        .services
+        .iter()
+        .filter(|c| c.reachable.is_some())
+        .collect();
+    let answered = probed.iter().filter(|c| c.reachable == Some(true)).count();
+    let wallets = run.wallets.as_ref();
+    let shown = wallets.map(|w| {
+        if w.after.is_empty() {
+            &w.before
+        } else {
+            &w.after
+        }
+    });
+    // The code's failures first, then the services', then the rest as run.
+    let mut tests: Vec<&LiveTest> = run.tests.iter().collect();
+    tests.sort_by_key(|t| match (t.test.status, &t.unreachable) {
+        (TestStatus::Failed, None) => 0,
+        (TestStatus::Failed, Some(_)) => 1,
+        _ => 2,
+    });
+    html! {
+        (heading("Live network", &intro, run_pill(report, report.sources.live.as_ref())))
+        dl.kv {
+            (key_figure("Tests", &html! { (count(run.tests.len())) " " small { @if failed == 0 { "none failed" } @else { (count(failed)) " failed" } } }))
+            (key_figure("Passed", &html! { (count(count_of(TestStatus::Passed))) }))
+            (key_figure("Service outages", &html! { (count(outages)) " " small { (plural(outages, "test hit one", "tests hit one")) } }))
+            (key_figure("Services answering", &html! { (count(answered)) " " small { "of " (count(probed.len())) " checked" } }))
+        }
+        div.card { div.tbl { table {
+            thead { tr { th { "Service" } th { "Before the tests" } th { "What it said" } } }
+            tbody {
+                @for c in &run.services {
+                    tr {
+                        td { b { (c.name) } }
+                        td {
+                            @match c.reachable {
+                                Some(true) => "Answering",
+                                Some(false) => span.lowtag { "Not answering" },
+                                None => span.muted { "Not checked" },
+                            }
+                        }
+                        td { span.muted { (c.detail) } }
+                    }
+                }
+            }
+        } } }
+        @if let (Some(w), Some(list)) = (wallets, shown) {
+            div.vhead { div {
+                h2.sub { "Test wallets" }
+                p { "The stagenet wallets the paid tests use (" code { (w.dir) } "), as the run left them. After the tests, what the merchant was paid goes back to the spender, so only the fees are lost. “Ready to pay” counts the unlocked outputs big enough to pay one test order; a run makes " (count(live::PAYMENTS)) " payments." }
+            } }
+            div.card { div.tbl { table {
+                thead { tr { th { "Wallet" } th.r { "Balance (XMR)" } th.r { "Unlocked" } th.r { "Outputs" } th.r { "Ready to pay" } } }
+                tbody { @for wallet in list.iter() { (wallet_row(wallet)) } }
+            } } }
+            @if let Some(problem) = &w.problem {
+                div.callout { b { "Before the tests" } span { (problem) } }
+            }
+            @if !w.kept.is_empty() {
+                div.callout { b { "After the tests" } span { @for (i, kept) in w.kept.iter().enumerate() { @if i > 0 { " · " } (kept) } } }
+            }
+        }
+        div.vhead { div {
+            h2.sub { "Tests" }
+            p { "Every live test of the run, with the services it needs. A failure’s first line says what went wrong." }
+        } }
+        div.card { div.tbl { table {
+            thead { tr { th { "Test" } th { "Needs" } th { "Result" } th.r { "Time" } } }
+            tbody {
+                @for t in &tests {
+                    tr {
+                        td {
+                            (mark(t.test.status))
+                            " "
+                            @let leaf = t.test.name.rsplit("::").next().unwrap_or_default();
+                            b { (sentence(leaf.strip_prefix(live::PREFIX).unwrap_or(leaf))) }
+                            span.muted.desc { (t.suite) " · " (t.test.class) }
+                            @if t.test.status != TestStatus::Passed {
+                                @if let Some(message) = &t.test.message {
+                                    span.muted.desc.mono { (first_line(message)) }
+                                }
+                            }
+                        }
+                        td { @if t.needs.is_empty() { span.muted { (NONE) } } @else { (t.needs.join(", ")) } }
+                        td { (live_result(t)) }
+                        td.r { (duration(t.test.secs)) }
+                    }
+                }
+            }
+        } } }
+    }
+}
+
+/// A message's first line, cut to a readable length.
+fn first_line(message: &str) -> String {
+    let line = message
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    if line.chars().count() > 240 {
+        line.chars().take(240).collect::<String>() + "…"
+    } else {
+        line.to_string()
     }
 }

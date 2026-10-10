@@ -26,17 +26,19 @@ pub(super) enum Tab {
     Properties,
     Fuzzing,
     Scale,
+    Live,
     Screens,
 }
 
 impl Tab {
-    const ALL: [Tab; 7] = [
+    const ALL: [Tab; 8] = [
         Tab::Overview,
         Tab::Tests,
         Tab::Coverage,
         Tab::Properties,
         Tab::Fuzzing,
         Tab::Scale,
+        Tab::Live,
         Tab::Screens,
     ];
 
@@ -48,6 +50,7 @@ impl Tab {
             Tab::Properties => "properties.html",
             Tab::Fuzzing => "fuzzing.html",
             Tab::Scale => "scale.html",
+            Tab::Live => "live.html",
             Tab::Screens => "screens.html",
         }
     }
@@ -60,6 +63,7 @@ impl Tab {
             Tab::Properties => "Property tests",
             Tab::Fuzzing => "Fuzzing",
             Tab::Scale => "Scale",
+            Tab::Live => "Live network",
             Tab::Screens => "Screens",
         }
     }
@@ -79,6 +83,7 @@ impl Tab {
             Tab::Properties => report.properties.is_some(),
             Tab::Fuzzing => !report.fuzz.is_empty(),
             Tab::Scale => report.stress.is_some() || report.scale.is_some(),
+            Tab::Live => report.live.is_some(),
             Tab::Screens => report
                 .gallery
                 .as_ref()
@@ -92,6 +97,7 @@ impl Tab {
             Tab::Tests => Some(report.cases.len()),
             Tab::Properties => report.properties.as_ref().map(|p| p.tests.len()),
             Tab::Fuzzing => Some(report.fuzz.len()),
+            Tab::Live => report.live.as_ref().map(|l| l.tests.len()),
             Tab::Screens => report.gallery.as_ref().map(|g| g.total),
             Tab::Overview | Tab::Coverage | Tab::Scale => None,
         }
@@ -142,6 +148,7 @@ pub(super) fn write(report: &Report, out: &Path) -> io::Result<Vec<Tab>> {
             Tab::Properties => runs::properties(report),
             Tab::Fuzzing => runs::fuzzing(report),
             Tab::Scale => scale::page(report),
+            Tab::Live => runs::live(report),
             Tab::Screens => screens::page(report),
         };
         save(out, tab, &page(report, &shell, tab, &body))?;
@@ -169,7 +176,7 @@ fn page(report: &Report, shell: &Shell, tab: Tab, body: &Markup) -> Markup {
                 title {
                     @if tab == Tab::Overview { (TITLE) } @else { (tab.label()) " · " (TITLE) }
                 }
-                meta name="description" content="Monokulo’s tests, coverage, property tests, fuzzing, load checks and screenshots, rebuilt from every CI run on main.";
+                meta name="description" content="Monokulo’s tests, coverage, property tests, fuzzing, load checks, live-network checks and screenshots, rebuilt from every CI run on main.";
                 link rel="icon" href="../assets/favicon.svg" type="image/svg+xml";
                 link rel="stylesheet" href="assets/theme.css";
                 link rel="stylesheet" href="assets/quality.css";
@@ -262,6 +269,7 @@ fn runline(report: &Report) -> Markup {
     for (name, run) in [
         ("Nightly properties", &sources.properties),
         ("Fuzzing", &sources.fuzz),
+        ("Live network", &sources.live),
     ] {
         if let Some(d) = run.as_ref().and_then(|r| date(&r.date)) {
             parts.push(html! { span.muted { (name) " " (d) } });
@@ -291,6 +299,16 @@ fn figures(report: &Report) -> Markup {
     let browser = lines(|c| c.totals.browser.map(|t| t.lines));
     let woocommerce = lines(|c| c.totals.woocommerce.map(|t| t.lines));
     let nightly = report.properties.as_ref().map(|p| p.tests.len());
+    let mut beside = Vec::new();
+    if !report.fuzz.is_empty() {
+        beside.push(format!(
+            "plus {}",
+            format::plural(report.fuzz.len(), "fuzz target", "fuzz targets")
+        ));
+    }
+    if let Some(live) = &report.live {
+        beside.push(format!("{} live daily", format::count(live.tests.len())));
+    }
     html! {
         (figure("Tests", &format::count(per_change.len()),
             &format!("{} passed · {} skipped", format::count(passed), format::count(skipped)), None))
@@ -298,7 +316,7 @@ fn figures(report: &Report) -> Markup {
         (coverage_figure("Checkout and POS", browser, "browser"))
         (coverage_figure("WooCommerce", woocommerce, "PHP"))
         (figure("Properties nightly", &nightly.map_or_else(|| NONE.to_string(), format::count),
-            &if report.fuzz.is_empty() { "no fuzz run yet".to_string() } else { format!("plus {}", format::plural(report.fuzz.len(), "fuzz target", "fuzz targets")) }, None))
+            &if beside.is_empty() { "no fuzz run yet".to_string() } else { beside.join(" · ") }, None))
     }
 }
 

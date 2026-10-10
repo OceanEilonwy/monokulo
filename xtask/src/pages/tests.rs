@@ -229,6 +229,73 @@ fn exploration_artifacts(root: &Path) {
     }
 }
 
+/// A live-network artifact as `cargo xtask live` leaves it: both `JUnit`
+/// reports and live.json. The mainnet node was down, so its test's failure
+/// is the node's; the DNS test failed with every service answering.
+fn live_artifact(root: &Path) {
+    put(
+        &root.join("rust-junit.xml"),
+        junit_xml(&[
+            (
+                "engine",
+                "daemon_rpc::live_node_tests::live_node_get_height_returns_a_plausible_value",
+                1.5,
+                r#"<failure message="connection refused">error sending request</failure>"#,
+            ),
+            (
+                "monokulo",
+                "embed_domains::tests::live_system_resolver_reads_real_txt_records",
+                0.2,
+                r#"<failure message="got: [&lt;script&gt;]"/>"#,
+            ),
+            (
+                "shared",
+                "haveno::tests::live_haveno_markets_api_prices_fiat_under_both_policies",
+                3.0,
+                "",
+            ),
+        ]),
+    );
+    put(
+        &root.join("browser-junit.xml"),
+        junit_xml(&[(
+            "pos-stagenet-payments.spec.js",
+            "a 0-conf-trusted payment shows shared success and stays reviewable",
+            90.0,
+            "",
+        )]),
+    );
+    put_json(
+        &root.join("live.json"),
+        &json!({
+            "services": [
+                {"id": "mainnet-node", "name": "Monero mainnet node", "reachable": false, "detail": "https://node.example:18089/get_height: Connection refused"},
+                {"id": "stagenet-node", "name": "Monero stagenet nodes", "reachable": true, "detail": "answered HTTP 200"},
+                {"id": "dns", "name": "DNS", "reachable": true, "detail": "google.com is 192.0.2.1"},
+                {"id": "haveno", "name": "haveno.markets", "reachable": true, "detail": "answered HTTP 200"},
+                {"id": "wallets", "name": "Funded stagenet test wallets", "reachable": true, "detail": "the spender can pay a run"},
+                {"id": "tor", "name": "Tor network", "reachable": null, "detail": "only the test itself can tell whether it works"}
+            ],
+            "wallets": {
+                "dir": "e2e/wallets/ci",
+                "before": [{"role": "spender", "address": "53etP59", "balance": 60_000_000_000u64, "unlocked": 60_000_000_000u64, "outputs": 16, "ready": 16}],
+                "after": [
+                    {"role": "spender", "address": "53etP59", "balance": 59_000_000_000u64, "unlocked": 50_000_000_000u64, "outputs": 17, "ready": 10},
+                    {"role": "merchant", "address": "52Ed34j", "balance": 670_000_000u64, "unlocked": 0, "outputs": 2, "ready": 0}
+                ],
+                "problem": null,
+                "kept": ["Swept 0.000670000000 XMR from the merchant to the spender"]
+            },
+            "reasons": {
+                "engine › daemon_rpc::live_node_tests::live_node_get_height_returns_a_plausible_value": "needs a live mainnet node",
+                "monokulo › embed_domains::tests::live_system_resolver_reads_real_txt_records": "needs live DNS",
+                "shared › haveno::tests::live_haveno_markets_api_prices_fiat_under_both_policies": "needs the live haveno.markets API",
+                "pos-stagenet-payments.spec.js › a 0-conf-trusted payment shows shared success and stays reviewable": "needs the live stagenet node and the funded test wallets"
+            }
+        }),
+    );
+}
+
 struct Fixture {
     scratch: Scratch,
 }
@@ -238,6 +305,7 @@ impl Fixture {
         let scratch = Scratch::new("quality");
         coverage_artifact(&scratch.join("coverage"));
         exploration_artifacts(&scratch.join("runs"));
+        live_artifact(&scratch.join("live"));
         Fixture { scratch }
     }
 
@@ -332,6 +400,8 @@ fn every_local_link_of_every_page_resolves() {
         &f.path("runs"),
         "--fuzz",
         &f.path("runs"),
+        "--live",
+        &f.path("live"),
     ]);
     let pages = page_names(&f.out());
     assert_eq!(
@@ -340,6 +410,7 @@ fn every_local_link_of_every_page_resolves() {
             "coverage.html",
             "fuzzing.html",
             "index.html",
+            "live.html",
             "properties.html",
             "scale.html",
             "screens.html",
@@ -676,4 +747,58 @@ fn a_shot_without_a_result_keeps_an_earlier_failure() {
         .unwrap()
         .unwrap();
     assert_eq!(gallery.screens[0].status.as_deref(), Some("failed"));
+}
+
+#[test]
+fn the_live_page_puts_each_failure_down_to_the_code_or_a_service() {
+    let f = Fixture::new();
+    f.build(&["--live", &f.path("live")]);
+    let page = f.page("live.html");
+    // The node was down, so its test's failure is the node's.
+    assert!(page.contains("Service unreachable"), "{page}");
+    assert!(page.contains("Monero mainnet node didn’t answer"), "{page}");
+    // DNS answered, so the resolver test's failure is the code's; its
+    // message is escaped.
+    assert!(page.contains("<b>Failed</b>"), "{page}");
+    assert!(page.contains("got: [&lt;script&gt;]"), "{page}");
+    assert!(!page.contains("<script>]"), "{page}");
+    // What each test needs, by the service's name.
+    assert!(
+        page.contains("<td>Monero stagenet nodes, Funded stagenet test wallets</td>"),
+        "{page}"
+    );
+    assert!(page.contains("<td>haveno.markets</td>"), "{page}");
+    // The wallets as the run left them, and what the upkeep did.
+    assert!(page.contains("0.059000000000"), "{page}");
+    assert!(
+        page.contains("Swept 0.000670000000 XMR from the merchant to the spender"),
+        "{page}"
+    );
+    assert!(
+        page.contains("Not answering") && page.contains("Not checked"),
+        "{page}"
+    );
+    // One failure is the code's, so the run line doesn't claim all passed.
+    assert!(page.contains("Some checks failed"), "{page}");
+    assert!(page.contains(r#"href="live.html""#), "{page}");
+}
+
+#[test]
+fn a_live_failure_while_its_service_was_down_does_not_fail_the_report() {
+    let f = Fixture::new();
+    let live = f.scratch.join("live");
+    // Only the node test, which failed while its node was down.
+    put(
+        &live.join("rust-junit.xml"),
+        junit_xml(&[(
+            "engine",
+            "daemon_rpc::live_node_tests::live_node_get_height_returns_a_plausible_value",
+            1.5,
+            r#"<failure message="connection refused"/>"#,
+        )]),
+    );
+    f.build(&["--live", &f.path("live")]);
+    let page = f.page("live.html");
+    assert!(page.contains("All checks passed"), "{page}");
+    assert!(page.contains("Service unreachable"), "{page}");
 }

@@ -38,7 +38,7 @@ struct Skip {
 /// Why a skipped case was skipped. A `<skipped message>` (or body) where the
 /// tool writes one; Playwright leaves `<skipped/>` empty and writes the
 /// reason given to `test.skip` or `test.fixme` as that annotation's property.
-fn skip_reason(case: roxmltree::Node, skipped: roxmltree::Node) -> Option<String> {
+pub(crate) fn skip_reason(case: roxmltree::Node, skipped: roxmltree::Node) -> Option<String> {
     let property = case
         .descendants()
         .filter(|n| n.has_tag_name("property"))

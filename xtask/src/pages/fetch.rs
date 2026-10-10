@@ -4,7 +4,8 @@
 //!
 //! The site is in parts, each made by one workflow on main: release
 //! (release.yml: the OpenWrt site and the coverage artifact, from one run
-//! that passed), properties, fuzz and scale (their scheduled workflows).
+//! that passed), properties, fuzz, scale and live (their scheduled
+//! workflows).
 //! Pages serves one deployment, so each of those workflows deploys the whole
 //! site when it finishes: its own part from its own run (`--current PART`,
 //! the run in GITHUB_RUN_ID), and every other part from that part's newest
@@ -44,6 +45,8 @@ pub(super) struct Sources {
     pub(super) fuzz: Option<SourceRun>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) scale: Option<SourceRun>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) live: Option<SourceRun>,
 }
 
 impl Sources {
@@ -54,6 +57,7 @@ impl Sources {
             Key::Properties => &mut self.properties,
             Key::Fuzz => &mut self.fuzz,
             Key::Scale => &mut self.scale,
+            Key::Live => &mut self.live,
         }
     }
 }
@@ -66,6 +70,7 @@ enum Key {
     Properties,
     Fuzz,
     Scale,
+    Live,
 }
 
 impl Key {
@@ -85,6 +90,7 @@ impl Key {
             Key::Properties => "properties",
             Key::Fuzz => "fuzz",
             Key::Scale => "scale",
+            Key::Live => "live",
         }
     }
 }
@@ -102,7 +108,7 @@ struct Source {
     needs_success: bool,
 }
 
-const SOURCES: [Source; 5] = [
+const SOURCES: [Source; 6] = [
     Source {
         key: Key::Site,
         // release.yml builds the OpenWrt package (openwrt.yml) once every
@@ -144,6 +150,14 @@ const SOURCES: [Source; 5] = [
         workflow: "engine-scale.yml",
         wanted: |n, _| n.starts_with("engine-scale-measurements-"),
         required: false,
+        needs_success: false,
+    },
+    Source {
+        key: Key::Live,
+        workflow: "live-network.yml",
+        wanted: |n, _| n.starts_with("live-network-"),
+        required: false,
+        // A run where a service was down is what the page is there to show.
         needs_success: false,
     },
 ];
@@ -204,14 +218,14 @@ struct FetchArgs {
 }
 
 /// The parts of the site, as `--current` names them.
-const PARTS: [&str; 4] = ["release", "properties", "fuzz", "scale"];
+const PARTS: [&str; 5] = ["release", "properties", "fuzz", "scale", "live"];
 
 fn parse(args: &[&str]) -> io::Result<FetchArgs> {
     let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidInput, what.to_string());
     let [dir, options @ ..] = args else {
         return Err(bad(
             "usage: cargo xtask pages fetch DIR [--repo OWNER/NAME] [--feature zmq|default] \
-             [--current release|properties|fuzz|scale [--conclusion success|failure]]",
+             [--current release|properties|fuzz|scale|live [--conclusion success|failure]]",
         ));
     };
     let mut repo = env::var("GITHUB_REPOSITORY").ok();
@@ -227,7 +241,9 @@ fn parse(args: &[&str]) -> io::Result<FetchArgs> {
         match *flag {
             "--repo" => repo = Some((*value).to_string()),
             "--current" if PARTS.contains(value) => current = Some((*value).to_string()),
-            "--current" => return Err(bad("--current is release, properties, fuzz or scale")),
+            "--current" => {
+                return Err(bad("--current is release, properties, fuzz, scale or live"))
+            }
             "--conclusion" => conclusion = (*value).to_string(),
             "--feature" => {
                 build = Build::parse(value).ok_or_else(|| bad("--feature is zmq or default"))?;
@@ -458,6 +474,8 @@ mod tests {
             "engine-properties-default-37695839811",
             Build::Default
         ));
+        assert!(pick(Key::Live, "live-network-37800000001", Build::Zmq));
+        assert!(!pick(Key::Live, "engine-scale-measurements-1", Build::Zmq));
     }
 
     #[test]
@@ -474,6 +492,7 @@ mod tests {
                 ("properties", "properties", "engine-properties.yml"),
                 ("fuzz", "fuzz", "engine-fuzz.yml"),
                 ("scale", "scale", "engine-scale.yml"),
+                ("live", "live", "live-network.yml"),
             ]
         );
         // The release part is what passed: the live site never shows a
@@ -498,6 +517,8 @@ mod tests {
         .unwrap();
         assert_eq!(args.current.as_deref(), Some("fuzz"));
         assert_eq!(args.conclusion, "failure");
+        let args = parse(&["dir", "--repo", "o/r", "--current", "live"]).unwrap();
+        assert_eq!(args.current.as_deref(), Some("live"));
         let args = parse(&["dir", "--repo", "o/r"]).unwrap();
         assert!(args.current.is_none());
         assert_eq!(args.conclusion, "success");
