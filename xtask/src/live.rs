@@ -41,7 +41,7 @@ pub(crate) const HELP: &str = "\
                       the services, wallets and each failure's cause as a GitHub job summary";
 
 /// A test the daily run runs is named with this prefix, and `#[ignore]`d.
-const PREFIX: &str = "live_";
+pub(crate) const PREFIX: &str = "live_";
 
 /// The nextest filter for those tests: the last segment of the test's path
 /// starts with [`PREFIX`]. It runs with `--run-ignored only`.

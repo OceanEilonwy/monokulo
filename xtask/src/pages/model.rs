@@ -5,7 +5,7 @@
 use super::fetch::Sources;
 use super::format::{capitalised, sentence};
 use super::inputs::{
-    BrowserKind, CoverageRun, FuzzTarget, Gallery, Properties, Stress, Test, TestStatus,
+    BrowserKind, CoverageRun, FuzzTarget, Gallery, LiveRun, Properties, Stress, Test, TestStatus,
 };
 use crate::support::project_browser;
 use regex::Regex;
@@ -311,6 +311,9 @@ pub(super) struct Report {
     pub(super) gallery: Option<Gallery>,
     pub(super) properties: Option<Properties>,
     pub(super) fuzz: Vec<FuzzTarget>,
+    /// The daily live-network run: kept apart from `cases`, since its
+    /// tests run against services Monokulo doesn't run.
+    pub(super) live: Option<LiveRun>,
     /// Every test of every suite, the nightly properties included.
     pub(super) cases: Vec<Case>,
 }
@@ -349,6 +352,7 @@ impl Report {
             gallery: None,
             properties,
             fuzz: Vec::new(),
+            live: None,
             cases,
         }
     }
@@ -358,7 +362,9 @@ impl Report {
         self.cases.iter().filter(|c| c.suite != Suite::Property)
     }
 
-    /// Whether every test, collector and fuzz campaign passed.
+    /// Whether every test, collector and fuzz campaign passed. A live
+    /// test that failed while a service it needs was down doesn't count
+    /// against the code.
     pub(super) fn all_passed(&self) -> bool {
         self.cases.iter().all(|c| c.status != TestStatus::Failed)
             && self.coverage.as_ref().is_none_or(|c| c.passed)
@@ -366,6 +372,10 @@ impl Report {
                 .fuzz
                 .iter()
                 .all(|f| f.status == crate::exploration::Status::Passed)
+            && self
+                .live
+                .as_ref()
+                .is_none_or(|l| l.failures().next().is_none())
     }
 
     /// The link to a workflow run on the repository.
@@ -386,6 +396,7 @@ mod tests {
             status: TestStatus::Passed,
             kind: None,
             project: String::new(),
+            message: None,
         }
     }
 

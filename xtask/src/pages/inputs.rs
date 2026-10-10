@@ -4,6 +4,8 @@
 
 use crate::coverage::{Counts, CrateCoverage, Status as CollectorStatus};
 use crate::exploration::{Build, Status as CampaignStatus};
+use crate::live;
+use crate::summary::skip_reason;
 use crate::support::{at, css_links, files_under, html_links, read_json};
 use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, DynamicImage};
 use serde::{Deserialize, Serialize};
@@ -116,6 +118,8 @@ pub(crate) struct Test {
     pub(super) kind: Option<BrowserKind>,
     /// The `hostname` of its testsuite: the Playwright project, or empty.
     pub(super) project: String,
+    /// Why it failed or was skipped, where the report says.
+    pub(super) message: Option<String>,
 }
 
 pub(crate) fn junit(path: &Path) -> io::Result<Vec<Test>> {
@@ -126,14 +130,21 @@ pub(crate) fn junit(path: &Path) -> io::Result<Vec<Test>> {
         .descendants()
         .filter(|n| n.has_tag_name("testcase"))
         .map(|case| {
-            let has = |tag: &str| case.children().any(|c| c.has_tag_name(tag));
-            let status = if has("failure") || has("error") {
-                TestStatus::Failed
-            } else if has("skipped") {
-                TestStatus::Skipped
-            } else {
-                TestStatus::Passed
-            };
+            let child = |tag: &str| case.children().find(|c| c.has_tag_name(tag));
+            let (status, message) =
+                if let Some(failure) = child("failure").or_else(|| child("error")) {
+                    let message = [failure.attribute("message"), failure.text()]
+                        .into_iter()
+                        .flatten()
+                        .map(str::trim)
+                        .find(|m| !m.is_empty())
+                        .map(str::to_string);
+                    (TestStatus::Failed, message)
+                } else if let Some(skipped) = child("skipped") {
+                    (TestStatus::Skipped, skip_reason(case, skipped))
+                } else {
+                    (TestStatus::Passed, None)
+                };
             let secs = case
                 .attribute("time")
                 .and_then(|t| t.parse::<f64>().ok())
@@ -151,6 +162,7 @@ pub(crate) fn junit(path: &Path) -> io::Result<Vec<Test>> {
                     .and_then(|suite| suite.attribute("hostname"))
                     .unwrap_or("")
                     .to_string(),
+                message,
             }
         })
         .collect())
@@ -1041,4 +1053,88 @@ pub(super) fn gallery(src: &Path, out: &Path) -> io::Result<Option<(Gallery, Lin
         },
         linked,
     )))
+}
+
+/// One test of the live-network run, with what it needs from outside.
+pub(super) struct LiveTest {
+    pub(super) test: Test,
+    /// Rust or Browser.
+    pub(super) suite: &'static str,
+    /// The services it needs, by name.
+    pub(super) needs: Vec<String>,
+    /// For a failure, the service it needs that wasn't answering when the
+    /// run checked: the failure is that service's, not the code's.
+    pub(super) unreachable: Option<String>,
+}
+
+/// The live-network artifact as the page shows it.
+pub(super) struct LiveRun {
+    pub(super) tests: Vec<LiveTest>,
+    pub(super) services: Vec<live::Check>,
+    pub(super) wallets: Option<live::Wallets>,
+}
+
+impl LiveRun {
+    /// The failures that are the code's: every service each needs answered.
+    pub(super) fn failures(&self) -> impl Iterator<Item = &LiveTest> {
+        self.tests
+            .iter()
+            .filter(|t| t.test.status == TestStatus::Failed && t.unreachable.is_none())
+    }
+}
+
+/// The live-network run (`cargo xtask live`): its two `JUnit` reports, and
+/// `live.json` with the services, the wallets and each test's reason. A
+/// run that left neither report shows nothing.
+pub(super) fn live(src: &Path) -> io::Result<Option<LiveRun>> {
+    let read = |name: &str| {
+        let path = src.join(name);
+        if path.is_file() {
+            junit(&path).map(Some)
+        } else {
+            Ok(None)
+        }
+    };
+    let (rust, browser) = (read("rust-junit.xml")?, read("browser-junit.xml")?);
+    if rust.is_none() && browser.is_none() {
+        return Ok(None);
+    }
+    let summary = src.join("live.json");
+    let summary: live::Live = if summary.is_file() {
+        read_json(&summary)?
+    } else {
+        live::Live::default()
+    };
+    let name_of = |id: &str| {
+        summary
+            .services
+            .iter()
+            .find(|c| c.id == id)
+            .map_or_else(|| id.to_string(), |c| c.name.clone())
+    };
+    let tests = [("Rust", rust), ("Browser", browser)]
+        .into_iter()
+        .flat_map(|(suite, tests)| tests.into_iter().flatten().map(move |t| (suite, t)))
+        .map(|(suite, test)| {
+            let reason = summary
+                .reasons
+                .get(&live::case_key(&test.class, &test.name))
+                .map_or("", String::as_str);
+            let unreachable = (test.status == TestStatus::Failed)
+                .then(|| live::missing(reason, &summary.services))
+                .flatten()
+                .map(|c| c.name.clone());
+            LiveTest {
+                needs: live::needs(reason).iter().map(|id| name_of(id)).collect(),
+                unreachable,
+                suite,
+                test,
+            }
+        })
+        .collect();
+    Ok(Some(LiveRun {
+        tests,
+        services: summary.services,
+        wallets: summary.wallets,
+    }))
 }
