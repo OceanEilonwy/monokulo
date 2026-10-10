@@ -665,13 +665,16 @@ async fn seed_webhooks(
                     Some(200),
                     720,
                 ),
+                // Ages round up to the minute, so 90s reads "2 min ago"
+                // (store-webhooks.spec.js) for the next 30s, not only
+                // until the second after this seed, as 120 did.
                 (
                     "order.paid",
                     "a8723b2e45b0d44e9c1f0a77d3b0d44e",
                     1,
                     true,
                     Some(200),
-                    120,
+                    90,
                 ),
             ],
         ),
