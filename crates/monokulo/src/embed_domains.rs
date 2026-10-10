@@ -663,11 +663,11 @@ mod tests {
         }
     }
 
-    /// Needs the network, so it only runs when asked for
-    /// (`cargo test -- --ignored`).
+    /// Needs the network, so it runs daily (`cargo xtask live`) rather
+    /// than on every change. Resolves `_dmarc.google.com`'s TXT records.
     #[tokio::test]
-    #[ignore = "needs live DNS: resolves _dmarc.google.com's TXT records"]
-    async fn the_system_resolver_reads_real_txt_records() {
+    #[ignore = "needs live DNS"]
+    async fn live_system_resolver_reads_real_txt_records() {
         let dns = SystemDns::new().unwrap();
         let values = dns.txt_values("_dmarc.google.com").await.unwrap();
         assert!(

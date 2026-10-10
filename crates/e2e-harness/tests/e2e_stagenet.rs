@@ -110,8 +110,8 @@ async fn oneshot_json(
 }
 
 #[tokio::test]
-#[ignore = "needs the live stagenet node and a funded test wallet"]
-async fn real_stagenet_payment_is_detected_end_to_end() {
+#[ignore = "needs the live stagenet node and the funded test wallets"]
+async fn live_stagenet_payment_is_detected_end_to_end() {
     use support::e2e_fixture;
 
     let ctx = cli_wallet::WalletCtx::default();

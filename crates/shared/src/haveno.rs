@@ -1175,9 +1175,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "hits the real haveno.markets API over the network - run manually \
-                (`cargo test -p shared haveno::tests::manual_smoke -- --ignored --nocapture`), never as part of the default suite"]
-    async fn manual_smoke_test_against_the_real_haveno_markets_api() {
+    // Run daily by `cargo xtask live` (live-network.yml), never per change.
+    #[ignore = "needs the live haveno.markets API"]
+    async fn live_haveno_markets_api_prices_fiat_under_both_policies() {
         let provider = HavenoRateProvider::new("https://haveno.markets");
         let strict = HavenoPolicy {
             min_offers_per_side: 2,
