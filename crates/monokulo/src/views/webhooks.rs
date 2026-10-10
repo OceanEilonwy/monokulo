@@ -15,10 +15,9 @@ use super::time::Clock;
 use super::{layout, short_id, PageChrome};
 use crate::db::{DeliveryRow, DeliveryState, WebhookHealth, WebhookRow};
 
-/// How many deliveries each webhook shows on the settings page.
-pub const RECENT: usize = 20;
-/// How many the page of all a webhook's deliveries shows.
-pub const ALL: usize = 200;
+/// How many of a webhook's deliveries a page of them shows: in its fold on
+/// the settings page, and on the page of all its deliveries.
+pub const PAGE: usize = 20;
 /// "Delivered recently" is in the last this many days.
 pub const RECENT_DAYS: i64 = 30;
 
@@ -36,11 +35,16 @@ pub struct WebhooksCard {
     pub created_secret: Option<String>,
 }
 
-/// One webhook, how it's doing and its latest deliveries (newest first).
+/// One webhook, how it's doing and one page of its deliveries (newest
+/// first).
 pub struct WebhookEntry {
     pub webhook: WebhookRow,
     pub health: WebhookHealth,
+    /// Page `page` (from 0, the newest) of its deliveries.
     pub recent: Vec<DeliveryRow>,
+    pub page: usize,
+    /// There are older deliveries than these.
+    pub has_more: bool,
     /// The plugin that registered it, while it's connected
     /// ("WooCommerce").
     pub plugin: Option<String>,
@@ -72,6 +76,14 @@ impl<'a> Paths<'a> {
     }
     pub fn all(&self, webhook: &str) -> String {
         format!("{}/deliveries", self.webhook(webhook))
+    }
+    /// Page `page` of the webhook's deliveries (0, the newest, is
+    /// [`Self::all`]).
+    pub fn deliveries_page(&self, webhook: &str, page: usize) -> String {
+        match page {
+            0 => self.all(webhook),
+            page => format!("{}?page={page}", self.all(webhook)),
+        }
     }
     pub fn detail(&self, webhook: &str, delivery: i64) -> String {
         format!("{}/deliveries/{delivery}", self.webhook(webhook))
@@ -266,6 +278,41 @@ pub fn deliveries_table(
     }
 }
 
+/// One page of the webhook's deliveries with "← Newer" and "Older →"
+/// links: plain links to the page of all its deliveries, which fixi turns
+/// into fetching just this part, in place, wherever it is.
+pub fn deliveries_results(
+    paths: &Paths<'_>,
+    clock: &Clock,
+    max_attempts: u32,
+    entry: &WebhookEntry,
+) -> Markup {
+    let id = entry.webhook.id.as_str();
+    let target = format!("#deliveries-{id}");
+    let link = |page: usize, rel: &'static str, text: &'static str| {
+        let href = paths.deliveries_page(id, page);
+        html! {
+            a href=(href) rel=(rel) fx-action=(href) fx-target=(target) fx-swap="outerHTML" { (text) }
+        }
+    };
+    html! {
+        div id=(format!("deliveries-{id}")) class="deliveries-results" {
+            @if entry.recent.is_empty() {
+                p class="muted" { @if entry.page == 0 { "Nothing sent yet." } @else { "No older deliveries." } }
+            } @else {
+                (deliveries_table(paths, clock, max_attempts, &entry.webhook, &entry.recent))
+            }
+            @if entry.page > 0 || entry.has_more {
+                p class="orders-pages" {
+                    @if entry.page > 0 { (link(entry.page - 1, "prev", "← Newer")) }
+                    @if entry.page > 0 && entry.has_more { " · " }
+                    @if entry.has_more { (link(entry.page + 1, "next", "Older →")) }
+                }
+            }
+        }
+    }
+}
+
 fn dialog_id(delivery: i64) -> String {
     format!("delivery-{delivery}-dialog")
 }
@@ -314,8 +361,8 @@ pub fn card(card: &WebhooksCard, error: Markup) -> Markup {
                     (health_line(card, entry))
                     @if !entry.recent.is_empty() {
                         details class="wh-deliveries" open[entry.health.retrying > 0 || entry.health.gave_up > 0] {
-                            summary { "Recent deliveries " span class="hint" { "(last " (RECENT) ")" } }
-                            (deliveries_table(&paths, &card.clock, card.max_attempts, &entry.webhook, &entry.recent))
+                            summary { "Recent deliveries " span class="hint" { "(" (PAGE) " a page)" } }
+                            (deliveries_results(&paths, &card.clock, card.max_attempts, entry))
                             p class="hint" { a href=(paths.all(id)) { "All deliveries for this webhook" } }
                         }
                     }
@@ -625,8 +672,8 @@ pub fn delete_page(chrome: &PageChrome, store_name: &str, entry: &WebhookEntry) 
     )
 }
 
-/// `GET …/settings/webhooks/{webhook}/deliveries`: its latest [`ALL`]
-/// deliveries.
+/// `GET …/settings/webhooks/{webhook}/deliveries[?page=N]`: a page of
+/// its deliveries, newest first.
 pub fn all_page(
     chrome: &PageChrome,
     store_name: &str,
@@ -643,12 +690,8 @@ pub fn all_page(
         html! {
             h1 { "Deliveries" }
             p { code class="wh-url" { (entry.webhook.url) } }
-            @if entry.recent.is_empty() {
-                p class="muted" { "Nothing sent yet." }
-            } @else {
-                p class="hint" { "The latest " (entry.recent.len()) ", newest first." }
-                (deliveries_table(&paths, &chrome.clock, max_attempts, &entry.webhook, &entry.recent))
-            }
+            p class="hint" { "Newest first, " (PAGE) " a page." }
+            (deliveries_results(&paths, &chrome.clock, max_attempts, entry))
             p { a href=(paths.settings()) { "Back to the store's settings" } }
         },
     )

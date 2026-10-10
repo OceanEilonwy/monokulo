@@ -15,8 +15,12 @@ Delete the webhook and add a new one.
 The WooCommerce plugin adds its own webhook when it connects, and
 disconnecting it deletes it.
 
-A webhook gets the events that happen after it was added, not earlier
-ones.
+**A new webhook gets only the events that happen from the moment it's
+added.** Nothing from before is sent to it: no earlier status changes, not
+even for orders still open.
+
+There is no switching a webhook off. To stop one, delete it; to start
+again, add it again (with a new signing secret).
 
 ## What arrives
 
@@ -96,8 +100,14 @@ until the one before is delivered or given up on.
 
 The store's settings, *Webhooks*, show each webhook with one line on how
 it's doing: delivering, retrying (and when it tries next), or gave up. Under
-it are its 20 most recent deliveries, open by themselves when one is
-retrying or gave up; *All deliveries for this webhook* lists more.
+it are its deliveries, newest first, 20 at a time, open by themselves when
+one is retrying or gave up. *Older →* and *← Newer* page through them (in
+place, or as the page *All deliveries for this webhook* without
+JavaScript).
+
+Deliveries don't stay forever: one that arrived is deleted after 30 days,
+one that gave up after 90 (`webhooks.keep_delivered_days`,
+`webhooks.keep_given_up_days`). Deliveries still being tried are kept.
 
 - *Details* on a delivery shows its attempts, the request sent (the
   signature header, never the secret; your own headers' values masked) and
@@ -115,4 +125,6 @@ Whoever runs your Monokulo sets these on its admin settings page
 | --- | --- | --- |
 | `webhooks.max_attempts` | 8 | Attempts per delivery before giving up. |
 | `webhooks.delivery_timeout_ms` | 5000 | How long your server has to answer each one. |
+| `webhooks.keep_delivered_days` | 30 | Days a delivery that arrived stays in the list. |
+| `webhooks.keep_given_up_days` | 90 | Days a delivery that gave up stays in the list, where it can still be sent again. |
 | `webhooks.allow_private_urls` | false | Webhooks are never sent to private or loopback addresses (`localhost`, `192.168.…`) unless this is on. Only for testing on your own network. |

@@ -47,6 +47,8 @@ const DELIVERY_CONCURRENCY: usize = 16;
 /// Most deliveries one store gets in a batch, so one store's backlog or
 /// slow endpoint can't hold the others up.
 const DELIVERY_PER_STORE: u32 = 4;
+/// How often old deliveries are deleted (`webhooks.keep_*_days`).
+const PRUNE_EVERY: Duration = Duration::from_secs(10 * 60);
 /// How much of an answer is kept: its first bytes.
 pub const RESPONSE_EXCERPT_BYTES: usize = 512;
 
@@ -416,6 +418,29 @@ pub async fn run_delivery_tick(
     }
 }
 
+/// Deletes deliveries delivered longer ago than `webhooks.keep_delivered_days`
+/// and ones given up on longer ago than `webhooks.keep_given_up_days`.
+/// Returns how many of each.
+pub async fn prune_deliveries(
+    db: &Database,
+    config: &WebhookConfig,
+    now: i64,
+) -> Result<(u64, u64), DbError> {
+    let delivered_before = now.saturating_sub(config.keep_delivered_secs);
+    let gave_up_before = now.saturating_sub(config.keep_given_up_secs);
+    let (delivered, gave_up) = db
+        .write(move |db| db.prune_deliveries(delivered_before, gave_up_before))
+        .await?;
+    if delivered + gave_up > 0 {
+        tracing::info!(
+            webhook.pruned_delivered = delivered,
+            webhook.pruned_gave_up = gave_up,
+            "old webhook deliveries deleted"
+        );
+    }
+    Ok((delivered, gave_up))
+}
+
 /// One line per attempt, inside its `webhook delivery` span.
 fn log_attempt(delivery: &DueDelivery, result: &AttemptResult, max_attempts: u32) {
     let status = result.status;
@@ -465,9 +490,16 @@ pub async fn run_delivery_loop(
             }
         }
     };
+    let mut pruned_at: Option<tokio::time::Instant> = None;
     loop {
         // Read each batch: a saved change applies to the next attempt.
         let config = settings.webhooks.load();
+        if pruned_at.is_none_or(|at| at.elapsed() >= PRUNE_EVERY) {
+            pruned_at = Some(tokio::time::Instant::now());
+            if let Err(e) = prune_deliveries(&db, &config, crate::now_unix()).await {
+                tracing::warn!(error = %e, "old webhook deliveries could not be deleted");
+            }
+        }
         let picked = match run_delivery_tick(&db, &client, &key, &config, &SystemClock).await {
             Ok(picked) => picked,
             Err(e) => {

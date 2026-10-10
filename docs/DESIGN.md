@@ -1200,9 +1200,14 @@ monokulo subscriber ──(same transaction)──▶ webhook_deliveries + order
 
 - Follows the stream from its saved position (`order_event_position`, one row). For
   each event it makes the body (below) and queues one `webhook_deliveries` row per
-  enabled webhook of the event's store, saving the new position in the same
-  transaction, so a restart neither repeats nor skips an event. A store with no
-  webhook queues nothing; a webhook added later doesn't get earlier events.
+  webhook of the event's store, saving the new position in the same transaction,
+  so a restart neither repeats nor skips an event. A store with no webhook queues
+  nothing.
+- **A new webhook gets only events from the moment it is added.** There is no
+  backfill: an event is queued for the webhooks that exist when the subscriber
+  reads it, and never again.
+- A webhook can't be switched off: there is no enabled flag. To stop one, a
+  merchant deletes it (its deliveries go with it).
 - Reconnects after any failure, waiting 1 s and doubling up to 60 s.
 - On `events_lost` it moves to `resume_after` and logs an error: those events'
   webhooks were never sent. Only a warning if it had never read the log before.
@@ -1229,7 +1234,11 @@ monokulo subscriber ──(same transaction)──▶ webhook_deliveries + order
   settings ("Send again", or "Retry failed" for all of a webhook's given-up ones).
 - Each delivery keeps its last status, error, duration, the first 512 bytes of the
   last response, and its last 20 attempts. The store settings page shows them per
-  webhook; the engine knows nothing of them.
+  webhook, 20 a page (plain Newer/Older links, fetched in place with fixi); the
+  engine knows nothing of them.
+- Every 10 minutes the worker deletes deliveries delivered longer ago than
+  `webhooks.keep_delivered_days` (default 30) and ones given up on longer ago than
+  `webhooks.keep_given_up_days` (default 90). Waiting deliveries are never pruned.
 - Delivery is **at-least-once, not exactly-once** — a merchant's endpoint may see a
   duplicate if a 2xx response is lost after being sent. This is a documented contract,
   not an oversight: webhook handlers are expected to be idempotent, and the body's
@@ -1349,6 +1358,8 @@ settings page, Payments tab, Webhooks card), since monokulo delivers webhooks:
 allow_private_urls = false    # SSRF escape hatch, self-hosted LAN testing only
 delivery_timeout_ms = 5000
 max_attempts = 8
+keep_delivered_days = 30      # then a delivery that arrived is deleted
+keep_given_up_days = 90       # then one that gave up is deleted
 ```
 
 One more knob lives outside this file entirely:

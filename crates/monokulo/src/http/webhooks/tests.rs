@@ -648,7 +648,8 @@ async fn a_deliverys_detail_is_a_page_without_javascript() {
     assert!(html.contains(">Send again now</button>"));
     // All of the webhook's deliveries, as a page too.
     let all = body_text(get(&router, &format!("{base}/deliveries"), &session).await).await;
-    assert!(all.contains("The latest 3, newest first."), "{all}");
+    assert!(all.contains("Newest first, 20 a page."), "{all}");
+    assert!(!all.contains("Older →"), "one page: {all}");
 }
 
 /// Deleting a webhook is asked first: a page without JavaScript, a dialog
@@ -1027,4 +1028,134 @@ async fn a_different_user_cannot_create_or_delete_webhooks_on_someone_elses_conn
         .await
         .unwrap();
     assert_eq!(delete_response.status(), StatusCode::NOT_FOUND);
+}
+
+/// A webhook's deliveries come 20 a page, newest first: the settings
+/// page's fold shows the first with "Older →"; the page of all of them
+/// pages on with "← Newer" and "Older →" until the last; a fixi request
+/// gets just that page's part, to swap in place.
+#[tokio::test]
+async fn a_webhooks_deliveries_page_twenty_at_a_time() {
+    let (state, _engine) = test_state_with_real_engine().await;
+    let router = build_router(state.clone());
+    let session = signed_up_and_logged_in_session_token(
+        &router,
+        "pages@example.com",
+        "correct horse battery staple",
+    )
+    .await;
+    let (store, pk) = create_connection(&router, &session).await;
+    let created = crate::webhooks::create(
+        &state.db,
+        &state.encryption_key,
+        &crate::db::ConnectionId::new(store.clone()),
+        "https://bakery.example/hook",
+        &std::collections::BTreeMap::new(),
+    )
+    .await
+    .unwrap();
+    let webhook = created.webhook.id.to_string();
+    let base = format!("/dashboard/stores/{store}/settings/webhooks/{webhook}/deliveries");
+    let order = |seq: i64| format!("order{seq:030}");
+    let add = |from: i64, to: i64| {
+        let db = state.db.lock();
+        for seq in from..=to {
+            let event = LoggedEvent {
+                seq,
+                event_id: format!("evt_{seq}"),
+                event_type: "order.paid".into(),
+                created_at: 1000,
+                tenant_public_key: pk.clone(),
+                order_id: OrderId::new(order(seq)),
+                status: Some("paid".into()),
+                txid: None,
+                merchant_order_id: None,
+                xmr_amount_piconero: 1,
+            };
+            db.queue_order_event(&event, 1000, |store, metadata| {
+                crate::webhooks::body::body_v2(&event, store, metadata)
+            })
+            .unwrap();
+        }
+    };
+    let older = format!(
+        r##"<a href="{base}?page=1" rel="next" fx-action="{base}?page=1" fx-target="#deliveries-{webhook}" fx-swap="outerHTML">Older →</a>"##
+    );
+
+    // Exactly a page: no more pages.
+    add(1, 20);
+    let html = body_text(
+        get(
+            &router,
+            &format!("/dashboard/stores/{store}/settings"),
+            &session,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(html.matches(r#"<td data-label="Status">"#).count(), 20);
+    assert!(!html.contains("Older →"), "{html}");
+
+    // One more: the fold shows the newest 20 and links to the rest.
+    add(21, 41);
+    let html = body_text(
+        get(
+            &router,
+            &format!("/dashboard/stores/{store}/settings"),
+            &session,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(html.matches(r#"<td data-label="Status">"#).count(), 20);
+    assert!(html.contains(&older), "{html}");
+    assert!(
+        html.contains(&order(41)) && !html.contains(&order(21)),
+        "newest first"
+    );
+    assert!(!html.contains("← Newer"));
+
+    // The page of all of them: page 1 has both links, page 2 the last one.
+    let html = body_text(get(&router, &format!("{base}?page=1"), &session).await).await;
+    assert_eq!(html.matches(r#"<td data-label="Status">"#).count(), 20);
+    assert!(html.contains(&order(21)) && html.contains(&order(2)) && !html.contains(&order(22)));
+    assert!(
+        html.contains(&format!(r#"<a href="{base}" rel="prev""#)),
+        "{html}"
+    );
+    assert!(
+        html.contains(&format!(r#"<a href="{base}?page=2" rel="next""#)),
+        "{html}"
+    );
+    let html = body_text(get(&router, &format!("{base}?page=2"), &session).await).await;
+    assert_eq!(html.matches(r#"<td data-label="Status">"#).count(), 1);
+    assert!(html.contains(&order(1)));
+    assert!(
+        html.contains("← Newer") && !html.contains("Older →"),
+        "{html}"
+    );
+    let html = body_text(get(&router, &format!("{base}?page=9"), &session).await).await;
+    assert!(html.contains("No older deliveries."), "{html}");
+
+    // fixi: just the page's part.
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{base}?page=1"))
+                .header("authorization", format!("Bearer {session}"))
+                .header("fx-request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let fragment = body_text(response).await;
+    assert!(
+        fragment.starts_with(&format!(
+            r#"<div id="deliveries-{webhook}" class="deliveries-results">"#
+        )),
+        "{fragment}"
+    );
+    assert!(!fragment.contains("<html"));
 }

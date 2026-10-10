@@ -72,6 +72,7 @@ fn config(allow_private_urls: bool, max_attempts: u32) -> WebhookConfig {
         allow_private_urls,
         delivery_timeout: Duration::from_secs(2),
         max_attempts,
+        ..WebhookConfig::default()
     }
 }
 
@@ -858,5 +859,93 @@ async fn an_engine_event_reaches_the_endpoint_once() {
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&body).unwrap()["order_id"],
         order.as_str()
+    );
+}
+
+// -- Keeping deliveries ------------------------------------------------------
+
+/// Delivered deliveries go after `webhooks.keep_delivered_days` (30) and
+/// given-up ones after `webhooks.keep_given_up_days` (90), each a second
+/// past its period and not a second before; waiting ones always stay.
+#[tokio::test]
+async fn old_deliveries_are_pruned_delivered_after_30_days_given_up_after_90() {
+    let db = test_db();
+    let store = add_store(&db, "s1", "Bakery");
+    let (webhook, _) = add_webhook(&db, &store, "https://bakery.example/hook").await;
+    let now = 1_000_000_000;
+    let day = 86_400;
+    // (order, delivered, at): `at` is when it was delivered or given up.
+    let cases = [
+        ("delivered-old", true, now - 30 * day - 1),
+        ("delivered-edge", true, now - 30 * day),
+        ("gave-up-at-31-days", false, now - 31 * day),
+        ("gave-up-old", false, now - 90 * day - 1),
+        ("gave-up-edge", false, now - 90 * day),
+    ];
+    for (seq, (order, delivered, at)) in cases.iter().enumerate() {
+        let seq = i64::try_from(seq).unwrap() + 1;
+        queue(&db, &event(seq, "s1", order, "order.paid"), at - 60);
+        let id = db.lock().recent_deliveries(&webhook.id, 1).unwrap()[0].id;
+        db.lock()
+            .record_delivery_attempt(
+                id,
+                &crate::db::AttemptOutcome {
+                    attempt: crate::db::Attempt {
+                        n: 1,
+                        at: *at,
+                        status: Some(if *delivered { 200 } else { 500 }),
+                        error: None,
+                        ms: 5,
+                        signature: String::new(),
+                    },
+                    delivered: *delivered,
+                    response: None,
+                    next_attempt_at: None,
+                },
+            )
+            .unwrap();
+    }
+    // Still waiting, from long ago.
+    queue(
+        &db,
+        &event(9, "s1", "waiting", "order.paid"),
+        now - 400 * day,
+    );
+
+    let pruned = delivery::prune_deliveries(&db, &WebhookConfig::default(), now)
+        .await
+        .unwrap();
+    assert_eq!(pruned, (1, 1));
+    let mut left: Vec<String> = db
+        .lock()
+        .recent_deliveries(&webhook.id, 100)
+        .unwrap()
+        .into_iter()
+        .map(|d| d.order_id.to_string())
+        .collect();
+    left.sort();
+    assert_eq!(
+        left,
+        [
+            "delivered-edge",
+            "gave-up-at-31-days",
+            "gave-up-edge",
+            "waiting"
+        ]
+    );
+
+    // Shorter periods, from the settings: both kinds go sooner.
+    let short = WebhookConfig {
+        keep_delivered_secs: day,
+        keep_given_up_secs: 2 * day,
+        ..WebhookConfig::default()
+    };
+    assert_eq!(
+        delivery::prune_deliveries(&db, &short, now).await.unwrap(),
+        (1, 2)
+    );
+    assert_eq!(
+        db.lock().recent_deliveries(&webhook.id, 100).unwrap().len(),
+        1
     );
 }

@@ -40,7 +40,9 @@ engine's own server and logging settings under `[engine.*]`, or
 `[engine.*]` tables with a remote engine), and a missing encryption key.
 
 Webhooks are monokulo's: it delivers them, so `webhooks.max_attempts`,
-`webhooks.delivery_timeout_ms` and `webhooks.allow_private_urls` are
+`webhooks.delivery_timeout_ms`, `webhooks.allow_private_urls`,
+`webhooks.keep_delivered_days` (30) and `webhooks.keep_given_up_days` (90)
+are
 monokulo settings (admin settings page, Payments tab, Webhooks card), not
 under `[engine.*]`. The engine only keeps the order events they are made
 from, for `order_events.retention_days` (default 7, an engine setting, so

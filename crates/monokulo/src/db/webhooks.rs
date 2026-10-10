@@ -22,7 +22,6 @@ pub struct WebhookRow {
     pub signing_secret_encrypted: String,
     /// A JSON object of the headers sent with every delivery.
     pub extra_headers: String,
-    pub enabled: bool,
     pub created_at: i64,
 }
 
@@ -207,13 +206,12 @@ fn webhook_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebhookRow> {
         url: row.get(2)?,
         signing_secret_encrypted: row.get(3)?,
         extra_headers: row.get(4)?,
-        enabled: row.get(5)?,
-        created_at: row.get(6)?,
+        created_at: row.get(5)?,
     })
 }
 
 const WEBHOOK_COLUMNS: &str =
-    "id, store_id, url, signing_secret_encrypted, extra_headers, enabled, created_at_utc";
+    "id, store_id, url, signing_secret_encrypted, extra_headers, created_at_utc";
 
 impl Db {
     pub fn create_webhook(&self, new: &NewWebhook<'_>) -> Result<()> {
@@ -269,16 +267,16 @@ impl Db {
         Ok(changed == 1)
     }
 
-    /// Turns a webhook on or off: for fixtures that queue an event for one
-    /// webhook of a store with several.
+    /// Deletes one delivery: for fixtures that queue an event for one
+    /// webhook of a store with several (each event goes to all of them).
     #[cfg(any(test, feature = "test-support"))]
-    pub fn set_webhook_enabled_for_test(&self, id: &WebhookId, enabled: bool) {
+    pub fn delete_delivery_for_test(&self, delivery_id: i64) {
         self.conn
             .execute(
-                "UPDATE webhooks SET enabled = ?2 WHERE id = ?1",
-                params![id, enabled],
+                "DELETE FROM webhook_deliveries WHERE id = ?1",
+                params![delivery_id],
             )
-            .expect("turning a test webhook on or off");
+            .expect("deleting a test delivery");
     }
 
     /// Where the order-event log has been read up to: 0 before the first
@@ -310,7 +308,7 @@ impl Db {
         self.save_order_event_position(after, at)
     }
 
-    /// Queues `event` for each of its store's enabled webhooks, with the
+    /// Queues `event` for each of its store's webhooks, with the
     /// body `body` makes for each, and moves the position past it, in one
     /// transaction: a restart never queues an event twice nor skips one.
     /// An event at or before the position was handled already and is left
@@ -330,11 +328,7 @@ impl Db {
         }
         let mut queued = 0;
         if let Some(store) = self.get_store_connection_by_public_key(&event.tenant_public_key)? {
-            let webhooks: Vec<WebhookRow> = self
-                .list_webhooks(&store.id)?
-                .into_iter()
-                .filter(|w| w.enabled)
-                .collect();
+            let webhooks = self.list_webhooks(&store.id)?;
             if !webhooks.is_empty() {
                 let metadata = self.get_order_currency_metadata(&store.id, &event.order_id)?;
                 let body = body(&store, metadata.as_ref());
@@ -369,8 +363,7 @@ impl Db {
     ///   order are never in flight at once and a later one never overtakes
     ///   an earlier one; a given-up delivery holds nothing back;
     /// - at most `per_store` per store, so one store's backlog or slow
-    ///   endpoint can't fill the batch;
-    /// - only enabled webhooks'.
+    ///   endpoint can't fill the batch.
     pub fn due_deliveries(&self, now: i64, per_store: u32, limit: u32) -> Result<Vec<DueDelivery>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, webhook_id, store_id, order_id, event_id, event_type, body, attempt_count,
@@ -384,7 +377,7 @@ impl Db {
                            ROW_NUMBER() OVER (PARTITION BY d.webhook_id, d.order_id ORDER BY d.id) AS per_order
                     FROM webhook_deliveries d
                     JOIN webhooks w ON w.id = d.webhook_id
-                    WHERE d.next_attempt_at_utc IS NOT NULL AND w.enabled = 1
+                    WHERE d.next_attempt_at_utc IS NOT NULL
                 )
                 WHERE per_order = 1 AND due_at <= ?1
              )
@@ -530,17 +523,54 @@ impl Db {
         webhook_id: &WebhookId,
         limit: usize,
     ) -> Result<Vec<DeliveryRow>> {
+        self.deliveries_page(webhook_id, 0, limit)
+    }
+
+    /// `limit` of the webhook's deliveries, newest first, after skipping
+    /// the `offset` newest.
+    pub fn deliveries_page(
+        &self,
+        webhook_id: &WebhookId,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<DeliveryRow>> {
         let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT {DELIVERY_COLUMNS} FROM webhook_deliveries WHERE webhook_id = ?1
-             ORDER BY id DESC LIMIT ?2"
+             ORDER BY id DESC LIMIT ?2 OFFSET ?3"
         ))?;
         let rows = stmt
             .query_map(
-                params![webhook_id, i64::try_from(limit).unwrap_or(i64::MAX)],
+                params![
+                    webhook_id,
+                    i64::try_from(limit).unwrap_or(i64::MAX),
+                    i64::try_from(offset).unwrap_or(i64::MAX)
+                ],
                 delivery_from_row,
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Deletes deliveries delivered before `delivered_before` and ones
+    /// given up on before `gave_up_before` (unix seconds). Returns how many
+    /// of each.
+    pub fn prune_deliveries(
+        &self,
+        delivered_before: i64,
+        gave_up_before: i64,
+    ) -> Result<(u64, u64)> {
+        let delivered = self.conn.execute(
+            "DELETE FROM webhook_deliveries WHERE delivered_at_utc < ?1",
+            params![delivered_before],
+        )?;
+        let gave_up = self.conn.execute(
+            "DELETE FROM webhook_deliveries WHERE gave_up_at_utc < ?1",
+            params![gave_up_before],
+        )?;
+        Ok((
+            u64::try_from(delivered).unwrap_or(u64::MAX),
+            u64::try_from(gave_up).unwrap_or(u64::MAX),
+        ))
     }
 
     /// One of the store's deliveries; `None` when it isn't the store's.

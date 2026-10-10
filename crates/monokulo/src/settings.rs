@@ -341,6 +341,20 @@ settings! {
         description: "Attempts per webhook delivery before giving up, with the wait doubling from 1 minute up to 64 minutes between them.",
         example: "8",
     },
+    WEBHOOKS_KEEP_DELIVERED_DAYS: u64 {
+        key: "webhooks.keep_delivered_days",
+        default: 30,
+        check: range(1, 3650),
+        description: "Days a webhook delivery that arrived stays in the store's list of deliveries before it is deleted.",
+        example: "30",
+    },
+    WEBHOOKS_KEEP_GIVEN_UP_DAYS: u64 {
+        key: "webhooks.keep_given_up_days",
+        default: 90,
+        check: range(1, 3650),
+        description: "Days a webhook delivery that was given up on stays in the store's list (where it can still be sent again) before it is deleted.",
+        example: "90",
+    },
     ABUSE_STREAM_CAP: usize {
         key: "abuse.stream_cap",
         default: 16,
@@ -635,6 +649,15 @@ pub struct WebhookConfig {
     pub allow_private_urls: bool,
     pub delivery_timeout: std::time::Duration,
     pub max_attempts: u32,
+    /// How long a delivered delivery is kept, in seconds.
+    pub keep_delivered_secs: i64,
+    /// How long a given-up delivery is kept, in seconds.
+    pub keep_given_up_secs: i64,
+}
+
+/// Days as seconds, for the keep settings.
+fn days(days: u64) -> i64 {
+    i64::try_from(days.saturating_mul(86_400)).unwrap_or(i64::MAX)
 }
 
 impl Default for WebhookConfig {
@@ -645,6 +668,8 @@ impl Default for WebhookConfig {
                 WEBHOOKS_DELIVERY_TIMEOUT_MS.default_value(),
             ),
             max_attempts: WEBHOOKS_MAX_ATTEMPTS.default_value(),
+            keep_delivered_secs: days(WEBHOOKS_KEEP_DELIVERED_DAYS.default_value()),
+            keep_given_up_secs: days(WEBHOOKS_KEEP_GIVEN_UP_DAYS.default_value()),
         }
     }
 }
@@ -656,6 +681,8 @@ impl Section for WebhookConfig {
             &WEBHOOKS_ALLOW_PRIVATE_URLS,
             &WEBHOOKS_DELIVERY_TIMEOUT_MS,
             &WEBHOOKS_MAX_ATTEMPTS,
+            &WEBHOOKS_KEEP_DELIVERED_DAYS,
+            &WEBHOOKS_KEEP_GIVEN_UP_DAYS,
         ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
@@ -665,6 +692,8 @@ impl Section for WebhookConfig {
                 snapshot.get(&WEBHOOKS_DELIVERY_TIMEOUT_MS),
             ),
             max_attempts: snapshot.get(&WEBHOOKS_MAX_ATTEMPTS),
+            keep_delivered_secs: days(snapshot.get(&WEBHOOKS_KEEP_DELIVERED_DAYS)),
+            keep_given_up_secs: days(snapshot.get(&WEBHOOKS_KEEP_GIVEN_UP_DAYS)),
         })
     }
 }
@@ -1565,6 +1594,45 @@ mod tests {
         .flat_map(|keys| keys.iter().map(|setting| setting.key()))
         .collect();
         assert_eq!(covered.len(), ALL.len());
+    }
+
+    /// How long webhook deliveries are kept comes from the options file;
+    /// a value out of range stops monokulo from starting, naming it.
+    #[tokio::test]
+    async fn the_webhook_delivery_keep_periods_load_and_bad_ones_stop_monokulo() {
+        let load = |options: &str| {
+            let options = options.to_string();
+            async move {
+                MonokuloSettings::load(
+                    Database::inline(Db::open_in_memory().unwrap().into_shared()),
+                    EngineClient::for_tests("http://127.0.0.1:1"),
+                    Arc::new(ExchangeRateProviders::xmr_only()),
+                    Default::default(),
+                    None,
+                    test_secrets(),
+                    live_settings::OptionsFile::in_memory(&options),
+                )
+                .await
+            }
+        };
+        let settings = load("[webhooks]\nkeep_delivered_days = 7\nkeep_given_up_days = 45\n")
+            .await
+            .unwrap();
+        let webhooks = settings.webhooks.load();
+        assert_eq!(
+            (webhooks.keep_delivered_secs, webhooks.keep_given_up_secs),
+            (7 * 86_400, 45 * 86_400)
+        );
+        for bad in [
+            "[webhooks]\nkeep_delivered_days = 0\n",
+            "[webhooks]\nkeep_given_up_days = 5000\n",
+        ] {
+            let refused = match load(bad).await {
+                Err(refused) => refused,
+                Ok(_) => panic!("{bad} was accepted"),
+            };
+            assert!(refused.contains("webhooks.keep_"), "{refused}");
+        }
     }
 
     async fn loaded(
