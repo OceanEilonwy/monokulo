@@ -143,6 +143,15 @@ test("a delivery's details open as a dialog, with its attempts, request and last
   await retrying.getByRole('link', { name: 'Details' }).first().click();
   const dialog = page.getByRole('dialog', { name: 'Delivery of order.paid' });
   await expect(dialog).toBeVisible();
+  // The status at the top right, on the title's line, beside the close
+  // button; the facts under it.
+  const title = await dialog.locator('.dialog-title').boundingBox();
+  const status = await dialog.locator('.delivery-head-end .tag').boundingBox();
+  const close = await dialog.locator('.delivery-head-end .dialog-x').boundingBox();
+  expect(status.x).toBeGreaterThan(title.x + title.width);
+  expect(Math.abs((status.y + status.height / 2) - (title.y + title.height / 2))).toBeLessThan(4);
+  expect(close.x).toBeGreaterThan(status.x + status.width);
+  await expect(dialog.locator('.delivery-facts dt')).toHaveText(['Endpoint', 'Order', 'Next try']);
   await expect(dialog.locator('table tbody tr')).toHaveCount(4);
   await expect(dialog.locator('tbody tr').first().locator('td').first()).toContainText('4');
   await dialog.getByText('Request', { exact: true }).click();

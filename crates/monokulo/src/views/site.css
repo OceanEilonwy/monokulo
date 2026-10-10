@@ -1293,6 +1293,18 @@ mk-select[compact] .mk-popup { white-space: nowrap; }
 .req pre { margin: var(--space-xs) 0; font-size: 0.82em; white-space: pre-wrap; overflow-wrap: anywhere; }
 .delivery-dialog .dialog-actions, .delivery-page .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; }
 .delivery-page { max-width: 46rem; margin: var(--space-lg) 0; }
+/* A delivery's head: its title, then its status at the top right (beside
+   the dialog's close button); on a phone the status goes under it. */
+.delivery-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm); margin: 0 0 var(--space-md); }
+.delivery-head .dialog-title { flex: 1 1 auto; margin: 0; }
+.delivery-head .event-name { font-family: var(--font-mono); font-weight: 600; font-size: 0.95em; overflow-wrap: anywhere; }
+.delivery-head-end { display: flex; align-items: center; gap: var(--space-sm); margin-left: auto; }
+.delivery-head-end .tag { white-space: nowrap; }
+.delivery-head-end .dialog-x { margin: 0; }
+.delivery-facts { margin: 0 0 var(--space-lg); }
+.delivery-facts dd { font-weight: 400; }
+.delivery-facts .endpoint { font-family: var(--font-mono); font-size: 0.9em; }
+.delivery-facts + .mini-h { margin-top: 0; }
 .deliveries-page { margin: var(--space-lg) 0; }
 @media (max-width: 640px) {
   /* A delivery on a phone is a compact two-column card, not a tall list. */
