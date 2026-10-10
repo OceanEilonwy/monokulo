@@ -504,21 +504,44 @@ pub fn detail_content(
     request.push('\n');
     request.push_str(&body);
     html! {
-        (heading(&format!("delivery-{}-title", delivery.id), html! { "Delivery of " code { (delivery.event_type) } }, in_dialog))
-        p {
-            "To " code class="wh-url" { (webhook.url) } " for order "
-            a href=(paths.order(delivery.order_id.as_str())) { (short_id(delivery.order_id.as_str())) } ". "
-            (state_tag(state)) " "
+        // The title, its status at the top right (beside the close button
+        // in a dialog), then what it is, one fact a line.
+        div class="delivery-head" {
+            @let title_id = format!("delivery-{}-title", delivery.id);
+            @if in_dialog {
+                h2 id=(title_id) class="dialog-title" { "Delivery of " span class="event-name" { (delivery.event_type) } }
+            } @else {
+                h1 id=(title_id) class="dialog-title" { "Delivery of " span class="event-name" { (delivery.event_type) } }
+            }
+            div class="delivery-head-end" {
+                (state_tag(state))
+                @if in_dialog {
+                    button type="button" class="dialog-x" aria-label="Close" data-closes-dialog { "×" }
+                }
+            }
+        }
+        dl class="facts delivery-facts" {
+            dt { "Endpoint" }
+            dd class="endpoint" { (webhook.url) }
+            dt { "Order" }
+            dd { a href=(paths.order(delivery.order_id.as_str())) { (short_id(delivery.order_id.as_str())) } }
             @match state {
                 DeliveryState::Retrying | DeliveryState::Queued => {
-                    @if let Some(next) = delivery.next_attempt_at { "next try at " (clock.text(next)) ", " (clock.relative(next)) "." }
+                    @if let Some(next) = delivery.next_attempt_at {
+                        dt { "Next try" }
+                        dd { (clock.text(next)) " (" (clock.relative(next)) ")" }
+                    }
                 }
                 DeliveryState::Delivered => {
-                    @if let Some(at) = delivery.delivered_at { "at " (clock.text(at)) "." }
+                    @if let Some(at) = delivery.delivered_at {
+                        dt { "Delivered" }
+                        dd { (clock.text(at)) }
+                    }
                 }
                 DeliveryState::GaveUp => {
                     @if let Some(at) = delivery.gave_up_at {
-                        "at " (clock.text(at)) " after " (plural(u64::from(delivery.attempt_count), "attempt", "attempts")) "."
+                        dt { "Gave up" }
+                        dd { (clock.text(at)) ", after " (plural(u64::from(delivery.attempt_count), "attempt", "attempts")) }
                     }
                 }
             }

@@ -630,14 +630,16 @@ async fn a_deliverys_detail_is_a_page_without_javascript() {
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_text(response).await;
     assert!(html.contains(r#"<h1 id="delivery-"#), "{html}");
+    // The head: the title, the status at its right; then the facts.
     assert!(
-        html.contains("Delivery of <code>order.confirming</code>"),
+        html.contains(r#"class="dialog-title">Delivery of <span class="event-name">order.confirming</span></h1><div class="delivery-head-end"><span class="tag tag-slow">retrying</span></div>"#),
         "{html}"
     );
     assert!(
-        html.contains(r#"<span class="tag tag-slow">retrying</span> next try at"#),
+        html.contains(r#"<dl class="facts delivery-facts"><dt>Endpoint</dt><dd class="endpoint">https://erp.bakery.example/payments/in</dd><dt>Order</dt>"#),
         "{html}"
     );
+    assert!(html.contains("<dt>Next try</dt><dd>"), "{html}");
     assert_eq!(
         html.matches("<code>503 Service Unavailable</code>").count(),
         4,
