@@ -107,7 +107,8 @@ else
     # left behind by a killed run be taken over instead of blocking forever.
     if ! mkdir "$LOCK_FILE.d" 2>/dev/null; then
         holder="$(cat "$LOCK_FILE.d/pid" 2>/dev/null || true)"
-        if [[ -n "$holder" ]] && kill -0 "$holder" 2>/dev/null; then busy; fi
+        # No pid yet: the holder has only just made the directory.
+        if [[ -z "$holder" ]] || kill -0 "$holder" 2>/dev/null; then busy; fi
         rm -rf "$LOCK_FILE.d"
         mkdir "$LOCK_FILE.d" 2>/dev/null || busy
     fi
