@@ -497,7 +497,10 @@ async fn a_healthy_webhooks_deliveries_stay_folded_and_an_empty_card_offers_to_a
                 &AttemptOutcome {
                     attempt: Attempt {
                         n: 1,
-                        at: crate::now_unix() - 120,
+                        // Ages round up to the minute: 90s reads "2 min
+                        // ago" for 30s, where 120s flips to "3 min" at the
+                        // next second.
+                        at: crate::now_unix() - 90,
                         status: Some(200),
                         error: None,
                         ms: 184,
