@@ -185,16 +185,16 @@ async fn owned(
     id: &ConnectionId,
     webhook: &WebhookId,
     recent: usize,
-) -> Result<(super::OwnedStore, WebhookEntry), Response> {
+) -> Result<(super::OwnedStore, WebhookEntry), StatusCode> {
     let row = match load_owned_connection(&state.db, user, id).await {
         Ok(Some(row)) => row,
-        Ok(None) => return Err(StatusCode::NOT_FOUND.into_response()),
-        Err(()) => return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(()) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
     match entry(state, &row, webhook.clone(), recent).await {
         Ok(Some(entry)) => Ok((row, entry)),
-        Ok(None) => Err(StatusCode::NOT_FOUND.into_response()),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
 
@@ -207,7 +207,7 @@ pub async fn delete_page(
 ) -> Response {
     let (row, entry) = match owned(&state, &user, &id, &webhook, 0).await {
         Ok(found) => found,
-        Err(response) => return response,
+        Err(status) => return status.into_response(),
     };
     let chrome = super::page_chrome(
         &state,
@@ -265,7 +265,7 @@ pub async fn all(
 ) -> Response {
     let (row, entry) = match owned(&state, &user, &id, &webhook, views::webhooks::ALL).await {
         Ok(found) => found,
-        Err(response) => return response,
+        Err(status) => return status.into_response(),
     };
     let chrome = super::page_chrome(
         &state,
@@ -292,7 +292,7 @@ pub async fn detail(
 ) -> Response {
     let (row, entry) = match owned(&state, &user, &id, &webhook, 0).await {
         Ok(found) => found,
-        Err(response) => return response,
+        Err(status) => return status.into_response(),
     };
     let (store_id, target) = (id.clone(), webhook.clone());
     let found = state
@@ -327,8 +327,8 @@ pub async fn send_again(
     AuthedUser(user, _): AuthedUser,
     Path((id, webhook, delivery)): Path<(ConnectionId, WebhookId, i64)>,
 ) -> Response {
-    if let Err(response) = owned(&state, &user, &id, &webhook, 0).await {
-        return response;
+    if let Err(status) = owned(&state, &user, &id, &webhook, 0).await {
+        return status.into_response();
     }
     let (store_id, target, now) = (id.clone(), webhook.clone(), crate::now_unix());
     match state
@@ -356,8 +356,8 @@ pub async fn retry_failed(
     AuthedUser(user, _): AuthedUser,
     Path((id, webhook)): Path<(ConnectionId, WebhookId)>,
 ) -> Response {
-    if let Err(response) = owned(&state, &user, &id, &webhook, 0).await {
-        return response;
+    if let Err(status) = owned(&state, &user, &id, &webhook, 0).await {
+        return status.into_response();
     }
     let (store_id, target, now) = (id.clone(), webhook.clone(), crate::now_unix());
     match state
