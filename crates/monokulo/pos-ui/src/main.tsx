@@ -100,6 +100,11 @@ const post = (url: string, value?: unknown) => json<void>(url, {
 const [now, setNow] = createSignal(Math.floor(Date.now() / 1000));
 /** How long an order stays in the Finished tab after it finished here. */
 const FINISHED_KEEP_SECONDS = 24 * 60 * 60;
+/** How long the POS waits to reopen an update stream the browser gave up
+ * on: 5s, doubling with each failure to at most a minute, as the checkout
+ * (static/checkout.js) does. */
+const STREAM_RETRY_MS = 5000;
+const STREAM_RETRY_MAX_MS = 60000;
 
 /** Moves the site's own status indicator and theme toggle (rendered by
  * the server into #pos-site-controls) into the top bar, and makes the
@@ -459,29 +464,45 @@ function App() {
   // rate-limits each store).
   createEffect(watchedIds, ids => {
     if (!ids) { markConnected(); return; }
-    const source = new EventSource(`${api}/events?orders=${ids.split(',').map(encodeURIComponent).join(',')}`);
+    const url = `${api}/events?orders=${ids.split(',').map(encodeURIComponent).join(',')}`;
     const watching = ids.split(',').length;
-    source.addEventListener('open', () => {
-      timeline.record('stream.open', { orders: watching, down_ms: streamDownAt ? Date.now() - streamDownAt : undefined });
-      streamDownAt = 0;
-      markConnected();
-    });
-    source.addEventListener('status', event => {
-      let update: StatusEvent;
-      try { update = JSON.parse((event as MessageEvent).data) as StatusEvent; }
-      catch { return; /* A malformed event is ignored; the next snapshot reconciles. */ }
-      statusRevisions.set(update.order_id, statusRevision(update.order_id) + 1);
-      updateOrders(previous => previous.map(o => o.order_id === update.order_id ? merge(o, update) : o));
-    });
-    // The browser retries a dropped stream every few seconds; the counter is
-    // offline once it has failed to reconnect for 6s, however many attempts
-    // that took (and however often the watched set changes meanwhile). Only
-    // a successful open clears it.
-    source.addEventListener('error', () => {
-      if (!streamDownAt) { streamDownAt = Date.now(); timeline.record('stream.error', { orders: watching, online: navigator.onLine }, 'warn'); }
-      if (lostTimer === undefined) lostTimer = window.setTimeout(() => { setOffline(true); timeline.record('stream.lost', { after_ms: 6000 }, 'warn'); }, 6000);
-    });
-    return () => source.close();
+    let source: EventSource;
+    let retryTimer: number | undefined;
+    let retryDelay = STREAM_RETRY_MS;
+    const open = () => {
+      source = new EventSource(url);
+      source.addEventListener('open', () => {
+        timeline.record('stream.open', { orders: watching, down_ms: streamDownAt ? Date.now() - streamDownAt : undefined });
+        streamDownAt = 0;
+        retryDelay = STREAM_RETRY_MS;
+        markConnected();
+      });
+      source.addEventListener('status', event => {
+        let update: StatusEvent;
+        try { update = JSON.parse((event as MessageEvent).data) as StatusEvent; }
+        catch { return; /* A malformed event is ignored; the next snapshot reconciles. */ }
+        statusRevisions.set(update.order_id, statusRevision(update.order_id) + 1);
+        updateOrders(previous => previous.map(o => o.order_id === update.order_id ? merge(o, update) : o));
+      });
+      // A dropped stream is retried every few seconds; the counter is
+      // offline once it has failed to reconnect for 6s, however many
+      // attempts that took (and however often the watched set changes
+      // meanwhile). Only a successful open clears it.
+      source.addEventListener('error', () => {
+        if (!streamDownAt) { streamDownAt = Date.now(); timeline.record('stream.error', { orders: watching, online: navigator.onLine }, 'warn'); }
+        if (lostTimer === undefined) lostTimer = window.setTimeout(() => { setOffline(true); timeline.record('stream.lost', { after_ms: 6000 }, 'warn'); }, 6000);
+        // A stream closed for good isn't retried by the browser: any browser's
+        // after a refusal (a server error, a restart), and Firefox's after a
+        // failed connection too, the Wi-Fi being down. The POS opens a new
+        // one itself, waiting longer each time one fails.
+        if (source.readyState === EventSource.CLOSED) {
+          retryTimer = window.setTimeout(open, retryDelay);
+          retryDelay = Math.min(retryDelay * 2, STREAM_RETRY_MAX_MS);
+        }
+      });
+    };
+    open();
+    return () => { window.clearTimeout(retryTimer); source.close(); };
   });
   function resetKeypad() { setDigits('0'); setReference(''); setActiveId(null); setScreen('keypad'); setError(''); }
   function pushDigit(d: string) { setDigits(value => (value + d).slice(-(config.decimals + 9)).replace(/^0+(?=\d)/, '') || '0'); }
