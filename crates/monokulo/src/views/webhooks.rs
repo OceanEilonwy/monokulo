@@ -5,7 +5,7 @@
 //!
 //! Every action is a plain POST form: "Send again" on a delivery, "Retry
 //! failed (N)" on a webhook whose deliveries gave up, adding and deleting a
-//! webhook. "Details" and "Delete…" are links to pages holding the same
+//! webhook. "Details" and "Delete" are links to pages holding the same
 //! content as their dialogs (`confirm-dialogs.js` opens the dialog
 //! instead).
 
@@ -261,15 +261,21 @@ pub fn deliveries_table(
                                     _ => { (delivery.attempt_count) " of " (max_attempts) },
                                 }
                             }
+                            // Two fixed slots, the same in every row: Details,
+                            // then Send again or nothing, so each lines up.
                             td class="row-acts" {
-                                a href=(paths.detail(webhook.id.as_str(), delivery.id))
-                                    data-opens-dialog=(dialog_id(delivery.id)) { "Details" }
-                                @if state == DeliveryState::GaveUp {
-                                    form method="post" action=(paths.send_again(webhook.id.as_str(), delivery.id)) class="inline-form" {
-                                        // An icon, so the row stays narrow enough to show it.
-                                        button type="submit" class="icon-only send-again" aria-label="Send again" title="Send again" {
-                                            (super::wallets::regenerate_icon())
+                                div class="act-slots" {
+                                    a href=(paths.detail(webhook.id.as_str(), delivery.id))
+                                        data-opens-dialog=(dialog_id(delivery.id)) { "Details" }
+                                    @if state == DeliveryState::GaveUp {
+                                        form method="post" action=(paths.send_again(webhook.id.as_str(), delivery.id)) class="inline-form" {
+                                            // An icon, so the row stays narrow enough to show it.
+                                            button type="submit" class="icon-only send-again" aria-label="Send again" title="Send again" {
+                                                (super::wallets::regenerate_icon())
+                                            }
                                         }
+                                    } @else {
+                                        span class="act-slot" aria-hidden="true" {}
                                     }
                                 }
                             }
@@ -359,7 +365,7 @@ pub fn card(card: &WebhooksCard, error: Markup) -> Markup {
                             span class="tag tag-unknown" { (plugin) }
                         }
                         span class="card-spacer" {}
-                        a class="btn btn-sm" href=(paths.delete(id)) data-opens-dialog=(delete_dialog_id(id)) { "Delete…" }
+                        a class="btn btn-sm btn-danger" href=(paths.delete(id)) data-opens-dialog=(delete_dialog_id(id)) { "Delete" }
                     }
                     (health_line(card, entry))
                     @if !entry.recent.is_empty() {
@@ -373,22 +379,24 @@ pub fn card(card: &WebhooksCard, error: Markup) -> Markup {
             }
             h4 { "Add a webhook" }
             form method="post" action=(paths.add()) {
-                label {
-                    "URL"
-                    input type="url" name="url" placeholder="https://your-endpoint.example.com/monokulo-webhook" required;
-                    span class="field-help" {
+                (super::settings::Field::new("URL", "webhook-url")
+                    .help(Some("webhook-url-help"), html! {
                         "Where Monokulo sends this store's order events: an " code { "http(s)://" } " URL your server answers. "
                         "Private and loopback addresses are refused at delivery."
-                    }
-                }
-                label {
-                    "Custom headers (optional)"
-                    textarea name="extra_headers" rows="3" placeholder="X-Api-Key: your-value\nAnother-Header: another-value" {}
-                    span class="field-help" {
+                    })
+                    .render(html! {
+                        input type="url" name="url" id="webhook-url" aria-describedby="webhook-url-help"
+                            placeholder="https://your-endpoint.example.com/monokulo-webhook" required;
+                    }))
+                (super::settings::Field::new("Custom headers (optional)", "webhook-headers")
+                    .help(Some("webhook-headers-help"), html! {
                         "One " code { "Header-Name: value" } " pair per line - sent with every delivery to this "
                         "webhook, alongside the signature headers Monokulo always includes."
-                    }
-                }
+                    })
+                    .render(html! {
+                        textarea name="extra_headers" id="webhook-headers" aria-describedby="webhook-headers-help" rows="3"
+                            placeholder="X-Api-Key: your-value\nAnother-Header: another-value" {}
+                    }))
                 div class="form-actions" {
                     button type="submit" { "Add webhook" }
                 }

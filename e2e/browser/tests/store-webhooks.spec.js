@@ -26,6 +26,18 @@ async function seed(empty = false) {
   return (await response.json()).deliveries;
 }
 const card = (page) => page.locator('#card-webhooks');
+/** Every row's Details at one x, and its second slot at another. */
+async function aligned(hook) {
+  const rows = hook.locator('.deliveries-results tbody tr');
+  const xs = [];
+  for (let i = 0; i < await rows.count(); i++) {
+    const details = await rows.nth(i).getByRole('link', { name: 'Details' }).boundingBox();
+    const slot = await rows.nth(i).locator('.act-slots > :nth-child(2)').boundingBox();
+    xs.push([Math.round(details.x), Math.round(slot.x)]);
+  }
+  expect(new Set(xs.map(([d]) => d)).size, JSON.stringify(xs)).toBe(1);
+  expect(new Set(xs.map(([, s]) => s)).size, JSON.stringify(xs)).toBe(1);
+}
 const webhook = (page, url) => card(page).locator('.wh').filter({ has: page.locator('.wh-url', { hasText: url }) });
 
 test('each webhook says how it is doing; the deliveries of one that needs you are open', async ({ page, context }) => {
@@ -68,6 +80,20 @@ test('each webhook says how it is doing; the deliveries of one that needs you ar
   };
   await fits();
   await expect(gaveUp.getByRole('button', { name: 'Retry failed (1)' })).toBeVisible();
+  // Delete is the site's red danger button, as Retire is on a wallet's page.
+  const remove = gaveUp.getByRole('link', { name: 'Delete', exact: true });
+  await expect(remove).toHaveClass(/\bbtn-danger\b/);
+  const danger = await page.evaluate(() => {
+    const probe = document.createElement('a');
+    probe.className = 'btn btn-danger';
+    document.body.append(probe);
+    const colour = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return colour;
+  });
+  expect(await remove.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(danger);
+  await aligned(retrying);
+  await aligned(gaveUp);
   await gaveUp.scrollIntoViewIfNeeded();
   await captureCoverageStage(page, 'store-webhooks-gave-up', test.info(), { group: GROUP });
 
@@ -75,8 +101,25 @@ test('each webhook says how it is doing; the deliveries of one that needs you ar
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await fits();
+  await aligned(retrying);
+  await aligned(gaveUp);
   await retrying.scrollIntoViewIfNeeded();
   await captureCoverageStage(page, 'store-webhooks-phone', test.info(), { group: GROUP, asIs: true });
+});
+
+test("the All deliveries page keeps Details and Send again in fixed columns, wide and on a phone", async ({ page, context }) => {
+  await login(context);
+  await seed();
+  await page.goto(`${settings()}#card-webhooks`);
+  const href = await webhook(page, 'https://old-shop.example/?wc-api=monokulo').getByRole('link', { name: 'All deliveries for this webhook' }).getAttribute('href');
+  await page.goto(fixture.base_url + href);
+  const list = page.locator('.deliveries-page');
+  await expect(list.getByRole('button', { name: 'Send again', exact: true })).toHaveCount(1);
+  for (const size of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(size);
+    await aligned(list);
+    expect(await list.locator('.table-scroll').evaluate((t) => t.scrollWidth <= t.clientWidth)).toBe(true);
+  }
 });
 
 test('Retry failed queues the given-up deliveries again and says so', async ({ page, context }) => {
@@ -185,9 +228,10 @@ test('without JavaScript, Details and Delete are pages and Send again is a form'
 
   // Followed as a link (without JavaScript the toast and the save bar can
   // sit over it on this page).
-  const remove = webhook(page, 'https://bakery.example/hooks/monokulo').getByRole('link', { name: 'Delete…' });
+  const remove = webhook(page, 'https://bakery.example/hooks/monokulo').getByRole('link', { name: 'Delete', exact: true });
   await page.goto(fixture.base_url + await remove.getAttribute('href'));
   await expect(page.getByRole('heading', { level: 1, name: 'Delete this webhook?' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Delete webhook' })).toHaveClass(/\bbtn-danger\b/);
   await page.getByRole('button', { name: 'Delete webhook' }).click();
   await expect(page).toHaveURL(/\/settings\?saved=webhooks#card-webhooks$/);
   await expect(card(page).locator('.card-meta')).toHaveText('2 webhooks');

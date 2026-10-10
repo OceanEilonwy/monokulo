@@ -112,9 +112,9 @@ one that gave up after 90 (`webhooks.keep_delivered_days`,
 - *Details* on a delivery shows its attempts, the request sent (the
   signature header, never the secret; your own headers' values masked) and
   the start of your server's last answer.
-- *Send again* on a delivery that gave up sends it again now; *Retry failed*
+- *Send again* (the circular arrow) on a delivery that gave up sends it again now; *Retry failed*
   does it for all of a webhook's.
-- *Delete…* removes the webhook and its deliveries.
+- *Delete* removes the webhook and its deliveries, once you confirm.
 
 ## Settings
 
