@@ -13,9 +13,10 @@ use super::machine::{
 use crate::views::scaling::thousands;
 use shared::activity::PoolPath;
 
-/// A round shorter than this is drawn to this scale, so its units are
-/// still visible.
-const MIN_SCALE_MS: u64 = 120;
+/// A round shorter than this is drawn to this scale: a round of a few
+/// milliseconds still reads as short, but its parts apart (a part under a
+/// millisecond is drawn 3px wide).
+const MIN_SCALE_MS: u64 = 10;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Presented {
@@ -122,21 +123,19 @@ pub struct Lane {
     pub outcome: Option<Chip>,
 }
 
-/// A segment of a lane: the tier's spans that ran back to back.
+/// A segment of a lane: a run of the tier's units, drawn solid, with the
+/// tier's work outside its units drawn outlined over only the time it
+/// took (docs/engine_visualizer_decisions.md D39).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Bar {
     pub start_ms: u64,
     /// The time it took: what its label and the round's total add up.
     pub ms: u64,
-    /// How long it is drawn: `ms`, or longer when it is a solid segment
-    /// followed by the tier's work outside its units, drawn as one shape
-    /// running on to that work's end.
+    /// How long it is drawn, from its start to its last piece's end: the
+    /// time other tiers ran between its pieces included.
     pub span_ms: u64,
-    /// How much of it, from the left, is drawn solid (the tier's units);
-    /// the rest is outlined (its work outside them). 0 for work alone.
-    pub solid_ms: u64,
-    /// Ran in pass 2, on time left over.
-    pub leftover: bool,
+    /// What it is drawn as, left to right.
+    pub shapes: Vec<Shape>,
     /// Only work for the tier outside its units (the round's tip request,
     /// say).
     pub work: bool,
@@ -147,21 +146,145 @@ pub struct Bar {
     /// lane is too close, which then carries this one's time too. The
     /// labels add up to the round.
     pub label: Option<String>,
-    /// The segment that finished last: the round's end marker is on its
-    /// right edge.
+    /// The segment that finished last: the round's end marker is just
+    /// past its right edge.
     pub last: bool,
 }
+
+/// One drawn piece of a segment, in the round's milliseconds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Shape {
+    /// The tier's units: solid. `leftover` ran in pass 2, on time left
+    /// over (striped).
+    Fill {
+        from_ms: u64,
+        to_ms: u64,
+        leftover: bool,
+    },
+    /// The tier's work outside its units: an outline the solid part's
+    /// height. `joined`: it starts where the shape before it ends.
+    /// `band_from`: split on a wide track, but joined from there on a
+    /// narrow one.
+    Work {
+        from_ms: u64,
+        to_ms: u64,
+        joined: bool,
+        band_from: Option<u64>,
+    },
+    /// A 1px line at mid height across the time other tiers ran between
+    /// a unit and the tier's later work; `band` as for `Work`.
+    Thread {
+        from_ms: u64,
+        to_ms: u64,
+        band: bool,
+    },
+}
+
+/// A gap between a segment's pieces narrower than this share of the drawn
+/// scale is covered by the outline after it (joined); a wider one is
+/// crossed by a thread.
+const JOIN_SHARE: f64 = 0.025;
+/// On a narrow track the same share is far fewer pixels: gaps under this
+/// are joined there too (the page's container query, `.band`).
+const JOIN_SHARE_NARROW: f64 = 0.05;
 
 /// Segments closer than this, as a share of the drawn length, share one
 /// label.
 const LABEL_GAP: f64 = 0.08;
 
-/// `tier`'s segments in `round`: its spans, merged where nothing else ran
-/// between them, those that took no time left out when the lane has one
-/// that took some, each labelled with its time.
+/// One of a tier's spans, as a segment is built from them.
+struct Piece {
+    start_ms: u64,
+    ms: u64,
+    solid: bool,
+    leftover: bool,
+}
+
+/// What `pieces` (one segment's, in time order) are drawn as at
+/// `scale_ms`: each unit solid, each run of work outside units outlined
+/// over the time it took, the gap before it joined or crossed by a thread
+/// by its share of the scale. Joined outlines in a row are one box.
+fn shapes(pieces: &[Piece], scale_ms: u64) -> Vec<Shape> {
+    let mut shapes: Vec<Shape> = Vec::with_capacity(pieces.len() + 2);
+    let mut end: Option<u64> = None;
+    for piece in pieces {
+        let to = piece.start_ms + piece.ms;
+        let gap = end.map(|end| piece.start_ms.saturating_sub(end));
+        let share = |gap: u64| gap as f64 / scale_ms.max(1) as f64;
+        match (piece.solid, gap) {
+            (true, gap) => {
+                // A unit is never after a gap in one segment: a unit after
+                // a gap starts the next segment.
+                match shapes.last_mut() {
+                    Some(Shape::Fill {
+                        to_ms, leftover, ..
+                    }) if gap == Some(0) && *leftover == piece.leftover => *to_ms = to,
+                    _ => shapes.push(Shape::Fill {
+                        from_ms: piece.start_ms,
+                        to_ms: to,
+                        leftover: piece.leftover,
+                    }),
+                }
+            }
+            (false, None) => shapes.push(Shape::Work {
+                from_ms: piece.start_ms,
+                to_ms: to,
+                joined: false,
+                band_from: None,
+            }),
+            (false, Some(gap)) => {
+                let before = end.unwrap_or(piece.start_ms);
+                if share(gap) < JOIN_SHARE {
+                    match shapes.last_mut() {
+                        // Joined to an outline: the same box, on to here.
+                        Some(Shape::Work { to_ms, .. }) => *to_ms = to,
+                        _ => shapes.push(Shape::Work {
+                            from_ms: before,
+                            to_ms: to,
+                            joined: true,
+                            band_from: None,
+                        }),
+                    }
+                } else {
+                    let band = share(gap) < JOIN_SHARE_NARROW;
+                    shapes.push(Shape::Thread {
+                        from_ms: before,
+                        to_ms: piece.start_ms,
+                        band,
+                    });
+                    shapes.push(Shape::Work {
+                        from_ms: piece.start_ms,
+                        to_ms: to,
+                        joined: false,
+                        band_from: band.then_some(before),
+                    });
+                }
+            }
+        }
+        end = Some(end.map_or(to, |end| end.max(to)));
+    }
+    shapes
+}
+
+/// A time as a lane writes it: "<1ms" for a part that took under a
+/// millisecond (times are whole milliseconds), never "0ms".
+pub fn lane_time(ms: u64) -> String {
+    if ms == 0 {
+        "<1ms".to_owned()
+    } else {
+        milliseconds(ms)
+    }
+}
+
+/// `tier`'s segments in `round`. A segment is a run of the tier's units
+/// with the tier's later work outside its units (however long after);
+/// a unit after a gap starts the next one. A segment that took no time is
+/// left out where the lane has one that took some. Each is labelled with
+/// its time.
 fn segments(round: &super::machine::Round, tier: Tier, scale_ms: u64) -> Vec<Bar> {
     type OperationTotals = std::collections::BTreeMap<&'static str, (u64, u64)>;
-    let mut merged: Vec<(Bar, OperationTotals)> = Vec::new();
+    let mut built: Vec<(Vec<Piece>, OperationTotals)> = Vec::new();
     for unit in round.units.iter().filter(|unit| unit.tier == tier) {
         let operation = match unit.span {
             Span::Work {
@@ -179,93 +302,85 @@ fn segments(round: &super::machine::Round, tier: Tier, scale_ms: u64) -> Vec<Bar
                 Tier::Upkeep => "Housekeeping work",
             },
         };
-        match merged.last_mut() {
-            Some((bar, parts)) if bar.start_ms + bar.ms == unit.start_ms => {
-                bar.ms += unit.ms;
-                bar.leftover |= unit.leftover();
-                bar.work &= matches!(unit.span, Span::Work { what: _ });
+        let piece = Piece {
+            start_ms: unit.start_ms,
+            ms: unit.ms,
+            solid: !matches!(unit.span, Span::Work { what: _ }),
+            leftover: unit.leftover(),
+        };
+        let attaches = built.last().is_some_and(|(pieces, _)| {
+            let end = pieces.iter().map(|p| p.start_ms + p.ms).max().unwrap_or(0);
+            !piece.solid || piece.start_ms == end
+        });
+        if attaches {
+            if let Some((pieces, parts)) = built.last_mut() {
+                pieces.push(piece);
                 let entry = parts.entry(operation).or_default();
                 entry.0 += 1;
                 entry.1 += unit.ms;
             }
-            Some(_) | None => merged.push((
-                Bar {
-                    start_ms: unit.start_ms,
-                    ms: unit.ms,
-                    span_ms: 0,
-                    solid_ms: 0,
-                    leftover: unit.leftover(),
-                    work: matches!(unit.span, Span::Work { what: _ }),
-                    title: String::new(),
-                    details: Vec::new(),
-                    label: None,
-                    last: false,
-                },
+        } else {
+            built.push((
+                vec![piece],
                 std::collections::BTreeMap::from([(operation, (1, unit.ms))]),
-            )),
+            ));
         }
     }
-    if merged.iter().any(|(bar, _)| bar.ms > 0) {
-        merged.retain(|(bar, _)| bar.ms > 0);
+    let took = |pieces: &[Piece]| pieces.iter().map(|p| p.ms).sum::<u64>();
+    if built.iter().any(|(pieces, _)| took(pieces) > 0) {
+        built.retain(|(pieces, _)| took(pieces) > 0);
     } else {
-        merged.truncate(1);
+        built.truncate(1);
     }
-    // A solid segment and the tier's work outside its units that follows
-    // it (Blocks keeping its fetched blocks, say) are one shape: outlined
-    // from the segment's start to the work's end, solid for the segment.
-    let mut shapes: Vec<(Bar, OperationTotals)> = Vec::with_capacity(merged.len());
-    for (mut bar, parts) in merged {
-        match shapes.last_mut() {
-            Some((solid, solid_parts))
-                if bar.work && !solid.work && !solid.leftover && solid.span_ms == solid.ms =>
-            {
-                solid.span_ms = bar.start_ms + bar.ms - solid.start_ms;
-                solid.ms += bar.ms;
-                for (operation, (count, ms)) in parts {
-                    let entry = solid_parts.entry(operation).or_default();
-                    entry.0 += count;
-                    entry.1 += ms;
-                }
-            }
-            _ => {
-                bar.span_ms = bar.ms;
-                bar.solid_ms = if bar.work { 0 } else { bar.ms };
-                shapes.push((bar, parts));
-            }
-        }
-    }
-    let merged = shapes;
     let close = (scale_ms as f64 * LABEL_GAP) as u64;
-    let next_starts: Vec<Option<u64>> = (0..merged.len())
-        .map(|i| merged.get(i + 1).map(|(next, _)| next.start_ms))
+    let next_starts: Vec<Option<u64>> = (0..built.len())
+        .map(|i| {
+            built
+                .get(i + 1)
+                .and_then(|(pieces, _)| pieces.first().map(|p| p.start_ms))
+        })
         .collect();
     let mut carried = 0;
-    merged
+    built
         .into_iter()
         .zip(next_starts)
-        .map(|((mut bar, parts), next_start)| {
+        .map(|((pieces, parts), next_start)| {
+            let start_ms = pieces.first().map_or(0, |p| p.start_ms);
+            let end_ms = pieces
+                .iter()
+                .map(|p| p.start_ms + p.ms)
+                .max()
+                .unwrap_or(start_ms);
+            let ms = took(&pieces);
             let count: u64 = parts.values().map(|(count, _)| count).sum();
-            bar.title = format!(
-                "{}: {} total · {} operation{}",
-                tier_name(tier),
-                milliseconds(bar.ms).replace("ms", " ms"),
-                count,
-                if count == 1 { "" } else { "s" }
-            );
-            bar.details = parts
-                .into_iter()
-                .map(|(operation, (count, ms))| {
-                    format!(
-                        "{operation}: {count}, {} total",
-                        milliseconds(ms).replace("ms", " ms")
-                    )
-                })
-                .collect();
+            let mut bar = Bar {
+                start_ms,
+                ms,
+                span_ms: end_ms - start_ms,
+                shapes: shapes(&pieces, scale_ms),
+                work: pieces.iter().all(|p| !p.solid),
+                title: format!(
+                    "{}: {} total · {} operation{}",
+                    tier_name(tier),
+                    lane_time(ms).replace("ms", " ms"),
+                    count,
+                    if count == 1 { "" } else { "s" }
+                ),
+                details: parts
+                    .into_iter()
+                    .map(|(operation, (count, ms))| {
+                        format!(
+                            "{operation}: {count}, {} total",
+                            lane_time(ms).replace("ms", " ms")
+                        )
+                    })
+                    .collect(),
+                label: None,
+                last: false,
+            };
             carried += bar.ms;
-            if next_start
-                .is_none_or(|next| next.saturating_sub(bar.start_ms + bar.span_ms) >= close)
-            {
-                bar.label = Some(milliseconds(carried));
+            if next_start.is_none_or(|next| next.saturating_sub(end_ms) >= close) {
+                bar.label = Some(lane_time(carried));
                 carried = 0;
             }
             bar
@@ -779,7 +894,7 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
                 name: tier_name(*tier),
                 share: format!("{share} %"),
                 ms: lane_ms,
-                time: milliseconds(lane_ms),
+                time: lane_time(lane_ms),
                 bars,
                 reserved: if round.to_budget {
                     started.map(|start| (start, round.budget_ms * u64::from(share) / 100))
@@ -805,7 +920,7 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
         state: state_line,
         scale_ms,
         elapsed_ms,
-        elapsed: milliseconds(elapsed_ms),
+        elapsed: lane_time(elapsed_ms),
         lanes,
     }
 }

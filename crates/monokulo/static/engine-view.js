@@ -419,7 +419,21 @@
   }
 
   const pct = (ms, scale) => Math.min(100, (ms / Math.max(1, scale)) * 100);
-  const barEnd = (bar, scale) => pct(bar.start_ms, scale) + Math.max(0.5, pct(bar.span_ms, scale));
+  const barEnd = (bar, scale) => pct(bar.start_ms, scale) + pct(bar.span_ms, scale);
+  // A segment's shapes, worked out by the server (`present::Shape`), placed
+  // in it in percent of its drawn length.
+  function shapesHTML(bar) {
+    const span = bar.span_ms;
+    const at = (ms) => (span ? ((ms - bar.start_ms) / span) * 100 : 0);
+    const place = (from, to) => `left:${at(from).toFixed(2)}%;width:${(span ? at(to) - at(from) : 100).toFixed(2)}%`;
+    return bar.shapes.map((shape) => {
+      if (shape.kind === "fill") return `<i class="fill${shape.leftover ? " p2" : ""}" style="${place(shape.from_ms, shape.to_ms)}"></i>`;
+      if (shape.kind === "thread") return `<i class="thread${shape.band ? " band" : ""}" style="${place(shape.from_ms, shape.to_ms)}"></i>`;
+      const band = shape.band_from != null;
+      const join = band ? `;--join:${at(shape.band_from).toFixed(2)}%;--join-w:${(at(shape.to_ms) - at(shape.band_from)).toFixed(2)}%` : "";
+      return `<i class="work${shape.joined ? " joined" : band ? " band" : ""}" style="${place(shape.from_ms, shape.to_ms)}${join}"></i>`;
+    }).join("");
+  }
 
   // A past round chosen from the recent rounds, shown in place of the live
   // one until its "× Paused" chip is pressed.
@@ -430,12 +444,9 @@
     if (!box) return;
     const detailsOpen = box.querySelector(".round-breakdown")?.open || false;
     let html = "";
-    const rawRound = pinned || v.round;
-    // A fixed budget scale keeps fast completed rounds and the next running
-    // round from repeatedly zooming the lanes during catch-up.
-    const round = rawRound && !pinned && mode === "live"
-      ? { ...rawRound, scale_ms: Math.max(10000, Math.ceil(rawRound.scale_ms / 10000) * 10000) }
-      : rawRound;
+    // Drawn to the server's scale: whether a gap is joined or crossed by a
+    // thread is decided at that scale.
+    const round = pinned || v.round;
     if (round) {
       const chip = pinned ? `<a class="engine-chip round-paused" id="round-resume" href="${live}" title="Showing a past round: back to the live one">× Paused</a>` : "";
       html += `<header class="round-head"><h2 id="h-round" title="Scanner round for this network since the engine started; resets on engine restart">${esc(round.title)}</h2>${chip}<span class="engine-hint round-state">${esc(round.state)}</span></header><div class="lanes">`;
@@ -443,13 +454,8 @@
         html += `<div class="lane-label"><span class="tierchip t-${lane.tier}">${esc(lane.name)}</span><small>${esc(lane.share)}</small></div><div class="track t-${lane.tier}"><div class="track-in">`;
         if (lane.reserved) html += `<div class="share" style="left:${pct(lane.reserved[0], round.scale_ms)}%;width:${pct(lane.reserved[1], round.scale_ms)}%"></div>`;
         for (const bar of lane.bars) {
-          // One shape: solid for the tier's units, outlined on for its
-          // work outside them.
-          const solid = bar.span_ms ? Math.min(100, (bar.solid_ms / bar.span_ms) * 100) : 100;
-          const kind = (solid >= 100 ? (bar.leftover ? "bar p2" : "bar") : "bar work") + (bar.last ? " last" : "");
-          html += `<div class="${kind}" data-solid="${solid.toFixed(1)}" title="${esc(bar.title)}" style="left:${pct(bar.start_ms, round.scale_ms).toFixed(2)}%;width:${Math.max(0.5, pct(bar.span_ms, round.scale_ms)).toFixed(2)}%${solid < 100 ? `;--solid:${solid.toFixed(1)}%` : ""}"></div>`;
+          html += `<div class="bar${bar.last ? " last" : ""}" title="${esc(bar.title)}" style="left:${pct(bar.start_ms, round.scale_ms).toFixed(2)}%;width:${pct(bar.span_ms, round.scale_ms).toFixed(2)}%">${shapesHTML(bar)}</div>`;
           if (bar.label) {
-            // After the bar as drawn: a short one is drawn wider than its time.
             const end = barEnd(bar, round.scale_ms);
             html += `<span class="lane-time${end > 88 ? " before" : ""}" style="left:${Math.min(99.5, end).toFixed(2)}%">${esc(bar.label)}</span>`;
           }
