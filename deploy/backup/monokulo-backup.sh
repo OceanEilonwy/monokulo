@@ -93,16 +93,33 @@ mkdir -p "$DEST_DIR"
 # in-progress folder. (The cron-level flock above stops scheduled runs piling
 # up; this covers a run started by hand at the same time.)
 LOCK_FILE="$DEST_DIR/.backup.lock"
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
+LOCK_DIR=""
+busy() {
     echo "error: another backup into $DEST_DIR appears to be running (lock: $LOCK_FILE)" >&2
     exit 1
+}
+release_lock() { if [[ -n "$LOCK_DIR" ]]; then rm -rf "$LOCK_DIR"; fi; }
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LOCK_FILE"
+    flock -n 9 || busy
+else
+    # macOS has no flock. mkdir is atomic, and the pid inside lets a lock
+    # left behind by a killed run be taken over instead of blocking forever.
+    if ! mkdir "$LOCK_FILE.d" 2>/dev/null; then
+        holder="$(cat "$LOCK_FILE.d/pid" 2>/dev/null || true)"
+        if [[ -n "$holder" ]] && kill -0 "$holder" 2>/dev/null; then busy; fi
+        rm -rf "$LOCK_FILE.d"
+        mkdir "$LOCK_FILE.d" 2>/dev/null || busy
+    fi
+    LOCK_DIR="$LOCK_FILE.d"
+    echo $$ > "$LOCK_DIR/pid"
 fi
+trap release_lock EXIT
 
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 DEST="$DEST_DIR/monokulo-${TIMESTAMP}"
 PARTIAL="${DEST}.partial"
-cleanup() { rm -rf "$PARTIAL"; }
+cleanup() { rm -rf "$PARTIAL"; release_lock; }
 trap cleanup EXIT
 mkdir -p "$PARTIAL"
 
@@ -119,12 +136,15 @@ done
 
 if command -v sha256sum >/dev/null 2>&1; then
     (cd "$PARTIAL" && sha256sum "${DATABASES[@]}" > SHA256SUMS)
+elif command -v shasum >/dev/null 2>&1; then
+    # macOS: same output format, and sha256sum -c reads it.
+    (cd "$PARTIAL" && shasum -a 256 "${DATABASES[@]}" > SHA256SUMS)
 fi
 
 # Renamed into place only once complete and checked: the backup directory
 # never holds a half-written backup under its final name.
 mv "$PARTIAL" "$DEST"
-trap - EXIT
+trap release_lock EXIT
 
 echo "==> backup ok: $DEST"
 count() { sqlite3 "$1" "SELECT COUNT(*) FROM $2;" 2>/dev/null || echo "?"; }
