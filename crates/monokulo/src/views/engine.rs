@@ -184,7 +184,7 @@ const ENGINE_STYLE: &str = r#"
 .marks span { position: absolute; top: 44px; height: 16px; line-height: 14px; font-size: 0.62rem; font-weight: 800; white-space: nowrap; padding: 0 5px; border-radius: 4px; transition: left 0.5s; }
 .marks span::after { content: ""; position: absolute; top: 100%; height: calc(var(--cells-top) - 60px); border-left: 2px solid currentColor; }
 .marks .m-tip { transform: translateX(-10px); background: var(--paper-raised); border: 1px solid var(--line-strong); }
-.marks .m-tip::after { left: 9px; }
+.marks .m-tip::after { left: 8px; }
 .marks .m-hw { transform: translateX(calc(-100% + 10px)); color: var(--accent-text); background: var(--paper-raised); }
 /* A mark's label covers a group's tick passing behind it. */
 .marks span { z-index: 2; }
@@ -194,9 +194,9 @@ const ENGINE_STYLE: &str = r#"
 .marks .m-win::after { display: none; }
 .pills { position: absolute; left: 0; right: 0; top: 0; height: 40px; }
 .pill { position: absolute; top: 22px; height: 18px; transform: translateX(-12px); display: inline-flex; align-items: center; font-size: 0.68rem; font-weight: 800; padding: 0 var(--pill-pad-x); border-radius: 99px; border: 1.5px solid var(--line-strong); background: var(--paper-raised); white-space: nowrap; transition: left 0.45s cubic-bezier(0.4, 0, 0.2, 1); }
-.pill::before { content: ""; position: absolute; left: 10px; top: 100%; height: calc(var(--cells-top) - 40px); border-left: 2px solid currentColor; }
+.pill::before { content: ""; position: absolute; left: 9.5px; top: 100%; height: calc(var(--cells-top) - 40px); border-left: 2px solid currentColor; }
 .pill.frontier { transform: translateX(calc(-100% + 12px)); border-color: var(--accent); background: var(--tint-highlight); }
-.pill.frontier::before { left: auto; right: 10px; }
+.pill.frontier::before { left: auto; right: 9.5px; }
 .pill.catchup { top: 0; }
 .pill.catchup::before { height: calc(var(--cells-top) - 18px); }
 .pill.busy { animation: pill-busy 0.6s ease-in-out infinite alternate; }
@@ -234,9 +234,10 @@ const ENGINE_STYLE: &str = r#"
 .ruler { position: relative; height: var(--row); }
 .ruler-in { position: absolute; top: 0; bottom: 0; left: var(--space-sm); right: var(--space-sm); }
 .ruler-label { position: absolute; top: var(--space-xs); transform: translateX(-50%); font: 700 0.62rem/14px var(--font-mono); background: var(--ink); color: var(--paper-raised); padding: 0 5px; border-radius: 3px; white-space: nowrap; transition: left 0.3s; }
-/* The round's end: a line from the right edge of the segment that finished
-   last (`--up` lanes above) down to the round's total. */
-.ruler-label::before { content: ""; position: absolute; left: 50%; margin-left: -1px; bottom: 100%; width: 2px; height: calc(var(--up, 0) * (var(--row) + var(--row-gap)) + var(--space-xs) - 2px); background: var(--ink); }
+/* The round's end: a marker on the right edge of the segment that finished
+   last, in its lane only, and the round's total under the lanes at the
+   same place. */
+.bar.last::after { content: ""; position: absolute; right: -1px; top: calc(-1.5px - var(--space-xs)); bottom: calc(-1.5px - var(--space-xs)); width: 2px; background: var(--ink); }
 .round-breakdown { margin-top: var(--space-lg); }
 .ribbon-row { display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 6px; }
 .ribbon { display: flex; justify-content: flex-end; align-items: flex-end; height: 30px; overflow: hidden; border-bottom: 1px solid var(--line); }
@@ -869,18 +870,20 @@ fn bar_end(bar: &Bar, scale_ms: u64) -> f64 {
     pct(bar.start_ms, scale_ms) + pct(bar.span_ms, scale_ms).max(0.5)
 }
 
-/// The round's total under the right edge of the segment that finished
-/// last, a line running up to it.
+/// The round's total, under the lanes where the segment that finished last
+/// ends (its marker is on that segment alone).
 fn end_marker(round: &RoundView) -> Markup {
-    let last = round.lanes.iter().enumerate().find_map(|(at, lane)| {
-        lane.bars
-            .iter()
-            .find(|bar| bar.last)
-            .map(|bar| (round.lanes.len() - at, bar_end(bar, round.scale_ms)))
-    });
-    let (up, left) = last.unwrap_or((0, pct(round.elapsed_ms, round.scale_ms)));
+    let left = round
+        .lanes
+        .iter()
+        .flat_map(|lane| &lane.bars)
+        .find(|bar| bar.last)
+        .map_or_else(
+            || pct(round.elapsed_ms, round.scale_ms),
+            |bar| bar_end(bar, round.scale_ms),
+        );
     html! {
-        span class="ruler-label" style=(format!("left:{:.2}%;--up:{up}", left.min(99.5))) { (round.elapsed) }
+        span class="ruler-label" style=(format!("left:{:.2}%", left.min(99.5))) { (round.elapsed) }
     }
 }
 
@@ -892,10 +895,13 @@ fn bar_div(bar: &Bar, scale_ms: u64) -> Markup {
     } else {
         bar.solid_ms as f64 / bar.span_ms as f64 * 100.0
     };
-    let class = match (solid >= 100.0, bar.leftover) {
-        (true, true) => "bar p2",
-        (true, false) => "bar",
-        (false, _) => "bar work",
+    let class = match (solid >= 100.0, bar.leftover, bar.last) {
+        (true, true, false) => "bar p2",
+        (true, true, true) => "bar p2 last",
+        (true, false, false) => "bar",
+        (true, false, true) => "bar last",
+        (false, _, false) => "bar work",
+        (false, _, true) => "bar work last",
     };
     let style = if solid >= 100.0 {
         span_style(bar.start_ms, bar.span_ms, scale_ms)

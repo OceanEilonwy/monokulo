@@ -446,7 +446,7 @@
           // One shape: solid for the tier's units, outlined on for its
           // work outside them.
           const solid = bar.span_ms ? Math.min(100, (bar.solid_ms / bar.span_ms) * 100) : 100;
-          const kind = solid >= 100 ? (bar.leftover ? "bar p2" : "bar") : "bar work";
+          const kind = (solid >= 100 ? (bar.leftover ? "bar p2" : "bar") : "bar work") + (bar.last ? " last" : "");
           html += `<div class="${kind}" data-solid="${solid.toFixed(1)}" title="${esc(bar.title)}" style="left:${pct(bar.start_ms, round.scale_ms).toFixed(2)}%;width:${Math.max(0.5, pct(bar.span_ms, round.scale_ms)).toFixed(2)}%${solid < 100 ? `;--solid:${solid.toFixed(1)}%` : ""}"></div>`;
           if (bar.label) {
             // After the bar as drawn: a short one is drawn wider than its time.
@@ -458,11 +458,11 @@
         if (lane.outcome) html += `<span class="engine-chip ${lane.outcome.tone}" title="${esc(lane.outcome.text)}">${esc(lane.outcome.text)}</span>`;
         html += "</div>";
       }
-      // The round's total under the right edge of the segment that finished
-      // last, a line running up to it.
-      let up = 0, at = pct(round.elapsed_ms, round.scale_ms);
-      round.lanes.forEach((lane, i) => { const bar = lane.bars.find((b) => b.last); if (bar) { up = round.lanes.length - i; at = barEnd(bar, round.scale_ms); } });
-      html += `<div></div><div class="ruler"><div class="ruler-in"><span class="ruler-label" style="left:${Math.min(99.5, at).toFixed(2)}%;--up:${up}">${esc(round.elapsed)}</span></div></div><div></div></div>`;
+      // The round's total under the lanes where the segment that finished
+      // last ends (its marker is on that segment alone).
+      const lastBar = round.lanes.flatMap((lane) => lane.bars).find((b) => b.last);
+      const at = lastBar ? barEnd(lastBar, round.scale_ms) : pct(round.elapsed_ms, round.scale_ms);
+      html += `<div></div><div class="ruler"><div class="ruler-in"><span class="ruler-label" style="left:${Math.min(99.5, at).toFixed(2)}%">${esc(round.elapsed)}</span></div></div><div></div></div>`;
       html += `<details class="round-breakdown"${detailsOpen ? " open" : ""}><summary>Timing details · ${esc(round.title)} (snapshot)</summary>${round.lanes.flatMap(lane => lane.bars.map(bar => `<p><strong>${esc(bar.title)}</strong></p><ul>${(bar.details || []).map(detail => `<li>${esc(detail)}</li>`).join("")}</ul>`)).join("")}</details>`;
     } else {
       html += '<header><h2 id="h-round" title="Scanner round for this network since the engine started; resets on engine restart">Round</h2><span class="engine-hint">No round recorded yet.</span></header>';
