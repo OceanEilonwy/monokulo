@@ -160,6 +160,10 @@ pub(crate) struct Harness {
     pub(crate) now: i64,
     pub(crate) node_online: bool,
     pub(crate) custody_online: bool,
+    /// Whether this process registered the first store's keys: a restart
+    /// while custody is offline can't, so its blocks go unscanned (the
+    /// frontier records them from their headers) until custody recovers.
+    pub(crate) registered: bool,
 }
 
 impl Harness {
@@ -194,6 +198,7 @@ impl Harness {
             now: 1_700_000_000,
             node_online: true,
             custody_online: true,
+            registered: true,
         }
     }
 
@@ -276,7 +281,15 @@ impl Harness {
             branch,
             "restart lost the replacement branch identity"
         );
-        // The custody backend is independent of the restarted scanner process.
+        // The custody backend is independent of the restarted scanner
+        // process, but registering the keys again needs it.
+        self.registered = self.custody_online;
+    }
+
+    /// The stores whose keys this process has registered.
+    pub(crate) fn registered_tenants(&self) -> Vec<(TenantId, WalletHandle)> {
+        let skip = usize::from(!self.registered);
+        self.tenants[skip..].to_vec()
     }
 
     pub(crate) async fn tick(&mut self) -> RoundReport {
@@ -288,6 +301,7 @@ impl Harness {
         self.now += RETRY_TIME.as_secs() as i64;
         let before = self.snapshot();
         let fault_trace = fault.map(|at| self.store().lock().fail_nth_access(Some(at)));
+        let tenants = self.registered_tenants();
         let report = tokio::time::timeout(
             Duration::from_secs(5),
             run_round_at(
@@ -296,7 +310,7 @@ impl Harness {
                     self.db.as_ref().unwrap(),
                     &self.custody,
                     &self.daemon,
-                    &self.tenants,
+                    &tenants,
                 ),
                 Duration::ZERO,
                 self.now,
@@ -333,6 +347,23 @@ impl Harness {
             assert!(
                 !matches!(after.status, OrderStatus::Paid | OrderStatus::Overpaid),
                 "new settlement during an open reorg"
+            );
+        }
+        // A merchant ships on a settlement: one announced by a round whose
+        // node and storage answered is only on a payment the chain holds as
+        // deep as the order requires.
+        if fault.is_none()
+            && self.node_online
+            && self.daemon.calls_healthy()
+            && !matches!(before.status, OrderStatus::Paid | OrderStatus::Overpaid)
+            && matches!(after.status, OrderStatus::Paid | OrderStatus::Overpaid)
+        {
+            assert!(
+                self.model
+                    .payment_height()
+                    .is_some_and(|height| self.model.height() - height + 1 >= 10),
+                "settled on a payment the chain doesn't hold: {:?}",
+                self.model
             );
         }
         report
@@ -444,6 +475,7 @@ impl Harness {
         self.custody.recover(self.tenants[0].1);
         self.node_online = true;
         self.custody_online = true;
+        self.registered = true;
     }
 
     pub(crate) fn matches_model(&self) -> bool {
@@ -525,6 +557,7 @@ impl Harness {
             Event::CustodyOnline(online) => {
                 if online {
                     self.custody.recover(self.tenants[0].1);
+                    self.registered = true;
                 } else {
                     self.custody.fail(self.tenants[0].1);
                 }
@@ -594,9 +627,10 @@ pub(crate) fn explore(data: &[u8]) {
                 10 => Event::Restart,
                 11 => Event::Check,
                 12 => {
+                    let tenants = h.registered_tenants();
                     let report = crate::work::fast_pass(
                         &h.state,
-                        &inputs(h.db.as_ref().unwrap(), &h.custody, &h.daemon, &h.tenants),
+                        &inputs(h.db.as_ref().unwrap(), &h.custody, &h.daemon, &tenants),
                     )
                     .await;
                     if h.node_online && h.custody_online && h.daemon.calls_healthy() {
@@ -612,11 +646,12 @@ pub(crate) fn explore(data: &[u8]) {
                     // Yielding inline admission creates actual cancellation
                     // opportunities without a file-worker race against virtual time.
                     h.db = Some(Db::over_shared_yielding(Arc::clone(h.store())));
+                    let tenants = h.registered_tenants();
                     let _ = tokio::time::timeout(
                         Duration::ZERO,
                         crate::work::run_round(
                             &h.state,
-                            &inputs(h.db.as_ref().unwrap(), &h.custody, &h.daemon, &h.tenants),
+                            &inputs(h.db.as_ref().unwrap(), &h.custody, &h.daemon, &tenants),
                             Duration::ZERO,
                         ),
                     )

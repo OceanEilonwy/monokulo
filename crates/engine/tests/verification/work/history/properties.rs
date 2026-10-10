@@ -396,6 +396,7 @@ fn crash_process_child() {
             now,
             node_online: true,
             custody_online: true,
+            registered: true,
         };
         crash_world(&mut h, phase, amount);
         let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
