@@ -167,6 +167,60 @@ fn a_fork_after_rewind_before_rescanning_cannot_keep_a_discarded_payment_height(
     });
 }
 
+/// Restarted while custody is offline, the store's keys aren't registered
+/// and nobody is scanned for, so the frontier records new blocks from their
+/// headers. A block the node placed the payment in, replaced before the
+/// frontier got there, is recorded from its replacement: the payment
+/// mustn't settle on it.
+#[test]
+fn a_replaced_payment_block_recorded_from_its_header_cannot_settle_the_order() {
+    use crate::exploration_rpc::Rpc;
+    runtime().block_on(async {
+        let mut h = Harness::new().await;
+        h.pool(true);
+        h.check().await;
+        h.apply(&Event::CustodyOnline(false)).await;
+        h.restart();
+        h.apply(&Event::CallFailures(Rpc::Blocks.bit() | Rpc::Headers.bit()))
+            .await;
+        h.mine(1, true);
+        h.tick().await;
+        let snapshot = h.snapshot();
+        assert_eq!(
+            snapshot.payments[0].height,
+            Some(3),
+            "the node named the block"
+        );
+        assert_eq!(
+            h.store().lock().max_scanned_height(NETWORK).unwrap(),
+            Some(2),
+            "before the frontier recorded it"
+        );
+        h.reorg(1, Destination::Gone, 0);
+        h.apply(&Event::CallFailures(0)).await;
+        h.mine(9, false);
+        let high_water = |h: &Harness| h.store().lock().max_scanned_height(NETWORK).unwrap();
+        for _ in 0..h.model.blocks.len() + 16 {
+            h.tick().await.into_result().unwrap();
+            let snapshot = h.snapshot();
+            assert!(
+                !matches!(snapshot.status, OrderStatus::Paid | OrderStatus::Overpaid),
+                "settled on a replaced block: {snapshot:?}"
+            );
+            if high_water(&h) == Some(h.model.height()) {
+                break;
+            }
+        }
+        assert_eq!(
+            high_water(&h),
+            Some(h.model.height()),
+            "the frontier recorded the replacement"
+        );
+        assert_eq!(h.snapshot().payments[0].height, None);
+        h.check().await;
+    });
+}
+
 async fn tenant_failure_history(
     tenant_count: usize,
     failing_index: Option<usize>,
@@ -567,6 +621,12 @@ fn reviewed_engine_history_seeds_replay() {
         // SQL fault stops the round), then a reorg replaces that block.
         include_bytes!("../../../../../fuzz/seeds/history/payment-block-replaced-before-its-scan")
             .as_slice(),
+        // Likewise with the keys unregistered (restarted while custody is
+        // offline), so the frontier records the replacement from its header.
+        include_bytes!(
+            "../../../../../fuzz/seeds/history/payment-block-replaced-before-its-header"
+        )
+        .as_slice(),
     ] {
         crate::work::history::explore(data);
     }
