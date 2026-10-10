@@ -5,9 +5,13 @@
 //! network. The live tests in `src/daemon_rpc.rs` need a mainnet node and are
 //! `#[ignore]`d, so without this nothing in CI talks to a node-shaped server.
 //!
-//! `record_stagenet_node` (ignored) makes the recording through a local proxy
-//! to a public stagenet node; re-run it only if the client's requests change:
-//! `cargo test -p engine --test daemon_rpc_replay -- --ignored`.
+//! `live_stagenet_node_answers_as_recorded` makes the same calls and checks
+//! the same answers against the public node itself. It runs daily
+//! (`cargo xtask live`), so the day the real node stops answering the way the
+//! recording says, that test fails while this one still passes. Through a
+//! recording proxy it is also how the recording is made:
+//! `cargo xtask record-stagenet-node`, re-run only if the client's requests
+//! change.
 
 // An integration test crate: every function in it is test code, which
 // fails by panicking.
@@ -31,12 +35,15 @@ use engine::daemon::{ChainHeader, KeyImageStatus, MoneroDaemonClient as _, ScanT
 use engine::daemon_rpc::RpcDaemonClient;
 use monero::consensus::serialize;
 use monero::cryptonote::hash::Hashable as _;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/stagenet_node_recording.json"
 );
+/// The public node the recording was made from: the live test's node unless
+/// `ENGINE_LIVE_STAGENET_NODE` names another (`http://host:port`), as
+/// `cargo xtask record-stagenet-node` does with its recording proxy.
 const NODE: &str = "http://node2.monerodevs.org:38089";
 /// Four consecutive stagenet blocks; the first transaction below is in the second.
 const START: u64 = 2_210_330;
@@ -49,7 +56,7 @@ const UNSPENT_KEY_IMAGE: &str = "11111111111111111111111111111111111111111111111
 /// Well-formed, but no transaction's id.
 const ABSENT_TX: &str = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Deserialize)]
 struct Exchange {
     path: String,
     request_hex: String,
@@ -111,7 +118,7 @@ async fn replay() -> (RpcDaemonClient, String, tokio::task::JoinHandle<()>) {
         .with_state(table);
     let (port, task) = serve(router).await;
     (
-        replay_client(port),
+        client_of("127.0.0.1", port),
         format!("http://127.0.0.1:{port}"),
         task,
     )
@@ -119,8 +126,8 @@ async fn replay() -> (RpcDaemonClient, String, tokio::task::JoinHandle<()>) {
 
 /// The client under test, with pool timings no test run can outlast: what
 /// is asked, and when, is decided by the test, never by the clock.
-fn replay_client(port: u16) -> RpcDaemonClient {
-    RpcDaemonClient::new("127.0.0.1", port, false, false)
+fn client_of(host: &str, port: u16) -> RpcDaemonClient {
+    RpcDaemonClient::new(host, port, false, false)
         .unwrap()
         .with_pool_timing(
             std::time::Duration::from_secs(3600),
@@ -363,35 +370,13 @@ async fn scanner_node_client_reports_a_node_that_does_not_answer_as_it_expects()
 }
 
 #[tokio::test]
-#[ignore = "records from a public stagenet node; run by hand when the client's requests change"]
-async fn record_stagenet_node() {
-    let recorded: Arc<Mutex<Vec<Exchange>>> = Arc::default();
-    let http = reqwest::Client::new();
-    let router = Router::new()
-        .fallback(
-            async |State((recorded, http)): State<(Arc<Mutex<Vec<Exchange>>>, reqwest::Client)>,
-                   uri: Uri,
-                   body: Bytes| {
-                let response = http
-                    .post(format!("{NODE}{}", uri.path()))
-                    .body(body.clone())
-                    .send()
-                    .await
-                    .unwrap()
-                    .bytes()
-                    .await
-                    .unwrap();
-                recorded.lock().push(Exchange {
-                    path: uri.path().to_owned(),
-                    request_hex: hex::encode(&body),
-                    response_hex: hex::encode(&response),
-                });
-                (StatusCode::OK, response)
-            },
-        )
-        .with_state((Arc::clone(&recorded), http));
-    let (port, _server) = serve(router).await;
-    exercise(&replay_client(port), &format!("http://127.0.0.1:{port}")).await;
-    let exchanges = recorded.lock().clone();
-    std::fs::write(FIXTURE, serde_json::to_string_pretty(&exchanges).unwrap()).unwrap();
+#[ignore = "needs the live stagenet node"]
+async fn live_stagenet_node_answers_as_recorded() {
+    let node = std::env::var("ENGINE_LIVE_STAGENET_NODE").unwrap_or_else(|_| NODE.to_owned());
+    let (host, port) = node
+        .strip_prefix("http://")
+        .and_then(|address| address.rsplit_once(':'))
+        .expect("ENGINE_LIVE_STAGENET_NODE is http://host:port");
+    let client = client_of(host, port.parse().expect("a port number"));
+    exercise(&client, &node).await;
 }
