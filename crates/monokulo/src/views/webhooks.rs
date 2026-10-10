@@ -266,7 +266,10 @@ pub fn deliveries_table(
                                     data-opens-dialog=(dialog_id(delivery.id)) { "Details" }
                                 @if state == DeliveryState::GaveUp {
                                     form method="post" action=(paths.send_again(webhook.id.as_str(), delivery.id)) class="inline-form" {
-                                        button type="submit" class="btn-sm" { "Send again" }
+                                        // An icon, so the row stays narrow enough to show it.
+                                        button type="submit" class="icon-only send-again" aria-label="Send again" title="Send again" {
+                                            (super::wallets::regenerate_icon())
+                                        }
                                     }
                                 }
                             }
@@ -618,17 +621,21 @@ fn indented_json(json: &str) -> String {
     out
 }
 
+/// A page of the store's settings around `content`, in a box of `class`
+/// (`delivery-page`, as wide as a dialog; `deliveries-page`, the page's
+/// whole width, for the table).
 fn page(
     chrome: &PageChrome,
     store_id: &str,
     store_name: &str,
     title: &str,
+    class: &str,
     content: Markup,
 ) -> Markup {
     let body = html! {
         div class="wrap settings-page" {
             (super::store_breadcrumb(store_id, store_name, false))
-            div class="delivery-page" { (content) }
+            div class=(class) { (content) }
         }
     };
     layout(chrome, &format!("{title} - {store_name} - Monokulo"), body)
@@ -649,6 +656,7 @@ pub fn detail_page(
         store_id,
         store_name,
         "Webhook delivery",
+        "delivery-page",
         detail_content(
             store_id,
             &chrome.clock,
@@ -668,6 +676,7 @@ pub fn delete_page(chrome: &PageChrome, store_name: &str, entry: &WebhookEntry) 
         store_id,
         store_name,
         "Delete webhook",
+        "delivery-page",
         html! { div class="confirm-dialog-page" { (delete_content(store_id, entry, false)) } },
     )
 }
@@ -687,6 +696,7 @@ pub fn all_page(
         store_id,
         store_name,
         "Webhook deliveries",
+        "deliveries-page",
         html! {
             h1 { "Deliveries" }
             p { code class="wh-url" { (entry.webhook.url) } }

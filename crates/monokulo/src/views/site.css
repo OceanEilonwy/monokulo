@@ -1282,6 +1282,9 @@ mk-select[compact] .mk-popup { white-space: nowrap; }
 .del-table td, .del-table th { white-space: nowrap; }
 .row-acts { text-align: right; }
 .row-acts .inline-form { margin-left: var(--space-sm); }
+.row-acts > * { vertical-align: middle; }
+/* "Send again" as an icon: a 28px target, the row's own height. */
+.row-acts button.icon-only { width: 1.75rem; height: 1.75rem; }
 .wh-deliveries { margin-top: var(--space-xs); }
 .wh-deliveries > .table-scroll { margin-top: var(--space-sm); }
 .mini-h { margin: var(--space-md) 0 var(--space-xs); font-size: 0.75rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
@@ -1289,10 +1292,10 @@ mk-select[compact] .mk-popup { white-space: nowrap; }
 .req pre { margin: var(--space-xs) 0; font-size: 0.82em; white-space: pre-wrap; overflow-wrap: anywhere; }
 .delivery-dialog .dialog-actions, .delivery-page .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; }
 .delivery-page { max-width: 46rem; margin: var(--space-lg) 0; }
+.deliveries-page { margin: var(--space-lg) 0; }
 @media (max-width: 640px) {
   /* A delivery on a phone is a compact two-column card, not a tall list. */
   table.del-table tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 var(--space-md); }
   table.del-table td.row-acts { grid-column: 1 / -1; text-align: left; }
   .del-table td, .del-table th { white-space: normal; }
-  .row-acts .inline-form { margin-left: 0; }
 }

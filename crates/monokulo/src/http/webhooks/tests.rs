@@ -432,9 +432,9 @@ async fn the_card_shows_each_webhooks_health_and_its_deliveries() {
     );
     assert!(html.contains("5f01c9…e21b03"), "orders shortened: {html}");
     assert_eq!(
-        html.matches(">Send again</button>").count(),
+        html.matches(r#"<button type="submit" class="icon-only send-again" aria-label="Send again" title="Send again"><svg"#).count(),
         1,
-        "only the given-up row"
+        "only the given-up row, as an icon with its name: {html}"
     );
     assert!(html.contains(&format!(
         r#"action="{base}/deliveries/{gave_up}/send-again""#
