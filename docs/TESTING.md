@@ -155,7 +155,7 @@ Fifteen additional properties in `work/money/properties.rs` exercise money guara
 | Generated scenario | Guarantee checked |
 |---|---|
 | Up to eight independent payments across three orders; partial, exact and excess funding; different mining depths and replacement survivors | Each output credits only its destination order once; settlement requires enough funds at the configured depth; affirmative double spends remove only affected funds; re-mining restores credit |
-| Late additional payment after an order is settled; disappearance with or without spent-input evidence | Confirmed funds continue covering the order; no false unconfirmed/confirming downgrade or webhook; only affected extra money loses credit |
+| Late additional payment after an order is settled; disappearance with or without spent-input evidence | Confirmed funds continue covering the order; no false unconfirmed/confirming downgrade or order event; only affected extra money loses credit |
 | Multiple outputs in one transaction, including unassigned subaddresses | Every matching output retains its own index and amount; no output credits the wrong order; tenant defaults and order confirmation overrides apply independently |
 | Two to five transactions reusing one output key | Credit only one spendable output; never settle unresolved copies, even with a zero-confirmation policy; the credited winner changes correctly through forks and disappearance |
 | Payment mined before expiry while custody is down | Expiry waits for catch-up; delayed scanning finds money rather than prematurely expiring the order |
@@ -317,14 +317,14 @@ interleaving.
 
 The process-death runner retains random SQLite opcode interruption and adds eight
 named checkpoints: before/after commit for staged block matches, payment publication,
-status recompute plus webhook creation, and reorg completion. The parent verifies
+status recompute plus its order event, and reorg completion. The parent verifies
 the exact rendezvous, kills the child without Rust cleanup, reopens the database,
 checks integrity and converges to the expected money/identity/event state. Hooks are
 compiled only into tests and activated only in the crash subprocess.
 
 The money oracle independently totals funds that have reached the required depth;
 it does not call production status or conflict functions. After convergence, another
-round must preserve money state and webhook event counts. Amounts and thresholds,
+round must preserve money state and order event counts. Amounts and thresholds,
 transaction ordering, work budgets, batch sizes and fault positions vary. The
 existing RingCT fixture is complemented by clear-amount transactions with real
 one-time-key derivation and distinct inputs. These test output scanning; they do
@@ -342,7 +342,7 @@ no new settlement while reconciliation is open) and after bounded recovery
 (correct payment height, credited amount, status, cursor and canonical hashes).
 Stored confirmations on settled orders are snapshots; the model requires them to
 meet the threshold rather than keep increasing on every block. Stable extra rounds
-must preserve payment/order state and webhook event counts. Named regressions also
+must preserve payment/order state and order event counts. Named regressions also
 cover a second fork after a candidate was processed, and after rewind but before
 replacement blocks were scanned. The discovered fix remembers the replacement
 branch durably, recollects candidates when it changes, and retains a hash anchor
@@ -471,7 +471,7 @@ status)`. This makes every scenario below deterministic and fast, with no live n
 | Mempool poll idempotency: the same unconfirmed tx observed across many poll ticks produces exactly one `order_payments` row | The scanner polls every ~1s and *will* see the same tx repeatedly; this must be a no-op, not a growing pile of duplicate rows or a surfaced error | Feed the same tx to the scan-and-record path N times; assert row count stays 1 (relies on, and should explicitly exercise, `UNIQUE(txid, output_index)`) |
 | Reorg where the tx reappears at a different height | Most common real-world reorg outcome; must not misreport as a problem | Script a `reorg_from` that includes the same tx in a different block; assert `block_height` updates, no incorrect status regression, no spurious double-spend event |
 | Reorg where the tx falls back into the mempool | Second most common outcome | Script a reorg whose replacement blocks omit the tx but the mempool still has it; assert `block_height → NULL`, confirmations → 0, status recomputes (e.g. `paid → confirming`/`unconfirmed`) |
-| Reorg where the tx vanishes and `is_key_image_spent` proves a different, confirmed transaction consumed the same inputs | The actual double-spend case | Script the vanish + a `set_key_image_status(image, SpentInBlockchain)` with a different txid; assert `voided_at` set, status recomputed, `double_spend_detected_at` stamped, `order.double_spend_detected` webhook enqueued |
+| Reorg where the tx vanishes and `is_key_image_spent` proves a different, confirmed transaction consumed the same inputs | The actual double-spend case | Script the vanish + a `set_key_image_status(image, SpentInBlockchain)` with a different txid; assert `voided_at` set, status recomputed, `double_spend_detected_at` stamped, `order.double_spend_detected` order event written |
 | Reorg where the tx vanishes but `is_key_image_spent` reports unspent (still propagating) | **Safety property**: must never void on ambiguous evidence | Same vanish, but `set_key_image_status` reports unspent; assert the payment row is left alone (not voided), pending a later re-check |
 | The exact two-transaction scenario from design review: one payment voided, the other intact | Direct regression test tying the scanner-level behavior to the status-function test in §2 | Two matched payments on one order; void one via the daemon-proof path above; assert the *order's* recomputed status and `double_spend_detected_at` match §2's expectations, exercised through the full scanner path this time, not just the pure function in isolation |
 | A reorg is reported at its true fork point at every depth the window covers; one deeper is reported at the window's edge instead | This limitation is a deliberate design choice (§DESIGN.md 3, 7.5) — the test exists to keep it an intentional, documented boundary rather than something that silently regresses. Note the original phrasing here ("one deeper than the window is *not caught*") turned out to be wrong when actually exercised: a deeper reorg **is** detected, just at the wrong (too high) height, which is a materially different failure mode — payments below the window keep counting at heights that no longer exist | Loop one case per depth from 1 to the full window; then one case one block deeper, asserting the reported point is the window edge and that a payment below it is left untouched. **Done** (`a_reorg_is_detected_at_its_true_fork_point_at_every_depth_the_window_covers`, `a_reorg_deeper_than_the_window_is_reported_at_the_window_edge_and_leaves_older_payments_alone`) |
@@ -479,7 +479,7 @@ status)`. This makes every scenario below deterministic and fast, with no live n
 | A zero-conf payment whose transaction leaves the mempool without being mined, because a conflicting transaction won | The one double-spend shape reorg detection structurally cannot see (no recorded block hash ever changes), and the one a merchant using a native 0-conf threshold is exposed to | Record a mempool match, drop the transaction from the fake's pool, mine a conflicting transaction, mark the shared key images `SpentInBlockchain`; assert the void, the status retraction and the `order.double_spend_detected` event. Then the same script with the key images left unspent, asserting *no* void — a dropped or evicted transaction is not a double-spend. **Done** (`a_zero_conf_order_double_spent_out_of_the_mempool_is_voided_with_no_reorg_involved`, `a_mempool_payment_that_merely_disappears_is_never_voided_on_that_evidence_alone`) |
 | The tip trades places repeatedly (a block-withholding pool publishing in bursts), with one transaction moving in and out of the chain | The realistic on-the-wire shape of selfish mining, as opposed to one clean reorg — the property at risk is bookkeeping (one row, counted once), not detection | Several rounds of `reorg_from` alternating between two chains, two ticks each; assert one payment row, the latest agreed height, no double-spend flag, and the amount counted exactly once. **Done** (`rapidly_alternating_chain_tips_never_lose_or_double_count_a_payment`) |
 | A different daemon, serving a divergent history, is swapped in mid-run | Answers "do we need per-daemon sync state?" — no: the stored `(height, hash)` window is re-validated against whoever answers now, so a swapped, rolled-back, eclipsed or lying node is the same case as a reorg and takes the same code path (§DESIGN.md 7.7) | Drive ticks against one `FakeDaemonClient`, then against a second with a different chain, then back; assert reconciliation and rewind each time. **Done** (`swapping_to_a_daemon_serving_a_different_chain_reconciles_exactly_like_a_reorg`) |
-| A node that fails partway through a reconciliation pass, *after* a void has already committed | The one mid-tick failure whose damage is not self-healing: a voided row leaves both sweeps' input sets by construction and a terminal order is skipped by the per-tick recompute, so a deferred status update is lost permanently rather than retried | Two mempool payments, both proven double-spent, with the daemon failing on the second lookup; assert the first void's status change, total, and both webhook events all landed anyway. **Done** (`a_void_that_lands_before_the_node_fails_still_updates_the_order_it_belongs_to`) |
+| A node that fails partway through a reconciliation pass, *after* a void has already committed | The one mid-tick failure whose damage is not self-healing: a voided row leaves both sweeps' input sets by construction and a terminal order is skipped by the per-tick recompute, so a deferred status update is lost permanently rather than retried | Two mempool payments, both proven double-spent, with the daemon failing on the second lookup; assert the first void's status change, total, and both order events all landed anyway. **Done** (`a_void_that_lands_before_the_node_fails_still_updates_the_order_it_belongs_to`) |
 | A node lying about height, omitting or inventing mempool/block transactions, or reporting a height far below the recorded high-water mark | These are the trust-boundary cases (§DESIGN.md 7.7); the tests exist to state which are closed by construction and which are accepted, so a future change can't quietly move one across the line | One test per case, asserting the *actual* consequence rather than an aspiration: inflated height inflates confirmations (accepted), an invented transaction cannot become a payment (closed), an omitted one only delays detection (bounded), a lagging node changes nothing at all (closed). **Done** |
 
 ## 4. Chain Scanner Throughput / Active Watchlist
@@ -525,13 +525,16 @@ construction — these tests must actually generate concurrency.
 
 ## 7. Webhook Delivery
 
+Monokulo delivers webhooks, from the engine's order-event log (§DESIGN.md 11):
+the delivery rows below are monokulo's; the event-family row is the engine's log.
+
 | Test | Why | How |
 |---|---|---|
 | HMAC signature matches an independently-computed value for a fixed `(secret, payload)` test vector | Merchants implement verification against the documented scheme; a fixed vector lets them (and this test suite) cross-check the exact same computation | Hardcode a `(secret, payload, expected_signature)` triple in the test; recompute and compare bit-for-bit — this triple should also appear in end-user documentation |
 | A failing endpoint (mock server returning 500) increments `attempt_count` and pushes `next_attempt_at` out on a backoff schedule; a later 2xx sets `delivered_at` and stops retries | Core reliability contract | Local mock HTTP server (e.g. `wiremock`) scripted to fail N times then succeed; drive the delivery worker's claim-and-attempt loop directly rather than through a real clock/sleep |
 | A webhook URL resolving to a loopback/private/link-local address is rejected at **both** registration and delivery time | SSRF is a real vector here (§DESIGN.md 11) — the "at both times" phrasing matters because DNS can change between registration and delivery, so a registration-time-only check is insufficient | Register a webhook with a public-looking hostname whose DNS is then changed (or stub the resolver) to a private IP before delivery; assert the delivery is refused, not just the registration |
 | A webhook target that issues an HTTP redirect to a private address is not followed | Same SSRF concern, redirect-based bypass specifically | Mock server responding with a 3xx to a private IP; assert the delivery worker does not follow it |
-| A status transition fires exactly one `order.<status>` event; an independent double-spend void fires exactly one `order.double_spend_detected` event; a void that also changes status fires both | Direct test of the two-event-family design (§DESIGN.md 11) — this is the same distinction §2's "independence test" checks at the status-function level, checked here at the delivery-enqueueing level | Drive each scenario through the writer actor; assert the exact multiset of `webhook_deliveries.event_type` rows created |
+| A status transition fires exactly one `order.<status>` event; an independent double-spend void fires exactly one `order.double_spend_detected` event; a void that also changes status fires both | Direct test of the two-event-family design (§DESIGN.md 11) — this is the same distinction §2's "independence test" checks at the status-function level, checked here at the event-log level | Drive each scenario through the writer actor; assert the exact multiset of `order_events.event_type` rows created |
 | A duplicate delivery (simulated lost-ack) is accepted as an expected, documented characteristic, not silently deduped by hidden logic | The at-least-once contract must actually hold, not just be claimed in docs | Simulate an ack loss (client receives 2xx, worker doesn't observe it before a retry fires); assert two deliveries occur, i.e. that this isn't secretly exactly-once |
 
 ## 8. DDoS Protections
@@ -597,7 +600,7 @@ tier is for wiring confidence, not for the reorg scenarios in §3.
 - The WooCommerce checkout runs end to end by default, without stagenet:
   `mock-woocommerce`'s `a_full_woocommerce_checkout_is_created_with_the_key_opened_and_paid`
   connects through monokulo, creates the order with the store's secret key, opens
-  monokulo's checkout page and receives the engine's signed `order.paid` webhook
+  monokulo's checkout page and receives monokulo's signed `order.paid` webhook
   (the test engine settles the order with `TestEngineHandle::mark_order_paid`).
 
 ## 11. Client Library / Widget (browser-level)
@@ -676,59 +679,29 @@ windows during partial construction. The epoch property exposed an unchecked sum
 of backend epochs; status aggregation now saturates while per-backend invalidation
 continues to compare each actual epoch independently.
 
-### Webhook delivery and recovery properties
+### The engine's order-event log
 
-Twenty-one generated properties in `webhook_delivery::properties` use **64 cases per
-property** by default. They use real local HTTP endpoints, file-backed SQLite,
-and the production database worker. A separate queue oracle calculates eligible
-heads and tenant shares without calling the production selector. A stalled DNS
-resolver is injected only to prove the timeout covers name resolution. No external
-service, new dependency, or live daemon is needed. Existing Linux/macOS CI and the
-daily default/ZMQ exploration job select these tests automatically.
+The engine sends no webhooks: it writes each event a store's webhooks announce
+(`order.<status>`, `order.double_spend_detected`, `order.double_spend_reversed`)
+to the order-event log in the same transaction as the change, and monokulo
+reads the log over `GET /api/v1/admin/order-events` and delivers the webhooks
+(`docs/DESIGN.md` §11). Every scanner, money, history, node and concurrency
+property above that counts "exactly one paid event" counts rows of this log.
+Its own tests:
 
-| Property family | Inclusive ranges and guarantees |
-|---|---|
-| Retry and restart histories | 0–9 failures, ceilings 1–8, success statuses 200/201/204/299, arbitrary Unicode payload text. Every request preserves payload bytes and event ID, has one valid fresh signature, carries merchant headers, and uses the exact 60/120/240/480/960/1920/3840-second backoff from the recorded attempt time. Reopening preserves all row fields; success clears failures and terminal outcomes stop retries. |
-| Stored-header defenses | Nine case-varied reserved names and values of 1–32 ASCII characters, plus a fixed simultaneous override attempt. Even legacy stored headers cannot replace or duplicate signing, event identity, content type, host, framing, or connection headers. Safe merchant headers still arrive. Admission and delivery share the reserved-name rule. |
-| Independent fairness/FIFO model | 1–20 tenants, 1–8 orders each, 1–4 events per order; 1–24 retry/success/give-up/no-op actions; tenant shares 0–7 and total limits 0–64; clocks 999/1000/1100. The earliest pending event blocks later events even while waiting for retry, terminal events unblock them, and tenant shares apply after order-head selection. |
-| Late outcome histories and overlapping ticks | 1–29 reordered bookkeeping outcomes, timestamps 1–99,999. A real overlapping-request property uses late HTTP failures 400–599 and ceilings 1–8. Acknowledged success remains authoritative, duplicate/late failures cannot rewrite it, and terminal failures cannot be reopened by retry scheduling. |
-| Private-destination policy reload | IP literals and `localhost`; forced allow→deny followed by 1–15 generated flips. Tightening policy prevents new requests even after a permitted request warmed a connection. Clients retain separate pools with fixed resolver policies. |
-| Environment proxy bypass | Four HTTP/ALL proxy environment names, isolated child processes and a real local proxy. Guarded requests must not reach the proxy or bypass private-destination classification. Guarded delivery ignores system proxy settings; the explicit private-URL policy retains proxy support. |
-| Redirects and HTTP status classes | Redirects 301/302/303/307/308 never reach their target or forward a signed event. Statuses 200–599 are recorded exactly; only 2xx succeeds, and all other responses follow the failure/give-up contract. |
-| Timeouts, disconnections and DNS stalls | Zero timeout, hanging HTTP, connection refusal and accepted-connection reset; 1–15 ms deadlines, ceilings 1–4. Stalled DNS is bounded by the same deadline. Failures are persisted, URL tokens are excluded from errors, reopen preserves the row, and a healthy endpoint recovers eligible retries. |
-| Cancellation while a batch is running | 1–6 fast and 1–6 held requests. Rendezvous proves fast outcomes committed and slow requests entered before cancellation. Committed successes survive, unfinished rows remain retryable, and subsequent delivery converges. |
-| Actual batch/concurrency bounds | 1–20 tenants, 1–6 orders each, 1–3 events per order; full drain verifies exact request count and FIFO. A separate 16–64-tenant test fills and holds all 16 worker slots, checks no seventeenth request starts, then drains; batch size never exceeds 50 or four eligible heads per tenant. |
-| Legacy payload identity | Arbitrary Unicode raw payloads and full-width u64 non-string event IDs. Two real sends preserve exact body bytes and the stable delivery-ID fallback, with valid signatures. |
-| Subscription lifecycle | Two subscriptions on the same order, 2–6 events each. A disabled subscription does not block the other; reopening and reenabling preserves its own FIFO. Deletion cancels only its queue and allows the documented delete-and-recreate rotation. |
-| Lowered budgets and integer limits | Recorded attempts 1–15 and new ceilings 0–15; an already exhausted row retires without another network request or fabricated attempt. Small/full-width u32 attempt counts and ordinary/near-MAX i64 timestamps cannot panic or overflow; retry timestamps saturate. |
-| Observable SQLite failures | Denial positions 0–31 across success, retry, give-up and already-exhausted retirement. Errors are surfaced, later completed outcomes still commit, and unaffected/pending rows recover after reopen. A fixed sweep covers every reached SQL boundary for all four outcomes. Deletion additionally tests positions 0–23 and a complete reached-boundary sweep, with both correct and incorrect tenant IDs; failed deletion rolls back parent and children together. |
-| Process death at durability boundaries | Generated success/retry/give-up/exhausted-retirement outcomes, before/after the atomic write. A fixed sweep always kills a child at **all eight** named rendezvous points, checks SQLite integrity after reopening, and verifies terminal/pending state. A delivered request whose acknowledgement was not persisted is sent again with the same body/event ID and a valid newly timed signature. |
+- `store::order_events::tests`: when a reader resuming from an id has missed
+  events (pruned, or an id this log never handed out).
+- `scanner::tests::a_status_change_whose_order_event_cannot_be_written_is_rolled_back_rather_than_lost`:
+  the event is written in the status change's transaction.
+- `http::tests::the_order_event_stream_replays_from_a_position_then_goes_live`
+  and `the_order_event_stream_says_when_a_reader_missed_events`: the stream
+  replays from `Last-Event-ID` or `?after=`, then sends new events as they
+  commit, and sends `events_lost` first when the position is older than the log.
+- `work::tests::upkeep_prunes_order_events_older_than_the_retention`: the
+  upkeep tier prunes events past `order_events.retention_days`.
 
-Fixed regressions also protect success/error cleanup, late-outcome immunity,
-reserved stored headers, a warmed `localhost` connection after policy tightening,
-and full-width counters/timestamps. Replay seeds are committed in
-`crates/engine/proptest-regressions/webhook_properties/`, one file per property.
-
-These tests enforce **at-least-once**, so an interrupted acknowledgement or an
-overlapping worker may deliver a duplicate. The durable attempt count tracks
-recorded outcomes rather than every possible request received by the merchant.
-Consumers must deduplicate by event ID. Explicit subscription deletion atomically
-removes its delivery rows, including history; a request already in flight can still
-finish. Ordinary delivery/give-up retains rows for inspection. The signing/SSRF
-primitive tests remain in `shared`; these properties exercise their delivery wiring.
-
-```sh
-# Local default budget, including fixed regressions and complete fault/crash sweeps.
-cargo nextest run -p engine --lib --locked -E 'test(/^webhook_delivery::/)'
-
-# Larger, reproducible exploration.
-PROPTEST_CASES=128 PROPTEST_RNG_SEED=83 cargo nextest run -p engine --lib --locked \
-  -E 'test(/^webhook_delivery::/)'
-
-# All three new target suites together.
-cargo nextest run -p engine --lib --locked -E \
-  'test(http::tests::properties::) | test(key_custody::plain::properties::) | test(key_custody::router::properties::) | test(webhook_delivery::properties::)'
-```
+Monokulo's delivery worker (retries, signing, the private-address guard) is
+tested in monokulo.
 
 ## Deterministic scheduler, queue and boundary exploration
 
@@ -970,10 +943,10 @@ runs the shared wait oracle. The daily jobs discover it.
 
 `http::tests::properties::authorization` sends requests through the production
 `build_router`, without the test token-injection layer. Its explicit matrix covers
-all 25 registered method/route combinations: tenant metadata/lifecycle, orders,
-refund addresses, payment lookup, webhooks and SSE, plus engine status, tenant
-creation, settings, logs, activity and proof-anchor administration. A fixed sweep
-runs every route with absent/wrong/tenant-as-engine credentials, and all 14 tenant
+all 24 registered method/route combinations: tenant metadata/lifecycle, orders,
+refund addresses, payment lookup and SSE, plus engine status, tenant
+creation, settings, logs, activity, the order-event log and proof-anchor administration. A fixed sweep
+runs every route with absent/wrong/tenant-as-engine credentials, and all 11 tenant
 routes with eight invalid tenant credential classes (missing, public key, revoked,
 disabled, wrong scheme, unknown, tampered and engine token as bearer).
 
@@ -981,7 +954,7 @@ Generated tests use 2–4 real tenants, inline or production file-backed DB work
 1–32 ownership/rotation/disable/read/refund/list events, ASCII credential noise up
 to 128 bytes, order amounts 1–9,999, and 2–32 concurrent rejected writes or SSE
 requests, duplicate capability headers, eight malformed Bearer forms, filtered
-order/webhook lists and 1–12 foreign writes preceding a positive owner SSE event.
+order lists and 1–12 foreign writes preceding a positive owner SSE event.
 Independent principal state checks current/revoked/disabled credentials;
 cross-tenant identifiers cannot expose or mutate another tenant, body identities
 cannot redirect an authenticated purchase, and rejected requests preserve a full
@@ -1013,7 +986,7 @@ rotation/refund/configuration changes and a persisted reorg guard run with 1–4
 replays. A fixed sweep forces all six permutations and all four cancellation
 choices. Recovery recreates volatile scanner state, drains the actual tiers and
 checks exact amount, stable payment identity, mined location, no pending reorg or
-recompute work, and exactly one paid webhook. Reopening preserves the payment.
+recompute work, and exactly one paid order event. Reopening preserves the payment.
 The scan gate covers both batched engine scans and single HTTP lookup scans.
 
 Run `PROPTEST_CASES=128 cargo test -p engine --lib
@@ -1092,13 +1065,12 @@ assertion bearing the defect’s specified `BOUNDARY:` marker on the mutant. All
 | Accept a scanned block despite a changed parent | Complete late-commit prerequisite sweep |
 | Read an order without checking its tenant | Named authorization/revocation history |
 | Drop payment insert/update recompute obligations | Complete late-commit prerequisite sweep |
-| Commit paid status without its webhook | Combined real-worker concurrency sweep |
+| Commit paid status without its order event | Combined real-worker concurrency sweep |
 | Accept another round's completion | Generated scheduler generation property |
 | Trust one node’s spent vote despite disagreement | Combined portfolio independent void ledger |
 | Publish completion for a different scan window | Held-owner wrong-window regression |
 | Bypass matching-proof settlement requirements | Combined portfolio independent status ledger |
 | Reverse the earliest-mined conflict winner | Durable conflict winner/reorg regression |
-| Send a later webhook event before an earlier retry | Production FIFO/backoff regression |
 | Retain an obsolete reorg staging checkpoint | Reopen/fork/network staging sweep |
 | Retain obsolete staged matches | Same sweep, independent staging-row assertion |
 | Keep custody handles live across backend epoch changes | Generated backend epoch isolation property |
@@ -1125,12 +1097,12 @@ configurations and retains JSON plus logs. These checks demonstrate detection of
 these 27 selected defects; they are not a percentage score for every possible bug.
 The money, crash, concurrency, fuzz and authorization suites remain complementary.
 
-## Combined money, proof, node, custody and delivery histories
+## Combined money, proof, node, custody and order-event histories
 
 The shared `portfolio` property/fuzz harness now composes three real adversarial
 nodes through production fallback/corroboration, independent multi-wallet money
 accounting, trusted verifier results, wallet handle replacement, SQL denial,
-restart/reorg recovery and the production webhook executor against local HTTP.
+restart/reorg recovery and the order-event log as monokulo reads it.
 Generated histories have up to 16 commands (previously eight), 2–4 wallets,
 2–4 transactions, amounts 1–65536 and confirmation thresholds 0–3. The first
 three branch changes exercise missing/mismatching proof before proof catches up;
@@ -1146,8 +1118,9 @@ replacement and reopen. Recovery requires all tenant cursors to reach the model
 chain tip before comparing settlement depth, rather than stopping when payment
 rows alone match. Proof holds deliberately retain settlement obligations; healthy
 final recovery drains them. Status commits must have their corresponding durable
-webhook, delivery fails once through actual HTTP, retries preserve exact event
-bytes, and every expected event eventually reaches its tenant's destination.
+order event; a reader cut off after the first event resumes from its id and gets
+every other event once, in order, and every event reads back with the exact bytes
+it was written with.
 
 Run `cargo test -p engine --lib portfolio_histories` and `cargo test -p engine --lib
 combined_portfolio`. The existing portfolio
@@ -1174,7 +1147,7 @@ two custody replacement choices run in a fixed 144-case sweep, plus generated
 properties. Gates prove entry into custody and worker admission. Accepted effects
 must drain after callers abandon them, and a fresh scanner generation with the
 replacement custody handle must preserve one exact payment/stable ID. Confirmation
-and proof holds must produce no paid webhook; subsequent canonical proof catch-up
+and proof holds must produce no paid order event; subsequent canonical proof catch-up
 must settle once, enqueue exactly one paid event, drain recomputes, and survive a
 DB reopen. This is controlled generation replacement, not an OS scheduling proof.
 
@@ -1264,7 +1237,6 @@ available for replay/shrinking. Logs, JUnit and replay settings are saved under
 | Sustained new pool traffic | 320 new transactions per round for eight consecutive rounds | A previously scanned transaction paying a newly allocated address must be rediscovered while arrivals continue; the first address receives nothing |
 | Pure pool rotation | 1–257 initially queued IDs, 1–64 completed per turn, 1–32 new arrivals per turn; fuzz ticket histories up to 1024 operations over eight IDs | New admissions cannot extend an existing item's wait; ticket oracle checks admission order, partial progress, missing bodies/deferred IDs, departures and membership uniqueness |
 | Worker admission and dispatch | 1–8 waves; fixed 64 waves = 12,288 accepted jobs | All three queues filled to 64 each, abandoned accepted callers still commit exactly once, cancelled waiting callers never commit, exact per-class FIFO, one turn per three continuously ready jobs, complete drain |
-| Webhook backlogs | 1–16 healthy / 1–8 failing tenants, 1–4 orders each, 1–3 events per order; fixed 1025 healthy / 128 failing, four orders, three events = 13,836 deliveries | Real HTTP/SQLite, reached 503 responses, healthy tail progress, persisted retry deadlines and reopen, eventual failed-merchant recovery, per-order FIFO, stable retry bytes, valid signatures and unique protocol headers, at most 16 live deliveries |
 | Production cache limits | 20,065 attempted small bodies against the 20,000-body cap; serialized 8 MiB bodies against 128 MiB; 8193 block headers against a 1 MiB budget | Duplicate admission, integer overflow rejection, exact byte accounting, reclaim/refill, scanned-first eviction, preserved anchor, replacement, oversized pinned-anchor exception, branch-range removal and complete clear |
 
 The round safety net now uses stable FIFO transaction membership and a separate

@@ -48,7 +48,7 @@ These held before and must keep holding. Each lists how it is enforced.
    stays queued. Other transitions still
    happen: expiry, confirmations counting, partial, and `paid` walked back.
    Mempool detection keeps running.
-4. **A status change and its webhook commit together**, and a payment
+4. **A status change and its order event commit together**, and a payment
    change leaves a durable recompute obligation. This is unchanged:
    `recompute_and_notify` and the `pending_payment_recomputes` triggers.
 5. **Replacement blocks are always forward-scanned after a reorg.** Rewind
@@ -270,8 +270,8 @@ replace the rotating scan over every non-terminal order.
 No SQLite call runs on a Tokio worker thread in production:
 
 - **The database worker** (`store::Db`) is one thread with its own
-  connection. The scanner's units and webhook delivery send it jobs in
-  classes (`Scanner`, `Webhook`, `Admin`), each with a bounded queue (64),
+  connection. The scanner's units and the API send it jobs in
+  classes (`Scanner`, `Admin`), each with a bounded queue (64),
   served round-robin. A backlog in one class delays another by at most one
   job, and a full queue makes its callers wait instead of growing memory.
   A job runs to completion even if its caller stops waiting, so every job
@@ -362,9 +362,9 @@ shorter) runs `work::mempool::fast_pass`:
 - It scans them against every store with something in scope (windows
   reloaded at most once a second), up to 4096 scans a pass. Past that, the
   rest are left to the next pass and the round's rotation, never dropped.
-- A match is recorded and its order recomputed (status and webhook) in the
-  same database job, using the last round's chain height, and webhook
-  delivery is woken at once (`ScanState::waking`).
+- A match is recorded and its order recomputed (status and order event) in the
+  same database job, using the last round's chain height, and readers of
+  the order-event log are woken as soon as it commits.
 - It shares the round's mempool state, so the rotation skips what the fast
   path already scanned.
 

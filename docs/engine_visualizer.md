@@ -26,7 +26,7 @@ us, while tuning the scheduler): it makes the scheduler described in
 - how far behind each group of stores is, and how fast it is catching up.
 
 Everything moves on screen when it moves in the engine, so a payment can be
-followed from the pool, through settlement, to its webhook; and a block from
+followed from the pool, through settlement, to its order's status; and a block from
 the node, through the cache, into the stores' cursors and the database.
 
 ## What the engine does, and what is shown for it
@@ -87,7 +87,7 @@ deliberately left out (see "Left out").
 | --- | --- |
 | Pool txids (polled with the tip), remembered bodies and per-store scans | The pool: one dot per transaction (up to 200, then a count), dimmed once every store has been scanned for it |
 | Fast pass: new transactions only, up to its scan budget, the rest deferred to the round | New dots drop in from the node; a sweep scans them; deferred ones keep a ring until the round's rotation reaches them |
-| A match: payment recorded and its order recomputed in the same job | The dot turns orange; an envelope flies to the Webhooks line |
+| A match: payment recorded and its order recomputed in the same job | The dot turns orange |
 | A transaction mined | Its dot flies to the block that holds it |
 | Not watching (nothing in scope) | The pool is drawn empty with "not watched: no store is waiting for a payment" |
 
@@ -95,8 +95,8 @@ deliberately left out (see "Left out").
 
 This tier is where what the chain and the pool say becomes what the shop
 sees: it recomputes each affected order's status (pending, unconfirmed,
-confirming, paid, expired) and queues the shop's webhook in the same
-transaction. Without it a payment would be found and recorded but no order
+confirming, paid, expired) and writes the order event (which monokulo
+delivers to the shop's webhooks) in the same transaction. Without it a payment would be found and recorded but no order
 would ever change. It earns one line on the page because it answers "the
 payment was seen, so why hasn't the shop heard?": a growing queue, a paid
 status held during a reorg, or an order backing off. The panel is called
@@ -108,7 +108,6 @@ starts with that sentence.
 | Obligations (`pending_payment_recomputes`) and due orders (`orders.next_due_*`) | Summary: how many orders wait to be recomputed. Detail: the two queues as tokens |
 | A recompute page (64, in database jobs of 16), each order once per round | Tokens leave the queues |
 | Status transitions | Summary: the last state reached, as a `.state-*` chip. Detail: the last three, "confirming to paid" |
-| Webhook enqueued with the transition | An envelope flies to the Webhooks line |
 | A paid transition held during a reorg | Summary reads "paid held: reorg open" |
 | Vanished-payment page and its backoff | Detail line: "12 unconfirmed payments looked at, 1 not found (next look in 16 s)" |
 | Order backoff | Detail line: "2 orders waiting to retry" |
@@ -123,13 +122,12 @@ each did (rows removed, time to the next checkpoint, page positions).
 
 | Engine | Shown as |
 | --- | --- |
-| Database worker: three classes (Scanner, Webhook, Admin), 64 slots each, served round-robin by one thread | One line: three tiny bars (queue depths) and "38 jobs a second, longest wait 1.7 ms". Detail: each queue's depth, whose turn is next, the longest job |
+| Database worker: two classes (Scanner, Admin), 64 slots each, served round-robin by one thread | One line: two tiny bars (queue depths) and "38 jobs a second, longest wait 1.7 ms". Detail: each queue's depth, whose turn is next, the longest job |
 | Durable state (the "save states") | In place rather than in a panel: every save puts a small dark square on the thing saved (a block cell, a group pill, the reorg line, the order-status line) and sends it to the Database line. A block checkpoint keeps its square on the half-filled cell |
 | In-memory state | In place too: the cache gauge on the chain, pool bodies on the mempool line, retry delays on pills and order status |
 | Both, together | A "Restart safety" line: "60 saves a minute; 4 blocks and 8 pool bodies only in memory". Detail: what is saved and what is only in memory, side by side, each saved row lighting when written |
 | Nodes: active and pinned for the round, fallbacks, cooldowns, RPC calls | Two small cards right of the chain strip; each call is a short packet labelled with its method; a node in cooldown is greyed with its time left |
 | ZMQ announcements | A spark on the node card when it announces a block or a transaction |
-| Webhook delivery | One line: deliveries a minute and a sparkline of the last five minutes (10 s buckets). Detail: due now, sent and failed in the last five minutes |
 
 ### Overall progress
 
@@ -193,8 +191,7 @@ Top to bottom:
        line says "not scanned".
      - Order status: "2 to recompute", and the last state reached.
      - Upkeep: four squares lighting as each job runs.
-     - Database: three queue bars and jobs a second.
-     - Webhooks: deliveries a minute and a sparkline.
+     - Database: two queue bars and jobs a second.
      - Restart safety: saves a minute and what is only in memory.
 5. **Events**, below the fold: the same events in words, up to the playback
    position, filterable by tier; clicking a row moves the timeline there.
@@ -310,8 +307,7 @@ in tests.
   per SQL statement.
 - A **snapshot every 10 s**, taken by the scan loop before a round
   (`work::snapshot`): one store call for the database facts
-  (`Store::activity_facts`, each query indexed; migration 0026 indexes
-  webhook deliveries by when they were made) and the scheduler's memory
+  (`Store::activity_facts`, each query indexed) and the scheduler's memory
   (the carried block cache, the pool it remembers, the database worker's
   queues, the nodes).
 - The events (`shared::activity::Event`): `round_started` (with the tip it
