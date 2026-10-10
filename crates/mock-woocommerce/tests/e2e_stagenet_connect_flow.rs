@@ -214,7 +214,7 @@ async fn spawn_test_monokulo(
 // `.without_background_scan_loop()` below, not by this attribute - see
 // `TestEngineConfig::without_background_scan_loop`'s doc comment.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore]
+#[ignore = "needs the live stagenet node and the funded merchant and spender wallets"]
 async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // Same standard `e2e/*` layout every real suite in this repo uses - run
     // from the repository root, same as this file's own doc comment says.
