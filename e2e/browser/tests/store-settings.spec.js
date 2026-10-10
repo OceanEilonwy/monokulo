@@ -141,3 +141,44 @@ test('without JavaScript the save bar is always there and saves, refused or not'
   await expect(page).toHaveURL(/\?saved=confirmation-thresholds$/);
   await context.close();
 });
+
+test('the Verified domains form lays its field out like every other setting, and still adds a domain', async ({ page, context }) => {
+  await login(context);
+  await page.goto(fixture.base_url + store + '/settings#card-verified-domains');
+  const card = page.locator('#card-verified-domains');
+  const field = card.locator('form mk-setting.setting-field');
+  await expect(field).toHaveCount(1);
+  // Name, then help, then the control, as the settings components have them.
+  const label = await field.locator('label.setting-label').boundingBox();
+  const help = await field.locator('.field-help').boundingBox();
+  const input = await field.locator('input[name="domain"]').boundingBox();
+  expect(label.y).toBeLessThan(help.y);
+  expect(help.y).toBeLessThan(input.y);
+  await expect(field.locator('input[name="domain"]')).toHaveAttribute('aria-describedby', 'new-domain-help');
+  await expect(card.getByLabel('Domain')).toHaveAttribute('name', 'domain');
+  // Adding one works as before: its TXT record is shown.
+  await card.getByLabel('Domain').fill('layout-check.example');
+  await card.getByRole('button', { name: 'Add domain' }).click();
+  const row = page.locator('#card-verified-domains tr', { hasText: 'layout-check.example' });
+  await expect(row).toContainText('_monokulo.layout-check.example');
+  // Removing asks first (a confirm), as before.
+  page.once('dialog', (dialog) => dialog.accept());
+  await row.getByRole('button', { name: 'Remove' }).click();
+  await expect(page.locator('#card-verified-domains')).not.toContainText('layout-check.example');
+});
+
+test('without JavaScript the Verified domains form still adds a domain', async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  await login(context);
+  const page = await context.newPage();
+  await page.goto(fixture.base_url + store + '/settings#card-verified-domains');
+  const card = page.locator('#card-verified-domains');
+  await card.getByLabel('Domain').fill('nojs-check.example');
+  await card.getByRole('button', { name: 'Add domain' }).click();
+  await expect(page.locator('#card-verified-domains tr', { hasText: 'nojs-check.example' })).toContainText('_monokulo.nojs-check.example');
+  // Removed again without the confirm (no JavaScript, no prompt).
+  await page.locator('#card-verified-domains tr', { hasText: 'nojs-check.example' }).getByRole('button', { name: 'Remove' }).click();
+  await expect(page.locator('#card-verified-domains')).not.toContainText('nojs-check.example');
+  await context.close();
+});
+

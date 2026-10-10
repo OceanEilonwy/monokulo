@@ -964,12 +964,17 @@ fn verified_domains_card(store: &StoreSettingsData) -> Markup {
                 }
             }
             form method="post" action=(format!("{base}/domains")) {
-                label {
-                    "Domain"
-                    input type="text" name="domain" placeholder="shop.example" required autocomplete="off" spellcheck="false";
-                    span class="field-help" { "Just the domain, like shop.example. Its subdomains are covered too." }
+                (Field::new("Domain", "new-domain")
+                    .help(Some("new-domain-help"), html! {
+                        "Just the domain, like shop.example. Its subdomains are covered too."
+                    })
+                    .render(html! {
+                        input type="text" name="domain" id="new-domain" aria-describedby="new-domain-help"
+                            placeholder="shop.example" required autocomplete="off" spellcheck="false";
+                    }))
+                div class="form-actions" {
+                    button type="submit" { "Add domain" }
                 }
-                button type="submit" { "Add domain" }
             }
         },
     )
@@ -1459,6 +1464,26 @@ mod tests {
             "got: {html}"
         );
         assert!(!html.contains("new_unit_amount"), "{html}");
+    }
+
+    /// The Verified domains form is a settings field: its name, its help,
+    /// then the input, described by the help.
+    #[test]
+    fn the_verified_domains_form_uses_the_settings_field() {
+        let html = page(
+            &chrome(),
+            &StoreSettingsViewModel {
+                store: Some(base_store()),
+            },
+        )
+        .into_string();
+        assert!(
+            html.contains(r#"<mk-setting class="setting-field"><div class="setting-label-row"><label class="setting-label" for="new-domain">Domain</label><span class="changed-mark">changed</span></div><p class="field-help" id="new-domain-help">Just the domain, like shop.example. Its subdomains are covered too.</p><input type="text" name="domain" id="new-domain" aria-describedby="new-domain-help""#),
+            "{html}"
+        );
+        assert!(html.contains(
+            r#"<div class="form-actions"><button type="submit">Add domain</button></div>"#
+        ));
     }
 
     #[test]
