@@ -21,9 +21,10 @@
 //! cargo test -p e2e-harness --features e2e --test e2e_stagenet -- --ignored --nocapture
 //! ```
 //!
-//! Wallet files (`e2e/wallets/`) are found relative to the `cli-wallet` crate,
-//! whatever `cargo test`'s working directory is. See `e2e/README.md`
-//! for the full picture.
+//! Wallet files (`e2e/wallets/`, or `$E2E_WALLET_DIR`) are found relative to
+//! the `cli-wallet` crate, whatever `cargo test`'s working directory is: the
+//! merchant's view key and spend public key make the tenant, and the spender
+//! pays its order. See `e2e/README.md` for the full picture.
 
 // An integration test crate: every function in it is test code, which
 // fails by panicking.
@@ -115,10 +116,14 @@ async fn live_stagenet_payment_is_detected_end_to_end() {
     use support::e2e_fixture;
 
     let ctx = cli_wallet::WalletCtx::default();
-    let spender = cli_wallet::WalletStore::load(&ctx)
-        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallet_dir.display()))
+    let wallets = cli_wallet::WalletStore::load(&ctx)
+        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallet_dir.display()));
+    let spender = wallets
         .wallet("spender")
         .unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
+    let merchant = wallets
+        .wallet("merchant")
+        .unwrap_or_else(|e| panic!("failed to load the merchant wallet: {e}"));
 
     // Same boot sequence as main.rs's happy path, minus the webhook loop (not
     // exercised by this test) and the bound TCP listener (the router is driven
@@ -142,10 +147,10 @@ async fn live_stagenet_payment_is_detected_end_to_end() {
     .await;
 
     let material = WalletMaterial::from_hex(
-        e2e_fixture::WALLET_PRIVATE_VIEW_KEY,
-        e2e_fixture::WALLET_PUBLIC_SPEND_KEY,
+        &merchant.private_view_key_hex,
+        &merchant.spend_public_key_hex().unwrap(),
     )
-    .expect("invalid wallet key material in support::e2e_fixture");
+    .expect("invalid key material in the merchant wallet");
     let sealed = key_custody.seal(&material).await.unwrap();
     let created = store
         .lock()
@@ -153,8 +158,8 @@ async fn live_stagenet_payment_is_detected_end_to_end() {
             &NewTenant {
                 key_custody_backend: "plain".to_owned(),
                 sealed_key_material: sealed,
-                primary_address: e2e_fixture::WALLET_PRIMARY_ADDRESS.to_owned(),
-                network: e2e_fixture::WALLET_NETWORK.to_owned(),
+                primary_address: merchant.address.clone(),
+                network: network_str(Network::Stagenet).to_owned(),
                 confirmations_required: Some(e2e_fixture::PAYMENT_CONFIRMATIONS_REQUIRED),
                 order_expiry_seconds: Some(e2e_fixture::PAYMENT_ORDER_EXPIRY_MINUTES * 60),
             },

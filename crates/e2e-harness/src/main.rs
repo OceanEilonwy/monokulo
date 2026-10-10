@@ -90,10 +90,6 @@ const NODE_PORT: u16 = 38089;
 const FALLBACK_NODE_HOSTS: [&str; 2] = ["node2.monerodevs.org", "node3.monerodevs.org"];
 const NODE_SSL: bool = false;
 const NODE_ACCEPT_SELF_SIGNED_CERTS: bool = true;
-const WALLET_PRIVATE_VIEW_KEY: &str =
-    "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e";
-const WALLET_PUBLIC_SPEND_KEY: &str =
-    "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335";
 const PAYMENT_REORG_CHECK_DEPTH: u64 = 20;
 
 fn urlencode(s: &str) -> String {
@@ -475,7 +471,12 @@ async fn main() {
     // store step, then the wallet brought in with its keys, which makes the
     // store. The first Playwright payment settles at the mempool sighting
     // (`confirmations_required` 0); the second test changes this default to
-    // 1 before creating its order and waits for a real block.
+    // 1 before creating its order and waits for a real block. The wallet is
+    // the merchant's, from the same wallet directory the spender's is.
+    let merchant = cli_wallet::WalletStore::load(&cli_wallet::WalletCtx::default())
+        .and_then(|store| store.wallet("merchant"))
+        .expect("failed to load the merchant wallet");
+    let merchant_spend_pubkey = merchant.spend_public_key_hex().unwrap();
     let setup_fields = [
         ("kind", "web"),
         ("store_name", "POS e2e test"),
@@ -483,8 +484,8 @@ async fn main() {
         ("confirmations_required", "0"),
         ("name", "POS e2e wallet"),
         ("network", "stagenet"),
-        ("view_key_hex", WALLET_PRIVATE_VIEW_KEY),
-        ("spend_pubkey_hex", WALLET_PUBLIC_SPEND_KEY),
+        ("view_key_hex", merchant.private_view_key_hex.as_str()),
+        ("spend_pubkey_hex", merchant_spend_pubkey.as_str()),
     ];
     let mut done_path = String::new();
     for step in ["/setup", "/setup/wallet/keys"] {
