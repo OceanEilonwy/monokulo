@@ -1,4 +1,4 @@
-const { test, expect, pauseClockAt, recordEventSources, eventSources } = require('../coverage-test');
+const { test, expect, pauseClockAt, recordEventSources, eventSources, EVENT_SOURCE_CLOSED } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
 
@@ -343,7 +343,12 @@ test('customer walks away: the order on screen expires', async ({ page, request 
   await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Expired');
 });
 
-test('counter loses its connection: the order shows connection lost, then recovers by itself', async ({ page, request }) => {
+// Who reconnects a stream that failed to connect: Chromium and WebKit retry
+// the same EventSource themselves; Firefox closes it for good, and the POS
+// opens a new one after its wait.
+const RECONNECTS_FAILED_STREAM = { chromium: 'browser', webkit: 'browser', firefox: 'pos' };
+
+test('counter loses its connection: the order shows connection lost, then recovers by itself', async ({ page, request, browserName }) => {
   let online = true;
   // The Wi-Fi is down: every attempt to (re)open the update stream fails.
   await page.route('**/pos/events?*', route => (online ? route.continue() : route.abort('internetdisconnected')));
@@ -369,13 +374,48 @@ test('counter loses its connection: the order shows connection lost, then recove
   await page.clock.runFor(1);
   await expect(badge).toContainText('Connection lost');
   await captureCoverageStage(page, 'pos-connection-lost', test.info());
-  // The customer pays meanwhile; back online, the stream reconnects (the
-  // browser's own retry, a few real seconds) and brings the missed payment
-  // in without a reload.
+  // The customer pays meanwhile; back online, the stream reconnects and
+  // brings the missed payment in without a reload. The browser's retry runs
+  // on its own clock, a few real seconds; the POS's on the page's, moved a
+  // second at a time until it has.
   await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/payment?fraction=1`);
   online = true;
-  await expect(badge).toContainText('Unconfirmed', { timeout: 15000 });
+  await expect.poll(async () => { await page.clock.runFor(1000); return badge.textContent(); }, { timeout: 15000 }).toContain('Unconfirmed');
   await expect(page.locator('.pos-stage-msg')).toContainText('Payment seen. Waiting for its first confirmation.');
+  const streams = await eventSources(page);
+  if (RECONNECTS_FAILED_STREAM[browserName] === 'browser') {
+    expect(streams, 'one stream, retried by the browser').toHaveLength(1);
+    expect(streams[0].refused).toBe(0);
+  } else {
+    expect(streams.length, 'the POS opened another once the browser gave up').toBeGreaterThan(1);
+    expect(streams.slice(0, -1).every(stream => stream.refused === 1)).toBe(true);
+  }
+  expect(streams.at(-1).readyState, 'connected').toBe(1);
+});
+
+test('the server refuses the counter\'s update stream: the POS opens another itself, and the payment comes in', async ({ page, request }) => {
+  let refusing = true;
+  // A restarting server: every browser closes a refused stream for good.
+  await page.route('**/pos/events?*', route => (refusing ? route.fulfill({ status: 503, body: 'restarting' }) : route.continue()));
+  await recordEventSources(page);
+  await pauseClockAt(page, new Date('2026-01-01T00:00:00Z'));
+  await page.goto(posUrl());
+  const badge = page.locator('.pos-order-heading .pos-badge');
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
+  await expect.poll(async () => (await eventSources(page)).map(stream => stream.refused), 'the browser gives up on the stream').toEqual([1]);
+  // Refused again after the POS's first wait (5s), so it waits twice as long.
+  await page.clock.runFor(5000);
+  await expect.poll(async () => (await eventSources(page)).map(stream => stream.refused)).toEqual([1, 1]);
+  // Down for 6s: the merchant is told.
+  await page.clock.runFor(1000);
+  await expect(badge).toContainText('Connection lost');
+  refusing = false;
+  await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/payment?fraction=1`);
+  await page.clock.runFor(8999);
+  expect(await eventSources(page), 'not yet: it waits 10s this time').toHaveLength(2);
+  await page.clock.runFor(1);
+  await expect(badge).toContainText('Unconfirmed');
+  expect((await eventSources(page)).map(stream => stream.readyState)).toEqual([EVENT_SOURCE_CLOSED, EVENT_SOURCE_CLOSED, 1]);
 });
 
 test('merchant opens Cancel order then changes their mind: nothing happens until they confirm', async ({ page }) => {
