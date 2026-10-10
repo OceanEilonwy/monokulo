@@ -102,6 +102,20 @@ const photographs = project => (project.use.browserName || 'chromium') === 'chro
 
 async function captureCoverageStage(target, stage, testInfo, options = {}) {
   if (!enabled || !photographs(testInfo.project)) return;
+  // A test's timeout bounds what it tests, not the gallery: a stage is about
+  // ten full-page screenshots, and a test with several of them on a busy
+  // runner would otherwise time out on photographs alone. So the time spent
+  // here is given back to the test.
+  const started = performance.now();
+  try {
+    await capture(target, stage, testInfo, options);
+  } finally {
+    // 0 is no timeout at all; adding to it would make one.
+    if (testInfo.timeout) testInfo.setTimeout(testInfo.timeout + (performance.now() - started));
+  }
+}
+
+async function capture(target, stage, testInfo, options) {
   if (!NAME.test(stage)) throw new Error(`invalid coverage stage: ${stage}`);
   const group = options.group || '';
   if (group && !GROUP.test(group)) throw new Error(`invalid coverage group: ${group}`);
