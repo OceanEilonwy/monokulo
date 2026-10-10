@@ -498,6 +498,41 @@ fn a_settlement_waits_for_an_open_reorg_on_its_network() {
     cleanup(&path);
 }
 
+/// A payment the node placed in a block the scan hasn't reached (the
+/// vanished-payment check) shows its confirmations, but its order settles
+/// only once that block is recorded: replaced before then, nothing would
+/// notice the payment left it.
+#[test]
+fn a_settlement_waits_for_the_payments_block_to_be_recorded() {
+    let (store, path) = fixture();
+    let s = &store.0;
+    let o = OrderId::new(order(s, &store.3, 5_000));
+    s.record_payment_match(&o, "tx", 0, 100, "[\"ki\"]", 1_000, Some(50), None)
+        .unwrap();
+    s.set_scanned_block(monero::Network::Mainnet, 49, "h49")
+        .unwrap();
+    let (_, held) = s.recompute_order_status(&o, 59, 1_000).unwrap();
+    assert_eq!(held, crate::status::OrderStatus::Confirming);
+    assert_eq!(
+        s.get_order_by_id(&o).unwrap().unwrap().confirmations,
+        10,
+        "counted all the same"
+    );
+    assert_eq!(
+        s.due_order_ids(monero::Network::Mainnet, 1_000, 0, 10)
+            .unwrap(),
+        vec![o.clone()],
+        "due again at once"
+    );
+
+    s.set_scanned_block(monero::Network::Mainnet, 50, "h50")
+        .unwrap();
+    let (_, settled) = s.recompute_order_status(&o, 59, 1_000).unwrap();
+    assert_eq!(settled, crate::status::OrderStatus::Paid);
+    drop(store);
+    cleanup(&path);
+}
+
 /// The scanner's hot queries are answered from indexes, never by
 /// scanning a whole table: the plans are checked here so an edit can't
 /// silently turn one back into a full scan.

@@ -666,7 +666,10 @@ struct StatusFacts<'a> {
     /// The tenant is behind the network: blocks not yet scanned for it
     /// could hold a payment.
     tenant_lagging: bool,
-    /// A reorg is being reconciled on the order's network.
+    /// A reorg is being reconciled on the order's network, or a counted
+    /// payment's height is above every recorded block: the node named it
+    /// (the vanished-payment check) before the scan got there, and no fork
+    /// detection covers a block not yet recorded.
     settlement_frozen: bool,
     /// Payments sharing an output key, none of them yet in a block (a
     /// proven one, under proof-of-work checking): which is credited isn't
@@ -726,8 +729,10 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
         && facts.tenant_lagging;
     // While a reorg on this network is being reconciled, confirmations may be
     // counted on the losing chain: an order can't newly settle until the
-    // rewind. Everything else (expiry, confirmation counts, walking a
-    // settlement back) still happens, and it shows where the payment stands.
+    // rewind. Likewise while a payment's block isn't recorded yet: replaced
+    // before the scan reaches it, nothing would notice its height is gone.
+    // Everything else (expiry, confirmation counts, walking a settlement
+    // back) still happens, and it shows where the payment stands.
     //
     // Likewise while confirmations above the ceiling are needed: a block
     // whose proof of work wasn't checked may be made up
@@ -2563,10 +2568,17 @@ impl Store {
             .ok_or(StoreError::NotFound)?;
         let (confirmations_required, network, lagging) = self.recompute_facts(&order.tenant_id)?;
         let conflicts = self.settle_output_key_conflicts(order_id, network, now)?;
-        let views: Vec<PaymentView> = self
+        let counted: Vec<_> = self
             .get_valid_payments(order_id)?
-            .iter()
+            .into_iter()
             .filter(|p| !conflicts.uncounted.contains(&p.id))
+            .collect();
+        let high_water = self.max_scanned_height(network)?;
+        let unscanned = counted.iter().any(
+            |p| matches!((p.block_height, high_water), (Some(h), Some(top)) if h as u64 > top),
+        );
+        let views: Vec<PaymentView> = counted
+            .iter()
             .map(|p| PaymentView {
                 amount_piconero: p.amount_piconero,
                 confirmations: match p.block_height {
@@ -2583,7 +2595,7 @@ impl Store {
                 .confirmations_required_override
                 .unwrap_or(confirmations_required),
             tenant_lagging: lagging,
-            settlement_frozen: self.settlement_frozen(network)?,
+            settlement_frozen: self.settlement_frozen(network)? || unscanned,
             conflicted: conflicts.unsettled,
             proven_views: self.proven_views(
                 network,
