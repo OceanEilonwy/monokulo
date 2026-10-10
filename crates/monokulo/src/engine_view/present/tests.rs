@@ -59,7 +59,7 @@ fn snapshot(tip: u64, high_water: u64, groups: &[(u64, u64)]) -> Event {
             },
         ],
         database: Database {
-            queued: [2, 0, 1],
+            queued: [2, 1],
             capacity: 64,
             completed: 1_234,
             max_queue_wait_us: 1_700,
@@ -545,9 +545,9 @@ fn an_open_reorg_draws_attention() {
     assert!(presented.side.reorg.alert);
 }
 
-/// The side's summaries for the pool, orders, upkeep, webhooks and saves.
+/// The side's summaries for the pool, orders, upkeep and saves.
 #[test]
-fn the_side_summarises_the_pool_orders_upkeep_webhooks_and_saves() {
+fn the_side_summarises_the_pool_orders_upkeep_and_saves() {
     let state = after([
         Event::Snapshot(Box::new(Snapshot {
             pool: shared::activity::Pool {
@@ -556,10 +556,6 @@ fn the_side_summarises_the_pool_orders_upkeep_webhooks_and_saves() {
                 txids: vec!["aaaaaaaa".into()],
             },
             orders_due: 2,
-            webhooks: shared::activity::Webhooks {
-                due: 1,
-                sent: [vec![0; 24], vec![1, 2, 0, 0, 0, 4]].concat(),
-            },
             ..Snapshot::default()
         })),
         Event::RoundStarted {
@@ -589,11 +585,6 @@ fn the_side_summarises_the_pool_orders_upkeep_webhooks_and_saves() {
     assert_eq!(side.orders.summary, "2 to recompute");
     assert_eq!(side.transitions, [("pending", "unconfirmed")]);
     assert_eq!(side.upkeep.summary, "ran in round 77");
-    assert_eq!(
-        side.webhooks.summary, "7 a minute, 2 due",
-        "the last six buckets; the recompute queued one"
-    );
-    assert_eq!(side.sent.len(), 30);
     assert_eq!(
         side.restart.summary,
         "2 saves a minute; 0 blocks only in memory"

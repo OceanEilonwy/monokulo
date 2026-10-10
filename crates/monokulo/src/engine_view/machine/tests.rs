@@ -154,12 +154,8 @@ fn a_snapshot_sets_what_the_page_draws() {
         },
         recomputes_pending: 2,
         orders_due: 4,
-        webhooks: shared::activity::Webhooks {
-            due: 1,
-            sent: vec![0, 3],
-        },
         database: Database {
-            queued: [1, 0, 0],
+            queued: [1, 0],
             capacity: 64,
             completed: 10,
             max_queue_wait_us: 5,
@@ -189,8 +185,6 @@ fn a_snapshot_sets_what_the_page_draws() {
     assert_eq!(state.pool.remembered, 9);
     assert_eq!(state.pool.txs[0].txid, "aaaaaaaa");
     assert_eq!((state.orders.pending, state.orders.due), (2, 4));
-    assert_eq!(state.webhooks.due, 1);
-    assert_eq!(state.webhooks.sent, [0, 3]);
     assert_eq!(state.database.completed, 10);
     assert_eq!(state.nodes[0].label, "node-a");
     assert_eq!(state.catching_up(), 2);
@@ -1111,9 +1105,9 @@ fn a_paying_pool_transaction_flies_to_order_status() {
 }
 
 /// Recomputes: what changed is listed newest first (three kept), each
-/// queues a webhook that flies (three at most), settling is a key event.
+/// writes an order event, settling is a key event.
 #[test]
-fn recomputes_list_their_changes_and_queue_webhooks() {
+fn recomputes_list_their_changes() {
     let mut feed = Feed::new().after([Event::Snapshot(Box::new(Snapshot {
         recomputes_pending: 5,
         ..Snapshot::default()
@@ -1132,10 +1126,9 @@ fn recomputes_list_their_changes_and_queue_webhooks() {
     });
     assert_eq!(
         text(&one),
-        "An order went from pending to unconfirmed; its webhook is queued."
+        "An order went from pending to unconfirmed; its order event is written."
     );
     assert!(!key(&one));
-    assert_eq!(feed.state.webhooks.due, 1);
 
     let many = feed.feed(Event::Recomputed {
         orders: 9,
@@ -1149,23 +1142,13 @@ fn recomputes_list_their_changes_and_queue_webhooks() {
     assert!(key(&many), "an order was paid");
     assert_eq!(
         text(&many),
-        "4 orders changed status (one from confirming to paid); their webhooks are queued."
+        "4 orders changed status (one from confirming to paid); their order events are written."
     );
-    let envelopes = many
-        .effects
-        .iter()
-        .filter(|e| {
-            matches!(
-                e,
-                Effect::Fly {
-                    token: Token::Envelope,
-                    from: _,
-                    to: _
-                }
-            )
-        })
-        .count();
-    assert_eq!(envelopes, MAX_TOKENS);
+    assert_eq!(
+        many.effects,
+        [Effect::Save { at: Anchor::Orders }],
+        "nothing flies from a recompute"
+    );
     assert_eq!(feed.state.orders.last.len(), LAST_TRANSITIONS);
     assert_eq!(
         feed.state.orders.last[0].to,
@@ -1173,7 +1156,6 @@ fn recomputes_list_their_changes_and_queue_webhooks() {
         "newest first"
     );
     assert_eq!(feed.state.orders.pending, 0, "never below none");
-    assert_eq!(feed.state.webhooks.due, 5);
 }
 
 #[test]
@@ -1481,7 +1463,7 @@ fn random_run(mut seed: u64, steps: usize) {
                 .filter(|e| matches!(
                     e,
                     Effect::Fly {
-                        token: Token::Payment | Token::Envelope,
+                        token: Token::Payment,
                         from: _,
                         to: _
                     }

@@ -61,7 +61,6 @@ pub struct State {
     pub orders: Orders,
     pub upkeep: Upkeep,
     pub database: Database,
-    pub webhooks: Webhooks,
     pub nodes: Vec<Node>,
     /// The last call made to the node, as far as the events tell.
     pub last_call: Option<Call>,
@@ -263,14 +262,6 @@ pub struct Upkeep {
     pub pruned: u64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
-pub struct Webhooks {
-    pub due: u64,
-    /// Deliveries in each 10 s of the five minutes before the last
-    /// snapshot, oldest first.
-    pub sent: Vec<u32>,
-}
-
 /// A call made to the node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -337,7 +328,6 @@ pub enum Anchor {
     Pool,
     Reorg,
     Orders,
-    Webhooks,
     Database,
     Upkeep,
 }
@@ -347,7 +337,6 @@ pub enum Anchor {
 #[serde(rename_all = "snake_case")]
 pub enum Token {
     Payment,
-    Envelope,
     Stores,
 }
 
@@ -880,10 +869,6 @@ impl State {
             .collect();
         self.orders.pending = snapshot.recomputes_pending;
         self.orders.due = snapshot.orders_due;
-        self.webhooks = Webhooks {
-            due: snapshot.webhooks.due,
-            sent: snapshot.webhooks.sent.clone(),
-        };
         self.database = snapshot.database;
         self.nodes.clone_from(&snapshot.nodes);
     }
@@ -1131,16 +1116,8 @@ impl State {
             self.orders.last.push_front(*transition);
         }
         self.orders.last.truncate(LAST_TRANSITIONS);
-        let queued = u64::try_from(transitions.len()).unwrap_or(u64::MAX);
-        self.webhooks.due = self.webhooks.due.saturating_add(queued);
+        let changed = u64::try_from(transitions.len()).unwrap_or(u64::MAX);
         self.save(out, Anchor::Orders, |saved| &mut saved.recomputes);
-        for _ in transitions.iter().take(MAX_TOKENS) {
-            out.effects.push(Effect::Fly {
-                from: Anchor::Orders,
-                to: Anchor::Webhooks,
-                token: Token::Envelope,
-            });
-        }
         let settled = transitions
             .iter()
             .any(|t| matches!(t.to, OrderStatus::Paid | OrderStatus::Overpaid));
@@ -1159,7 +1136,7 @@ impl State {
                 Tier::Settlement,
                 settled,
                 MarkKind::Recomputed {
-                    orders: queued,
+                    orders: changed,
                     from: first.from,
                     to: first.to,
                 },
