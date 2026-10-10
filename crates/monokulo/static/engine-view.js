@@ -333,6 +333,22 @@
     return Math.max(1, 1 + Math.floor((width - NEXT_PX) / CELL_PX));
   }
 
+  // The server's rule (views::engine::label_levels, checked against the
+  // same cases), for the labels as drawn here, where the strip's width
+  // decides where they go: in order, each on the lowest level where it is
+  // LABEL_GAP_PX clear of every label already there.
+  const LABEL_GAP_PX = 4;
+  function stackLabels(spans) {
+    const placed = [];
+    const levels = spans.map(([left, right]) => {
+      let level = placed.findIndex((on) => on.every(([l, r]) => r + LABEL_GAP_PX <= left || right + LABEL_GAP_PX <= l));
+      if (level < 0) { level = placed.length; placed.push([]); }
+      placed[level].push([left, right]);
+      return level;
+    });
+    return [levels, Math.max(1, placed.length)];
+  }
+
   function drawChain(chain) {
     const box = $("cells");
     if (!box) return;
@@ -413,6 +429,20 @@
       el.style.left = `${x(group.cursor)}px`;
     }
     for (const [id, el] of pillEls) if (!seen.has(id)) { el.remove(); pillEls.delete(id); }
+    // The labels as few levels high as they can go: each with its left and
+    // right edges where it is going (a pill glides there), measured.
+    const labels = [];
+    const tipEl = $("chain-marks").querySelector(".m-tip"), hwEl = $("chain-marks").querySelector(".m-hw");
+    const anchored = (el, at, fromLeft, off) => {
+      const width = el.offsetWidth;
+      labels.push({ el, span: fromLeft ? [at - off, at - off + width] : [at + off - width, at + off] });
+    };
+    if (tipEl) anchored(tipEl, x(tip), true, 10);
+    if (hwEl) anchored(hwEl, x(hw), false, 10);
+    for (const group of chain.groups) anchored(pillEls.get(String(group.id)), x(group.cursor), !group.frontier, 12);
+    const [levels, used] = stackLabels(labels.map((label) => label.span));
+    labels.forEach((label, i) => label.el.style.setProperty("--level", levels[i]));
+    $("strip").style.setProperty("--levels", used);
     $("cache-chip").textContent = chain.cache;
     // The network's nodes, and nothing else: the last call under the one in use.
     setHTML($("nodes"), chain.nodes.map((n) => `<div class="node"><div class="nm"><span class="label" title="${esc(n.label)}">${esc(n.label)}</span><span class="engine-chip ${n.tone}">${esc(n.chip)}</span></div>${n.active && chain.call ? `<div class="call">${esc(chain.call)}</div>` : ""}</div>`).join(""));
