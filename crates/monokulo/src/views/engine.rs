@@ -12,7 +12,7 @@ use super::{layout_with_head, reload_button, script, Load, PageChrome};
 use crate::engine_view::present::{
     Bar, ChainView, Lane, MarkView, Panel, Presented, RibbonMark, RoundView,
 };
-use crate::views::scaling::{thousands, MachineView, ScanningView, Tile, TileChart};
+use crate::views::scaling::{network_name, thousands, MachineView, ScanningView, Tile, TileChart};
 
 /// Blocks drawn without JavaScript: enough for the widest strip. Those
 /// that don't fit whole wrap out of sight; the script draws as many as fit.
@@ -84,7 +84,8 @@ const ENGINE_STYLE: &str = r#"
 .engine-chip.hi { background: var(--tint-highlight); border-color: var(--accent); }
 .engine-timeline { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--space-md); align-items: start; }
 .engine-timeline .tl-track { position: relative; display: grid; gap: 3px; }
-.tl-modes { display: inline-flex; gap: .5rem; align-self: start; margin-top: 2px; height: 28px; border: 1px solid var(--btn-border); border-radius: var(--radius-sm); overflow: hidden; }
+.engine-timeline .tl-read { align-self: center; }
+.tl-modes { display: inline-flex; gap: .5rem; align-self: center; height: 28px; border: 1px solid var(--btn-border); border-radius: var(--radius-sm); overflow: hidden; }
 .tl-modes label { position: relative; display: flex; align-items: center; padding: 0 12px; font-size: 0.8rem; font-weight: 700; cursor: pointer; color: var(--btn-ink); background: var(--btn-bg); }
 .tl-modes label + label { border-left: 1px solid var(--btn-border); }
 .tl-modes input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
@@ -156,7 +157,7 @@ const ENGINE_STYLE: &str = r#"
    whole goes to a second line, which is out of sight, so the strip never
    shows part of one. engine-view.js measures the strip and draws as many
    blocks as fit, again when it is resized. */
-.strip { position: relative; padding-inline: 14px 8px; padding-top: 26px; height: 128px; }
+.strip { --cells-top: 74px; position: relative; padding-inline: 14px 8px; padding-top: var(--cells-top); height: 120px; }
 .cells { display: flex; flex-direction: row-reverse; flex-wrap: wrap; align-content: flex-start; gap: 4px; align-items: flex-end; height: 28px; overflow: hidden; }
 .cell { position: relative; width: 22px; height: 26px; border-radius: 4px; border: 1.5px solid var(--viz-cell-edge); background: var(--viz-cell-recorded); overflow: hidden; flex: none; transition: background 0.3s, border-color 0.3s, opacity 0.3s; }
 .cell .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--viz-tier-blocks); opacity: 0.85; transition: width 0.2s linear; }
@@ -175,23 +176,26 @@ const ENGINE_STYLE: &str = r#"
 .cell .save { position: absolute; right: 1px; top: 1px; width: 7px; height: 7px; border-radius: 2px; background: var(--viz-saved); }
 @keyframes cell-enter { from { transform: translateX(60px); opacity: 0; } }
 .brk { width: 60px; height: 26px; flex: none; display: grid; place-items: center; font-size: 0.62rem; font-weight: 700; color: var(--muted); border-inline: 2px dotted var(--line-strong); text-align: center; line-height: 1.1; }
-.axis { position: absolute; left: 0; right: 0; top: 56px; height: 12px; font-size: 0.62rem; color: var(--muted); }
+.axis { position: absolute; left: 0; right: 0; top: calc(var(--cells-top) + 30px); height: 12px; font-size: 0.62rem; color: var(--muted); }
 .axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
-.marks span { position: absolute; top: 0; font-size: 0.62rem; font-weight: 800; white-space: nowrap; padding: 0 5px; border-radius: 4px; transition: left 0.5s; }
-.marks span::after { content: ""; position: absolute; top: 15px; height: 11px; border-left: 2px solid currentColor; }
+/* Above the blocks, top down: stores catching up, the frontier, then the
+   node's tip and the high-water mark, each with a tick down to its block;
+   the reorg window's line sits a --space-sm step above the blocks. */
+.marks span { position: absolute; top: 44px; height: 16px; line-height: 14px; font-size: 0.62rem; font-weight: 800; white-space: nowrap; padding: 0 5px; border-radius: 4px; transition: left 0.5s; }
+.marks span::after { content: ""; position: absolute; top: 100%; height: calc(var(--cells-top) - 60px); border-left: 2px solid currentColor; }
 .marks .m-tip { transform: translateX(-10px); background: var(--paper-raised); border: 1px solid var(--line-strong); }
 .marks .m-tip::after { left: 9px; }
 .marks .m-hw { transform: translateX(calc(-100% + 10px)); color: var(--accent-text); }
 .marks .m-hw::after { right: 9px; }
-.marks .m-win { top: 23px; height: 2px; padding: 0; background: var(--viz-tier-chain); }
+.marks .m-win { top: calc(var(--cells-top) - var(--space-sm) - 2px); height: 2px; padding: 0; background: var(--viz-tier-chain); }
 .marks .m-win::after { display: none; }
-.pills { position: absolute; left: 0; right: 0; top: 72px; height: 50px; }
-.pill { position: absolute; top: 0; transform: translateX(-12px); display: inline-flex; align-items: center; font-size: 0.68rem; font-weight: 800; padding: var(--pill-pad-y) var(--pill-pad-x); border-radius: 99px; border: 1.5px solid var(--line-strong); background: var(--paper-raised); white-space: nowrap; transition: left 0.45s cubic-bezier(0.4, 0, 0.2, 1); }
-.pill::before { content: ""; position: absolute; left: 10px; top: -8px; height: 7px; border-left: 2px solid currentColor; }
+.pills { position: absolute; left: 0; right: 0; top: 0; height: 40px; }
+.pill { position: absolute; top: 22px; height: 18px; transform: translateX(-12px); display: inline-flex; align-items: center; font-size: 0.68rem; font-weight: 800; padding: 0 var(--pill-pad-x); border-radius: 99px; border: 1.5px solid var(--line-strong); background: var(--paper-raised); white-space: nowrap; transition: left 0.45s cubic-bezier(0.4, 0, 0.2, 1); }
+.pill::before { content: ""; position: absolute; left: 10px; top: 100%; height: calc(var(--cells-top) - 40px); border-left: 2px solid currentColor; }
 .pill.frontier { transform: translateX(calc(-100% + 12px)); border-color: var(--accent); background: var(--tint-highlight); }
 .pill.frontier::before { left: auto; right: 10px; }
-.pill.catchup { top: 24px; }
-.pill.catchup::before { top: -32px; height: 31px; }
+.pill.catchup { top: 0; }
+.pill.catchup::before { height: calc(var(--cells-top) - 18px); }
 .pill.busy { animation: pill-busy 0.6s ease-in-out infinite alternate; }
 .pill.waiting { opacity: 0.55; }
 @keyframes pill-busy { to { box-shadow: 0 0 0 4px var(--tint-highlight); } }
@@ -205,27 +209,32 @@ const ENGINE_STYLE: &str = r#"
 @keyframes node-spark { 30% { box-shadow: 0 0 0 4px var(--tint-highlight); } }
 .round-head { flex-wrap: nowrap !important; }
 .round-head .round-state { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.lanes { display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; grid-auto-rows: 18px; gap: 2px 10px; align-items: center; }
+.lanes { --row: 24px; --row-gap: var(--space-xs); display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; grid-auto-rows: var(--row); gap: var(--row-gap) 10px; align-items: center; }
 .lane-label { font-size: 0.7rem; font-weight: 700; display: flex; justify-content: space-between; }
 .lane-label small { color: var(--muted); font-weight: 600; }
-.track { position: relative; height: 15px; background: var(--surface-sunken); border-radius: 3px; overflow: hidden; }
-.bar { position: absolute; top: 2px; bottom: 2px; min-width: 3px; border-radius: 2px; background: var(--tier); transition: left 0.3s, width 0.3s; }
-.bar.work { background: color-mix(in srgb, var(--tier) 30%, var(--paper-raised)); box-shadow: inset 0 0 0 1.5px var(--tier); }
-.lane-time { position: absolute; top: 0; line-height: 15px; margin-left: 5px; font-size: 0.62rem; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--ink); z-index: 1; }
+.track { position: relative; height: 20px; background: var(--surface-sunken); border-radius: 3px; overflow: hidden; }
+.track-in { position: absolute; top: 0; bottom: 0; left: var(--space-sm); right: var(--space-sm); }
+.bar { position: absolute; top: calc(1.5px + var(--space-xs)); bottom: calc(1.5px + var(--space-xs)); min-width: 3px; border-radius: 2px; background: var(--tier); transition: left 0.3s, width 0.3s; }
+.bar.work { background: linear-gradient(to right, var(--tier) var(--solid, 0%), color-mix(in srgb, var(--tier) 30%, var(--paper-raised)) var(--solid, 0%)); box-shadow: inset 0 0 0 1.5px var(--tier); }
+.lane-time { position: absolute; top: 0; line-height: 20px; margin-left: 5px; font-size: 0.62rem; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--ink); z-index: 1; }
 .lane-time.before { margin-left: -5px; transform: translateX(-100%); }
 .round-paused { flex: none; text-decoration: none; color: var(--ink); background: var(--tint-warning); border-color: var(--warning); cursor: pointer; }
 .round-paused:hover { border-color: var(--ink); }
 .rbar { cursor: pointer; }
 .rbar:hover, .rbar.pinned { outline: 2px solid var(--ink); outline-offset: 1px; }
 .bar.p2 { background: repeating-linear-gradient(135deg, var(--tier) 0 4px, color-mix(in srgb, var(--tier) 40%, var(--paper-raised)) 4px 7px); }
-.share { position: absolute; top: 0; bottom: 0; border: 1.5px dashed var(--line-strong); border-radius: 3px; transition: left 0.3s, width 0.3s; }
-.bar.last::after { content: ""; position: absolute; right: -1px; top: -2px; bottom: -2px; width: 1px; background: var(--ink); }
+.share { position: absolute; top: 0; bottom: 0; box-sizing: content-box; margin-left: calc(-1.5px - var(--space-xs)); padding-inline: var(--space-xs); border: 1.5px dashed var(--line-strong); border-radius: 3px; transition: left 0.3s, width 0.3s; }
 /* The outcome chip sits on its lane's own row, flush with the card's
    right edge, at every width. */
-.outcome { font-size: 0.7rem; height: 18px; display: flex; align-items: center; justify-content: flex-end; overflow: hidden; white-space: nowrap; min-width: 0; max-width: 18rem; }
-.outcome .engine-chip { line-height: 14px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-.ruler { position: relative; height: 18px; }
-.ruler-label { position: absolute; top: 3px; transform: translateX(-50%); font: 700 0.62rem/14px var(--font-mono); background: var(--ink); color: var(--paper-raised); padding: 0 5px; border-radius: 3px; white-space: nowrap; transition: left 0.3s; }
+.outcome { font-size: 0.7rem; height: var(--row); display: flex; align-items: center; justify-content: flex-end; overflow: hidden; white-space: nowrap; min-width: 0; max-width: 18rem; }
+.outcome .engine-chip { line-height: 16px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.ruler { position: relative; height: var(--row); }
+.ruler-in { position: absolute; top: 0; bottom: 0; left: var(--space-sm); right: var(--space-sm); }
+.ruler-label { position: absolute; top: var(--space-xs); transform: translateX(-50%); font: 700 0.62rem/14px var(--font-mono); background: var(--ink); color: var(--paper-raised); padding: 0 5px; border-radius: 3px; white-space: nowrap; transition: left 0.3s; }
+/* The round's end: a line from the right edge of the segment that finished
+   last (`--up` lanes above) down to the round's total. */
+.ruler-label::before { content: ""; position: absolute; left: 50%; margin-left: -1px; bottom: 100%; width: 2px; height: calc(var(--up, 0) * (var(--row) + var(--row-gap)) + var(--space-xs) - 2px); background: var(--ink); }
+.round-breakdown { margin-top: var(--space-lg); }
 .ribbon-row { display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 6px; }
 .ribbon { display: flex; justify-content: flex-end; align-items: flex-end; height: 30px; overflow: hidden; border-bottom: 1px solid var(--line); }
 .rbar { width: 8px; display: flex; flex-direction: column-reverse; flex: none; border-radius: 2px 2px 0 0; overflow: hidden; }
@@ -350,7 +359,7 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
                         select id="engine-network" name="network" {
                             @for network in NETWORKS {
                                 @let configured = page.networks.iter().any(|n| n == network);
-                                @let choice = Choice::new(network, capitalized(network)).selected(*network == page.network).disabled(!configured);
+                                @let choice = Choice::new(network, network_name(network)).selected(*network == page.network).disabled(!configured);
                                 (if configured { choice } else { choice.note("no node configured") })
                             }
                         }
@@ -380,15 +389,6 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
         }
     };
     layout_with_head(chrome, "Engine - Monokulo", head, body)
-}
-
-/// `mainnet` as `Mainnet`, for the picker.
-fn capitalized(network: &str) -> String {
-    let mut chars = network.chars();
-    chars
-        .next()
-        .map(|first| first.to_uppercase().chain(chars).collect())
-        .unwrap_or_default()
 }
 
 /// The "Machine and links" strip: small multiples of the machine's CPU and
@@ -537,6 +537,8 @@ fn chain(chain: &ChainView) -> Markup {
             .iter()
             .find(|(h, _)| *h == height)
             .or_else(|| centres.iter().rev().find(|(h, _)| *h < height))
+            // Older than every block drawn: at the oldest, the left edge.
+            .or_else(|| centres.first())
             .map_or(0, |(_, x)| *x)
     };
     let left = |x: u64| format!("left:calc(100% - {x}px)");
@@ -591,10 +593,14 @@ fn chain(chain: &ChainView) -> Markup {
                     }
                 }
                 div class="nodes" id="nodes" {
+                    // The network's nodes, and nothing else: the last call
+                    // to the node in use under its name.
                     @for node in &chain.nodes {
-                        div class="node" { div class="nm" { span class="label" title=(node.label) { (node.label) } span class=(format!("engine-chip {}", node.tone)) { (node.chip) } } }
+                        div class="node" {
+                            div class="nm" { span class="label" title=(node.label) { (node.label) } span class=(format!("engine-chip {}", node.tone)) { (node.chip) } }
+                            @if let (true, Some(call)) = (node.active, &chain.call) { div class="call" { (call) } }
+                        }
                     }
-                    div class="node" id="node-call" { div class="call" { (chain.call) } }
                 }
             }
         }
@@ -717,7 +723,7 @@ fn help() -> Markup {
                     dt { small { "40 %" } }
                     dd { "The tier's share of the round's budget." }
                     dt { span class="bar" style="position:static;display:block;width:18px;height:10px;background:var(--viz-tier-blocks)" {} }
-                    dd { "A unit of work. Striped " span class="bar p2 t-blocks" style="position:static;display:inline-block;width:18px;height:10px" {} " ran on time left over (pass 2); pale with an edge " span class="bar work t-chain" style="position:static;display:inline-block;width:18px;height:10px" {} " is work for the tier outside its units, such as the tip request. Hover over a bar for what it was. While stores catch up or a reorganisation is open, a dashed box shows the tier's reserved share." }
+                    dd { "A unit of work. Striped " span class="bar p2 t-blocks" style="position:static;display:inline-block;width:18px;height:10px" {} " ran on time left over (pass 2); pale with an edge " span class="bar work t-chain" style="position:static;display:inline-block;width:18px;height:10px" {} " is work for the tier outside its units, such as the tip request. A unit followed by such work is one shape, " span class="bar work t-blocks" style="position:static;display:inline-block;width:18px;height:10px;--solid:60%" {} ": solid for the unit, outlined on to the work's end. Hover over a bar for what it was. While stores catch up or a reorganisation is open, a dashed box shows the tier's reserved share." }
                     dt { span class="ruler-label" style="position:static;transform:none" { "s" } }
                     dd { "Each segment's time is written after it. The thin marker is on the right edge of the segment that finished last, and the label under it is the round's time: the sum of the segments'." }
                     dt { span class="engine-chip ok" style="font-size:0.6rem" { "Idle" } }
@@ -779,7 +785,7 @@ fn round(view: &Presented, pinned: Option<&RoundView>, network: &str) -> Markup 
                             (lane_row(lane, round.scale_ms))
                         }
                         div {}
-                        div class="ruler" { span class="ruler-label" style=(left_pct(round.elapsed_ms, round.scale_ms)) { (round.elapsed) } }
+                        div class="ruler" { div class="ruler-in" { (end_marker(round)) } }
                         div {}
                     }
                     details class="round-breakdown" {
@@ -831,16 +837,18 @@ fn lane_row(lane: &Lane, scale_ms: u64) -> Markup {
     html! {
         div class="lane-label" { span class=(format!("tierchip t-{tier}")) { (lane.name) } small { (lane.share) } }
         div class=(format!("track t-{tier}")) {
-            @if let Some((start, ms)) = lane.reserved {
-                div class="share" style=(span_style(start, ms, scale_ms)) {}
-            }
-            @for bar in &lane.bars {
-                (bar_div(bar, scale_ms))
-                @if let Some(label) = &bar.label {
-                    // After the bar as drawn: a short one is drawn wider than its time.
-                    @let end = pct(bar.start_ms, scale_ms) + pct(bar.ms, scale_ms).max(0.5);
-                    span class=(if end > 88.0 { "lane-time before" } else { "lane-time" })
-                        style=(format!("left:{:.2}%", end.min(99.5))) { (label) }
+            div class="track-in" {
+                @if let Some((start, ms)) = lane.reserved {
+                    div class="share" style=(span_style(start, ms, scale_ms)) {}
+                }
+                @for bar in &lane.bars {
+                    (bar_div(bar, scale_ms))
+                    @if let Some(label) = &bar.label {
+                        // After the bar as drawn: a short one is drawn wider than its time.
+                        @let end = bar_end(bar, scale_ms);
+                        span class=(if end > 88.0 { "lane-time before" } else { "lane-time" })
+                            style=(format!("left:{:.2}%", end.min(99.5))) { (label) }
+                    }
                 }
             }
         }
@@ -852,19 +860,55 @@ fn lane_row(lane: &Lane, scale_ms: u64) -> Markup {
     }
 }
 
-fn bar_div(bar: &Bar, scale_ms: u64) -> Markup {
+/// Where `bar` ends as drawn, in percent of the lane: a short one is drawn
+/// wider than its time.
+fn bar_end(bar: &Bar, scale_ms: u64) -> f64 {
+    pct(bar.start_ms, scale_ms) + pct(bar.span_ms, scale_ms).max(0.5)
+}
+
+/// The round's total under the right edge of the segment that finished
+/// last, a line running up to it.
+fn end_marker(round: &RoundView) -> Markup {
+    let last = round.lanes.iter().enumerate().find_map(|(at, lane)| {
+        lane.bars
+            .iter()
+            .find(|bar| bar.last)
+            .map(|bar| (round.lanes.len() - at, bar_end(bar, round.scale_ms)))
+    });
+    let (up, left) = last.unwrap_or((0, pct(round.elapsed_ms, round.scale_ms)));
     html! {
-        div class=(format!("{}{}", match (bar.work, bar.leftover) { (true, _) => "bar work", (false, true) => "bar p2", (false, false) => "bar" }, if bar.last { " last" } else { "" }))
-            style=(span_style(bar.start_ms, bar.ms, scale_ms)) title=(bar.title) {}
+        span class="ruler-label" style=(format!("left:{:.2}%;--up:{up}", left.min(99.5))) { (round.elapsed) }
+    }
+}
+
+/// A segment: solid for its units, outlined for the tier's work outside
+/// them, one shape when it has both (the solid part from the left).
+fn bar_div(bar: &Bar, scale_ms: u64) -> Markup {
+    let solid = if bar.span_ms == 0 {
+        100.0
+    } else {
+        bar.solid_ms as f64 / bar.span_ms as f64 * 100.0
+    };
+    let class = match (solid >= 100.0, bar.leftover) {
+        (true, true) => "bar p2",
+        (true, false) => "bar",
+        (false, _) => "bar work",
+    };
+    let style = if solid >= 100.0 {
+        span_style(bar.start_ms, bar.span_ms, scale_ms)
+    } else {
+        format!(
+            "{};--solid:{solid:.1}%",
+            span_style(bar.start_ms, bar.span_ms, scale_ms)
+        )
+    };
+    html! {
+        div class=(class) data-solid=(format!("{solid:.1}")) style=(style) title=(bar.title) {}
     }
 }
 
 fn pct(ms: u64, scale_ms: u64) -> f64 {
     (ms as f64 / scale_ms.max(1) as f64 * 100.0).min(100.0)
-}
-
-fn left_pct(ms: u64, scale_ms: u64) -> String {
-    format!("left:{:.2}%", pct(ms, scale_ms).min(99.5))
 }
 
 fn span_style(start: u64, ms: u64, scale_ms: u64) -> String {
@@ -1047,10 +1091,11 @@ mod tests {
             cache: String::new(),
             nodes: vec![NodeView {
                 label: "node-a".into(),
+                active: true,
                 chip: "active",
                 tone: "ok",
             }],
-            call: String::new(),
+            call: None,
         }
     }
 
@@ -1083,5 +1128,38 @@ mod tests {
             40
         )
         .is_empty());
+    }
+
+    /// A segment is one shape: solid for its units, outlined for the
+    /// tier's work after them, the solid part from the left.
+    #[test]
+    fn a_segment_is_one_shape_solid_then_outlined() {
+        let bar = |ms: u64, span_ms: u64, solid_ms: u64| Bar {
+            start_ms: 100,
+            ms,
+            span_ms,
+            solid_ms,
+            leftover: false,
+            work: solid_ms == 0,
+            title: String::new(),
+            details: Vec::new(),
+            label: None,
+            last: false,
+        };
+        let both = bar_div(&bar(42, 43, 40), 1_000).into_string();
+        assert!(
+            both.contains(r#"class="bar work" data-solid="93.0" style="left:10.00%;width:4.30%;--solid:93.0%""#),
+            "{both}"
+        );
+        let solid = bar_div(&bar(40, 40, 40), 1_000).into_string();
+        assert!(
+            solid.contains(r#"class="bar" data-solid="100.0" style="left:10.00%;width:4.00%""#),
+            "{solid}"
+        );
+        let outlined = bar_div(&bar(2, 2, 0), 1_000).into_string();
+        assert!(
+            outlined.contains(r#"class="bar work" data-solid="0.0""#),
+            "{outlined}"
+        );
     }
 }

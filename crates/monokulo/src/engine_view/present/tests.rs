@@ -93,7 +93,7 @@ fn an_empty_state_reads_as_not_yet_known() {
     assert_eq!(figure(&presented, "Last round").0, "–");
     assert_eq!(figure(&presented, "Chain").0, "–");
     assert_eq!(presented.round, None);
-    assert_eq!(presented.chain.call, "–");
+    assert_eq!(presented.chain.call, None, "no call seen yet");
     assert_eq!(presented.side.reorg.summary, "No reorganisation");
 }
 
@@ -135,7 +135,7 @@ fn a_caught_up_network_reads_as_caught_up() {
         "41 stores whose scan has reached block 3,412,880"
     );
     assert_eq!(chain.cache, "cache 3.2 MB of 64.0 MB");
-    assert_eq!(chain.call, "on_get_block_hash 3,412,880");
+    assert_eq!(chain.call.as_deref(), Some("on_get_block_hash 3,412,880"));
     assert_eq!(
         chain
             .nodes
@@ -279,8 +279,9 @@ fn a_round_s_lanes_are_drawn_to_scale() {
 /// are one segment (Chain's tip request and its unit); spans that took no
 /// time are left out where the lane has one that took some; each segment
 /// is labelled with its time, unless the lane's next one is too close,
-/// which then carries both. The end marker is on the segment that
-/// finished last.
+/// which then carries both. A unit and the tier's work outside units
+/// after it are one shape, solid then outlined. The end marker is on the
+/// segment that finished last.
 #[test]
 fn a_round_s_parts_add_up_to_it() {
     let unit = |tier, start_ms, ms| Event::Unit {
@@ -346,8 +347,22 @@ fn a_round_s_parts_add_up_to_it() {
     assert!(!round.lanes[0].bars[0].work, "not only the tip request");
     assert_eq!(
         drawn(1),
-        [(423, 40, None, false), (464, 2, Some("42ms"), true)],
-        "the cache carry is too close to share a label; it finished last"
+        [(423, 42, Some("42ms"), true)],
+        "the unit and the cache carry after it are one shape; it finished last"
+    );
+    let blocks = &round.lanes[1].bars[0];
+    assert_eq!(
+        (blocks.span_ms, blocks.solid_ms, blocks.work),
+        (43, 40, false),
+        "outlined from the unit's start to the carry's end, solid for the unit"
+    );
+    assert_eq!(
+        (
+            round.lanes[0].bars[0].span_ms,
+            round.lanes[0].bars[0].solid_ms
+        ),
+        (423, 423),
+        "solid all through"
     );
     assert_eq!(
         drawn(2),

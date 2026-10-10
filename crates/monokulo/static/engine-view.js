@@ -381,11 +381,13 @@
     const x = (h) => {
       const el = cellEls.get(String(h));
       if (el && el.isConnected) return el.offsetLeft + el.offsetWidth / 2;
+      // Older than every block drawn: at the oldest, the left edge.
+      const first = blocks.find((b) => b !== null);
+      const oldest = cellEls.get(String(first));
+      if (first !== undefined && h < first && oldest && oldest.isConnected) return oldest.offsetLeft + oldest.offsetWidth / 2;
+      // In the cut.
       const cut = cellEls.get("brk");
       if (cut && cut.isConnected) return cut.offsetLeft + cut.offsetWidth / 2;
-      // Older than the strip shows (a narrow strip has no cut): at its
-      // oldest block, the left edge.
-      const oldest = cellEls.get(String(blocks.find((b) => b !== null)));
       return oldest && oldest.isConnected ? oldest.offsetLeft + oldest.offsetWidth / 2 : 0;
     };
     const tip = chain.tip ?? 0, hw = chain.high_water ?? 0;
@@ -412,11 +414,12 @@
     }
     for (const [id, el] of pillEls) if (!seen.has(id)) { el.remove(); pillEls.delete(id); }
     $("cache-chip").textContent = chain.cache;
-    $("nodes").innerHTML = chain.nodes.map((n) => `<div class="node"><div class="nm"><span class="label" title="${esc(n.label)}">${esc(n.label)}</span><span class="engine-chip ${n.tone}">${esc(n.chip)}</span></div></div>`).join("") +
-      `<div class="node" id="node-call"><div class="call">${esc(chain.call)}</div></div>`;
+    // The network's nodes, and nothing else: the last call under the one in use.
+    setHTML($("nodes"), chain.nodes.map((n) => `<div class="node"><div class="nm"><span class="label" title="${esc(n.label)}">${esc(n.label)}</span><span class="engine-chip ${n.tone}">${esc(n.chip)}</span></div>${n.active && chain.call ? `<div class="call">${esc(chain.call)}</div>` : ""}</div>`).join(""));
   }
 
   const pct = (ms, scale) => Math.min(100, (ms / Math.max(1, scale)) * 100);
+  const barEnd = (bar, scale) => pct(bar.start_ms, scale) + Math.max(0.5, pct(bar.span_ms, scale));
 
   // A past round chosen from the recent rounds, shown in place of the live
   // one until its "× Paused" chip is pressed.
@@ -437,21 +440,29 @@
       const chip = pinned ? `<a class="engine-chip round-paused" id="round-resume" href="${live}" title="Showing a past round: back to the live one">× Paused</a>` : "";
       html += `<header class="round-head"><h2 id="h-round" title="Scanner round for this network since the engine started; resets on engine restart">${esc(round.title)}</h2>${chip}<span class="engine-hint round-state">${esc(round.state)}</span></header><div class="lanes">`;
       for (const lane of round.lanes) {
-        html += `<div class="lane-label"><span class="tierchip t-${lane.tier}">${esc(lane.name)}</span><small>${esc(lane.share)}</small></div><div class="track t-${lane.tier}">`;
+        html += `<div class="lane-label"><span class="tierchip t-${lane.tier}">${esc(lane.name)}</span><small>${esc(lane.share)}</small></div><div class="track t-${lane.tier}"><div class="track-in">`;
         if (lane.reserved) html += `<div class="share" style="left:${pct(lane.reserved[0], round.scale_ms)}%;width:${pct(lane.reserved[1], round.scale_ms)}%"></div>`;
         for (const bar of lane.bars) {
-          html += `<div class="bar${bar.work ? " work" : bar.leftover ? " p2" : ""}${bar.last ? " last" : ""}" title="${esc(bar.title)}" style="left:${pct(bar.start_ms, round.scale_ms)}%;width:${Math.max(0.5, pct(bar.ms, round.scale_ms))}%"></div>`;
+          // One shape: solid for the tier's units, outlined on for its
+          // work outside them.
+          const solid = bar.span_ms ? Math.min(100, (bar.solid_ms / bar.span_ms) * 100) : 100;
+          const kind = solid >= 100 ? (bar.leftover ? "bar p2" : "bar") : "bar work";
+          html += `<div class="${kind}" data-solid="${solid.toFixed(1)}" title="${esc(bar.title)}" style="left:${pct(bar.start_ms, round.scale_ms).toFixed(2)}%;width:${Math.max(0.5, pct(bar.span_ms, round.scale_ms)).toFixed(2)}%${solid < 100 ? `;--solid:${solid.toFixed(1)}%` : ""}"></div>`;
           if (bar.label) {
             // After the bar as drawn: a short one is drawn wider than its time.
-            const end = pct(bar.start_ms, round.scale_ms) + Math.max(0.5, pct(bar.ms, round.scale_ms));
+            const end = barEnd(bar, round.scale_ms);
             html += `<span class="lane-time${end > 88 ? " before" : ""}" style="left:${Math.min(99.5, end).toFixed(2)}%">${esc(bar.label)}</span>`;
           }
         }
-        html += `</div><div class="outcome">`;
+        html += `</div></div><div class="outcome">`;
         if (lane.outcome) html += `<span class="engine-chip ${lane.outcome.tone}" title="${esc(lane.outcome.text)}">${esc(lane.outcome.text)}</span>`;
         html += "</div>";
       }
-      html += `<div></div><div class="ruler"><span class="ruler-label" style="left:${Math.min(99.5, pct(round.elapsed_ms, round.scale_ms))}%">${esc(round.elapsed)}</span></div><div></div></div>`;
+      // The round's total under the right edge of the segment that finished
+      // last, a line running up to it.
+      let up = 0, at = pct(round.elapsed_ms, round.scale_ms);
+      round.lanes.forEach((lane, i) => { const bar = lane.bars.find((b) => b.last); if (bar) { up = round.lanes.length - i; at = barEnd(bar, round.scale_ms); } });
+      html += `<div></div><div class="ruler"><div class="ruler-in"><span class="ruler-label" style="left:${Math.min(99.5, at).toFixed(2)}%;--up:${up}">${esc(round.elapsed)}</span></div></div><div></div></div>`;
       html += `<details class="round-breakdown"${detailsOpen ? " open" : ""}><summary>Timing details · ${esc(round.title)} (snapshot)</summary>${round.lanes.flatMap(lane => lane.bars.map(bar => `<p><strong>${esc(bar.title)}</strong></p><ul>${(bar.details || []).map(detail => `<li>${esc(detail)}</li>`).join("")}</ul>`)).join("")}</details>`;
     } else {
       html += '<header><h2 id="h-round" title="Scanner round for this network since the engine started; resets on engine restart">Round</h2><span class="engine-hint">No round recorded yet.</span></header>';
@@ -574,7 +585,7 @@
   function anchor(a) {
     if (!a) return null;
     switch (a.kind) {
-      case "node": return document.querySelector("#nodes .node");
+      case "node": return document.querySelector("#nodes .node:has(.engine-chip.ok)") || document.querySelector("#nodes .node");
       case "cell": return cellEls.get(String(a.id)) || cellEls.get("brk");
       case "group": return pillEls.get(String(a.id));
       case "pool": return $("pool-dots");
