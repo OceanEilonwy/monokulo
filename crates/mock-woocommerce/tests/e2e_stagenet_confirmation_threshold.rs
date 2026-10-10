@@ -323,21 +323,22 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     println!("connected: connection_id={connection_id} public_key={public_key}");
 
     // The real point of this test: one real custom confirmation threshold,
-    // added through the real dashboard form (`http::orders::create_confirmation_threshold`),
-    // scoped to this exact store. `client` is a plain `reqwest::Client::new()`,
-    // which follows redirects by default - so a real success here lands as a
-    // 200 on the store detail page the handler's own 302 points at, not the
-    // 302 itself; checking the landing page actually shows the new row is a
-    // stronger proof of success than a raw status code would be anyway.
+    // added through the store settings form (`http::store_settings::save`),
+    // which saves only the fields it is sent, scoped to this exact store.
+    // `client` is a plain `reqwest::Client::new()`, which follows redirects
+    // by default - so a real success here lands as a 200 on the settings
+    // page the save's own 303 points at, not the 303 itself; checking the
+    // landing page actually shows the new row is a stronger proof of
+    // success than a raw status code would be anyway.
     let threshold_response = client
         .post(format!(
-            "{monokulo_base_url}/dashboard/stores/{connection_id}/settings/confirmation-thresholds"
+            "{monokulo_base_url}/dashboard/stores/{connection_id}/settings"
         ))
         .header("authorization", &bearer)
         .form(&[
-            ("unit_amount", THRESHOLD_UNIT_AMOUNT),
+            ("new_unit_amount", THRESHOLD_UNIT_AMOUNT),
             (
-                "confirmations_required",
+                "new_confirmations_required",
                 &THRESHOLD_CONFIRMATIONS_REQUIRED.to_string(),
             ),
         ])
@@ -351,8 +352,10 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     );
     let threshold_html = threshold_response.text().await.unwrap();
     assert!(
-        threshold_html.contains(&format!("<td>{THRESHOLD_UNIT_AMOUNT}</td>"))
-            && threshold_html.contains(&format!("<td>{THRESHOLD_CONFIRMATIONS_REQUIRED}</td>")),
+        threshold_html.contains(&format!(">{THRESHOLD_UNIT_AMOUNT}</td>"))
+            && threshold_html.contains(&format!(
+                r#"data-label="Confirmations required">{THRESHOLD_CONFIRMATIONS_REQUIRED}</td>"#
+            )),
         "expected the real new threshold row on the landing page, got: {threshold_html}"
     );
     println!("created a real confirmation threshold: {THRESHOLD_UNIT_AMOUNT} XMR -> {THRESHOLD_CONFIRMATIONS_REQUIRED} confirmations");
