@@ -354,7 +354,9 @@ details.mini.alert { border-color: var(--error); }
   .lane-label .tierchip { font-size: 0.65rem; }
   .lane-label small { display: none; }
   .engine-timeline { flex-wrap: wrap; }
-  .engine-timeline .tl-track { flex-basis: 100%; }
+  /* The bar the row's width, less room at its end for the window's right
+     handle, which sits 16px outside the window. */
+  .engine-timeline .tl-track { flex-basis: 100%; margin-right: var(--space-lg); }
   .help-body { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) {

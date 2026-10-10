@@ -626,11 +626,13 @@ test('the timeline scrub bar reaches the playback control', async ({ page, conte
       expect(m.modes.left - m.handle.right, `${mode} ${width}px: the handle clear of the control`).toBeGreaterThanOrEqual(xs);
     }
   }
-  // A phone: the bar takes the card's whole width, the control under it.
+  // A phone: the bar takes the card's width, less room for the right
+  // handle inside the card, the control under it.
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(300);
   const m = await measure();
-  expect(Math.abs(m.bar.right - m.inner)).toBeLessThanOrEqual(1);
+  expect(Math.abs(m.bar.right - (m.inner - await space(page, 'lg')))).toBeLessThanOrEqual(1);
+  expect(m.handle.right).toBeLessThanOrEqual(m.inner + 0.5);
   expect(Math.abs(m.bar.left - m.innerLeft)).toBeLessThanOrEqual(1);
   expect(m.modes.top).toBeGreaterThan(m.bar.bottom);
 });
