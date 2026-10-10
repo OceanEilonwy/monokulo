@@ -916,7 +916,7 @@ fn round(view: &Presented, pinned: Option<&RoundView>, network: &str) -> Markup 
                         div {}
                     }
                     details class="round-breakdown" {
-                        summary { "Timing details · " (round.title) " (snapshot)" }
+                        summary { "Timing details" }
                         @for lane in &round.lanes {
                             @for bar in &lane.bars {
                                 p { strong { (bar.title) } }

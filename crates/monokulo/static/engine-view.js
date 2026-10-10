@@ -499,7 +499,7 @@
       const lastBar = round.lanes.flatMap((lane) => lane.bars).find((b) => b.last);
       const at = lastBar ? barEnd(lastBar, round.scale_ms) : pct(round.elapsed_ms, round.scale_ms);
       html += `<div></div><div class="ruler"><div class="ruler-in"><span class="ruler-label" style="left:${Math.min(99.5, at).toFixed(2)}%">${esc(round.elapsed)}</span></div></div><div></div></div>`;
-      html += `<details class="round-breakdown"${detailsOpen ? " open" : ""}><summary>Timing details · ${esc(round.title)} (snapshot)</summary>${round.lanes.flatMap(lane => lane.bars.map(bar => `<p><strong>${esc(bar.title)}</strong></p><ul>${(bar.details || []).map(detail => `<li>${esc(detail)}</li>`).join("")}</ul>`)).join("")}</details>`;
+      html += `<details class="round-breakdown"${detailsOpen ? " open" : ""}><summary>Timing details</summary>${round.lanes.flatMap(lane => lane.bars.map(bar => `<p><strong>${esc(bar.title)}</strong></p><ul>${(bar.details || []).map(detail => `<li>${esc(detail)}</li>`).join("")}</ul>`)).join("")}</details>`;
     } else {
       html += '<header><h2 id="h-round" title="Scanner round for this network since the engine started; resets on engine restart">Round</h2><span class="engine-hint">No round recorded yet.</span></header>';
     }
