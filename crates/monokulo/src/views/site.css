@@ -1281,8 +1281,9 @@ mk-select[compact] .mk-popup { white-space: nowrap; }
 .del-table { font-size: 0.9em; }
 .del-table td, .del-table th { white-space: nowrap; }
 .row-acts { text-align: right; }
-.row-acts .inline-form { margin-left: var(--space-sm); }
-.row-acts > * { vertical-align: middle; }
+/* Fixed slots: Details, then the Send again icon or an empty slot. */
+.act-slots { display: grid; grid-template-columns: max-content 1.75rem; gap: var(--space-sm); align-items: center; justify-content: end; }
+.act-slot { width: 1.75rem; }
 /* "Send again" as an icon: a 28px target, the row's own height. */
 .row-acts button.icon-only { width: 1.75rem; height: 1.75rem; }
 .wh-deliveries { margin-top: var(--space-xs); }
@@ -1297,5 +1298,6 @@ mk-select[compact] .mk-popup { white-space: nowrap; }
   /* A delivery on a phone is a compact two-column card, not a tall list. */
   table.del-table tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 var(--space-md); }
   table.del-table td.row-acts { grid-column: 1 / -1; text-align: left; }
+  table.del-table .act-slots { justify-content: start; }
   .del-table td, .del-table th { white-space: normal; }
 }

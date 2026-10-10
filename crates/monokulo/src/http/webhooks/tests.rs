@@ -451,9 +451,26 @@ async fn the_card_shows_each_webhooks_health_and_its_deliveries() {
             "{id}"
         );
     }
+    // Delete: the red danger button, its dialog's confirm red too.
     assert!(html.contains(&format!(
-        r#"href="{base}/delete" data-opens-dialog="{webhook}-delete-dialog""#
+        r#"<a class="btn btn-sm btn-danger" href="{base}/delete" data-opens-dialog="{webhook}-delete-dialog">Delete</a>"#
     )));
+    assert!(html.contains(r#"<button type="submit" class="btn-danger">Delete webhook</button>"#));
+    // Every row's actions in the same two slots: Details, then Send
+    // again or an empty slot.
+    assert_eq!(
+        html.matches(r#"<div class="act-slots">"#).count(),
+        3,
+        "{html}"
+    );
+    assert_eq!(
+        html.matches(r#"<span class="act-slot" aria-hidden="true"></span>"#)
+            .count(),
+        2
+    );
+    // The add form: the settings pattern (name, help, control).
+    assert!(html.contains(r#"<mk-setting class="setting-field"><div class="setting-label-row"><label class="setting-label" for="webhook-url">URL</label>"#), "{html}");
+    assert!(html.contains(r#"<p class="field-help" id="webhook-url-help">"#));
     assert!(
         !html.contains("never-shown"),
         "a header's value is never shown"
