@@ -12,6 +12,8 @@
 //! none of those has its keys registered) is recorded from its header alone:
 //! its id, its parent's and its time, about a kilobyte, with no transactions
 //! fetched. The stores that were left behind catch up on whole blocks later.
+//! A block a payment claims (the node named it before it was recorded) is
+//! always recorded whole, so the commit can check the payment is in it.
 //!
 //! A block's results stay in memory ([`BlockScan`]) until the whole block
 //! is scanned, then commit in one transaction with the cursor moves, and
@@ -1118,8 +1120,17 @@ async fn scan_block(
     }
 
     // A new block with nobody to scan it for is recorded from its header:
-    // its transactions would be fetched and then read by no one.
-    let header_only = group == Group::Frontier && frontier && scannable.is_empty();
+    // its transactions would be fetched and then read by no one. Unless a
+    // payment claims its height (the vanished-payment check took the node's
+    // word for it): that block is fetched whole, so the commit sees whether
+    // it holds the payment.
+    let header_only = group == Group::Frontier
+        && frontier
+        && scannable.is_empty()
+        && round
+            .db(move |s, network| s.payments_at_height(network, height))
+            .await?
+            .is_empty();
     if group == Group::Frontier {
         round.blocks.frontier_header_only = Some(header_only);
     }
@@ -1476,7 +1487,8 @@ fn commit(
         // may since have been replaced above every recorded hash, where no
         // fork is detected: if this block doesn't hold the transaction, the
         // payment isn't in it. Unconfirmed, the vanished-payment check
-        // follows it again.
+        // follows it again. A block a payment claims is never recorded from
+        // its header alone, so its transactions are here to check.
         if let Some(txids) = &block.txids {
             for payment in s.payments_at_height(network, height)? {
                 if !txids.contains(&payment.txid) {
