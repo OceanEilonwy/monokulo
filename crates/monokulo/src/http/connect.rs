@@ -462,14 +462,23 @@ pub async fn finish(
     // here explicitly in case a real deployment prefers "credentials now, webhook
     // registration retried separately" instead.
     let (webhook_id, webhook_signing_secret) = match &req.webhook_url {
-        Some(url) => match state
-            .engine
-            .client
-            .create_webhook(&secret_token, url, &Default::default())
-            .await
+        Some(url) => match crate::webhooks::create(
+            &state.db,
+            &state.encryption_key,
+            &row.id,
+            url,
+            &Default::default(),
+        )
+        .await
         {
-            Ok((webhook_id, signing_secret)) => (Some(webhook_id), Some(signing_secret)),
-            Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+            Ok(created) => (
+                Some(created.webhook.id.to_string()),
+                Some(created.signing_secret),
+            ),
+            Err(e) => {
+                tracing::warn!(store.id = %row.id, error = %e, "the plugin's webhook could not be added");
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
         },
         None => (None, None),
     };
@@ -486,10 +495,11 @@ pub async fn finish(
         .filter(|i| i.kind == kind)
         .and_then(|i| i.webhook_id);
     if let Some(earlier) = earlier {
+        let store_id = row.id.clone();
+        let earlier = shared::ids::WebhookId::new(earlier);
         if let Err(e) = state
-            .engine
-            .client
-            .delete_webhook(&secret_token, &earlier)
+            .db
+            .write(move |db| db.delete_webhook(&store_id, &earlier))
             .await
         {
             tracing::warn!(store.id = %row.id, error = %e, "the earlier connection's webhook could not be removed");
@@ -886,7 +896,7 @@ mod tests {
     #[tokio::test]
     async fn finish_with_a_webhook_url_registers_a_real_webhook_and_carries_the_signing_secret() {
         let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let cookie =
             signed_up_and_logged_in_session_cookie(&router, "webhook-register@example.com").await;
         let post_response = connect_through_setup(
@@ -907,15 +917,42 @@ mod tests {
         assert_eq!(finish_response.status(), StatusCode::OK);
         let body = body_json(finish_response).await;
         let secret_token = body["secret_token"].as_str().unwrap().to_string();
-        assert!(!body["webhook_signing_secret"].as_str().unwrap().is_empty());
+        let signing_secret = body["webhook_signing_secret"].as_str().unwrap();
+        assert!(signing_secret.starts_with("whsec_"));
 
-        let engine_client = EngineClient::embedded_for_tests(engine.router());
-        let webhooks = engine_client
-            .list_webhooks(&shared::auth::RawToken::presented(&secret_token))
-            .await
+        // Monokulo's own webhook, its secret the one the plugin was given,
+        // kept encrypted; the integration names it.
+        let public_key = body["public_key"].as_str().unwrap().to_string();
+        let store = state
+            .db
+            .lock()
+            .get_store_connection_by_public_key(&public_key)
+            .unwrap()
             .unwrap();
+        let webhooks = state.db.lock().list_webhooks(&store.id).unwrap();
         assert_eq!(webhooks.len(), 1);
         assert_eq!(webhooks[0].url, "https://merchant.example/hook");
+        assert_eq!(
+            crate::crypto::decrypt(
+                &state.encryption_key,
+                crate::crypto::Binding::WebhookSecret(webhooks[0].id.as_str()),
+                &webhooks[0].signing_secret_encrypted,
+            )
+            .unwrap(),
+            signing_secret
+        );
+        let integration = state
+            .db
+            .lock()
+            .active_integration(&store.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            integration.webhook_id.as_deref(),
+            Some(webhooks[0].id.as_str())
+        );
+
+        let engine_client = EngineClient::embedded_for_tests(engine.router());
         let tenant_view = engine_client
             .get_tenant(&shared::auth::RawToken::presented(&secret_token))
             .await
@@ -1090,11 +1127,7 @@ mod tests {
             .unwrap();
         let new_sk = super::super::orders::decrypt_sk(&state.encryption_key, &row).unwrap();
         assert_ne!(new_sk.expose(), old_sk.expose());
-        assert!(engine_client
-            .list_webhooks(&new_sk)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(state.db.lock().list_webhooks(&id).unwrap().is_empty());
         let rows = state.db.lock().list_integrations(&id).unwrap();
         assert!(rows[0].disconnected_at.is_some());
         // The site unlocks.
@@ -1126,7 +1159,7 @@ mod tests {
         let rows = state.db.lock().list_integrations(&id).unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows[0].disconnected_at.is_none() && rows[1].disconnected_at.is_some());
-        assert_eq!(engine_client.list_webhooks(&new_sk).await.unwrap().len(), 1);
+        assert_eq!(state.db.lock().list_webhooks(&id).unwrap().len(), 1);
         // And again while connected: the earlier row closes and its webhook
         // goes, so there's still one.
         let once_more = router
@@ -1151,7 +1184,7 @@ mod tests {
             rows.iter().filter(|r| r.disconnected_at.is_none()).count(),
             1
         );
-        assert_eq!(engine_client.list_webhooks(&new_sk).await.unwrap().len(), 1);
+        assert_eq!(state.db.lock().list_webhooks(&id).unwrap().len(), 1);
 
         // An order from the plugin: seen now, at its new version; and while
         // it can be paid, disconnecting waits.

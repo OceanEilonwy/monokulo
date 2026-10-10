@@ -884,71 +884,6 @@ impl EngineClient {
         Ok(rotated.secret_token)
     }
 
-    /// `GET /api/v1/admin/tenant/webhooks` — lists `sk`'s tenant's
-    /// registered webhooks (WBS 1.3.3).
-    pub async fn list_webhooks(
-        &self,
-        sk: &RawToken,
-    ) -> Result<Vec<WebhookView>, EngineClientError> {
-        self.send(Call::get("/api/v1/admin/tenant/webhooks").store(sk))
-            .await?
-            .parsed()
-    }
-
-    /// `POST /api/v1/admin/tenant/webhooks` — registers a webhook for
-    /// `sk`'s tenant (WBS 1.4.4), authenticated the same way `get_tenant` is.
-    /// Returns `(webhook_id, signing_secret)`: all `http/connect.rs::finish`
-    /// needs back. `extra_headers`, when non-empty, is sent as a flat JSON
-    /// object of header name -> value strings, the shape the engine's
-    /// delivery worker reads back out (`src/webhook_delivery.rs`, which skips
-    /// any non-string value), so every value must be a plain string.
-    pub async fn create_webhook(
-        &self,
-        sk: &RawToken,
-        url: &str,
-        extra_headers: &std::collections::BTreeMap<String, String>,
-    ) -> Result<(String, String), EngineClientError> {
-        let extra_headers = if extra_headers.is_empty() {
-            None
-        } else {
-            Some(
-                serde_json::to_value(extra_headers)
-                    .expect("a BTreeMap<String, String> always serializes to a JSON object"),
-            )
-        };
-        let parsed: CreateWebhookResponse = self
-            .send(Call::post("/api/v1/admin/tenant/webhooks").store(sk).json(
-                &CreateWebhookRequest {
-                    url: url.to_string(),
-                    extra_headers,
-                },
-            ))
-            .await?
-            .parsed()?;
-        Ok((parsed.webhook_id, parsed.signing_secret))
-    }
-
-    /// `DELETE /api/v1/admin/tenant/webhooks/{webhook_id}` — removes
-    /// one of `sk`'s tenant's webhooks. A bare `204 No Content` on success,
-    /// the engine's own `404` for an unknown or not-this-tenant's id.
-    pub async fn delete_webhook(
-        &self,
-        sk: &RawToken,
-        webhook_id: &str,
-    ) -> Result<(), EngineClientError> {
-        let webhook_id = path_id(webhook_id)?;
-        self.send(
-            Call::new(
-                Method::DELETE,
-                format!("/api/v1/admin/tenant/webhooks/{webhook_id}"),
-            )
-            .store(sk),
-        )
-        .await?
-        .checked()
-        .map(drop)
-    }
-
     /// `PATCH /api/v1/admin/tenant` — sets `sk`'s tenant's
     /// `confirmations_required` (how many block confirmations an on-chain
     /// payment needs before an order reads as `paid`). `0` is a legal,
@@ -1390,31 +1325,6 @@ struct SetRefundAddressRequest {
     refund_address: String,
 }
 
-/// Mirrors the engine's own `WebhookView`.
-#[derive(Debug, Deserialize)]
-pub struct WebhookView {
-    pub webhook_id: String,
-    pub url: String,
-    pub enabled: bool,
-    pub created_at: i64,
-}
-
-/// Mirrors the engine's own `CreateWebhookRequest` (`src/http/admin.rs` at the repo
-/// root) field-for-field — `extra_headers` omitted, see `create_webhook`'s doc
-/// comment.
-#[derive(Serialize)]
-struct CreateWebhookRequest {
-    url: String,
-    extra_headers: Option<serde_json::Value>,
-}
-
-/// Mirrors the engine's own `CreateWebhookResponse`.
-#[derive(Debug, Deserialize)]
-struct CreateWebhookResponse {
-    webhook_id: String,
-    signing_secret: String,
-}
-
 /// Mirrors the engine's own `NodeStatus` (`src/http/status_page.rs` at the
 /// repo root) field-for-field. `Clone` so `http::status_page`'s short-TTL
 /// cache (see its own module doc comment) can hand out copies without
@@ -1643,44 +1553,6 @@ mod tests {
             .expect("get_tenant against a real engine should succeed");
 
         assert_eq!(fetched.public_key, created.public_key);
-    }
-
-    /// `create_webhook` against a real engine — proves the request/response shape
-    /// actually matches `src/http/admin.rs::create_webhook`/`CreateWebhookResponse`
-    /// at the repo root, not just a plausible guess: a real `webhook_id`/
-    /// `signing_secret` come back, and the webhook is genuinely visible afterward via
-    /// `list_webhooks` (which this task doesn't touch, but already exists from WBS
-    /// 1.3.3) with the exact URL that was registered.
-    #[cfg(feature = "embedded-engine")]
-    #[tokio::test]
-    async fn create_webhook_then_list_webhooks_round_trips_against_a_real_engine() {
-        let engine =
-            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let client = EngineClient::embedded_for_tests(engine.router());
-
-        let created = client
-            .create_tenant(test_create_tenant_request())
-            .await
-            .expect("create_tenant against a real engine should succeed");
-
-        let (webhook_id, signing_secret) = client
-            .create_webhook(
-                &created.secret_token,
-                "https://merchant.example/hook",
-                &Default::default(),
-            )
-            .await
-            .expect("create_webhook against a real engine should succeed");
-        assert!(!webhook_id.is_empty());
-        assert!(!signing_secret.is_empty());
-
-        let webhooks = client
-            .list_webhooks(&created.secret_token)
-            .await
-            .expect("list_webhooks against a real engine should succeed");
-        assert_eq!(webhooks.len(), 1);
-        assert_eq!(webhooks[0].webhook_id, webhook_id);
-        assert_eq!(webhooks[0].url, "https://merchant.example/hook");
     }
 
     /// `get_status` against a real engine — proves the DTOs above actually
@@ -2248,24 +2120,17 @@ mod contract_tests {
             )
         ));
 
-        let (webhook_id, secret) = client
-            .create_webhook(
-                &sk,
-                "http://127.0.0.1:9/hook",
-                &std::collections::BTreeMap::from([("x-shop".to_string(), "1".to_string())]),
-            )
+        engine.mark_order_expired(order.order_id.as_str()).unwrap();
+        let mut log = client.open_order_event_log(0).await.unwrap();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(10), log.next())
             .await
+            .expect("the log replays its event within 10 s")
+            .expect("the log is open")
             .unwrap();
-        let webhooks = client.list_webhooks(&sk).await.unwrap();
+        let first = String::from_utf8_lossy(&first).into_owned();
         lines.push(format!(
-            "webhook listed {}, secret given {}",
-            webhooks.iter().any(|w| w.webhook_id == webhook_id),
-            !secret.is_empty()
-        ));
-        lines.push(format!(
-            "delete webhook: {}, again: {}",
-            outcome(&client.delete_webhook(&sk, &webhook_id).await),
-            outcome(&client.delete_webhook(&sk, &webhook_id).await)
+            "the order-event log replays order.expired: {}",
+            first.contains("event: order_event") && first.contains("\"event\":\"order.expired\"")
         ));
 
         lines.push(format!(
@@ -2395,8 +2260,7 @@ mod contract_tests {
             "detail: Some(\"m-1\") Pending refund Some(\"4refund\"), 0 payments",
             "unknown order: 404 Not Found",
             "an id that names another route: 404 Not Found: not a valid id",
-            "webhook listed true, secret given true",
-            "delete webhook: ok, again: 404 Not Found",
+            "the order-event log replays order.expired: true",
             "lookup of a malformed txid: 400 Bad Request",
             "status networks: [\"mainnet\"]",
             "settings: 200 OK",

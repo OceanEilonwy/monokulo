@@ -27,7 +27,7 @@ use super::orders::{decrypt_sk, load_owned_connection};
 use super::{AppState, AuthedUser, OwnedStore};
 
 /// What a plugin is called.
-fn integration_name(kind: &str) -> String {
+pub(super) fn integration_name(kind: &str) -> String {
     match kind {
         "woocommerce" => "WooCommerce".to_owned(),
         other => {
@@ -387,7 +387,7 @@ pub async fn disconnect_submit(
             row.name
         ));
     }
-    // Its webhook first, with the key that still works.
+    // Its webhook first.
     let (store_id, integration_id) = (row.id.clone(), integration.clone());
     let webhook_id = state
         .db
@@ -402,16 +402,16 @@ pub async fn disconnect_submit(
         .await
         .ok()
         .flatten();
-    if let Some(webhook_id) = &webhook_id {
-        match state.engine.client.delete_webhook(&sk, webhook_id).await {
-            Ok(()) => {}
-            // Already gone: removed on the Webhooks card, say.
-            Err(crate::engine_client::EngineClientError::EngineError { status, .. })
-                if status == StatusCode::NOT_FOUND => {}
-            Err(e) => {
-                tracing::error!(store.id = %id, error = %e, "the plugin's webhook could not be removed");
-                return refuse(something_went_wrong());
-            }
+    // Already gone (deleted on the Webhooks card, say): nothing to do.
+    if let Some(webhook_id) = webhook_id {
+        let (store_id, webhook_id) = (row.id.clone(), shared::ids::WebhookId::new(webhook_id));
+        if let Err(e) = state
+            .db
+            .write(move |db| db.delete_webhook(&store_id, &webhook_id))
+            .await
+        {
+            tracing::error!(store.id = %id, error = %e, "the plugin's webhook could not be removed");
+            return refuse(something_went_wrong());
         }
     }
     let new_sk = match state.engine.client.rotate_secret(&sk).await {

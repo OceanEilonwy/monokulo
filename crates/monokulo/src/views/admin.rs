@@ -684,6 +684,7 @@ impl Group {
                 "public_url" => Group::PublicAddress,
                 "engine" => Group::EngineConnection,
                 "exchange_rate" => Group::ExchangeRates,
+                "webhooks" => Group::Webhooks,
                 "abuse" if matches!(rest, "challenge_bits" | "under_attack") => {
                     Group::AbuseChallenge
                 }
@@ -710,7 +711,9 @@ impl Group {
                     Group::Chain
                 }
                 "payment" => Group::Orders,
-                "webhooks" => Group::Webhooks,
+                // How long the engine keeps the order events webhooks are
+                // sent from.
+                "order_events" => Group::Webhooks,
                 "key_custody" if matches!(rest, "enabled_backends" | "default_backend") => {
                     Group::CustodyBackends
                 }
@@ -771,6 +774,7 @@ impl Group {
             Group::Orders => Some("Defaults for new stores. Each store's own settings win for its orders."),
             Group::ExchangeRates => Some("Which providers stores may price fiat orders with. Each store still chooses whether to use one, and in what order."),
             Group::AbuseLimits => Some("Requests a minute, per visitor, merchant or shop."),
+            Group::Webhooks => Some("How stores' webhooks are sent, and how long the engine keeps the order events they're sent from."),
             _ => None,
         }
     }
@@ -784,7 +788,6 @@ impl Group {
                 | Group::AllNodes
                 | Group::Orders
                 | Group::Chain
-                | Group::Webhooks
                 | Group::CustodyBackends
                 | Group::Server(SettingOwner::Engine)
                 | Group::Logging(SettingOwner::Engine)
@@ -843,6 +846,8 @@ const FIELD_ORDER: &[&str] = &[
     "payment.reorg_check_depth",
     "webhooks.max_attempts",
     "webhooks.delivery_timeout_ms",
+    "webhooks.allow_private_urls",
+    "order_events.retention_days",
     "abuse.soft_per_min",
     "abuse.hard_per_min",
     "abuse.stream_cap",
@@ -1927,6 +1932,9 @@ mod tests {
                 "exchange-rates",
             ),
             ("exchange_rate.cache_seconds", M, Payments, "exchange-rates"),
+            ("webhooks.allow_private_urls", M, Payments, "webhooks"),
+            ("webhooks.delivery_timeout_ms", M, Payments, "webhooks"),
+            ("webhooks.max_attempts", M, Payments, "webhooks"),
             ("engine.mode", M, General, "engine"),
             ("engine.url", M, General, "engine"),
             ("engine.token", M, General, "engine"),
@@ -2015,9 +2023,7 @@ mod tests {
                 Server,
                 "server-engine",
             ),
-            ("webhooks.allow_private_urls", E, Payments, "webhooks"),
-            ("webhooks.delivery_timeout_ms", E, Payments, "webhooks"),
-            ("webhooks.max_attempts", E, Payments, "webhooks"),
+            ("order_events.retention_days", E, Payments, "webhooks"),
             ("server.bind", E, Server, "server-engine"),
             ("server.worker_threads", E, Server, "server-engine"),
             ("server.cpus", E, Server, "server-engine"),
