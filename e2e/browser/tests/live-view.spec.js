@@ -185,7 +185,9 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await expect(card.locator('a.rbar.pinned')).toHaveCount(1);
   const times = await card.locator('.lane-time').allTextContents();
   const total = await card.locator('.ruler-label').textContent();
-  expect(times.reduce((sum, t) => sum + Number(t.replace(/[^0-9]/g, '')), 0)).toBe(Number(total.replace(/[^0-9]/g, '')));
+  // A part under a millisecond ("<1ms") counts as none.
+  const ms = (t) => (t.startsWith('<') ? 0 : Number(t.replace(/[^0-9]/g, '')));
+  expect(times.reduce((sum, t) => sum + ms(t), 0)).toBe(ms(total));
   await card.locator('#round-resume').click();
   await expect(card.locator('#round-resume')).toHaveCount(0);
 
@@ -429,17 +431,24 @@ test('the round card has room: inset bars, its end marker, chips apart', async (
     const lanes = [...round.querySelectorAll('.lanes .track')].map((track) => ({
       track: box(track),
       share: track.querySelector('.share') && box(track.querySelector('.share')),
-      bars: [...track.querySelectorAll('.bar')].map((bar) => ({ ...box(bar), cls: bar.className, solid: Number(bar.dataset.solid), background: getComputedStyle(bar).backgroundImage, last: false })),
+      bars: [...track.querySelectorAll('.bar')].map((bar) => ({
+        ...box(bar),
+        cls: bar.className,
+        shapes: [...bar.children].map((shape) => ({ cls: shape.className, ...box(shape), display: getComputedStyle(shape).display })),
+      })),
       chip: box(track.nextElementSibling.querySelector('.engine-chip')),
     }));
     const label = round.querySelector('.ruler-label');
     const lastBar = round.querySelector('.bar.last');
     const marker = getComputedStyle(lastBar, '::after');
+    const lastBox = lastBar.getBoundingClientRect();
     return {
       lanes,
       label: box(label),
       lasts: round.querySelectorAll('.bar.last').length,
-      marker: { height: parseFloat(marker.height), width: parseFloat(marker.width) },
+      marker: { height: parseFloat(marker.height), width: parseFloat(marker.width), left: lastBox.right - parseFloat(marker.right) - parseFloat(marker.width) },
+      lastRight: lastBox.right,
+      lastTime: box(lastBar.nextElementSibling),
       ruleLine: getComputedStyle(label, '::before').content,
       lanesBox: box(round.querySelector('.lanes')),
       details: box(round.querySelector('.round-breakdown')),
@@ -457,18 +466,25 @@ test('the round card has room: inset bars, its end marker, chips apart', async (
       expect(lane.share.bottom - 1.5 - bar.bottom, `lane ${i} bottom`).toBeGreaterThanOrEqual(xs - 0.5);
     }
   }
-  // Blocks' unit and its cache carry after it: one shape, outlined to the
-  // carry's end and solid from the left for the unit, no gap.
+  // Blocks' unit, then Mempool, Settlement and Upkeep (306ms, 3 % of the
+  // round's 10s budget), then its cache carry: on a wide track a thread
+  // crosses the gap to an outline over the carry's own time, the outline
+  // exactly the solid part's height.
   const blocks = card.lanes[1].bars;
   expect(blocks).toHaveLength(1);
-  expect(blocks[0].cls).toBe('bar work last');
-  expect(blocks[0].solid).toBeGreaterThan(0);
-  expect(blocks[0].solid).toBeLessThan(100);
-  expect(blocks[0].background).toContain(`${blocks[0].solid}%`);
-  // The round's total under the right edge of the segment that finished
-  // last (Blocks').
-  const end = blocks[0].right;
-  expect(Math.abs(card.label.left + card.label.width / 2 - end), `label ${JSON.stringify(card.label)} end ${end}`).toBeLessThanOrEqual(1.5);
+  expect(blocks[0].cls).toBe('bar last');
+  const [fill, thread, work] = blocks[0].shapes;
+  expect([fill.cls, thread.cls, work.cls]).toEqual(['fill', 'thread band', 'work band']);
+  expect(work.height).toBe(fill.height);
+  expect(thread.height).toBe(1);
+  expect(Math.abs(thread.left - fill.right)).toBeLessThanOrEqual(1);
+  expect(work.left - fill.right, 'split: the outline over the carry alone').toBeGreaterThan(20);
+  // The marker 3px past the end of the segment that finished last, its
+  // time and the round's total moved with it.
+  expect(Math.abs(card.marker.left - card.lastRight - 3), JSON.stringify(card.marker)).toBeLessThanOrEqual(0.5);
+  expect(card.lastTime.left).toBeGreaterThanOrEqual(card.marker.left + card.marker.width + 3);
+  const middle = card.marker.left + card.marker.width / 2;
+  expect(Math.abs(card.label.left + card.label.width / 2 - middle), `label ${JSON.stringify(card.label)} marker ${middle}`).toBeLessThanOrEqual(1.5);
   // The marker is on that one segment, in its lane only: no line running
   // across the other lanes to the total.
   expect(card.lasts).toBe(1);
@@ -488,6 +504,24 @@ test('the round card has room: inset bars, its end marker, chips apart', async (
     return { middle, modes: modes.top + modes.height / 2 };
   });
   expect(Math.abs(centred.middle - centred.modes), JSON.stringify(centred)).toBeLessThanOrEqual(1.5);
+});
+
+test('on a phone a gap between the thresholds is joined', async ({ page, context }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openAsAdmin(page, context);
+  await expect(page.locator('#engine-timeline')).toBeVisible();
+  const blocks = await page.evaluate(() => {
+    const bar = document.querySelector('#engine-round .track.t-blocks .bar');
+    const track = bar.closest('.track').getBoundingClientRect();
+    const [fill, thread, work] = [...bar.children].map((el) => ({ ...JSON.parse(JSON.stringify(el.getBoundingClientRect())), display: getComputedStyle(el).display, cls: el.className }));
+    return { track: track.width, fill, thread, work };
+  });
+  expect(blocks.track).toBeLessThan(480);
+  expect(blocks.work.cls).toBe('work band');
+  // The thread goes and the outline starts where the solid part ends.
+  expect(blocks.thread.display).toBe('none');
+  expect(Math.abs(blocks.work.left - blocks.fill.right)).toBeLessThanOrEqual(0.5);
+  expect(blocks.work.height).toBe(blocks.fill.height);
 });
 
 test('without JavaScript the engine page is the network as of now', async ({ browser }) => {
