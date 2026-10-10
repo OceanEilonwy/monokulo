@@ -15,7 +15,8 @@ This is the implementation follow-up to `engine_cancellation_audit.md` (2026-09-
   rotate through at most 16 tenants per pass. Routine status recomputation uses
   bounded, rotating pages. The vanished-mempool sweep uses a 64-payment page
   and moves its cursor after each attempted payment, including failed lookups.
-- Webhook delivery's DNS check, socket slot acquisition/connection/exchange,
+- Webhook delivery's DNS check (monokulo's since the engine stopped sending
+  webhooks), socket slot acquisition/connection/exchange,
   and wallet registration checks now have end-to-end time bounds. The custody
   socket protocol accepts a stable registration ID when re-registering an
   existing tenant, making retries after a lost response return the same handle.

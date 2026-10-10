@@ -458,7 +458,7 @@ Made by the project owner on 2026-10-03:
 - `Engine::start(EngineConfig)` takes the options file path, the
   command-line/environment values and the database path. It opens
   storage, loads the settings, registers every store's wallet, and starts
-  the webhook delivery loop and the network loop manager.
+  the network loop manager.
 - `Engine::router()` returns the admin API; `Engine::bind_address()` returns
   `server.bind`, for the standalone binary.
 - `Engine::shutdown(grace)` stops the loops and reports `Stopped::Cleanly`

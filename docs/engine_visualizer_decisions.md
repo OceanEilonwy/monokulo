@@ -46,6 +46,10 @@ last five minutes for the network's stores, with a new partial index on
 "Failed" was dropped from the panel's detail: due and sent are what the
 design's one line shows, and failures have their own place (the logs).
 
+Superseded: the engine no longer sends webhooks (monokulo delivers them from
+the engine's order-event log, `docs/DESIGN.md` §11), so the page has no
+Webhooks panel and migration 0031 drops the index with the table.
+
 ## D6. The page's logic is a state machine in Rust, in monokulo
 
 (Asked for by the reviewer.) `monokulo::engine_view::machine` is a pure
@@ -152,6 +156,8 @@ again. A viewer's first read is the engine's whole record (up to about
 A recompute that changes an order's status queues its webhook in the same
 transaction, so the machine adds one to "due" per status change; the next
 snapshot sets the true figure (deliveries since then included).
+
+Superseded with D5: there is no webhook queue in the engine to count.
 
 ## D18. The engine's internal changes
 
