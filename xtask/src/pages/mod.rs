@@ -24,6 +24,7 @@ mod tests;
 
 pub(crate) use docs::build as docs;
 pub(crate) use fetch::fetch;
+pub(crate) use inputs::{junit, Test, TestStatus};
 pub(crate) use serve::serve;
 
 use crate::exploration::Build;

@@ -58,8 +58,9 @@ fn skip_reason(case: roxmltree::Node, skipped: roxmltree::Node) -> Option<String
 /// test is ignored, so the reason is read where it is written. Reading the
 /// source needs no build, so it works the same after a plain or a coverage
 /// run on every platform. A file that does not parse is not one a test
-/// binary was built from.
-fn ignored_tests(root: &Path) -> io::Result<Vec<(String, Option<String>)>> {
+/// binary was built from. `cargo xtask live` reads the same list to check
+/// each one is run daily or says why not.
+pub(crate) fn ignored_tests(root: &Path) -> io::Result<Vec<(String, Option<String>)>> {
     struct Tests {
         modules: Vec<String>,
         file: String,
@@ -145,11 +146,13 @@ fn message(node: roxmltree::Node) -> String {
     text
 }
 
-/// One suite's counts and wall time, and whether cargo-nextest wrote it.
+/// One suite's counts and wall time, whether cargo-nextest wrote it, and
+/// the name of every case it ran.
 struct Suite {
     counts: Counts,
     seconds: f64,
     nextest: bool,
+    names: Vec<String>,
 }
 
 /// One suite's counts, wall time, failures and skipped tests. The run's wall
@@ -191,6 +194,11 @@ fn read(
             .sum(),
     };
     let mut counts = Counts::default();
+    let names = cases
+        .iter()
+        .filter_map(|case| case.attribute("name"))
+        .map(str::to_string)
+        .collect();
     for case in cases {
         let child = |tag: &str| case.children().find(|c| c.has_tag_name(tag));
         let mut name = [case.attribute("classname"), case.attribute("name")]
@@ -233,6 +241,7 @@ fn read(
         counts,
         seconds,
         nextest,
+        names,
     })
 }
 
@@ -311,7 +320,17 @@ fn summarize(source: &Path, title: &str, suites: &[&str]) -> String {
         if let Ok(suite) = &mut row {
             if suite.nextest {
                 match ignored_tests(source) {
-                    Ok(ignored) => {
+                    Ok(mut ignored) => {
+                        // A run with --run-ignored (the daily live run) ran
+                        // some: the report names each by its module path
+                        // in its binary, which ends with its path in its file.
+                        ignored.retain(|(name, _)| {
+                            let path = name.split_once(" › ").map_or(name.as_str(), |(_, p)| p);
+                            !suite
+                                .names
+                                .iter()
+                                .any(|ran| ran == path || ran.ends_with(&format!("::{path}")))
+                        });
                         suite.counts.skipped += ignored.len() as u64;
                         skips.extend(ignored.into_iter().map(|(name, reason)| Skip {
                             label: label.to_string(),
@@ -552,6 +571,18 @@ mod tests {
             "- <code>crates/net/src.rs › live::dns::resolves</code>: needs live DNS: resolves real records\n\
              - <code>crates/net/src.rs › bare</code>: no reason given\n"
         ));
+        // An ignored test the run ran anyway (--run-ignored) is not skipped.
+        fs::write(
+            &report,
+            r#"<testsuites name="nextest-run" time="1"><testsuite name="net"><testcase classname="net" name="net::live::dns::resolves"/></testsuite></testsuites>"#,
+        )
+        .unwrap();
+        let summary = summarize(&source, "Rust", &[&format!("rust={}", report.display())]);
+        assert!(
+            summary.contains("| rust | ✅ passed | 1 | 0 | 0 | 1 | 1s |"),
+            "{summary}"
+        );
+        assert!(!summary.contains("resolves</code>"), "{summary}");
         // Only nextest leaves its ignored tests out; another tool's report
         // already says what it skipped.
         fs::write(
