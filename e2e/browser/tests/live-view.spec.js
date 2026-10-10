@@ -351,6 +351,119 @@ test('the machine strip and the Scanning panel follow the engine live', async ({
   expect(errors).toEqual([]);
 });
 
+// A theme spacing step, in pixels.
+const space = (page, step) => page.evaluate((step) => parseFloat(getComputedStyle(document.documentElement).getPropertyValue(`--space-${step}`)), step);
+
+test('the chain strip labels its blocks from above, at the right blocks', async ({ page, context }) => {
+  await openAsAdmin(page, context);
+  await expect(page.locator('#engine-timeline')).toBeVisible();
+  await expect(page.locator('#pills .pill.catchup')).toHaveText('Catching up, 3 stores');
+  const sm = await space(page, 'sm');
+  const layout = () => page.evaluate(() => {
+    const box = (el) => el.getBoundingClientRect();
+    const cells = [...document.querySelectorAll('#cells > .cell')].map((c) => ({ h: Number(c.dataset.h), ...JSON.parse(JSON.stringify(box(c))) }));
+    const top = Math.min(...cells.map((c) => c.top));
+    const labels = [...document.querySelectorAll('#pills .pill, #chain-marks .m-tip, #chain-marks .m-hw')].map((el) => box(el).bottom);
+    const axis = [...document.querySelectorAll('#chain-axis span')].map((el) => box(el).top);
+    const win = document.querySelector('#chain-marks .m-win');
+    const catchup = document.querySelector('#pills .pill.catchup');
+    // The pill's tick: 2px wide, 10px in from its left edge.
+    const tick = catchup ? box(catchup).left + 11 : null;
+    return { cells, top, bottom: Math.max(...cells.map((c) => c.bottom)), labels, axis, win: win && box(win).bottom, tick };
+  });
+  // Wide: the catching-up stores' block is drawn (beyond the cut), and the
+  // tick lands on it.
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect.poll(async () => (await layout()).cells.length).toBeGreaterThan(30);
+  // (Pills and marks glide to their blocks.)
+  await page.waitForTimeout(600);
+  const l = await layout();
+  for (const bottom of l.labels) expect(bottom, 'every label above the blocks').toBeLessThanOrEqual(l.top);
+  for (const top of l.axis) expect(top, 'the block numbers under them').toBeGreaterThanOrEqual(l.bottom);
+  // The reorg window's line a --space-sm step above the blocks.
+  expect(Math.abs(l.top - l.win - sm), `${l.top} ${l.win}`).toBeLessThanOrEqual(1);
+  const onto = l.cells.filter((c) => Math.abs(c.left + c.width / 2 - l.tick) <= 1.5);
+  expect(onto.length, 'the tick lands on a block').toBe(1);
+  expect(onto[0].h).toBeLessThan(Math.max(...l.cells.map((c) => c.h)) - 20);
+  // Narrow: no cut, and the stores are behind the oldest block drawn: the
+  // tick is at it, the left edge, not further right.
+  await page.setViewportSize({ width: 800, height: 900 });
+  await expect.poll(async () => (await layout()).cells.length).toBeLessThan(20);
+  // (The pill glides there.)
+  await expect.poll(async () => {
+    const now = await layout();
+    const oldest = now.cells.reduce((a, b) => (a.h < b.h ? a : b));
+    return oldest.h > onto[0].h && Math.abs(now.tick - (oldest.left + oldest.width / 2)) <= 1.5;
+  }).toBe(true);
+  // The node list is the network's nodes, and nothing else.
+  await expect(page.locator('#nodes > .node')).toHaveCount(2);
+  await expect(page.locator('#node-call')).toHaveCount(0);
+  await expect(page.locator('#nodes > .node .label')).toHaveText(['node-a.example:18081', 'node-b.example:18081']);
+});
+
+test('the round card has room: inset bars, its end marker, chips apart', async ({ page, context }) => {
+  await openAsAdmin(page, context);
+  await expect(page.locator('#engine-timeline')).toBeVisible();
+  const [xs, lg] = [await space(page, 'xs'), await space(page, 'lg')];
+  const card = await page.evaluate(() => {
+    const box = (el) => JSON.parse(JSON.stringify(el.getBoundingClientRect()));
+    const round = document.getElementById('engine-round');
+    const lanes = [...round.querySelectorAll('.lanes .track')].map((track) => ({
+      track: box(track),
+      share: track.querySelector('.share') && box(track.querySelector('.share')),
+      bars: [...track.querySelectorAll('.bar')].map((bar) => ({ ...box(bar), cls: bar.className, solid: Number(bar.dataset.solid), background: getComputedStyle(bar).backgroundImage, last: false })),
+      chip: box(track.nextElementSibling.querySelector('.engine-chip')),
+    }));
+    const label = round.querySelector('.ruler-label');
+    const line = getComputedStyle(label, '::before');
+    return {
+      lanes,
+      label: box(label),
+      lineHeight: parseFloat(line.height),
+      lanesBox: box(round.querySelector('.lanes')),
+      details: box(round.querySelector('.round-breakdown')),
+    };
+  });
+  for (const [i, lane] of card.lanes.entries()) {
+    // The chips apart, each on its lane's row.
+    if (i) expect(lane.chip.top, `lane ${i}`).toBeGreaterThanOrEqual(card.lanes[i - 1].chip.bottom);
+    if (!lane.share) continue;
+    // Inside the dashed outline with a --space-xs gap all round: nothing
+    // covers it.
+    for (const bar of lane.bars) {
+      expect(bar.left - (lane.share.left + 1.5), `lane ${i} start`).toBeGreaterThanOrEqual(xs - 0.5);
+      expect(bar.top - (lane.share.top + 1.5), `lane ${i} top`).toBeGreaterThanOrEqual(xs - 0.5);
+      expect(lane.share.bottom - 1.5 - bar.bottom, `lane ${i} bottom`).toBeGreaterThanOrEqual(xs - 0.5);
+    }
+  }
+  // Blocks' unit and its cache carry after it: one shape, outlined to the
+  // carry's end and solid from the left for the unit, no gap.
+  const blocks = card.lanes[1].bars;
+  expect(blocks).toHaveLength(1);
+  expect(blocks[0].cls).toBe('bar work');
+  expect(blocks[0].solid).toBeGreaterThan(0);
+  expect(blocks[0].solid).toBeLessThan(100);
+  expect(blocks[0].background).toContain(`${blocks[0].solid}%`);
+  // The end marker: a line from the right edge of the segment that
+  // finished last (Blocks') down to the round's total, centred under it.
+  const end = blocks[0].right;
+  expect(Math.abs(card.label.left + card.label.width / 2 - end), `label ${JSON.stringify(card.label)} end ${end}`).toBeLessThanOrEqual(1.5);
+  expect(card.label.top - card.lineHeight, 'the line reaches up to Blocks').toBeLessThanOrEqual(card.lanes[1].track.bottom);
+  expect(card.label.top).toBeGreaterThan(card.lanes[4].track.bottom);
+  // Room above Timing details.
+  expect(Math.abs(card.details.top - card.lanesBox.bottom - lg), `${card.details.top} ${card.lanesBox.bottom}`).toBeLessThanOrEqual(1);
+  // The playback row centred in its card.
+  const centred = await page.evaluate(() => {
+    const cardBox = document.getElementById('engine-timeline');
+    const style = getComputedStyle(cardBox);
+    const outer = cardBox.getBoundingClientRect();
+    const middle = outer.top + parseFloat(style.borderTopWidth) + parseFloat(style.paddingTop) + (cardBox.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) / 2;
+    const modes = document.getElementById('tl-modes').getBoundingClientRect();
+    return { middle, modes: modes.top + modes.height / 2 };
+  });
+  expect(Math.abs(centred.middle - centred.modes), JSON.stringify(centred)).toBeLessThanOrEqual(1.5);
+});
+
 test('without JavaScript the engine page is the network as of now', async ({ browser }) => {
   const context = await browser.newContext({ javaScriptEnabled: false });
   await context.addCookies([{ name: 'session', value: fixture.admin_session, url: fixture.base_url }]);
