@@ -20,6 +20,8 @@ pulldown-cmark = { version = "0.13.4", default-features = false, features = ["ht
 # pages build: the screenshot gallery's thumbnails, and the JUnit reports.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 roxmltree = "0.21"
+# test-summary: the #[ignore]d tests and their reasons, from the source.
+syn = { version = "2", features = ["full", "visit"] }
 # Reading fuzzer, test and mutation logs.
 regex = "1"
 # test-timings: the database of how long each test took.

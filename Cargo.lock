@@ -5361,6 +5361,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "snp-attest",
+ "syn 2.0.119",
 ]
 
 [[package]]
