@@ -27,6 +27,9 @@ on:
     # 16:00 UTC: the nightly property, fuzz and scale runs start from 17:00.
     - cron: '0 16 * * *'
   workflow_dispatch:
+  # Trial only: workflow_dispatch needs the file on main first.
+  push:
+    branches: [live-network-daily-trial]
 
 permissions:
   contents: read
