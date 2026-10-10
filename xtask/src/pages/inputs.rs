@@ -89,8 +89,8 @@ pub(super) enum TestStatus {
 }
 
 /// Which browser project a test ran in: against the fixture server or the
-/// real binaries. Playwright's `JUnit` report names it as each testsuite's
-/// `hostname`.
+/// real binaries, in whichever browser (`real-binaries-webkit`).
+/// Playwright's `JUnit` report names it as each testsuite's `hostname`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum BrowserKind {
     Fixture,
@@ -99,7 +99,7 @@ pub(super) enum BrowserKind {
 
 impl BrowserKind {
     fn of_project(project: &str) -> Self {
-        if project == "real-binaries" {
+        if project.starts_with("real-binaries") {
             BrowserKind::RealBinaries
         } else {
             BrowserKind::Fixture
