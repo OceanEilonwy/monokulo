@@ -25,8 +25,10 @@ module doc comment for the full explanation (why no chain scanning, why decoys
 come from a cache, why it's safe to trust that path's randomness/cryptography).
 
 Following the same pattern as `daemon_rpc::live_node_tests` (`src/daemon_rpc.rs`),
-the test is `#[ignore]`d so the default `cargo test` run stays hermetic and fast -
-run it explicitly, from the repository root:
+the test is `#[ignore]`d so the default `cargo test` run stays hermetic and fast,
+and named `live_`, so the daily live-network run (`cargo xtask live`,
+`.github/workflows/live-network.yml`) runs it with every other test that needs
+the network. Run it explicitly, from the repository root:
 
 ```bash
 cargo test -p e2e-harness --features e2e --test e2e_stagenet -- --ignored --nocapture
@@ -73,11 +75,40 @@ so a full run is fast (seconds, not minutes) and doesn't depend on a large
 
   These files contain real (if worthless - stagenet has no exchange value)
   private keys. Treat them like any other credentials file.
+- **`wallets/ci/`**: the daily live-network run's own `spender.db` and
+  `merchant.db`, which nothing else spends from - see "The daily run's
+  wallets" below.
 - **`stagenet-decoy-distribution.json`**: a cached snapshot of the RingCT
   output distribution, refreshed periodically via `cli-wallet`'s own
   `refresh-decoy-pool` bin (see that crate's doc comment) rather than fetched
   live on every send - the main reason these tests are fast. Shared by every
   wallet: it's chain data, not wallet data.
+
+## The daily run's wallets
+
+The live-network workflow pays its orders from `wallets/ci/`, not from the
+wallets above, so a developer's run and the daily one never pick the same
+outputs at once (each takes the file lock, but they hold different copies of
+the file). The suites and `wallet-cli` take the wallet directory from
+`E2E_WALLET_DIR` (relative to the repository root), which the workflow sets:
+
+```sh
+E2E_WALLET_DIR=e2e/wallets/ci cargo run -p cli-wallet --bin wallet-cli -- balance
+```
+
+The merchant has 32 subaddresses made ahead, so `rescan` finds the payments
+the tests' engines send to each order's subaddress (a fresh engine starts at
+index 1).
+
+The workflow can't commit the files it changes, so it keeps their newest
+copy in the Actions cache and rescans the last 1500 blocks before each run
+(`cargo xtask live wallets check`); with no cached copy it rescans from the
+height the pair was made. After the tests, `cargo xtask live wallets keep`
+sweeps what the merchant received back to the spender, splits the spender's
+outputs when fewer than twelve can pay an order, and merges the ones too
+small to. The pair only loses the fees, a few hundredths of a stagenet XMR a
+month. When the spender can't pay a run, the check fails with its address:
+send it stagenet XMR from the faucet, and the next run's rescan finds it.
 
 ## Inspecting/driving a wallet by hand
 
