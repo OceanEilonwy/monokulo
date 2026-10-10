@@ -669,6 +669,16 @@ three rows tall however far apart they were, and the leaders were 2px.
   the same cases (`views/label_levels.json`): the Rust test reads them, and
   the browser test runs the script's function on them.
 
+## D41. The scrub bar reaches the playback control
+
+PR #76 review round 5. The timeline's bar stopped a 9rem readout and a gap
+short of the Live/Play/Pause control, so it looked cut off. The bar now
+takes the row (`flex: 1`) up to a `--space-xl` gap before the control:
+room for the window's right handle, 16px outside the window, with clear
+space still between the handle and the control. The "behind live" readout
+moved under the control, out of the row, so the bar keeps its width when
+playback leaves live (its width changing under a drag lost the drag).
+
 ## What differs from the design, and what is left
 
 - **Simplified time lens.** The design asked for minimum animation lengths,
