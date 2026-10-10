@@ -1,0 +1,135 @@
+// @ts-check
+// A store's webhooks (docs/design/user-testing/webhooks.html, variation 2):
+// one health line per webhook, its recent deliveries folded under it and
+// open by themselves while one is retrying or gave up, "Send again" and
+// "Retry failed (N)" as plain forms, and a delivery's detail as a dialog,
+// or a page without JavaScript. Captures each state for the gallery (every
+// capture is taken on a phone too).
+const { test, expect } = require('../coverage-test');
+const { startCoverageFixture, stopCoverageFixture } = require('../coverage-fixture');
+const { captureCoverageStage } = require('../coverage-screenshot');
+
+const GROUP = 'store-settings';
+let fixture;
+test.describe.configure({ mode: 'serial' });
+test.beforeAll(async () => { fixture = await startCoverageFixture(); });
+test.afterAll(async () => { await stopCoverageFixture(fixture?.process); });
+
+async function login(context) {
+  await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
+}
+const settings = () => `${fixture.base_url}/dashboard/stores/${fixture.connection_id}/settings`;
+/** The design's three webhooks (delivering, retrying, gave up), or none. */
+async function seed(empty = false) {
+  const response = await fetch(`${fixture.base_url}/__coverage/webhooks${empty ? '?empty' : ''}`, { method: 'POST' });
+  expect(response.ok).toBe(true);
+  return (await response.json()).deliveries;
+}
+const card = (page) => page.locator('#card-webhooks');
+const webhook = (page, url) => card(page).locator('.wh').filter({ has: page.locator('.wh-url', { hasText: url }) });
+
+test('each webhook says how it is doing; the deliveries of one that needs you are open', async ({ page, context }) => {
+  await login(context);
+  await seed();
+  await page.goto(`${settings()}#card-webhooks`);
+  await expect(card(page).locator('.card-meta')).toHaveText('3 webhooks');
+
+  const healthy = webhook(page, 'https://bakery.example/hooks/monokulo');
+  await expect(healthy.locator('.wh-health .tag')).toHaveText('delivering');
+  await expect(healthy.locator('.wh-health .hint')).toContainText('last 2 min ago · 200 in');
+  await expect(healthy.locator('details.wh-deliveries')).not.toHaveAttribute('open', '');
+  await healthy.locator('details.wh-deliveries').scrollIntoViewIfNeeded();
+  await captureCoverageStage(page, 'store-webhooks-healthy', test.info(), { group: GROUP });
+
+  const retrying = webhook(page, 'https://erp.bakery.example/payments/in');
+  await expect(retrying.locator('.wh-health .tag')).toHaveText('retrying');
+  await expect(retrying.locator('.wh-health .hint')).toContainText('next try at');
+  await expect(retrying.locator('.wh-health .hint')).toContainText('attempt 5 of 8 failed (503)');
+  await expect(retrying.locator('details.wh-deliveries')).toHaveAttribute('open', '');
+  await expect(retrying.locator('td[data-label="Attempt"]').first()).toHaveText('4 of 8');
+  await retrying.scrollIntoViewIfNeeded();
+  await captureCoverageStage(page, 'store-webhooks-retrying', test.info(), { group: GROUP });
+
+  const gaveUp = webhook(page, 'https://old-shop.example/?wc-api=monokulo');
+  await expect(gaveUp.locator('.wh-health .tag')).toHaveText('gave up');
+  await expect(gaveUp.locator('.wh-health .hint')).toContainText('after 8 attempts (connection refused)');
+  await expect(gaveUp.locator('details.wh-deliveries')).toHaveAttribute('open', '');
+  await expect(gaveUp.getByRole('button', { name: 'Send again' })).toHaveCount(1);
+  await expect(gaveUp.getByRole('button', { name: 'Retry failed (1)' })).toBeVisible();
+  await gaveUp.scrollIntoViewIfNeeded();
+  await captureCoverageStage(page, 'store-webhooks-gave-up', test.info(), { group: GROUP });
+
+  // Nothing wider than a phone.
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await retrying.scrollIntoViewIfNeeded();
+  await captureCoverageStage(page, 'store-webhooks-phone', test.info(), { group: GROUP, asIs: true });
+});
+
+test('Retry failed queues the given-up deliveries again and says so', async ({ page, context }) => {
+  await login(context);
+  await seed();
+  await page.goto(`${settings()}#card-webhooks`);
+  const gaveUp = webhook(page, 'https://old-shop.example/?wc-api=monokulo');
+  await gaveUp.getByRole('button', { name: 'Retry failed (1)' }).click();
+  await expect(page.locator('#settings-toasts')).toContainText('Webhooks updated');
+  const again = webhook(page, 'https://old-shop.example/?wc-api=monokulo');
+  await expect(again.locator('.wh-health .tag')).toHaveText('sending');
+  await expect(again.getByRole('button', { name: /Retry failed/ })).toHaveCount(0);
+  await expect(again.locator('td[data-label="Status"] .tag').first()).toHaveText('queued');
+});
+
+test("a delivery's details open as a dialog, with its attempts, request and last response", async ({ page, context }) => {
+  await login(context);
+  await seed();
+  await page.goto(`${settings()}#card-webhooks`);
+  const retrying = webhook(page, 'https://erp.bakery.example/payments/in');
+  await retrying.getByRole('link', { name: 'Details' }).first().click();
+  const dialog = page.getByRole('dialog', { name: 'Delivery of order.paid' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('table tbody tr')).toHaveCount(4);
+  await expect(dialog.locator('tbody tr').first().locator('td').first()).toContainText('4');
+  await dialog.getByText('Request', { exact: true }).click();
+  await expect(dialog.locator('pre').first()).toContainText('X-Monokulo-Signature: t=');
+  await expect(dialog.locator('pre').first()).toContainText('"api_version": 2');
+  await dialog.getByText('Last response').click();
+  await expect(dialog.locator('pre').nth(1)).toContainText('503 Service Unavailable');
+  await expect(dialog.getByRole('button', { name: 'Send again now' })).toBeVisible();
+  await captureCoverageStage(page, 'store-webhooks-detail-dialog', test.info(), { group: GROUP });
+  await dialog.getByRole('link', { name: 'Close' }).click();
+  await expect(dialog).toBeHidden();
+});
+
+test('a store with no webhooks offers to add one', async ({ page, context }) => {
+  await login(context);
+  await seed(true);
+  await page.goto(`${settings()}#card-webhooks`);
+  await expect(card(page)).toContainText('No webhooks yet. Monokulo can tell your server when an order is paid, confirming or expired.');
+  await expect(card(page).getByRole('button', { name: 'Add webhook' })).toBeVisible();
+  await card(page).scrollIntoViewIfNeeded();
+  await captureCoverageStage(page, 'store-webhooks-empty', test.info(), { group: GROUP });
+});
+
+test('without JavaScript, Details and Delete are pages and Send again is a form', async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  await login(context);
+  const page = await context.newPage();
+  await seed();
+  await page.goto(`${settings()}#card-webhooks`);
+  const gaveUp = webhook(page, 'https://old-shop.example/?wc-api=monokulo');
+  await gaveUp.getByRole('link', { name: 'Details' }).first().click();
+  await expect(page).toHaveURL(/\/settings\/webhooks\/wh_[0-9a-f]+\/deliveries\/\d+$/);
+  await expect(page.getByRole('heading', { level: 1, name: 'Delivery of order.paid' })).toBeVisible();
+  await expect(page.locator('.delivery-page .tag')).toHaveText('gave up');
+  await captureCoverageStage(page, 'store-webhooks-detail-page', test.info(), { group: GROUP, shapes: ['desktop', 'mobile-portrait'] });
+  await page.getByRole('button', { name: 'Send again now' }).click();
+  await expect(page).toHaveURL(/\/settings\?saved=webhooks#card-webhooks$/);
+  await expect(webhook(page, 'https://old-shop.example/?wc-api=monokulo').locator('.wh-health .tag')).toHaveText('sending');
+
+  await webhook(page, 'https://bakery.example/hooks/monokulo').getByRole('link', { name: 'Delete…' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Delete this webhook?' })).toBeVisible();
+  await page.getByRole('button', { name: 'Delete webhook' }).click();
+  await expect(page).toHaveURL(/\/settings\?saved=webhooks#card-webhooks$/);
+  await expect(card(page).locator('.card-meta')).toHaveText('2 webhooks');
+  await context.close();
+});

@@ -487,6 +487,199 @@ async fn connect_plugin(
     Ok(Json(serde_json::json!({ "integration_id": id })))
 }
 
+/// The fixture store's webhooks as the design shows them
+/// (store-webhooks.spec.js): one delivering, one retrying, one that gave
+/// up, each with a few deliveries made minutes ago. `?empty` removes them
+/// all instead.
+async fn seed_webhooks(
+    State(control): State<Controls>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    use monokulo::db::{Attempt, AttemptOutcome, LoggedEvent};
+    let store = shared::ids::ConnectionId::new("coverage-store");
+    fn failed<E>(_: E) -> StatusCode {
+        StatusCode::INTERNAL_SERVER_ERROR
+    }
+    let existing = control.db.lock().list_webhooks(&store).map_err(failed)?;
+    for webhook in existing {
+        control
+            .db
+            .lock()
+            .delete_webhook(&store, &webhook.id)
+            .map_err(failed)?;
+    }
+    if query.contains_key("empty") {
+        return Ok(Json(serde_json::json!({ "webhooks": [] })));
+    }
+    let now = monokulo::now_unix();
+    // (url, events: (event, order, attempts made, delivered, status, seconds ago))
+    type Seed = (&'static str, &'static str, u32, bool, Option<u16>, i64);
+    let webhooks: [(&str, &[Seed]); 3] = [
+        (
+            "https://bakery.example/hooks/monokulo",
+            &[
+                (
+                    "order.unconfirmed",
+                    "5f01c9a7d2e14b88a3e0f9c6d1e21b07",
+                    1,
+                    true,
+                    Some(200),
+                    1380,
+                ),
+                (
+                    "order.confirming",
+                    "a8723b2e45b0d44e9c1f0a77d3b0d44e",
+                    1,
+                    true,
+                    Some(200),
+                    720,
+                ),
+                (
+                    "order.paid",
+                    "a8723b2e45b0d44e9c1f0a77d3b0d44e",
+                    1,
+                    true,
+                    Some(200),
+                    120,
+                ),
+            ],
+        ),
+        (
+            "https://erp.bakery.example/payments/in",
+            &[
+                (
+                    "order.unconfirmed",
+                    "c7d2e19b3f8e4a01b27c55e0d19a44f0",
+                    1,
+                    true,
+                    Some(200),
+                    6000,
+                ),
+                (
+                    "order.confirming",
+                    "c7d2e19b3f8e4a01b27c55e0d19a44f0",
+                    5,
+                    false,
+                    Some(503),
+                    480,
+                ),
+                (
+                    "order.paid",
+                    "5f01c9a7d2e14b88a3e0f9c6d1e21b07",
+                    4,
+                    false,
+                    Some(503),
+                    0,
+                ),
+            ],
+        ),
+        (
+            "https://old-shop.example/?wc-api=monokulo",
+            &[
+                (
+                    "order.unconfirmed",
+                    "3f9a1c4be2d07a85c113e9f0a277ab2e",
+                    2,
+                    true,
+                    Some(200),
+                    15000,
+                ),
+                (
+                    "order.paid",
+                    "3f9a1c4be2d07a85c113e9f0a277ab2e",
+                    8,
+                    false,
+                    None,
+                    11500,
+                ),
+            ],
+        ),
+    ];
+    let public_key = control.public_key.clone();
+    let mut seq = control.db.lock().order_event_position().map_err(failed)?;
+    let mut ids = Vec::new();
+    for (url, events) in webhooks {
+        let created = monokulo::webhooks::create(
+            &control.db,
+            &ENCRYPTION_KEY,
+            &store,
+            url,
+            &Default::default(),
+        )
+        .await
+        .map_err(failed)?;
+        // Only this webhook gets the events below.
+        let all = control.db.lock().list_webhooks(&store).map_err(failed)?;
+        for other in all {
+            control
+                .db
+                .lock()
+                .set_webhook_enabled_for_test(&other.id, other.id == created.webhook.id);
+        }
+        for (event_type, order, attempts, delivered, status, ago) in events {
+            seq += 1;
+            let at = now - ago;
+            let event = LoggedEvent {
+                seq,
+                event_id: format!("evt_fixture{seq}"),
+                event_type: (*event_type).to_string(),
+                created_at: at - 60 * i64::from(*attempts),
+                tenant_public_key: public_key.clone(),
+                order_id: shared::ids::OrderId::new(*order),
+                status: event_type.strip_prefix("order.").map(str::to_string),
+                txid: None,
+                merchant_order_id: Some("gm-1042".to_string()),
+                xmr_amount_piconero: 81_245_310_000,
+            };
+            let db = control.db.lock();
+            db.queue_order_event(&event, event.created_at, |store, metadata| {
+                monokulo::webhooks::body::body_v2(&event, store, metadata)
+            })
+            .map_err(failed)?;
+            let id = db
+                .recent_deliveries(&created.webhook.id, 1)
+                .map_err(failed)?[0]
+                .id;
+            for n in 1..=*attempts {
+                let last = n == *attempts;
+                let gives_up = last && !delivered && *attempts == 8;
+                db.record_delivery_attempt(
+                    id,
+                    &AttemptOutcome {
+                        attempt: Attempt {
+                            n,
+                            at: at - 60 * i64::from(*attempts - n),
+                            status: if *delivered && last { Some(200) } else { *status },
+                            error: status.is_none().then(|| "could not connect: connection refused".to_string()),
+                            ms: if status.is_some() { 184 + u64::from(n) * 600 } else { 3 },
+                            signature: format!("t={at},v1=9f2c{n:060}"),
+                        },
+                        delivered: *delivered && last,
+                        response: status.map(|s| {
+                            if s == 200 {
+                                "HTTP/1.1 200 OK\ncontent-type: text/plain\n\nok".to_string()
+                            } else {
+                                "HTTP/1.1 503 Service Unavailable\ncontent-type: text/html\n\n<html><body>Upstream is restarting</body></html>".to_string()
+                            }
+                        }),
+                        next_attempt_at: (!(*delivered && last) && !gives_up).then_some(now + 360),
+                    },
+                )
+                .map_err(failed)?;
+            }
+            ids.push(id);
+        }
+    }
+    let all = control.db.lock().list_webhooks(&store).map_err(failed)?;
+    for webhook in all {
+        control
+            .db
+            .lock()
+            .set_webhook_enabled_for_test(&webhook.id, true);
+    }
+    Ok(Json(serde_json::json!({ "deliveries": ids })))
+}
+
 /// An order the plugin made, still open: disconnecting it waits.
 async fn plugin_order(
     State(control): State<Controls>,
@@ -919,6 +1112,7 @@ async fn main() {
         .route("/__coverage/integration", post(connect_plugin))
         .route("/__coverage/integration/order", post(plugin_order))
         .route("/__coverage/status/{story}", post(status_story))
+        .route("/__coverage/webhooks", post(seed_webhooks))
         .with_state(Controls {
             engine,
             client: state.engine.client.clone(),

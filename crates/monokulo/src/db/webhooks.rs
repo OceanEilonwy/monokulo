@@ -269,6 +269,18 @@ impl Db {
         Ok(changed == 1)
     }
 
+    /// Turns a webhook on or off: for fixtures that queue an event for one
+    /// webhook of a store with several.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_webhook_enabled_for_test(&self, id: &WebhookId, enabled: bool) {
+        self.conn
+            .execute(
+                "UPDATE webhooks SET enabled = ?2 WHERE id = ?1",
+                params![id, enabled],
+            )
+            .expect("turning a test webhook on or off");
+    }
+
     /// Where the order-event log has been read up to: 0 before the first
     /// event.
     pub fn order_event_position(&self) -> Result<i64> {
