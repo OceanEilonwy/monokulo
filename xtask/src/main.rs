@@ -3,6 +3,7 @@ mod exploration;
 mod logo;
 mod mutations;
 mod pages;
+mod recording;
 mod rounds;
 mod snp;
 mod stress;
@@ -25,6 +26,7 @@ Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|summar
        cargo xtask test-summary TITLE LABEL=JUNIT...
        cargo xtask test-timings [--db PATH] <run|load|report> [...]
        cargo xtask pages <build|fetch> [...]
+       cargo xtask record-stagenet-node
        cargo xtask serve DIR [PORT]
 ";
 
@@ -42,6 +44,7 @@ fn help() {
         summary::HELP,
         timings::HELP,
         pages::HELP,
+        recording::HELP,
     ] {
         println!("{text}");
     }
@@ -93,6 +96,7 @@ fn main() -> ExitCode {
         ["pages", "fetch", rest @ ..] => pages::fetch(rest),
         ["pages", "docs", rest @ ..] => pages::docs(&root(), rest),
         ["serve", rest @ ..] => pages::serve(rest),
+        ["record-stagenet-node"] => recording::record(&root()),
         _ => {
             help();
             return ExitCode::FAILURE;
