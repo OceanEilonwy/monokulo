@@ -563,6 +563,10 @@ fn reviewed_engine_history_seeds_replay() {
         include_bytes!("../../../../../fuzz/seeds/history/fork-outage-restart").as_slice(),
         include_bytes!("../../../../../fuzz/seeds/history/sql-cancellation").as_slice(),
         include_bytes!("../../../../../fuzz/seeds/history/shorter-and-repeated-forks").as_slice(),
+        // The node names a payment's block before the scan gets there (a
+        // SQL fault stops the round), then a reorg replaces that block.
+        include_bytes!("../../../../../fuzz/seeds/history/payment-block-replaced-before-its-scan")
+            .as_slice(),
     ] {
         crate::work::history::explore(data);
     }
