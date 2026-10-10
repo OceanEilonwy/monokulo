@@ -524,6 +524,72 @@ test('on a phone a gap between the thresholds is joined', async ({ page, context
   expect(blocks.work.height).toBe(blocks.fill.height);
 });
 
+// The script's label rule, run on the cases the server's is tested with
+// (views/label_levels.json): one rule, two places, kept in step.
+test('the script stacks labels by the same rule as the server', async () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const root = path.resolve(__dirname, '../../../crates/monokulo');
+  const source = fs.readFileSync(path.join(root, 'static/engine-view.js'), 'utf8');
+  const gap = source.match(/const LABEL_GAP_PX = \d+;/)[0];
+  const body = source.match(/function stackLabels\(spans\) \{[\s\S]*?\n {2}\}\n/)[0];
+  const stackLabels = new Function(`${gap}\n${body}\nreturn stackLabels;`)();
+  const cases = JSON.parse(fs.readFileSync(path.join(root, 'src/views/label_levels.json'), 'utf8'));
+  expect(cases.length).toBeGreaterThanOrEqual(7);
+  for (const c of cases) expect(stackLabels(c.spans), c.case).toEqual([c.levels, c.used]);
+});
+
+test('the chain strip labels take as few levels as they can, with 1px leaders', async ({ page, context }) => {
+  await openAsAdmin(page, context);
+  await expect(page.locator('#engine-timeline')).toBeVisible();
+  const read = () => page.evaluate(() => {
+    const strip = document.getElementById('strip');
+    const labels = [...document.querySelectorAll('#chain-marks .m-tip, #chain-marks .m-hw, #pills .pill')]
+      .filter((el) => el.offsetParent !== null)
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        const leader = getComputedStyle(el, el.classList.contains('pill') ? '::before' : '::after');
+        return { text: el.textContent, level: Number(getComputedStyle(el).getPropertyValue('--level')), left: r.left, right: r.right, top: r.top, bottom: r.bottom, leader: leader.borderLeftWidth };
+      });
+    return { labels, levels: Number(getComputedStyle(strip).getPropertyValue('--levels')), height: strip.getBoundingClientRect().height };
+  });
+  const gap = 4;
+  // The user's case: stores catching up far to the left, the frontier and
+  // the node's tip on one block. Only the frontier goes up.
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.waitForTimeout(700);
+  let s = await read();
+  const by = (text) => s.labels.find((l) => l.text.startsWith(text));
+  expect([by('node tip').level, by('Frontier').level, by('Catching up').level]).toEqual([0, 1, 0]);
+  expect(s.levels).toBe(2);
+  // The strip is as tall as the levels it uses.
+  expect(s.height).toBe(32 + (s.levels - 1) * 22 + 46);
+  for (const width of [1280, 800]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.waitForTimeout(700);
+    s = await read();
+    expect(s.labels.length).toBeGreaterThan(1);
+    for (const [i, a] of s.labels.entries()) {
+      expect(a.leader, `${a.text}: a 1px leader`).toBe('1px');
+      for (const b of s.labels.slice(i + 1)) {
+        const apart = a.right + gap - 0.5 <= b.left || b.right + gap - 0.5 <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+        expect(apart, `${width}px: ${a.text} and ${b.text} apart`).toBe(true);
+      }
+      // Up a level only because it would overlap a label on each one below.
+      for (let below = 0; below < a.level; below++) {
+        const blocked = s.labels.some((b) => b !== a && b.level === below && !(b.right + gap <= a.left + 0.5 || a.right + gap <= b.left + 0.5));
+        expect(blocked, `${width}px: ${a.text} could go down to level ${below}`).toBe(true);
+      }
+    }
+    expect(s.levels).toBe(Math.max(1, ...s.labels.map((l) => l.level + 1)));
+  }
+  // A phone shows no labels: the strip is the cells alone.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(300);
+  s = await read();
+  expect(s.labels).toEqual([]);
+});
+
 test('without JavaScript the engine page is the network as of now', async ({ browser }) => {
   const context = await browser.newContext({ javaScriptEnabled: false });
   await context.addCookies([{ name: 'session', value: fixture.admin_session, url: fixture.base_url }]);
@@ -533,6 +599,12 @@ test('without JavaScript the engine page is the network as of now', async ({ bro
   await expect(page.locator('.engine-page a.reload')).toBeVisible();
   await expect(page.locator('#engine-summary')).toContainText('Node tip');
   await expect(page.locator('#engine-events tr').first()).toBeVisible();
+  // The server stacks the labels by the same rule: only the frontier,
+  // on the node tip's block, goes up a level.
+  await expect(page.locator('#strip')).toHaveAttribute('style', '--levels:2');
+  await expect(page.locator('#chain-marks .m-tip')).toHaveAttribute('style', /--level:0$/);
+  await expect(page.locator('#pills .pill.frontier')).toHaveAttribute('style', /--level:1$/);
+  await expect(page.locator('#pills .pill.catchup')).toHaveAttribute('style', /--level:0$/);
   await captureCoverageStage(page, 'engine-no-js', test.info(), shot);
   await context.close();
 });
