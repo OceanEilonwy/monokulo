@@ -5,8 +5,9 @@
 //! shared stagenet fixture data every real e2e test in this crate still
 //! needs regardless of which wallet implementation sends the payment.
 
-/// The real end-to-end tests' fixed stagenet connection + watch-only wallet
-/// fixture - replaces what used to be `e2e/moneropay-stagenet.toml`, parsed at
+/// The real end-to-end tests' fixed stagenet connection and payment
+/// settings (the merchant's keys come from its wallet file,
+/// `cli_wallet::WalletStore`) - replaces what used to be `e2e/moneropay-stagenet.toml`, parsed at
 /// test time via the now-removed `engine::config::Config`. Plain Rust
 /// constants instead of a TOML file: `e2e_stagenet.rs`/`e2e_dashboard_stagenet.rs`
 /// were the only things that ever read that file (the real binary now reads
@@ -28,14 +29,6 @@ pub(crate) mod e2e_fixture {
     pub(crate) const NODE_PORT: u16 = 38089;
     pub(crate) const NODE_SSL: bool = false;
     pub(crate) const NODE_ACCEPT_SELF_SIGNED_CERTS: bool = true;
-
-    pub(crate) const WALLET_PRIMARY_ADDRESS: &str =
-        "54F1KdjaAtnL6Fb4SbLUM1AMQSjSERjYUgYRtVgwjBirA26RyJCzxc4TbWPW65ZvRC6bifBfrTTv3fyu25BFQuvA2ogNiXg";
-    pub(crate) const WALLET_PRIVATE_VIEW_KEY: &str =
-        "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e";
-    pub(crate) const WALLET_PUBLIC_SPEND_KEY: &str =
-        "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335";
-    pub(crate) const WALLET_NETWORK: &str = "stagenet";
 
     // Real stagenet blocks land roughly every ~2 minutes; requiring any
     // confirmations at all would make these tests spend most of their time

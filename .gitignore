@@ -14,9 +14,9 @@ moneropay.db-wal
 
 # cli-wallet wallet files: the lock taken around every change (and the
 # note of who holds it), and SQLite's journal while a write is under way.
-/e2e/wallets/*.db.lock
-/e2e/wallets/*.db.lock.holder
-/e2e/wallets/*.db-journal
+/e2e/wallets/**/*.db.lock
+/e2e/wallets/**/*.db.lock.holder
+/e2e/wallets/**/*.db-journal
 
 # scripts/build-openwrt.sh: the binaries it drops into the package, the
 # packages and repository, and the landing page site.

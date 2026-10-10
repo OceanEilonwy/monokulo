@@ -150,10 +150,15 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     use support::e2e_fixture;
 
     let ctx = cli_wallet::WalletCtx::default();
-    let spender = cli_wallet::WalletStore::load(&ctx)
-        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallet_dir.display()))
+    let wallets = cli_wallet::WalletStore::load(&ctx)
+        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallet_dir.display()));
+    let spender = wallets
         .wallet("spender")
         .unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
+    let merchant = wallets
+        .wallet("merchant")
+        .unwrap_or_else(|e| panic!("failed to load the merchant wallet: {e}"));
+    let merchant_spend_pubkey = merchant.spend_public_key_hex().unwrap();
 
     // ---- boot a REAL, network-bound engine (no tenant bootstrapped here - the
     // "advanced connect" flow below creates it, through monokulo, exactly
@@ -299,8 +304,8 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         ("store_site", "e2e-dashboard-test.example.com"),
         ("name", "E2E wallet"),
         ("network", "stagenet"),
-        ("view_key_hex", e2e_fixture::WALLET_PRIVATE_VIEW_KEY),
-        ("spend_pubkey_hex", e2e_fixture::WALLET_PUBLIC_SPEND_KEY),
+        ("view_key_hex", merchant.private_view_key_hex.as_str()),
+        ("spend_pubkey_hex", merchant_spend_pubkey.as_str()),
     ];
     let mut done_path = String::new();
     for step in ["/setup", "/setup/wallet/keys"] {
