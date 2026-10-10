@@ -114,7 +114,9 @@ fn lock_icon() -> Markup {
 }
 
 /// The refresh arrow of "Make a different phrase".
-fn regenerate_icon() -> Markup {
+/// A circular arrow: do it again (a new phrase, a webhook delivery sent
+/// again).
+pub(super) fn regenerate_icon() -> Markup {
     html! {
         svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" {
             path d="M20 11a8 8 0 1 0-2.3 5.7" {}

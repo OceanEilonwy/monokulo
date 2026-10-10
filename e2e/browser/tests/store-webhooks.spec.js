@@ -54,7 +54,19 @@ test('each webhook says how it is doing; the deliveries of one that needs you ar
   await expect(gaveUp.locator('.wh-health .tag')).toHaveText('gave up');
   await expect(gaveUp.locator('.wh-health .hint')).toContainText('after 8 attempts (connection refused)');
   await expect(gaveUp.locator('details.wh-deliveries')).toHaveAttribute('open', '');
-  await expect(gaveUp.getByRole('button', { name: 'Send again' })).toHaveCount(1);
+  const sendAgain = gaveUp.getByRole('button', { name: 'Send again', exact: true });
+  await expect(sendAgain).toHaveCount(1);
+  await expect(sendAgain).toHaveAttribute('title', 'Send again');
+  // Whole, inside its table, and a target of at least 24px.
+  const fits = async () => {
+    const button = await sendAgain.boundingBox();
+    const table = await gaveUp.locator('.table-scroll').boundingBox();
+    expect(button.width).toBeGreaterThanOrEqual(24);
+    expect(button.height).toBeGreaterThanOrEqual(24);
+    expect(button.x + button.width).toBeLessThanOrEqual(table.x + table.width);
+    expect(await gaveUp.locator('.table-scroll').evaluate((t) => t.scrollWidth <= t.clientWidth)).toBe(true);
+  };
+  await fits();
   await expect(gaveUp.getByRole('button', { name: 'Retry failed (1)' })).toBeVisible();
   await gaveUp.scrollIntoViewIfNeeded();
   await captureCoverageStage(page, 'store-webhooks-gave-up', test.info(), { group: GROUP });
@@ -62,6 +74,7 @@ test('each webhook says how it is doing; the deliveries of one that needs you ar
   // Nothing wider than a phone.
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await fits();
   await retrying.scrollIntoViewIfNeeded();
   await captureCoverageStage(page, 'store-webhooks-phone', test.info(), { group: GROUP, asIs: true });
 });
