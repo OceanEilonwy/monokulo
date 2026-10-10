@@ -53,8 +53,9 @@ pub struct ChainView {
     pub next_block: Option<NextBlock>,
     pub cache: String,
     pub nodes: Vec<NodeView>,
-    /// The last call to the node, as monerod names it.
-    pub call: String,
+    /// The last call to the node in use, as monerod names it; `None`
+    /// before the page has seen one.
+    pub call: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -86,6 +87,8 @@ pub struct NextBlock {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct NodeView {
     pub label: String,
+    /// The node the engine is using now: the last call goes under it.
+    pub active: bool,
     pub chip: &'static str,
     /// `ok` for the active node, empty for a fallback, `warn` cooling down.
     pub tone: &'static str,
@@ -123,7 +126,15 @@ pub struct Lane {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Bar {
     pub start_ms: u64,
+    /// The time it took: what its label and the round's total add up.
     pub ms: u64,
+    /// How long it is drawn: `ms`, or longer when it is a solid segment
+    /// followed by the tier's work outside its units, drawn as one shape
+    /// running on to that work's end.
+    pub span_ms: u64,
+    /// How much of it, from the left, is drawn solid (the tier's units);
+    /// the rest is outlined (its work outside them). 0 for work alone.
+    pub solid_ms: u64,
     /// Ran in pass 2, on time left over.
     pub leftover: bool,
     /// Only work for the tier outside its units (the round's tip request,
@@ -181,6 +192,8 @@ fn segments(round: &super::machine::Round, tier: Tier, scale_ms: u64) -> Vec<Bar
                 Bar {
                     start_ms: unit.start_ms,
                     ms: unit.ms,
+                    span_ms: 0,
+                    solid_ms: 0,
                     leftover: unit.leftover(),
                     work: matches!(unit.span, Span::Work { what: _ }),
                     title: String::new(),
@@ -197,6 +210,31 @@ fn segments(round: &super::machine::Round, tier: Tier, scale_ms: u64) -> Vec<Bar
     } else {
         merged.truncate(1);
     }
+    // A solid segment and the tier's work outside its units that follows
+    // it (Blocks keeping its fetched blocks, say) are one shape: outlined
+    // from the segment's start to the work's end, solid for the segment.
+    let mut shapes: Vec<(Bar, OperationTotals)> = Vec::with_capacity(merged.len());
+    for (mut bar, parts) in merged {
+        match shapes.last_mut() {
+            Some((solid, solid_parts))
+                if bar.work && !solid.work && !solid.leftover && solid.span_ms == solid.ms =>
+            {
+                solid.span_ms = bar.start_ms + bar.ms - solid.start_ms;
+                solid.ms += bar.ms;
+                for (operation, (count, ms)) in parts {
+                    let entry = solid_parts.entry(operation).or_default();
+                    entry.0 += count;
+                    entry.1 += ms;
+                }
+            }
+            _ => {
+                bar.span_ms = bar.ms;
+                bar.solid_ms = if bar.work { 0 } else { bar.ms };
+                shapes.push((bar, parts));
+            }
+        }
+    }
+    let merged = shapes;
     let close = (scale_ms as f64 * LABEL_GAP) as u64;
     let next_starts: Vec<Option<u64>> = (0..merged.len())
         .map(|i| merged.get(i + 1).map(|(next, _)| next.start_ms))
@@ -224,7 +262,9 @@ fn segments(round: &super::machine::Round, tier: Tier, scale_ms: u64) -> Vec<Bar
                 })
                 .collect();
             carried += bar.ms;
-            if next_start.is_none_or(|next| next.saturating_sub(bar.start_ms + bar.ms) >= close) {
+            if next_start
+                .is_none_or(|next| next.saturating_sub(bar.start_ms + bar.span_ms) >= close)
+            {
                 bar.label = Some(milliseconds(carried));
                 carried = 0;
             }
@@ -613,6 +653,7 @@ fn chain(state: &State, tuning: &Tuning) -> ChainView {
             .iter()
             .map(|node| NodeView {
                 label: node.label.clone(),
+                active: node.active,
                 chip: if node.active {
                     "active"
                 } else if node.cooling_down {
@@ -629,19 +670,18 @@ fn chain(state: &State, tuning: &Tuning) -> ChainView {
                 },
             })
             .collect(),
-        call: match state.last_call {
-            Some(Call::BlockHash { height }) => format!("on_get_block_hash {}", thousands(height)),
-            Some(Call::Blocks { from, count }) => {
+        call: state.last_call.map(|call| match call {
+            Call::BlockHash { height } => format!("on_get_block_hash {}", thousands(height)),
+            Call::Blocks { from, count } => {
                 format!(
                     "get_blocks.bin {} from {}",
                     thousands(count),
                     thousands(from)
                 )
             }
-            Some(Call::Pool) => "get_transaction_pool_hashes".to_owned(),
-            Some(Call::Transactions) => "get_transactions".to_owned(),
-            None => dash(),
-        },
+            Call::Pool => "get_transaction_pool_hashes".to_owned(),
+            Call::Transactions => "get_transactions".to_owned(),
+        }),
     }
 }
 
@@ -715,10 +755,14 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
                 .filter(|unit| unit.tier == *tier)
                 .map(|unit| unit.ms)
                 .sum();
+            let bars = segments(round, *tier, scale_ms);
+            // The reserved share is drawn from where the tier's first
+            // segment starts (its work before its units with it), so the
+            // outline goes round its segments rather than across one.
             let started = round
                 .units
                 .iter()
-                .find(|unit| {
+                .any(|unit| {
                     unit.tier == *tier
                         && matches!(
                             unit.span,
@@ -728,14 +772,15 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
                             }
                         )
                 })
-                .map(|unit| unit.start_ms);
+                .then(|| bars.first().map(|bar| bar.start_ms))
+                .flatten();
             Lane {
                 tier: *tier,
                 name: tier_name(*tier),
                 share: format!("{share} %"),
                 ms: lane_ms,
                 time: milliseconds(lane_ms),
-                bars: segments(round, *tier, scale_ms),
+                bars,
                 reserved: if round.to_budget {
                     started.map(|start| (start, round.budget_ms * u64::from(share) / 100))
                 } else {
@@ -750,7 +795,7 @@ fn round_view(state: &State, round: &super::machine::Round, tuning: &Tuning) -> 
     if let Some(bar) = lanes
         .iter_mut()
         .flat_map(|lane| lane.bars.iter_mut())
-        .max_by_key(|bar| (bar.start_ms + bar.ms, bar.start_ms))
+        .max_by_key(|bar| (bar.start_ms + bar.span_ms, bar.start_ms))
     {
         bar.last = true;
     }
