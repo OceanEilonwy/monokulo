@@ -6,14 +6,12 @@
 //! logic) against a data folder holding a real `Store`-backed engine.db and a
 //! monokulo.db, with a concurrent writer thread still inserting orders while
 //! the backup runs - the exact hazard `monokulo-backup.sh`'s header reasons
-//! about (a writer mid-commit while `.backup` runs). Excluded from the default
-//! run like `e2e_stagenet.rs` is, since it shells out to external scripts and
-//! requires `sqlite3` on PATH; run explicitly with:
-//!
-//! ```sh
-//! cargo test --test backup_restore -- --ignored --nocapture
-//! ```
+//! about (a writer mid-commit while `.backup` runs). Needs the `sqlite3` CLI
+//! on PATH, as the scripts themselves do, and fails without it rather than
+//! skipping. Unix only: the scripts are shell scripts, which Windows can't
+//! run.
 
+#![cfg(unix)]
 // An integration test crate: every function in it is test code, which
 // fails by panicking.
 #![expect(
@@ -83,7 +81,13 @@ fn require_sqlite3() {
         .arg("-version")
         .output()
         .is_ok_and(|o| o.status.success());
-    assert!(ok, "sqlite3 CLI must be on PATH for this test - it's what monokulo-backup.sh and monokulo-restore.sh themselves require");
+    assert!(
+        ok,
+        "the sqlite3 CLI must be on PATH for this test, as monokulo-backup.sh and \
+         monokulo-restore.sh themselves require it: install it with \
+         `sudo apt install sqlite3` (Debian, Ubuntu), `sudo dnf install sqlite` (Fedora), \
+         `sudo pacman -S sqlite` (Arch) or `brew install sqlite` (macOS)"
+    );
 }
 
 fn seed_tenant_and_orders(store: &Store, n: u32) -> String {
@@ -126,7 +130,6 @@ fn seed_tenant_and_orders(store: &Store, n: u32) -> String {
 /// destination, and diff `tenant/order/order_payments` counts between source
 /// and restored copy.
 #[test]
-#[ignore = "shells out to deploy/backup/*.sh and requires the sqlite3 CLI - see module docs"]
 fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
     require_sqlite3();
 
@@ -290,7 +293,6 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
 /// aimed at an existing destination must fail loudly rather than silently
 /// clobber it, and must succeed once `--force` is supplied.
 #[test]
-#[ignore = "shells out to deploy/backup/*.sh and requires the sqlite3 CLI - see module docs"]
 fn restore_refuses_to_overwrite_an_existing_destination_without_force() {
     require_sqlite3();
 
