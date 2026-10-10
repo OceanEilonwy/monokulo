@@ -148,19 +148,23 @@ jobs:
             crates/monokulo/pos-ui/package-lock.json
       - name: Install the browser tests' dependencies
         run: npm ci --prefix e2e/browser --no-audit --no-fund
-      - name: Cache Playwright's Chromium
-        id: chromium
+      # Chromium runs every browser test; Firefox and WebKit run the POS's
+      # (coverage-browser.config.js). The key names the browsers, so a
+      # cache saved with fewer isn't restored. Their system libraries aren't
+      # cached: they are installed either way.
+      - name: Cache Playwright's browsers
+        id: browsers
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/browser/package-lock.json') }}
-      - name: Install Chromium
+          key: playwright-chromium-firefox-webkit-${{ runner.os }}-${{ hashFiles('e2e/browser/package-lock.json') }}
+      - name: Install Chromium, Firefox and WebKit
         working-directory: e2e/browser
         run: |
-          if test '${{ steps.chromium.outputs.cache-hit }}' = true; then
-            npx playwright install-deps chromium
+          if test '${{ steps.browsers.outputs.cache-hit }}' = true; then
+            npx playwright install-deps chromium firefox webkit
           else
-            npx playwright install --with-deps chromium
+            npx playwright install --with-deps chromium firefox webkit
           fi
       - name: Run tests
         id: tests
