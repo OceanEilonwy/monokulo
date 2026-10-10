@@ -138,6 +138,28 @@ test('real POS payment card copies the address and saves a refund address', asyn
   await expect(page.locator('.pos-refund-state')).toHaveAttribute('aria-label', 'Refund address saved');
 });
 
+test('real POS copies the address from a selection where the clipboard API is missing, and says when it could not copy', async ({ page }) => {
+  // A tablet reaching the POS over plain http on the shop's network: the
+  // page isn't a secure context, so it has no navigator.clipboard.
+  await page.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, 'clipboard', { configurable: true, get: () => undefined });
+    document.addEventListener('copy', () => { window.__copied = String(document.getSelection()); });
+  });
+  await page.goto(posUrl());
+  const card = page.locator('.pos-pay-card');
+  const copy = card.getByRole('button', { name: 'Copy payment address' });
+  const address = await card.locator('.pos-address .short-value').getAttribute('title');
+  await copy.click();
+  await expect(copy).toHaveText('Copied');
+  expect(await page.evaluate(() => window.__copied)).toBe(address);
+  await expect(copy).toHaveText('Copy');
+  // A browser that copies nothing even then: the button says so.
+  await page.evaluate(() => { document.execCommand = () => false; });
+  await copy.click();
+  await expect(copy).toHaveText('Not copied');
+  await expect(copy).toHaveText('Copy');
+});
+
 test('real POS uses the site theme toggle, applies it in place and remembers it', async ({ page }) => {
   await page.goto(posUrl());
   const toggle = page.locator('.pos-top .theme-toggle');
