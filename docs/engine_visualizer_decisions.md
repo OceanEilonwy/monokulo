@@ -606,6 +606,44 @@ Review round 1:
   node's tip meet they draw one line of the normal width, not two side by
   side.
 
+## D39. A segment's outline covers only its work's own time
+
+Approved design: `docs/design/user-testing/engine-round-outline.html`
+(PR #76, review round 2; design F with a join threshold). It replaces round
+1's one shape, whose outline ran from a unit's start to the tier's later
+work's end, across the time other tiers ran between, and so was far too
+big.
+
+- **Solid** is the tier's units. **Outlined** is the tier's work outside
+  its units (Chain's tip request, Blocks keeping its fetched blocks), drawn
+  over only the time that work took: exactly the solid part's height, a 1px
+  edge in the tier's colour, nothing inside.
+- **The gap before later work** (other tiers ran) is measured against the
+  drawn scale. At 2.5 % or more it splits: a 1px thread at mid height
+  crosses it to the outline. Under 2.5 % (or none) it joins: the outline
+  starts where the shape before it ends. Joined outlines in a row are one
+  box, never two meeting with a doubled edge. A segment can be solid, a
+  joined outline, a thread and another outline, so a `Bar` carries its
+  `shapes`.
+- **A narrow track** (under 480px: phones) joins gaps under 5 %, as the
+  same share is far fewer pixels there. The server marks a gap from 2.5 %
+  to 5 % as a band, and a container query on the track joins it; no
+  script.
+- A unit after a gap starts the next segment; a segment that took no time
+  is left out where the lane has one that took some.
+- **The end marker** sits 3px past the end of the segment that finished
+  last, so it never covers its colour; that segment's time and the
+  round's total move with it.
+- **Short rounds** are drawn to the round and 15 % more with a 10ms floor
+  (was 120ms). Times are whole milliseconds: a part under one is drawn 3px
+  wide and labelled "<1ms", never "0ms".
+- **The script draws the round to the server's scale.** It used to draw a
+  live round to a 10s scale (rounded up to whole 10s) to keep the lanes
+  from zooming during catch-up; whether a gap is joined or threaded is
+  decided at the server's scale, and short rounds are now meant to be
+  drawn to their own, so it no longer overrides it. (A catching-up round
+  is drawn to its budget by the server anyway.)
+
 ## What differs from the design, and what is left
 
 - **Simplified time lens.** The design asked for minimum animation lengths,
