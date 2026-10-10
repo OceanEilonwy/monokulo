@@ -398,10 +398,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "hits the real CoinMarketCap API over the network - run manually \
-                (`cargo test -p shared coinmarketcap::tests::manual_smoke_test -- --ignored --nocapture`), \
-                never as part of the default suite"]
-    async fn manual_smoke_test_against_the_real_coinmarketcap_api() {
+    // Run daily by `cargo xtask live` (live-network.yml), never per change.
+    #[ignore = "needs the live CoinMarketCap API"]
+    async fn live_coinmarketcap_api_quotes_usd() {
         let provider =
             CoinMarketCapRateProvider::new("https://pro-api.coinmarketcap.com/public-api");
         let usd = provider

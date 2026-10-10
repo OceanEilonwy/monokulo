@@ -3712,8 +3712,9 @@ mod wire_tests {
 mod live_node_tests {
     //! These hit a real public Monero node over the network and are excluded from
     //! the default `cargo test` run (`#[ignore]`) so the main suite stays hermetic
-    //! and fast - run explicitly with `cargo test --ignored daemon_rpc::` when you
-    //! want to verify against real chain data. Per `docs/TESTING.md` §10's
+    //! and fast. `cargo xtask live` runs them, with every other `live_` test, once
+    //! a day (live-network.yml); `cargo test --ignored daemon_rpc::` runs just
+    //! these, to verify against real chain data by hand. Per `docs/TESTING.md` §10's
     //! reasoning for the regtest tier: this proves the real RPC wiring and real
     //! transaction parsing against real (and constantly-changing) mainnet data,
     //! which no fixture-based unit test can substitute for - it's a *complement* to
@@ -3737,7 +3738,7 @@ mod live_node_tests {
 
     #[tokio::test]
     #[ignore = "needs a live mainnet node"]
-    async fn real_node_get_height_returns_a_plausible_value() {
+    async fn live_node_get_height_returns_a_plausible_value() {
         let height = client().get_height().await.unwrap();
         // Mainnet passed height 3,700,000 in mid-2026; a sane lower bound that
         // won't need updating for a long time, without hardcoding an exact value
@@ -3750,7 +3751,7 @@ mod live_node_tests {
 
     #[tokio::test]
     #[ignore = "needs a live mainnet node"]
-    async fn real_node_get_block_hash_matches_a_known_immutable_block() {
+    async fn live_node_get_block_hash_matches_a_known_immutable_block() {
         // Captured live against this exact node while building this client - at
         // 5+ confirmations deep at the time, this block's hash is permanent.
         let hash = client().get_block_hash(3_755_690).await.unwrap();
@@ -3762,8 +3763,8 @@ mod live_node_tests {
 
     #[tokio::test]
     #[ignore = "needs a live mainnet node"]
-    async fn real_node_header_matches_a_known_immutable_block() {
-        // Same block as `real_node_get_block_hash_matches_a_known_immutable_block`
+    async fn live_node_header_matches_a_known_immutable_block() {
+        // Same block as `live_node_get_block_hash_matches_a_known_immutable_block`
         // above - captured live against this exact node while building this
         // client.
         let headers = client().get_chain_headers(3_755_690, 1).await.unwrap();
@@ -3777,7 +3778,7 @@ mod live_node_tests {
 
     #[tokio::test]
     #[ignore = "needs a live mainnet node"]
-    async fn real_node_block_transactions_all_parse_as_valid_monero_transactions() {
+    async fn live_node_block_transactions_all_parse_as_valid_monero_transactions() {
         // Proves the real deserialization path handles *current* mainnet
         // transaction formats (view tags, CLSAG, bulletproofs+) - the crate's own
         // fixture used elsewhere in this codebase is a single, older-format
@@ -3828,7 +3829,7 @@ mod live_node_tests {
     /// `on_get_block_hash` names it, and the headers say the same.
     #[tokio::test]
     #[ignore = "needs a live mainnet node"]
-    async fn real_node_pruned_chain_blocks_match_the_whole_ones() {
+    async fn live_node_pruned_chain_blocks_match_the_whole_ones() {
         let c = client();
         let (start, count) = (3_755_688, 4);
         let chain = c.get_chain_blocks(start, count).await.unwrap();
@@ -3868,7 +3869,7 @@ mod live_node_tests {
     /// bodies that came with them handed over under their ids.
     #[tokio::test]
     #[ignore = "needs a live mainnet node"]
-    async fn real_node_pool_is_followed_by_its_changes() {
+    async fn live_node_pool_is_followed_by_its_changes() {
         let c = client();
         let pool = c.get_mempool_txids().await.unwrap();
         let stats = c.stats();
@@ -3896,7 +3897,7 @@ mod live_node_tests {
     /// the changes and isn't asked for the tip.
     #[tokio::test]
     #[ignore = "needs a live mainnet node"]
-    async fn real_node_says_the_tip_has_not_moved_with_the_pools_changes() {
+    async fn live_node_says_the_tip_has_not_moved_with_the_pools_changes() {
         let c = client().with_pool_timing(Duration::ZERO, Duration::from_secs(3600));
         let requests = |endpoint: &str| {
             c.stats()
@@ -3940,7 +3941,7 @@ mod live_node_tests {
     /// hash of the rest, and hash to the ids they were asked for by.
     #[tokio::test]
     #[ignore = "needs a live mainnet node"]
-    async fn real_node_pool_transactions_fetched_by_id_hash_to_their_ids() {
+    async fn live_node_pool_transactions_fetched_by_id_hash_to_their_ids() {
         let c = client();
         let pool: Vec<String> = c
             .pool_hashes()
@@ -3964,7 +3965,7 @@ mod live_node_tests {
 
     #[tokio::test]
     #[ignore = "needs a live mainnet node"]
-    async fn real_node_locate_transaction_finds_a_known_confirmed_tx() {
+    async fn live_node_locate_transaction_finds_a_known_confirmed_tx() {
         let location = client().locate_transaction(KNOWN_TX).await.unwrap();
         assert_eq!(location, TxLocation::InBlock(3_755_690));
     }
@@ -3973,7 +3974,7 @@ mod live_node_tests {
     /// one its block holds, placed at that block.
     #[tokio::test]
     #[ignore = "needs a live mainnet node"]
-    async fn real_node_find_transaction_matches_the_same_tx_in_its_block() {
+    async fn live_node_find_transaction_matches_the_same_tx_in_its_block() {
         let c = client();
         let (fetched, location) = c.find_transaction(KNOWN_TX).await.unwrap().unwrap();
         assert_eq!(location, TxLocation::InBlock(3_755_690));
@@ -3989,7 +3990,7 @@ mod live_node_tests {
 
     #[tokio::test]
     #[ignore = "needs a live mainnet node"]
-    async fn real_node_find_transaction_finds_nothing_for_a_bogus_hash() {
+    async fn live_node_find_transaction_finds_nothing_for_a_bogus_hash() {
         let found = client()
             .find_transaction("0000000000000000000000000000000000000000000000000000000000000000")
             .await
@@ -3999,7 +4000,7 @@ mod live_node_tests {
 
     #[tokio::test]
     #[ignore = "needs a live mainnet node"]
-    async fn real_node_locate_transaction_reports_not_found_for_a_bogus_hash() {
+    async fn live_node_locate_transaction_reports_not_found_for_a_bogus_hash() {
         let location = client()
             .locate_transaction("0000000000000000000000000000000000000000000000000000000000000000")
             .await
@@ -4009,7 +4010,7 @@ mod live_node_tests {
 
     #[tokio::test]
     #[ignore = "needs a live mainnet node"]
-    async fn real_node_is_key_image_spent_reports_unspent_for_a_null_image() {
+    async fn live_node_is_key_image_spent_reports_unspent_for_a_null_image() {
         let statuses = client()
             .is_key_image_spent(&[
                 "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
@@ -4021,7 +4022,7 @@ mod live_node_tests {
 
     #[tokio::test]
     #[ignore = "needs a live mainnet node"]
-    async fn real_node_end_to_end_scan_of_live_mempool_never_panics_and_finds_no_false_matches() {
+    async fn live_node_end_to_end_scan_of_live_mempool_never_panics_and_finds_no_false_matches() {
         // The fullest available proof this pipeline works: real transactions,
         // fresh off a real node's real mempool, run through the actual
         // scanner's scan-and-record path (real KeyCustody scan +
