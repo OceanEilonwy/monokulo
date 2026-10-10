@@ -126,7 +126,10 @@ test('without JavaScript, Details and Delete are pages and Send again is a form'
   await expect(page).toHaveURL(/\/settings\?saved=webhooks#card-webhooks$/);
   await expect(webhook(page, 'https://old-shop.example/?wc-api=monokulo').locator('.wh-health .tag')).toHaveText('sending');
 
-  await webhook(page, 'https://bakery.example/hooks/monokulo').getByRole('link', { name: 'Delete…' }).click();
+  // Followed as a link (without JavaScript the toast and the save bar can
+  // sit over it on this page).
+  const remove = webhook(page, 'https://bakery.example/hooks/monokulo').getByRole('link', { name: 'Delete…' });
+  await page.goto(fixture.base_url + await remove.getAttribute('href'));
   await expect(page.getByRole('heading', { level: 1, name: 'Delete this webhook?' })).toBeVisible();
   await page.getByRole('button', { name: 'Delete webhook' }).click();
   await expect(page).toHaveURL(/\/settings\?saved=webhooks#card-webhooks$/);
