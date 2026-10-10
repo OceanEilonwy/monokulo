@@ -157,7 +157,9 @@ const ENGINE_STYLE: &str = r#"
    whole goes to a second line, which is out of sight, so the strip never
    shows part of one. engine-view.js measures the strip and draws as many
    blocks as fit, again when it is resized. */
-.strip { --cells-top: 74px; position: relative; padding-inline: 14px 8px; padding-top: var(--cells-top); height: 120px; }
+/* The strip is as tall as its labels' levels: level 0 sits right above
+   the blocks (over the reorg window's line), each level up 22px higher. */
+.strip { --levels: 1; --cells-top: calc(32px + (var(--levels) - 1) * 22px); position: relative; padding-inline: 14px 8px; padding-top: var(--cells-top); height: calc(var(--cells-top) + 46px); }
 .cells { display: flex; flex-direction: row-reverse; flex-wrap: wrap; align-content: flex-start; gap: 4px; align-items: flex-end; height: 28px; overflow: hidden; }
 .cell { position: relative; width: 22px; height: 26px; border-radius: 4px; border: 1.5px solid var(--viz-cell-edge); background: var(--viz-cell-recorded); overflow: hidden; flex: none; transition: background 0.3s, border-color 0.3s, opacity 0.3s; }
 .cell .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--viz-tier-blocks); opacity: 0.85; transition: width 0.2s linear; }
@@ -181,24 +183,28 @@ const ENGINE_STYLE: &str = r#"
 /* Above the blocks, top down: stores catching up, the frontier, then the
    node's tip and the high-water mark, each with a tick down to its block;
    the reorg window's line sits a --space-sm step above the blocks. */
-.marks span { position: absolute; top: 44px; height: 16px; line-height: 14px; font-size: 0.62rem; font-weight: 800; white-space: nowrap; padding: 0 5px; border-radius: 4px; transition: left 0.5s; }
-.marks span::after { content: ""; position: absolute; top: 100%; height: calc(var(--cells-top) - 60px); border-left: 2px solid currentColor; }
+/* Labels above the blocks: each on the lowest level where it overlaps no
+   other (engine::label_levels, and the same rule in engine-view.js), with
+   a 1px leader down to its block. Leaders on one block are the same
+   pixel, so they draw as one line. */
+.marks span:not(.m-win), .pill { --level: 0; top: calc(var(--cells-top) - 32px - var(--level) * 22px); height: 18px; }
+.marks span:not(.m-win)::after, .pill::before { content: ""; position: absolute; top: 100%; height: calc(14px + var(--level) * 22px); border-left: 1px solid currentColor; }
+.marks span { position: absolute; line-height: 16px; font-size: 0.62rem; font-weight: 800; white-space: nowrap; padding: 0 5px; border-radius: 4px; transition: left 0.5s; }
 .marks .m-tip { transform: translateX(-10px); background: var(--paper-raised); border: 1px solid var(--line-strong); }
-.marks .m-tip::after { left: 8px; }
+.marks .m-tip::after { left: 8.5px; }
 .marks .m-hw { transform: translateX(calc(-100% + 10px)); color: var(--accent-text); background: var(--paper-raised); }
 /* A mark's label covers a group's tick passing behind it. */
 .marks span { z-index: 2; }
 .pills { z-index: 1; }
-.marks .m-hw::after { right: 9px; }
+.marks .m-hw::after { right: 9.5px; }
 .marks .m-win { top: calc(var(--cells-top) - var(--space-sm) - 2px); height: 2px; padding: 0; background: var(--viz-tier-chain); }
+.marks .m-tip, .marks .m-hw { box-sizing: border-box; }
 .marks .m-win::after { display: none; }
-.pills { position: absolute; left: 0; right: 0; top: 0; height: 40px; }
-.pill { position: absolute; top: 22px; height: 18px; transform: translateX(-12px); display: inline-flex; align-items: center; font-size: 0.68rem; font-weight: 800; padding: 0 var(--pill-pad-x); border-radius: 99px; border: 1.5px solid var(--line-strong); background: var(--paper-raised); white-space: nowrap; transition: left 0.45s cubic-bezier(0.4, 0, 0.2, 1); }
-.pill::before { content: ""; position: absolute; left: 9.5px; top: 100%; height: calc(var(--cells-top) - 40px); border-left: 2px solid currentColor; }
+.pills { position: absolute; left: 0; right: 0; top: 0; height: var(--cells-top); }
+.pill { position: absolute; box-sizing: border-box; transform: translateX(-12px); display: inline-flex; align-items: center; font-size: 0.68rem; font-weight: 800; padding: 0 var(--pill-pad-x); border-radius: 99px; border: 1.5px solid var(--line-strong); background: var(--paper-raised); white-space: nowrap; transition: left 0.45s cubic-bezier(0.4, 0, 0.2, 1); }
+.pill::before { left: 10px; }
 .pill.frontier { transform: translateX(calc(-100% + 12px)); border-color: var(--accent); background: var(--tint-highlight); }
-.pill.frontier::before { left: auto; right: 9.5px; }
-.pill.catchup { top: 0; }
-.pill.catchup::before { height: calc(var(--cells-top) - 18px); }
+.pill.frontier::before { left: auto; right: 10px; }
 .pill.busy { animation: pill-busy 0.6s ease-in-out infinite alternate; }
 .pill.waiting { opacity: 0.55; }
 @keyframes pill-busy { to { box-shadow: 0 0 0 4px var(--tint-highlight); } }
@@ -539,6 +545,51 @@ pub fn visible_blocks(chain: &ChainView, cells: u64) -> Vec<Option<u64>> {
         .collect()
 }
 
+/// The space kept between two labels on one level, in pixels.
+pub const LABEL_GAP_PX: f64 = 4.0;
+
+/// Each label's level, given its left and right edges in pixels, in the
+/// order given (the node's tip, the high-water mark, then each group of
+/// stores): each goes on the lowest level where it is at least
+/// `LABEL_GAP_PX` clear of every label already there. Returns the levels
+/// in the order given and how many are used (at least one). The page's
+/// script applies the same rule to the labels as drawn (`stackLabels` in
+/// engine-view.js), checked against the same cases
+/// (`label_levels.json`).
+pub fn label_levels(spans: &[(f64, f64)]) -> (Vec<usize>, usize) {
+    let mut placed: Vec<Vec<(f64, f64)>> = Vec::new();
+    let levels = spans
+        .iter()
+        .map(|&(left, right)| {
+            let clear = |level: &Vec<(f64, f64)>| {
+                level
+                    .iter()
+                    .all(|&(l, r)| r + LABEL_GAP_PX <= left || right + LABEL_GAP_PX <= l)
+            };
+            let level = placed.iter().position(clear).unwrap_or(placed.len());
+            if level == placed.len() {
+                placed.push(Vec::new());
+            }
+            placed[level].push((left, right));
+            level
+        })
+        .collect();
+    (levels, placed.len().max(1))
+}
+
+/// A label's width as drawn, in pixels, estimated from its text: the page
+/// without JavaScript places its labels with it (the script measures).
+fn label_width(text: &str, pill: bool) -> f64 {
+    let chars = text.chars().count() as f64;
+    if pill {
+        // 0.68rem bold, the pill's padding and border.
+        chars * 6.4 + 19.0
+    } else {
+        // 0.62rem bold, 5px padding and a 1px border.
+        chars * 5.9 + 12.0
+    }
+}
+
 fn chain(chain: &ChainView) -> Markup {
     let blocks = visible_blocks(chain, CELLS);
     let next = |height: u64| chain.next_block.is_some() && Some(height) == chain.tip.map(|t| t + 1);
@@ -569,6 +620,49 @@ fn chain(chain: &ChainView) -> Markup {
     let left = |x: u64| format!("left:calc(100% - {x}px)");
     let tip = chain.tip.unwrap_or(0);
     let high_water = chain.high_water.unwrap_or(0);
+    // The labels, left and right edges as drawn in pixels from the strip's
+    // right edge (negative, so left is less than right), stacked as few
+    // levels high as they can go: the node's tip and the high-water mark,
+    // then each group of stores.
+    let anchored = |x: u64, width: f64, from_left: bool, off: f64| {
+        let x = -(x as f64);
+        if from_left {
+            (x - off, x - off + width)
+        } else {
+            (x + off - width, x + off)
+        }
+    };
+    let mut spans = Vec::new();
+    if chain.tip.is_some() {
+        spans.push(anchored(
+            centre(tip),
+            label_width("node tip", false),
+            true,
+            10.0,
+        ));
+    }
+    if high_water < tip {
+        spans.push(anchored(
+            centre(high_water),
+            label_width("scanned to", false),
+            false,
+            10.0,
+        ));
+    }
+    for group in &chain.groups {
+        spans.push(anchored(
+            centre(group.cursor),
+            label_width(&group.label, true),
+            !group.frontier,
+            12.0,
+        ));
+    }
+    let (levels, used) = label_levels(&spans);
+    let mut level = levels.into_iter();
+    let tip_level = chain.tip.map(|_| level.next().unwrap_or(0));
+    let hw_level = (high_water < tip).then(|| level.next().unwrap_or(0));
+    let placed =
+        |x: u64, level: Option<usize>| format!("{};--level:{}", left(x), level.unwrap_or(0));
     html! {
         section class="engine-card t-blocks" id="engine-chain" aria-labelledby="h-chain" {
             header {
@@ -585,13 +679,13 @@ fn chain(chain: &ChainView) -> Markup {
             }
             div class="chain-row" {
                 div class="strip-scroll" id="strip-scroll" {
-                    div class="strip" id="strip" {
+                    div class="strip" id="strip" style=(format!("--levels:{used}")) {
                         div class="marks" id="chain-marks" {
                             @if chain.tip.is_some() {
-                                span class="m-tip" style=(left(centre(tip))) { "node tip" }
+                                span class="m-tip" style=(placed(centre(tip), tip_level)) { "node tip" }
                             }
                             @if high_water < tip {
-                                span class="m-hw" style=(left(centre(high_water))) { "scanned to" }
+                                span class="m-hw" style=(placed(centre(high_water), hw_level)) { "scanned to" }
                             }
                         }
                         // Newest first: laid out from the right.
@@ -612,7 +706,7 @@ fn chain(chain: &ChainView) -> Markup {
                             @for group in &chain.groups {
                                 div class=(format!("pill {}{}{}", if group.frontier { "frontier" } else { "catchup" }, if group.busy { " busy" } else { "" }, if group.waiting { " waiting" } else { "" }))
                                     data-id=(group.id) title=(group.title)
-                                    style=(left(centre(group.cursor))) { (group.label) }
+                                    style=(placed(centre(group.cursor), level.next())) { (group.label) }
                             }
                         }
                     }
@@ -1234,6 +1328,75 @@ mod tests {
             zero.contains(r#"style="left:30.00%;width:0.00%""#)
                 && zero.contains(r#"<i class="fill" style="left:0.00%;width:100.00%"></i>"#),
             "{zero}"
+        );
+    }
+
+    /// The labels' levels: the cases the page's script is checked against
+    /// too (`label_levels.json`).
+    #[test]
+    fn labels_go_on_the_lowest_level_they_are_clear_on() {
+        #[derive(serde::Deserialize)]
+        struct Case {
+            case: String,
+            spans: Vec<(f64, f64)>,
+            levels: Vec<usize>,
+            used: usize,
+        }
+        let cases: Vec<Case> = serde_json::from_str(include_str!("label_levels.json")).unwrap();
+        assert!(cases.len() >= 7);
+        for case in cases {
+            assert_eq!(
+                label_levels(&case.spans),
+                (case.levels, case.used),
+                "{}",
+                case.case
+            );
+        }
+    }
+
+    /// The strip is as tall as its labels need: the node's tip and stores
+    /// catching up far to the left share the lowest level (one level); the
+    /// frontier on the tip's block goes up one (two levels), and nothing
+    /// else does.
+    #[test]
+    fn the_strip_is_as_tall_as_its_labels_levels() {
+        let group = |id: u64, cursor: u64, frontier: bool, label: &str| GroupView {
+            id,
+            cursor,
+            frontier,
+            busy: false,
+            waiting: false,
+            label: label.into(),
+            title: String::new(),
+        };
+        let mut view = chain(3_412_880, 3_412_880, 3_412_838);
+        view.groups = vec![group(2, 3_412_838, false, "Catching up, 3 stores")];
+        let html = super::chain(&view).into_string();
+        assert!(html.contains(r#"id="strip" style="--levels:1""#), "{html}");
+        assert!(
+            html.contains(r#"class="m-tip" style="left:calc(100% - 45px);--level:0""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#";--level:0">Catching up, 3 stores"#),
+            "{html}"
+        );
+
+        view.groups
+            .insert(0, group(1, 3_412_880, true, "Frontier, 41 stores"));
+        let html = super::chain(&view).into_string();
+        assert!(html.contains(r#"id="strip" style="--levels:2""#), "{html}");
+        assert!(
+            html.contains(r#";--level:1">Frontier, 41 stores"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#";--level:0">Catching up, 3 stores"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"class="m-tip" style="left:calc(100% - 45px);--level:0""#),
+            "{html}"
         );
     }
 }

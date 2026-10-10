@@ -1,0 +1,44 @@
+[
+  {
+    "case": "two labels far apart share the lowest level",
+    "spans": [[-60, 10], [-900, -780]],
+    "levels": [0, 0],
+    "used": 1
+  },
+  {
+    "case": "two labels that would overlap stack",
+    "spans": [[-10, 50], [-130, 12]],
+    "levels": [0, 1],
+    "used": 2
+  },
+  {
+    "case": "the node's tip, the frontier on its block and stores catching up far left: only the frontier goes up",
+    "spans": [[-10, 50], [-130, 12], [-912, -782]],
+    "levels": [0, 1, 0],
+    "used": 2
+  },
+  {
+    "case": "a gap of exactly LABEL_GAP_PX is clear",
+    "spans": [[0, 40], [44, 80]],
+    "levels": [0, 0],
+    "used": 1
+  },
+  {
+    "case": "a gap under LABEL_GAP_PX is not",
+    "spans": [[0, 40], [43, 80]],
+    "levels": [0, 1],
+    "used": 2
+  },
+  {
+    "case": "a third label goes back down to the lowest level it is clear on",
+    "spans": [[0, 100], [50, 150], [200, 260], [90, 210]],
+    "levels": [0, 1, 0, 2],
+    "used": 3
+  },
+  {
+    "case": "no labels: one level, for the reorg window's line",
+    "spans": [],
+    "levels": [],
+    "used": 1
+  }
+]
