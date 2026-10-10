@@ -402,6 +402,25 @@ macro_rules! e2e_path {
     };
 }
 
+/// Names another directory of wallet files than `e2e/wallets/`, for a run
+/// that must not spend from the wallets developers use: the daily
+/// live-network job (`.github/workflows/live-network.yml`) sets it to
+/// `e2e/wallets/ci`, a pair nothing else spends from, so it never races a
+/// local run for the same outputs. Every e2e suite and `wallet-cli` take it,
+/// through [`WalletCtx::for_network`].
+pub const WALLET_DIR_VAR: &str = "E2E_WALLET_DIR";
+
+/// Where wallet files live: `dir` (the [`WALLET_DIR_VAR`] variable's value)
+/// when given, else `e2e/wallets/`. A relative `dir` is taken from the
+/// repository root, not the working directory, which `cargo test` sets to
+/// each test's own crate.
+fn wallet_dir(dir: Option<std::ffi::OsString>) -> PathBuf {
+    match dir {
+        Some(dir) => Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join(dir),
+        None => PathBuf::from(e2e_path!("wallets")),
+    }
+}
+
 impl Default for WalletCtx {
     /// The standard layout every real e2e suite in this repo already uses -
     /// see `e2e/README.md`.
@@ -412,8 +431,9 @@ impl Default for WalletCtx {
 
 impl WalletCtx {
     /// [`WalletCtx::default`]'s layout for wallets on `network`: its
-    /// default nodes, and the committed decoy snapshot where there is one
-    /// (stagenet's).
+    /// default nodes, the committed decoy snapshot where there is one
+    /// (stagenet's), and the wallet directory [`WALLET_DIR_VAR`] names, if
+    /// any.
     pub fn for_network(network: Network) -> Self {
         let (nodes, decoy_distribution_path) = match network {
             Network::Testnet => (DEFAULT_TESTNET_NODES, None),
@@ -429,7 +449,7 @@ impl WalletCtx {
             network,
             node_urls: nodes.iter().map(|url| url.to_string()).collect(),
             accept_invalid_certs: true,
-            wallet_dir: PathBuf::from(e2e_path!("wallets")),
+            wallet_dir: wallet_dir(std::env::var_os(WALLET_DIR_VAR)),
             decoy_distribution_path,
         }
     }
@@ -1395,5 +1415,27 @@ mod tests {
         assert_eq!(network_name(Network::Mainnet), "mainnet");
         assert!(parse_network("mainnet").is_err());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_wallet_directory_variable_is_taken_from_the_repository_root() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        assert_eq!(wallet_dir(None), repo.join("e2e/wallets"));
+        assert_eq!(
+            wallet_dir(Some("e2e/wallets/ci".into())),
+            repo.join("e2e/wallets/ci")
+        );
+        // An absolute one is used as given.
+        let elsewhere = std::env::temp_dir().join("wallets");
+        assert_eq!(wallet_dir(Some(elsewhere.clone().into())), elsewhere);
+        // Every e2e suite and wallet-cli resolve a bare name in it.
+        let ctx = WalletCtx {
+            wallet_dir: wallet_dir(Some("e2e/wallets/ci".into())),
+            ..WalletCtx::default()
+        };
+        assert_eq!(
+            ctx.wallet_path("spender"),
+            repo.join("e2e/wallets/ci/spender.db")
+        );
     }
 }

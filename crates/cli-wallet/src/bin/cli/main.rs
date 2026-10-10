@@ -52,7 +52,9 @@ struct Cli {
     #[arg(long, visible_alias = "wallet", global = true, default_value = DEFAULT_WALLET)]
     wallet_file: String,
 
-    /// Directory bare wallet names resolve in.
+    /// Directory bare wallet names resolve in: `e2e/wallets/` unless the
+    /// `E2E_WALLET_DIR` variable names another (taken from the repository
+    /// root).
     #[arg(long, global = true)]
     wallet_dir: Option<PathBuf>,
 
