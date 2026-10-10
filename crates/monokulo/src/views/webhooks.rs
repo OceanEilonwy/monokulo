@@ -432,10 +432,7 @@ pub fn detail_content(
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&webhook.extra_headers)
             .map(|map| map.keys().cloned().collect())
             .unwrap_or_default();
-    let body = serde_json::from_str::<serde_json::Value>(&delivery.body)
-        .ok()
-        .and_then(|v| serde_json::to_string_pretty(&v).ok())
-        .unwrap_or_else(|| delivery.body.clone());
+    let body = indented_json(&delivery.body);
     let mut request = format!(
         "POST {path}\nContent-Type: application/json\nX-Monokulo-Signature: {signature}\nX-Monokulo-Event: {}\nX-Monokulo-Event-Id: {}\n",
         delivery.event_type, delivery.event_id
@@ -496,7 +493,7 @@ pub fn detail_content(
         details class="req" {
             summary { "Request" }
             pre { (request) }
-            p class="hint" { "The body is shown formatted; it's sent on one line, exactly as signed. The signing secret is never shown again: verify with the copy you saved." }
+            p class="hint" { "The body is laid out here for reading; it's sent on one line, exactly as signed. The signing secret is never shown again: verify with the copy you saved." }
         }
         @if let Some(response) = &delivery.last_response {
             details class="req" {
@@ -516,6 +513,59 @@ pub fn detail_content(
             }
         }
     }
+}
+
+/// Compact JSON laid out one field per line, its fields in the order they
+/// were sent (a parsed `Value` would sort them). Anything that isn't a JSON
+/// object comes back as it is.
+fn indented_json(json: &str) -> String {
+    if serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json).is_err() {
+        return json.to_string();
+    }
+    fn newline(out: &mut String, depth: usize) {
+        out.push('\n');
+        out.push_str(&"  ".repeat(depth));
+    }
+    let mut out = String::new();
+    let mut depth = 0usize;
+    let (mut in_string, mut escaped) = (false, false);
+    for c in json.chars() {
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_string = true;
+                out.push(c);
+            }
+            '{' | '[' => {
+                depth += 1;
+                out.push(c);
+                newline(&mut out, depth);
+            }
+            '}' | ']' => {
+                depth = depth.saturating_sub(1);
+                newline(&mut out, depth);
+                out.push(c);
+            }
+            ',' => {
+                out.push(c);
+                newline(&mut out, depth);
+            }
+            ':' => out.push_str(": "),
+            c if c.is_whitespace() => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn page(
@@ -599,4 +649,16 @@ pub fn all_page(
             p { a href=(paths.settings()) { "Back to the store's settings" } }
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_body_is_laid_out_in_the_order_it_was_sent() {
+        assert_eq!(
+            super::indented_json(r#"{"b":1,"a":"x,{y}\"","s":{"id":"1"}}"#),
+            "{\n  \"b\": 1,\n  \"a\": \"x,{y}\\\"\",\n  \"s\": {\n    \"id\": \"1\"\n  }\n}"
+        );
+        assert_eq!(super::indented_json("not json"), "not json");
+    }
 }
