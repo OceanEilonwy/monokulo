@@ -387,8 +387,11 @@ function App() {
   /** The store's full orders page, optionally searching for `term`. */
   const allOrdersUrl = (term = '') => `/dashboard/stores/${encodeURIComponent(config.connectionId)}/orders${term ? `?q=${encodeURIComponent(term)}` : ''}`;
   function merge(previous: Order, next: Partial<Order> & { updated_at?: number }): Order {
-    if (previous.updated_at !== undefined && next.updated_at !== undefined && next.updated_at < previous.updated_at) return previous;
-    return { ...previous, ...next, qr_svg: next.qr_svg ?? previous.qr_svg, refund_address: next.refund_address !== undefined ? next.refund_address : previous.refund_address };
+    // A cancellation is only ever read from the order, never from a status
+    // event, and is never undone: whichever of the two knows it wins.
+    const cancelled_at = next.cancelled_at ?? previous.cancelled_at;
+    if (previous.updated_at !== undefined && next.updated_at !== undefined && next.updated_at < previous.updated_at) return { ...previous, cancelled_at };
+    return { ...previous, ...next, cancelled_at, qr_svg: next.qr_svg ?? previous.qr_svg, refund_address: next.refund_address !== undefined ? next.refund_address : previous.refund_address };
   }
   function mergeRead(previous: Order, next: Order, revision: number): Order {
     const merged = merge(previous, next);
@@ -398,7 +401,7 @@ function App() {
     return { ...merged, status: previous.status, confirmations: previous.confirmations,
       confirmations_required: previous.confirmations_required, error: previous.error,
       updated_at: previous.updated_at, received_xmr: previous.received_xmr,
-      remaining_xmr: previous.remaining_xmr, cancelled_at: previous.cancelled_at,
+      remaining_xmr: previous.remaining_xmr,
       qr_svg: previous.qr_svg ?? merged.qr_svg };
   }
   /** Every change to the orders goes through here, so an order that turns
