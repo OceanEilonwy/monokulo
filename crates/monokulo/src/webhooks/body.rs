@@ -1,4 +1,4 @@
-//! A webhook's body, version 2 (`docs/site/webhooks.md`): the engine's
+//! A webhook's body, version 2 (`xtask/src/pages/docs/webhooks.md`): the engine's
 //! event, with what monokulo recorded about the order when it was made
 //! (its price, its exchange rate) and the store it belongs to.
 //!
