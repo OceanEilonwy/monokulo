@@ -1,6 +1,7 @@
 # The GitHub Pages site:
-#   /           the landing page and the signed apk repository (the OpenWrt
-#               package's site artifact)
+#   /           the landing page (`cargo xtask pages landing`; xtask/src/pages/landing/)
+#               and the signed apk repository (the OpenWrt workflow's
+#               openwrt-repo artifact)
 #   /testing/   the coverage report (`cargo xtask pages build`): tests,
 #               coverage, screenshots, property tests, fuzzing, scale and the
 #               live-network tests
@@ -77,9 +78,12 @@ jobs:
           args=(target/pages)
           if test -n "$PART"; then args+=(--current "$PART" --conclusion "$CONCLUSION"); fi
           cargo xtask pages fetch "${args[@]}"
+      # The install page for the apk repository the artifact holds.
+      - name: Build the landing page beside the apk repository
+        run: cargo xtask pages landing --site target/pages/site --github-url "https://github.com/$GITHUB_REPOSITORY"
       - name: Build the coverage report beside the landing page
         run: |
-          args=(--out target/pages/site/testing --sources target/pages/sources.json --repo-url "https://github.com/$GITHUB_REPOSITORY")
+          args=(--out target/pages/site/testing --sources target/pages/sources.json --github-url "https://github.com/$GITHUB_REPOSITORY")
           for source in coverage properties fuzz scale live; do
             if test -d "target/pages/$source"; then args+=("--$source" "target/pages/$source"); fi
           done

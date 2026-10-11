@@ -1,7 +1,9 @@
 #!/bin/sh
-# Build the monokulo package (.apk) for OpenWrt 25.12 on the GL.iNet Flint 2
-# (mediatek/filogic, aarch64_cortex-a53), a signed apk repository holding it,
-# and the landing page that explains how to install it.
+# Build the monokulo package (.apk) for one OpenWrt release and CPU
+# architecture (by default 25.12 on the GL.iNet Flint 2: mediatek/filogic,
+# aarch64_cortex-a53) and a signed apk repository holding
+# it. Publishing it, and the page that explains how to install it, belong to
+# the Pages site (`cargo xtask pages`).
 #
 # monokulo, with the engine inside it, is cross-compiled here with cargo. Its C
 # parts (SQLite, aws-lc) are compiled with the gcc from the official OpenWrt
@@ -15,8 +17,7 @@
 # Output:
 #   dist/          the package, the repository index and the public key,
 #                  for installing by hand (CI uploads these as an artifact)
-#   site/          the landing page with the package repository under it,
-#                  ready for GitHub Pages
+#   dist/repo/     the signed apk repository: the package and packages.adb
 #
 # Signing key (must match openwrt/keys/monokulo.pem), first found wins:
 #   $APK_SIGNING_KEY       the PEM itself (how CI passes the secret)
@@ -27,21 +28,16 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+# One OpenWrt release and CPU architecture per run; openwrt.yml's build matrix
+# sets these, and the defaults are its entry for the Flint 2.
 SDK_IMAGE="${SDK_IMAGE:-openwrt/sdk:mediatek-filogic-25.12.5}"
-RELEASE=25.12
-ARCH=aarch64_cortex-a53
-TARGET=aarch64-unknown-linux-musl
+ARCH="${OPENWRT_ARCH:-aarch64_cortex-a53}"        # the SDK's package architecture
+TARGET="${RUST_TARGET:-aarch64-unknown-linux-musl}"
+TOOLCHAIN_PREFIX="${TOOLCHAIN_PREFIX:-aarch64-openwrt-linux-musl}"  # the SDK compiler's name
+triple=$(printf '%s' "$TARGET" | tr - _)
+TRIPLE=$(printf '%s' "$triple" | tr '[:lower:]' '[:upper:]')
 PUBKEY=openwrt/keys/monokulo.pem
 PKG=openwrt/monokulo
-
-# Where the repository is published, e.g. https://owner.github.io/monokulo
-remote=$(git remote get-url origin 2>/dev/null || true)
-slug=${GITHUB_REPOSITORY:-$(printf '%s' "$remote" | sed -E 's#^(git@github\.com:|https://github\.com/)##; s#\.git$##')}
-REPO_URL="${REPO_URL:-https://github.com/$slug}"
-if [ -z "${PAGES_URL:-}" ]; then
-	owner=$(printf '%s' "${slug%%/*}" | tr '[:upper:]' '[:lower:]')
-	PAGES_URL="https://$owner.github.io/${slug#*/}"
-fi
 
 # The package version is the crate's; the release number is the commit
 # count, so every build from main upgrades the one before it.
@@ -76,9 +72,9 @@ if [ ! -d "$toolchain_root/staging_dir" ]; then
 	trap - EXIT
 	mv "$toolchain_root/staging_dir.partial" "$toolchain_root/staging_dir"
 fi
-toolchain=$(ls -d "$toolchain_root"/staging_dir/toolchain-aarch64_cortex-a53_gcc-*_musl | head -n 1)
-[ -x "$toolchain/bin/aarch64-openwrt-linux-musl-gcc" ] || {
-	echo "error: no aarch64 musl gcc in $SDK_IMAGE" >&2
+toolchain=$(ls -d "$toolchain_root"/staging_dir/toolchain-"$ARCH"_gcc-*_musl* | head -n 1)
+[ -x "$toolchain/bin/$TOOLCHAIN_PREFIX-gcc" ] || {
+	echo "error: no $TOOLCHAIN_PREFIX-gcc in $SDK_IMAGE" >&2
 	exit 1
 }
 
@@ -98,15 +94,15 @@ rustup target add "$TARGET"
 (
 	export STAGING_DIR="$toolchain_root/staging_dir"
 	export PATH="$toolchain/bin:$PATH"
-	export CC_aarch64_unknown_linux_musl=aarch64-openwrt-linux-musl-gcc
-	export CXX_aarch64_unknown_linux_musl=aarch64-openwrt-linux-musl-g++
-	export AR_aarch64_unknown_linux_musl=aarch64-openwrt-linux-musl-ar
-	export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-openwrt-linux-musl-gcc
+	export "CC_$triple=$TOOLCHAIN_PREFIX-gcc"
+	export "CXX_$triple=$TOOLCHAIN_PREFIX-g++"
+	export "AR_$triple=$TOOLCHAIN_PREFIX-ar"
+	export "CARGO_TARGET_${TRIPLE}_LINKER=$TOOLCHAIN_PREFIX-gcc"
 	# RandomX also calls libgcc's __clear_cache after writing JIT code; Rust's
 	# musl target links no libgcc of its own, so link the toolchain's static
 	# one. And libc once more after both, for what libstdc++ needs from it
 	# (the static link resolves left to right).
-	export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-L native=$static_cxx -C link-arg=-lgcc -C link-arg=-lc"
+	export "CARGO_TARGET_${TRIPLE}_RUSTFLAGS=-L native=$static_cxx -C link-arg=-lgcc -C link-arg=-lc"
 	export CARGO_PROFILE_RELEASE_STRIP=symbols
 	# The engine is built into monokulo (its default `embedded-engine`
 	# feature), so there is one binary to ship, with the engine's default
@@ -122,7 +118,7 @@ if ! file "target/$TARGET/release/monokulo" | grep -q 'statically linked'; then
 fi
 install -m 0755 "target/$TARGET/release/monokulo" "$PKG/files/monokulo"
 
-rm -rf dist site
+rm -rf dist
 mkdir -p dist/repo
 chmod 0777 dist dist/repo # the SDK runs as its own user
 
@@ -178,22 +174,5 @@ cp "dist/repo/$apk" dist/repo/packages.adb dist/
 cp "$PUBKEY" dist/monokulo.pem
 (cd dist && sha256sum "$apk" packages.adb monokulo.pem > SHA256SUMS)
 
-# The landing page, its assets (monokulo's own theme, fonts and logo) and the
-# package repository.
-repo_path="openwrt/$RELEASE/$ARCH"
-repo="site/$repo_path"
-mkdir -p "$repo" site/assets
-cp dist/repo/* "$repo/"
-cp "$PUBKEY" site/monokulo.pem
-cp crates/monokulo/src/views/theme.css site/assets/theme.css
-cp crates/monokulo/static/logo.svg crates/monokulo/static/favicon.svg \
-	crates/monokulo/static/manrope-500.woff2 crates/monokulo/static/manrope-700.woff2 \
-	crates/monokulo/static/manrope-800.woff2 site/assets/
-size=$(du -k "$repo/$apk" | cut -f1)
-awk -v key="$(cat "$PUBKEY")" '{ gsub(/@PUBKEY@/, key); print }' web/index.html |
-	sed -e "s#@PAGES_URL@#$PAGES_URL#g" -e "s#@REPO_PATH@#$repo_path#g" -e "s#@REPO_URL@#$REPO_URL#g" \
-		-e "s#@APK@#$apk#g" -e "s#@APK_SIZE@#$((size / 1024)) MB#g" -e "s#@VERSION@#$VERSION-r$PKG_RELEASE#g" \
-	> site/index.html
-touch site/.nojekyll
 
-ls -l dist "$repo"
+ls -l dist dist/repo

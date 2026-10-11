@@ -19,8 +19,7 @@ moneropay.db-wal
 /e2e/wallets/**/*.db-journal
 
 # scripts/build-openwrt.sh: the binaries it drops into the package, the
-# packages and repository, and the landing page site.
+# packages and repository.
 /openwrt/monokulo/files/monokulo
 /openwrt/monokulo/files/monokulo-engine
 /dist/
-/site/

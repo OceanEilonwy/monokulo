@@ -114,7 +114,7 @@ run), and `cargo xtask pages build` (`xtask/src/pages/`) renders a page per
 section, each naming the run and commit it is from, plus `badge.json` (the
 README's coverage badge), shipping only the report pages the pages link and
 the files those need. The pages are plain HTML that reads without
-JavaScript; `web/pages/coverage/` holds their stylesheet and the script that
+JavaScript; `xtask/src/pages/assets/coverage/` holds their stylesheet and the script that
 adds the filters and the screenshot viewer. The default build of the
 property and fuzz runs is shown (`--feature` on both commands picks
 another).

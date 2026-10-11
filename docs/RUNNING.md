@@ -41,19 +41,23 @@ databases (`monokulo.db` and the engine's `engine.db`) live in the
 `monokulo-data` volume. `compose.yaml` also shows, commented out, the engine
 as a container of its own.
 
-## On an OpenWrt router (GL.iNet Flint 2)
+## On an OpenWrt router
 
 One signed package, `monokulo`, holds both binaries, a procd service that
-runs them, and a LuCI page (Services › Monokulo). It is for OpenWrt 25.12 on
-`aarch64_cortex-a53` (the Flint 2 and other MediaTek Filogic routers). The
-install steps are on the landing page, https://oceaneilonwy.github.io/monokulo/,
-which is also the package repository; `web/index.html` is its source.
+runs them, and a LuCI page (Services › Monokulo). It is built for each OpenWrt
+release and CPU architecture in `.github/workflows/openwrt.yml`'s build
+matrix: today OpenWrt 25.12 on `aarch64_cortex-a53` (the GL.iNet Flint 2 and
+other MediaTek Filogic routers). The install steps are on the landing page,
+https://oceaneilonwy.github.io/monokulo/, whose dropdown picks the OpenWrt
+version; the same site is the package repository. `cargo xtask pages landing`
+builds the page (xtask/src/pages/landing/).
 
-`scripts/build-openwrt.sh` builds the package, the signed repository and the
-landing page into `dist/` and `site/` (it needs Docker, for the OpenWrt
-SDK). The `OpenWrt package` workflow runs it on every pull request and push
-to main and uploads `dist/` and `site/` as artifacts; the `Pages` workflow
-then publishes the site to GitHub Pages beside the coverage report. On the
+`scripts/build-openwrt.sh` builds one entry's package and signed repository
+into `dist/` (it needs Docker, for the OpenWrt SDK). The `OpenWrt package`
+workflow runs it for every matrix entry on pull requests that change the
+package and on pushes to main, and uploads each as artifacts; the `Pages`
+workflow then lays the repositories out under `openwrt/<release>/<arch>/`
+and publishes the site to GitHub Pages beside the coverage report. On the
 router:
 
 - `/etc/config/monokulo` (or LuCI) sets the port, listen address (LAN only

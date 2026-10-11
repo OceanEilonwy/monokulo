@@ -3,7 +3,7 @@
 //! each.
 //!
 //! The site is in parts, each made by one workflow on main: release
-//! (release.yml: the OpenWrt site and the coverage artifact, from one run
+//! (release.yml: the OpenWrt apk repository and the coverage artifact, from one run
 //! that passed), properties, fuzz, scale and live (their scheduled
 //! workflows).
 //! Pages serves one deployment, so each of those workflows deploys the whole
@@ -108,13 +108,33 @@ struct Source {
     needs_success: bool,
 }
 
+/// The prefix of openwrt.yml's apk repository artifacts:
+/// `openwrt-repo-<release>-<arch>`, one per OpenWrt release and architecture.
+const OPENWRT_REPO_PREFIX: &str = "openwrt-repo-";
+
+/// Where the site serves an apk repository artifact, from its name:
+/// `openwrt/<release>/<arch>`.
+fn openwrt_repo_dir(artifact: &str) -> io::Result<PathBuf> {
+    artifact
+        .strip_prefix(OPENWRT_REPO_PREFIX)
+        .and_then(|target| target.split_once('-'))
+        .filter(|(release, arch)| !release.is_empty() && !arch.is_empty())
+        .map(|(release, arch)| PathBuf::from("openwrt").join(release).join(arch))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{artifact} is not named {OPENWRT_REPO_PREFIX}<release>-<arch>"),
+            )
+        })
+}
+
 const SOURCES: [Source; 6] = [
     Source {
         key: Key::Site,
         // release.yml builds the OpenWrt package (openwrt.yml) once every
         // test passed on main.
         workflow: "release.yml",
-        wanted: |n, _| n == "monokulo-openwrt-site",
+        wanted: |n, _| n.starts_with(OPENWRT_REPO_PREFIX),
         required: true,
         needs_success: true,
     },
@@ -358,7 +378,10 @@ pub(crate) fn fetch(args: &[&str]) -> io::Result<Exit> {
         let id = run.id.to_string();
         for name in &names {
             // One artifact goes straight in; several (the fuzz targets) get a folder each.
-            let dest = if names.len() > 1 {
+            // The apk repositories are served by release and architecture.
+            let dest = if source.key == Key::Site {
+                dir.join(key).join(openwrt_repo_dir(name)?)
+            } else if names.len() > 1 {
                 dir.join(key).join(name)
             } else {
                 dir.join(key)
@@ -434,6 +457,26 @@ mod tests {
 
     fn pick(key: Key, name: &str, build: Build) -> bool {
         (SOURCES.iter().find(|s| s.key == key).unwrap().wanted)(name, build)
+    }
+
+    #[test]
+    fn each_apk_repository_artifact_is_served_by_its_release_and_architecture() {
+        assert!(pick(
+            Key::Site,
+            "openwrt-repo-25.12-aarch64_cortex-a53",
+            Build::Zmq
+        ));
+        assert!(pick(Key::Site, "openwrt-repo-26.06-x86_64", Build::Zmq));
+        assert!(!pick(
+            Key::Site,
+            "monokulo-openwrt-25.12-aarch64_cortex-a53",
+            Build::Zmq
+        ));
+        assert_eq!(
+            openwrt_repo_dir("openwrt-repo-25.12-aarch64_cortex-a53").unwrap(),
+            PathBuf::from("openwrt/25.12/aarch64_cortex-a53")
+        );
+        assert!(openwrt_repo_dir("openwrt-repo-25.12").is_err());
     }
 
     #[test]
