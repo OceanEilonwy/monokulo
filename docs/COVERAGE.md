@@ -157,7 +157,3 @@ test harness and broadcasts real stagenet transactions from the repository's
 public wallet fixture. It is excluded from `all` and CI. Use it when the
 node and fixture funds are available; compare its paid happy path with the
 deterministic browser report rather than adding the two percentages together.
-
-See [the browser migration audit](COVERAGE_MIGRATION_AUDIT.md) for the before
-and after path comparison and [the work notes](../coverage_work_notes.md) for
-progress and exact measured results.

@@ -2,7 +2,7 @@
 
 Monokulo can serve its checkout, embed library and dashboard over Tor, on its
 own or alongside a clearnet address. The engine stays private either way: it
-listens on loopback and only monokulo talks to it (`docs/DESIGN.md` §4).
+listens on loopback and only monokulo talks to it.
 
 This page explains the `torrc` lines in [`deploy/tor/torrc.snippet`](../deploy/tor/torrc.snippet)
 and how they fit with monokulo's own abuse protection

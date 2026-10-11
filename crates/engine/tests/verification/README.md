@@ -54,5 +54,5 @@ cargo xtask engine fuzz history
 ```
 
 See the [engine verification guide](../../../../docs/ENGINE_VERIFICATION.md) for
-harness roles and assurance limits, and [`docs/TESTING.md`](../../../../docs/TESTING.md) for the coverage map, scenario
-ranges, regression replay instructions and mutation runner.
+harness roles and assurance limits, the coverage map, scenario ranges,
+regression replay instructions and the mutation runner.

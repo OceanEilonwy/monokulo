@@ -23,8 +23,7 @@ certify that the engine is bug-free.
 Cargo integration-test crates. `#[path]` loads its files inside their owning
 modules, retaining private access and existing test identities. Ordinary shipping
 builds exclude it; shared fuzz code requires the `fuzzing` feature. The
-[tree README](../crates/engine/tests/verification/README.md) describes domain roles;
-[TESTING.md](TESTING.md) gives the broader inventory and scenario ranges.
+[tree README](../crates/engine/tests/verification/README.md) describes domain roles.
 
 ## Review corrections and evidence
 
@@ -59,7 +58,7 @@ Mutation evidence consists of 54 detected runs (27 defects × default/ZMQ), with
 healthy baselines passing and no surviving or invalid mutants. This is an
 acceptance set, not a statistical mutation score. It includes funding,
 confirmation, expiry and overpayment equality, retry expiry/deadline/free attempts,
-scan ownership and the domain defect examples listed in TESTING.md. The status
+scan ownership and the domain defect examples in the mutation runner. The status
 boundary grid checks 720 combinations independently of production decisions.
 
 Measured campaign examples from the review work:

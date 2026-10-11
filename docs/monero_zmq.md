@@ -12,7 +12,7 @@ within a round trip of the node seeing it rather than within a poll interval.
 
 ## Why it is possible now
 
-The design ruled ZMQ out (`docs/DESIGN.md` §2, §15) because the usual Rust
+The original design ruled ZMQ out because the usual Rust
 binding links `libzmq`, a C library, and the engine is one static binary.
 The [`zeromq`](https://crates.io/crates/zeromq) crate (0.6, MIT, maintained
 under the zeromq GitHub organisation) implements ZMTP in Rust on tokio: no C,
@@ -158,8 +158,7 @@ internal hosts.
    Something like 2 s for the pool is a fair trade; it should be a setting.
    "Connected" now comes from the socket's own events, so the switch back
    to full speed on a lost connection is immediate.
-2. **A test against a real monerod** (`--regtest --zmq-pub`, as in
-   `docs/TESTING.md` §10): a payment broadcast and a block mined, each seen
+2. **A test against a real monerod** (`--regtest --zmq-pub`): a payment broadcast and a block mined, each seen
    well inside the poll interval.
 3. **The released binaries.** CI's release tarballs are built without the
    feature; only the Docker image has it.
