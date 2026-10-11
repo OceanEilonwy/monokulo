@@ -35,6 +35,13 @@ runs:
       name: Install POS app dependencies
       shell: bash
       run: npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
+    # Nothing in CI is debugged, so dev and test builds optimise the
+    # workspace's own crates as Cargo.toml does the dependencies. Set before
+    # the Rust cache, whose key considers CARGO_* variables. Coverage
+    # (cargo xtask coverage rust) sets it back to 0 for its own build.
+    - name: Optimise the workspace's crates
+      shell: bash
+      run: echo CARGO_PROFILE_DEV_OPT_LEVEL=3 >> "$GITHUB_ENV"
     - uses: dtolnay/rust-toolchain@nightly
       with:
         components: ${{ inputs.components }}
