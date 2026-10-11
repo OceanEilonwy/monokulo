@@ -60,7 +60,7 @@ pub(super) const PAGES: [Page; 6] = [
 /// The sample shop's files, from `examples/geomart/` to `geomart/`.
 const GEOMART: [&str; 2] = ["index.html", "done.html"];
 const FONT_WEIGHTS: [u16; 3] = [500, 700, 800];
-const REPO_URL: &str = "https://github.com/OceanEilonwy/monokulo";
+const GITHUB_URL: &str = "https://github.com/OceanEilonwy/monokulo";
 
 /// `cargo xtask pages docs --out DIR`.
 pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
@@ -96,7 +96,7 @@ pub(super) fn write(root: &Path, out: &Path) -> io::Result<()> {
             assets.join("theme.css"),
         ),
         (
-            root.join("web/pages/docs/docs.css"),
+            root.join("xtask/src/pages/assets/docs/docs.css"),
             assets.join("docs.css"),
         ),
     ];
@@ -161,7 +161,7 @@ pub(super) fn render(page: &Page, markdown: &str) -> Markup {
                             a href=(format!("{up}../#install")) { "Install" }
                             a href=(format!("{up}./")) aria-current="page" { "Docs" }
                             a href=(format!("{up}../testing/")) { "Testing" }
-                            a href=(REPO_URL) { "Source code" }
+                            a href=(GITHUB_URL) { "Source code" }
                         }
                     }
                 }

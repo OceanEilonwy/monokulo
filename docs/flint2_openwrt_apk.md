@@ -537,13 +537,13 @@ The files:
 
 | Path | What it is |
 |---|---|
-| `scripts/build-openwrt.sh` | Builds everything: copies the SDK's cross toolchain out of its image, cross-compiles monokulo (the engine built into it) with it, has the SDK package and sign them, and renders the landing page. Output in `dist/` and `site/`. |
+| `scripts/build-openwrt.sh` | Builds everything: copies the SDK's cross toolchain out of its image, cross-compiles monokulo (the engine built into it) with it, and has the SDK package and sign them. Output in `dist/`; `cargo xtask pages landing` makes the landing page. |
 | `openwrt/monokulo/Makefile` | The package: the binary, the init script, the UCI config, the keep list and the LuCI files. |
 | `openwrt/monokulo/files/monokulo.init` | procd service with one instance, `monokulo`, the engine inside it. |
 | `openwrt/monokulo/files/monokulo.config` | `/etc/config/monokulo`. |
 | `openwrt/monokulo/files/luci/` | The LuCI view (Services › Monokulo), its menu entry and its ACL. |
 | `openwrt/keys/monokulo.pem` | The public signing key. It is the same key as kringle's. |
-| `web/index.html` | The landing page template, with install steps. |
+| `xtask/src/pages/landing/` | The landing page (maud) with install steps, and its stylesheet and script in `xtask/src/pages/assets/landing/`. |
 | `.github/workflows/openwrt.yml` | Builds on every PR and push to main, uploads the artifacts, and deploys Pages from main. |
 
 ### Decisions

@@ -75,24 +75,20 @@ fn stylesheets() -> Vec<(String, String)> {
             ));
         }
     }
-    // The GitHub Pages site (web/) loads theme.css too: the landing page's
-    // style block and the coverage report's stylesheet.
-    let web = crate_dir().join("../../web");
-    let text = read(&web.join("index.html"));
-    for (i, block) in text.split("<style>").skip(1).enumerate() {
-        let end = block.find("</style>").expect("an unterminated <style>");
-        sheets.push((
-            format!("web/index.html (style block {})", i + 1),
-            block[..end].to_string(),
-        ));
-    }
+    // The GitHub Pages site (xtask/src/pages/assets/) loads theme.css too: the landing page's
+    // stylesheet, the coverage report's and the docs'.
+    let root = crate_dir().join("../..");
     sheets.push((
-        "web/pages/coverage/coverage.css".to_string(),
-        read(&web.join("pages/coverage/coverage.css")),
+        "xtask/src/pages/assets/landing/landing.css".to_string(),
+        read(&root.join("xtask/src/pages/assets/landing/landing.css")),
     ));
     sheets.push((
-        "web/pages/docs/docs.css".to_string(),
-        read(&web.join("pages/docs/docs.css")),
+        "xtask/src/pages/assets/coverage/coverage.css".to_string(),
+        read(&root.join("xtask/src/pages/assets/coverage/coverage.css")),
+    ));
+    sheets.push((
+        "xtask/src/pages/assets/docs/docs.css".to_string(),
+        read(&root.join("xtask/src/pages/assets/docs/docs.css")),
     ));
     sheets
 }
@@ -106,7 +102,9 @@ fn markup_sources() -> Vec<(String, String)> {
         ("pos-ui/src", "tsx"),
         ("pos-ui/src", "ts"),
         ("../../xtask/src/pages/render", "rs"),
-        ("../../web/pages/coverage", "js"),
+        ("../../xtask/src/pages/landing", "rs"),
+        ("../../xtask/src/pages/assets/coverage", "js"),
+        ("../../xtask/src/pages/assets/landing", "js"),
     ] {
         for path in files_with_extension(&crate_dir().join(dir), ext) {
             sources.push((

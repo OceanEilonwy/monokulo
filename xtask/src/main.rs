@@ -26,7 +26,7 @@ Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|summar
        cargo xtask engine <fuzz|properties|scale|mutations> [...]
        cargo xtask test-summary TITLE LABEL=JUNIT...
        cargo xtask test-timings [--db PATH] <run|load|report> [...]
-       cargo xtask pages <build|fetch> [...]
+       cargo xtask pages <build|fetch|landing|docs> [...]
        cargo xtask live <tests|browser|probe|wallets|report> [...]
        cargo xtask record-stagenet-node
        cargo xtask serve DIR [PORT]
@@ -97,6 +97,7 @@ fn main() -> ExitCode {
         ["test-timings", rest @ ..] => timings::timings(rest),
         ["pages", "build", rest @ ..] => pages::build(&root(), rest),
         ["pages", "fetch", rest @ ..] => pages::fetch(rest),
+        ["pages", "landing", rest @ ..] => pages::landing(&root(), rest),
         ["pages", "docs", rest @ ..] => pages::docs(&root(), rest),
         ["serve", rest @ ..] => pages::serve(rest),
         ["live", rest @ ..] => live::live(&root(), rest),

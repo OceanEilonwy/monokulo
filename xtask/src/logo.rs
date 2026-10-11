@@ -19,7 +19,6 @@
 //! writes (the list is `OUTPUTS`, at the bottom).
 
 use crate::support::Exit;
-use regex::Regex;
 use std::{collections::BTreeMap, fmt::Write, fs, io, path::Path};
 
 pub(crate) const HELP: &str =
@@ -410,31 +409,14 @@ pub(crate) fn small() -> String {
     drawing(Kind::Small, &INLINE, "monokulo-lens-small", "")
 }
 
-/// A page with `<!-- logo:small -->` / `<!-- logo:full -->` markers before
-/// inline SVGs: the drawings inside them, replaced.
-fn web_page(text: &str, markers: usize, name: &str) -> io::Result<String> {
-    let marker = Regex::new(r"(?s)(<!-- logo:(small|full) -->.*?<svg[^>]*>).*?(</svg>)").unwrap();
-    let count = marker.find_iter(text).count();
-    if count != markers {
-        return Err(io::Error::other(format!(
-            "{name}: expected {markers} logo markers, found {count}"
-        )));
-    }
-    Ok(marker
-        .replace_all(text, |c: &regex::Captures| {
-            let mark = if &c[2] == "small" {
-                small()
-            } else {
-                drawing(Kind::Full, &INLINE, "monokulo-lens-full", "")
-            };
-            format!("{}{mark}{}", &c[1], &c[3])
-        })
-        .into_owned())
+/// The full mark's drawing, for a page rendered with it inline.
+pub(crate) fn full() -> String {
+    drawing(Kind::Full, &INLINE, "monokulo-lens-full", "")
 }
 
-/// Every file the mark is written to, from what the file holds now.
-fn render(path: &str, old: &str) -> io::Result<String> {
-    Ok(match path {
+/// What each file the mark is written to holds.
+fn render(path: &str) -> String {
+    match path {
         "crates/monokulo/static/logo.svg" => standalone(Kind::Full, "Monokulo", false, &STANDALONE),
         "docs/readme/logo.svg" => standalone(Kind::Hero, "Monokulo", false, &STANDALONE),
         "docs/readme/logo-dark.svg" => standalone(Kind::Hero, "Monokulo", false, &ON_DARK),
@@ -443,12 +425,11 @@ fn render(path: &str, old: &str) -> io::Result<String> {
         }
         "crates/monokulo/src/views/logo_art.rs" => rust_module(),
         "crates/monokulo/pos-ui/src/logo.ts" => ts_module(),
-        "web/index.html" => web_page(old, 2, path)?,
         _ => unreachable!("{path} is not a logo output"),
-    })
+    }
 }
 
-const OUTPUTS: [&str; 8] = [
+const OUTPUTS: [&str; 7] = [
     "crates/monokulo/static/logo.svg",
     "docs/readme/logo.svg",
     "docs/readme/logo-dark.svg",
@@ -456,7 +437,6 @@ const OUTPUTS: [&str; 8] = [
     "plugins/woocommerce/assets/monokulo-icon.svg",
     "crates/monokulo/src/views/logo_art.rs",
     "crates/monokulo/pos-ui/src/logo.ts",
-    "web/index.html",
 ];
 
 /// Writes every output under `root` that differs from what the mark draws.
@@ -464,7 +444,7 @@ pub(crate) fn write(root: &Path) -> io::Result<Exit> {
     for rel in OUTPUTS {
         let path = root.join(rel);
         let old = fs::read_to_string(&path).unwrap_or_default();
-        let new = render(rel, &old)?;
+        let new = render(rel);
         if new == old {
             println!("unchanged {rel}");
         } else {
@@ -487,10 +467,7 @@ mod tests {
         let root = crate::root();
         for rel in OUTPUTS {
             let old = fs::read_to_string(root.join(rel)).unwrap();
-            assert!(
-                render(rel, &old).unwrap() == old,
-                "{rel} is stale: run `cargo xtask logo`"
-            );
+            assert!(render(rel) == old, "{rel} is stale: run `cargo xtask logo`");
         }
     }
 

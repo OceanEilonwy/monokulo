@@ -31,7 +31,6 @@ on:
       - 'scripts/**'
       - 'xtask/**'
       - 'openwrt/**'
-      - 'web/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'

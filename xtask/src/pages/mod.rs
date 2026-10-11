@@ -6,7 +6,7 @@
 //! Every input of the report is optional; the pages say what they have no
 //! data for. A build reads the artifacts (`inputs`), works out what the
 //! pages show (`model`) and renders a page per section (`render`), beside
-//! the stylesheet and script in `web/pages/coverage/`, the screenshot
+//! the stylesheet and script in `xtask/src/pages/assets/coverage/`, the screenshot
 //! gallery (`gallery/`), the report pages the pages link and what those
 //! need (`reports/`) and a shields.io endpoint for the coverage badge
 //! (`badge.json`). Only one engine build of the property and fuzz runs is
@@ -16,6 +16,7 @@ mod docs;
 mod fetch;
 mod format;
 mod inputs;
+mod landing;
 mod model;
 mod render;
 mod serve;
@@ -25,6 +26,7 @@ mod tests;
 pub(crate) use docs::build as docs;
 pub(crate) use fetch::fetch;
 pub(crate) use inputs::{junit, Test, TestStatus};
+pub(crate) use landing::build as landing;
 pub(crate) use serve::serve;
 
 use crate::exploration::Build;
@@ -60,20 +62,23 @@ const OUTPUTS: [&str; 12] = [
 /// The page's own stylesheet and script, beside theme.css in `assets/`.
 const PAGE_ASSETS: [&str; 2] = ["coverage.css", "coverage.js"];
 const FONT_WEIGHTS: [u16; 3] = [500, 700, 800];
-const DEFAULT_REPO_URL: &str = "https://github.com/OceanEilonwy/monokulo";
+const DEFAULT_GITHUB_URL: &str = "https://github.com/OceanEilonwy/monokulo";
 
 pub(crate) const HELP: &str = "\
         pages build --out DIR [--coverage DIR] [--properties DIR] [--fuzz DIR] [--scale DIR]\n\
-                     [--live DIR] [--sources FILE] [--feature zmq|default] [--repo-url URL]\n\
+                     [--live DIR] [--sources FILE] [--feature zmq|default] [--github-url URL]\n\
                       Build the coverage report (GitHub Pages /testing/) from CI artifacts: the joined\n\
                       coverage artifact (or target/coverage), an engine-properties artifact, a folder of\n\
                       engine-fuzz artifacts, an engine-scale-measurements artifact, a live-network artifact,\n\
                       and a JSON file naming the run behind each (docs/COVERAGE.md); replaces its own files\n\
                       in DIR\n\
         pages fetch DIR [--repo OWNER/NAME] [--feature zmq|default]\n\
-                      Download main's newest OpenWrt site, coverage, property, fuzz, scale and live-network\n\
+                      Download main's newest OpenWrt apk repository, coverage, property, fuzz, scale and live-network\n\
                       artifacts\n\
                       into DIR, with DIR/sources.json naming their runs (needs the gh CLI)\n\
+        pages landing --site DIR [--github-url URL]\n\
+                      Build the landing page (GitHub Pages /) into DIR, which holds the\n\
+                      OpenWrt apk repository under openwrt/ (the page names its package and key)\n\
         pages docs --out DIR
                       Build the docs (GitHub Pages /docs/) from docs/site/*.md, with the Geomart sample
                       shop (examples/geomart/) under DIR/geomart/
@@ -118,7 +123,7 @@ struct SiteArgs {
     live: Option<PathBuf>,
     sources: Option<PathBuf>,
     build: Build,
-    repo_url: String,
+    github_url: String,
 }
 
 fn parse(args: &[&str]) -> io::Result<SiteArgs> {
@@ -127,7 +132,7 @@ fn parse(args: &[&str]) -> io::Result<SiteArgs> {
         (None, None, None, None, None, None, None);
     // The default build is the one that ships: zmq is a default feature.
     let mut build = Build::Default;
-    let mut repo_url = DEFAULT_REPO_URL.to_string();
+    let mut github_url = DEFAULT_GITHUB_URL.to_string();
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
         let value = rest
@@ -146,7 +151,7 @@ fn parse(args: &[&str]) -> io::Result<SiteArgs> {
                 build =
                     Build::parse(value).ok_or_else(|| bad("--feature is zmq or default".into()))?;
             }
-            "--repo-url" => repo_url = (*value).trim_end_matches('/').to_string(),
+            "--github-url" => github_url = (*value).trim_end_matches('/').to_string(),
             _ => return Err(bad(format!("unknown option {flag}"))),
         }
     }
@@ -159,7 +164,7 @@ fn parse(args: &[&str]) -> io::Result<SiteArgs> {
         live,
         sources,
         build,
-        repo_url,
+        github_url,
     })
 }
 
@@ -191,7 +196,7 @@ fn copy_assets(root: &Path, out: &Path) -> io::Result<()> {
     }));
     copies.extend(PAGE_ASSETS.iter().map(|name| {
         (
-            root.join("web/pages/coverage").join(name),
+            root.join("xtask/src/pages/assets/coverage").join(name),
             (*name).to_string(),
         )
     }));
@@ -213,12 +218,12 @@ fn read_inputs(args: &SiteArgs, out: &Path) -> io::Result<Report> {
         None => None,
     };
     let Some(src) = &args.coverage else {
-        let mut report = Report::new(args.repo_url.clone(), sources, None, properties);
+        let mut report = Report::new(args.github_url.clone(), sources, None, properties);
         read_nightly(args, &mut report)?;
         return Ok(report);
     };
     let (coverage, mut linked) = inputs::coverage(src)?;
-    let mut report = Report::new(args.repo_url.clone(), sources, Some(coverage), properties);
+    let mut report = Report::new(args.github_url.clone(), sources, Some(coverage), properties);
     let run = src.join("stress/run.json");
     if run.is_file() {
         report.stress = Some(inputs::stress(&run)?);

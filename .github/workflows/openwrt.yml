@@ -1,20 +1,21 @@
-# The OpenWrt package for the GL.iNet Flint 2 (OpenWrt 25.12, mediatek/filogic,
-# aarch64_cortex-a53): monokulo (the engine inside it) and its LuCI page in one signed
-# .apk, a signed apk repository, and the landing page with install
-# instructions (scripts/build-openwrt.sh does all of it).
+# The OpenWrt packages: monokulo (the engine inside it) and its LuCI page in
+# one signed .apk, and a signed apk repository holding it, for each OpenWrt
+# release and CPU architecture in the build matrix below (today one: 25.12 on
+# the GL.iNet Flint 2, mediatek/filogic, aarch64_cortex-a53). The build is
+# scripts/build-openwrt.sh; the landing page with install instructions is
+# built by pages.yml.
 #
 # release.yml runs it on main and version tags, after every test passed; a
-# pull request runs it only when it changes the package itself. Each run
-# builds and uploads as artifacts
-#   monokulo-openwrt-25.12-aarch64_cortex-a53   the .apk, the repository index
-#                                               (packages.adb), the public key
-#                                               (monokulo.pem) and SHA256SUMS
-#   monokulo-openwrt-site                       the landing page with the
-#                                               repository under it
-# On main, release.yml's Pages job publishes that run's
-# monokulo-openwrt-site artifact, with the coverage report beside it
-# (pages.yml); routers use it as their package repository (Settings > Pages >
-# Source: GitHub Actions).
+# pull request runs it only when it changes the package itself. Each matrix
+# entry builds and uploads as artifacts
+#   monokulo-openwrt-<release>-<arch>   the .apk, the repository index
+#                                       (packages.adb), the public key
+#                                       (monokulo.pem) and SHA256SUMS
+#   openwrt-repo-<release>-<arch>       the signed apk repository (the .apk
+#                                       and packages.adb)
+# On main, release.yml's Pages job publishes that run's openwrt-repo-* artifacts
+# (pages.yml, which lays out the site); routers use it as their package
+# repository (Settings > Pages > Source: GitHub Actions).
 #
 # Needs the repository secret APK_SIGNING_KEY: the private key matching
 # openwrt/keys/monokulo.pem (the same key signs kringle). Pull requests from
@@ -27,7 +28,6 @@ on:
   pull_request:
     paths:
       - 'openwrt/**'
-      - 'web/**'
       - 'scripts/build-openwrt.sh'
       - '.github/workflows/openwrt.yml'
   workflow_call:
@@ -46,9 +46,27 @@ env:
 
 jobs:
   build:
-    name: Build the OpenWrt package
+    # One build per OpenWrt release and CPU architecture. A release or
+    # architecture is supported by adding an entry here: the site lists
+    # every openwrt-repo-* artifact, and its dropdown offers each one.
+    name: Build the OpenWrt package (${{ matrix.release }}, ${{ matrix.arch }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The GL.iNet Flint 2 (mediatek/filogic).
+          - release: '25.12'
+            arch: aarch64_cortex-a53
+            sdk_image: openwrt/sdk:mediatek-filogic-25.12.5
+            rust_target: aarch64-unknown-linux-musl
+            toolchain_prefix: aarch64-openwrt-linux-musl
+    env:
+      SDK_IMAGE: ${{ matrix.sdk_image }}
+      OPENWRT_ARCH: ${{ matrix.arch }}
+      RUST_TARGET: ${{ matrix.rust_target }}
+      TOOLCHAIN_PREFIX: ${{ matrix.toolchain_prefix }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -56,9 +74,9 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup-rust
         with:
-          targets: aarch64-unknown-linux-musl
-          cache-key: openwrt-aarch64
-      - name: Build the package, repository and site
+          targets: ${{ matrix.rust_target }}
+          cache-key: openwrt-${{ matrix.release }}-${{ matrix.arch }}
+      - name: Build the package and repository
         env:
           APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
           SDK_VOLUME: "" # fresh runner every time, no point keeping SDK state
@@ -73,7 +91,7 @@ jobs:
           SIGNED: ${{ secrets.APK_SIGNING_KEY != '' }}
         run: |
           {
-            echo "## OpenWrt package (25.12, aarch64_cortex-a53)"
+            echo "## OpenWrt package (${{ matrix.release }}, ${{ matrix.arch }})"
             echo
             echo "| File | Size |"
             echo "| --- | ---: |"
@@ -89,7 +107,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
-          name: monokulo-openwrt-25.12-aarch64_cortex-a53
+          name: monokulo-openwrt-${{ matrix.release }}-${{ matrix.arch }}
           path: |
             dist/*.apk
             dist/packages.adb
@@ -98,9 +116,8 @@ jobs:
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
-          name: monokulo-openwrt-site
-          path: site/
-          include-hidden-files: true
+          name: openwrt-repo-${{ matrix.release }}-${{ matrix.arch }}
+          path: dist/repo/
           if-no-files-found: error
           # Every Pages deploy republishes the newest from a Release run on
           # main that passed, so it must outlast the gap between them.
