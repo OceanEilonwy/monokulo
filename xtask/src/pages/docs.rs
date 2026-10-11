@@ -160,7 +160,7 @@ pub(super) fn render(page: &Page, markdown: &str) -> Markup {
                         nav aria-label="Site" {
                             a href=(format!("{up}../#install")) { "Install" }
                             a href=(format!("{up}./")) aria-current="page" { "Docs" }
-                            a href=(format!("{up}../quality/")) { "Testing" }
+                            a href=(format!("{up}../testing/")) { "Testing" }
                             a href=(REPO_URL) { "Source code" }
                         }
                     }

@@ -92,7 +92,7 @@ branch.
 ## On GitHub Pages
 
 Main's results don't need downloading:
-<https://oceaneilonwy.github.io/monokulo/quality/> shows every test, the
+<https://oceaneilonwy.github.io/monokulo/testing/> shows every test, the
 coverage of each crate and file (linked to its annotated source), the
 nightly property and fuzz runs, the stress and scale points and the
 screenshot gallery. The site is in parts, each made by one workflow on

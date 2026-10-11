@@ -1,4 +1,4 @@
-//! `cargo xtask pages build`: the coverage report (GitHub Pages: /quality/)
+//! `cargo xtask pages build`: the coverage report (GitHub Pages: /testing/)
 //! from CI artifacts, `cargo xtask pages fetch`: those artifacts, downloaded
 //! from main's newest runs, and `cargo xtask serve`: a built site, served to
 //! look at.
@@ -65,7 +65,7 @@ const DEFAULT_REPO_URL: &str = "https://github.com/OceanEilonwy/monokulo";
 pub(crate) const HELP: &str = "\
         pages build --out DIR [--coverage DIR] [--properties DIR] [--fuzz DIR] [--scale DIR]\n\
                      [--live DIR] [--sources FILE] [--feature zmq|default] [--repo-url URL]\n\
-                      Build the coverage report (GitHub Pages /quality/) from CI artifacts: the joined\n\
+                      Build the coverage report (GitHub Pages /testing/) from CI artifacts: the joined\n\
                       coverage artifact (or target/coverage), an engine-properties artifact, a folder of\n\
                       engine-fuzz artifacts, an engine-scale-measurements artifact, a live-network artifact,\n\
                       and a JSON file naming the run behind each (docs/COVERAGE.md); replaces its own files\n\
