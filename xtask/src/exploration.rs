@@ -15,8 +15,8 @@ use std::{
     env, fmt, fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    sync::LazyLock,
+    process::Command,
+    sync::{Arc, LazyLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -353,18 +353,154 @@ fn semantics(dir: &Path) -> io::Result<(u64, BTreeMap<String, u64>)> {
     Ok((cases, counts))
 }
 
-/// Programs and their environment, so tests can stand fakes in for git,
-/// rustc and cargo.
-#[derive(Clone, Default)]
-pub(crate) struct Tools {
+/// A program to run: what `Command` would be given.
+#[derive(Clone)]
+pub(crate) struct Spec {
+    program: String,
+    args: Vec<String>,
+    dir: Option<PathBuf>,
     vars: BTreeMap<String, String>,
 }
 
+impl Spec {
+    fn args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.args
+            .extend(args.into_iter().map(|a| a.as_ref().to_string()));
+        self
+    }
+
+    fn arg(self, arg: impl AsRef<str>) -> Self {
+        self.args([arg])
+    }
+}
+
+/// Where a program's output goes.
+#[derive(Clone, Copy)]
+pub(crate) enum Sink<'a> {
+    /// Held in memory and returned.
+    Capture,
+    /// Our own stdout and stderr.
+    Inherit,
+    /// Stdout and stderr together in a file.
+    File(&'a Path),
+    /// Stdout and stderr together in a file and on our stdout at once
+    /// (`2>&1 | tee`).
+    Tee(&'a Path),
+}
+
+/// How a run ended. `exit` is `None` when it ran out its time limit and was
+/// stopped. Output is only held for `Sink::Capture`.
+pub(crate) struct Done {
+    exit: Option<Exit>,
+    stdout: String,
+    stderr: String,
+}
+
+/// Runs the programs the explorations depend on (git, rustc, cargo and the
+/// fuzzer they build). The real one starts processes; tests hand `Tools` an
+/// in-memory one, so no test writes an executable or forks a child.
+pub(crate) trait Runner: Send + Sync {
+    fn run(&self, spec: &Spec, sink: Sink, limit: Option<Duration>) -> io::Result<Done>;
+}
+
+struct Processes;
+
+impl Runner for Processes {
+    fn run(&self, spec: &Spec, sink: Sink, limit: Option<Duration>) -> io::Result<Done> {
+        let mut command = Command::new(&spec.program);
+        command.args(&spec.args).envs(&spec.vars);
+        if let Some(dir) = &spec.dir {
+            command.current_dir(dir);
+        }
+        let done = |status: Option<std::process::ExitStatus>| Done {
+            exit: status.map(Exit::of),
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+        match sink {
+            Sink::Capture => {
+                let output = command.output()?;
+                Ok(Done {
+                    exit: Some(Exit::of(output.status)),
+                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                })
+            }
+            Sink::Inherit => Ok(done(Some(command.status()?))),
+            Sink::File(log) => {
+                let file = fs::File::create(log)?;
+                let mut child = command.stdout(file.try_clone()?).stderr(file).spawn()?;
+                // The command holds the file's handles; dropping it leaves
+                // the child as their only owner.
+                drop(command);
+                Ok(done(match limit {
+                    Some(limit) => wait_with_deadline(&mut child, limit, OnTimeout::KillChild)?,
+                    None => Some(child.wait()?),
+                }))
+            }
+            Sink::Tee(log) => {
+                let (mut reader, writer) = io::pipe()?;
+                let mut child = command.stdout(writer.try_clone()?).stderr(writer).spawn()?;
+                // The command holds the pipe's write ends; dropping it leaves
+                // the child as their only owner, so the read below ends when
+                // the child does.
+                drop(command);
+                let mut file = fs::File::create(log)?;
+                let mut buffer = [0u8; 8192];
+                loop {
+                    let n = reader.read(&mut buffer)?;
+                    if n == 0 {
+                        break;
+                    }
+                    file.write_all(&buffer[..n])?;
+                    io::stdout().write_all(&buffer[..n])?;
+                }
+                Ok(done(Some(child.wait()?)))
+            }
+        }
+    }
+}
+
+/// Programs and their environment, and what runs them.
+#[derive(Clone)]
+pub(crate) struct Tools {
+    vars: BTreeMap<String, String>,
+    runner: Arc<dyn Runner>,
+}
+
+impl Default for Tools {
+    fn default() -> Self {
+        Tools {
+            vars: BTreeMap::new(),
+            runner: Arc::new(Processes),
+        }
+    }
+}
+
 impl Tools {
-    fn command(&self, program: &str, root: &Path) -> Command {
-        let mut command = Command::new(program);
-        command.current_dir(root).envs(&self.vars);
-        command
+    fn spec(&self, program: &str, root: &Path) -> Spec {
+        Spec {
+            program: program.to_string(),
+            args: Vec::new(),
+            dir: Some(root.to_path_buf()),
+            vars: self.vars.clone(),
+        }
+    }
+
+    fn run(&self, spec: &Spec, sink: Sink, limit: Option<Duration>) -> io::Result<Done> {
+        self.runner.run(spec, sink, limit)
+    }
+
+    /// A program run to a log file and our own output at once, returning
+    /// its exit code.
+    fn tee(&self, spec: &Spec, log: &Path) -> io::Result<Exit> {
+        self.run(spec, Sink::Tee(log), None)?
+            .exit
+            .ok_or_else(|| io::Error::other("a run with no time limit timed out"))
     }
 
     fn var(&self, name: &str) -> Option<String> {
@@ -374,19 +510,17 @@ impl Tools {
     /// What a program prints, trimmed; a program that can't run or fails is
     /// an error, since what it would have said goes in the evidence.
     fn output(&self, root: &Path, program: &str, args: &[&str]) -> io::Result<String> {
-        let output = self
-            .command(program, root)
-            .args(args)
-            .output()
+        let done = self
+            .run(&self.spec(program, root).args(args), Sink::Capture, None)
             .map_err(|e| io::Error::new(e.kind(), format!("{program}: {e}")))?;
-        if !output.status.success() {
+        if done.exit != Some(Exit::SUCCESS) {
             return Err(io::Error::other(format!(
                 "{program} {} failed: {}",
                 args.join(" "),
-                String::from_utf8_lossy(&output.stderr).trim()
+                done.stderr.trim()
             )));
         }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(done.stdout.trim().to_string())
     }
 }
 
@@ -397,27 +531,6 @@ fn host_target(rustc: &str) -> io::Result<String> {
         .find_map(|l| l.strip_prefix("host: "))
         .map(str::to_string)
         .ok_or_else(|| io::Error::other("rustc did not report its host target."))
-}
-
-/// Runs a program to a log file and our own output at once (`2>&1 | tee`),
-/// returning its exit code.
-fn tee(mut command: Command, log: &Path) -> io::Result<Exit> {
-    let (mut reader, writer) = io::pipe()?;
-    let mut child = command.stdout(writer.try_clone()?).stderr(writer).spawn()?;
-    // The command holds the pipe's write ends; dropping it leaves the child
-    // as their only owner, so the read below ends when the child does.
-    drop(command);
-    let mut file = fs::File::create(log)?;
-    let mut buffer = [0u8; 8192];
-    loop {
-        let n = reader.read(&mut buffer)?;
-        if n == 0 {
-            break;
-        }
-        file.write_all(&buffer[..n])?;
-        io::stdout().write_all(&buffer[..n])?;
-    }
-    Ok(Exit::of(child.wait()?))
 }
 
 /// One seed's replay against the built fuzzer.
@@ -458,33 +571,29 @@ fn calibrate(
             .into_owned();
         let log = output.join(format!("calibration-{name}.log"));
         let started = Instant::now();
-        let file = fs::File::create(&log).map_err(|e| at(&log, e))?;
-        let exit_code = match Command::new(binary.canonicalize().unwrap_or(binary.to_path_buf()))
-            .args(["-runs=1", "-seed=1", &format!("-timeout={timeout}")])
-            .arg(seed.canonicalize().unwrap_or(seed.clone()))
-            .envs(&tools.vars)
-            .stdout(file.try_clone()?)
-            .stderr(file)
-            .spawn()
-        {
+        let seed_path = seed.canonicalize().unwrap_or(seed.clone());
+        let spec = Spec {
+            program: binary
+                .canonicalize()
+                .unwrap_or(binary.to_path_buf())
+                .to_string_lossy()
+                .into_owned(),
+            args: Vec::new(),
+            dir: None,
+            vars: tools.vars.clone(),
+        }
+        .args(["-runs=1", "-seed=1", &format!("-timeout={timeout}")])
+        .arg(seed_path.to_string_lossy());
+        let limit = Duration::from_secs(timeout + 10);
+        let exit_code = match tools.run(&spec, Sink::File(&log), Some(limit)) {
             Err(e) => {
                 fs::write(&log, format!("{e}\n")).ok();
                 Exit::NOT_FOUND
             }
-            Ok(mut child) => {
-                let status = wait_with_deadline(
-                    &mut child,
-                    Duration::from_secs(timeout + 10),
-                    OnTimeout::KillChild,
-                )?;
-                status.map_or_else(
-                    || {
-                        fs::write(&log, "Seed exceeded calibration watchdog\n").ok();
-                        Exit::TIMED_OUT
-                    },
-                    Exit::of,
-                )
-            }
+            Ok(done) => done.exit.unwrap_or_else(|| {
+                fs::write(&log, "Seed exceeded calibration watchdog\n").ok();
+                Exit::TIMED_OUT
+            }),
         };
         results.push(SeedRun {
             seed: name,
@@ -692,23 +801,17 @@ struct Plan<'a> {
 fn check_lockfile(plan: &Plan) -> Result<(), Stopped> {
     let fail = |e: io::Error| Stopped::at(Stage::Metadata, Exit::FAILURE)(e);
     let log = plan.output.join("metadata.log");
-    let metadata_log = fs::File::create(&log).map_err(|e| fail(at(&log, e)))?;
-    let status = plan
-        .tools
-        .command("cargo", plan.root)
-        .args([
-            "metadata",
-            "--manifest-path",
-            "fuzz/Cargo.toml",
-            "--locked",
-            "--format-version",
-            "1",
-        ])
-        .stdout(Stdio::null())
-        .stderr(metadata_log)
-        .status()
-        .map_err(fail)?;
-    let exit = Exit::of(status);
+    let spec = plan.tools.spec("cargo", plan.root).args([
+        "metadata",
+        "--manifest-path",
+        "fuzz/Cargo.toml",
+        "--locked",
+        "--format-version",
+        "1",
+    ]);
+    let done = plan.tools.run(&spec, Sink::Capture, None).map_err(fail)?;
+    fs::write(&log, &done.stderr).map_err(|e| fail(at(&log, e)))?;
+    let exit = done.exit.unwrap_or(Exit::FAILURE);
     if exit.succeeded() {
         Ok(())
     } else {
@@ -721,14 +824,19 @@ fn check_lockfile(plan: &Plan) -> Result<(), Stopped> {
 }
 
 /// `cargo fuzz build` or `cargo fuzz run` for the campaign's target.
-fn cargo_fuzz(plan: &Plan, verb: &str, host: &str) -> Command {
-    let mut command = plan.tools.command("cargo", plan.root);
-    command.args(["fuzz", verb, "--fuzz-dir", "fuzz", "--target", host]);
+fn cargo_fuzz(plan: &Plan, verb: &str, host: &str) -> Spec {
+    let mut spec = plan.tools.spec("cargo", plan.root).args([
+        "fuzz",
+        verb,
+        "--fuzz-dir",
+        "fuzz",
+        "--target",
+        host,
+    ]);
     if plan.campaign.features != Build::Default {
-        command.args(["--features", plan.campaign.features.features()]);
+        spec = spec.args(["--features", plan.campaign.features.features()]);
     }
-    command.arg(plan.campaign.target);
-    command
+    spec.arg(plan.campaign.target)
 }
 
 /// The campaign's stages in order; `Err` says where it stopped.
@@ -749,11 +857,13 @@ fn run_campaign(plan: &Plan) -> Result<Exit, Stopped> {
     // Prebuilt cargo-fuzz may be compiled for musl and inherit that as its
     // default. ASan needs the native Rust host target, which also owns the
     // calibration binary.
-    let built = tee(
-        cargo_fuzz(plan, "build", &host),
-        &plan.output.join("build.log"),
-    )
-    .map_err(Stopped::at(Stage::Build, Exit::FAILURE))?;
+    let built = plan
+        .tools
+        .tee(
+            &cargo_fuzz(plan, "build", &host),
+            &plan.output.join("build.log"),
+        )
+        .map_err(Stopped::at(Stage::Build, Exit::FAILURE))?;
     if !built.succeeded() {
         return Err(Stopped {
             stage: Stage::Build,
@@ -774,8 +884,7 @@ fn run_campaign(plan: &Plan) -> Result<Exit, Stopped> {
         .join(format!("fuzz/target/{host}/release/{}", c.target));
     calibrate(plan.output, &plan.seeds, &binary, c.timeout, &calibration)
         .map_err(Stopped::at(Stage::Calibration, Exit::FAILURE))?;
-    let mut explore = cargo_fuzz(plan, "run", &host);
-    explore.arg("--").args([
+    let explore = cargo_fuzz(plan, "run", &host).arg("--").args([
         format!("-max_total_time={}", c.seconds),
         format!("-max_len={}", c.max_len),
         format!("-timeout={}", c.timeout),
@@ -783,7 +892,9 @@ fn run_campaign(plan: &Plan) -> Result<Exit, Stopped> {
         format!("-seed={}", c.seed),
         "-print_final_stats=1".into(),
     ]);
-    let fuzzer = tee(explore, &plan.output.join("fuzzer.log"))
+    let fuzzer = plan
+        .tools
+        .tee(&explore, &plan.output.join("fuzzer.log"))
         .map_err(Stopped::at(Stage::Exploration, Exit::FAILURE))?;
     let verdict = finish(plan.output, &plan.corpus_dir, fuzzer)
         .map_err(Stopped::at(Stage::Reporting, Exit::FAILURE))?;
@@ -959,8 +1070,7 @@ pub(crate) fn properties(root: &Path, args: &[&str], tools: &Tools) -> io::Resul
             .open(summary)?;
         writeln!(file, "{settings}")?;
     }
-    let mut command = tools.command("cargo", root);
-    command.args([
+    let mut command = tools.spec("cargo", root).args([
         "nextest",
         "run",
         "-p",
@@ -973,9 +1083,13 @@ pub(crate) fn properties(root: &Path, args: &[&str], tools: &Tools) -> io::Resul
         "ci",
     ]);
     if build == Build::Zmq {
-        command.args(["--features", "engine/zmq"]);
+        command = command.args(["--features", "engine/zmq"]);
     }
-    let exit = Exit::of(command.args(["-E", "test(::properties::)"]).status()?);
+    let command = command.args(["-E", "test(::properties::)"]);
+    let exit = tools
+        .run(&command, Sink::Inherit, None)?
+        .exit
+        .unwrap_or(Exit::FAILURE);
     properties_report(root, &output, &tools)?;
     Ok(exit)
 }
@@ -1003,8 +1117,7 @@ pub(crate) fn scale(root: &Path, args: &[&str], tools: &Tools) -> io::Result<Exi
             tools.output(root, "rustc", &["--version"])?
         ),
     )?;
-    let mut command = tools.command("cargo", root);
-    command.args([
+    let mut command = tools.spec("cargo", root).args([
         "nextest",
         "run",
         "-p",
@@ -1019,10 +1132,10 @@ pub(crate) fn scale(root: &Path, args: &[&str], tools: &Tools) -> io::Result<Exi
         "1",
     ]);
     if build == Build::Zmq {
-        command.args(["--features", "zmq"]);
+        command = command.args(["--features", "zmq"]);
     }
-    command.args(["-E", "test(::scale::)"]);
-    let exit = tee(command, &output.join("tests.log"))?;
+    let command = command.args(["-E", "test(::scale::)"]);
+    let exit = tools.tee(&command, &output.join("tests.log"))?;
     let target = tools
         .var("CARGO_TARGET_DIR")
         .map_or_else(|| root.join("target"), |t| root.join(t));
@@ -1233,47 +1346,141 @@ mod tests {
         );
     }
 
-    /// A repository with reviewed seeds and fake git, rustc and cargo on the
-    /// PATH, so a whole campaign runs in a second.
+    /// The real runner, against `sh -c` so nothing is written to disk to run.
     #[cfg(unix)]
+    mod processes {
+        use super::*;
+
+        fn sh(script: &str) -> Spec {
+            Tools::default()
+                .spec("sh", Path::new("."))
+                .args(["-c", script])
+        }
+
+        #[test]
+        fn capture_holds_both_streams_and_the_exit_code() {
+            let done = Processes
+                .run(&sh("echo out; echo err >&2; exit 3"), Sink::Capture, None)
+                .unwrap();
+            assert_eq!(done.exit, Some(Exit::new(3)));
+            assert_eq!((done.stdout.trim(), done.stderr.trim()), ("out", "err"));
+        }
+
+        #[test]
+        fn file_and_tee_sinks_put_both_streams_in_the_log() {
+            let s = Scratch::new("exploration-sinks");
+            for sink in [
+                Sink::File(&s.join("file.log")),
+                Sink::Tee(&s.join("tee.log")),
+            ] {
+                let done = Processes
+                    .run(&sh("echo out; echo err >&2"), sink, None)
+                    .unwrap();
+                assert_eq!(done.exit, Some(Exit::SUCCESS));
+            }
+            for name in ["file.log", "tee.log"] {
+                let log = fs::read_to_string(s.join(name)).unwrap();
+                assert!(log.contains("out") && log.contains("err"), "{name}: {log}");
+            }
+        }
+
+        #[test]
+        fn a_run_past_its_limit_is_stopped_and_has_no_exit() {
+            let s = Scratch::new("exploration-limit");
+            let done = Processes
+                .run(
+                    &sh("sleep 30"),
+                    Sink::File(&s.join("slow.log")),
+                    Some(Duration::from_millis(100)),
+                )
+                .unwrap();
+            assert_eq!(done.exit, None);
+        }
+
+        #[test]
+        fn a_program_that_is_not_there_is_not_found() {
+            let spec = Tools::default().spec("no-such-program-for-xtask", Path::new("."));
+            let error = Processes.run(&spec, Sink::Capture, None).err().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        }
+    }
+
+    /// A repository with reviewed seeds and a toolchain that answers in
+    /// memory, so a whole campaign runs in a second and no test writes an
+    /// executable or starts a process.
     mod runner {
         use super::*;
-        use std::os::unix::fs::PermissionsExt;
 
-        const CARGO: &str = r#"#!/bin/sh
-failure="$ENGINE_TEST_FAILURE"
-case "$1 $2" in
-  "fuzz build"|"fuzz run")
-    if [ -n "$ENGINE_TEST_MUSL_DEFAULT" ]; then
-      found=""; previous=""
-      for argument in "$@"; do
-        if [ "$previous" = "--target" ]; then found="$argument"; fi
-        previous="$argument"
-      done
-      if [ "$found" != "x86_64-unknown-linux-gnu" ]; then
-        echo "sanitizer is incompatible with statically linked libc" >&2; exit 42
-      fi
-    fi;;
-esac
-if [ "$1" = metadata ]; then
-  if [ "$failure" = metadata ]; then exit 17; fi; exit 0
-fi
-if [ "$1 $2" = "fuzz --version" ] && [ "$failure" = no-cargo-fuzz ]; then
-  echo "no such command: fuzz" >&2; exit 101
-fi
-if [ "$1 $2" = "fuzz build" ]; then
-  if [ "$failure" = build ]; then exit 19; fi
-  mkdir -p fuzz/target/x86_64-unknown-linux-gnu/release
-  printf '#!/bin/sh\nif [ "$ENGINE_TEST_FAILURE" = calibration ]; then exit 23; fi\nexit 0\n' > fuzz/target/x86_64-unknown-linux-gnu/release/status
-  chmod +x fuzz/target/x86_64-unknown-linux-gnu/release/status
-elif [ "$1 $2" = "fuzz run" ]; then
-  echo '#8 INITED cov: 10 ft: 12'
-  echo '#55 DONE cov: 13 ft: 20'
-  if [ "$failure" = exploration ]; then exit 41; fi
-else
-  echo 'test tool version'
-fi
-"#;
+        /// Git, rustc, cargo and the built fuzzer, answering as the real
+        /// ones would. `ENGINE_TEST_FAILURE` picks the step that fails.
+        struct Toolchain;
+
+        impl Toolchain {
+            fn reply(spec: &Spec) -> (u8, &'static str, &'static str) {
+                let failure = spec.vars.get("ENGINE_TEST_FAILURE").map(String::as_str);
+                let fails = |step: &str, code: u8| if failure == Some(step) { code } else { 0 };
+                let args: Vec<&str> = spec.args.iter().map(String::as_str).collect();
+                let musl_default = spec.vars.contains_key("ENGINE_TEST_MUSL_DEFAULT")
+                    && !args.contains(&"x86_64-unknown-linux-gnu");
+                match (spec.program.as_str(), args.as_slice()) {
+                    ("git", _) if failure == Some("no-git") => (128, "", "not a repository"),
+                    ("git", ["rev-parse", ..]) => (0, "abcdef0123456789", ""),
+                    ("git", _) => (0, "", ""),
+                    ("rustc", _) => (0, "rustc test compiler\nhost: x86_64-unknown-linux-gnu", ""),
+                    ("cargo", ["metadata", ..]) => (fails("metadata", 17), "", ""),
+                    ("cargo", ["fuzz", "--version"]) if failure == Some("no-cargo-fuzz") => {
+                        (101, "", "no such command: fuzz")
+                    }
+                    ("cargo", ["fuzz", "build" | "run", ..]) if musl_default => (
+                        42,
+                        "",
+                        "sanitizer is incompatible with statically linked libc",
+                    ),
+                    ("cargo", ["fuzz", "build", ..]) => (fails("build", 19), "", ""),
+                    ("cargo", ["fuzz", "run", ..]) => (
+                        fails("exploration", 41),
+                        "#8 INITED cov: 10 ft: 12\n#55 DONE cov: 13 ft: 20\n",
+                        "",
+                    ),
+                    ("cargo", _) => (0, "test tool version", ""),
+                    // The built fuzzer, replaying a seed.
+                    _ => (fails("calibration", 23), "", ""),
+                }
+            }
+        }
+
+        impl Runner for Toolchain {
+            fn run(&self, spec: &Spec, sink: Sink, _limit: Option<Duration>) -> io::Result<Done> {
+                let (code, stdout, stderr) = Self::reply(spec);
+                if spec.program == "cargo"
+                    && spec.args.get(..2) == Some(&["fuzz".into(), "build".into()])
+                    && code == 0
+                {
+                    let built = spec
+                        .dir
+                        .as_ref()
+                        .unwrap()
+                        .join("fuzz/target/x86_64-unknown-linux-gnu/release");
+                    fs::create_dir_all(&built)?;
+                    fs::write(built.join("status"), "fuzzer")?;
+                }
+                let both = format!("{stdout}{stderr}");
+                match sink {
+                    Sink::File(log) => fs::write(log, &both)?,
+                    Sink::Tee(log) => {
+                        fs::write(log, &both)?;
+                        io::stdout().write_all(both.as_bytes())?;
+                    }
+                    Sink::Capture | Sink::Inherit => {}
+                }
+                let held = matches!(sink, Sink::Capture);
+                Ok(Done {
+                    exit: Some(Exit::new(code)),
+                    stdout: if held { stdout.into() } else { String::new() },
+                    stderr: if held { stderr.into() } else { String::new() },
+                })
+            }
+        }
 
         struct Repo {
             scratch: Scratch,
@@ -1288,33 +1495,32 @@ fi
                 fs::create_dir_all(root.join("fuzz/seeds/status")).unwrap();
                 fs::write(root.join("fuzz/seeds/status/boundary"), b"reviewed").unwrap();
                 fs::write(root.join("fuzz/Cargo.lock"), "fuzz lock").unwrap();
-                let bin = root.join("bin");
-                fs::create_dir(&bin).unwrap();
-                for (name, body) in [
-                    ("git", "#!/bin/sh\ncase \"$1\" in rev-parse) echo abcdef0123456789;; status) ;; esac\n"),
-                    ("rustc", "#!/bin/sh\necho \"rustc test compiler\"\necho \"host: x86_64-unknown-linux-gnu\"\n"),
-                    ("cargo", CARGO),
-                ] {
-                    fs::write(bin.join(name), body).unwrap();
-                    fs::set_permissions(bin.join(name), fs::Permissions::from_mode(0o755)).unwrap();
-                }
-                let mut tools = Tools::default();
-                let path = format!("{}:{}", bin.display(), env::var("PATH").unwrap_or_default());
+                let mut tools = Tools {
+                    runner: Arc::new(Toolchain),
+                    ..Tools::default()
+                };
                 tools.vars.extend([
-                    ("PATH".into(), path),
                     ("RUSTUP_TOOLCHAIN".into(), "fixture".into()),
                     ("ENGINE_FUZZ_SEED".into(), "1".into()),
                 ]);
                 Repo { scratch, tools }
             }
-            fn campaign(&self, failure: Option<&str>) -> Exit {
+            fn failing(&self, failure: Option<&str>) -> Tools {
                 let mut tools = self.tools.clone();
                 if let Some(failure) = failure {
                     tools
                         .vars
                         .insert("ENGINE_TEST_FAILURE".into(), failure.into());
                 }
-                fuzz(self.scratch.path(), &["status", "1"], &tools).unwrap()
+                tools
+            }
+            fn campaign(&self, failure: Option<&str>) -> Exit {
+                fuzz(
+                    self.scratch.path(),
+                    &["status", "1"],
+                    &self.failing(failure),
+                )
+                .unwrap()
             }
             fn reports(&self) -> Vec<PathBuf> {
                 let dir = self
@@ -1401,8 +1607,8 @@ fi
         #[test]
         fn a_checkout_without_git_is_an_error_before_any_evidence_is_written() {
             let repo = Repo::new("exploration-no-git");
-            fs::write(repo.scratch.join("bin/git"), "#!/bin/sh\nexit 128\n").unwrap();
-            let error = fuzz(repo.scratch.path(), &["status", "1"], &repo.tools).unwrap_err();
+            let tools = repo.failing(Some("no-git"));
+            let error = fuzz(repo.scratch.path(), &["status", "1"], &tools).unwrap_err();
             assert!(error.to_string().contains("git rev-parse"), "{error}");
             assert!(!repo.scratch.join("target").exists());
         }
