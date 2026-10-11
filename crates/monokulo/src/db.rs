@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use crate::fx_provider_settings::FxProviderSettings;
 
+mod order_changes;
 mod webhooks;
 use rusqlite::{params, Connection, OptionalExtension};
 pub use webhooks::{
@@ -140,6 +141,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/0037_store_integrations.sql"),
     ),
     (38, include_str!("../migrations/0038_webhooks.sql")),
+    (
+        39,
+        include_str!("../migrations/0039_pos_order_change_trigger.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -161,6 +166,9 @@ const TEST_ADMIN_PASSWORD_HASH: &str =
 
 pub struct Db {
     conn: Connection,
+    /// The POS orders this connection's commits changed
+    /// ([`order_changes`]); always empty on a read connection.
+    changed_orders: Arc<Mutex<order_changes::ChangedOrders>>,
 }
 
 /// How long a session is good for after it was made: 30 days. A session
@@ -388,6 +396,8 @@ pub type SharedDb = Arc<Mutex<Db>>;
 pub struct Database {
     reads: Pool<Db>,
     writes: Pool<Db>,
+    /// Woken for each POS order a write changed, once it has committed.
+    order_changes: crate::live::OrderChanges,
 }
 
 impl Database {
@@ -402,6 +412,7 @@ impl Database {
         Ok(Database {
             reads: Pool::start("monokulo-db-read", readers).map_err(unavailable)?,
             writes: Pool::start("monokulo-db-write", vec![writer]).map_err(unavailable)?,
+            order_changes: Default::default(),
         })
     }
 
@@ -413,7 +424,15 @@ impl Database {
         Database {
             reads: Pool::Inline(db.clone()),
             writes: Pool::Inline(db),
+            order_changes: Default::default(),
         }
+    }
+
+    /// The POS orders' changes in this database, for the live streams
+    /// showing them: every write that changes what a stream shows wakes it
+    /// (`db::order_changes`), whichever handler made it.
+    pub fn order_changes(&self) -> &crate::live::OrderChanges {
+        &self.order_changes
     }
 
     /// Runs `f` on a read-only connection.
@@ -432,7 +451,9 @@ impl Database {
         }
     }
 
-    /// Runs `f` on the writing connection.
+    /// Runs `f` on the writing connection, then wakes the live streams of
+    /// the POS orders it changed: after `f`, so after each of its commits,
+    /// and a stream woken reads the change back.
     pub async fn write<T, E>(
         &self,
         f: impl FnOnce(&Db) -> std::result::Result<T, E> + Send + 'static,
@@ -441,7 +462,16 @@ impl Database {
         T: Send + 'static,
         E: From<PoolError> + Send + 'static,
     {
-        self.writes.run(f).await
+        let order_changes = self.order_changes.clone();
+        self.writes
+            .run(move |db| {
+                let result = f(db);
+                for (connection_id, order_id) in db.take_changed_orders() {
+                    order_changes.notify(&connection_id, &order_id);
+                }
+                result
+            })
+            .await
     }
 
     /// The test's connection, for setting up and checking state directly.
@@ -918,28 +948,45 @@ pub enum RedeemInviteResult {
 
 impl Db {
     pub fn open_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory()?;
-        shared::sqlite::configure_writer(&conn)?;
-        apply_migrations(&conn)?;
-        Ok(Db { conn })
+        Self::writer(Connection::open_in_memory()?)
     }
 
     /// The writing connection to the database file at `path`: WAL, foreign
     /// keys and the rest of `shared::sqlite::configure_writer`, then any
     /// pending migrations.
     pub fn open_file(path: &str) -> Result<Self> {
-        let conn = Connection::open(path)?;
+        Self::writer(Connection::open(path)?)
+    }
+
+    /// `conn` set up to write: recording the POS orders its commits change
+    /// (before migrating, so a migration may change them too).
+    fn writer(conn: Connection) -> Result<Self> {
         shared::sqlite::configure_writer(&conn)?;
+        let changed_orders = order_changes::record(&conn)?;
         apply_migrations(&conn)?;
-        Ok(Db { conn })
+        Ok(Db {
+            conn,
+            changed_orders,
+        })
     }
 
     /// A read-only connection to the database file at `path`, for the read
     /// pool.
     pub fn open_reader(path: &str) -> Result<Self> {
-        Ok(Db {
-            conn: shared::sqlite::open_reader(path)?,
-        })
+        Ok(Self::reader(shared::sqlite::open_reader(path)?))
+    }
+
+    /// `conn` for reading only: it records no changes, as it makes none.
+    fn reader(conn: Connection) -> Self {
+        Db {
+            conn,
+            changed_orders: Arc::default(),
+        }
+    }
+
+    /// The POS orders whose committed changes haven't been announced yet.
+    fn take_changed_orders(&self) -> Vec<(ConnectionId, OrderId)> {
+        self.changed_orders.lock().take_committed()
     }
 
     /// Runs `f` with this connection refusing writes, as the read pool's
@@ -3137,6 +3184,115 @@ mod tests {
         );
     }
 
+    /// A write wakes the streams of the POS orders whose shown state it
+    /// changed, once it has committed: not before, not for one rolled
+    /// back, not another order's, and not for a write that changed nothing
+    /// they show.
+    #[tokio::test]
+    async fn only_committed_changes_to_what_a_pos_orders_stream_shows_wake_it() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_user(
+            &shared::ids::UserId::new("merchant"),
+            "merchant@example.com",
+            "hash",
+            false,
+            1,
+        )
+        .unwrap();
+        let store = ConnectionId::new("store");
+        crate::db::test_rows::store_on_wallet(
+            &db,
+            &store,
+            &shared::ids::UserId::new("merchant"),
+            "store.example",
+            "pk_store",
+            "encrypted",
+            1,
+            "XMR",
+        )
+        .unwrap();
+        let (first, second) = (OrderId::new("first"), OrderId::new("second"));
+        for order in [&first, &second] {
+            db.insert_pos_order(&store, order, None, None, 1).unwrap();
+        }
+        let db = Database::inline(db.into_shared());
+        let mut first_watch = db.order_changes().subscribe(&store, &first);
+        let second_watch = db.order_changes().subscribe(&store, &second);
+
+        let (s, o) = (store.clone(), first.clone());
+        db.write(move |db| {
+            let transaction = db.conn.unchecked_transaction()?;
+            db.background_pos_order(&s, &o)?;
+            Ok::<_, DbError>(transaction.rollback()?)
+        })
+        .await
+        .unwrap();
+        assert!(!first_watch.changed.has_changed().unwrap(), "rolled back");
+        assert!(
+            !db.lock()
+                .get_pos_order(&store, &first)
+                .unwrap()
+                .unwrap()
+                .backgrounded
+        );
+
+        let (s, o) = (store.clone(), second.clone());
+        db.write(move |db| db.background_pos_order(&s, &o))
+            .await
+            .unwrap();
+        assert!(second_watch.changed.has_changed().unwrap());
+        assert!(!first_watch.changed.has_changed().unwrap(), "another order");
+
+        let (s, o) = (store.clone(), first.clone());
+        let inside = db.order_changes().subscribe(&store, &first);
+        db.write(move |db| {
+            let transaction = db.conn.unchecked_transaction()?;
+            db.cancel_pos_order(&s, &o, 2)?;
+            assert!(!inside.changed.has_changed().unwrap(), "before its commit");
+            Ok::<_, DbError>(transaction.commit()?)
+        })
+        .await
+        .unwrap();
+        assert_eq!(*first_watch.changed.borrow_and_update(), 1, "committed");
+
+        let (s, o) = (store.clone(), first.clone());
+        db.write(move |db| {
+            Ok::<_, DbError>(db.conn.execute(
+                "UPDATE pos_orders SET reference = 'Mia', backgrounded = 1 WHERE connection_id = ?1 AND order_id = ?2",
+                params![s, o],
+            )?)
+        })
+        .await
+        .unwrap();
+        assert!(
+            !first_watch.changed.has_changed().unwrap(),
+            "nothing the stream shows changed"
+        );
+    }
+
+    /// The trigger announcing POS order changes needs monokulo's writing
+    /// connection: on any other, the change it would announce fails
+    /// rather than going unannounced.
+    #[test]
+    fn a_connection_that_cannot_announce_pos_order_changes_cannot_make_them() {
+        let conn = Connection::open_in_memory().unwrap();
+        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+        // Without foreign keys, no store is needed.
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        conn.execute(
+            "INSERT INTO pos_orders (connection_id, order_id, created_at_utc) VALUES ('store', 'order', 1)",
+            [],
+        )
+        .unwrap();
+        let refused = conn.execute("UPDATE pos_orders SET backgrounded = 1", []);
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.to_string().contains("pos_order_changed")),
+            "{refused:?}"
+        );
+    }
+
     #[test]
     fn creating_a_user_then_reading_it_back_round_trips() {
         let db = Db::open_in_memory().unwrap();
@@ -3603,7 +3759,7 @@ mod tests {
 
         shared::migrations::apply(&conn, MIGRATIONS).unwrap();
 
-        let db = Db { conn };
+        let db = Db::reader(conn);
         let row = db
             .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
             .unwrap()
@@ -3637,7 +3793,7 @@ mod tests {
 
         shared::migrations::apply(&conn, MIGRATIONS).unwrap();
 
-        let db = Db { conn };
+        let db = Db::reader(conn);
         let row = db
             .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
             .unwrap()
@@ -3664,7 +3820,7 @@ mod tests {
 
         shared::migrations::apply(&conn, MIGRATIONS).unwrap();
 
-        let db = Db { conn };
+        let db = Db::reader(conn);
         assert_eq!(
             db.get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
                 .unwrap()

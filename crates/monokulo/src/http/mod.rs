@@ -237,9 +237,6 @@ pub struct AppState {
     /// Wakes the webhook delivery worker (`crate::webhooks`) when a
     /// merchant sends a delivery again.
     pub webhooks: Arc<crate::webhooks::Webhooks>,
-    /// Wakes the POS's live streams when monokulo changes an order the
-    /// engine knows nothing of (`crate::live::OrderChanges`).
-    pub order_changes: crate::live::OrderChanges,
 }
 
 /// The encryption key [`AppState::for_tests`] uses.
@@ -278,7 +275,6 @@ impl AppState {
             settings: Self::test_settings(None),
             log_store: None,
             webhooks: Arc::default(),
-            order_changes: Default::default(),
             engine: crate::http::Engine::new(EngineClient::for_tests(format!(
                 "http://{}",
                 shared::unreachable::address()

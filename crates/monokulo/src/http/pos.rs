@@ -733,22 +733,17 @@ pub async fn order_detail(
 
 pub async fn background_order(
     State(db): State<Database>,
-    State(order_changes): State<crate::live::OrderChanges>,
     AuthedUser(user, _): AuthedUser,
     Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
 ) -> Response {
     if !matches!(load_owned_connection(&db, &user, &id).await, Ok(Some(_))) {
         return ApiError::NotFound.into_response();
     }
-    let (store_id, order) = (id.clone(), order_id.clone());
     match db
-        .write(move |db| db.background_pos_order(&store_id, &order))
+        .write(move |db| db.background_pos_order(&id, &order_id))
         .await
     {
-        Ok(true) => {
-            order_changes.notify(&id, &order_id);
-            StatusCode::NO_CONTENT.into_response()
-        }
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => ApiError::NotFound.into_response(),
         Err(_) => ApiError::Internal.into_response(),
     }
@@ -758,7 +753,6 @@ pub async fn cancel_order(
     State(db): State<Database>,
     State(encryption_key): State<AtRestKey>,
     State(engine): State<Engine>,
-    State(order_changes): State<crate::live::OrderChanges>,
     AuthedUser(user, _): AuthedUser,
     Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
 ) -> Response {
@@ -796,7 +790,6 @@ pub async fn cancel_order(
         Ok(false) => return ApiError::NotFound.into_response(),
         Err(_) => return ApiError::Internal.into_response(),
     }
-    order_changes.notify(&id, &order_id);
     // A payment the scanner recorded between the check above and the
     // cancellation would be hidden from the terminal for good: look
     // again, and take the cancellation back (the order stays backgrounded,
@@ -804,11 +797,16 @@ pub async fn cancel_order(
     match engine.client.get_order_detail(&sk, &order_id).await {
         Ok(after) if after.order.amount_received_piconero > 0 => {
             let (store_id, order) = (id.clone(), order_id.clone());
-            let _ = db
+            match db
                 .write(move |db| db.uncancel_pos_order(&store_id, &order))
-                .await;
-            order_changes.notify(&id, &order_id);
-            ApiError::BadRequest("A payment reached this order as it was being cancelled. It was backgrounded for review instead.".to_string()).into_response()
+                .await
+            {
+                Ok(_) => ApiError::BadRequest("A payment reached this order as it was being cancelled. It was backgrounded for review instead.".to_string()).into_response(),
+                Err(error) => {
+                    tracing::error!(store.id = %id, order.id = %order_id, %error, "a payment reached an order as the POS cancelled it, and the cancellation could not be taken back");
+                    ApiError::Internal.into_response()
+                }
+            }
         }
         _ => StatusCode::NO_CONTENT.into_response(),
     }
@@ -1007,7 +1005,7 @@ pub async fn order_events(
         .map(|order_id| {
             (
                 state.engine.client.subscribe_order(&row.id, &sk, order_id),
-                state.order_changes.subscribe(&row.id, order_id),
+                state.db.order_changes().subscribe(&row.id, order_id),
             )
         })
         .collect();
@@ -2012,121 +2010,205 @@ mod tests {
         );
     }
 
+    /// A merchant signed in to a store on a real engine, for the tests of
+    /// what wakes a POS order's live stream.
+    struct LiveStore {
+        state: AppState,
+        engine: std::sync::Arc<engine_test_support::TestEngineHandle>,
+        router: Router,
+        session_token: String,
+        id: String,
+    }
+
+    /// One open `pos/events` stream.
+    struct LiveEvents {
+        body: Body,
+        pending: Vec<(String, String)>,
+        parser: crate::live::SseTestParser,
+    }
+
+    impl LiveEvents {
+        /// The next status event; one that never comes (a change that
+        /// didn't wake the stream) fails on `next_sse_event`'s timeout.
+        async fn next(&mut self) -> serde_json::Value {
+            let (event, data) =
+                crate::live::next_sse_event(&mut self.body, &mut self.pending, &mut self.parser)
+                    .await
+                    .unwrap();
+            assert_eq!(event, "status");
+            serde_json::from_str(&data).unwrap()
+        }
+    }
+
+    impl LiveStore {
+        async fn new(email: &str) -> Self {
+            let (state, engine) = test_state_with_real_engine().await;
+            let router = build_router(state.clone());
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                email,
+                "correct horse battery staple",
+            )
+            .await;
+            let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+            LiveStore {
+                state,
+                engine: std::sync::Arc::new(engine),
+                router,
+                session_token,
+                id,
+            }
+        }
+
+        async fn orders(&self, count: usize) -> Vec<String> {
+            create_pos_orders(&self.router, &self.session_token, &self.id, count).await
+        }
+
+        async fn send(&self, method: &str, path: String) -> axum::response::Response {
+            self.router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(format!("/dashboard/stores/{}/{path}", self.id))
+                        .header("authorization", format!("Bearer {}", self.session_token))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        }
+
+        async fn open(&self, order: &str) -> LiveEvents {
+            let response = self.send("GET", format!("pos/events?orders={order}")).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            LiveEvents {
+                body: response.into_body(),
+                pending: Vec::new(),
+                parser: crate::live::SseTestParser::default(),
+            }
+        }
+
+        /// The terminal's `background` or `cancel` button.
+        async fn act(&self, order: &str, action: &str) -> axum::response::Response {
+            self.send("POST", format!("pos/orders/{order}/{action}"))
+                .await
+        }
+
+        /// What monokulo itself wakes `order`'s streams with, counted.
+        fn watch(&self, order: &str) -> crate::live::OrderChangeWatch {
+            self.state.db.order_changes().subscribe(
+                &crate::db::ConnectionId::new(self.id.as_str()),
+                &crate::db::OrderId::new(order),
+            )
+        }
+
+        fn pos_row(&self, order: &str) -> crate::db::PosOrderRow {
+            self.state
+                .db
+                .lock()
+                .get_pos_order(
+                    &crate::db::ConnectionId::new(self.id.as_str()),
+                    &crate::db::OrderId::new(order),
+                )
+                .unwrap()
+                .unwrap()
+        }
+
+        /// A stream on `order`, opened once the store's engine stream is
+        /// up. That stream wakes every watched order when it connects,
+        /// which would also carry a change a test's action failed to
+        /// announce; an engine change to `order` (its refund address, set
+        /// from the checkout page) shows on the stream only once it is up,
+        /// so its connect has passed before the order under test is
+        /// watched. Keep the stream returned open throughout: the store's
+        /// engine stream closes with its last watcher.
+        async fn connect_engine_stream(&self, order: &str) -> LiveEvents {
+            let mut stream = self.open(order).await;
+            assert!(stream.next().await["refund_address"].is_null());
+            let store_id = crate::db::ConnectionId::new(self.id.as_str());
+            let pk = self
+                .state
+                .db
+                .read(move |db| db.get_store_connection_by_id(&store_id))
+                .await
+                .unwrap()
+                .unwrap()
+                .tenant_public_key;
+            let refund_address = "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC";
+            let set = self
+                .router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/pay/{pk}/orders/{order}/refund-address"))
+                        .header("accept", "application/json")
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .body(Body::from(format!("refund_address={refund_address}")))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(set.status(), StatusCode::OK);
+            assert_eq!(stream.next().await["refund_address"], refund_address);
+            stream
+        }
+
+        /// Pays `order` a little in the engine as its cancellation is
+        /// written: after the cancel handler's check that it had no
+        /// payment, before its second look.
+        fn pay_as_cancelled(&self) {
+            let engine = std::sync::Arc::clone(&self.engine);
+            let db = self.state.db.lock();
+            let conn = db.conn_for_test();
+            conn.create_scalar_function(
+                "pay_order_now",
+                1,
+                rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+                move |call| {
+                    engine
+                        .record_order_payment(
+                            &call.get::<String>(0)?,
+                            shared::xmr_amount::Piconero(1),
+                            Some(101),
+                        )
+                        .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+                    Ok(rusqlite::types::Null)
+                },
+            )
+            .unwrap();
+            conn.execute_batch(
+                "CREATE TEMP TRIGGER pay_as_cancelled AFTER UPDATE OF cancelled_at_utc ON pos_orders
+                 WHEN NEW.cancelled_at_utc IS NOT NULL
+                 BEGIN SELECT pay_order_now(NEW.order_id); END;",
+            )
+            .unwrap();
+        }
+    }
+
     /// What the POS itself holds about an order (backgrounded, cancelled)
     /// is on the live stream and moves it at once: the engine reports
     /// nothing of either, so a watching terminal would otherwise learn of
     /// them only by reloading. Nothing else wakes the stream here, so each
-    /// update can only have come from the action's own notice.
+    /// update can only have come from the write's own notice.
     #[tokio::test]
     async fn backgrounding_and_cancelling_an_order_are_sent_on_its_live_stream() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "pos-stream-state@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
-        let mut orders = create_pos_orders(&router, &session_token, &id, 2).await;
+        let store = LiveStore::new("pos-stream-state@example.com").await;
+        let mut orders = store.orders(2).await;
         let (order, other) = (orders.remove(0), orders.remove(0));
+        let _engine_stream = store.connect_engine_stream(&other).await;
 
-        struct Events {
-            body: Body,
-            pending: Vec<(String, String)>,
-            parser: crate::live::SseTestParser,
-        }
-        impl Events {
-            /// The next status event; one that never comes (a change that
-            /// didn't wake the stream) fails on `next_sse_event`'s timeout.
-            async fn next(&mut self) -> serde_json::Value {
-                let (event, data) = crate::live::next_sse_event(
-                    &mut self.body,
-                    &mut self.pending,
-                    &mut self.parser,
-                )
-                .await
-                .unwrap();
-                assert_eq!(event, "status");
-                serde_json::from_str(&data).unwrap()
-            }
-        }
-        let open = |order: String| {
-            let (router, session_token, id) = (router.clone(), session_token.clone(), id.clone());
-            async move {
-                let response = router
-                    .oneshot(
-                        Request::builder()
-                            .uri(format!("/dashboard/stores/{id}/pos/events?orders={order}"))
-                            .header("authorization", format!("Bearer {session_token}"))
-                            .body(Body::empty())
-                            .unwrap(),
-                    )
-                    .await
-                    .unwrap();
-                assert_eq!(response.status(), StatusCode::OK);
-                Events {
-                    body: response.into_body(),
-                    pending: Vec::new(),
-                    parser: crate::live::SseTestParser::default(),
-                }
-            }
-        };
-
-        // The store's engine stream wakes every order watched when it
-        // connects, which would also carry a change the actions below
-        // failed to announce. So connect it first on another order, held
-        // open throughout: an engine change to that order shows on its
-        // stream only once the engine stream is up, and its connect has
-        // then passed before the order under test is watched.
-        let mut barrier = open(other.clone()).await;
-        assert!(barrier.next().await["refund_address"].is_null());
-        let store_id = crate::db::ConnectionId::new(id.as_str());
-        let pk = state
-            .db
-            .read(move |db| db.get_store_connection_by_id(&store_id))
-            .await
-            .unwrap()
-            .unwrap()
-            .tenant_public_key;
-        let refund_address = "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC";
-        let set = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/pay/{pk}/orders/{other}/refund-address"))
-                    .header("accept", "application/json")
-                    .header("content-type", "application/x-www-form-urlencoded")
-                    .body(Body::from(format!("refund_address={refund_address}")))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(set.status(), StatusCode::OK);
-        assert_eq!(barrier.next().await["refund_address"], refund_address);
-
-        let mut events = open(order.clone()).await;
+        let mut events = store.open(&order).await;
         let first = events.next().await;
         assert_eq!(first["backgrounded"], false);
         assert!(first["cancelled_at"].is_null());
 
         for (action, check) in [("background", "backgrounded"), ("cancel", "cancelled_at")] {
-            let response = router
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri(format!(
-                            "/dashboard/stores/{id}/pos/orders/{order}/{action}"
-                        ))
-                        .header("authorization", format!("Bearer {session_token}"))
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            assert_eq!(
+                store.act(&order, action).await.status(),
+                StatusCode::NO_CONTENT
+            );
             let update = events.next().await;
             assert_eq!(update["backgrounded"], true, "after {action}");
             assert_eq!(
@@ -2135,7 +2217,124 @@ mod tests {
                 "after {action}"
             );
         }
-        drop(barrier);
+    }
+
+    /// A payment that reaches an order while the POS cancels it takes the
+    /// cancellation back, leaving the order backgrounded for review, and
+    /// the order's streams hear of both writes.
+    #[tokio::test]
+    async fn a_payment_landing_as_an_order_is_cancelled_takes_the_cancellation_back() {
+        let store = LiveStore::new("pos-uncancel@example.com").await;
+        let mut orders = store.orders(2).await;
+        let (order, other) = (orders.remove(0), orders.remove(0));
+        store.pay_as_cancelled();
+        let watch = store.watch(&order);
+        let elsewhere = store.watch(&other);
+
+        let response = store.act(&order, "cancel").await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(body_text(response)
+            .await
+            .contains("A payment reached this order as it was being cancelled"));
+        let row = store.pos_row(&order);
+        assert!(row.backgrounded);
+        assert_eq!(row.cancelled_at, None);
+        assert_eq!(
+            *watch.changed.borrow(),
+            2,
+            "cancelled, then not: each wakes the stream"
+        );
+        assert_eq!(*elsewhere.changed.borrow(), 0, "another order's stream");
+    }
+
+    /// When the cancellation can't be taken back, the terminal is told it
+    /// failed rather than that the order was backgrounded, and the write
+    /// that didn't happen wakes nothing.
+    #[tokio::test]
+    async fn a_cancellation_that_cannot_be_taken_back_is_an_error_and_wakes_nothing_more() {
+        let store = LiveStore::new("pos-uncancel-fails@example.com").await;
+        let order = store.orders(1).await.remove(0);
+        store.pay_as_cancelled();
+        store
+            .state
+            .db
+            .lock()
+            .conn_for_test()
+            .execute_batch(
+                "CREATE TEMP TRIGGER refuse_uncancel BEFORE UPDATE OF cancelled_at_utc ON pos_orders
+                 WHEN OLD.cancelled_at_utc IS NOT NULL AND NEW.cancelled_at_utc IS NULL
+                 BEGIN SELECT RAISE(ABORT, 'refused for the test'); END;",
+            )
+            .unwrap();
+        let watch = store.watch(&order);
+
+        let response = store.act(&order, "cancel").await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(store.pos_row(&order).cancelled_at.is_some());
+        assert_eq!(*watch.changed.borrow(), 1, "only the cancellation");
+    }
+
+    /// Without its POS row a cancelled order would be shown as open: when
+    /// the rows can't be read, the stream sends nothing until the next
+    /// change and the status endpoint fails.
+    #[tokio::test]
+    async fn a_failed_read_of_the_pos_rows_sends_nothing_and_fails_the_status() {
+        let store = LiveStore::new("pos-read-fails@example.com").await;
+        let mut orders = store.orders(2).await;
+        let (order, other) = (orders.remove(0), orders.remove(0));
+        let _engine_stream = store.connect_engine_stream(&other).await;
+        // Every read of the POS rows fails, and says when it happened.
+        let (refused_sender, mut refused) = tokio::sync::mpsc::unbounded_channel();
+        {
+            let db = store.state.db.lock();
+            let conn = db.conn_for_test();
+            conn.create_scalar_function(
+                "refuse_pos_order_read",
+                0,
+                rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+                move |_| -> rusqlite::Result<rusqlite::types::Null> {
+                    let _ = refused_sender.send(());
+                    Err(rusqlite::Error::UserFunctionError(
+                        "refused for the test".into(),
+                    ))
+                },
+            )
+            .unwrap();
+            conn.execute_batch(
+                "CREATE TEMP VIEW pos_orders AS
+                 SELECT * FROM main.pos_orders WHERE refuse_pos_order_read()",
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            store
+                .send("GET", format!("pos/orders/{order}/status"))
+                .await
+                .status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        refused.recv().await.unwrap();
+
+        let mut events = store.open(&order).await;
+        let next = events.next();
+        tokio::pin!(next);
+        tokio::select! {
+            sent = &mut next => panic!("sent without the order's POS row: {sent}"),
+            _ = refused.recv() => {}
+        }
+        store
+            .state
+            .db
+            .lock()
+            .conn_for_test()
+            .execute_batch("DROP VIEW temp.pos_orders")
+            .unwrap();
+        assert_eq!(
+            store.act(&order, "background").await.status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(next.await["backgrounded"], true);
     }
 
     /// The terminal's Active tab and background stack come from
