@@ -207,7 +207,7 @@ database; delete it to start over with a fresh bootstrap.
 - The test order's `xmr_amount_piconero` (335_000_000, i.e. 0.000335 XMR) is
   chosen to be a genuinely tiny real payment, per the project's own constraint
   of only moving trivial amounts on this shared faucet-funded wallet. The
-  engine itself has no concept of fiat at all (`docs/fx_refactor.md`) - the
+  engine itself has no concept of fiat at all - the
   monokulo owns fiat pricing in production; this test talks to the
   engine's own XMR-only API directly.
 

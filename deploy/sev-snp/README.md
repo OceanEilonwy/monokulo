@@ -1,7 +1,7 @@
 # Deploying the engine inside an AMD SEV-SNP confidential VM
 
 With the engine in an SEV-SNP confidential VM and the `snp` key custody
-backend enabled (`docs/DESIGN.md` §6.3-6.5), stores' private view keys are:
+backend enabled, stores' private view keys are:
 
 - encrypted in memory by the hardware, against the host and the hypervisor;
 - sealed at rest under a master key only this engine image, on this chip, can
@@ -242,8 +242,7 @@ the engine it replaces hands it over.
 3. Switch monokulo to the new engine, stop the old one, and remove
    `snp_handoff_url`.
 
-Moving to another machine works the same way: wraps are bound to the chip. If
-no engine can hand over any more, see `docs/INCIDENT_RUNBOOK.md` §7.
+Moving to another machine works the same way: wraps are bound to the chip.
 
 ## What this does *not* protect against
 
@@ -262,7 +261,7 @@ no engine can hand over any more, see `docs/INCIDENT_RUNBOOK.md` §7.
   subaddress indices, rewound scan cursors) and reading the payments and
   amounts the engine records there, and through the admin API with the engine
   token. Assume the host can learn which payments are a store's and how much
-  they were for (`docs/DESIGN.md` §6.5, Limits).
+  they were for.
 - **The engine's clock** is the host's: it can make a stale revocation list
   look current to the engine. Merchants' clients check bundles against their
   own clocks.

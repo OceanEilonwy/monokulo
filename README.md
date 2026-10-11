@@ -60,7 +60,7 @@ The [install guide](https://oceaneilonwy.github.io/monokulo/) on GitHub Pages is
 - [Running Monokulo](docs/RUNNING.md): Docker, the OpenWrt package, building from source, and running the engine on its own host
 - [Configuration](docs/CONFIGURATION.md): the options file, command-line options and secrets
 - [Tor onion service](docs/TOR.md)
-- [Design](docs/DESIGN.md) and [engine verification](docs/ENGINE_VERIFICATION.md)
+- [Engine verification](docs/ENGINE_VERIFICATION.md)
 
 ## Contributing
 

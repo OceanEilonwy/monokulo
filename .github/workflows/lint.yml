@@ -39,7 +39,7 @@ jobs:
         # what shipped code does: test builds (the browser suites' real
         # binaries among them) must run what merchants run. Replacing
         # behaviour needs a `cfg(not(... "test-support" ...))` for the
-        # production side, so there must be none (docs/TESTING.md).
+        # production side, so there must be none.
         run: |
           if grep -rnE --include='*.rs' 'not\([^)]*"test-support"' crates xtask fuzz; then
             echo '::error::test-support may only add code; the lines above replace shipped behaviour under it.'

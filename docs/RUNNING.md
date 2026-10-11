@@ -6,7 +6,7 @@ scanning, stores, a log of order events and its admin API) and `monokulo`
 and stores' webhooks, which it sends from the engine's order events), which
 uses the engine only through its admin API. By default the engine runs inside
 monokulo, as a library on threads of its own: one binary, one process, one
-options file ([engine_as_library.md](https://github.com/OceanEilonwy/monokulo/blob/main/docs/engine_as_library.md)). It can also run on its own
+options file. It can also run on its own
 (`monokulo-engine`), on another host if need be, with monokulo reaching it
 over HTTP with an engine token the two share (`engine.mode = "remote"`).
 Settings live in the options file (and a few runtime switches in the
@@ -69,8 +69,6 @@ router:
   readable by root only. Back it up.
 - One procd instance runs monokulo, the engine inside it, as the `monokulo`
   user; `logread -e monokulo` shows its logs.
-
-The design and the CPU and capacity figures are in [flint2_openwrt_apk.md](https://github.com/OceanEilonwy/monokulo/blob/main/docs/flint2_openwrt_apk.md).
 
 ## From release binaries or source
 
