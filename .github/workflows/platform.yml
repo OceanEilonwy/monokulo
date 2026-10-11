@@ -287,9 +287,9 @@ jobs:
         if: always()
         run: test '${{ steps.tests.outcome }}' = success
 
-    # The engine's one-CPU scanner capacity sweep
-    # and fault recovery. With coverage, its report joins the coverage
-    # artifact.
+  stress:
+    # The engine's one-CPU scanner capacity sweep and fault recovery. With
+    # coverage, its report joins the coverage artifact.
     name: Engine progress tests
     if: inputs.platform == 'linux'
     runs-on: ubuntu-latest
