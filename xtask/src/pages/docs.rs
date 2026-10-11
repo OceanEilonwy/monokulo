@@ -1,5 +1,5 @@
 //! `cargo xtask pages docs`: the guides for adding Monokulo to a site
-//! (GitHub Pages: /docs/), from the Markdown in `docs/site/`, beside the
+//! (GitHub Pages: /docs/), from the Markdown in `xtask/src/pages/docs/`, beside the
 //! landing page and the coverage report. Each page is rendered with maud
 //! around pulldown-cmark's HTML, with the same header and a tab per page;
 //! a fenced `diff` block becomes the walkthrough's added and kept lines.
@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// One page of the docs: its Markdown file in `docs/site/`, the folder it
+/// One page of the docs: its Markdown file in `xtask/src/pages/docs/`, the folder it
 /// is published as (empty for the front page), and its tab's label.
 pub(super) struct Page {
     pub(super) source: &'static str,
@@ -81,7 +81,7 @@ pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
 /// Writes every page, the assets they use and the sample shop into `out`.
 pub(super) fn write(root: &Path, out: &Path) -> io::Result<()> {
     for page in &PAGES {
-        let source = root.join("docs/site").join(page.source);
+        let source = root.join("xtask/src/pages/docs").join(page.source);
         let markdown = fs::read_to_string(&source).map_err(|e| at(&source, e))?;
         let dir = out.join(page.dir);
         fs::create_dir_all(&dir).map_err(|e| at(&dir, e))?;

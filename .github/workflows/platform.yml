@@ -289,7 +289,6 @@ jobs:
 
     # The engine's one-CPU scanner capacity sweep
     # and fault recovery. With coverage, its report joins the coverage
-    #. With coverage, its report joins the coverage
     # artifact.
     name: Engine progress tests
     if: inputs.platform == 'linux'

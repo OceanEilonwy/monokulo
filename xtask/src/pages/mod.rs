@@ -80,7 +80,7 @@ pub(crate) const HELP: &str = "\
                       Build the landing page (GitHub Pages /) into DIR, which holds the\n\
                       OpenWrt apk repository under openwrt/ (the page names its package and key)\n\
         pages docs --out DIR
-                      Build the docs (GitHub Pages /docs/) from docs/site/*.md, with the Geomart sample
+                      Build the docs (GitHub Pages /docs/) from xtask/src/pages/docs/*.md, with the Geomart sample
                       shop (examples/geomart/) under DIR/geomart/
         serve DIR [PORT]\n\
                       Serve DIR on http://127.0.0.1:PORT (8000) to look at a built site as Pages serves it";
