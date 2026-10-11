@@ -326,18 +326,12 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 ". The first-run wizard creates your admin account. On the admin page, add a Monero node for the network you’ll accept payments on, then set up a wallet (make a new one in your browser, or bring your own view key) and add a store that takes payments into it. You can use your own reachable node or a remote node over HTTPS."
                             }
                             p style="margin-top:var(--space-md)" {
-                                "Monokulo listens on this computer only by default. To serve customers over the internet, configure its listen address in Server settings, put it behind an HTTPS reverse proxy, and set the public URL customers will use. For a Tor onion service, see "
-                                a href=(format!("{github_url}/blob/main/docs/TOR.md")) { "the Tor guide" }
-                                "."
+                                "Monokulo listens on this computer only by default. To serve customers over the internet, configure its listen address in Server settings, put it behind an HTTPS reverse proxy, and set the public URL customers will use."
                             }
                             p style="margin-top:var(--space-md)" {
                                 "Press "
                                 strong { "Ctrl+C" }
-                                " to stop it. For automatic startup, run it under your system’s service manager with the same encryption key. For data paths, options and building from source, see "
-                                a href=(format!("{github_url}/blob/main/docs/RUNNING.md#from-release-binaries-or-source")) {
-                                    "Running Monokulo"
-                                }
-                                "."
+                                " to stop it. For automatic startup, run it under your system’s service manager with the same encryption key. "
                             }
                         }
                         div class="card" {
@@ -751,9 +745,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 strong { "public URL" }
                                 " on Monokulo’s admin page (Settings) to the address customers use, for example "
                                 code { "https://pay.example.com" }
-                                ". Behind CGNAT, or to keep your address private, serve it as a Tor onion service instead: see "
-                                a href=(format!("{github_url}/blob/main/docs/TOR.md")) { "docs/TOR.md" }
-                                " and set "
+                                ". Behind CGNAT, or to keep your address private, serve it as a Tor onion service instead: set "
                                 em { "Listen on" }
                                 " to "
                                 em { "This router only" }

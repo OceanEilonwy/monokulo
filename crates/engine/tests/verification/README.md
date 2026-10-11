@@ -52,7 +52,3 @@ cargo xtask engine scale default
 cargo xtask engine scale zmq
 cargo xtask engine fuzz history
 ```
-
-See the [engine verification guide](../../../../docs/ENGINE_VERIFICATION.md) for
-harness roles and assurance limits, the coverage map, scenario ranges,
-regression replay instructions and the mutation runner.

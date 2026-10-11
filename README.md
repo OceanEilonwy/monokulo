@@ -24,8 +24,7 @@
   <a href="https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main"><b>Downloads</b></a> ·
   <a href="https://oceaneilonwy.github.io/monokulo/"><b>Docs</b></a> ·
   <a href="https://oceaneilonwy.github.io/monokulo/testing/"><b>How it's tested</b></a> ·
-  <a href="plugins/woocommerce"><b>WooCommerce</b></a> ·
-  <a href="CONTRIBUTING.md"><b>Contribute</b></a>
+  <a href="plugins/woocommerce"><b>WooCommerce</b></a>
 </p>
 
 ## Why Monokulo
@@ -40,7 +39,7 @@
 
 ## Get started
 
-**1. Download** the build for your computer from [latest-main](https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main) (Linux, macOS, Windows), or use the [OpenWrt package](https://oceaneilonwy.github.io/monokulo/#install) or [Docker](docs/RUNNING.md#with-docker).
+**1. Download** the build for your computer from [latest-main](https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main) (Linux, macOS, Windows), or use the [OpenWrt package](https://oceaneilonwy.github.io/monokulo/#install) or Docker (see the [install guide](https://oceaneilonwy.github.io/monokulo/#install)).
 
 **2. Start it** with an encryption key you keep:
 
@@ -53,15 +52,6 @@ MONOKULO_ENCRYPTION_KEY="$(cat monokulo.key)" ./monokulo
 
 Step-by-step instructions for every platform are in the **[install guide](https://oceaneilonwy.github.io/monokulo/#install)**.
 
-## Documentation
-
-The [install guide](https://oceaneilonwy.github.io/monokulo/) on GitHub Pages is the place to start. Until the rest moves there:
-
-- [Running Monokulo](docs/RUNNING.md): Docker, the OpenWrt package, building from source, and running the engine on its own host
-- [Configuration](docs/CONFIGURATION.md): the options file, command-line options and secrets
-- [Tor onion service](docs/TOR.md)
-- [Engine verification](docs/ENGINE_VERIFICATION.md)
-
 ## Contributing
 
 Monokulo builds on nightly Rust, Node 24 and CMake. To run it locally against stagenet:
@@ -70,5 +60,3 @@ Monokulo builds on nightly Rust, Node 24 and CMake. To run it locally against st
 (cd crates/monokulo/pos-ui && npm ci)
 scripts/dev-run.sh start    # then open http://127.0.0.1:8081
 ```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for tests, coverage and the stagenet test wallet.
