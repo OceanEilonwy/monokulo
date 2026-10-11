@@ -1275,6 +1275,29 @@ else
 fi
 "#;
 
+        /// The fake tools, written once per test process. Writing a script in
+        /// one test while another forks a child leaks the open write handle
+        /// into that child, and executing the script then fails with
+        /// "Text file busy". Every test waits here, so no script is ever open
+        /// for writing while a campaign spawns it.
+        fn fake_tools() -> &'static Path {
+            static BIN: std::sync::OnceLock<Scratch> = std::sync::OnceLock::new();
+            BIN.get_or_init(|| {
+                let scratch = Scratch::new("exploration-fake-tools");
+                let bin = scratch.path();
+                for (name, body) in [
+                    ("git", "#!/bin/sh\ncase \"$1\" in rev-parse) echo abcdef0123456789;; status) ;; esac\n"),
+                    ("rustc", "#!/bin/sh\necho \"rustc test compiler\"\necho \"host: x86_64-unknown-linux-gnu\"\n"),
+                    ("cargo", CARGO),
+                ] {
+                    fs::write(bin.join(name), body).unwrap();
+                    fs::set_permissions(bin.join(name), fs::Permissions::from_mode(0o755)).unwrap();
+                }
+                scratch
+            })
+            .path()
+        }
+
         struct Repo {
             scratch: Scratch,
             tools: Tools,
@@ -1288,16 +1311,7 @@ fi
                 fs::create_dir_all(root.join("fuzz/seeds/status")).unwrap();
                 fs::write(root.join("fuzz/seeds/status/boundary"), b"reviewed").unwrap();
                 fs::write(root.join("fuzz/Cargo.lock"), "fuzz lock").unwrap();
-                let bin = root.join("bin");
-                fs::create_dir(&bin).unwrap();
-                for (name, body) in [
-                    ("git", "#!/bin/sh\ncase \"$1\" in rev-parse) echo abcdef0123456789;; status) ;; esac\n"),
-                    ("rustc", "#!/bin/sh\necho \"rustc test compiler\"\necho \"host: x86_64-unknown-linux-gnu\"\n"),
-                    ("cargo", CARGO),
-                ] {
-                    fs::write(bin.join(name), body).unwrap();
-                    fs::set_permissions(bin.join(name), fs::Permissions::from_mode(0o755)).unwrap();
-                }
+                let bin = fake_tools();
                 let mut tools = Tools::default();
                 let path = format!("{}:{}", bin.display(), env::var("PATH").unwrap_or_default());
                 tools.vars.extend([
@@ -1400,8 +1414,13 @@ fi
 
         #[test]
         fn a_checkout_without_git_is_an_error_before_any_evidence_is_written() {
-            let repo = Repo::new("exploration-no-git");
-            fs::write(repo.scratch.join("bin/git"), "#!/bin/sh\nexit 128\n").unwrap();
+            let mut repo = Repo::new("exploration-no-git");
+            let broken = repo.scratch.join("broken");
+            fs::create_dir(&broken).unwrap();
+            fs::write(broken.join("git"), "#!/bin/sh\nexit 128\n").unwrap();
+            fs::set_permissions(broken.join("git"), fs::Permissions::from_mode(0o755)).unwrap();
+            let path = format!("{}:{}", broken.display(), repo.tools.vars["PATH"]);
+            repo.tools.vars.insert("PATH".into(), path);
             let error = fuzz(repo.scratch.path(), &["status", "1"], &repo.tools).unwrap_err();
             assert!(error.to_string().contains("git rev-parse"), "{error}");
             assert!(!repo.scratch.join("target").exists());
