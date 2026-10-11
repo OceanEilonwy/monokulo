@@ -41,6 +41,43 @@ test('real POS backgrounds, reloads, reopens, cancels, and searches an order', a
   await expect(page.locator('.pos-order-card')).toContainText('Fixture order');
 });
 
+// The live stream's status events never say an order was cancelled, so one
+// arriving while the POS reads the order back after the cancel must not
+// make it forget the cancellation. (After a connection comes back, the
+// stream opens with a snapshot of every order, which can land right here.)
+test('real POS keeps a cancellation when a status event arrives while it reads the order back', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.EventSource = class {
+      constructor() { window.__statusListeners = []; }
+      addEventListener(name, listener) { if (name === 'status') window.__statusListeners.push(listener); }
+      close() {}
+    };
+    window.__status = update => window.__statusListeners.forEach(listener => listener({ data: JSON.stringify(update) }));
+  });
+  let held;
+  let release;
+  const reading = new Promise(resolve => { held = resolve; });
+  const released = new Promise(resolve => { release = resolve; });
+  let holdReads = false;
+  await page.route('**/pos/orders/*', async route => {
+    if (holdReads && route.request().method() === 'GET') {
+      holdReads = false;
+      held(new URL(route.request().url()).pathname.split('/').pop());
+      await released;
+    }
+    await route.continue();
+  });
+  await page.goto(posUrl());
+  await expect(page.locator('.pos-pay-card .pos-qr svg')).toBeVisible();
+  holdReads = true;
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: 'Cancel order' }).click();
+  const orderId = await reading;
+  await page.evaluate(id => window.__status({ order_id: id, status: 'pending', confirmations: 0, confirmations_required: 10, is_terminal: false }), orderId);
+  release();
+  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Cancelled');
+});
+
 test('real POS header stays above its payment card and its actions stay reachable', async ({ page }) => {
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
