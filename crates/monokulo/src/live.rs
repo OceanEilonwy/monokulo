@@ -225,8 +225,10 @@ impl Drop for OrderSubscription {
 
 /// Changes monokulo makes to its own record of an order (the POS
 /// backgrounding or cancelling it), which the engine knows nothing of and
-/// so never reports to a [`LiveHub`]. Held by the app rather than the
-/// engine client, so its watchers carry on across a change of engine.
+/// so never reports to a [`LiveHub`]. Held by the database
+/// (`db::Database::order_changes`), which wakes it for every write that
+/// changes such an order, and not by the engine client, so its watchers
+/// carry on across a change of engine.
 #[derive(Clone, Default)]
 pub struct OrderChanges {
     stores: Arc<Mutex<HashMap<crate::db::ConnectionId, HashMap<crate::db::OrderId, LocalWatch>>>>,
@@ -242,7 +244,8 @@ pub struct OrderChangeWatch {
     changes: OrderChanges,
     connection_id: crate::db::ConnectionId,
     order_id: crate::db::OrderId,
-    changed: watch::Receiver<u64>,
+    /// The order's changes since anyone began watching it, counted.
+    pub(crate) changed: watch::Receiver<u64>,
 }
 
 impl OrderChanges {
@@ -269,8 +272,9 @@ impl OrderChanges {
         }
     }
 
-    /// Wakes the order's watchers. Called once the change is committed, so
-    /// what they read back has it; nothing to do when nobody watches.
+    /// Wakes the order's watchers. `db::Database::write` calls it once the
+    /// change is committed, so what they read back has it; nothing to do
+    /// when nobody watches.
     pub fn notify(&self, connection_id: &crate::db::ConnectionId, order_id: &crate::db::OrderId) {
         let stores = self.stores.lock();
         if let Some(order) = stores

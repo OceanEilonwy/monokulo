@@ -248,7 +248,6 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         settings: monokulo_settings.clone(),
         log_store,
         webhooks,
-        order_changes: Default::default(),
         engine: monokulo::http::Engine::new(engine_client),
     };
     let router = build_router(app_state);
