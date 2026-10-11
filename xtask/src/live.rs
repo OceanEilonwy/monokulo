@@ -958,7 +958,7 @@ mod tests {
             .unwrap();
         let picks = Regex::new(pattern).unwrap();
         for name in [
-            "live_tor_visitors_are_told_apart",
+            "live_tor_takes_our_torrc_and_hands_monokulo_a_circuit_identity",
             "daemon_rpc::live_node_tests::live_node_get_height_returns_a_plausible_value",
         ] {
             assert!(picks.is_match(name), "{name}");
@@ -1077,7 +1077,7 @@ mod tests {
                 Some("needs a live mainnet node".to_string()),
             ),
             (
-                "crates/monokulo/tests/e2e_tor.rs › live_tor_visitors".to_string(),
+                "crates/monokulo/tests/e2e_tor.rs › live_tor_takes_our_torrc".to_string(),
                 Some("needs tor and the live Tor network".to_string()),
             ),
         ];
@@ -1088,7 +1088,7 @@ mod tests {
                     "engine",
                     "daemon_rpc::live_node_tests::live_node_get_height",
                 ),
-                case("monokulo::e2e_tor", "live_tor_visitors"),
+                case("monokulo::e2e_tor", "live_tor_takes_our_torrc"),
                 case("engine", "something_else"),
             ],
             &ignored,
@@ -1101,7 +1101,7 @@ mod tests {
                     "needs a live mainnet node".to_string()
                 ),
                 (
-                    "monokulo::e2e_tor › live_tor_visitors".to_string(),
+                    "monokulo::e2e_tor › live_tor_takes_our_torrc".to_string(),
                     "needs tor and the live Tor network".to_string()
                 ),
             ]

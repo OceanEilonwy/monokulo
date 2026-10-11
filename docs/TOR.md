@@ -74,8 +74,11 @@ command-line option shown):
 ## Testing it
 
 `crates/monokulo/tests/e2e_tor.rs` runs a real tor with this snippet's lines in
-front of monokulo and checks per-circuit identities, limits, challenges and the
-stream cap. It needs the live Tor network, so it's ignored by default:
+front of monokulo and checks that tor accepts those lines and that monokulo
+sees a visitor as a circuit. The limits, challenges and stream cap that follow
+from a circuit identity need no Tor and are tested without it
+(`onion_listener.rs`, the `abuse` modules). The Tor test needs the live Tor
+network, so it's ignored by default:
 
 ```sh
 cargo test -p monokulo --test e2e_tor -- --ignored --nocapture

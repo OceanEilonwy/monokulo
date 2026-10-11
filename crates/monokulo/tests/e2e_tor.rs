@@ -21,20 +21,22 @@
 //!    are rewritten), plus a `SocksPort` and a `ControlPort` for the test.
 //! 3. Checks through the control port that tor accepted the proof-of-work,
 //!    circuit-export, intro-DoS and stream settings.
-//! 4. Acts as several visitors through the `SocksPort`, each with its own
-//!    SOCKS username/password, so tor's default `IsolateSOCKSAuth` puts each
-//!    on its own circuit, and checks that monokulo sees one distinct circuit
-//!    identity per visitor, challenges and then blocks only the abusive one,
-//!    and caps open live-update streams per (circuit, store).
+//! 4. Reaches the onion service through the `SocksPort` and checks that
+//!    monokulo sees the visitor as a circuit, which is the one thing the
+//!    circuit-export setting is for.
+//!
+//! That is all it is for: whether a real tor takes our torrc and hands
+//! monokulo a circuit identity. What monokulo does with identities (one
+//! budget per circuit, challenge, hard limit, stream cap) needs no Tor and
+//! is tested without it, in `onion_listener.rs` and the `abuse` modules.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use monokulo::abuse::proxy_protocol::{OnionListener, OnionPeer};
-use monokulo::abuse::{AbuseConfig, AbuseProtection, ClientIdentity};
+use monokulo::abuse::ClientIdentity;
 use monokulo::db::Db;
 use monokulo::engine_client::{CreateTenantRequest, EngineClient};
 use monokulo::http::{build_router, AppState};
@@ -46,12 +48,6 @@ const TEST_VIEW_KEY_HEX: &str = "07070707070707070707070707070707070707070707070
 const TEST_SPEND_PUBKEY_HEX: &str =
     "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 const ENCRYPTION_KEY: monokulo::crypto::AtRestKey = monokulo::crypto::AtRestKey::new([7u8; 32]);
-
-/// Small limits so the test needs only a handful of requests over Tor.
-const SOFT: u32 = 5;
-const HARD: u32 = 12;
-const STREAM_CAP: usize = 3;
-const BITS: u32 = 8;
 
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(300);
 const REACHABLE_TIMEOUT: Duration = Duration::from_secs(420);
@@ -217,7 +213,6 @@ struct Visitor {
 
 struct Reply {
     status: u16,
-    headers: String,
     body: String,
 }
 
@@ -276,32 +271,8 @@ impl Visitor {
             .ok_or_else(|| std::io::Error::other(format!("no HTTP status in {head:?}")))?;
         Ok(Reply {
             status,
-            headers: head.to_ascii_lowercase(),
             body: body.to_string(),
         })
-    }
-
-    /// Opens a live-update stream and returns its status line's code,
-    /// keeping the connection open (returned) when it was accepted.
-    async fn open_stream(&self, path: &str) -> (u16, Option<TcpStream>) {
-        let mut stream = self.connect().await.expect("SOCKS connect");
-        let request = format!(
-            "GET {path} HTTP/1.1\r\nHost: {}\r\nAccept: text/event-stream\r\n\r\n",
-            self.onion
-        );
-        stream.write_all(request.as_bytes()).await.unwrap();
-        let mut reader = BufReader::new(stream);
-        let mut status_line = String::new();
-        tokio::time::timeout(Duration::from_secs(90), reader.read_line(&mut status_line))
-            .await
-            .expect("stream answer timed out")
-            .unwrap();
-        let status: u16 = status_line
-            .split(' ')
-            .nth(1)
-            .and_then(|code| code.parse().ok())
-            .expect("status line");
-        (status, (status == 200).then(|| reader.into_inner()))
     }
 }
 
@@ -382,16 +353,8 @@ async fn start_monokulo(
         &wallet,
     )
     .unwrap();
-    let config = AbuseConfig {
-        soft_per_min: SOFT,
-        hard_per_min: HARD,
-        stream_cap: STREAM_CAP,
-        challenge_bits: BITS,
-        ..Default::default()
-    };
     let state = AppState {
         encryption_key: ENCRYPTION_KEY,
-        abuse: Arc::new(AbuseProtection::new(config)),
         engine: monokulo::http::Engine::new(engine_client),
         ..AppState::for_tests_with_db(db.into_shared())
     };
@@ -433,7 +396,7 @@ fn circuits(state: &AppState) -> Vec<u32> {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs tor and the live Tor network"]
-async fn live_tor_visitors_are_told_apart_by_circuit_and_only_the_abusive_one_is_slowed() {
+async fn live_tor_takes_our_torrc_and_hands_monokulo_a_circuit_identity() {
     let engine =
         engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
     let (state, onion_listener, store) = start_monokulo(&engine).await;
@@ -489,19 +452,13 @@ async fn live_tor_visitors_are_told_apart_by_circuit_and_only_the_abusive_one_is
         socks: tor.socks,
         onion: hostname.clone(),
     };
-    let (a, b, c, d) = (
-        visitor("visitor-a"),
-        visitor("visitor-b"),
-        visitor("visitor-c"),
-        visitor("visitor-d"),
-    );
+    let visitor = visitor("visitor");
     let status_path = format!("/pay/{}/orders/{}/status", store.pk, store.order_id);
-    let events_path = format!("/pay/{}/orders/{}/events", store.pk, store.order_id);
 
     // -- wait until the descriptor is published and reachable ---------------
     let deadline = Instant::now() + REACHABLE_TIMEOUT;
     let first = loop {
-        match a.get(&status_path, "").await {
+        match visitor.get(&status_path, "").await {
             Ok(reply) => break reply,
             Err(e) => {
                 assert!(
@@ -516,111 +473,8 @@ async fn live_tor_visitors_are_told_apart_by_circuit_and_only_the_abusive_one_is
     assert_eq!(first.status, 200, "{}", first.body);
     println!("reachable over Tor");
 
-    // -- one circuit per visitor --------------------------------------------
-    assert_eq!(b.get(&status_path, "").await.unwrap().status, 200);
+    // -- monokulo saw that visitor as a circuit -----------------------------
     let seen = circuits(&state);
-    assert!(
-        seen.len() >= 2,
-        "two visitors, two circuits at least: {seen:?}"
-    );
-    assert_ne!(seen[0], seen[1]);
-
-    // -- visitor A past the soft limit is challenged; B is not ---------------
-    // Normally the 6th request; a few spare in case a minute boundary
-    // passes mid-test (the count is a rolling minute).
-    let mut challenged = None;
-    for _ in 0..SOFT + 3 {
-        let reply = a.get(&status_path, "").await.unwrap();
-        if reply.status == 429 {
-            challenged = Some(reply);
-            break;
-        }
-        assert_eq!(reply.status, 200);
-    }
-    let challenged = challenged.expect("visitor A is challenged past the soft limit");
-    assert!(
-        challenged.headers.contains("monokulo-challenge:"),
-        "{}",
-        challenged.headers
-    );
-    let body: serde_json::Value = serde_json::from_str(&challenged.body).unwrap();
-    let challenge = body["challenge"]["challenge"].as_str().unwrap().to_string();
-    assert_eq!(
-        b.get(&status_path, "").await.unwrap().status,
-        200,
-        "the other visitor is unaffected"
-    );
-
-    // A solves it (as monokulo-client.js would) and gets through.
-    let proof = format!(
-        "{challenge}.{}",
-        monokulo::abuse::challenge::solve(&challenge, BITS)
-    );
-    let solved = a
-        .get(&status_path, &format!("Monokulo-Proof: {proof}\r\n"))
-        .await
-        .unwrap();
-    assert_eq!(solved.status, 200, "the proof is accepted: {}", solved.body);
-
-    // -- past the hard limit only A gets 429 + Retry-After -------------------
-    let mut blocked = None;
-    for _ in 0..HARD + 3 {
-        let reply = a.get(&status_path, "").await.unwrap();
-        if reply.status == 429 {
-            blocked = Some(reply);
-            break;
-        }
-    }
-    let blocked = blocked.expect("visitor A reaches the hard limit");
-    assert!(
-        blocked.headers.contains("retry-after:"),
-        "{}",
-        blocked.headers
-    );
-    assert!(
-        !blocked.headers.contains("monokulo-challenge:"),
-        "nothing to solve past the hard limit"
-    );
-    assert_eq!(
-        b.get(&status_path, "").await.unwrap().status,
-        200,
-        "the other visitor is still unaffected"
-    );
-
-    // -- open live-update streams are capped per (circuit, store) -----------
-    let mut held = Vec::new();
-    for n in 0..STREAM_CAP {
-        let (status, stream) = c.open_stream(&events_path).await;
-        assert_eq!(status, 200, "stream {n} of visitor C");
-        held.push(stream);
-    }
-    assert_eq!(
-        c.open_stream(&events_path).await.0,
-        429,
-        "one stream too many for visitor C's circuit"
-    );
-    assert_eq!(
-        d.open_stream(&events_path).await.0,
-        200,
-        "another circuit has its own allowance"
-    );
-    drop(held);
-
-    // At least four: tor may rebuild a visitor's rendezvous circuit, which
-    // then counts as a new one. What matters is that no two visitors were
-    // ever taken for one client.
-    let seen = circuits(&state);
-    assert!(
-        seen.len() >= 4,
-        "four visitors, four circuits at least: {seen:?}"
-    );
-    let mut distinct = seen.clone();
-    distinct.sort_unstable();
-    distinct.dedup();
-    assert_eq!(
-        distinct.len(),
-        seen.len(),
-        "no circuit counted twice: {seen:?}"
-    );
+    assert_eq!(seen.len(), 1, "one visitor, one circuit: {seen:?}");
     println!("PASS");
 }
