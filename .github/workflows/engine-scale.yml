@@ -8,7 +8,7 @@ permissions:
 jobs:
   measurements:
     # Capacity and latency depend on hardware. They are recorded for review;
-    # the scale tests (tests.yml's Engine scale tests) are the
+    # the scale tests (platform.yml's Engine scale tests) are the
     # machine-independent merge check.
     runs-on: ubuntu-latest
     timeout-minutes: 60

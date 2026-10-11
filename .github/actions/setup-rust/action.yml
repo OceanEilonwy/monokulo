@@ -15,6 +15,16 @@ inputs:
   cache-key:
     description: Separates this job's Rust cache from others the same job id makes
     default: ''
+  shared-key:
+    description: >
+      Jobs that pass the same shared-key (and cache-key) use one Rust cache
+      on a runner type; empty keeps this job's own
+    default: ''
+  save:
+    description: >
+      Save the Rust cache when the job ends (on main only). A job that
+      shares a cache with another sets this to false and only restores it
+    default: 'true'
   pos-app:
     description: Install the POS app's npm dependencies (only builds of monokulo need them)
     default: 'true'
@@ -36,12 +46,18 @@ runs:
       shell: bash
       run: npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
     # Nothing in CI is debugged, so dev and test builds optimise the
-    # workspace's own crates as Cargo.toml does the dependencies. Set before
-    # the Rust cache, whose key considers CARGO_* variables. Coverage
-    # (cargo xtask coverage rust) sets it back to 0 for its own build.
-    - name: Optimise the workspace's crates
+    # workspace's own crates as Cargo.toml does the dependencies, and keep
+    # file and line numbers for backtraces but none of the rest of the debug
+    # info, which CI never reads (a smaller cache, and our own crates, which
+    # the Rust cache does not keep, compile and link faster). Set before the
+    # Rust cache, whose key considers CARGO_* variables. Coverage
+    # (cargo xtask coverage rust) sets the optimisation back to 0 for its own
+    # build.
+    - name: Set the dev profile for CI
       shell: bash
-      run: echo CARGO_PROFILE_DEV_OPT_LEVEL=3 >> "$GITHUB_ENV"
+      run: |
+        echo CARGO_PROFILE_DEV_OPT_LEVEL=3 >> "$GITHUB_ENV"
+        echo CARGO_PROFILE_DEV_DEBUG=line-tables-only >> "$GITHUB_ENV"
     - uses: dtolnay/rust-toolchain@nightly
       with:
         components: ${{ inputs.components }}
@@ -49,10 +65,13 @@ runs:
     - uses: Swatinem/rust-cache@v2
       with:
         key: ${{ inputs.cache-key }}
+        shared-key: ${{ inputs.shared-key }}
+        # A job that fails its tests still built the dependencies.
+        cache-on-failure: true
         # Only main saves. Every pull request used to save its own copy of
         # each job's cache (about 3 GB of Linux caches a pull request), which
         # took the repository past GitHub's 10 GB limit, and the least
         # recently used caches go first: main's Windows and macOS ones, which
         # only a main push touches, so Windows rebuilt every dependency.
         # Pull requests still restore main's.
-        save-if: ${{ github.ref == 'refs/heads/main' }}
+        save-if: ${{ github.ref == 'refs/heads/main' && inputs.save == 'true' }}

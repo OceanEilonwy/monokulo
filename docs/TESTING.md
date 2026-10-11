@@ -30,26 +30,28 @@ implement it. Organized by component, in roughly the order a component would be 
 ### CI: pull request checks and releases
 
 Two workflows run the tests, both through two reusable ones: `lint.yml`
-(rustfmt, clippy and the checks below) and `tests.yml` (one platform's
-suites, each a job of its own: the Rust tests everywhere, the browser,
-WooCommerce, stress and scale suites on Linux; with `coverage`, each
-through its coverage collector). Each `tests.yml` run ends in a Summary job
+(rustfmt, clippy and the checks below) and `platform.yml` (one platform's
+build and suites, each a job of its own: the Rust tests everywhere, the
+browser, WooCommerce, engine progress and scale suites on Linux; with
+`coverage`, each through its coverage collector). Each `platform.yml` run ends in a Summary job
 that passes only when every suite did and, with coverage, joins what they
 collected into the one coverage artifact and checks it.
 
-- `checks.yml`, on every pull request update: `lint`, and `tests (linux)`
+- `checks.yml`, on every pull request update: `lint`, and `linux`
   without coverage. A manual run (Actions > Checks > Run workflow) takes a
   JSON list of platforms (`["linux", "macos", "windows"]`) and can collect
   coverage, for any branch. A pull request's checks list only jobs that
   run: nothing is skipped.
 - `release.yml`, on main, version tags and manual runs: `lint` and
-  `tests (linux)`, `tests (macos)` and `tests (windows)` on the merged
-  commit, then `coverage` once they pass, then the builds and releases.
-  The plain Linux run there also keeps the Rust cache pull requests start
-  from warm: an instrumented build shares nothing with a plain one.
+  `linux`, `macos` and `windows` on the merged commit, then `coverage` once they pass, then the builds and releases.
+  Only runs on main save the Rust cache, which pull requests restore: the
+  Rust tests job of each platform builds the whole workspace's tests (its
+  Build the tests step) and saves it, and the other Linux suites restore
+  that one and save nothing. An instrumented build shares nothing with a
+  plain one, so coverage keeps caches of its own.
 
 The `main` branch requires one approval, dismisses stale approvals after a
-push, and requires `lint / rustfmt and clippy` and `tests (linux) / Summary`.
+push, and requires `lint / rustfmt and clippy` and `linux / Summary`.
 macOS, Windows and coverage problems show on main, before anything is
 released.
 
