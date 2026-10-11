@@ -37,13 +37,20 @@ all = { level = "deny", priority = -1 }
 # Set by `cargo +nightly llvm-cov`, which leaves test code out of reports.
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
 
-# Every dependency is optimised, even in dev and test builds; the workspace's
-# own crates stay unoptimised for debugging and coverage. Tests spend most of
-# their time in dependencies: SQLite, password hashing (Argon2id, about a
-# second a hash unoptimised), Monero output scanning (curve arithmetic and
-# hashing), RandomX proof of work (its C++ is built at this level too) and the
-# TLS root certificates every HTTP client loads. A dependency is rebuilt only
-# when Cargo.lock changes, and CI caches the build.
+# Dev and test builds are optimised, the workspace's own crates and every
+# dependency alike. Tests spend most of their time in optimisable code:
+# SQLite, password hashing (Argon2id, about a second a hash unoptimised),
+# Monero output scanning (curve arithmetic and hashing), RandomX proof of
+# work (its C++ is built at this level too), the TLS root certificates every
+# HTTP client loads, and the engine's own property tests and scanner. A
+# dependency is rebuilt only when Cargo.lock changes, and CI caches the
+# build. Only coverage builds the workspace's crates unoptimised, so
+# instrumented lines map to source: `cargo xtask coverage rust` sets
+# CARGO_PROFILE_DEV_OPT_LEVEL=0, which leaves the dependencies' setting
+# below alone. Debugging a workspace crate: set the same variable to 0.
+[profile.dev]
+opt-level = 3
+
 [profile.dev.package."*"]
 opt-level = 3
 # Decoding and encoding images (`cargo xtask pages build`'s screenshot
