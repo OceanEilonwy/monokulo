@@ -42,3 +42,10 @@ runs:
     - uses: Swatinem/rust-cache@v2
       with:
         key: ${{ inputs.cache-key }}
+        # Only main saves. Every pull request used to save its own copy of
+        # each job's cache (about 3 GB of Linux caches a pull request), which
+        # took the repository past GitHub's 10 GB limit, and the least
+        # recently used caches go first: main's Windows and macOS ones, which
+        # only a main push touches, so Windows rebuilt every dependency.
+        # Pull requests still restore main's.
+        save-if: ${{ github.ref == 'refs/heads/main' }}

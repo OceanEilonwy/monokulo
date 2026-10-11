@@ -81,6 +81,14 @@ jobs:
           components: ${{ inputs.coverage && 'llvm-tools-preview' || '' }}
           # An instrumented build shares nothing with a plain one.
           cache-key: ${{ inputs.coverage && 'coverage' || 'tests' }}
+      # Windows runners run the workspace's tests several times as slowly
+      # as Linux ones. Nothing is debugged or measured for coverage there,
+      # so the workspace's own crates are optimised as the dependencies
+      # already are (Cargo.toml), if that pays for the longer compile.
+      - name: Optimise the workspace's crates
+        if: inputs.platform == 'windows' && !inputs.coverage
+        shell: bash
+        run: echo CARGO_PROFILE_DEV_OPT_LEVEL=3 >> "$GITHUB_ENV"
       - uses: taiki-e/install-action@v2
         with:
           tool: ${{ inputs.coverage && 'cargo-llvm-cov,cargo-nextest' || 'cargo-nextest' }}
