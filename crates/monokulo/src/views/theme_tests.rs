@@ -76,7 +76,7 @@ fn stylesheets() -> Vec<(String, String)> {
         }
     }
     // The GitHub Pages site (web/) loads theme.css too: the landing page's
-    // style block and the quality report's stylesheet.
+    // style block and the coverage report's stylesheet.
     let web = crate_dir().join("../../web");
     let text = read(&web.join("index.html"));
     for (i, block) in text.split("<style>").skip(1).enumerate() {
@@ -87,8 +87,8 @@ fn stylesheets() -> Vec<(String, String)> {
         ));
     }
     sheets.push((
-        "web/pages/quality/quality.css".to_string(),
-        read(&web.join("pages/quality/quality.css")),
+        "web/pages/coverage/coverage.css".to_string(),
+        read(&web.join("pages/coverage/coverage.css")),
     ));
     sheets.push((
         "web/pages/docs/docs.css".to_string(),
@@ -98,7 +98,7 @@ fn stylesheets() -> Vec<(String, String)> {
 }
 
 /// Markup that can carry colours of its own: the views, the POS app and the
-/// quality report's pages (rendered by xtask) and script.
+/// coverage report's pages (rendered by xtask) and script.
 fn markup_sources() -> Vec<(String, String)> {
     let mut sources = Vec::new();
     for (dir, ext) in [
@@ -106,7 +106,7 @@ fn markup_sources() -> Vec<(String, String)> {
         ("pos-ui/src", "tsx"),
         ("pos-ui/src", "ts"),
         ("../../xtask/src/pages/render", "rs"),
-        ("../../web/pages/quality", "js"),
+        ("../../web/pages/coverage", "js"),
     ] {
         for path in files_with_extension(&crate_dir().join(dir), ext) {
             sources.push((

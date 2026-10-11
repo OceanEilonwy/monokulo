@@ -13,7 +13,7 @@ name: Release
 #                      key-custody-cli for every computer merchants use, the
 #                      Docker image and the OpenWrt package
 #   Pages              on main: the GitHub Pages site's release part (the
-#                      OpenWrt package site and the quality report) from
+#                      OpenWrt package site and the coverage report) from
 #                      this run's artifacts (pages.yml)
 #   GitHub release     a version tag's release (with build provenance for the
 #                      CLI); main updates the latest-main prerelease instead
@@ -283,7 +283,7 @@ jobs:
     secrets: inherit
 
   pages:
-    # The landing page, apk repository and quality report from this run, on
+    # The landing page, apk repository and coverage report from this run, on
     # the commit it tested, with the property, fuzz and scale pages as they
     # are live (pages.yml).
     name: Pages

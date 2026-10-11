@@ -1,4 +1,4 @@
-// The quality report's enhancements (cargo xtask pages build renders the pages).
+// The coverage report's enhancements (cargo xtask pages build renders the pages).
 // Every page reads fine without this: it adds the tests' and screens' filters
 // and the screenshot viewer. It never writes markup from strings: text goes in
 // through textContent and attributes through setAttribute.

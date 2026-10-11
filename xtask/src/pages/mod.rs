@@ -1,4 +1,4 @@
-//! `cargo xtask pages build`: the quality report (GitHub Pages: /quality/)
+//! `cargo xtask pages build`: the coverage report (GitHub Pages: /quality/)
 //! from CI artifacts, `cargo xtask pages fetch`: those artifacts, downloaded
 //! from main's newest runs, and `cargo xtask serve`: a built site, served to
 //! look at.
@@ -6,7 +6,7 @@
 //! Every input of the report is optional; the pages say what they have no
 //! data for. A build reads the artifacts (`inputs`), works out what the
 //! pages show (`model`) and renders a page per section (`render`), beside
-//! the stylesheet and script in `web/pages/quality/`, the screenshot
+//! the stylesheet and script in `web/pages/coverage/`, the screenshot
 //! gallery (`gallery/`), the report pages the pages link and what those
 //! need (`reports/`) and a shields.io endpoint for the coverage badge
 //! (`badge.json`). Only one engine build of the property and fuzz runs is
@@ -58,14 +58,14 @@ const OUTPUTS: [&str; 12] = [
     "reports",
 ];
 /// The page's own stylesheet and script, beside theme.css in `assets/`.
-const PAGE_ASSETS: [&str; 2] = ["quality.css", "quality.js"];
+const PAGE_ASSETS: [&str; 2] = ["coverage.css", "coverage.js"];
 const FONT_WEIGHTS: [u16; 3] = [500, 700, 800];
 const DEFAULT_REPO_URL: &str = "https://github.com/OceanEilonwy/monokulo";
 
 pub(crate) const HELP: &str = "\
         pages build --out DIR [--coverage DIR] [--properties DIR] [--fuzz DIR] [--scale DIR]\n\
                      [--live DIR] [--sources FILE] [--feature zmq|default] [--repo-url URL]\n\
-                      Build the quality report (GitHub Pages /quality/) from CI artifacts: the joined\n\
+                      Build the coverage report (GitHub Pages /quality/) from CI artifacts: the joined\n\
                       coverage artifact (or target/coverage), an engine-properties artifact, a folder of\n\
                       engine-fuzz artifacts, an engine-scale-measurements artifact, a live-network artifact,\n\
                       and a JSON file naming the run behind each (docs/COVERAGE.md); replaces its own files\n\
@@ -191,7 +191,7 @@ fn copy_assets(root: &Path, out: &Path) -> io::Result<()> {
     }));
     copies.extend(PAGE_ASSETS.iter().map(|name| {
         (
-            root.join("web/pages/quality").join(name),
+            root.join("web/pages/coverage").join(name),
             (*name).to_string(),
         )
     }));
@@ -276,7 +276,7 @@ pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
     .filter_map(|(name, present)| present.then_some(name))
     .collect();
     eprintln!(
-        "quality report in {}: {} page(s), {}",
+        "coverage report in {}: {} page(s), {}",
         out.display(),
         pages.len(),
         if have.is_empty() {

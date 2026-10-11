@@ -1,7 +1,7 @@
 @font-face{font-family:"Manrope";font-style:normal;font-weight:500;font-display:swap;src:url(manrope-500.woff2) format("woff2")}
 @font-face{font-family:"Manrope";font-style:normal;font-weight:700;font-display:swap;src:url(manrope-700.woff2) format("woff2")}
 @font-face{font-family:"Manrope";font-style:normal;font-weight:800;font-display:swap;src:url(manrope-800.woff2) format("woff2")}
-/* The quality report's pages (cargo xtask pages build, xtask/src/pages/render/).
+/* The coverage report's pages (cargo xtask pages build, xtask/src/pages/render/).
    Colours come only from theme.css roles. A status line, a row of headline figures,
    then section tabs; each section opens from a summary into the specifics
    (area > group > test, crate > file, target > scenarios, screen > shapes). */
@@ -47,8 +47,8 @@ main{max-width:1120px;margin:0 auto;padding:var(--space-2xl) max(16px,3vw) 80px;
 .meter i.skip{background:var(--line-strong)}
 .meter.ok i{background:var(--success)}
 
-.tabs{display:flex;gap:var(--space-xs);border-bottom:2px solid var(--line);overflow-x:auto;scrollbar-width:thin}
-.tabs a{text-decoration:none;position:relative;top:2px;padding:10px 14px;border-bottom:3px solid transparent;color:var(--muted);font-weight:700;font-size:14px;white-space:nowrap}
+.tabs{display:flex;gap:var(--space-xs);box-shadow:inset 0 -2px 0 var(--line);overflow-x:auto;scrollbar-width:thin}
+.tabs a{text-decoration:none;padding:10px 14px;border-bottom:3px solid transparent;color:var(--muted);font-weight:700;font-size:14px;white-space:nowrap}
 .tabs a:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 .tabs a[aria-current="page"]{color:var(--ink);border-bottom-color:var(--accent)}
 .tabs .c{font-weight:600;color:var(--muted);font-size:12px;margin-left:4px}

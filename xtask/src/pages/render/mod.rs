@@ -1,6 +1,6 @@
 //! The report's pages, rendered with maud: one page per section, each with
 //! the same header, headline figures and section tabs. They read without
-//! JavaScript; `assets/quality.js` only adds the tests' and screens' filters
+//! JavaScript; `assets/coverage.js` only adds the tests' and screens' filters
 //! and the screenshot viewer.
 
 mod coverage;
@@ -21,24 +21,24 @@ use std::{fs, io, path::Path};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Tab {
     Overview,
-    Tests,
     Coverage,
+    Tests,
     Properties,
     Fuzzing,
-    Scale,
     Live,
+    Scale,
     Screens,
 }
 
 impl Tab {
     const ALL: [Tab; 8] = [
         Tab::Overview,
-        Tab::Tests,
         Tab::Coverage,
+        Tab::Tests,
         Tab::Properties,
         Tab::Fuzzing,
-        Tab::Scale,
         Tab::Live,
+        Tab::Scale,
         Tab::Screens,
     ];
 
@@ -63,7 +63,7 @@ impl Tab {
             Tab::Properties => "Property tests",
             Tab::Fuzzing => "Fuzzing",
             Tab::Scale => "Scale",
-            Tab::Live => "Live network",
+            Tab::Live => "Live tests",
             Tab::Screens => "Screens",
         }
     }
@@ -179,8 +179,8 @@ fn page(report: &Report, shell: &Shell, tab: Tab, body: &Markup) -> Markup {
                 meta name="description" content="Monokulo’s tests, coverage, property tests, fuzzing, load checks, live-network checks and screenshots, rebuilt from every CI run on main.";
                 link rel="icon" href="../assets/favicon.svg" type="image/svg+xml";
                 link rel="stylesheet" href="assets/theme.css";
-                link rel="stylesheet" href="assets/quality.css";
-                @if script { script src="assets/quality.js" defer {} }
+                link rel="stylesheet" href="assets/coverage.css";
+                @if script { script src="assets/coverage.js" defer {} }
             }
             body {
                 header.chrome {
@@ -194,7 +194,7 @@ fn page(report: &Report, shell: &Shell, tab: Tab, body: &Markup) -> Markup {
                         nav aria-label="Site" {
                             a href="../#how" { "How it works" }
                             a href="../#install" { "Install" }
-                            a href="./" aria-current="page" { "Quality" }
+                            a href="./" aria-current="page" { "Testing" }
                             a href=(repo) { "Source code" }
                         }
                     }

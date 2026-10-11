@@ -1,7 +1,7 @@
 # The GitHub Pages site:
 #   /           the landing page and the signed apk repository (the OpenWrt
 #               package's site artifact)
-#   /quality/   the quality report (`cargo xtask pages build`): tests,
+#   /quality/   the coverage report (`cargo xtask pages build`): tests,
 #               coverage, screenshots, property tests, fuzzing, scale and the
 #               live-network tests
 #   /docs/      the guides for adding Monokulo to a site (`cargo xtask
@@ -77,7 +77,7 @@ jobs:
           args=(target/pages)
           if test -n "$PART"; then args+=(--current "$PART" --conclusion "$CONCLUSION"); fi
           cargo xtask pages fetch "${args[@]}"
-      - name: Build the quality report beside the landing page
+      - name: Build the coverage report beside the landing page
         run: |
           args=(--out target/pages/site/quality --sources target/pages/sources.json --repo-url "https://github.com/$GITHUB_REPOSITORY")
           for source in coverage properties fuzz scale live; do

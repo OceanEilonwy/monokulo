@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn serve_answers_files_and_refuses_paths_outside_its_folder() {
-        let scratch = Scratch::new("quality-serve");
+        let scratch = Scratch::new("coverage-report-serve");
         put(&scratch.join("site/index.html"), "<p>report</p>");
         put(&scratch.join("site/a b.json"), "{}");
         put(&scratch.join("secret.txt"), "outside");

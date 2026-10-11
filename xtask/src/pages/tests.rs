@@ -302,7 +302,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let scratch = Scratch::new("quality");
+        let scratch = Scratch::new("coverage-report");
         coverage_artifact(&scratch.join("coverage"));
         exploration_artifacts(&scratch.join("runs"));
         live_artifact(&scratch.join("live"));
@@ -647,8 +647,8 @@ fn missing_inputs_leave_their_sections_out_but_still_build_the_front_page() {
     assert_eq!(badge["message"], "unknown");
     for asset in [
         "theme.css",
-        "quality.css",
-        "quality.js",
+        "coverage.css",
+        "coverage.js",
         "manrope-500.woff2",
     ] {
         assert!(f.out().join("assets").join(asset).is_file(), "{asset}");
@@ -674,11 +674,48 @@ fn a_rebuild_replaces_its_own_files_and_nothing_else() {
 }
 
 #[test]
+fn the_tabs_read_in_the_order_the_report_is_read() {
+    let f = Fixture::new();
+    f.build(&[
+        "--coverage",
+        &f.path("coverage"),
+        "--properties",
+        &f.path("runs"),
+        "--fuzz",
+        &f.path("runs"),
+        "--live",
+        &f.path("live"),
+    ]);
+    let page = f.page("index.html");
+    let nav = page.split("<nav class=\"tabs\"").nth(1).unwrap();
+    let nav = nav.split("</nav>").next().unwrap();
+    let files: Vec<&str> = nav
+        .split("href=\"")
+        .skip(1)
+        .map(|rest| rest.split('"').next().unwrap())
+        .collect();
+    assert_eq!(
+        files,
+        [
+            "index.html",
+            "coverage.html",
+            "tests.html",
+            "properties.html",
+            "fuzzing.html",
+            "live.html",
+            "scale.html",
+            "screens.html"
+        ]
+    );
+    assert!(nav.contains("Live tests") && !nav.contains("Live network"));
+}
+
+#[test]
 fn only_the_pages_with_filters_load_the_script() {
     let f = Fixture::new();
     f.build(&["--coverage", &f.path("coverage")]);
     for name in page_names(&f.out()) {
-        let loads = f.page(&name).contains("assets/quality.js");
+        let loads = f.page(&name).contains("assets/coverage.js");
         assert_eq!(
             loads,
             name == "tests.html" || name == "screens.html",
