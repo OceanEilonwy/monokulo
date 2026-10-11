@@ -21,33 +21,51 @@ test.use({
   permissions: async ({ browserName }, use) => use(CAMERAS[browserName].permissions),
 });
 
+/** The page side of holdUpCode: replaces getUserMedia with a camera that
+ * sees the code. Safe to run twice in one document. */
+function holdUp(code) {
+  if (window.__codeHeldUp) return;
+  window.__codeHeldUp = true;
+  const devices = navigator.mediaDevices;
+  const camera = devices.getUserMedia.bind(devices);
+  devices.getUserMedia = async constraints => {
+    const device = await camera(constraints);
+    const canvas = Object.assign(document.createElement('canvas'), { width: 640, height: 480 });
+    const context = canvas.getContext('2d');
+    const image = new Image();
+    image.src = code;
+    await image.decode();
+    // A camera sends frames all the time; a canvas only when drawn.
+    const draw = () => { context.fillStyle = 'white'; context.fillRect(0, 0, 640, 480); context.drawImage(image, 160, 80, 320, 320); };
+    draw();
+    const frames = setInterval(draw, 100);
+    const [track] = canvas.captureStream(10).getVideoTracks();
+    const stop = track.stop.bind(track);
+    track.stop = () => { clearInterval(frames); stop(); device.getTracks().forEach(t => t.stop()); };
+    return new MediaStream([track]);
+  };
+}
+
+const heldUp = new WeakMap();
+
 /** Holds the refund QR up to a camera that shows none: the page still gets
  * the browser's own camera, asked for as it asks, but what the camera sees
  * is the code (fixtures/refund-qr.png on a white card). Stopping the
- * picture stops the camera. */
+ * picture stops the camera. Open the page with `visit`, not `page.goto`:
+ * the init script alone sometimes isn't in the first document in WebKit
+ * (one run showed the mock's own test pattern, so nothing was ever
+ * decoded), and the pages look getUserMedia up when the camera is asked
+ * for, so `visit` also installs it into the loaded document. */
 async function holdUpCode(page, browserName) {
   if (CAMERAS[browserName].showsCode) return;
   const code = `data:image/png;base64,${fs.readFileSync(path.join(__dirname, '../fixtures/refund-qr.png')).toString('base64')}`;
-  await page.addInitScript(code => {
-    const devices = navigator.mediaDevices;
-    const camera = devices.getUserMedia.bind(devices);
-    devices.getUserMedia = async constraints => {
-      const device = await camera(constraints);
-      const canvas = Object.assign(document.createElement('canvas'), { width: 640, height: 480 });
-      const context = canvas.getContext('2d');
-      const image = new Image();
-      image.src = code;
-      await image.decode();
-      // A camera sends frames all the time; a canvas only when drawn.
-      const draw = () => { context.fillStyle = 'white'; context.fillRect(0, 0, 640, 480); context.drawImage(image, 160, 80, 320, 320); };
-      draw();
-      const frames = setInterval(draw, 100);
-      const [track] = canvas.captureStream(10).getVideoTracks();
-      const stop = track.stop.bind(track);
-      track.stop = () => { clearInterval(frames); stop(); device.getTracks().forEach(t => t.stop()); };
-      return new MediaStream([track]);
-    };
-  }, code);
+  heldUp.set(page, code);
+  await page.addInitScript(holdUp, code);
+}
+
+async function visit(page, url) {
+  await page.goto(url);
+  if (heldUp.has(page)) await page.evaluate(holdUp, heldUp.get(page));
 }
 
 const address = '86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC';
@@ -69,7 +87,7 @@ async function checkoutUrl(request) {
 test('real checkout scans a refund QR with the camera, then stops the camera', async ({ page, request, browserName }) => {
   const url = await checkoutUrl(request);
   await holdUpCode(page, browserName);
-  await page.goto(url);
+  await visit(page, url);
   const scan = page.locator('#scan-refund');
   const video = page.locator('#refund-camera');
   await scan.click();
@@ -106,7 +124,7 @@ test('real checkout camera can be stopped by the customer before it finds a code
 test('merchant scans the customer refund QR with the POS tablet camera', async ({ page, context, browserName }) => {
   await holdUpCode(page, browserName);
   await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
-  await page.goto(`${fixture.base_url}/dashboard/stores/${fixture.connection_id}/pos`);
+  await visit(page, `${fixture.base_url}/dashboard/stores/${fixture.connection_id}/pos`);
   const card = page.locator('.pos-pay-card');
   await card.getByRole('button', { name: 'Scan refund QR' }).click();
   await expect(card.locator('#pos-refund')).toHaveValue(address);
