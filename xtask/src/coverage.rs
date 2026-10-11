@@ -336,8 +336,8 @@ fn collect_rust(log: &Log) -> io::Result<Exit> {
             "monokulo/snp",
         ],
         None,
-        // The workspace's crates unoptimised, so lines map to source (the
-        // profile in Cargo.toml optimises them); dependencies stay optimised.
+        // The workspace's crates unoptimised, so lines map to source (CI
+        // optimises them otherwise); dependencies stay optimised.
         &[("CARGO_PROFILE_DEV_OPT_LEVEL", "0".to_string())],
     )?;
     if junit.is_file() {
