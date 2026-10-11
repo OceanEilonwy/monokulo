@@ -145,7 +145,14 @@ impl Ledger<'_> {
                     }
                     total += o.amount;
                     let depth = height.map_or(0, |h| {
-                        let top = tip.min(daemon.ceiling.get());
+                        // Confirmations count up to the highest block the
+                        // proof still covers on the current chain: after a
+                        // reorg the proof can name blocks of the discarded
+                        // branch above that, and those prove nothing.
+                        let top = (1..=tip.min(daemon.ceiling.get()))
+                            .rev()
+                            .find(|h| daemon.proves(*h))
+                            .unwrap_or(0);
                         if !daemon.proves(h as u64) || h as u64 > top {
                             0
                         } else {
