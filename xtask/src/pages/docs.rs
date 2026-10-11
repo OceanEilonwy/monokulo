@@ -1,6 +1,6 @@
 //! `cargo xtask pages docs`: the guides for adding Monokulo to a site
 //! (GitHub Pages: /docs/), from the Markdown in `docs/site/`, beside the
-//! landing page and the quality report. Each page is rendered with maud
+//! landing page and the coverage report. Each page is rendered with maud
 //! around pulldown-cmark's HTML, with the same header and a tab per page;
 //! a fenced `diff` block becomes the walkthrough's added and kept lines.
 //! The sample shop the walkthrough builds, `examples/geomart/`, is copied
@@ -160,7 +160,7 @@ pub(super) fn render(page: &Page, markdown: &str) -> Markup {
                         nav aria-label="Site" {
                             a href=(format!("{up}../#install")) { "Install" }
                             a href=(format!("{up}./")) aria-current="page" { "Docs" }
-                            a href=(format!("{up}../quality/")) { "Quality" }
+                            a href=(format!("{up}../quality/")) { "Testing" }
                             a href=(REPO_URL) { "Source code" }
                         }
                     }

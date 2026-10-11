@@ -114,7 +114,7 @@ run), and `cargo xtask pages build` (`xtask/src/pages/`) renders a page per
 section, each naming the run and commit it is from, plus `badge.json` (the
 README's coverage badge), shipping only the report pages the pages link and
 the files those need. The pages are plain HTML that reads without
-JavaScript; `web/pages/quality/` holds their stylesheet and the script that
+JavaScript; `web/pages/coverage/` holds their stylesheet and the script that
 adds the filters and the screenshot viewer. The default build of the
 property and fuzz runs is shown (`--feature` on both commands picks
 another).
@@ -122,11 +122,11 @@ another).
 To see a local run the same way, after `cargo xtask coverage all`:
 
 ```sh
-cargo xtask pages build --coverage target/coverage --out target/quality
-cargo xtask serve target/quality   # then open http://127.0.0.1:8000
+cargo xtask pages build --coverage target/coverage --out target/coverage-report
+cargo xtask serve target/coverage-report   # then open http://127.0.0.1:8000
 ```
 
-Opening `target/quality/index.html` from disk works too; the server only
+Opening `target/coverage-report/index.html` from disk works too; the server only
 matches how Pages serves the site.
 
 Rust metrics include production source in Cargo workspace crates, with a

@@ -7,7 +7,7 @@
 #
 # A failure here is news about a service as often as about the code, so
 # nothing waits on this workflow, and each service is probed before the
-# tests run: the summary and the quality site's Live network page say which
+# tests run: the summary and the Testing site's Live tests page say which
 # failures came while a service a test needs wasn't answering.
 #
 # The payments come from a pair of stagenet wallets of the run's own
@@ -150,7 +150,7 @@ jobs:
           done
 
   pages:
-    # This run's Live network page, with every other part of the site as it
+    # This run's Live tests page, with every other part of the site as it
     # is live (pages.yml). On main only; a run that didn't finish shows
     # nothing new.
     name: Pages

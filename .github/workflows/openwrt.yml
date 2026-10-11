@@ -12,7 +12,7 @@
 #   monokulo-openwrt-site                       the landing page with the
 #                                               repository under it
 # On main, release.yml's Pages job publishes that run's
-# monokulo-openwrt-site artifact, with the quality report beside it
+# monokulo-openwrt-site artifact, with the coverage report beside it
 # (pages.yml); routers use it as their package repository (Settings > Pages >
 # Source: GitHub Actions).
 #

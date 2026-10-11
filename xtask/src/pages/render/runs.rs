@@ -452,7 +452,7 @@ pub(super) fn live(report: &Report) -> Markup {
         _ => 2,
     });
     html! {
-        (heading("Live network", &intro, run_pill(report, report.sources.live.as_ref())))
+        (heading("Live tests", &intro, run_pill(report, report.sources.live.as_ref())))
         dl.kv {
             (key_figure("Tests", &html! { (count(run.tests.len())) " " small { @if failed == 0 { "none failed" } @else { (count(failed)) " failed" } } }))
             (key_figure("Passed", &html! { (count(count_of(TestStatus::Passed))) }))

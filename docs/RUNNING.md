@@ -53,7 +53,7 @@ which is also the package repository; `web/index.html` is its source.
 landing page into `dist/` and `site/` (it needs Docker, for the OpenWrt
 SDK). The `OpenWrt package` workflow runs it on every pull request and push
 to main and uploads `dist/` and `site/` as artifacts; the `Pages` workflow
-then publishes the site to GitHub Pages beside the quality report. On the
+then publishes the site to GitHub Pages beside the coverage report. On the
 router:
 
 - `/etc/config/monokulo` (or LuCI) sets the port, listen address (LAN only
