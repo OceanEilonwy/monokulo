@@ -523,17 +523,6 @@ impl EngineClient {
             .subscribe(self, connection_id, sk, order_id)
     }
 
-    /// Wakes the streams watching this order after monokulo changed
-    /// something about it the engine doesn't know (see
-    /// `crate::live::LiveHub::order_changed`).
-    pub fn order_changed(
-        &self,
-        connection_id: &crate::db::ConnectionId,
-        order_id: &shared::ids::OrderId,
-    ) {
-        self.target().live.order_changed(connection_id, order_id);
-    }
-
     /// How many stores currently hold an open engine event stream.
     pub fn live_upstream_count(&self) -> usize {
         self.target().live.upstream_count()

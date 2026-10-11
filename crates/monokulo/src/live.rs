@@ -14,6 +14,10 @@
 //! predates the endpoint), every watcher of that store is woken on each retry
 //! instead, which degrades to server-side polling at the retry interval rather
 //! than to no updates at all.
+//!
+//! What monokulo itself holds about an order (the POS backgrounding or
+//! cancelling it) never passes through the engine; [`OrderChanges`] wakes
+//! the streams that show it.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -196,16 +200,6 @@ impl LiveHub {
         }
     }
 
-    /// Wakes the watchers of one order that monokulo itself changed
-    /// (cancelled, backgrounded), which the engine reports nothing of.
-    pub fn order_changed(
-        &self,
-        connection_id: &crate::db::ConnectionId,
-        order_id: &crate::db::OrderId,
-    ) {
-        self.wake(connection_id, Some(order_id));
-    }
-
     /// Ends every stream from this hub (task 3.2: `engine.url` changed).
     /// Upstream connections to the old engine are aborted and every order
     /// watch is dropped, so each browser's stream ends and its reconnect is
@@ -226,6 +220,87 @@ impl LiveHub {
 impl Drop for OrderSubscription {
     fn drop(&mut self) {
         self.hub.release(&self.connection_id, &self.order_id);
+    }
+}
+
+/// Changes monokulo makes to its own record of an order (the POS
+/// backgrounding or cancelling it), which the engine knows nothing of and
+/// so never reports to a [`LiveHub`]. Held by the app rather than the
+/// engine client, so its watchers carry on across a change of engine.
+#[derive(Clone, Default)]
+pub struct OrderChanges {
+    stores: Arc<Mutex<HashMap<crate::db::ConnectionId, HashMap<crate::db::OrderId, LocalWatch>>>>,
+}
+
+struct LocalWatch {
+    changed: watch::Sender<u64>,
+    watchers: usize,
+}
+
+/// A watch on one order's [`OrderChanges`]; dropping it releases the order.
+pub struct OrderChangeWatch {
+    changes: OrderChanges,
+    connection_id: crate::db::ConnectionId,
+    order_id: crate::db::OrderId,
+    changed: watch::Receiver<u64>,
+}
+
+impl OrderChanges {
+    pub fn subscribe(
+        &self,
+        connection_id: &crate::db::ConnectionId,
+        order_id: &crate::db::OrderId,
+    ) -> OrderChangeWatch {
+        let mut stores = self.stores.lock();
+        let order = stores
+            .entry(connection_id.clone())
+            .or_default()
+            .entry(order_id.clone())
+            .or_insert_with(|| LocalWatch {
+                changed: watch::channel(0).0,
+                watchers: 0,
+            });
+        order.watchers += 1;
+        OrderChangeWatch {
+            changes: self.clone(),
+            connection_id: connection_id.clone(),
+            order_id: order_id.clone(),
+            changed: order.changed.subscribe(),
+        }
+    }
+
+    /// Wakes the order's watchers. Called once the change is committed, so
+    /// what they read back has it; nothing to do when nobody watches.
+    pub fn notify(&self, connection_id: &crate::db::ConnectionId, order_id: &crate::db::OrderId) {
+        let stores = self.stores.lock();
+        if let Some(order) = stores
+            .get(connection_id)
+            .and_then(|orders| orders.get(order_id))
+        {
+            order.changed.send_modify(|n| *n = n.wrapping_add(1));
+        }
+    }
+
+    fn release(&self, connection_id: &crate::db::ConnectionId, order_id: &crate::db::OrderId) {
+        let mut stores = self.stores.lock();
+        let Some(orders) = stores.get_mut(connection_id) else {
+            return;
+        };
+        if let Some(order) = orders.get_mut(order_id) {
+            order.watchers -= 1;
+            if order.watchers == 0 {
+                orders.remove(order_id);
+            }
+        }
+        if orders.is_empty() {
+            stores.remove(connection_id);
+        }
+    }
+}
+
+impl Drop for OrderChangeWatch {
+    fn drop(&mut self) {
+        self.changes.release(&self.connection_id, &self.order_id);
     }
 }
 
@@ -453,12 +528,14 @@ pub type BatchSnapshot = Vec<(crate::db::OrderId, LiveSnapshot)>;
 /// of them changes (or `refresh_every` passes) it takes one snapshot of all
 /// that are still live, rather than one per order, so a screen watching many
 /// orders costs one engine read per change instead of one per order. Each
-/// order's events are sent only when its fingerprint changes; an order stops
-/// being read once terminal, and the stream ends when none are left.
-/// `snapshot` gets the live order ids and returns `None` when it could not
-/// read them, in which case the stream waits for the next change.
+/// order is followed for the engine's changes and for monokulo's own
+/// ([`OrderChanges`]). Its events are sent only when its fingerprint
+/// changes; an order stops being read once terminal, and the stream ends
+/// when none are left. `snapshot` gets the live order ids and returns `None`
+/// when it could not read them, in which case the stream waits for the next
+/// change.
 pub fn batch_snapshot_stream<F, Fut>(
-    subscriptions: Vec<OrderSubscription>,
+    subscriptions: Vec<(OrderSubscription, OrderChangeWatch)>,
     refresh_every: Duration,
     snapshot: F,
 ) -> impl Stream<Item = Result<Event, Infallible>> + Send
@@ -467,7 +544,7 @@ where
     Fut: Future<Output = Option<BatchSnapshot>> + Send + 'static,
 {
     struct State<F> {
-        subscriptions: Vec<OrderSubscription>,
+        subscriptions: Vec<(OrderSubscription, OrderChangeWatch)>,
         snapshot: F,
         last: HashMap<crate::db::OrderId, String>,
         first: bool,
@@ -484,12 +561,16 @@ where
                 return None;
             }
             if !state.first {
-                let changes = futures_util::future::select_all(
-                    state
-                        .subscriptions
-                        .iter_mut()
-                        .map(|s| Box::pin(s.changed.changed())),
-                );
+                let changes = futures_util::future::select_all(state.subscriptions.iter_mut().map(
+                    |(engine, local)| {
+                        Box::pin(async move {
+                            tokio::select! {
+                                changed = engine.changed.changed() => changed,
+                                changed = local.changed.changed() => changed,
+                            }
+                        })
+                    },
+                ));
                 tokio::select! {
                     (changed, _, _) = changes => {
                         if changed.is_err() {
@@ -501,13 +582,14 @@ where
             }
             state.first = false;
             // One read covers every change seen so far.
-            for subscription in &mut state.subscriptions {
-                subscription.changed.mark_unchanged();
+            for (engine, local) in &mut state.subscriptions {
+                engine.changed.mark_unchanged();
+                local.changed.mark_unchanged();
             }
             let ids = state
                 .subscriptions
                 .iter()
-                .map(|s| s.order_id.clone())
+                .map(|(engine, _)| engine.order_id.clone())
                 .collect();
             let Some(snapshots) = (state.snapshot)(ids).await else {
                 continue;
@@ -515,7 +597,9 @@ where
             let mut events = Vec::new();
             for (order_id, snapshot) in snapshots {
                 if snapshot.terminal {
-                    state.subscriptions.retain(|s| s.order_id != order_id);
+                    state
+                        .subscriptions
+                        .retain(|(engine, _)| engine.order_id != order_id);
                 }
                 if state.last.get(&order_id) != Some(&snapshot.fingerprint) {
                     state.last.insert(order_id, snapshot.fingerprint);
@@ -677,6 +761,70 @@ mod tests {
         assert!(a.changed.has_changed().unwrap());
         assert!(!b.changed.has_changed().unwrap());
     }
+
+    /// Monokulo's own changes reach only the named order's watchers, and an
+    /// order nobody watches holds nothing: its notice is dropped, and a
+    /// watch is forgotten with its last watcher.
+    #[test]
+    fn order_changes_reach_only_the_named_order_and_are_released_with_their_watchers() {
+        let changes = OrderChanges::default();
+        let store = shared::ids::ConnectionId::new("conn");
+        let (o1, o2) = (
+            shared::ids::OrderId::new("o1"),
+            shared::ids::OrderId::new("o2"),
+        );
+        changes.notify(&store, &o1);
+        assert!(changes.stores.lock().is_empty());
+
+        let mut a = changes.subscribe(&store, &o1);
+        let mut a_again = changes.subscribe(&store, &o1);
+        let b = changes.subscribe(&store, &o2);
+        let elsewhere = changes.subscribe(&shared::ids::ConnectionId::new("other"), &o1);
+        changes.notify(&store, &o1);
+        assert!(a.changed.has_changed().unwrap());
+        assert!(a_again.changed.has_changed().unwrap());
+        assert!(!b.changed.has_changed().unwrap());
+        assert!(!elsewhere.changed.has_changed().unwrap());
+        a.changed.mark_unchanged();
+        a_again.changed.mark_unchanged();
+        changes.notify(&store, &o2);
+        assert!(b.changed.has_changed().unwrap());
+        assert!(!a.changed.has_changed().unwrap());
+
+        drop(a);
+        assert_eq!(changes.stores.lock()[&store].len(), 2);
+        drop(a_again);
+        assert_eq!(changes.stores.lock()[&store].len(), 1);
+        drop((b, elsewhere));
+        assert!(changes.stores.lock().is_empty());
+    }
+
+    /// Unlike the engine's own feed, which ends with its hub when the
+    /// engine client changes, monokulo's changes keep reaching their
+    /// watchers.
+    #[tokio::test]
+    async fn order_changes_outlive_a_new_engine_hub() {
+        let engine = crate::engine_client::EngineClient::for_tests("http://127.0.0.1:1");
+        let changes = OrderChanges::default();
+        let (store, order) = (
+            shared::ids::ConnectionId::new("conn"),
+            shared::ids::OrderId::new("order"),
+        );
+        let engine_side = engine.subscribe_order(
+            &store,
+            &shared::auth::RawToken::presented("sk_test"),
+            &order,
+        );
+        let watch = changes.subscribe(&store, &order);
+        engine.set_cache_limit(1024 * 1024);
+        assert!(
+            engine_side.changed.has_changed().is_err(),
+            "the engine's feed ended"
+        );
+        changes.notify(&store, &order);
+        assert!(watch.changed.has_changed().unwrap());
+    }
+
     #[tokio::test]
     async fn a_new_cache_size_ends_live_streams_on_the_old_http_client() {
         let engine = crate::engine_client::EngineClient::for_tests("http://127.0.0.1:1");
