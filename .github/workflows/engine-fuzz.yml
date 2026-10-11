@@ -52,6 +52,9 @@ jobs:
           path: fuzz/corpus
           key: engine-fuzz-${{ matrix.target }}-${{ matrix.features }}-${{ github.run_id }}
           restore-keys: engine-fuzz-${{ matrix.target }}-${{ matrix.features }}-
+      - name: Restore the saved corpus
+        # The cache can be evicted; the ci/fuzz branch is the durable copy.
+        run: .github/scripts/restore-fuzz-corpus.sh "$FUZZ_TARGET"
       - name: Record replay settings
         run: |
           echo "Target: $FUZZ_TARGET; features: ${FUZZ_FEATURES:-default}; seed: $ENGINE_FUZZ_SEED; budget: ${FUZZ_SECONDS:-target-default}s" >> "$GITHUB_STEP_SUMMARY"
@@ -92,6 +95,43 @@ jobs:
         env:
           FUZZ_FEATURES: ${{ matrix.features }}
         run: cargo test --manifest-path fuzz/Cargo.toml --locked --features "$FUZZ_FEATURES" --test interleavings
+
+  save-corpus:
+    # One job writes ci/fuzz, so the nine targets don't race each other.
+    name: Save the corpus to ci/fuzz
+    needs: fuzz
+    if: always() && github.ref == 'refs/heads/main' && needs.fuzz.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: engine-fuzz-*
+          path: ${{ runner.temp }}/fuzz-artifacts
+      - run: .github/scripts/save-fuzz-corpus.sh "$RUNNER_TEMP/fuzz-artifacts"
+
+  crash-seeds:
+    # A crash is a bug; a draft PR carries its reproducer to main as a seed.
+    name: Propose crashing inputs as seeds
+    needs: fuzz
+    if: always() && github.ref == 'refs/heads/main' && needs.fuzz.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: engine-fuzz-*
+          path: ${{ runner.temp }}/fuzz-artifacts
+      - run: .github/scripts/propose-fuzz-crashes.sh "$RUNNER_TEMP/fuzz-artifacts"
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   pages:
     # This run's fuzz page, with every other part of the site as it is
