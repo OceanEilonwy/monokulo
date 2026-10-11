@@ -733,7 +733,7 @@ pub async fn order_detail(
 
 pub async fn background_order(
     State(db): State<Database>,
-    State(engine): State<Engine>,
+    State(order_changes): State<crate::live::OrderChanges>,
     AuthedUser(user, _): AuthedUser,
     Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
 ) -> Response {
@@ -746,7 +746,7 @@ pub async fn background_order(
         .await
     {
         Ok(true) => {
-            engine.client.order_changed(&id, &order_id);
+            order_changes.notify(&id, &order_id);
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => ApiError::NotFound.into_response(),
@@ -758,6 +758,7 @@ pub async fn cancel_order(
     State(db): State<Database>,
     State(encryption_key): State<AtRestKey>,
     State(engine): State<Engine>,
+    State(order_changes): State<crate::live::OrderChanges>,
     AuthedUser(user, _): AuthedUser,
     Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
 ) -> Response {
@@ -795,7 +796,7 @@ pub async fn cancel_order(
         Ok(false) => return ApiError::NotFound.into_response(),
         Err(_) => return ApiError::Internal.into_response(),
     }
-    engine.client.order_changed(&id, &order_id);
+    order_changes.notify(&id, &order_id);
     // A payment the scanner recorded between the check above and the
     // cancellation would be hidden from the terminal for good: look
     // again, and take the cancellation back (the order stays backgrounded,
@@ -806,7 +807,7 @@ pub async fn cancel_order(
             let _ = db
                 .write(move |db| db.uncancel_pos_order(&store_id, &order))
                 .await;
-            engine.client.order_changed(&id, &order_id);
+            order_changes.notify(&id, &order_id);
             ApiError::BadRequest("A payment reached this order as it was being cancelled. It was backgrounded for review instead.".to_string()).into_response()
         }
         _ => StatusCode::NO_CONTENT.into_response(),
@@ -997,7 +998,12 @@ pub async fn order_events(
 
     let subscriptions = order_ids
         .iter()
-        .map(|order_id| state.engine.client.subscribe_order(&row.id, &sk, order_id))
+        .map(|order_id| {
+            (
+                state.engine.client.subscribe_order(&row.id, &sk, order_id),
+                state.order_changes.subscribe(&row.id, order_id),
+            )
+        })
         .collect();
     let connection_id = row.id.clone();
     // One engine read per change for every watched order together: the
@@ -1990,7 +1996,8 @@ mod tests {
     /// What the POS itself holds about an order (backgrounded, cancelled)
     /// is on the live stream and moves it at once: the engine reports
     /// nothing of either, so a watching terminal would otherwise learn of
-    /// them only by reloading.
+    /// them only by reloading. Nothing else wakes the stream here, so each
+    /// update can only have come from the action's own notice.
     #[tokio::test]
     async fn backgrounding_and_cancelling_an_order_are_sent_on_its_live_stream() {
         let (state, _engine) = test_state_with_real_engine().await;
@@ -2002,52 +2009,88 @@ mod tests {
         )
         .await;
         let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
-        let order = create_pos_orders(&router, &session_token, &id, 1)
+        let mut orders = create_pos_orders(&router, &session_token, &id, 2).await;
+        let (order, other) = (orders.remove(0), orders.remove(0));
+
+        struct Events {
+            body: Body,
+            pending: Vec<(String, String)>,
+            parser: crate::live::SseTestParser,
+        }
+        impl Events {
+            /// The next status event; one that never comes (a change that
+            /// didn't wake the stream) fails on `next_sse_event`'s timeout.
+            async fn next(&mut self) -> serde_json::Value {
+                let (event, data) = crate::live::next_sse_event(
+                    &mut self.body,
+                    &mut self.pending,
+                    &mut self.parser,
+                )
+                .await
+                .unwrap();
+                assert_eq!(event, "status");
+                serde_json::from_str(&data).unwrap()
+            }
+        }
+        let open = |order: String| {
+            let (router, session_token, id) = (router.clone(), session_token.clone(), id.clone());
+            async move {
+                let response = router
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("/dashboard/stores/{id}/pos/events?orders={order}"))
+                            .header("authorization", format!("Bearer {session_token}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                Events {
+                    body: response.into_body(),
+                    pending: Vec::new(),
+                    parser: crate::live::SseTestParser::default(),
+                }
+            }
+        };
+
+        // The store's engine stream wakes every order watched when it
+        // connects, which would also carry a change the actions below
+        // failed to announce. So connect it first on another order, held
+        // open throughout: an engine change to that order shows on its
+        // stream only once the engine stream is up, and its connect has
+        // then passed before the order under test is watched.
+        let mut barrier = open(other.clone()).await;
+        assert!(barrier.next().await["refund_address"].is_null());
+        let store_id = crate::db::ConnectionId::new(id.as_str());
+        let pk = state
+            .db
+            .read(move |db| db.get_store_connection_by_id(&store_id))
             .await
-            .remove(0);
-        let events = router
+            .unwrap()
+            .unwrap()
+            .tenant_public_key;
+        let refund_address = "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC";
+        let set = router
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/dashboard/stores/{id}/pos/events?orders={order}"))
-                    .header("authorization", format!("Bearer {session_token}"))
-                    .body(Body::empty())
+                    .method("POST")
+                    .uri(format!("/pay/{pk}/orders/{other}/refund-address"))
+                    .header("accept", "application/json")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(format!("refund_address={refund_address}")))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(events.status(), StatusCode::OK);
-        let mut body = events.into_body();
-        let (mut pending, mut parser) = (Vec::new(), crate::live::SseTestParser::default());
-        async fn next(
-            body: &mut Body,
-            pending: &mut Vec<(String, String)>,
-            parser: &mut crate::live::SseTestParser,
-        ) -> serde_json::Value {
-            let (event, data) = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                crate::live::next_sse_event(body, pending, parser),
-            )
-            .await
-            .expect("the stream sends an event")
-            .unwrap();
-            assert_eq!(event, "status");
-            serde_json::from_str(&data).unwrap()
-        }
-        let first = next(&mut body, &mut pending, &mut parser).await;
+        assert_eq!(set.status(), StatusCode::OK);
+        assert_eq!(barrier.next().await["refund_address"], refund_address);
+
+        let mut events = open(order.clone()).await;
+        let first = events.next().await;
         assert_eq!(first["backgrounded"], false);
         assert!(first["cancelled_at"].is_null());
-        // The store's upstream stream wakes every watcher once as it
-        // connects; let that pass, so what follows is only what the
-        // actions below send.
-        while let Ok(extra) = tokio::time::timeout(
-            std::time::Duration::from_millis(300),
-            next(&mut body, &mut pending, &mut parser),
-        )
-        .await
-        {
-            assert_eq!(extra["backgrounded"], false);
-        }
 
         for (action, check) in [("background", "backgrounded"), ("cancel", "cancelled_at")] {
             let response = router
@@ -2065,7 +2108,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::NO_CONTENT);
-            let update = next(&mut body, &mut pending, &mut parser).await;
+            let update = events.next().await;
             assert_eq!(update["backgrounded"], true, "after {action}");
             assert_eq!(
                 update["cancelled_at"].is_i64(),
@@ -2073,6 +2116,7 @@ mod tests {
                 "after {action}"
             );
         }
+        drop(barrier);
     }
 
     /// The terminal's Active tab and background stack come from
