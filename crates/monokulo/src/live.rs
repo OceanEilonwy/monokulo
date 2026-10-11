@@ -196,6 +196,16 @@ impl LiveHub {
         }
     }
 
+    /// Wakes the watchers of one order that monokulo itself changed
+    /// (cancelled, backgrounded), which the engine reports nothing of.
+    pub fn order_changed(
+        &self,
+        connection_id: &crate::db::ConnectionId,
+        order_id: &crate::db::OrderId,
+    ) {
+        self.wake(connection_id, Some(order_id));
+    }
+
     /// Ends every stream from this hub (task 3.2: `engine.url` changed).
     /// Upstream connections to the old engine are aborted and every order
     /// watch is dropped, so each browser's stream ends and its reconnect is

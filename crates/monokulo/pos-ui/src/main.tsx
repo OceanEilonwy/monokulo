@@ -19,7 +19,7 @@ type Order = {
   received_xmr?: string; remaining_xmr?: string;
   refund_address?: string | null; qr_svg?: string;
 };
-type StatusEvent = Pick<Order, 'order_id' | 'status' | 'confirmations' | 'confirmations_required' | 'error' | 'updated_at' | 'received_xmr' | 'remaining_xmr' | 'qr_svg'> & { is_terminal: boolean };
+type StatusEvent = Pick<Order, 'order_id' | 'status' | 'confirmations' | 'confirmations_required' | 'error' | 'updated_at' | 'received_xmr' | 'remaining_xmr' | 'qr_svg' | 'backgrounded' | 'cancelled_at' | 'refund_address'> & { is_terminal: boolean };
 type Config = { connectionId: string; publicKey: string; currency: string; decimals: number; storeName: string; clientLogging: boolean };
 
 const root = document.getElementById('pos-root');
