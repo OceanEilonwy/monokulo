@@ -80,7 +80,7 @@ the real-binaries tests file by file, each spec file with processes of its own.
 ## In CI
 
 On main, once every platform's tests pass, `.github/workflows/release.yml`'s
-`coverage` job runs each collector in a job of its own (`tests.yml` with
+`coverage` job runs each collector in a job of its own (`platform.yml` with
 `coverage: true`: Rust, browser, WooCommerce and the engine stress run),
 then its Summary job joins their outputs with `cargo xtask coverage report`
 and uploads the combined artifact (`coverage-<sha>`). Each job's summary

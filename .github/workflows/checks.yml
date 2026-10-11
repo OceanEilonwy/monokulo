@@ -5,7 +5,7 @@ name: Checks
 # A manual run (Actions > Checks > Run workflow) can test any branch on
 # other platforms, or with coverage.
 #
-# Required checks: lint / rustfmt and clippy, and tests (linux) / Summary.
+# Required checks: lint / rustfmt and clippy, and linux / Summary.
 
 on:
   # Every PR, including documentation changes: path-filtered workflows would
@@ -37,13 +37,13 @@ jobs:
 
   # One entry per platform asked for (Linux for a pull request), so a
   # pull request's checks list only what runs.
-  tests:
-    name: tests (${{ matrix.platform }})
+  platform:
+    name: ${{ matrix.platform }}
     strategy:
       fail-fast: false
       matrix:
         platform: ${{ fromJSON(inputs.platforms || '["linux"]') }}
-    uses: ./.github/workflows/tests.yml
+    uses: ./.github/workflows/platform.yml
     with:
       platform: ${{ matrix.platform }}
       coverage: ${{ inputs.coverage == true && matrix.platform == 'linux' }}

@@ -2,10 +2,10 @@ name: Release
 
 # Main, version tags and manual runs: every test on every platform, then the
 # downloads.
-#   lint, tests (linux, macos, windows)
+#   lint, linux, macos, windows
 #                      the pull request checks again on the merged commit,
-#                      on every platform; Linux's run also keeps the Rust
-#                      cache pull requests start from warm
+#                      on every platform; each platform's Rust tests job also
+#                      keeps the Rust cache pull requests start from warm
 #   coverage           once they pass: every Linux suite through its
 #                      coverage collector, and the one report and artifact
 #                      (coverage-<sha>) they make
@@ -58,20 +58,20 @@ jobs:
     name: lint
     uses: ./.github/workflows/lint.yml
 
-  tests:
-    name: tests (${{ matrix.platform }})
+  platform:
+    name: ${{ matrix.platform }}
     strategy:
       fail-fast: false
       matrix:
         platform: [linux, macos, windows]
-    uses: ./.github/workflows/tests.yml
+    uses: ./.github/workflows/platform.yml
     with:
       platform: ${{ matrix.platform }}
 
   coverage:
     name: coverage
-    needs: tests
-    uses: ./.github/workflows/tests.yml
+    needs: platform
+    uses: ./.github/workflows/platform.yml
     with:
       platform: linux
       coverage: true

@@ -1,8 +1,8 @@
-name: Tests
+name: Platform
 
-# One platform's test suites, called by checks.yml (pull requests) and
+# One platform's build and test suites, called by checks.yml (pull requests) and
 # release.yml (main, version tags), each suite a job of its own: the Rust
-# tests on every platform, the browser, WooCommerce, stress and scale suites
+# tests on every platform, the browser, WooCommerce, engine progress and scale suites
 # on Linux. With `coverage` (Linux only), each runs through its coverage
 # collector (`cargo xtask coverage <suite>`) and uploads what it collected.
 # Summary then passes only when every suite did, and with coverage joins
@@ -30,15 +30,19 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Debug and test builds keep file and line numbers for backtraces but
-  # none of the rest of the debug info, which CI never reads: our own crates
-  # (which the Rust cache does not keep) compile and link faster.
-  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   # Job names are fixed text: GitHub lists a skipped job (a Linux-only suite
   # on macOS or Windows) under its name unevaluated. The caller's job name
-  # says which run it is: tests (linux), coverage.
+  # says which run it is: linux, macos, windows, coverage.
+  #
+  # The Rust cache: the Rust tests job builds the whole workspace's tests
+  # (its Build the tests step) and saves the cache; the Linux suites that
+  # build less of it (browser, WooCommerce, engine progress, scale) restore
+  # that one and save nothing, so the repository keeps one Linux cache
+  # instead of one a suite. Cargo resolves a dependency's features per
+  # build, so they still compile the few crates a narrower build resolves
+  # differently. A coverage run keeps a cache a suite, as its builds differ.
   rust:
     name: Rust tests
     runs-on: ${{ format('{0}-latest', inputs.platform == 'linux' && 'ubuntu' || inputs.platform) }}
@@ -81,10 +85,20 @@ jobs:
           components: ${{ inputs.coverage && 'llvm-tools-preview' || '' }}
           # An instrumented build shares nothing with a plain one.
           cache-key: ${{ inputs.coverage && 'coverage' || 'tests' }}
+          shared-key: ${{ !inputs.coverage && 'dev' || '' }}
       - uses: taiki-e/install-action@v2
         with:
           tool: ${{ inputs.coverage && 'cargo-llvm-cov,cargo-nextest' || 'cargo-nextest' }}
-      - name: Run tests
+      # Everything the tests need compiled, apart from the run, so the build
+      # and the tests have times of their own in the log. A coverage run
+      # builds instrumented tests in `cargo xtask coverage rust` instead.
+      - name: Build the tests
+        if: ${{ !inputs.coverage }}
+        shell: bash
+        run: |
+          cargo nextest run --no-run --workspace --locked --profile ci --features monokulo/snp \
+            ${{ inputs.platform != 'linux' && '--exclude xtask' || '' }}
+      - name: Run the tests
         id: tests
         continue-on-error: true
         shell: bash
@@ -99,7 +113,7 @@ jobs:
             cargo nextest run --workspace --locked --profile ci --features monokulo/snp \
               ${{ inputs.platform != 'linux' && '--exclude xtask' || '' }}
           fi
-      - name: Run doctests
+      - name: Run the doctests
         id: doctests
         continue-on-error: true
         # nextest does not run doctests.
@@ -143,6 +157,8 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: ${{ inputs.coverage && 'coverage' || 'tests' }}
+          shared-key: ${{ !inputs.coverage && 'dev' || '' }}
+          save: ${{ inputs.coverage }}
           npm-lockfiles: |
             e2e/browser/package-lock.json
             crates/monokulo/pos-ui/package-lock.json
@@ -219,6 +235,9 @@ jobs:
       # For `cargo xtask`; the plugin's tests build no Rust.
       - uses: ./.github/actions/setup-rust
         with:
+          cache-key: ${{ inputs.coverage && 'coverage' || 'tests' }}
+          shared-key: ${{ !inputs.coverage && 'dev' || '' }}
+          save: ${{ inputs.coverage }}
           pos-app: 'false'
       - name: Install PHP and Composer
         uses: shivammathur/setup-php@v2
@@ -272,7 +291,7 @@ jobs:
     # The engine's one-CPU scanner capacity sweep and fault recovery
     # (docs/engine_stress.md). With coverage, its report joins the coverage
     # artifact.
-    name: 'Stress: engine scanner (one CPU)'
+    name: Engine progress tests
     if: inputs.platform == 'linux'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -280,6 +299,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
+          cache-key: ${{ inputs.coverage && 'coverage' || 'tests' }}
+          shared-key: ${{ !inputs.coverage && 'dev' || '' }}
+          save: ${{ inputs.coverage }}
           pos-app: 'false'
       - name: Measure engine scanner progress on one CPU
         id: stress
@@ -316,6 +338,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
+          cache-key: ${{ inputs.coverage && 'coverage' || 'tests' }}
+          shared-key: ${{ !inputs.coverage && 'dev' || '' }}
+          save: ${{ inputs.coverage }}
           pos-app: 'false'
       - uses: taiki-e/install-action@v2
         with:
