@@ -61,7 +61,7 @@ impl Tab {
             Tab::Tests => "All tests",
             Tab::Coverage => "Coverage",
             Tab::Properties => "Property tests",
-            Tab::Fuzzing => "Fuzzing",
+            Tab::Fuzzing => "Fuzzing tests",
             Tab::Scale => "Scale",
             Tab::Live => "Live tests",
             Tab::Screens => "Screens",

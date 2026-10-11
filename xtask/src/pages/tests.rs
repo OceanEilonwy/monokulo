@@ -314,11 +314,11 @@ impl Fixture {
     }
 
     fn out(&self) -> PathBuf {
-        self.scratch.join("site/quality")
+        self.scratch.join("site/testing")
     }
 
     fn build(&self, args: &[&str]) {
-        let out = self.path("site/quality");
+        let out = self.path("site/testing");
         let mut all = vec!["--out", out.as_str()];
         all.extend_from_slice(args);
         assert!(build(&crate::root(), &all).unwrap().succeeded());
@@ -708,6 +708,7 @@ fn the_tabs_read_in_the_order_the_report_is_read() {
         ]
     );
     assert!(nav.contains("Live tests") && !nav.contains("Live network"));
+    assert!(nav.contains("Fuzzing tests"));
 }
 
 #[test]
@@ -747,7 +748,7 @@ fn manifest_paths_cannot_reach_outside_the_artifact() {
 
     shots[0]["image"] = "../../outside.html".into();
     put_json(&manifest, &shots);
-    let out = f.path("site/quality");
+    let out = f.path("site/testing");
     let error = build(
         &crate::root(),
         &["--out", &out, "--coverage", &f.path("coverage")],

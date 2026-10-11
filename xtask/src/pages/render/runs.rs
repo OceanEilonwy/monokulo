@@ -331,7 +331,7 @@ pub(super) fn fuzzing(report: &Report) -> Markup {
     let sum = |f: fn(&FuzzTarget) -> Option<u64>| targets.iter().filter_map(f).sum::<u64>();
     let reached: Vec<&FuzzTarget> = targets.iter().filter(|t| t.cases > 0).collect();
     html! {
-        (heading("Fuzzing", &intro, run_pill(report, report.sources.fuzz.as_ref())))
+        (heading("Fuzzing tests", &intro, run_pill(report, report.sources.fuzz.as_ref())))
         dl.kv {
             (key_figure("Targets", &html! { (count(targets.len())) " " small { @if failed == 0 { "passed" } @else { (count(failed)) " failed" } } }))
             (key_figure("Executions", &html! { (executions(sum(|t| t.executions))) }))
