@@ -890,17 +890,30 @@ pub async fn order_status(
         Err(()) => return ApiError::Internal.into_response(),
     };
 
+    let (store_id, order) = (id.clone(), order_id.clone());
+    let pos_row = match state
+        .db
+        .read(move |db| db.get_pos_order(&store_id, &order))
+        .await
+    {
+        Ok(pos_row) => pos_row,
+        Err(_) => return ApiError::Internal.into_response(),
+    };
     match state.engine.client.get_order_detail(&sk, &order_id).await {
-        Ok(detail) => Json(pos_status(&state, &row.id, &sk, &detail.order).await).into_response(),
+        Ok(detail) => Json(pos_status(&state, &row.id, &sk, &detail.order, pos_row.as_ref()).await)
+            .into_response(),
         Err(error) => engine_failure(&error),
     }
 }
 
+/// `pos_row` is the order's POS row, `None` for an order the POS didn't
+/// create.
 async fn pos_status(
     state: &AppState,
     connection_id: &crate::db::ConnectionId,
     sk: &shared::auth::RawToken,
     order: &OrderView,
+    pos_row: Option<&crate::db::PosOrderRow>,
 ) -> PosStatusResponse {
     let confirmations_required =
         resolve_confirmations_required(state, connection_id, sk, &order.order_id).await;
@@ -910,13 +923,6 @@ async fn pos_status(
     // was resolved at creation - possibly `0`) has actually been
     // met, so there's no separate threshold check to fold in here.
     let (_, _, is_terminal) = crate::views::order_state(order.status);
-    let (store_id, order_id) = (connection_id.clone(), order.order_id.clone());
-    let pos_row = state
-        .db
-        .read(move |db| db.get_pos_order(&store_id, &order_id))
-        .await
-        .ok()
-        .flatten();
     PosStatusResponse {
         status: order.status.into(),
         updated_at: order.updated_at,
@@ -935,7 +941,7 @@ async fn pos_status(
         } else {
             None
         },
-        backgrounded: pos_row.as_ref().is_some_and(|row| row.backgrounded),
+        backgrounded: pos_row.is_some_and(|row| row.backgrounded),
         cancelled_at: pos_row.and_then(|row| row.cancelled_at),
         refund_address: order.refund_address.clone(),
     }
@@ -1015,6 +1021,17 @@ pub async fn order_events(
             let (state, connection_id, sk) = (state.clone(), connection_id.clone(), sk.clone());
             async move {
                 let mut views = engine_orders(&state, &sk, &ids).await.ok()?;
+                // Without its POS row a cancelled order would be sent as
+                // not cancelled: a failed read waits for the next change.
+                let (store_id, wanted) = (connection_id.clone(), ids.clone());
+                let pos_rows: HashMap<_, _> = state
+                    .db
+                    .read(move |db| db.get_pos_orders(&store_id, &wanted))
+                    .await
+                    .ok()?
+                    .into_iter()
+                    .map(|row| (row.order_id.clone(), row))
+                    .collect();
                 let mut snapshots = Vec::with_capacity(ids.len());
                 for order_id in ids {
                     let Some(order) = views.remove(&order_id) else {
@@ -1029,7 +1046,9 @@ pub async fn order_events(
                         ));
                         continue;
                     };
-                    let status = pos_status(&state, &connection_id, &sk, &order).await;
+                    let status =
+                        pos_status(&state, &connection_id, &sk, &order, pos_rows.get(&order_id))
+                            .await;
                     let mut json = serde_json::to_value(&status).ok()?;
                     json["order_id"] = serde_json::Value::String(order_id.to_string());
                     let data = json.to_string();
