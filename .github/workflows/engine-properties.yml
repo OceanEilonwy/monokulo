@@ -2,7 +2,7 @@ name: Engine property exploration
 
 on:
   schedule:
-    - cron: '0 18 * * *'
+    - cron: '0 0,6,12,18 * * *'
   workflow_dispatch:
     inputs:
       cases:
@@ -38,7 +38,7 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       PROPTEST_CASES: ${{ inputs.cases || '512' }}
       ENGINE_PROOF_CASES: ${{ inputs.proof_cases || '32' }}
-      # A different reproducible seed for each daily/manual run.
+      # A different reproducible seed for each scheduled/manual run.
       PROPTEST_RNG_SEED: ${{ github.run_id }}
     steps:
       - uses: actions/checkout@v7

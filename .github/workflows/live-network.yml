@@ -26,7 +26,7 @@ name: Live network
 
 on:
   schedule:
-    # 16:00 UTC: the nightly property, fuzz and scale runs start from 17:00.
+    # 16:00 UTC: the property and fuzz runs start every 6 hours from 00:00 and 01:00; mutation and scale runs are weekly from 17:00.
     - cron: '0 16 * * *'
   workflow_dispatch:
 

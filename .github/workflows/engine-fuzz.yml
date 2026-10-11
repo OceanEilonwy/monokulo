@@ -2,7 +2,7 @@ name: Engine fuzz exploration
 
 on:
   schedule:
-    - cron: '0 19 * * *'
+    - cron: '0 1,7,13,19 * * *'
   workflow_dispatch:
     inputs:
       seconds:
