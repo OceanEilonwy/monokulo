@@ -96,7 +96,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-chromium-firefox-webkit-linux-${{ hashFiles('e2e/browser/package-lock.json') }}
+          key: playwright-chromium-firefox-webkit-${{ env.CACHE_OS }}-${{ hashFiles('e2e/browser/package-lock.json') }}
       - name: Install Chromium
         working-directory: e2e/browser
         run: |
