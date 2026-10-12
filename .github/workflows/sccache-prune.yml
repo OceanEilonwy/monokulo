@@ -1,0 +1,32 @@
+name: sccache prune
+
+# Deletes every sccache cache but the newest. Main saves a new one on each
+# run (setup-rust), each up to 1 GB, and the repository has 10 GB for every
+# cache: left to GitHub, the least recently used go first, which are the
+# Rust caches only main touches. Called after the jobs that save one
+# (release.yml, rust-cache.yml); a separate job, as pull request jobs get
+# no write access to the caches.
+
+on:
+  workflow_call:
+
+permissions:
+  actions: write
+
+jobs:
+  prune:
+    name: Delete older sccache caches
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Delete every sccache cache but the newest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh cache list --key sccache- --sort created_at --order desc --limit 100 --json id,key \
+            --jq '.[1:][] | "\(.id) \(.key)"' |
+          while read -r id key; do
+            echo "Deleting $key"
+            gh cache delete "$id"
+          done

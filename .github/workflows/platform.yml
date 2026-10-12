@@ -98,6 +98,7 @@ jobs:
         run: |
           cargo nextest run --no-run --workspace --locked --profile ci --features monokulo/snp \
             ${{ inputs.platform != 'linux' && '--exclude xtask' || '' }}
+          if test -n "${RUSTC_WRAPPER:-}"; then sccache --show-stats; fi
       - name: Run the tests
         id: tests
         continue-on-error: true

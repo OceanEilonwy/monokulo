@@ -32,4 +32,13 @@ jobs:
       # The Rust tests job's Build the tests step on Linux, so the cache
       # holds the same build.
       - name: Build the tests
-        run: cargo nextest run --no-run --workspace --locked --profile ci --features monokulo/snp
+        run: |
+          cargo nextest run --no-run --workspace --locked --profile ci --features monokulo/snp
+          sccache --show-stats
+
+  sccache:
+    name: Keep the newest sccache cache
+    needs: dev
+    uses: ./.github/workflows/sccache-prune.yml
+    permissions:
+      actions: write
