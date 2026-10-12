@@ -11,10 +11,10 @@ mod tests;
 
 use super::format::{self, coverage as covered, date, int, share, NONE};
 use super::model::Report;
+use super::site_header::{self, Section};
 use crate::coverage::Counts;
-use crate::logo;
 use crate::support::at;
-use maud::{html, Markup, PreEscaped, DOCTYPE};
+use maud::{html, Markup, DOCTYPE};
 use std::{fs, io, path::Path};
 
 /// A section of the report, and the page it is on.
@@ -179,26 +179,12 @@ fn page(report: &Report, shell: &Shell, tab: Tab, body: &Markup) -> Markup {
                 meta name="description" content="Monokulo’s tests, coverage, property tests, fuzzing, load checks, live-network checks and screenshots, rebuilt from every CI run on main.";
                 link rel="icon" href="../assets/favicon.svg" type="image/svg+xml";
                 link rel="stylesheet" href="assets/theme.css";
+                link rel="stylesheet" href="assets/header.css";
                 link rel="stylesheet" href="assets/coverage.css";
                 @if script { script src="assets/coverage.js" defer {} }
             }
             body {
-                header.chrome {
-                    div.bar {
-                        a.brand href="../" {
-                            svg.logo-mark width="30" height="30" viewBox="0 0 64 64" aria-hidden="true" focusable="false" {
-                                (PreEscaped(logo::small()))
-                            }
-                            span { "Monokulo" }
-                        }
-                        nav aria-label="Site" {
-                            a href="../#how" { "How it works" }
-                            a href="../#install" { "Install" }
-                            a href="./" aria-current="page" { "Testing" }
-                            a href=(repo) { "Source code" }
-                        }
-                    }
-                }
+                (site_header::render(Section::Testing, "../", repo))
                 main {
                     div.intro {
                         h1 { (TITLE) }

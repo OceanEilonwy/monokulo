@@ -6,7 +6,7 @@
 //! The sample shop the walkthrough builds, `examples/geomart/`, is copied
 //! to `/docs/geomart/` so its pages run there.
 
-use crate::logo;
+use super::site_header::{self, Section, GITHUB_URL};
 use crate::support::{at, Exit};
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -60,7 +60,6 @@ pub(super) const PAGES: [Page; 6] = [
 /// The sample shop's files, from `examples/geomart/` to `geomart/`.
 const GEOMART: [&str; 2] = ["index.html", "done.html"];
 const FONT_WEIGHTS: [u16; 3] = [500, 700, 800];
-const GITHUB_URL: &str = "https://github.com/OceanEilonwy/monokulo";
 
 /// `cargo xtask pages docs --out DIR`.
 pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
@@ -94,6 +93,10 @@ pub(super) fn write(root: &Path, out: &Path) -> io::Result<()> {
         (
             root.join("crates/monokulo/src/views/theme.css"),
             assets.join("theme.css"),
+        ),
+        (
+            root.join(site_header::STYLESHEET),
+            assets.join("header.css"),
         ),
         (
             root.join("xtask/src/pages/assets/docs/docs.css"),
@@ -146,25 +149,11 @@ pub(super) fn render(page: &Page, markdown: &str) -> Markup {
                 meta name="description" content="How to add Monokulo, self-hosted Monero payments, to your own website.";
                 link rel="icon" href=(format!("{up}../assets/favicon.svg")) type="image/svg+xml";
                 link rel="stylesheet" href=(format!("{up}assets/theme.css"));
+                link rel="stylesheet" href=(format!("{up}assets/header.css"));
                 link rel="stylesheet" href=(format!("{up}assets/docs.css"));
             }
             body {
-                header.chrome {
-                    div.bar {
-                        a.brand href=(format!("{up}../")) {
-                            svg.logo-mark width="30" height="30" viewBox="0 0 64 64" aria-hidden="true" focusable="false" {
-                                (PreEscaped(logo::small()))
-                            }
-                            span { "Monokulo" }
-                        }
-                        nav aria-label="Site" {
-                            a href=(format!("{up}../#install")) { "Install" }
-                            a href=(format!("{up}./")) aria-current="page" { "Docs" }
-                            a href=(format!("{up}../testing/")) { "Testing" }
-                            a href=(GITHUB_URL) { "Source code" }
-                        }
-                    }
-                }
+                (site_header::render(Section::Docs, &format!("{up}../"), GITHUB_URL))
                 main.docs-page {
                     nav.docs-tabs aria-label="Docs" {
                         @for other in &PAGES {
@@ -331,6 +320,7 @@ mod tests {
         assert!(out.join("geomart/index.html").is_file());
         assert!(out.join("geomart/done.html").is_file());
         assert!(out.join("assets/theme.css").is_file());
+        assert!(out.join("assets/header.css").is_file());
         let _ = fs::remove_dir_all(&out);
     }
 }

@@ -11,13 +11,6 @@ h1,h2,h3{font-weight:800;letter-spacing:-.01em;line-height:1.15;margin:0}
 p{margin:0}
 code{font-family:var(--font-mono);font-size:.9em;background:var(--paper-raised);border:1px solid var(--line);border-radius:var(--radius-sm);padding:.05em .35em;overflow-wrap:anywhere}
 
-header{background:var(--chrome-bg);color:var(--chrome-ink);border-bottom:3px solid var(--chrome-rule)}
-.bar{max-width:1040px;margin:0 auto;padding:var(--space-md) var(--space-lg);display:flex;align-items:center;justify-content:space-between;gap:var(--space-lg);flex-wrap:wrap}
-.brand{display:flex;align-items:center;gap:var(--space-sm);color:var(--chrome-ink);text-decoration:none;font-weight:800;font-size:20px}
-nav{display:flex;gap:var(--space-lg);flex-wrap:wrap;font-weight:700;font-size:15px}
-nav a{color:var(--chrome-ink);text-decoration:none}
-nav a:hover{text-decoration:underline}
-
 main{max-width:1040px;margin:0 auto;padding:var(--space-xl) var(--space-lg) 64px;display:flex;flex-direction:column;gap:56px}
 .card{background:var(--paper-raised);border:1px solid var(--line);border-radius:var(--radius-lg);padding:var(--space-xl)}
 .card h3{font-size:18px;margin-bottom:var(--space-sm)}
