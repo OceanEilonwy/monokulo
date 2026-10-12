@@ -495,6 +495,17 @@ async fn order_metadata(
         .unwrap_or_default()
 }
 
+/// When the POS cancelled the order, if the cancellation stands: only
+/// while nothing has reached it. A payment can land as the order is
+/// cancelled; the cancel handler then takes the cancellation back, but
+/// until it has (or if it can't) the row still says cancelled. Read this
+/// way, the order is shown as it is, paid and backgrounded for review, and
+/// never as cancelled first.
+fn standing_cancellation(row: &crate::db::PosOrderRow, order: &OrderView) -> Option<i64> {
+    row.cancelled_at
+        .filter(|_| order.amount_received_piconero == 0)
+}
+
 /// One POS order as the terminal shows it, from its local row and the
 /// engine's view of it (read singly or in a batch).
 fn pos_order_view(
@@ -506,6 +517,7 @@ fn pos_order_view(
         .as_ref()
         .and_then(|m| m.confirmations_required_applied)
         .unwrap_or(crate::confirmation_thresholds::FALLBACK_CONFIRMATIONS);
+    let cancelled_at = standing_cancellation(&row, order);
     PosOrderData {
         order_id_short: crate::views::short_id_text(row.order_id.as_str()),
         order_id: row.order_id,
@@ -529,7 +541,7 @@ fn pos_order_view(
         confirmations_required,
         error: derive_payment_error(order),
         backgrounded: row.backgrounded,
-        cancelled_at: row.cancelled_at,
+        cancelled_at,
         created_at: row.created_at,
         expires_at: order.expires_at,
         received_xmr: shared::exchange_rate::format_piconero_as_xmr(order.amount_received_piconero),
@@ -623,13 +635,13 @@ async fn active_pos_orders(
     .await;
     let mut rows: HashMap<crate::db::OrderId, crate::db::PosOrderRow> = rows
         .into_iter()
-        .filter(|row| row.cancelled_at.is_none())
         .map(|row| (row.order_id.clone(), row))
         .collect();
     Ok(open
         .into_iter()
         .filter_map(|order| {
             rows.remove(&order.order_id)
+                .filter(|row| standing_cancellation(row, &order).is_none())
                 .map(|row| pos_order_view(metadata.remove(&row.order_id), row, &order))
         })
         .collect())
@@ -940,7 +952,7 @@ async fn pos_status(
             None
         },
         backgrounded: pos_row.is_some_and(|row| row.backgrounded),
-        cancelled_at: pos_row.and_then(|row| row.cancelled_at),
+        cancelled_at: pos_row.and_then(|row| standing_cancellation(row, order)),
         refund_address: order.refund_address.clone(),
     }
 }
@@ -2155,10 +2167,10 @@ mod tests {
             stream
         }
 
-        /// Pays `order` a little in the engine as its cancellation is
-        /// written: after the cancel handler's check that it had no
-        /// payment, before its second look.
-        fn pay_as_cancelled(&self) {
+        /// Pays an order in the engine as its cancellation is written:
+        /// after the cancel handler's check that it had no payment, before
+        /// its second look. In full (so it is paid) or a little (partly).
+        fn pay_as_cancelled(&self, in_full: bool) {
             let engine = std::sync::Arc::clone(&self.engine);
             let db = self.state.db.lock();
             let conn = db.conn_for_test();
@@ -2167,13 +2179,17 @@ mod tests {
                 1,
                 rusqlite::functions::FunctionFlags::SQLITE_UTF8,
                 move |call| {
-                    engine
-                        .record_order_payment(
-                            &call.get::<String>(0)?,
+                    let order = call.get::<String>(0)?;
+                    if in_full {
+                        engine.mark_order_paid(&order)
+                    } else {
+                        engine.record_order_payment(
+                            &order,
                             shared::xmr_amount::Piconero(1),
                             Some(101),
                         )
-                        .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+                    }
+                    .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
                     Ok(rusqlite::types::Null)
                 },
             )
@@ -2184,6 +2200,42 @@ mod tests {
                  BEGIN SELECT pay_order_now(NEW.order_id); END;",
             )
             .unwrap();
+        }
+
+        /// Makes taking a cancellation back fail, leaving the row
+        /// cancelled.
+        fn refuse_uncancel(&self) {
+            self.state
+                .db
+                .lock()
+                .conn_for_test()
+                .execute_batch(
+                    "CREATE TEMP TRIGGER refuse_uncancel BEFORE UPDATE OF cancelled_at_utc ON pos_orders
+                     WHEN OLD.cancelled_at_utc IS NOT NULL AND NEW.cancelled_at_utc IS NULL
+                     BEGIN SELECT RAISE(ABORT, 'refused for the test'); END;",
+                )
+                .unwrap();
+        }
+
+        /// The order's status events from `events` up to its last one
+        /// (once it is terminal), each checked by `check`.
+        async fn events_until_terminal(
+            events: &mut LiveEvents,
+            check: impl Fn(&serde_json::Value),
+        ) -> serde_json::Value {
+            loop {
+                let event = events.next().await;
+                check(&event);
+                if event["is_terminal"] == true {
+                    return event;
+                }
+            }
+        }
+
+        async fn status(&self, order: &str) -> serde_json::Value {
+            let response = self.send("GET", format!("pos/orders/{order}/status")).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            body_json(response).await
         }
     }
 
@@ -2227,7 +2279,7 @@ mod tests {
         let store = LiveStore::new("pos-uncancel@example.com").await;
         let mut orders = store.orders(2).await;
         let (order, other) = (orders.remove(0), orders.remove(0));
-        store.pay_as_cancelled();
+        store.pay_as_cancelled(false);
         let watch = store.watch(&order);
         let elsewhere = store.watch(&other);
 
@@ -2254,24 +2306,91 @@ mod tests {
     async fn a_cancellation_that_cannot_be_taken_back_is_an_error_and_wakes_nothing_more() {
         let store = LiveStore::new("pos-uncancel-fails@example.com").await;
         let order = store.orders(1).await.remove(0);
-        store.pay_as_cancelled();
-        store
-            .state
-            .db
-            .lock()
-            .conn_for_test()
-            .execute_batch(
-                "CREATE TEMP TRIGGER refuse_uncancel BEFORE UPDATE OF cancelled_at_utc ON pos_orders
-                 WHEN OLD.cancelled_at_utc IS NOT NULL AND NEW.cancelled_at_utc IS NULL
-                 BEGIN SELECT RAISE(ABORT, 'refused for the test'); END;",
-            )
-            .unwrap();
+        store.pay_as_cancelled(false);
+        store.refuse_uncancel();
         let watch = store.watch(&order);
 
         let response = store.act(&order, "cancel").await;
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert!(store.pos_row(&order).cancelled_at.is_some());
         assert_eq!(*watch.changed.borrow(), 1, "only the cancellation");
+        // Money reached it, so it isn't cancelled: the terminal still
+        // lists it among the open orders, to be reviewed.
+        let active = body_json(
+            store
+                .send("GET", "pos/orders?state=active".to_string())
+                .await,
+        )
+        .await;
+        let listed = active["orders"].as_array().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["order_id"], order.as_str());
+        assert!(listed[0]["cancelled_at"].is_null());
+    }
+
+    /// An order paid in full as the POS cancels it is shown paid and
+    /// backgrounded for review, never cancelled: its stream's events,
+    /// down to the last, and its status agree with the cancel handler's
+    /// answer and the row it leaves.
+    #[tokio::test]
+    async fn an_order_paid_in_full_as_it_is_cancelled_is_never_shown_cancelled() {
+        let store = LiveStore::new("pos-paid-as-cancelled@example.com").await;
+        let mut orders = store.orders(2).await;
+        let (order, other) = (orders.remove(0), orders.remove(0));
+        let _engine_stream = store.connect_engine_stream(&other).await;
+        store.pay_as_cancelled(true);
+        let mut events = store.open(&order).await;
+        assert_eq!(events.next().await["status"], "pending");
+
+        let response = store.act(&order, "cancel").await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(body_text(response)
+            .await
+            .contains("It was backgrounded for review instead"));
+        let row = store.pos_row(&order);
+        assert!(row.backgrounded);
+        assert_eq!(row.cancelled_at, None);
+        let last = LiveStore::events_until_terminal(&mut events, |event| {
+            assert!(event["cancelled_at"].is_null(), "shown cancelled: {event}");
+        })
+        .await;
+        assert_eq!(last["status"], "paid");
+        assert_eq!(last["backgrounded"], true);
+        let status = store.status(&order).await;
+        assert!(status["cancelled_at"].is_null());
+        assert_eq!(status["backgrounded"], true);
+    }
+
+    /// The moment a stream can catch between the cancellation and taking
+    /// it back, held still: the row is cancelled and the order paid in
+    /// full, as when taking it back fails. The stream's last event and the
+    /// status still show it paid and backgrounded, not cancelled; only the
+    /// cancel handler's own answer reports the failure.
+    #[tokio::test]
+    async fn a_paid_order_whose_row_still_says_cancelled_is_shown_paid_not_cancelled() {
+        let store = LiveStore::new("pos-paid-still-cancelled@example.com").await;
+        let mut orders = store.orders(2).await;
+        let (order, other) = (orders.remove(0), orders.remove(0));
+        let _engine_stream = store.connect_engine_stream(&other).await;
+        store.pay_as_cancelled(true);
+        store.refuse_uncancel();
+        let mut events = store.open(&order).await;
+        assert_eq!(events.next().await["status"], "pending");
+
+        assert_eq!(
+            store.act(&order, "cancel").await.status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert!(store.pos_row(&order).cancelled_at.is_some());
+        let last = LiveStore::events_until_terminal(&mut events, |event| {
+            assert!(event["cancelled_at"].is_null(), "shown cancelled: {event}");
+        })
+        .await;
+        assert_eq!(last["status"], "paid");
+        assert_eq!(last["backgrounded"], true);
+        let status = store.status(&order).await;
+        assert!(status["cancelled_at"].is_null());
+        assert_eq!(status["status"], "paid");
     }
 
     /// Without its POS row a cancelled order would be shown as open: when
