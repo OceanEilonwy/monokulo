@@ -9,13 +9,13 @@
 
 mod page;
 
+use super::site_header::{GITHUB_URL, STYLESHEET};
 use crate::support::{at, files_under, Exit};
 use std::{
     fs, io,
     path::{Path, PathBuf},
 };
 
-const DEFAULT_GITHUB_URL: &str = "https://github.com/OceanEilonwy/monokulo";
 const PUBLIC_KEY: &str = "openwrt/keys/monokulo.pem";
 /// The page's stylesheet fonts, from monokulo's own static files.
 const FONT_WEIGHTS: [u16; 3] = [500, 700, 800];
@@ -24,7 +24,7 @@ const LOGOS: [&str; 2] = ["logo.svg", "favicon.svg"];
 /// `cargo xtask pages landing --site DIR [--github-url URL]`.
 pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
     let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidInput, what.to_string());
-    let (mut site, mut github_url) = (None, DEFAULT_GITHUB_URL.to_string());
+    let (mut site, mut github_url) = (None, GITHUB_URL.to_string());
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
         let value = rest
@@ -177,6 +177,7 @@ fn write(root: &Path, site: &Path, github_url: &str) -> io::Result<()> {
             root.join("crates/monokulo/src/views/theme.css"),
             assets.join("theme.css"),
         ),
+        (root.join(STYLESHEET), assets.join("header.css")),
         (
             root.join("xtask/src/pages/assets/landing/landing.css"),
             assets.join("landing.css"),
@@ -217,6 +218,7 @@ mod tests {
         let root = scratch.join("root");
         put(&root.join("xtask/src/pages/assets/landing/landing.css"), "");
         put(&root.join("xtask/src/pages/assets/landing/landing.js"), "");
+        put(&root.join(STYLESHEET), "");
         put(&root.join(PUBLIC_KEY), "KEY\n");
         put(&root.join("crates/monokulo/src/views/theme.css"), "");
         for name in LOGOS {
@@ -291,7 +293,7 @@ mod tests {
             "KEY\n"
         );
         assert!(site.join(".nojekyll").exists());
-        for asset in ["theme.css", "landing.css", "landing.js"] {
+        for asset in ["theme.css", "header.css", "landing.css", "landing.js"] {
             assert!(site.join("assets").join(asset).exists(), "{asset}");
         }
     }
@@ -301,7 +303,7 @@ mod tests {
         let scratch = Scratch::new("landing-empty");
         let site = scratch.join("site");
         fs::create_dir_all(site.join("openwrt")).unwrap();
-        let error = write(scratch.path(), &site, DEFAULT_GITHUB_URL).unwrap_err();
+        let error = write(scratch.path(), &site, GITHUB_URL).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 }

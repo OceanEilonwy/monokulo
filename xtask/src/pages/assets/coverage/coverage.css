@@ -18,15 +18,6 @@ code,.mono{font-family:var(--font-mono);font-size:.86em}
 .muted{color:var(--muted)}
 .small{font-size:13px}
 
-header.chrome{background:var(--chrome-bg);border-bottom:3px solid var(--chrome-rule)}
-.bar{max-width:1120px;margin:0 auto;padding:var(--space-md) max(16px,3vw);display:flex;align-items:center;justify-content:space-between;gap:var(--space-lg);flex-wrap:wrap}
-.brand{display:flex;align-items:center;gap:var(--space-sm);font-weight:800;font-size:19px;text-decoration:none}
-.brand{color:var(--chrome-ink)}
-nav a{color:var(--chrome-ink)}
-nav{display:flex;gap:var(--space-lg);flex-wrap:wrap;font-weight:700;font-size:14px}
-nav a{text-decoration:none}
-nav a[aria-current]{color:var(--accent-text)}
-
 main{max-width:1120px;margin:0 auto;padding:var(--space-2xl) max(16px,3vw) 80px;display:flex;flex-direction:column;gap:var(--space-xl)}
 .intro{display:flex;flex-direction:column;gap:var(--space-sm)}
 .intro h1{font-size:clamp(28px,4.5vw,42px)}

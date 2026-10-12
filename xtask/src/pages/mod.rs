@@ -20,6 +20,7 @@ mod landing;
 mod model;
 mod render;
 mod serve;
+mod site_header;
 #[cfg(test)]
 mod tests;
 
@@ -62,7 +63,6 @@ const OUTPUTS: [&str; 12] = [
 /// The page's own stylesheet and script, beside theme.css in `assets/`.
 const PAGE_ASSETS: [&str; 2] = ["coverage.css", "coverage.js"];
 const FONT_WEIGHTS: [u16; 3] = [500, 700, 800];
-const DEFAULT_GITHUB_URL: &str = "https://github.com/OceanEilonwy/monokulo";
 
 pub(crate) const HELP: &str = "\
         pages build --out DIR [--coverage DIR] [--properties DIR] [--fuzz DIR] [--scale DIR]\n\
@@ -132,7 +132,7 @@ fn parse(args: &[&str]) -> io::Result<SiteArgs> {
         (None, None, None, None, None, None, None);
     // The default build is the one that ships: zmq is a default feature.
     let mut build = Build::Default;
-    let mut github_url = DEFAULT_GITHUB_URL.to_string();
+    let mut github_url = site_header::GITHUB_URL.to_string();
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
         let value = rest
@@ -186,10 +186,13 @@ fn clear(out: &Path) -> io::Result<()> {
 fn copy_assets(root: &Path, out: &Path) -> io::Result<()> {
     let assets = out.join("assets");
     fs::create_dir_all(&assets).map_err(|e| at(&assets, e))?;
-    let mut copies = vec![(
-        root.join("crates/monokulo/src/views/theme.css"),
-        "theme.css".to_string(),
-    )];
+    let mut copies = vec![
+        (
+            root.join("crates/monokulo/src/views/theme.css"),
+            "theme.css".to_string(),
+        ),
+        (root.join(site_header::STYLESHEET), "header.css".to_string()),
+    ];
     copies.extend(FONT_WEIGHTS.iter().map(|weight| {
         let name = format!("manrope-{weight}.woff2");
         (root.join("crates/monokulo/static").join(&name), name)

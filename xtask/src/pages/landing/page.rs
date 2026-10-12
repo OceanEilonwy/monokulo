@@ -4,6 +4,7 @@
 
 use super::{distinct, Repo};
 use crate::logo;
+use crate::pages::site_header::{self, Section};
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 
 /// The page, for the apk repositories the site serves. The router
@@ -26,26 +27,11 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                 // Colours come only from monokulo's own theme (crates/monokulo/src/views/theme.css,
                 // copied here at build time): light or dark follows the OS.
                 link rel="stylesheet" href="assets/theme.css";
+                link rel="stylesheet" href="assets/header.css";
                 link rel="stylesheet" href="assets/landing.css";
             }
             body {
-                header {
-                    div class="bar" {
-                        a class="brand" href="#top" {
-                            svg class="logo-mark" width="30" height="30" viewBox="0 0 64 64" aria-hidden="true" focusable="false" {
-                                (PreEscaped(logo::small()))
-                            }
-                            span { "Monokulo" }
-                        }
-                        nav aria-label="Sections" {
-                            a href="#how" { "How it works" }
-                            a href="#install" { "Install" }
-                            a href="docs/" { "Docs" }
-                            a href="testing/" { "Testing" }
-                            a href=(github_url) { "Source code" }
-                        }
-                    }
-                }
+                (site_header::render(Section::Home, "", github_url))
                 main id="top" {
                     section class="hero" {
                         svg class="mark logo-mark" width="96" height="96" viewBox="0 0 64 64" aria-hidden="true" focusable="false" {

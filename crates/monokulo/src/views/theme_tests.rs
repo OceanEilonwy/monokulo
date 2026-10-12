@@ -76,8 +76,12 @@ fn stylesheets() -> Vec<(String, String)> {
         }
     }
     // The GitHub Pages site (xtask/src/pages/assets/) loads theme.css too: the landing page's
-    // stylesheet, the coverage report's and the docs'.
+    // stylesheet, the coverage report's and the docs', and the header they share.
     let root = crate_dir().join("../..");
+    sheets.push((
+        "xtask/src/pages/assets/site/header.css".to_string(),
+        read(&root.join("xtask/src/pages/assets/site/header.css")),
+    ));
     sheets.push((
         "xtask/src/pages/assets/landing/landing.css".to_string(),
         read(&root.join("xtask/src/pages/assets/landing/landing.css")),

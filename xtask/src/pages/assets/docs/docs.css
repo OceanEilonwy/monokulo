@@ -12,13 +12,6 @@ code{font-family:var(--font-mono);font-size:.88em;background:var(--paper-raised)
 pre{background:var(--paper-raised);border:1px solid var(--line);border-radius:var(--radius-md);padding:var(--space-md) var(--space-lg);overflow-x:auto;font-size:.85em}
 pre code{border:0;padding:0;background:none}
 
-header.chrome{background:var(--chrome-bg);border-bottom:3px solid var(--chrome-rule)}
-.bar{max-width:900px;margin:0 auto;padding:var(--space-md) var(--space-lg);display:flex;align-items:center;justify-content:space-between;gap:var(--space-lg);flex-wrap:wrap}
-.brand{display:flex;align-items:center;gap:var(--space-sm);font-weight:800;font-size:19px;text-decoration:none;color:var(--chrome-ink)}
-header nav{display:flex;gap:var(--space-lg);flex-wrap:wrap;font-weight:700;font-size:14px}
-header nav a{color:var(--chrome-ink);text-decoration:none}
-header nav a[aria-current]{color:var(--accent-text)}
-
 .docs-page{max-width:900px;margin:0 auto;padding:var(--space-xl) var(--space-lg) 80px}
 .docs-tabs{display:flex;flex-wrap:wrap;gap:var(--space-xs);margin:0 0 var(--space-lg);border-bottom:1px solid var(--line)}
 .docs-tabs a{padding:var(--space-xs) var(--space-md);text-decoration:none;border-bottom:3px solid transparent;color:var(--muted);font-weight:700;font-size:.92em}
