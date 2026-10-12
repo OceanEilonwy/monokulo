@@ -215,6 +215,12 @@ html:has(.save-bar) { scroll-padding-bottom: 7rem; }
 .save-bar-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
 .save-bar-actions[hidden] { display: none; }
 .save-bar-actions button, .save-bar-actions .btn { margin: 0; }
+.save-bar [data-save][aria-busy="true"] { display: inline-flex; align-items: center; gap: .5em; }
+.save-bar [data-save][aria-busy="true"]::before { content: ""; width: 1em; height: 1em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: save-spin .8s linear infinite; }
+@keyframes save-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .save-bar [data-save][aria-busy="true"]::before { animation: none; }
+}
 mk-save-bar:defined:not(.is-dirty):not(.is-failed):not(.is-leaving) { display: none; }
 @media (prefers-reduced-motion: no-preference) {
   mk-save-bar:defined { animation: save-bar-in 0.18s ease-out; }
