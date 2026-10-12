@@ -179,8 +179,7 @@ fn page(report: &Report, shell: &Shell, tab: Tab, body: &Markup) -> Markup {
                 meta name="description" content="Monokulo’s tests, coverage, property tests, fuzzing, load checks, live-network checks and screenshots, rebuilt from every CI run on main.";
                 link rel="icon" href="../assets/favicon.svg" type="image/svg+xml";
                 link rel="stylesheet" href="assets/theme.css";
-                link rel="stylesheet" href="assets/header.css";
-                link rel="stylesheet" href="assets/coverage.css";
+                link rel="stylesheet" href="assets/styles.css";
                 @if script { script src="assets/coverage.js" defer {} }
             }
             body {

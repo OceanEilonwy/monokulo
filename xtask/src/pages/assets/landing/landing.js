@@ -34,7 +34,7 @@ document.querySelectorAll("[role=tablist]").forEach(function (list) {
 // Copy buttons on every command and key (comments after a command are left out).
 document.querySelectorAll(".cmd").forEach(function (box) {
   var b = document.createElement("button");
-  b.type = "button"; b.className = "copy"; b.textContent = "Copy";
+  b.type = "button"; b.className = "btn btn-sm copy"; b.textContent = "Copy";
   b.setAttribute("aria-label", "Copy to clipboard");
   b.addEventListener("click", function () {
     var text = box.querySelector("pre").textContent.replace(/[ \t]+#.*$/gm, "");

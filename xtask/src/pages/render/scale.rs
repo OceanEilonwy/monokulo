@@ -103,7 +103,7 @@ fn chart(rows: &[Row]) -> Markup {
     html! {
         svg viewBox={ "0 0 " (W) " " (H) } role="img" aria-label={ "Scan time per block for " (label) " stores" } {
             @for v in ticks(y_max, y_step) {
-                line.grid x1=(f(LEFT)) x2=(f(W - RIGHT)) y1=(f(y(v))) y2=(f(y(v))) {}
+                line.gridline x1=(f(LEFT)) x2=(f(W - RIGHT)) y1=(f(y(v))) y2=(f(y(v))) {}
                 text x=(f(LEFT - 8.0)) y=(f(y(v) + 4.0)) text-anchor="end" { (ms(v)) " ms" }
             }
             line.axis x1=(f(LEFT)) x2=(f(W - RIGHT)) y1=(f(y(0.0))) y2=(f(y(0.0))) {}
@@ -175,7 +175,7 @@ fn run_figures(run: &Stress, title: Option<&str>) -> Option<Markup> {
                         }
                     }
                 } }
-                p.muted.small.note {
+                p.muted.small.table-note {
                     "Pass conditions: no store more than " (maybe_int(run.scenario.max_lag_blocks)) " blocks behind, status replies under " (maybe_int(run.scenario.max_http_ms)) " ms. "
                     @if all_kept_up {
                         @if rows.len() == 2 { "Both passed." } @else { "All " (count(rows.len())) " passed." }

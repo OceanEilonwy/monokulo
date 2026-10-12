@@ -94,14 +94,7 @@ pub(super) fn write(root: &Path, out: &Path) -> io::Result<()> {
             root.join("crates/monokulo/src/views/theme.css"),
             assets.join("theme.css"),
         ),
-        (
-            root.join(site_header::STYLESHEET),
-            assets.join("header.css"),
-        ),
-        (
-            root.join("xtask/src/pages/assets/docs/docs.css"),
-            assets.join("docs.css"),
-        ),
+        (root.join(super::STYLESHEET), assets.join("styles.css")),
     ];
     copies.extend(FONT_WEIGHTS.iter().map(|weight| {
         let name = format!("manrope-{weight}.woff2");
@@ -149,13 +142,12 @@ pub(super) fn render(page: &Page, markdown: &str) -> Markup {
                 meta name="description" content="How to add Monokulo, self-hosted Monero payments, to your own website.";
                 link rel="icon" href=(format!("{up}../assets/favicon.svg")) type="image/svg+xml";
                 link rel="stylesheet" href=(format!("{up}assets/theme.css"));
-                link rel="stylesheet" href=(format!("{up}assets/header.css"));
-                link rel="stylesheet" href=(format!("{up}assets/docs.css"));
+                link rel="stylesheet" href=(format!("{up}assets/styles.css"));
             }
             body {
                 (site_header::render(Section::Docs, &format!("{up}../"), GITHUB_URL))
                 main.docs-page {
-                    nav.docs-tabs aria-label="Docs" {
+                    nav.tabs aria-label="Docs" {
                         @for other in &PAGES {
                             @let href = if other.dir.is_empty() { format!("{up}./") } else { format!("{up}{}/", other.dir) };
                             @if other.dir == page.dir {
@@ -250,7 +242,7 @@ pub(super) fn markdown_html(markdown: &str) -> Markup {
                 events.push(Event::Html(diff_block(&code).0.into()));
             }
             Event::Start(Tag::Table(_)) => {
-                events.push(Event::Html("<div class=\"table-scroll\">".into()));
+                events.push(Event::Html("<div class=\"tbl\">".into()));
                 events.push(event);
             }
             Event::End(TagEnd::Table) => {
@@ -296,11 +288,8 @@ mod tests {
             "{html}"
         );
         assert!(html.contains(r#"<a href=".././">Key steps</a>"#), "{html}");
-        assert!(html.contains(r#"href="../assets/docs.css""#));
-        assert!(
-            html.contains(r#"<div class="table-scroll"><table>"#),
-            "{html}"
-        );
+        assert!(html.contains(r#"href="../assets/styles.css""#));
+        assert!(html.contains(r#"<div class="tbl"><table>"#), "{html}");
     }
 
     #[test]
@@ -320,7 +309,7 @@ mod tests {
         assert!(out.join("geomart/index.html").is_file());
         assert!(out.join("geomart/done.html").is_file());
         assert!(out.join("assets/theme.css").is_file());
-        assert!(out.join("assets/header.css").is_file());
+        assert!(out.join("assets/styles.css").is_file());
         let _ = fs::remove_dir_all(&out);
     }
 }

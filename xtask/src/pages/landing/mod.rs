@@ -9,7 +9,8 @@
 
 mod page;
 
-use super::site_header::{GITHUB_URL, STYLESHEET};
+use super::site_header::GITHUB_URL;
+use super::STYLESHEET;
 use crate::support::{at, files_under, Exit};
 use std::{
     fs, io,
@@ -177,11 +178,7 @@ fn write(root: &Path, site: &Path, github_url: &str) -> io::Result<()> {
             root.join("crates/monokulo/src/views/theme.css"),
             assets.join("theme.css"),
         ),
-        (root.join(STYLESHEET), assets.join("header.css")),
-        (
-            root.join("xtask/src/pages/assets/landing/landing.css"),
-            assets.join("landing.css"),
-        ),
+        (root.join(STYLESHEET), assets.join("styles.css")),
         (
             root.join("xtask/src/pages/assets/landing/landing.js"),
             assets.join("landing.js"),
@@ -216,7 +213,6 @@ mod tests {
 
     fn checkout(scratch: &Scratch) -> PathBuf {
         let root = scratch.join("root");
-        put(&root.join("xtask/src/pages/assets/landing/landing.css"), "");
         put(&root.join("xtask/src/pages/assets/landing/landing.js"), "");
         put(&root.join(STYLESHEET), "");
         put(&root.join(PUBLIC_KEY), "KEY\n");
@@ -293,7 +289,7 @@ mod tests {
             "KEY\n"
         );
         assert!(site.join(".nojekyll").exists());
-        for asset in ["theme.css", "header.css", "landing.css", "landing.js"] {
+        for asset in ["theme.css", "styles.css", "landing.js"] {
             assert!(site.join("assets").join(asset).exists(), "{asset}");
         }
     }
