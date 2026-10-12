@@ -44,29 +44,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
 # Tests spend most of their time in dependencies: SQLite, password hashing
 # (Argon2id, about a second a hash unoptimised), Monero output scanning
 # (curve arithmetic and hashing), RandomX proof of work (its C++ is built at
-# this level too) and the TLS root certificates every HTTP client loads. A
-# dependency is rebuilt only when Cargo.lock changes, and CI caches the build.
+# this level too), the TLS root certificates every HTTP client loads and
+# image decoding and encoding (unoptimised, the 552 screenshots of
+# `cargo xtask pages build`'s gallery take minutes). A dependency is rebuilt
+# only when Cargo.lock changes, and CI caches the build.
 [profile.dev.package."*"]
-opt-level = 3
-# Decoding and encoding images (`cargo xtask pages build`'s screenshot
-# gallery): unoptimised, the 552 screenshots of a CI run take minutes.
-[profile.dev.package.image]
-opt-level = 3
-[profile.dev.package.image-webp]
-opt-level = 3
-[profile.dev.package.zune-jpeg]
-opt-level = 3
-[profile.dev.package.png]
-opt-level = 3
-[profile.dev.package.fdeflate]
-opt-level = 3
-[profile.dev.package.miniz_oxide]
-opt-level = 3
-[profile.dev.package.simd-adler32]
-opt-level = 3
-[profile.dev.package.crc32fast]
-opt-level = 3
-[profile.dev.package.moxcms]
-opt-level = 3
-[profile.dev.package.pxfm]
 opt-level = 3
