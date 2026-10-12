@@ -6,6 +6,7 @@
 //! The sample shop the walkthrough builds, `examples/geomart/`, is copied
 //! to `/docs/geomart/` so its pages run there.
 
+use super::site_assets;
 use super::site_header::{self, Section, GITHUB_URL};
 use crate::support::{at, Exit};
 use maud::{html, Markup, PreEscaped, DOCTYPE};
@@ -59,7 +60,6 @@ pub(super) const PAGES: [Page; 6] = [
 
 /// The sample shop's files, from `examples/geomart/` to `geomart/`.
 const GEOMART: [&str; 2] = ["index.html", "done.html"];
-const FONT_WEIGHTS: [u16; 3] = [500, 700, 800];
 
 /// `cargo xtask pages docs --out DIR`.
 pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
@@ -87,25 +87,10 @@ pub(super) fn write(root: &Path, out: &Path) -> io::Result<()> {
         let path = dir.join("index.html");
         fs::write(&path, render(page, &markdown).0).map_err(|e| at(&path, e))?;
     }
-    let assets = out.join("assets");
-    fs::create_dir_all(&assets).map_err(|e| at(&assets, e))?;
-    let mut copies = vec![
-        (
-            root.join("crates/monokulo/src/views/theme.css"),
-            assets.join("theme.css"),
-        ),
-        (root.join(super::STYLESHEET), assets.join("styles.css")),
-    ];
-    copies.extend(FONT_WEIGHTS.iter().map(|weight| {
-        let name = format!("manrope-{weight}.woff2");
-        (
-            root.join("crates/monokulo/static").join(&name),
-            assets.join(name),
-        )
-    }));
+    site_assets::write(&out.join("assets"))?;
     let geomart = out.join("geomart");
     fs::create_dir_all(&geomart).map_err(|e| at(&geomart, e))?;
-    copies.extend(
+    let copies = Vec::from_iter(
         GEOMART
             .iter()
             .map(|name| (root.join("examples/geomart").join(name), geomart.join(name))),
@@ -140,9 +125,7 @@ pub(super) fn render(page: &Page, markdown: &str) -> Markup {
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (title) " · Monokulo docs" }
                 meta name="description" content="How to add Monokulo, self-hosted Monero payments, to your own website.";
-                link rel="icon" href=(format!("{up}../assets/favicon.svg")) type="image/svg+xml";
-                link rel="stylesheet" href=(format!("{up}assets/theme.css"));
-                link rel="stylesheet" href=(format!("{up}assets/styles.css"));
+                (site_assets::head(up))
             }
             body {
                 (site_header::render(Section::Docs, &format!("{up}../"), GITHUB_URL))
@@ -288,7 +271,10 @@ mod tests {
             "{html}"
         );
         assert!(html.contains(r#"<a href=".././">Key steps</a>"#), "{html}");
-        assert!(html.contains(r#"href="../assets/styles.css""#));
+        assert!(html.contains(&format!(
+            r#"href="{}""#,
+            site_assets::url("../", "styles.css")
+        )));
         assert!(html.contains(r#"<div class="tbl"><table>"#), "{html}");
     }
 
@@ -308,8 +294,13 @@ mod tests {
         );
         assert!(out.join("geomart/index.html").is_file());
         assert!(out.join("geomart/done.html").is_file());
-        assert!(out.join("assets/theme.css").is_file());
-        assert!(out.join("assets/styles.css").is_file());
+        // Every page links its files from the docs' own assets/, however
+        // deep it is.
+        for page in &PAGES {
+            let html = fs::read_to_string(out.join(page.dir).join("index.html")).unwrap();
+            let linked = site_assets::assert_links_published(&html, &out.join("assets"));
+            assert!(linked.contains(&"styles.css"), "{}", page.source);
+        }
         let _ = fs::remove_dir_all(&out);
     }
 }

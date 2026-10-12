@@ -5,6 +5,7 @@
 
 use super::{distinct, Repo};
 use crate::logo;
+use crate::pages::site_assets;
 use crate::pages::site_header::{self, Section};
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 
@@ -24,11 +25,9 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { "Monokulo: self-hosted Monero payments" }
                 meta name="description" content="Monokulo is a self-hosted Monero payment gateway for Linux, macOS, Windows and OpenWrt routers like the GL.iNet Flint 2. Watch-only: it never holds a spend key.";
-                link rel="icon" href="assets/favicon.svg" type="image/svg+xml";
                 // Colours come only from monokulo's own theme (crates/monokulo/src/views/theme.css,
                 // copied here at build time): light or dark follows the OS.
-                link rel="stylesheet" href="assets/theme.css";
-                link rel="stylesheet" href="assets/styles.css";
+                (site_assets::head(""))
             }
             body {
                 (site_header::render(Section::Home, "", github_url))
@@ -833,7 +832,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                     a href=(github_url) { "GitHub" }
                     " · Typeset in Manrope."
                 }
-                script src="assets/landing.js" defer {}
+                script src=(site_assets::url("", "landing.js")) defer {}
             }
         }
     }

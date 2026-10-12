@@ -2,14 +2,9 @@
    testing report each load it after theme.css. Colours come only from
    theme.css roles. The base comes first and every page uses it as it is; each
    page's block after it holds only that page's own pieces, and the few places
-   it differs from the base, keyed on that page's own elements. */
-
-/* ============================================================
-   Fonts: Manrope, copied beside this file from monokulo's static files
-   ============================================================ */
-@font-face{font-family:"Manrope";font-style:normal;font-weight:500;font-display:swap;src:url(manrope-500.woff2) format("woff2")}
-@font-face{font-family:"Manrope";font-style:normal;font-weight:700;font-display:swap;src:url(manrope-700.woff2) format("woff2")}
-@font-face{font-family:"Manrope";font-style:normal;font-weight:800;font-display:swap;src:url(manrope-800.woff2) format("woff2")}
+   it differs from the base, keyed on that page's own elements. The
+   typeface's @font-face rules are in each page's <head>, at the font
+   files' versioned names (xtask/src/pages/site_assets.rs). */
 
 /* ============================================================
    Base: the page, text and links

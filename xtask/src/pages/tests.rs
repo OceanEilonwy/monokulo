@@ -321,7 +321,7 @@ impl Fixture {
         let out = self.path("site/testing");
         let mut all = vec!["--out", out.as_str()];
         all.extend_from_slice(args);
-        assert!(build(&crate::root(), &all).unwrap().succeeded());
+        assert!(build(&all).unwrap().succeeded());
     }
 
     fn page(&self, name: &str) -> String {
@@ -645,14 +645,8 @@ fn missing_inputs_leave_their_sections_out_but_still_build_the_front_page() {
     assert!(!page.contains("class=\"tabs\""));
     let badge: serde_json::Value = read_json(&f.out().join("badge.json")).unwrap();
     assert_eq!(badge["message"], "unknown");
-    for asset in [
-        "theme.css",
-        "styles.css",
-        "coverage.js",
-        "manrope-500.woff2",
-    ] {
-        assert!(f.out().join("assets").join(asset).is_file(), "{asset}");
-    }
+    let linked = super::site_assets::assert_links_published(&page, &f.out().join("assets"));
+    assert!(linked.contains(&"styles.css") && linked.contains(&"manrope-500.woff2"));
     // Fuzzing alone still gets the front page, which says what it lacks.
     f.build(&["--fuzz", &f.path("runs")]);
     assert_eq!(page_names(&f.out()), ["fuzzing.html", "index.html"]);
@@ -716,7 +710,9 @@ fn only_the_pages_with_filters_load_the_script() {
     let f = Fixture::new();
     f.build(&["--coverage", &f.path("coverage")]);
     for name in page_names(&f.out()) {
-        let loads = f.page(&name).contains("assets/coverage.js");
+        let loads =
+            super::site_assets::assert_links_published(&f.page(&name), &f.out().join("assets"))
+                .contains(&"coverage.js");
         assert_eq!(
             loads,
             name == "tests.html" || name == "screens.html",
@@ -749,11 +745,8 @@ fn manifest_paths_cannot_reach_outside_the_artifact() {
     shots[0]["image"] = "../../outside.html".into();
     put_json(&manifest, &shots);
     let out = f.path("site/testing");
-    let error = build(
-        &crate::root(),
-        &["--out", &out, "--coverage", &f.path("coverage")],
-    )
-    .expect_err("a screenshot outside the artifact is refused");
+    let error = build(&["--out", &out, "--coverage", &f.path("coverage")])
+        .expect_err("a screenshot outside the artifact is refused");
     assert!(
         error.to_string().contains("outside the screenshots folder"),
         "{error}"
