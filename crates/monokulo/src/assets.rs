@@ -22,101 +22,8 @@ use axum::extract::Path;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-/// Whether a file's URL carries its digest.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Policy {
-    /// Linked by the pages at a URL carrying its digest: kept for a year.
-    Fingerprinted,
-    /// Linked by others at its bare name, so that name is theirs to keep:
-    /// checked with the server on every use. A check costs one round trip
-    /// and no body (`304`), which is what matters over Tor.
-    Public,
-}
-
-pub struct Asset {
-    /// The file's name under `static/` (or in the build's `OUT_DIR`), with
-    /// its extension: what the views ask for.
-    pub name: &'static str,
-    pub content_type: &'static str,
-    pub bytes: &'static [u8],
-    /// Sixteen hex characters naming this version of the file: FNV-1a of
-    /// its bytes, computed when the binary was built. A version label, not
-    /// an integrity check.
-    pub digest: &'static str,
-    pub policy: Policy,
-}
-
-/// FNV-1a over `bytes`, at compile time.
-pub const fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut i = 0;
-    while i < bytes.len() {
-        hash ^= bytes[i] as u64;
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        i += 1;
-    }
-    hash
-}
-
-/// `x` as sixteen lowercase hex characters, at compile time.
-pub const fn hex16(x: u64) -> [u8; 16] {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut out = [0u8; 16];
-    let mut i = 0;
-    while i < 16 {
-        out[i] = DIGITS[((x >> (60 - 4 * i)) & 0xf) as usize];
-        i += 1;
-    }
-    out
-}
-
-const JS: &str = "text/javascript; charset=utf-8";
-const CSS: &str = "text/css; charset=utf-8";
-const SVG: &str = "image/svg+xml";
-const PNG: &str = "image/png";
-const WOFF2: &str = "font/woff2";
-const WASM: &str = "application/wasm";
-
-/// One file of the table: its bytes and their digest, both baked in.
-///
-/// - `asset!("name.ext", TYPE)`: a file under `static/`, fingerprinted.
-/// - `asset!(built "name.ext", "/path/in/out-dir", TYPE)`: a file the build
-///   script makes (`build.rs`), fingerprinted.
-/// - `asset!(text "name.ext", TEXT, TYPE)`: a file another module holds
-///   as a string (the stylesheets, which `views` tests read), fingerprinted.
-/// - `asset!(public "name.ext", TYPE)`: a file under `static/` whose bare
-///   name others link.
-macro_rules! asset {
-    ($name:literal, $content_type:expr) => {
-        asset!(@entry $name, include_bytes!(concat!("../static/", $name)), $content_type, Policy::Fingerprinted)
-    };
-    (text $name:literal, $text:expr, $content_type:expr) => {
-        asset!(@entry $name, $text.as_bytes(), $content_type, Policy::Fingerprinted)
-    };
-    (built $name:literal, $path:literal, $content_type:expr) => {
-        asset!(@entry $name, include_bytes!(concat!(env!("OUT_DIR"), $path)), $content_type, Policy::Fingerprinted)
-    };
-    (public $name:literal, $content_type:expr) => {
-        asset!(@entry $name, include_bytes!(concat!("../static/", $name)), $content_type, Policy::Public)
-    };
-    (@entry $name:literal, $bytes:expr, $content_type:expr, $policy:expr) => {{
-        const BYTES: &[u8] = $bytes;
-        // The POS bundle and the WebAssembly modules run to a megabyte.
-        #[allow(long_running_const_eval)]
-        const HEX: [u8; 16] = hex16(fnv1a64(BYTES));
-        const DIGEST: &str = match ::core::str::from_utf8(&HEX) {
-            Ok(digest) => digest,
-            Err(_) => panic!("hex is ASCII"),
-        };
-        Asset {
-            name: $name,
-            content_type: $content_type,
-            bytes: BYTES,
-            digest: DIGEST,
-            policy: $policy,
-        }
-    }};
-}
+use static_assets::{asset, CSS, JS, PNG, SVG, WASM, WOFF2};
+pub use static_assets::{Asset, Policy};
 
 pub static ASSETS: &[Asset] = &[
     // -- The pages' own scripts and styles --------------------------------
@@ -190,23 +97,14 @@ const REVALIDATE: &str = "no-cache";
 
 /// The asset called `name`, if there is one.
 pub fn find(name: &str) -> Option<&'static Asset> {
-    ASSETS.iter().find(|asset| asset.name == name)
+    static_assets::find(ASSETS, name)
 }
 
 /// The URL a page links the asset called `name` at: with its digest, if
 /// it's fingerprinted. A name that isn't an asset's is a mistake in the
 /// view, caught by any test that renders it.
 pub fn url(name: &str) -> String {
-    let asset = find(name).unwrap_or_else(|| panic!("no static asset is called {name}"));
-    match asset.policy {
-        Policy::Fingerprinted => {
-            let (stem, extension) = name
-                .rsplit_once('.')
-                .expect("an asset's name has an extension");
-            format!("/static/{stem}.{}.{extension}", asset.digest)
-        }
-        Policy::Public => format!("/static/{name}"),
-    }
+    format!("/static/{}", static_assets::named(ASSETS, name).file_name())
 }
 
 /// `GET /static/{*file}`: the asset `file` names, by its name or by its
@@ -239,8 +137,7 @@ fn resolve(file: &str) -> Option<(&'static Asset, bool)> {
 /// The asset called `name`, as a fixed route serves it (the embed library
 /// has one, for its CORS headers).
 pub fn respond_named(headers: &HeaderMap, name: &str) -> Response {
-    let asset = find(name).unwrap_or_else(|| panic!("no static asset is called {name}"));
-    respond(headers, asset, REVALIDATE)
+    respond(headers, static_assets::named(ASSETS, name), REVALIDATE)
 }
 
 /// The asset, with `Cache-Control` and an `ETag` of its content: a browser
@@ -275,13 +172,12 @@ mod tests {
 
     #[test]
     fn the_digest_is_computed_at_build_time_from_the_bytes() {
-        const HEX: [u8; 16] = hex16(fnv1a64(b"hello"));
-        assert_eq!(std::str::from_utf8(&HEX).unwrap(), "a430d84680aabd0b");
-        assert_eq!(hex16(0), *b"0000000000000000");
         let asset = find("fx-glue.js").unwrap();
+        assert_eq!(asset.bytes, include_bytes!("../static/fx-glue.js"));
         assert_eq!(
             asset.digest,
-            std::str::from_utf8(&hex16(fnv1a64(asset.bytes))).unwrap()
+            std::str::from_utf8(&static_assets::hex16(static_assets::fnv1a64(asset.bytes)))
+                .unwrap()
         );
     }
 

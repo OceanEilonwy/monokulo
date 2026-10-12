@@ -72,6 +72,8 @@ clap = "4.6.7"
 key-custody = { path = "../key-custody", default-features = false }
 # Every shortened identifier's text (`views::short_id`).
 short-id = { path = "../short-id" }
+# Every file the pages link, baked in and named by its content (`assets`).
+static-assets = { path = "../static-assets" }
 
 [build-dependencies]
 # Not used by the build script's own code: it builds this crate for

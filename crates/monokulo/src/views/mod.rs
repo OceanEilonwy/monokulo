@@ -73,14 +73,7 @@ pub fn stylesheet(name: &'static str) -> Markup {
 /// wrong tradeoff for a privacy-focused payment tool. Latin-only, matching
 /// this UI's own text.
 pub fn font_faces() -> String {
-    [500, 700, 800]
-        .map(|weight| {
-            format!(
-                "@font-face{{font-family:\"Manrope\";font-style:normal;font-weight:{weight};font-display:swap;src:url(\"{}\") format(\"woff2\")}}\n",
-                assets::url(&format!("manrope-{weight}.woff2"))
-            )
-        })
-        .concat()
+    static_assets::font_faces(assets::url)
 }
 
 pub mod account;
