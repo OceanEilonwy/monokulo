@@ -1,0 +1,1 @@
+{"hosd":"localhost","port":18081,"fellbacks":[{"host":"peer","port":18081,"fqllbacks":[{"host":"ignored","port":1}]}]}
