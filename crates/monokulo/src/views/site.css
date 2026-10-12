@@ -262,9 +262,12 @@ html.js .toast-error { animation: toast-in 0.22s ease-out; }
 .node-row-mark:empty { display: none; }
 .node-row-body { padding: var(--space-xs) var(--space-md) var(--space-sm); }
 .node-row .setting-field input[type="text"] { width: 100%; }
-.node-row.is-dragging { opacity: 0.45; }
-.node-row.is-drop-before { box-shadow: 0 -3px 0 0 var(--card-changed); }
-.node-row.is-drop-after { box-shadow: 0 3px 0 0 var(--card-changed); }
+/* A dragged row follows the pointer, lifted with the popups' shadow; the
+   rows it passes slide out of its way (static/admin-settings.js). */
+.node-row { transition: transform 0.15s ease; }
+.node-row.is-dragging { position: relative; z-index: 2; transition: none; box-shadow: 0 8px 24px var(--popup-shadow); }
+.node-row.is-dragging .node-handle { cursor: grabbing; }
+@media (prefers-reduced-motion: reduce) { .node-row { transition: none; } }
 .node-status { margin: var(--space-xs) 0; color: var(--muted); }
 .node-status.is-problem { color: var(--error); }
 .node-row-actions button { margin-top: var(--space-xs); }

@@ -113,7 +113,18 @@ for (const javaScript of [true, false]) {
         await openNodes(page, 'testnet');
         await expect(page.locator('#settings-panel button[name="node_action"][value="up:testnet:1"]')).toBeHidden();
         const testnet = page.locator('#card-network-testnet');
-        await testnet.locator('[data-node-row="1"] [data-node-handle]').dragTo(testnet.locator('[data-node-row="0"] > summary'), { targetPosition: { x: 200, y: 2 } });
+        // The rows reorder while the handle is still held, not on release.
+        const handle = await testnet.locator('[data-node-row="1"] [data-node-handle]').boundingBox();
+        const primary = await testnet.locator('[data-node-row="0"] > summary').boundingBox();
+        if (!handle || !primary) throw new Error('node rows not laid out');
+        await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(handle.x + handle.width / 2, primary.y + 2, { steps: 8 });
+        await expect(testnet.locator('.node-row-address').first()).toHaveText(b);
+        await expect(testnet.locator('[data-node-place]').first()).toHaveText('Primary');
+        await expect(testnet.locator('.node-row.is-dragging [data-node-place]')).toHaveText('Primary');
+        await page.mouse.up();
+        await expect(testnet.locator('.node-row.is-dragging')).toHaveCount(0);
         await expect(testnet.locator('[data-node-place]').first()).toHaveText('Primary');
         await expect(testnet.locator('.node-row-address').first()).toHaveText(b);
         await expect(page.locator('#save-bar')).toContainText('1 unsaved change in Testnet');
