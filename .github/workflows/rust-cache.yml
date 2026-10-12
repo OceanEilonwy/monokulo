@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   dev:
-    name: Build the Rust tests
+    name: build the rust tests
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

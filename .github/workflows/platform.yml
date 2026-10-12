@@ -43,7 +43,7 @@ jobs:
   # differently. A coverage run keeps a cache a suite, as its builds differ.
   # rust-cache.yml builds the Linux one again on each new nightly.
   rust:
-    name: Rust tests
+    name: rust tests
     runs-on: ${{ format('{0}-latest', inputs.platform == 'linux' && 'ubuntu' || inputs.platform) }}
     # Enough for a cold cache on every platform: Windows took 58 minutes and
     # macOS 31 (22 of them building). A limit that stops a cold run while it
@@ -148,7 +148,7 @@ jobs:
           if-no-files-found: ignore
 
   browser:
-    name: Browser tests
+    name: browser tests
     if: inputs.platform == 'linux'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -224,7 +224,7 @@ jobs:
         run: test '${{ steps.tests.outcome }}' = success
 
   woocommerce:
-    name: WooCommerce tests
+    name: woocommerce tests
     if: inputs.platform == 'linux'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -291,7 +291,7 @@ jobs:
   stress:
     # The engine's one-CPU scanner capacity sweep and fault recovery. With
     # coverage, its report joins the coverage artifact.
-    name: Engine progress tests
+    name: engine progress tests
     if: inputs.platform == 'linux'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -325,7 +325,7 @@ jobs:
   scale:
     # Every scale scenario, the ignored large fixtures included, one test at
     # a time (`cargo xtask engine scale`), at 32 cases and a seed per run.
-    name: Engine scale tests
+    name: engine scale tests
     # Instrumenting it would add nothing: Coverage runs on main after the
     # plain Linux run already ran it.
     if: inputs.platform == 'linux' && !inputs.coverage
@@ -359,7 +359,7 @@ jobs:
     # Passes only when every suite did (a suite this platform doesn't run is
     # skipped). With coverage, also the one artifact and index from the
     # collectors, checked as `cargo xtask coverage all` checks a local run.
-    name: Summary
+    name: summary
     needs: [rust, browser, woocommerce, stress, scale]
     if: always()
     runs-on: ubuntu-latest

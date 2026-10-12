@@ -37,7 +37,7 @@ jobs:
     # This run's scale page, with every other part of the site as it is
     # live (pages.yml). On main only; a run that didn't finish shows nothing
     # new.
-    name: Pages
+    name: pages
     needs: measurements
     if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success", "failure"]'), needs.measurements.result)
     permissions:

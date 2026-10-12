@@ -5,7 +5,7 @@ name: checks
 # A manual run (Actions > checks > Run workflow) can test any branch on
 # other platforms, or with coverage.
 #
-# Required checks: lint / rustfmt and clippy, and linux / Summary.
+# Required checks: lint / rustfmt and clippy, and linux / summary.
 
 on:
   # Every PR, including documentation changes: path-filtered workflows would
