@@ -3469,7 +3469,7 @@ mod tests {
         let module = router
             .oneshot(
                 Request::builder()
-                    .uri("/static/key-custody.wasm")
+                    .uri(crate::assets::url("key-custody.wasm"))
                     .body(Body::empty())
                     .unwrap(),
             )

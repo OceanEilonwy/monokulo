@@ -66,10 +66,10 @@ pub fn clean_name(raw: &str) -> Result<Option<String>, String> {
 /// one tab of the backup screen.
 pub struct WalletApp {
     /// The key a backup is recorded under (`wallets.backup`), and the
-    /// suffix of its logo (`/static/wallet-logos/{key}.png`).
+    /// name of its logo (the asset `wallet-logos/{key}.png`).
     pub key: &'static str,
     pub name: &'static str,
-    /// What its tab says, after these logos (`/static/wallet-logos/`).
+    /// What its tab says, after these logos (the `wallet-logos/` assets).
     pub tab: &'static str,
     pub logos: &'static [&'static str],
     /// The heading over the phrase on its tab.

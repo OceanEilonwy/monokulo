@@ -3,7 +3,7 @@
 //
 // A form with a key custody box (data-key-custody-bundle) is caught as it is
 // submitted, before anything else sees it: key custody's own checker, built
-// as WebAssembly (/static/key-custody.wasm), verifies the engine's bundle
+// as WebAssembly (key-custody.wasm), verifies the engine's bundle
 // (AMD's signatures, the engine image, the key it vouches for) and encrypts
 // the typed keys to it. The encrypted keys go in the form's encrypted_keys
 // field, the typed ones are cleared, and the form is sent on as usual.
@@ -15,7 +15,7 @@
   window.monokuloKeyCustody = true;
   // Where the page says the module is (its URL carries the file's
   // version), read now: currentScript is only set while this runs.
-  const MODULE_URL = (document.currentScript && document.currentScript.dataset.module) || '/static/key-custody.wasm';
+  const MODULE_URL = document.currentScript.dataset.module;
 
   let loading;
   // The module, instantiated once. Its only import is randomness.

@@ -16,7 +16,7 @@
   'use strict';
   // Where the page says the module is (its URL carries the file's
   // version), read now: currentScript is only set while this runs.
-  const MODULE_URL = (document.currentScript && document.currentScript.dataset.module) || '/static/wallet-setup.wasm';
+  const MODULE_URL = document.currentScript.dataset.module;
   // How long the check waits before it lets you go on without answering.
   const CHECK_SECONDS = 20;
 

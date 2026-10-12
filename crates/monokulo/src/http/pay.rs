@@ -591,7 +591,11 @@ mod tests {
         }
         // checkout.js loads the QR decoder; the POS loads its app and styles.
         referenced.extend(
-            ["jsQR.js", "pos-app.js", "pos-app.css", "monokulo-client.js"].map(String::from),
+            ["jsQR.js", "pos-app.js", "pos-app.css", "monokulo-client.js"].map(|name| {
+                crate::assets::url(name)
+                    .trim_start_matches("/static/")
+                    .to_string()
+            }),
         );
         assert!(
             referenced.iter().any(|name| name.ends_with(".woff2")),
@@ -2072,10 +2076,13 @@ mod tests {
             "expected mount() to poll the status endpoint directly, got: {js}"
         );
         assert!(js.contains("options.refund === false"));
-        for asset in ["/static/checkout.js", "/static/jsQR.js"] {
+        for asset in [
+            crate::assets::url("checkout.js"),
+            crate::assets::url("jsQR.js"),
+        ] {
             let response = router
                 .clone()
-                .oneshot(Request::builder().uri(asset).body(Body::empty()).unwrap())
+                .oneshot(Request::builder().uri(&asset).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK, "{asset}");

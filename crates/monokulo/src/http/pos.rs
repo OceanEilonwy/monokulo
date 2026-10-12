@@ -1337,19 +1337,19 @@ mod tests {
         let router = build_router(state);
         for (path, mime, marker) in [
             (
-                "/static/pos-app.js",
+                crate::assets::url("pos-app.js"),
                 "text/javascript; charset=utf-8",
                 "pos-root",
             ),
             (
-                "/static/pos-app.css",
+                crate::assets::url("pos-app.css"),
                 "text/css; charset=utf-8",
                 ".pos-stack-card",
             ),
         ] {
             let response = router
                 .clone()
-                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .oneshot(Request::builder().uri(&path).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK);

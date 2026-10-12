@@ -2212,7 +2212,7 @@ async fn browser_reports_are_accepted_up_to_a_small_size_and_only_the_sites_own_
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/static/telemetry.js")
+                .uri(crate::assets::url("telemetry.js"))
                 .body(Body::empty())
                 .unwrap(),
         )
