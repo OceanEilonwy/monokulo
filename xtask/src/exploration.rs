@@ -927,7 +927,9 @@ pub(crate) fn fuzz(root: &Path, args: &[&str], tools: &Tools) -> io::Result<Exit
         _ => return Err(usage()),
     };
     let limits = limits(target).ok_or_else(usage)?;
-    let seconds = match seconds {
+    // An empty budget is the target's own: scheduled workflow runs have no
+    // inputs, so they pass the seconds argument as "".
+    let seconds = match seconds.filter(|s| !s.is_empty()) {
         None => limits.seconds,
         Some(s) => s.parse().ok().filter(|s| *s > 0).ok_or_else(|| {
             io::Error::new(
@@ -1602,6 +1604,16 @@ mod tests {
                 !replay.exists(),
                 "no replay settings without every tool's version"
             );
+        }
+
+        #[test]
+        fn a_scheduled_run_with_empty_seconds_and_features_takes_the_defaults() {
+            let repo = Repo::new("exploration-scheduled");
+            let exit = fuzz(repo.scratch.path(), &["status", "", ""], &repo.tools).unwrap();
+            assert_eq!(exit, Exit::SUCCESS);
+            let replay = repo.reports()[0].with_file_name("replay.json");
+            let replay: Value = read_json(&replay).unwrap();
+            assert_eq!(replay["settings"]["seconds"], 300);
         }
 
         #[test]
