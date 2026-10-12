@@ -105,14 +105,14 @@ runs:
       uses: actions/cache@v6
       with:
         path: ${{ runner.temp }}/sccache
-        key: sccache-${{ runner.os }}-dev-${{ steps.sccache.outputs.rustc }}-${{ github.run_id }}.${{ github.run_attempt }}
-        restore-keys: sccache-${{ runner.os }}-dev-${{ steps.sccache.outputs.rustc }}-
+        key: sccache-linux-dev-${{ steps.sccache.outputs.rustc }}-${{ github.run_id }}.${{ github.run_attempt }}
+        restore-keys: sccache-linux-dev-${{ steps.sccache.outputs.rustc }}-
     - if: steps.sccache.outcome == 'success' && !(github.ref == 'refs/heads/main' && inputs.save == 'true')
       uses: actions/cache/restore@v6
       with:
         path: ${{ runner.temp }}/sccache
-        key: sccache-${{ runner.os }}-dev-${{ steps.sccache.outputs.rustc }}-
-        restore-keys: sccache-${{ runner.os }}-dev-${{ steps.sccache.outputs.rustc }}-
+        key: sccache-linux-dev-${{ steps.sccache.outputs.rustc }}-
+        restore-keys: sccache-linux-dev-${{ steps.sccache.outputs.rustc }}-
     - if: inputs.cache == 'true'
       uses: Swatinem/rust-cache@v2
       with:
