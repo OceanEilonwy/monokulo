@@ -69,12 +69,6 @@ runs:
         echo CARGO_PROFILE_DEV_OPT_LEVEL=3 >> "$GITHUB_ENV"
         echo CARGO_PROFILE_DEV_DEBUG=line-tables-only >> "$GITHUB_ENV"
         echo CARGO_TERM_COLOR=always >> "$GITHUB_ENV"
-    # The runner's OS in lower case for the cache keys we name (sccache
-    # here, Playwright's browsers in platform.yml and live-network.yml):
-    # expressions have no lower-case function.
-    - name: Name the OS for cache keys
-      shell: bash
-      run: echo "CACHE_OS=$(echo "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
     - uses: dtolnay/rust-toolchain@nightly
       with:
         components: ${{ inputs.components }}
@@ -111,14 +105,14 @@ runs:
       uses: actions/cache@v6
       with:
         path: ${{ runner.temp }}/sccache
-        key: sccache-${{ env.CACHE_OS }}-dev-${{ steps.sccache.outputs.rustc }}-${{ github.run_id }}.${{ github.run_attempt }}
-        restore-keys: sccache-${{ env.CACHE_OS }}-dev-${{ steps.sccache.outputs.rustc }}-
+        key: sccache-${{ runner.os }}-dev-${{ steps.sccache.outputs.rustc }}-${{ github.run_id }}.${{ github.run_attempt }}
+        restore-keys: sccache-${{ runner.os }}-dev-${{ steps.sccache.outputs.rustc }}-
     - if: steps.sccache.outcome == 'success' && !(github.ref == 'refs/heads/main' && inputs.save == 'true')
       uses: actions/cache/restore@v6
       with:
         path: ${{ runner.temp }}/sccache
-        key: sccache-${{ env.CACHE_OS }}-dev-${{ steps.sccache.outputs.rustc }}-
-        restore-keys: sccache-${{ env.CACHE_OS }}-dev-${{ steps.sccache.outputs.rustc }}-
+        key: sccache-${{ runner.os }}-dev-${{ steps.sccache.outputs.rustc }}-
+        restore-keys: sccache-${{ runner.os }}-dev-${{ steps.sccache.outputs.rustc }}-
     - if: inputs.cache == 'true'
       uses: Swatinem/rust-cache@v2
       with:
