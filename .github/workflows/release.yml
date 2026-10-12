@@ -95,9 +95,9 @@ jobs:
           # RandomX links and nearly every Windows machine has.
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
-    # Without a Rust cache: a cached build took up to 15 minutes (macOS
-    # Intel) and Windows is the slowest to build cold.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 90 || 60 }}
+    # One limit for every platform, enough for the slowest (Windows) to
+    # build without a Rust cache.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
