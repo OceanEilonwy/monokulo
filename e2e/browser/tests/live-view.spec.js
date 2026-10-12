@@ -221,10 +221,13 @@ test('the chain strip shows more blocks when wider, never wider blocks', async (
   const counts = [];
   for (const width of [1280, 1024, 800, 390]) {
     await page.setViewportSize({ width, height: 900 });
-    // The script fits the strip again once it has been resized.
+    // The script fits the strip again once it has been resized. Until then
+    // the cells that no longer fit wrap onto a second, hidden line (the
+    // strip clips it), so wait for every cell to be back on one line
+    // inside it.
     await expect.poll(async () => {
-      const { left, cells } = await stripCells(page);
-      return cells.every((c) => c.left >= left - 0.5);
+      const { left, right, cells } = await stripCells(page);
+      return cells.every((c) => c.left >= left - 0.5 && c.right <= right + 0.5 && Math.abs(c.top - cells[0].top) < 8);
     }).toBe(true);
     const { left, right, cells } = await stripCells(page);
     const top = cells[0].top;
