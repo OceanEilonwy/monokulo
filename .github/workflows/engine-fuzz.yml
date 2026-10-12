@@ -47,13 +47,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz@0.13.2
-      - uses: actions/cache@v6
-        with:
-          path: fuzz/corpus
-          key: engine-fuzz-${{ matrix.target }}-${{ matrix.features }}-${{ github.run_id }}
-          restore-keys: engine-fuzz-${{ matrix.target }}-${{ matrix.features }}-
       - name: Restore the saved corpus
-        # The cache can be evicted; the ci/fuzz branch is the durable copy.
+        # From the ci/fuzz branch, which save-corpus adds every run's finds to.
         run: .github/scripts/restore-fuzz-corpus.sh "$FUZZ_TARGET"
       - name: Record replay settings
         run: |

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Seeds fuzz/corpus/<target> from the ci/fuzz branch, so a campaign starts
-# from the saved corpus when the Actions cache has been evicted.
+# from the saved corpus.
 # Usage: restore-fuzz-corpus.sh <target>
 set -euo pipefail
 

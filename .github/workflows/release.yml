@@ -49,9 +49,6 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   lint:
     name: lint
@@ -98,7 +95,9 @@ jobs:
           # RandomX links and nearly every Windows machine has.
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 30 }}
+    # Without a Rust cache: a cached build took up to 15 minutes (macOS
+    # Intel) and Windows is the slowest to build cold.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 90 || 60 }}
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
@@ -278,8 +277,8 @@ jobs:
 
   pages:
     # The landing page, apk repository and coverage report from this run, on
-    # the commit it tested, with the property, fuzz and scale pages as they
-    # are live (pages.yml).
+    # the commit it tested, with the property, fuzz, scale and live-network
+    # pages as they are live (pages.yml).
     name: Pages
     needs: [lint, coverage, openwrt]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -303,9 +302,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+      # The version's zips only: monokulo-* also matches the OpenWrt package
+      # artifacts (monokulo-openwrt-*).
       - uses: actions/download-artifact@v8
         with:
-          pattern: monokulo-*
+          pattern: monokulo-[0-9]*
           path: dist
           merge-multiple: true
       # Never removed once released: every monokulo of this version links
