@@ -47,8 +47,10 @@ jobs:
     name: Rust tests
     runs-on: ${{ format('{0}-latest', inputs.platform == 'linux' && 'ubuntu' || inputs.platform) }}
     # Windows runners build and run the workspace's tests several times as
-    # slowly: a cold-cache run took 58 minutes.
-    timeout-minutes: ${{ inputs.platform == 'windows' && 90 || 30 }}
+    # slowly: a cold-cache run took 58 minutes. A cold-cache macOS run took
+    # 31 (22 of them building), so 30 stopped it while saving the cache it
+    # needed to be faster next time.
+    timeout-minutes: ${{ inputs.platform == 'windows' && 90 || inputs.platform == 'macos' && 60 || 30 }}
     steps:
       - uses: actions/checkout@v7
       # The engine's property tests make, reopen and delete thousands of
