@@ -212,7 +212,8 @@ jobs:
             !target/coverage/browser/raw
           if-no-files-found: warn
       - name: Upload the Playwright report
-        if: failure() && !inputs.coverage
+        # Run tests continues on error, so failure() stays false here.
+        if: always() && steps.tests.outcome == 'failure' && !inputs.coverage
         uses: actions/upload-artifact@v7
         with:
           name: browser-tests-${{ github.sha }}

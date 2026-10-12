@@ -206,7 +206,7 @@ impl Store {
     }
 
     /// Every event in the log, oldest first: for tests.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-support", feature = "fuzzing"))]
     pub fn order_events_for_test(&self) -> Result<Vec<OrderEvent>> {
         self.order_events_after(0, usize::MAX >> 1)
     }

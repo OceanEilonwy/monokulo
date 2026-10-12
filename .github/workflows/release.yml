@@ -345,9 +345,11 @@ jobs:
       TAG: latest-main
     steps:
       - uses: actions/checkout@v7
+      # Only main's own zips: monokulo-* also matches the OpenWrt package
+      # artifacts, whose assets/ directory `gh release upload dist/*` refuses.
       - uses: actions/download-artifact@v8
         with:
-          pattern: monokulo-*
+          pattern: monokulo-main-*
           path: dist
           merge-multiple: true
       - uses: actions/download-artifact@v8

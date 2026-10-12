@@ -43,6 +43,17 @@ max-threads = 1
 filter = 'test(/(^|::)live_stagenet_/)'
 test-group = 'stagenet'
 
+# The live_node tests (daemon_rpc) all ask one node, which drops connections
+# past its per-address limit (monerod's rpc-max-connections-per-public-ip);
+# fourteen started at once lost one to "error sending request". Each takes
+# about a second, so they take turns too.
+[test-groups.live-node]
+max-threads = 1
+
+[[profile.live.overrides]]
+filter = 'test(/(^|::)live_node_/)'
+test-group = 'live-node'
+
 # Process-level watchdogs also catch blocking loops that Tokio cannot cancel.
 [profile.default]
 slow-timeout = { period = "120s", terminate-after = 10 }
