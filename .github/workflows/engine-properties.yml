@@ -33,19 +33,21 @@ jobs:
       matrix:
         features: ['']
     env:
-      RUSTUP_TOOLCHAIN: nightly-2026-10-02
-      CARGO_TERM_COLOR: always
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
       PROPTEST_CASES: ${{ inputs.cases || '512' }}
       ENGINE_PROOF_CASES: ${{ inputs.proof_cases || '32' }}
       # A different reproducible seed for each scheduled/manual run.
       PROPTEST_RNG_SEED: ${{ github.run_id }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@master
+      # The Rust tests job's toolchain, profile and cache (platform.yml): the
+      # properties are engine and key-custody unit tests, which that job
+      # builds too. Restore only; a cache of this job's own was the first to
+      # go when the repository passed GitHub's 10 GB.
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: nightly-2026-10-02
-      - uses: Swatinem/rust-cache@v2
+          shared-key: dev
+          save: 'false'
+          pos-app: 'false'
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest

@@ -369,9 +369,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         if: inputs.coverage
+      # Builds only xtask, which the Rust tests job's cache holds.
       - uses: ./.github/actions/setup-rust
         if: inputs.coverage
         with:
+          shared-key: dev
+          save: 'false'
           pos-app: 'false'
       - uses: actions/download-artifact@v8
         if: inputs.coverage

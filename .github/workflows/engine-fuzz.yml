@@ -73,8 +73,6 @@ jobs:
           if-no-files-found: ignore
 
   interleavings:
-    env:
-      RUSTUP_TOOLCHAIN: nightly-2026-10-02
     name: exhaustive serialized effect orders (${{ matrix.features || 'default' }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -84,17 +82,20 @@ jobs:
         features: ['']
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@master
+      # A plain test build, unlike the fuzz targets' instrumented release
+      # one, so it starts from the Rust tests job's cache (platform.yml):
+      # building into the main workspace's target directory reuses the
+      # dependencies that job built.
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: nightly-2026-10-02
           components: rust-src
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: fuzz -> target
+          shared-key: dev
+          save: 'false'
+          pos-app: 'false'
       - name: Enumerate serialized completion orders
         env:
           FUZZ_FEATURES: ${{ matrix.features }}
-        run: cargo test --manifest-path fuzz/Cargo.toml --locked --features "$FUZZ_FEATURES" --test interleavings
+        run: cargo test --manifest-path fuzz/Cargo.toml --target-dir target --locked --features "$FUZZ_FEATURES" --test interleavings
 
   save-corpus:
     # One job writes ci/fuzz, so the nine targets don't race each other.
