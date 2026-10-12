@@ -37,6 +37,8 @@
   var leavingTo = null;
   var goAfterSave = null;
   var submitting = false;
+  var savingButton = null;
+  var saveLabel = "";
   // The page is being loaded again (Discard on a card a save refused): no
   // "leave the page?" question.
   var reloading = false;
@@ -354,16 +356,40 @@
 
   // ---- saving -----------------------------------------------------------
 
+  function setSubmitting(active) {
+    submitting = active;
+    if (savingButton) {
+      savingButton.disabled = false;
+      savingButton.removeAttribute("aria-busy");
+      savingButton.textContent = saveLabel;
+      savingButton = null;
+    }
+    if (active) {
+      savingButton = bar() && bar().querySelector("[data-save]");
+      if (savingButton) {
+        saveLabel = savingButton.textContent;
+        savingButton.disabled = true;
+        savingButton.setAttribute("aria-busy", "true");
+        savingButton.textContent = "Saving…";
+      }
+    }
+  }
+
   // Before fixi (capture), but after a page's own scripts' capture
   // listeners, which load first: a save one of them held back (a
   // confirm(), a question first) isn't counted as sent.
   document.addEventListener("submit", function (event) {
     if (event.target !== form()) return;
+    if (submitting) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
     if (event.defaultPrevented) {
       goAfterSave = null;
       return;
     }
-    submitting = true;
+    setSubmitting(true);
   }, true);
 
   window.addEventListener("beforeunload", function (event) {
@@ -383,7 +409,7 @@
     if (!panel || event.target !== panel) return;
     var response = event.detail && event.detail.cfg && event.detail.cfg.response;
     if (response && (response.ok || response.status === 422)) return;
-    submitting = false;
+    setSubmitting(false);
     goAfterSave = null;
   });
 
@@ -392,7 +418,7 @@
   function settle() {
     var host = settingsForm();
     if (!host) return;
-    submitting = false;
+    setSubmitting(false);
     touched = false;
     leavingTo = null;
     lastCount = -1;
@@ -422,6 +448,11 @@
       if (!failed.length && !(box && box.classList.contains("is-failed"))) go(href);
     }
   }
+
+  // A plain POST may return to this page through the browser's back cache.
+  window.addEventListener("pageshow", function (event) {
+    if (event.persisted) setSubmitting(false);
+  });
 
   // Elements: each upgrades once the page is parsed (this script is
   // deferred) or as fixi swaps it in. A form settles a task later, once
