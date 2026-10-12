@@ -943,7 +943,7 @@ mod tests {
         );
         let script = router
             .clone()
-            .oneshot(get("/static/challenge.js", peer))
+            .oneshot(get(&crate::assets::url("challenge.js"), peer))
             .await
             .unwrap();
         assert_eq!(script.status(), StatusCode::OK);

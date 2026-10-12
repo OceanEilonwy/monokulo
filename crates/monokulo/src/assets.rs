@@ -6,11 +6,11 @@
 //! file by its name (`views::script`, `views::stylesheet`, [`url`]) and
 //! gets a URL carrying that digest, `/static/logo.3f9a1c2b4d5e6f70.svg`,
 //! which a browser may keep for a year: a new release's pages link new
-//! URLs. A known name asked for without its digest, or with an old one (a
-//! page cached from an older release, an older script), gets the current
-//! file, checked with the server on every use; never a 404. The one file
-//! others link by a fixed name, the embed library, is `public`: linked bare
-//! and checked on every use.
+//! URLs. Only that URL is served: a fingerprinted file's bare name, or an
+//! old digest, is a 404. The one file others link by a fixed name, the
+//! embed library, is `public`: linked bare and checked on every use. The
+//! digest and the naming are `static_assets`', shared with the GitHub Pages
+//! site.
 //!
 //! Everything is served from this binary rather than a CDN, so a
 //! self-hoster's pages have no third-party dependency in the payment path,
@@ -107,31 +107,18 @@ pub fn url(name: &str) -> String {
     format!("/static/{}", static_assets::named(ASSETS, name).file_name())
 }
 
-/// `GET /static/{*file}`: the asset `file` names, by its name or by its
-/// name with a digest in it.
+/// `GET /static/{*file}`: the asset published as `file`, its URL's last
+/// part. A fingerprinted file is kept for a year; a public one is checked
+/// on every use.
 pub async fn serve(headers: HeaderMap, Path(file): Path<String>) -> Response {
-    let Some((asset, current)) = resolve(&file) else {
+    let Some(asset) = static_assets::published(ASSETS, &file) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    respond(
-        &headers,
-        asset,
-        if current { IMMUTABLE } else { REVALIDATE },
-    )
-}
-
-/// The asset `file` names, and whether `file` carries its current digest.
-fn resolve(file: &str) -> Option<(&'static Asset, bool)> {
-    if let Some(asset) = find(file) {
-        return Some((asset, false));
-    }
-    let (stem, extension) = file.rsplit_once('.')?;
-    let (stem, digest) = stem.rsplit_once('.')?;
-    let asset = find(&format!("{stem}.{extension}"))?;
-    Some((
-        asset,
-        asset.policy == Policy::Fingerprinted && asset.digest == digest,
-    ))
+    let cache_control = match asset.policy {
+        Policy::Fingerprinted => IMMUTABLE,
+        Policy::Public => REVALIDATE,
+    };
+    respond(&headers, asset, cache_control)
 }
 
 /// The asset called `name`, as a fixed route serves it (the embed library
@@ -182,13 +169,13 @@ mod tests {
     }
 
     #[test]
-    fn every_name_links_to_a_url_the_route_serves_as_current() {
+    fn every_name_links_to_a_url_the_route_serves() {
         for asset in ASSETS {
             let linked = url(asset.name);
             let file = linked.strip_prefix("/static/").unwrap();
-            let (found, current) = resolve(file).unwrap_or_else(|| panic!("{linked}"));
-            assert_eq!(found.name, asset.name);
-            assert_eq!(current, asset.policy == Policy::Fingerprinted, "{linked}");
+            let found =
+                static_assets::published(ASSETS, file).unwrap_or_else(|| panic!("{linked}"));
+            assert!(std::ptr::eq(found, asset), "{linked}");
         }
         assert_eq!(url("monokulo-client.js"), "/static/monokulo-client.js");
         let logo = url("logo.svg");
@@ -200,21 +187,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_bare_or_stale_name_is_the_current_file_checked_on_every_use() {
-        let asset = find("admin-settings.js").unwrap();
-        let stale = resolve("admin-settings.0123456789abcdef.js").unwrap();
-        assert!(std::ptr::eq(stale.0, asset) && !stale.1);
-        let bare = resolve("admin-settings.js").unwrap();
-        assert!(std::ptr::eq(bare.0, asset) && !bare.1);
-        assert!(resolve("admin-settings.0123456789abcdef.0123456789abcdef.js").is_none());
-        assert!(resolve("nothing.js").is_none());
-        assert!(resolve("nothing").is_none());
-        assert!(resolve("").is_none());
-    }
-
     #[tokio::test]
-    async fn served_with_the_cache_policy_the_name_asks_for() {
+    async fn served_with_the_cache_policy_its_name_asks_for_and_only_at_that_name() {
         let cache = |file: &str| {
             let file = file.to_string();
             async move {
@@ -233,27 +207,35 @@ mod tests {
             cache(current.strip_prefix("/static/").unwrap()).await,
             (StatusCode::OK, Some(IMMUTABLE.to_string()))
         );
-        for stale_or_bare in [
+        assert_eq!(
+            cache("monokulo-client.js").await,
+            (StatusCode::OK, Some(REVALIDATE.to_string()))
+        );
+        for not_published in [
             "admin-settings.0123456789abcdef.js",
             "admin-settings.js",
-            "monokulo-client.js",
+            "nothing.js",
+            "",
         ] {
             assert_eq!(
-                cache(stale_or_bare).await,
-                (StatusCode::OK, Some(REVALIDATE.to_string())),
-                "{stale_or_bare}"
+                cache(not_published).await,
+                (StatusCode::NOT_FOUND, None),
+                "{not_published}"
             );
         }
-        assert_eq!(cache("nothing.js").await, (StatusCode::NOT_FOUND, None));
+    }
+
+    fn fixi() -> String {
+        static_assets::named(ASSETS, "fixi.js").file_name()
     }
 
     #[tokio::test]
     async fn a_browser_that_has_the_file_is_told_so_without_a_body() {
-        let first = serve(HeaderMap::new(), Path("fixi.js".to_string())).await;
+        let first = serve(HeaderMap::new(), Path(fixi())).await;
         let etag = first.headers()[header::ETAG].clone();
         let mut headers = HeaderMap::new();
         headers.insert(header::IF_NONE_MATCH, etag);
-        let again = serve(headers, Path("fixi.js".to_string())).await;
+        let again = serve(headers, Path(fixi())).await;
         assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
     }
 }
