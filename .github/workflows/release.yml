@@ -64,6 +64,14 @@ jobs:
     with:
       platform: ${{ matrix.platform }}
 
+  sccache:
+    name: Keep the newest sccache cache
+    needs: platform
+    if: always()
+    uses: ./.github/workflows/sccache-prune.yml
+    permissions:
+      actions: write
+
   coverage:
     name: coverage
     needs: platform

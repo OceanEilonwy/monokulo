@@ -73,6 +73,46 @@ runs:
       with:
         components: ${{ inputs.components }}
         targets: wasm32-unknown-unknown${{ inputs.targets != '' && format(', {0}', inputs.targets) || '' }}
+    # The Rust cache keeps the dependencies but none of the workspace's own
+    # crates (Cargo would rebuild them anyway: a checkout gives every file a
+    # new modification time), so every job compiled all of them again, most
+    # of a pull request's 8 to 10 minute test build. sccache keeps compiler
+    # output by its inputs' contents, so a crate a change doesn't reach comes
+    # from the cache. It can't keep what the linker makes (test binaries,
+    # binaries, proc macros), which still build every time. Only the Linux
+    # jobs that share the dev cache use it: pull requests run only those,
+    # and a cache for each other job would take the repository past
+    # GitHub's 10 GB again. Set before the Rust cache, whose key considers
+    # RUSTC_WRAPPER.
+    - if: inputs.cache == 'true' && inputs.shared-key == 'dev' && runner.os == 'Linux'
+      uses: taiki-e/install-action@v2
+      with:
+        tool: sccache
+    - if: inputs.cache == 'true' && inputs.shared-key == 'dev' && runner.os == 'Linux'
+      id: sccache
+      name: Compile through sccache
+      shell: bash
+      run: |
+        echo RUSTC_WRAPPER=sccache >> "$GITHUB_ENV"
+        echo "SCCACHE_DIR=$RUNNER_TEMP/sccache" >> "$GITHUB_ENV"
+        echo SCCACHE_CACHE_SIZE=1G >> "$GITHUB_ENV"
+        # Nothing one nightly compiles is any use to the next.
+        echo "rustc=$(rustc -V | sed -E 's/.*\(([0-9a-f]+) .*/\1/')" >> "$GITHUB_OUTPUT"
+    # Main saves a new one each run, as the Rust cache does, and its newest
+    # is the one the cache-pruning jobs (release.yml, rust-cache.yml) keep.
+    # Pull requests and jobs that don't save restore it.
+    - if: steps.sccache.outcome == 'success' && github.ref == 'refs/heads/main' && inputs.save == 'true'
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/sccache
+        key: sccache-${{ runner.os }}-dev-${{ steps.sccache.outputs.rustc }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: sccache-${{ runner.os }}-dev-${{ steps.sccache.outputs.rustc }}-
+    - if: steps.sccache.outcome == 'success' && !(github.ref == 'refs/heads/main' && inputs.save == 'true')
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ runner.temp }}/sccache
+        key: sccache-${{ runner.os }}-dev-${{ steps.sccache.outputs.rustc }}-
+        restore-keys: sccache-${{ runner.os }}-dev-${{ steps.sccache.outputs.rustc }}-
     - if: inputs.cache == 'true'
       uses: Swatinem/rust-cache@v2
       with:
