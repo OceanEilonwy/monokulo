@@ -1,0 +1,55 @@
+name: cache prune
+
+# Keeps the newest Rust cache of each kind and deletes the rest.
+#
+# A Rust cache's key (rust-cache's v0-rust-…, setup-rust's sccache-…) ends
+# in two parts that change: the compiler and lock file hashes for rust-cache,
+# the compiler and run for sccache. The rest names what the cache is for, as
+# v0-rust-dev-Linux-x64. A new nightly or a Cargo.lock change saves a new
+# cache under a new key and leaves the old one, which nothing restores any
+# more, taking space: on 2026-10-12, 4.8 of the repository's 10 GB. GitHub
+# then evicts the least recently used caches, which are the ones only main
+# reads (Windows, macOS, coverage), so main rebuilt every dependency.
+#
+# It runs after each workflow that saves caches on main, once it has saved
+# them. A separate workflow, as only this one needs write access to the
+# caches. The npm and Playwright caches are small and keyed on lock files
+# that rarely change; GitHub drops one a week after its last use.
+
+on:
+  workflow_run:
+    workflows:
+      - release
+      - rust cache
+      - engine fuzz exploration
+      - engine test-strength checks
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+concurrency:
+  group: cache-prune
+
+jobs:
+  prune:
+    name: Delete superseded Rust caches
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Delete every Rust cache but the newest of each kind
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh cache list --limit 1000 --json id,key,createdAt --jq '
+            [.[] | select(.key | test("^(v0-rust|sccache)-"))]
+            | group_by(.key | split("-") | .[:-2] | join("-"))
+            | map(sort_by(.createdAt) | reverse | .[1:][])
+            | .[] | "\(.id) \(.key)"' |
+          while read -r id key; do
+            echo "Deleting $key"
+            gh cache delete "$id"
+          done
