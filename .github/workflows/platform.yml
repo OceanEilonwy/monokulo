@@ -43,6 +43,7 @@ jobs:
   # instead of one a suite. Cargo resolves a dependency's features per
   # build, so they still compile the few crates a narrower build resolves
   # differently. A coverage run keeps a cache a suite, as its builds differ.
+  # rust-cache.yml builds the Linux one again on each new nightly.
   rust:
     name: Rust tests
     runs-on: ${{ format('{0}-latest', inputs.platform == 'linux' && 'ubuntu' || inputs.platform) }}

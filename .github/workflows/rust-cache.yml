@@ -1,0 +1,35 @@
+name: Rust cache
+
+# The Linux Rust cache (shared-key dev) on each new nightly. The cache is
+# keyed on the compiler, as nothing one nightly builds is any use to the
+# next, so until a main push saves a new one every scheduled job (the
+# property exploration, the interleavings, the tooling, Pages) built every
+# dependency again. This builds what the Rust tests job (platform.yml)
+# builds, once a day after the nightly comes out; a day a main push already
+# saved one restores it and saves nothing.
+
+on:
+  schedule:
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dev:
+    name: Build the Rust tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: dev
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # The Rust tests job's Build the tests step on Linux, so the cache
+      # holds the same build.
+      - name: Build the tests
+        run: cargo nextest run --no-run --workspace --locked --profile ci --features monokulo/snp
