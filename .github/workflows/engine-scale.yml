@@ -1,10 +1,13 @@
 name: Engine scale measurements
+
 on:
   schedule:
     - cron: '0 18 * * 6'
   workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
   measurements:
     # Capacity and latency depend on hardware. They are recorded for review;
@@ -14,8 +17,13 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
+      # The CI dev profile (optimised, as platform.yml's Engine progress
+      # tests measure it) and the Rust tests job's cache, restore only.
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: dev
+          save: 'false'
+          pos-app: 'false'
       - name: Record one-CPU capacity, latency and fault recovery
         run: cargo xtask stress scale
       - name: Preserve measurements and hardware metadata

@@ -13,8 +13,8 @@
 #   release     release.yml, once every test passed: the landing page and
 #               apk repository, tests, coverage, screenshots and the one-CPU
 #               stress run, all from that run, on the commit it tested
-#   properties  the nightly engine property exploration
-#   fuzz        the nightly engine fuzz exploration
+#   properties  the engine property exploration, every 6 hours
+#   fuzz        the engine fuzz exploration, every 6 hours
 #   scale       the weekly engine scale measurements
 #   live        the daily live-network tests (live-network.yml)
 # The calling workflow names its part: that part comes from its own run, and

@@ -26,7 +26,9 @@ name: Live network
 
 on:
   schedule:
-    # 16:00 UTC: the property and fuzz runs start every 6 hours from 00:00 and 01:00; mutation and scale runs are weekly from 17:00.
+    # 16:00 UTC, clear of the other scheduled runs: properties every 6
+    # hours from 00:00, fuzzing every 6 hours from 01:00, the Rust cache at
+    # 02:30, mutations Sundays at 17:00 and scale Saturdays at 18:00.
     - cron: '0 16 * * *'
   workflow_dispatch:
 
@@ -54,9 +56,12 @@ jobs:
       CI_WALLETS_BORN: 2225990
     steps:
       - uses: actions/checkout@v7
+      # The Rust tests job's cache, restore only: a daily run's own cache was
+      # evicted before the next run.
       - uses: ./.github/actions/setup-rust
         with:
-          cache-key: live
+          shared-key: dev
+          save: 'false'
           npm-lockfiles: |
             e2e/browser/package-lock.json
             crates/monokulo/pos-ui/package-lock.json
@@ -84,12 +89,14 @@ jobs:
           tor --list-modules
       - name: Install the browser tests' dependencies
         run: npm ci --prefix e2e/browser --no-audit --no-fund
-      - name: Cache Playwright's Chromium
+      # The browser tests' cache (platform.yml), which holds Chromium among
+      # its browsers; restore only.
+      - name: Restore Playwright's browsers
         id: chromium
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/browser/package-lock.json') }}
+          key: playwright-chromium-firefox-webkit-${{ runner.os }}-${{ hashFiles('e2e/browser/package-lock.json') }}
       - name: Install Chromium
         working-directory: e2e/browser
         run: |
