@@ -22,13 +22,15 @@ test.use({
 });
 
 /** The page side of holdUpCode: replaces getUserMedia with a camera that
- * sees the code. Safe to run twice in one document. */
+ * sees the code. Safe to run twice in one document: it checks the
+ * mediaDevices the page has now, not a flag of its own, as in WebKit the
+ * init script can run before there is one (a run where the second call
+ * then did nothing showed the mock's test pattern). */
 function holdUp(code) {
-  if (window.__codeHeldUp) return;
-  window.__codeHeldUp = true;
   const devices = navigator.mediaDevices;
+  if (!devices || devices.getUserMedia.holdsCode) return;
   const camera = devices.getUserMedia.bind(devices);
-  devices.getUserMedia = async constraints => {
+  const holdsCode = async constraints => {
     const device = await camera(constraints);
     const canvas = Object.assign(document.createElement('canvas'), { width: 640, height: 480 });
     const context = canvas.getContext('2d');
@@ -44,6 +46,8 @@ function holdUp(code) {
     track.stop = () => { clearInterval(frames); stop(); device.getTracks().forEach(t => t.stop()); };
     return new MediaStream([track]);
   };
+  holdsCode.holdsCode = true;
+  devices.getUserMedia = holdsCode;
 }
 
 const heldUp = new WeakMap();
