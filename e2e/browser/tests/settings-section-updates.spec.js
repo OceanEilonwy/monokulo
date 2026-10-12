@@ -33,7 +33,29 @@ test('saving an admin settings tab swaps only its panel, and the tab bar and ban
   await expect(bar).toBeInViewport({ ratio: 1 });
   const scrolled = await page.evaluate(() => window.scrollY);
   expect(scrolled).toBeGreaterThan(0);
+  // Hold the response so feedback is observable even on a fast local save.
+  const action = await page.locator('#settings-form').getAttribute('action');
+  const saveUrl = new URL(action, page.url()).href;
+  let releaseSave;
+  const held = new Promise(resolve => { releaseSave = resolve; });
+  let submissions = 0;
+  await page.route(saveUrl, async route => {
+    submissions++;
+    await held;
+    await route.continue();
+  });
   await bar.getByRole('button', { name: 'Save', exact: true }).click();
+  const saving = bar.getByRole('button', { name: 'Saving…', exact: true });
+  try {
+    await expect(saving).toBeDisabled();
+    await expect(saving).toHaveAttribute('aria-busy', 'true');
+    expect(await saving.evaluate(button => getComputedStyle(button, '::before').animationName)).toBe('save-spin');
+    // Enter/requestSubmit must not send another request while Save is disabled.
+    await page.locator('#settings-form').evaluate(form => form.requestSubmit());
+    await expect.poll(() => submissions).toBe(1);
+  } finally {
+    releaseSave();
+  }
 
   // A toast says what was saved; the card says when; the bar goes.
   await expect(page.locator('#settings-toasts .toast-success')).toContainText('Changes saved and applied');
@@ -41,6 +63,10 @@ test('saving an admin settings tab swaps only its panel, and the tab bar and ban
   // Focus lands on what the save did, not lost with the hidden bar.
   await expect(page.locator('#card-webhooks .card-saved')).toBeFocused();
   await expect(bar).toBeHidden();
+  await expect(bar.locator('[data-save]')).toBeEnabled();
+  await expect(bar.locator('[data-save]')).toHaveText('Save');
+  await expect(bar.locator('[data-save]')).not.toHaveAttribute('aria-busy');
+  await page.unroute(saveUrl);
   expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
   await expect(field).toHaveValue('9');
   expect(Math.abs((await page.evaluate(() => window.scrollY)) - scrolled)).toBeLessThan(50);
@@ -81,6 +107,7 @@ test('a value either check refuses saves nothing, and every change stays to fix 
   // The bar is red and says why, with a link to the card.
   await expect(bar).toHaveClass(/is-failed/);
   await expect(bar).toContainText('Nothing saved.');
+  await expect(bar.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
   // An error toast stays until it's closed: past the 12s at which site.css
   // fades one out on a page without JavaScript, it's still shown. Its
   // animations are moved on to 13s rather than waited out.
@@ -98,6 +125,40 @@ test('a value either check refuses saves nothing, and every change stays to fix 
   await openSettingsTab(page, 'server');
   await expect(page.locator('input[name="http_cache.max_mb"]')).toHaveValue('16');
 });
+
+for (const failure of ['http', 'network']) {
+  test(`a ${failure} failure restores Save and allows retry`, async ({ page }) => {
+    await signInAsAdmin(page);
+    await openSettingsTab(page, 'payments');
+    const value = failure === 'http' ? '11' : '12';
+    await page.locator('input[name="webhooks.max_attempts"]').fill(value);
+    const action = await page.locator('#settings-form').getAttribute('action');
+    const saveUrl = new URL(action, page.url()).href;
+    let releaseSave;
+    const held = new Promise(resolve => { releaseSave = resolve; });
+    await page.route(saveUrl, async route => {
+      await held;
+      if (failure === 'network') await route.abort('failed');
+      else await route.fulfill({ status: 500, body: 'Save failed' });
+    });
+    const save = page.locator('#save-bar [data-save]');
+    await save.click();
+    try {
+      await expect(save).toBeDisabled();
+      await expect(save).toHaveText('Saving…');
+    } finally {
+      releaseSave();
+    }
+    await expect(page.locator('#fx-error')).toBeVisible();
+    await expect(save).toBeEnabled();
+    await expect(save).toHaveText('Save');
+    await expect(save).not.toHaveAttribute('aria-busy');
+    await expect(page.locator('input[name="webhooks.max_attempts"]')).toHaveValue(value);
+    await page.unroute(saveUrl);
+    await save.click();
+    await expect(page.locator('#settings-toasts .toast-success')).toContainText('Changes saved and applied');
+  });
+}
 
 test('leaving a tab with unsaved changes asks first, and Save and go saves then goes', async ({ page }) => {
   await signInAsAdmin(page);
