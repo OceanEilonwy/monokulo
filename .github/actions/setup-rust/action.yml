@@ -13,12 +13,14 @@ inputs:
     description: More toolchain components, comma separated
     default: ''
   cache-key:
-    description: Separates this job's Rust cache from others the same job id makes
+    description: >
+      Separates this job's Rust cache from others the same job id makes;
+      ignored with a shared-key
     default: ''
   shared-key:
     description: >
-      Jobs that pass the same shared-key (and cache-key) use one Rust cache
-      on a runner type; empty keeps this job's own
+      Jobs that pass the same shared-key use one Rust cache on a runner type,
+      whatever their job ids and cache-keys; empty keeps this job's own
     default: ''
   cache:
     description: >
