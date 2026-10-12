@@ -98,14 +98,14 @@ runs:
         echo SCCACHE_CACHE_SIZE=1G >> "$GITHUB_ENV"
         # Nothing one nightly compiles is any use to the next.
         echo "rustc=$(rustc -V | sed -E 's/.*\(([0-9a-f]+) .*/\1/')" >> "$GITHUB_OUTPUT"
-    # Main saves a new one each run, as the Rust cache does, and its newest
-    # is the one the cache-pruning jobs (release.yml, rust-cache.yml) keep.
-    # Pull requests and jobs that don't save restore it.
+    # Main saves a new one each run, and cache-prune.yml keeps only the
+    # newest; the key ends in the two parts that change (compiler, run), as
+    # it expects. Pull requests and jobs that don't save restore it.
     - if: steps.sccache.outcome == 'success' && github.ref == 'refs/heads/main' && inputs.save == 'true'
       uses: actions/cache@v6
       with:
         path: ${{ runner.temp }}/sccache
-        key: sccache-${{ runner.os }}-dev-${{ steps.sccache.outputs.rustc }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: sccache-${{ runner.os }}-dev-${{ steps.sccache.outputs.rustc }}-${{ github.run_id }}.${{ github.run_attempt }}
         restore-keys: sccache-${{ runner.os }}-dev-${{ steps.sccache.outputs.rustc }}-
     - if: steps.sccache.outcome == 'success' && !(github.ref == 'refs/heads/main' && inputs.save == 'true')
       uses: actions/cache/restore@v6

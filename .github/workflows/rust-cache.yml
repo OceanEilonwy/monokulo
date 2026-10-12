@@ -35,10 +35,3 @@ jobs:
         run: |
           cargo nextest run --no-run --workspace --locked --profile ci --features monokulo/snp
           sccache --show-stats
-
-  sccache:
-    name: Keep the newest sccache cache
-    needs: dev
-    uses: ./.github/workflows/sccache-prune.yml
-    permissions:
-      actions: write
