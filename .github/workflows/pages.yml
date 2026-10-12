@@ -65,8 +65,11 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
+      # Builds only xtask, which the Rust tests job's cache holds.
       - uses: ./.github/actions/setup-rust
         with:
+          shared-key: dev
+          save: 'false'
           pos-app: 'false'
       # The artifacts land under target/, which the checkout ignores.
       - name: Download each part's artifacts

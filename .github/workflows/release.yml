@@ -104,7 +104,7 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           targets: ${{ matrix.target }}
-          cache-key: release-${{ matrix.target }}
+          cache: 'false'
       - name: Check the tag names this version
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
@@ -187,7 +187,7 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           targets: ${{ matrix.target }}
-          cache-key: cli-${{ matrix.target }}
+          cache: 'false'
           pos-app: 'false'
       - name: Build key-custody-cli
         run: cargo build --release --locked -p key-custody-cli --target ${{ matrix.target }}
@@ -267,8 +267,6 @@ jobs:
           build-args: |
             MONOKULO_RELEASE_TAG=${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
             MONOKULO_GIT_COMMIT=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
   openwrt:
     # The OpenWrt package, its repository and landing page (openwrt.yml);

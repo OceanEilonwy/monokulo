@@ -20,6 +20,13 @@ inputs:
       Jobs that pass the same shared-key (and cache-key) use one Rust cache
       on a runner type; empty keeps this job's own
     default: ''
+  cache:
+    description: >
+      Restore (and on main save) the Rust cache. Release builds turn it off:
+      they run rarely and in the release profile, which no other job builds,
+      so their caches only pushed the ones other jobs restore out of the
+      repository's 10 GB
+    default: 'true'
   save:
     description: >
       Save the Rust cache when the job ends (on main only). A job that
@@ -50,7 +57,8 @@ runs:
     # file and line numbers for backtraces but none of the rest of the debug
     # info, which CI never reads (a smaller cache, and our own crates, which
     # the Rust cache does not keep, compile and link faster). Set before the
-    # Rust cache, whose key considers CARGO_* variables. Coverage
+    # Rust cache, whose key considers CARGO_* variables; so is the terminal
+    # colour, so every job that shares a cache has the same key. Coverage
     # (cargo xtask coverage rust) sets the optimisation back to 0 for its own
     # build.
     - name: Set the dev profile for CI
@@ -58,11 +66,13 @@ runs:
       run: |
         echo CARGO_PROFILE_DEV_OPT_LEVEL=3 >> "$GITHUB_ENV"
         echo CARGO_PROFILE_DEV_DEBUG=line-tables-only >> "$GITHUB_ENV"
+        echo CARGO_TERM_COLOR=always >> "$GITHUB_ENV"
     - uses: dtolnay/rust-toolchain@nightly
       with:
         components: ${{ inputs.components }}
         targets: wasm32-unknown-unknown${{ inputs.targets != '' && format(', {0}', inputs.targets) || '' }}
-    - uses: Swatinem/rust-cache@v2
+    - if: inputs.cache == 'true'
+      uses: Swatinem/rust-cache@v2
       with:
         key: ${{ inputs.cache-key }}
         shared-key: ${{ inputs.shared-key }}
