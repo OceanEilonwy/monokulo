@@ -46,7 +46,7 @@ jobs:
     # One build per OpenWrt release and CPU architecture. A release or
     # architecture is supported by adding an entry here: the site lists
     # every openwrt-repo-* artifact, and its dropdown offers each one.
-    name: Build the OpenWrt package (${{ matrix.release }}, ${{ matrix.arch }})
+    name: build the openwrt package (${{ matrix.release }}, ${{ matrix.arch }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:

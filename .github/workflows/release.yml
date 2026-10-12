@@ -78,7 +78,7 @@ jobs:
     # SHA-256. The release jobs below put the files on the repository's
     # Releases page; a manual run of any branch (Actions > release > Run
     # workflow) keeps them as the run's artifacts only.
-    name: Build monokulo (${{ matrix.target }})
+    name: build monokulo (${{ matrix.target }})
     needs: [lint, coverage]
     strategy:
       fail-fast: false
@@ -163,7 +163,7 @@ jobs:
     # (key-custody-cli-{version}-{target}.tar.gz, .zip on Windows), each with
     # its SHA-256 and, on a version tag, GitHub build provenance
     # (`gh attestation verify`).
-    name: Build key-custody-cli (${{ matrix.target }})
+    name: build key-custody-cli (${{ matrix.target }})
     needs: [lint, coverage]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     strategy:
@@ -231,7 +231,7 @@ jobs:
   docker:
     # The production image (Dockerfile): built on main, and on a version tag
     # also pushed to ghcr.io/<owner>/monokulo as that version and latest.
-    name: Build the Docker image
+    name: build the docker image
     needs: [lint, coverage]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
@@ -270,7 +270,7 @@ jobs:
   openwrt:
     # The OpenWrt package, its repository and landing page (openwrt.yml);
     # on main, the site is deployed to GitHub Pages too.
-    name: OpenWrt
+    name: openwrt
     needs: [lint, coverage]
     uses: ./.github/workflows/openwrt.yml
     secrets: inherit
@@ -279,7 +279,7 @@ jobs:
     # The landing page, apk repository and coverage report from this run, on
     # the commit it tested, with the property, fuzz, scale and live-network
     # pages as they are live (pages.yml).
-    name: Pages
+    name: pages
     needs: [lint, coverage, openwrt]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
@@ -294,7 +294,7 @@ jobs:
   github-release:
     # A version tag's binaries as a GitHub release, for merchants to download
     # (the repository's Releases page, and releases/latest).
-    name: GitHub release
+    name: github release
     needs: [monokulo, key-custody-cli]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -329,7 +329,7 @@ jobs:
     # date on every push to main: the same file names every time, so its
     # download links never change. A prerelease, so releases/latest stays
     # the newest version tag.
-    name: Update the latest-main prerelease
+    name: update the latest-main prerelease
     needs: [monokulo, key-custody-cli]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest

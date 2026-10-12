@@ -94,7 +94,7 @@ jobs:
 
   save-corpus:
     # One job writes ci/fuzz, so the nine targets don't race each other.
-    name: Save the corpus to ci/fuzz
+    name: save the corpus to ci/fuzz
     needs: fuzz
     if: always() && github.ref == 'refs/heads/main' && needs.fuzz.result != 'skipped'
     runs-on: ubuntu-latest
@@ -111,7 +111,7 @@ jobs:
 
   crash-seeds:
     # A crash is a bug; a draft PR carries its reproducer to main as a seed.
-    name: Propose crashing inputs as seeds
+    name: propose crashing inputs as seeds
     needs: fuzz
     if: always() && github.ref == 'refs/heads/main' && needs.fuzz.result == 'failure'
     runs-on: ubuntu-latest
@@ -133,7 +133,7 @@ jobs:
     # This run's fuzz page, with every other part of the site as it is
     # live (pages.yml). On main only; a run that didn't finish shows nothing
     # new.
-    name: Pages
+    name: pages
     needs: fuzz
     if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success", "failure"]'), needs.fuzz.result)
     permissions:
