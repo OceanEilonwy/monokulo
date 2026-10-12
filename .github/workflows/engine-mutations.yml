@@ -1,4 +1,4 @@
-name: Engine test-strength checks
+name: engine test-strength checks
 
 on:
   schedule:

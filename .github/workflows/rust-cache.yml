@@ -1,4 +1,4 @@
-name: Rust cache
+name: rust cache
 
 # The Linux Rust cache (shared-key dev) on each new nightly. The cache is
 # keyed on the compiler, as nothing one nightly builds is any use to the

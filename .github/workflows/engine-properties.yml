@@ -1,4 +1,4 @@
-name: Engine property exploration
+name: engine property exploration
 
 on:
   schedule:

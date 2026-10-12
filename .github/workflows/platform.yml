@@ -1,4 +1,4 @@
-name: Platform
+name: platform
 
 # One platform's build and test suites, called by checks.yml (pull requests) and
 # release.yml (main, version tags), each suite a job of its own: the Rust

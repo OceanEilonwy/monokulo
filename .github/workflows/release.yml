@@ -1,4 +1,4 @@
-name: Release
+name: release
 
 # Main, version tags and manual runs: every test on every platform, then the
 # downloads.
@@ -76,7 +76,7 @@ jobs:
     # monokulo (the engine inside it: one executable) for every computer a
     # merchant might run it on, as monokulo-{version}-{target}.zip with its
     # SHA-256. The release jobs below put the files on the repository's
-    # Releases page; a manual run of any branch (Actions > Release > Run
+    # Releases page; a manual run of any branch (Actions > release > Run
     # workflow) keeps them as the run's artifacts only.
     name: Build monokulo (${{ matrix.target }})
     needs: [lint, coverage]

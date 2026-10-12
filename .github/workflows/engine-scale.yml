@@ -1,4 +1,4 @@
-name: Engine scale measurements
+name: engine scale measurements
 
 on:
   schedule:

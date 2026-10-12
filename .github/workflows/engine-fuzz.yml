@@ -1,4 +1,4 @@
-name: Engine fuzz exploration
+name: engine fuzz exploration
 
 on:
   schedule:

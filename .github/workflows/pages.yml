@@ -21,12 +21,12 @@
 # every other part from that part's newest run on main, which is what the
 # live site already shows. Each page names the run and commit it is from.
 #
-# A manual run (Actions > Pages > Run workflow) rebuilds the site from every
+# A manual run (Actions > pages > Run workflow) rebuilds the site from every
 # part's newest run on main. If the release part's artifacts have expired
 # (90 days without a release run on main), the build stops rather than take
-# the package repository offline: run the Release workflow on main.
+# the package repository offline: run the release workflow on main.
 
-name: Pages
+name: pages
 
 on:
   workflow_call:

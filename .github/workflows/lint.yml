@@ -1,4 +1,4 @@
-name: Lint
+name: lint
 
 # Formatting, clippy (every warning an error) and the checks that keep test
 # code out of what ships. Called by checks.yml (pull requests) and
