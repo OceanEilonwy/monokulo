@@ -15,6 +15,9 @@ hex = "0.4"
 getrandom = "0.4"
 p384 = { version = "0.14.0", features = ["ecdsa"] }
 snp-attest = { path = "../crates/snp-attest", default-features = false }
+# pages: the files the site links, baked in and named by their content, as
+# monokulo names its own.
+static-assets = { path = "../crates/static-assets" }
 # pages docs: the docs' pages, from Markdown.
 pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
 # pages build: the screenshot gallery's thumbnails, and the JUnit reports.

@@ -95,7 +95,7 @@ fn main() -> ExitCode {
             Ok(Exit::SUCCESS)
         }
         ["test-timings", rest @ ..] => timings::timings(rest),
-        ["pages", "build", rest @ ..] => pages::build(&root(), rest),
+        ["pages", "build", rest @ ..] => pages::build(rest),
         ["pages", "fetch", rest @ ..] => pages::fetch(rest),
         ["pages", "landing", rest @ ..] => pages::landing(&root(), rest),
         ["pages", "docs", rest @ ..] => pages::docs(&root(), rest),

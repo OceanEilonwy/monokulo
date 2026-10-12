@@ -20,6 +20,7 @@ mod landing;
 mod model;
 mod render;
 mod serve;
+mod site_assets;
 mod site_header;
 #[cfg(test)]
 mod tests;
@@ -60,12 +61,6 @@ const OUTPUTS: [&str; 12] = [
     "gallery",
     "reports",
 ];
-/// The stylesheet every page of the site loads after theme.css, from the
-/// workspace root; each part copies it into its own `assets/`.
-const STYLESHEET: &str = "xtask/src/pages/assets/styles.css";
-/// The report's own script, beside it in `assets/`.
-const SCRIPT: &str = "xtask/src/pages/assets/coverage/coverage.js";
-const FONT_WEIGHTS: [u16; 3] = [500, 700, 800];
 
 pub(crate) const HELP: &str = "\
         pages build --out DIR [--coverage DIR] [--properties DIR] [--fuzz DIR] [--scale DIR]\n\
@@ -184,29 +179,6 @@ fn clear(out: &Path) -> io::Result<()> {
     fs::create_dir_all(out).map_err(|e| at(out, e))
 }
 
-/// theme.css and the fonts from the server's own assets, the site's
-/// stylesheet and the report's script.
-fn copy_assets(root: &Path, out: &Path) -> io::Result<()> {
-    let assets = out.join("assets");
-    fs::create_dir_all(&assets).map_err(|e| at(&assets, e))?;
-    let mut copies = vec![
-        (
-            root.join("crates/monokulo/src/views/theme.css"),
-            "theme.css".to_string(),
-        ),
-        (root.join(STYLESHEET), "styles.css".to_string()),
-        (root.join(SCRIPT), "coverage.js".to_string()),
-    ];
-    copies.extend(FONT_WEIGHTS.iter().map(|weight| {
-        let name = format!("manrope-{weight}.woff2");
-        (root.join("crates/monokulo/static").join(&name), name)
-    }));
-    for (from, name) in copies {
-        fs::copy(&from, assets.join(name)).map_err(|e| at(&from, e))?;
-    }
-    Ok(())
-}
-
 /// Reads every input given, converting the screenshots into `out`, and
 /// copies the report pages they link.
 fn read_inputs(args: &SiteArgs, out: &Path) -> io::Result<Report> {
@@ -259,7 +231,7 @@ fn read_nightly(args: &SiteArgs, report: &mut Report) -> io::Result<()> {
 
 /// Builds the report into `--out`, replacing what an earlier build put there
 /// and nothing else.
-pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
+pub(crate) fn build(args: &[&str]) -> io::Result<Exit> {
     let args = parse(args)?;
     let out = &args.out;
     clear(out)?;
@@ -270,7 +242,7 @@ pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
         .as_ref()
         .map_or_else(Coverage::default, |c| c.shipping);
     write_json(&out.join("badge.json"), &badge(shipping))?;
-    copy_assets(root, out)?;
+    site_assets::write(&out.join("assets"))?;
     let have: Vec<&str> = [
         ("coverage", report.coverage.is_some()),
         ("properties", report.properties.is_some()),

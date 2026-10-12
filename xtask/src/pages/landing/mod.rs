@@ -9,8 +9,8 @@
 
 mod page;
 
+use super::site_assets;
 use super::site_header::GITHUB_URL;
-use super::STYLESHEET;
 use crate::support::{at, files_under, Exit};
 use std::{
     fs, io,
@@ -18,9 +18,6 @@ use std::{
 };
 
 const PUBLIC_KEY: &str = "openwrt/keys/monokulo.pem";
-/// The page's stylesheet fonts, from monokulo's own static files.
-const FONT_WEIGHTS: [u16; 3] = [500, 700, 800];
-const LOGOS: [&str; 2] = ["logo.svg", "favicon.svg"];
 
 /// `cargo xtask pages landing --site DIR [--github-url URL]`.
 pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
@@ -170,32 +167,7 @@ fn write(root: &Path, site: &Path, github_url: &str) -> io::Result<()> {
     let index_html = site.join("index.html");
     fs::write(&index_html, page).map_err(|e| at(&index_html, e))?;
 
-    let assets = site.join("assets");
-    fs::create_dir_all(&assets).map_err(|e| at(&assets, e))?;
-    let statics = root.join("crates/monokulo/static");
-    let mut copies = vec![
-        (
-            root.join("crates/monokulo/src/views/theme.css"),
-            assets.join("theme.css"),
-        ),
-        (root.join(STYLESHEET), assets.join("styles.css")),
-        (
-            root.join("xtask/src/pages/assets/landing/landing.js"),
-            assets.join("landing.js"),
-        ),
-    ];
-    copies.extend(
-        LOGOS
-            .iter()
-            .map(|name| (statics.join(name), assets.join(name))),
-    );
-    copies.extend(FONT_WEIGHTS.iter().map(|weight| {
-        let name = format!("manrope-{weight}.woff2");
-        (statics.join(&name), assets.join(name))
-    }));
-    for (from, to) in copies {
-        fs::copy(&from, &to).map_err(|e| at(&from, e))?;
-    }
+    site_assets::write(&site.join("assets"))?;
     // Pages would otherwise run the site through Jekyll.
     let nojekyll = site.join(".nojekyll");
     fs::write(&nojekyll, "").map_err(|e| at(&nojekyll, e))
@@ -213,19 +185,7 @@ mod tests {
 
     fn checkout(scratch: &Scratch) -> PathBuf {
         let root = scratch.join("root");
-        put(&root.join("xtask/src/pages/assets/landing/landing.js"), "");
-        put(&root.join(STYLESHEET), "");
         put(&root.join(PUBLIC_KEY), "KEY\n");
-        put(&root.join("crates/monokulo/src/views/theme.css"), "");
-        for name in LOGOS {
-            put(&root.join("crates/monokulo/static").join(name), "");
-        }
-        for weight in FONT_WEIGHTS {
-            put(
-                &root.join(format!("crates/monokulo/static/manrope-{weight}.woff2")),
-                "",
-            );
-        }
         root
     }
 
@@ -289,9 +249,8 @@ mod tests {
             "KEY\n"
         );
         assert!(site.join(".nojekyll").exists());
-        for asset in ["theme.css", "styles.css", "landing.js"] {
-            assert!(site.join("assets").join(asset).exists(), "{asset}");
-        }
+        let linked = site_assets::assert_links_published(&page, &site.join("assets"));
+        assert!(linked.contains(&"styles.css") && linked.contains(&"landing.js"));
     }
 
     #[test]

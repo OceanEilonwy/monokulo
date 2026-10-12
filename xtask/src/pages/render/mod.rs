@@ -11,6 +11,7 @@ mod tests;
 
 use super::format::{self, coverage as covered, date, int, share, NONE};
 use super::model::Report;
+use super::site_assets;
 use super::site_header::{self, Section};
 use crate::coverage::Counts;
 use crate::support::at;
@@ -177,10 +178,8 @@ fn page(report: &Report, shell: &Shell, tab: Tab, body: &Markup) -> Markup {
                     @if tab == Tab::Overview { (TITLE) } @else { (tab.label()) " · " (TITLE) }
                 }
                 meta name="description" content="Monokulo’s tests, coverage, property tests, fuzzing, load checks, live-network checks and screenshots, rebuilt from every CI run on main.";
-                link rel="icon" href="../assets/favicon.svg" type="image/svg+xml";
-                link rel="stylesheet" href="assets/theme.css";
-                link rel="stylesheet" href="assets/styles.css";
-                @if script { script src="assets/coverage.js" defer {} }
+                (site_assets::head(""))
+                @if script { script src=(site_assets::url("", "coverage.js")) defer {} }
             }
             body {
                 (site_header::render(Section::Testing, "../", repo))
