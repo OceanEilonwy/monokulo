@@ -1,0 +1,14 @@
+[package]
+name = "static-assets"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+
+# How a file a page links is baked in and named by its content: monokulo's
+# `/static/` files (`monokulo::assets`) and the GitHub Pages site's
+# `assets/` (`xtask pages`). One digest, one naming rule and one `asset!`
+# table, so a browser may keep any of them for as long as it likes. No
+# dependencies.
+
+[lints]
+workspace = true

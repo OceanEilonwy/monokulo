@@ -15,6 +15,7 @@ members = [
     "crates/key-custody-cli",
     "crates/wallet-setup",
     "crates/short-id",
+    "crates/static-assets",
     "xtask",
 ]
 
