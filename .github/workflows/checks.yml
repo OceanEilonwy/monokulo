@@ -1,8 +1,8 @@
-name: Checks
+name: checks
 
 # What a pull request must pass: lint, and every Linux test suite, without
 # coverage (release.yml collects it on main, and tests macOS and Windows).
-# A manual run (Actions > Checks > Run workflow) can test any branch on
+# A manual run (Actions > checks > Run workflow) can test any branch on
 # other platforms, or with coverage.
 #
 # Required checks: lint / rustfmt and clippy, and linux / Summary.

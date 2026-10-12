@@ -22,7 +22,7 @@
 # forks (no secret access) still build, with a throwaway key, but nothing
 # they build is deployed.
 
-name: OpenWrt package
+name: openwrt package
 
 on:
   pull_request:

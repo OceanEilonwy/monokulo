@@ -1,4 +1,4 @@
-name: Engine verification tooling
+name: engine verification tooling
 
 on:
   workflow_call:

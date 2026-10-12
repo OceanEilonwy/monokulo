@@ -22,7 +22,7 @@
 # all the same, the wallet check fails and says where to send more stagenet
 # coins.
 
-name: Live network
+name: live network
 
 on:
   schedule:
