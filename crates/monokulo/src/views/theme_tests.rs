@@ -75,24 +75,11 @@ fn stylesheets() -> Vec<(String, String)> {
             ));
         }
     }
-    // The GitHub Pages site (xtask/src/pages/assets/) loads theme.css too: the landing page's
-    // stylesheet, the coverage report's and the docs', and the header they share.
+    // The GitHub Pages site's one stylesheet (xtask/src/pages/assets/), loaded after theme.css.
     let root = crate_dir().join("../..");
     sheets.push((
-        "xtask/src/pages/assets/site/header.css".to_string(),
-        read(&root.join("xtask/src/pages/assets/site/header.css")),
-    ));
-    sheets.push((
-        "xtask/src/pages/assets/landing/landing.css".to_string(),
-        read(&root.join("xtask/src/pages/assets/landing/landing.css")),
-    ));
-    sheets.push((
-        "xtask/src/pages/assets/coverage/coverage.css".to_string(),
-        read(&root.join("xtask/src/pages/assets/coverage/coverage.css")),
-    ));
-    sheets.push((
-        "xtask/src/pages/assets/docs/docs.css".to_string(),
-        read(&root.join("xtask/src/pages/assets/docs/docs.css")),
+        "xtask/src/pages/assets/styles.css".to_string(),
+        read(&root.join("xtask/src/pages/assets/styles.css")),
     ));
     sheets
 }

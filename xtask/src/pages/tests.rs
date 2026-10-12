@@ -647,8 +647,7 @@ fn missing_inputs_leave_their_sections_out_but_still_build_the_front_page() {
     assert_eq!(badge["message"], "unknown");
     for asset in [
         "theme.css",
-        "header.css",
-        "coverage.css",
+        "styles.css",
         "coverage.js",
         "manrope-500.woff2",
     ] {

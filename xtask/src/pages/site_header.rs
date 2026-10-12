@@ -1,15 +1,13 @@
 //! The header every page of the GitHub Pages site shares: the brand and the
 //! site's links, the same on the landing page, the docs and the testing
-//! report. Its stylesheet is `xtask/src/pages/assets/site/header.css`, which
-//! each part copies into its own `assets/` beside its page stylesheet.
+//! report. Its rules are the "Site header" section of the site's one
+//! stylesheet, `xtask/src/pages/assets/styles.css`.
 
 use crate::logo;
 use maud::{html, Markup, PreEscaped};
 
 /// The repository the site links to when no other is given.
 pub(super) const GITHUB_URL: &str = "https://github.com/OceanEilonwy/monokulo";
-/// The header's stylesheet, from the workspace root.
-pub(super) const STYLESHEET: &str = "xtask/src/pages/assets/site/header.css";
 
 /// The part of the site a page is in; the header marks its link as current.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

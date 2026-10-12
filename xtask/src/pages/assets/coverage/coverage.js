@@ -222,7 +222,7 @@ if (gallery) {
     // A shape taken in one theme only shows that one.
     const shown = wanted.filter(t => shape[t]).length ? wanted.filter(t => shape[t]) : themesOf(shape);
     const clicked = (b, onClick) => { b.addEventListener('click', () => { view.focus = b.id; onClick(); }); return b; };
-    const button = (label, attrs, onClick) => clicked(h('button', {type: 'button', class: 'btn', ...attrs}, label), onClick);
+    const button = (label, attrs, onClick) => clicked(h('button', {type: 'button', class: 'btn btn-sm', ...attrs}, label), onClick);
     const toggle = (id, label, pressed, onClick) => clicked(h('button', {type: 'button', id, 'aria-pressed': String(pressed)}, label), onClick);
     const go = j => { if (list[j]) openViewer(list[j]); };
     const full = shape[shown[0]]?.full;

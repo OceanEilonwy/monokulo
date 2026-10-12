@@ -6,7 +6,7 @@
 //! Every input of the report is optional; the pages say what they have no
 //! data for. A build reads the artifacts (`inputs`), works out what the
 //! pages show (`model`) and renders a page per section (`render`), beside
-//! the stylesheet and script in `xtask/src/pages/assets/coverage/`, the screenshot
+//! the site's stylesheet (`assets/styles.css`) and the report's script (`assets/coverage/`), the screenshot
 //! gallery (`gallery/`), the report pages the pages link and what those
 //! need (`reports/`) and a shields.io endpoint for the coverage badge
 //! (`badge.json`). Only one engine build of the property and fuzz runs is
@@ -60,8 +60,11 @@ const OUTPUTS: [&str; 12] = [
     "gallery",
     "reports",
 ];
-/// The page's own stylesheet and script, beside theme.css in `assets/`.
-const PAGE_ASSETS: [&str; 2] = ["coverage.css", "coverage.js"];
+/// The stylesheet every page of the site loads after theme.css, from the
+/// workspace root; each part copies it into its own `assets/`.
+const STYLESHEET: &str = "xtask/src/pages/assets/styles.css";
+/// The report's own script, beside it in `assets/`.
+const SCRIPT: &str = "xtask/src/pages/assets/coverage/coverage.js";
 const FONT_WEIGHTS: [u16; 3] = [500, 700, 800];
 
 pub(crate) const HELP: &str = "\
@@ -181,8 +184,8 @@ fn clear(out: &Path) -> io::Result<()> {
     fs::create_dir_all(out).map_err(|e| at(out, e))
 }
 
-/// theme.css and the fonts from the server's own assets, and the page's
-/// stylesheet and script.
+/// theme.css and the fonts from the server's own assets, the site's
+/// stylesheet and the report's script.
 fn copy_assets(root: &Path, out: &Path) -> io::Result<()> {
     let assets = out.join("assets");
     fs::create_dir_all(&assets).map_err(|e| at(&assets, e))?;
@@ -191,17 +194,12 @@ fn copy_assets(root: &Path, out: &Path) -> io::Result<()> {
             root.join("crates/monokulo/src/views/theme.css"),
             "theme.css".to_string(),
         ),
-        (root.join(site_header::STYLESHEET), "header.css".to_string()),
+        (root.join(STYLESHEET), "styles.css".to_string()),
+        (root.join(SCRIPT), "coverage.js".to_string()),
     ];
     copies.extend(FONT_WEIGHTS.iter().map(|weight| {
         let name = format!("manrope-{weight}.woff2");
         (root.join("crates/monokulo/static").join(&name), name)
-    }));
-    copies.extend(PAGE_ASSETS.iter().map(|name| {
-        (
-            root.join("xtask/src/pages/assets/coverage").join(name),
-            (*name).to_string(),
-        )
     }));
     for (from, name) in copies {
         fs::copy(&from, assets.join(name)).map_err(|e| at(&from, e))?;

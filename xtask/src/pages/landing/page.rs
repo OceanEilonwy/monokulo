@@ -1,6 +1,7 @@
 //! The landing page (GitHub Pages: /): the project's front page, with the
 //! install steps for the desktop builds and for OpenWrt routers. Rendered with
-//! maud, beside its stylesheet and script in `xtask/src/pages/assets/landing/`.
+//! maud, beside the site's stylesheet (`xtask/src/pages/assets/styles.css`) and its
+//! script in `xtask/src/pages/assets/landing/`.
 
 use super::{distinct, Repo};
 use crate::logo;
@@ -27,12 +28,11 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                 // Colours come only from monokulo's own theme (crates/monokulo/src/views/theme.css,
                 // copied here at build time): light or dark follows the OS.
                 link rel="stylesheet" href="assets/theme.css";
-                link rel="stylesheet" href="assets/header.css";
-                link rel="stylesheet" href="assets/landing.css";
+                link rel="stylesheet" href="assets/styles.css";
             }
             body {
                 (site_header::render(Section::Home, "", github_url))
-                main id="top" {
+                main id="top" class="home" {
                     section class="hero" {
                         svg class="mark logo-mark" width="96" height="96" viewBox="0 0 64 64" aria-hidden="true" focusable="false" {
                             (PreEscaped(logo::full()))
@@ -56,37 +56,37 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                             }
                         }
                         div class="grid" {
-                            div class="card" {
+                            div class="card pad" {
                                 h3 { "Watch-only" }
                                 p {
                                     "Each store gives Monokulo its view key, never its spend key. Payments go straight to the store’s own wallet; Monokulo just sees them arrive."
                                 }
                             }
-                            div class="card" {
+                            div class="card pad" {
                                 h3 { "Checkout that works anywhere" }
                                 p {
                                     "A hosted checkout page and embed for static sites, a point-of-sale screen, and webhooks when an order is paid. The checkout works without JavaScript."
                                 }
                             }
-                            div class="card" {
+                            div class="card pad" {
                                 h3 { "Fast detection" }
                                 p {
                                     "Payments show up within about a second of reaching the network, and are confirmed as blocks arrive."
                                 }
                             }
-                            div class="card" {
+                            div class="card pad" {
                                 h3 { "Easy on the router" }
                                 p {
                                     "One static program and SQLite. The engine runs inside Monokulo on threads of its own, kept to two of the Flint 2’s four cores at low priority, so routing comes first. Checking each block’s proof of work (on by default for mainnet) takes about 256 MB of memory; turn it off on the admin page if you run your own node."
                                 }
                             }
-                            div class="card" {
+                            div class="card pad" {
                                 h3 { "Settings in your browser" }
                                 p {
                                     "Manage stores, nodes and payment settings on Monokulo’s admin page. On OpenWrt, LuCI also controls start, stop, port, listen address and the engine’s CPUs under Services → Monokulo."
                                 }
                             }
-                            div class="card" {
+                            div class="card pad" {
                                 h3 { "Survives upgrades" }
                                 p {
                                     "Its settings, keys and databases are kept across OpenWrt firmware upgrades."
@@ -113,7 +113,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 "Download one executable, start it in a terminal, then finish setup in your browser."
                             }
                         }
-                        div class="card" {
+                        div class="card pad" {
                             h3 { "Download and extract" }
                             p {
                                 "Open the "
@@ -136,7 +136,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 " checksum on the release page. You don’t need Rust, Node.js or a separate engine download."
                             }
                         }
-                        div class="card" {
+                        div class="card pad" {
                             div class="tabs" role="tablist" aria-label="Desktop operating system" hidden {
                                 button type="button" role="tab" id="tab-linux" aria-controls="panel-linux" aria-selected="true" {
                                     "Linux"
@@ -302,7 +302,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 }
                             }
                         }
-                        div class="card" {
+                        div class="card pad" {
                             h3 { "Finish setup in your browser" }
                             p {
                                 "Leave the terminal running and open "
@@ -320,7 +320,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 " to stop it. For automatic startup, run it under your system’s service manager with the same encryption key. "
                             }
                         }
-                        div class="card" {
+                        div class="card pad" {
                             h3 { "Where your config and data live" }
                             p {
                                 "Monokulo’s admin page saves settings in "
@@ -386,7 +386,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 " file you created, rather than in the config."
                             }
                         }
-                        div class="card" {
+                        div class="card pad" {
                             h3 { "Backups and updates" }
                             p {
                                 "Back up "
@@ -407,7 +407,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                             h2 { "Install on an OpenWrt router" }
                             p { "About ten minutes. You can do it all from the router’s web interface." }
                         }
-                        div class="card" {
+                        div class="card pad" {
                             h3 { "You’ll need" }
                             div class="req" {
                                 span { "OpenWrt " (releases) " with LuCI" }
@@ -438,7 +438,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 "), or at a remote node over HTTPS."
                             }
                         }
-                        div class="card" {
+                        div class="card pad" {
                             div class="tabs" role="tablist" aria-label="How to install" hidden {
                                 button type="button" role="tab" id="tab-web" aria-controls="panel-web" aria-selected="true" {
                                     "Web (LuCI)"
@@ -647,7 +647,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 }
                             }
                         }
-                        div class="card" {
+                        div class="card pad" {
                             h3 { "Config, data and secrets on OpenWrt" }
                             p style="margin-bottom:var(--space-md)" {
                                 "LuCI’s service settings live in "
@@ -672,7 +672,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 "Keep that file private: with it and a copy of the data folder, anyone can read your stores’ details."
                             }
                         }
-                        div class="card" {
+                        div class="card pad" {
                             h3 { "Optional: let customers outside your home pay" }
                             p {
                                 "By default Monokulo listens on your LAN only. For checkouts on the internet, it needs to listen on every interface, and the firewall needs to let its port in."
@@ -747,7 +747,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                             }
                         }
                         div class="grid two" {
-                            div class="card" {
+                            div class="card pad" {
                                 h3 { "Updating" }
                                 p {
                                     span class="path inline" {
@@ -768,7 +768,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                     "Settings, secrets and databases are kept. After a firmware upgrade, repeat the install steps to put the package back; your data is still there."
                                 }
                             }
-                            div class="card" {
+                            div class="card pad" {
                                 h3 { "Removing" }
                                 p {
                                     span class="path inline" {
@@ -789,7 +789,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 }
                             }
                         }
-                        div class="card" {
+                        div class="card pad" {
                             h3 { "Package files" }
                             p class="muted" {
                                 "You don’t need these if you use the repository above. The package is signed with the Monokulo key, so once it’s trusted (step 2) you can also install it directly: upload it in "
@@ -807,7 +807,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                             @for r in repos {
                                 div class="target" data-target=(r.id()) {
                                     p class="target-label muted small" { "OpenWrt " (r.release) " · " (r.arch) }
-                                    ul class="files" {
+                                    ul class="apk-files" {
                                         li {
                                             a href=(format!("{}/{}", r.path, r.apk)) { (r.apk) }
                                             " (" (r.size()) "): monokulo (the engine inside it) and the LuCI page"
@@ -819,7 +819,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                     }
                                 }
                             }
-                            ul class="files" {
+                            ul class="apk-files" {
                                 li {
                                     a href="openwrt/monokulo.pem" { "monokulo.pem" }
                                     ": the signing key, the same for every version"
