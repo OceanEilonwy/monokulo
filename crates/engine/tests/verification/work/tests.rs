@@ -1243,6 +1243,140 @@ async fn a_store_far_behind_does_not_hold_every_catch_up_turn() {
     );
 }
 
+/// A chain of 30 blocks on the node, the first 10 recorded, and a store per
+/// given cursor with an order open, for the frontier turn tests: each round
+/// with no time to spare gives the blocks tier one unit of one block.
+async fn frontier_turn_fixture(
+    cursors: &[u64],
+) -> (
+    SharedStore,
+    FlakyKeyCustody,
+    FakeDaemonClient,
+    Vec<(crate::store::TenantId, WalletHandle)>,
+) {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let fake = FakeDaemonClient::new();
+    for h in 1..=30 {
+        // A transaction in each, so scanning one asks custody.
+        let height = fake.push_block(&format!("a{h}"), vec![unrelated_tx(h)]);
+        if height <= 10 {
+            store
+                .set_scanned_block(monero::Network::Mainnet, height, &format!("a{h}"))
+                .unwrap();
+        }
+    }
+    let mut tenants = Vec::new();
+    for cursor in cursors {
+        let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        store
+            .execute_raw_for_test(&format!(
+                "UPDATE tenants SET scanned_through_height = {cursor} WHERE id = '{tenant}'"
+            ))
+            .unwrap();
+        tenants.push((tenant, handle));
+    }
+    (store.into_shared(), custody, fake, tenants)
+}
+
+async fn one_unit_round(
+    state: &ScanState,
+    store: &SharedStore,
+    custody: &FlakyKeyCustody,
+    fake: &FakeDaemonClient,
+    tenants: &[(crate::store::TenantId, WalletHandle)],
+) {
+    run_round(
+        state,
+        &inputs(&Db::over_shared(Arc::clone(store)), custody, fake, tenants),
+        Duration::ZERO,
+    )
+    .await
+    .into_result()
+    .unwrap();
+}
+
+fn high_water(store: &SharedStore) -> u64 {
+    store
+        .lock()
+        .max_scanned_height(monero::Network::Mainnet)
+        .unwrap()
+        .unwrap()
+}
+
+/// With nobody at the frontier, its turn goes to the store catching up: one
+/// block every round, not every other, until it reaches the frontier and
+/// takes the frontier on with it. Trailing the frontier a block behind all
+/// the way to the tip, it would fetch whole every block the frontier had
+/// recorded from its header.
+#[tokio::test]
+async fn catch_up_takes_the_turn_of_a_frontier_with_nobody_to_scan() {
+    let (store, custody, fake, tenants) = frontier_turn_fixture(&[5]).await;
+    let state = ScanState::default();
+    for round in 1..=20u64 {
+        one_unit_round(&state, &store, &custody, &fake, &tenants).await;
+        assert_eq!(
+            cursor_of(&store, tenants[0].0.as_str()),
+            Some(5 + round),
+            "round {round}: the store moves a block every round"
+        );
+        assert_eq!(
+            high_water(&store),
+            10.max(5 + round),
+            "round {round}: the frontier waits for it, then moves with it"
+        );
+    }
+}
+
+/// With a store at the frontier, turns alternate: the frontier and the
+/// store catching up each move a block every other round, neither starved.
+#[tokio::test]
+async fn turns_alternate_while_the_frontier_has_a_store_to_scan() {
+    let (store, custody, fake, tenants) = frontier_turn_fixture(&[5, 10]).await;
+    let (lagging, live) = (&tenants[0].0, &tenants[1].0);
+    let state = ScanState::default();
+    for round in 1..=10u64 {
+        one_unit_round(&state, &store, &custody, &fake, &tenants).await;
+        assert_eq!(
+            cursor_of(&store, live.as_str()),
+            Some(10 + round.div_ceil(2)),
+            "round {round}: the frontier moves on its turns"
+        );
+        assert_eq!(
+            cursor_of(&store, lagging.as_str()),
+            Some(5 + round / 2),
+            "round {round}: catch-up moves on the others"
+        );
+    }
+}
+
+/// A frontier with nobody to scan for still records the chain when the
+/// store behind can't move, whether its keys aren't registered (nothing is
+/// fetched for it) or custody fails it (the block commits without it):
+/// giving away its turn never stalls the network.
+#[tokio::test]
+async fn an_empty_frontier_keeps_its_turn_when_catch_up_cannot_move() {
+    for registered in [false, true] {
+        let (store, custody, fake, tenants) = frontier_turn_fixture(&[5]).await;
+        custody.fail(tenants[0].1);
+        let registered_tenants = if registered { &*tenants } else { &[] };
+        let state = ScanState::default();
+        for round in 1..=10u64 {
+            one_unit_round(&state, &store, &custody, &fake, registered_tenants).await;
+            assert_eq!(
+                high_water(&store),
+                10 + round.div_ceil(2),
+                "registered {registered}, round {round}: the frontier moves on its turns"
+            );
+        }
+        assert_eq!(
+            cursor_of(&store, tenants[0].0.as_str()),
+            Some(5),
+            "unscanned"
+        );
+    }
+}
+
 /// The node replaces its tip after the scanner fetched it: the scanner
 /// commits the old tip with its own contents (never one block's payments
 /// under another's hash), then detects the reorg and reconciles, so no
