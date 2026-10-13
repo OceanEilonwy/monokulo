@@ -1,0 +1,1 @@
+{"host":"docalÿÿost","port":180,"fallbacks":[{"host":"peer","port":82,"fallbacks":[{"host":"peer","port":18081,"fallbacks":[{"host":"ignoÊÊÊÿs://ÿÿost","port":60,"fallbacks":[{"host":"peer","port":82,"fallbacks":[{"host":"peer","port":18081,"fallbacks":[{"host":"ignored","port":1}]}]}
