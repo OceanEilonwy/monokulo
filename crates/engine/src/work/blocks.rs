@@ -51,6 +51,7 @@ use crate::store::{BlockCheckpoint, Movement, Store};
 use shared::activity::Event;
 
 use super::{bounded, count, Progress, Round, Wait};
+use walked::Walked;
 
 /// How far ahead of real time consensus lets a block's timestamp run.
 /// Catch-up windows start this much before a block's own timestamp, so a
@@ -440,20 +441,15 @@ impl Rotation {
         Ok(group)
     }
 
-    /// Records that the group at `group` was served and ended at `reached`.
+    /// Records that the group at `group` was served and its unit walked to
+    /// `walked`.
     async fn served(
         &mut self,
         round: &Round<'_>,
         group: u64,
-        reached: u64,
+        walked: Walked,
     ) -> Result<(), ScannerError> {
-        // A bounded tenant page may move only part of a group. Never skip
-        // another group that existed before this unit, even if this page
-        // reaches or passes its cursor.
-        let position = self.next_existing.map_or_else(
-            || reached.max(group),
-            |next| reached.max(group).min(next.saturating_sub(1)),
-        );
+        let position = walked.rotation_position(group, self.next_existing);
         self.last = Some(position);
         round
             .db(move |s, network| s.set_scheduler_position::<CatchUpGroup>(network, &position))
@@ -759,11 +755,12 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Result<Progress, ScannerE
 /// recorded chain can't move until the chain tier reconciles the fork, so
 /// it stops for the round instead of asking again and again.
 fn frontier_progress(round: &mut Round<'_>, reached: Reached) -> Progress {
-    if reached.diverged {
-        round.blocks.frontier_done = true;
-        Progress::Blocked(Wait::ChainDiverged)
-    } else {
-        Progress::Advanced
+    match reached.ended {
+        Ended::Diverged => {
+            round.blocks.frontier_done = true;
+            Progress::Blocked(Wait::ChainDiverged)
+        }
+        Ended::Walked => Progress::Advanced,
     }
 }
 
@@ -809,7 +806,7 @@ async fn serve_catch_up(
     // A group that diverged stays where it is; the rotation still moves on
     // past it, so the round's other groups are served.
     let reached = advance_group(round, Group::CatchUp, group, tip, until).await?;
-    rotation.served(round, group, reached.walked_to).await?;
+    rotation.served(round, group, reached.walked).await?;
     Ok(Some(idle.and(reached.moved)))
 }
 
@@ -971,9 +968,9 @@ async fn advance_group(
                     "block differs from the stored chain; waiting for reorg reconciliation"
                 );
                 return Ok(Reached {
-                    walked_to: cursor,
+                    walked: Walked::to(cursor),
                     moved,
-                    diverged: true,
+                    ended: Ended::Diverged,
                 });
             }
         }
@@ -982,21 +979,56 @@ async fn advance_group(
         round.blocks.frontier_done = true;
     }
     Ok(Reached {
-        walked_to: cursor,
+        walked: Walked::to(cursor),
         moved,
-        diverged: false,
+        ended: Ended::Walked,
     })
 }
 
 /// Where a group's unit left it.
 #[derive(Clone, Copy)]
 struct Reached {
-    /// The last block the unit got past. Not where the group's stores are:
-    /// a block commits for the group even when a store in it failed and
-    /// stayed. Whether any went with it is `moved`.
-    walked_to: u64,
+    /// How far the unit walked, for the rotation alone.
+    walked: Walked,
+    /// Whether any store went with it.
     moved: Movement,
-    diverged: bool,
+    ended: Ended,
+}
+
+/// Why a group's unit stopped.
+#[derive(Clone, Copy)]
+enum Ended {
+    /// At the end of its walk: its blocks, its time, or a group with nobody
+    /// left to scan.
+    Walked,
+    /// At a block that doesn't extend the recorded chain.
+    Diverged,
+}
+
+mod walked {
+    /// The last block a group's unit got past: a place in the catch-up
+    /// rotation and nothing else. Not where the group's stores are: a block
+    /// commits for the group even when a store in it failed and stayed. So
+    /// it can't be read as a height (no getter, no comparison); whether
+    /// anyone moved is a [`Movement`](crate::store::Movement).
+    #[derive(Clone, Copy)]
+    pub(super) struct Walked(u64);
+
+    impl Walked {
+        pub(super) const fn to(height: u64) -> Self {
+            Self(height)
+        }
+
+        /// Where the rotation stands after serving the group at `group`,
+        /// with `next_existing` the next group that existed before this
+        /// unit. A bounded tenant page may move only part of a group, so
+        /// it never skips that group, even if this walk reached or passed
+        /// its cursor.
+        pub(super) fn rotation_position(self, group: u64, next_existing: Option<u64>) -> u64 {
+            let walked = self.0.max(group);
+            next_existing.map_or(walked, |next| walked.min(next.saturating_sub(1)))
+        }
+    }
 }
 
 /// What one database read tells a block scan before it starts.
