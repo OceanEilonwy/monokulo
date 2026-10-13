@@ -1093,15 +1093,10 @@ fn every_store_operation_fails_whole_and_then_works() {
         &TenantId::new(tenant_id),
         11,
     )];
-    assert_eq!(
-        sweep(&store, |s| s.advance_scanned_cursors(
-            monero::Network::Mainnet,
-            11,
-            &scanned
-        ))
-        .len(),
-        1
-    );
+    let (moved, movement) = sweep(&store, |s| {
+        s.advance_scanned_cursors(monero::Network::Mainnet, 11, &scanned)
+    });
+    assert_eq!((moved.len(), movement.stores()), (1, 1));
     assert_eq!(
         sweep(&store, |s| s.advance_idle_cursors(
             monero::Network::Mainnet,
@@ -1109,7 +1104,8 @@ fn every_store_operation_fails_whole_and_then_works() {
             11,
             i64::MAX / 2,
             0
-        )),
+        ))
+        .stores(),
         1
     );
 }

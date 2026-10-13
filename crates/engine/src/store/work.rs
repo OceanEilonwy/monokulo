@@ -718,6 +718,60 @@ impl Store {
     }
 }
 
+/// Whether a write moved any store's cursor.
+///
+/// Only the store's own cursor writes can say [`Movement::Moved`]:
+/// [`Stores`] can't be built anywhere else, so a move can't be worked out
+/// from a height. A height says how far a scan walked, not who went with
+/// it: a block commits for a group even when a store in it failed and
+/// stayed behind.
+///
+/// ```compile_fail
+/// // Outside the store, a move can't be claimed: `Stores` is opaque.
+/// let n = std::num::NonZeroUsize::new(1).unwrap();
+/// let _ = engine::store::Movement::Moved(engine::store::Stores(n));
+/// ```
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Movement {
+    Moved(Stores),
+    Stayed,
+}
+
+/// How many stores' cursors a write moved: at least one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stores(std::num::NonZeroUsize);
+
+impl Stores {
+    pub const fn get(self) -> usize {
+        self.0.get()
+    }
+}
+
+impl Movement {
+    /// From the rows a cursor write changed.
+    fn of(rows: usize) -> Self {
+        std::num::NonZeroUsize::new(rows).map_or(Self::Stayed, |n| Self::Moved(Stores(n)))
+    }
+
+    /// How many stores moved.
+    pub const fn stores(self) -> usize {
+        match self {
+            Self::Moved(stores) => stores.get(),
+            Self::Stayed => 0,
+        }
+    }
+
+    /// Two writes' moves together.
+    pub fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Moved(a), Self::Moved(b)) => Self::Moved(Stores(a.0.saturating_add(b.get()))),
+            (Self::Moved(a), Self::Stayed) | (Self::Stayed, Self::Moved(a)) => Self::Moved(a),
+            (Self::Stayed, Self::Stayed) => Self::Stayed,
+        }
+    }
+}
+
 /// A block a tenant's scan stopped partway through (its step ran out of
 /// time). Resumed only for the same block hash.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -917,6 +971,39 @@ impl Store {
         )
     }
 
+    /// Whether any enabled tenant on `network` at cursor `cursor`, among
+    /// `registered` and not in `excluding`, has an order that could be paid
+    /// as of `since`: whether a block scanned for that group would be read
+    /// for anyone.
+    pub fn anyone_to_scan_at_cursor(
+        &self,
+        network: monero::Network,
+        cursor: u64,
+        excluding: &[TenantId],
+        registered: &[TenantId],
+        since: i64,
+        grace_period_seconds: i64,
+    ) -> Result<bool> {
+        Ok(self.conn.query_row(
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM tenants
+                 WHERE network = :network AND disabled_at_utc IS NULL AND scanned_through_height = :cursor
+                   AND id NOT IN (SELECT value FROM json_each(:excluding))
+                   AND id IN (SELECT value FROM json_each(:registered))
+                   AND {})",
+                super::tenant_in_scope("tenants.id")
+            ),
+            rusqlite::named_params! {
+                ":network": shared::network::SqlNetwork(network),
+                ":cursor": Unsigned(cursor),
+                ":excluding": json_array(excluding),
+                ":registered": json_array(registered),
+                ":since_minus_grace": since.saturating_sub(grace_period_seconds),
+            },
+            |row| row.get(0),
+        )?)
+    }
+
     /// The scan windows of several tenants at once, in one query: the minor
     /// indices of each tenant's orders that are open, or closed no earlier
     /// than `since` minus the grace period (task 7.3, decision D10). The live
@@ -951,8 +1038,8 @@ impl Store {
     /// nothing that could have been paid since `since` (no order in its scan
     /// window as of then) straight to `to`: there is nothing in those blocks
     /// for it to find. The predicate is evaluated here, inside the caller's
-    /// transaction, so an order committed before it counts. Returns how many
-    /// moved.
+    /// transaction, so an order committed before it counts. Returns whether
+    /// any moved, and how many.
     pub fn advance_idle_cursors(
         &self,
         network: monero::Network,
@@ -960,7 +1047,7 @@ impl Store {
         to: u64,
         since: i64,
         grace_period_seconds: i64,
-    ) -> Result<usize> {
+    ) -> Result<Movement> {
         let moved = self.conn.execute(
             &format!(
                 "UPDATE tenants SET scanned_through_height = :to
@@ -975,27 +1062,27 @@ impl Store {
                 ":since_minus_grace": since.saturating_sub(grace_period_seconds),
             },
         )?;
-        Ok(moved)
+        Ok(Movement::of(moved))
     }
 
     /// Moves tenants' cursors past a block that was scanned for them, in one
     /// statement. Only a [`ScannedBlock`](crate::work::ScannedBlock) can do
     /// this, and only the block scan builds one. Conditional on each cursor
     /// still being at the block's parent, so a reorg rewind in between wins;
-    /// returns the tenants that moved.
+    /// returns the tenants that moved, and whether any did.
     pub fn advance_scanned_cursors(
         &self,
         network: monero::Network,
         height: u64,
         scanned: &[crate::work::ScannedBlock],
-    ) -> Result<std::collections::HashSet<TenantId>> {
+    ) -> Result<(std::collections::HashSet<TenantId>, Movement)> {
         let ids: Vec<&TenantId> = scanned
             .iter()
             .filter(|b| b.height() == height)
             .map(crate::work::ScannedBlock::tenant_id)
             .collect();
         if ids.is_empty() {
-            return Ok(std::collections::HashSet::default());
+            return Ok((std::collections::HashSet::default(), Movement::Stayed));
         }
         let ids = json_array(&ids);
         let moved = self.rows(
@@ -1005,7 +1092,8 @@ impl Store {
             params![shared::network::SqlNetwork(network), Unsigned(height), ids],
             |row| row.get::<_, TenantId>(0),
         )?;
-        Ok(moved.into_iter().collect())
+        let movement = Movement::of(moved.len());
+        Ok((moved.into_iter().collect(), movement))
     }
 
     /// Up to `limit` enabled tenants on `network` with an order in scope,

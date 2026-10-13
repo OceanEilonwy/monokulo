@@ -627,6 +627,18 @@ fn reviewed_engine_history_seeds_replay() {
             "../../../../../fuzz/seeds/history/payment-block-replaced-before-its-header"
         )
         .as_slice(),
+        // A restart while custody is offline leaves the keys unregistered,
+        // so the frontier runs on headers with nobody in it; when custody
+        // recovers, the store far behind must reach the frontier, not trail
+        // it a block behind to the tip.
+        include_bytes!(
+            "../../../../../fuzz/seeds/history/lost-keys-catch-up-behind-an-empty-frontier"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../../../fuzz/seeds/history/lost-keys-catch-up-behind-an-empty-frontier-later-payment"
+        )
+        .as_slice(),
     ] {
         crate::work::history::explore(data);
     }

@@ -38,8 +38,8 @@ pub use order_events::{
     DEFAULT_ORDER_EVENT_RETENTION_SECS,
 };
 pub use work::{
-    position, sql_height, ActivityFacts, BlockCheckpoint, OpenedReorg, Position, ReorgCandidate,
-    ReorgJob, ReorgPhase, StagedPayment,
+    position, sql_height, ActivityFacts, BlockCheckpoint, Movement, OpenedReorg, Position,
+    ReorgCandidate, ReorgJob, ReorgPhase, StagedPayment, Stores,
 };
 
 /// A wrapped SEV-SNP master key: (measurement, guest SVN, wrapped key).

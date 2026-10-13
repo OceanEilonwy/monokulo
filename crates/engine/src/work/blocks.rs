@@ -6,7 +6,9 @@
 //! view-key scan per tenant per transaction. The *frontier* group (at the
 //! network's high-water mark) scans new blocks; the others catch up, served
 //! round-robin ([`Rotation`]). While the frontier is behind, turns alternate
-//! between it and catch-up, so neither starves the other.
+//! between it and catch-up, so neither starves the other. A frontier with
+//! nobody to scan for gives its turn to catch-up, so the stores behind reach
+//! it rather than trailing it to the tip.
 //!
 //! A new block nobody can be scanned for (no store has an order in scope, or
 //! none of those has its keys registered) is recorded from its header alone:
@@ -44,7 +46,7 @@ use crate::scanner::{
     record_scan_match, scan_txs_for_tenants, stage_block_match, ScanResult, ScannerError,
 };
 use crate::store::position::CatchUpGroup;
-use crate::store::{BlockCheckpoint, Store};
+use crate::store::{BlockCheckpoint, Movement, Store};
 
 use shared::activity::Event;
 
@@ -613,12 +615,12 @@ impl From<Group> for shared::activity::Group {
 }
 
 /// Records stores moved straight from `from` to `to` for the engine page.
-fn record_idle(round: &Round<'_>, from: u64, to: u64, moved: usize) {
-    if moved > 0 {
+fn record_idle(round: &Round<'_>, from: u64, to: u64, moved: Movement) {
+    if let Movement::Moved(stores) = moved {
         round.state.activity().record(Event::IdleAdvanced {
             from,
             to,
-            stores: count(moved),
+            stores: count(stores.get()),
         });
     }
 }
@@ -643,12 +645,15 @@ enum Page {
 }
 
 enum BlockOutcome {
-    Committed(Page),
+    /// Recorded, and the stores it moved past (none if every store it was
+    /// scanned for failed).
+    Committed(Page, Movement),
     /// Out of time partway through; progress is checkpointed.
     Interrupted,
     /// Nobody in the group could be scanned (keys not registered, retry
-    /// delays): nothing was fetched or recorded.
-    NobodyToScan,
+    /// delays): nothing was fetched or recorded. Those with nothing that
+    /// could have been paid may have moved straight to the high-water mark.
+    NobodyToScan(Movement),
     /// The block doesn't extend the recorded chain: a reorg the chain tier
     /// will handle.
     Diverged(&'static str),
@@ -719,6 +724,19 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Result<Progress, ScannerE
     let turn = &round.state.blocks.catch_up_turn;
     if frontier_behind && !turn.load(Ordering::Relaxed) {
         turn.store(true, Ordering::Relaxed);
+        // A frontier with nobody to scan for only records headers, and the
+        // stores catching up fetch those blocks whole after it anyway. Its
+        // turn goes to them, so they reach it instead of trailing it to the
+        // tip; unless none of them can move either, and the network's
+        // chain still has to.
+        if !anyone_at_frontier(round, high_water).await? {
+            let mut rotation = std::mem::take(&mut round.blocks.rotation);
+            let served = serve_catch_up(round, &mut rotation, high_water, tip, until).await;
+            round.blocks.rotation = rotation;
+            if let Some(Movement::Moved(_)) = served? {
+                return Ok(Progress::Advanced);
+            }
+        }
         let reached = advance_group(round, Group::Frontier, high_water, tip, until).await?;
         return Ok(frontier_progress(round, reached));
     }
@@ -726,7 +744,7 @@ async fn run(round: &mut Round<'_>, until: Instant) -> Result<Progress, ScannerE
     let mut rotation = std::mem::take(&mut round.blocks.rotation);
     let served = serve_catch_up(round, &mut rotation, high_water, tip, until).await;
     round.blocks.rotation = rotation;
-    if served? {
+    if served?.is_some() {
         return Ok(Progress::Advanced);
     }
     if frontier_behind {
@@ -749,16 +767,38 @@ fn frontier_progress(round: &mut Round<'_>, reached: Reached) -> Progress {
     }
 }
 
-/// Serves the next catch-up group, if the rotation has one this round.
+/// Whether the frontier group (the stores at the high-water mark) has
+/// anyone a new block would be scanned for: keys registered, not waiting
+/// out a retry delay, and an order that could be paid now.
+async fn anyone_at_frontier(round: &Round<'_>, high_water: u64) -> Result<bool, ScannerError> {
+    let waiting = round.state.backoff.waiting();
+    let registered: Vec<TenantId> = round
+        .inputs
+        .tenants
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect();
+    let (since, grace) = (round.now, round.inputs.grace_period_seconds);
+    round
+        .db(move |s, network| {
+            s.anyone_to_scan_at_cursor(network, high_water, &waiting, &registered, since, grace)
+        })
+        .await
+}
+
+/// Serves the next catch-up group, if the rotation has one this round:
+/// `None` if it has none, else whether any of the group's stores moved.
+/// How far the unit walked doesn't say: it walks past a block that commits
+/// even when no store in the group could go with it.
 async fn serve_catch_up(
     round: &mut Round<'_>,
     rotation: &mut Rotation,
     high_water: u64,
     tip: u64,
     until: Instant,
-) -> Result<bool, ScannerError> {
+) -> Result<Option<Movement>, ScannerError> {
     let Some(group) = rotation.next(round, high_water).await? else {
-        return Ok(false);
+        return Ok(None);
     };
     // Tenants with nothing that could ever have been paid need no block read
     // to decide: straight to the high-water mark.
@@ -769,8 +809,8 @@ async fn serve_catch_up(
     // A group that diverged stays where it is; the rotation still moves on
     // past it, so the round's other groups are served.
     let reached = advance_group(round, Group::CatchUp, group, tip, until).await?;
-    rotation.served(round, group, reached.cursor).await?;
-    Ok(true)
+    rotation.served(round, group, reached.walked_to).await?;
+    Ok(Some(idle.and(reached.moved)))
 }
 
 /// First run on a network: start just below the node's tip rather than
@@ -807,9 +847,9 @@ async fn seed(round: &Round<'_>, tip: u64) -> Result<Progress, ScannerError> {
 /// Makes up to the tuning's `blocks_per_unit` tenant-page block scans for the group at
 /// `cursor`, one after another, as far as its time allows (always at least
 /// one step of progress). The frontier stops at the tip; catch-up stops at the
-/// network's high-water mark, where it joins the frontier. Returns the
-/// cursor the group reached, and whether it stopped at a block that doesn't
-/// extend the recorded chain.
+/// network's high-water mark, where it joins the frontier. Returns how far
+/// the unit walked, whether any store moved, and whether it stopped at a
+/// block that doesn't extend the recorded chain.
 async fn advance_group(
     round: &mut Round<'_>,
     group: Group,
@@ -818,6 +858,7 @@ async fn advance_group(
     until: Instant,
 ) -> Result<Reached, ScannerError> {
     let mut cursor = cursor;
+    let mut moved = Movement::Stayed;
     let mut high_water = round.db(Store::max_scanned_height).await?.unwrap_or(cursor);
     // Tenants already given block `cursor + 1` this unit, a page at a
     // time, while the rest of the group at `cursor` waits for its page.
@@ -900,18 +941,24 @@ async fn advance_group(
             // same block (held already) before the group moves on, so a
             // group larger than a page moves together rather than its
             // first page running ahead of the rest.
-            BlockOutcome::Committed(Page::Full(page)) => {
+            BlockOutcome::Committed(Page::Full(page), stores) => {
+                moved = moved.and(stores);
                 given.extend(page);
                 scanned += 1;
             }
-            BlockOutcome::Committed(Page::Last) => {
+            BlockOutcome::Committed(Page::Last, stores) => {
+                moved = moved.and(stores);
                 round.blocks.cache.mark_scanned(cursor + 1);
                 given.clear();
                 cursor += 1;
                 high_water = high_water.max(cursor);
                 scanned += 1;
             }
-            BlockOutcome::Interrupted | BlockOutcome::NobodyToScan => break,
+            BlockOutcome::NobodyToScan(idle) => {
+                moved = moved.and(idle);
+                break;
+            }
+            BlockOutcome::Interrupted => break,
             BlockOutcome::Diverged(reason) => {
                 round
                     .state
@@ -924,7 +971,8 @@ async fn advance_group(
                     "block differs from the stored chain; waiting for reorg reconciliation"
                 );
                 return Ok(Reached {
-                    cursor,
+                    walked_to: cursor,
+                    moved,
                     diverged: true,
                 });
             }
@@ -934,7 +982,8 @@ async fn advance_group(
         round.blocks.frontier_done = true;
     }
     Ok(Reached {
-        cursor,
+        walked_to: cursor,
+        moved,
         diverged: false,
     })
 }
@@ -942,7 +991,11 @@ async fn advance_group(
 /// Where a group's unit left it.
 #[derive(Clone, Copy)]
 struct Reached {
-    cursor: u64,
+    /// The last block the unit got past. Not where the group's stores are:
+    /// a block commits for the group even when a store in it failed and
+    /// stayed. Whether any went with it is `moved`.
+    walked_to: u64,
+    moved: Movement,
     diverged: bool,
 }
 
@@ -1035,7 +1088,7 @@ async fn scan_block(
             })
             .await?;
         if !ids.iter().any(|id| round.handles.contains_key(id.as_str())) {
-            return Ok(BlockOutcome::NobodyToScan);
+            return Ok(BlockOutcome::NobodyToScan(Movement::Stayed));
         }
     }
     // Which orders could have been paid in this block: as of now for a new
@@ -1116,7 +1169,7 @@ async fn scan_block(
             .db(move |s, network| s.advance_idle_cursors(network, parent, high_water, since, grace))
             .await?;
         record_idle(round, parent, high_water, idle);
-        return Ok(BlockOutcome::NobodyToScan);
+        return Ok(BlockOutcome::NobodyToScan(idle));
     }
 
     // A new block with nobody to scan it for is recorded from its header:
@@ -1255,31 +1308,36 @@ async fn scan_block(
     let committed = round
         .db(move |s, network| commit(s, network, &commit_block, &scanned, now))
         .await?;
-    if let Some((matches, idle_moved)) = committed {
-        round.state.activity().record(Event::Committed {
-            height,
-            group: group.into(),
-            stores,
-            matches: count(matches),
-            idle_moved: count(idle_moved),
-            header_only,
-        });
-        round
-            .state
-            .blocks
-            .progress
-            .lock()
-            .finish_block(height, crate::now_unix());
-        let mut paged = round.state.blocks.paged.lock();
-        if paged.as_ref().is_some_and(|p| p.outline.height == height) {
-            *paged = None;
-        }
+    let Some(Commit {
+        matches,
+        scanned,
+        idle,
+    }) = committed
+    else {
+        return Ok(BlockOutcome::Diverged(
+            "the recorded chain changed before commit",
+        ));
+    };
+    round.state.activity().record(Event::Committed {
+        height,
+        group: group.into(),
+        stores,
+        matches: count(matches),
+        idle_moved: count(idle.stores()),
+        header_only,
+    });
+    round
+        .state
+        .blocks
+        .progress
+        .lock()
+        .finish_block(height, crate::now_unix());
+    let mut paged = round.state.blocks.paged.lock();
+    if paged.as_ref().is_some_and(|p| p.outline.height == height) {
+        *paged = None;
     }
-    Ok(if committed.is_some() {
-        BlockOutcome::Committed(plan.page)
-    } else {
-        BlockOutcome::Diverged("the recorded chain changed before commit")
-    })
+    drop(paged);
+    Ok(BlockOutcome::Committed(plan.page, scanned.and(idle)))
 }
 
 /// One block's scan in progress, for the tenants of one group: where each
@@ -1443,14 +1501,24 @@ struct CommitBlock {
     grace: i64,
 }
 
+/// What a block's commit did.
+struct Commit {
+    /// Payments found for the tenants that moved.
+    matches: usize,
+    /// Tenants it was scanned for that moved past it.
+    scanned: Movement,
+    /// Idle tenants at its parent moved along.
+    idle: Movement,
+}
+
 /// One transaction: record the block for the network (if it is the next
 /// one), and for each tenant it was scanned for, move the cursor and record
 /// its payments, staged and new. Idle tenants at the parent move along. The
 /// payments' recompute obligations are left by the payment triggers.
 ///
 /// Returns how many payments the block was found to hold for the tenants
-/// that moved (staged from a checkpoint, or found now) and how many idle
-/// tenants moved along, or `None` (nothing
+/// that moved (staged from a checkpoint, or found now), the tenants it
+/// moved past it and the idle ones it moved along, or `None` (nothing
 /// written) unless the block still extends the recorded chain: the
 /// recorded hash at its height (if any) is its own, and the recorded parent
 /// (if any) is its parent.
@@ -1460,8 +1528,8 @@ fn commit(
     block: &CommitBlock,
     scanned: &[ScannedBlock],
     now: i64,
-) -> Result<Option<(usize, usize)>, ScannerError> {
-    let result = s.in_transaction(|s| -> Result<Option<(usize, usize)>, ScannerError> {
+) -> Result<Option<Commit>, ScannerError> {
+    let result = s.in_transaction(|s| -> Result<Option<Commit>, ScannerError> {
         let height = block.height;
         if s.settlement_frozen(network)? {
             return Ok(None);
@@ -1501,7 +1569,7 @@ fn commit(
                 }
             }
         }
-        let moved = s.advance_scanned_cursors(network, height, scanned)?;
+        let (moved, scanned_moved) = s.advance_scanned_cursors(network, height, scanned)?;
         let mut matches = 0;
         for scanned in scanned {
             // A checkpoint's staged matches go either way: promoted if the
@@ -1550,10 +1618,14 @@ fn commit(
         if matches > 0 {
             crate::store::crash_checkpoint("publication.before_commit");
         }
-        Ok(Some((matches, idle)))
+        Ok(Some(Commit {
+            matches,
+            scanned: scanned_moved,
+            idle,
+        }))
     });
     #[cfg(test)]
-    if matches!(result, Ok(Some((matches, _))) if matches > 0) {
+    if matches!(&result, Ok(Some(commit)) if commit.matches > 0) {
         crate::store::crash_checkpoint("publication.after_commit");
     }
     result

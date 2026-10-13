@@ -509,6 +509,10 @@ impl Harness {
         self.recovered();
         // Bounded convergence, including block catch-up and five-minute void
         // revalidation. No wall-clock sleeps or report-only exit conditions.
+        // Each round gives the blocks tier one unit of one block. The one
+        // store is never behind a frontier someone else holds, so the
+        // frontier gives it every turn (a frontier with someone in it would
+        // take every other turn): a block per round from its cursor to the tip.
         for _ in 0..(self.model.blocks.len() + 16) {
             self.tick().await.into_result().unwrap();
             if self.matches_model() {

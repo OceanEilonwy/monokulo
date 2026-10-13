@@ -8736,7 +8736,8 @@ fn only_tenants_with_nothing_in_scope_move_without_a_scan() {
     assert_eq!(
         store
             .advance_idle_cursors(Network::Mainnet, 10, 11, 500, 0)
-            .unwrap(),
+            .unwrap()
+            .stores(),
         1
     );
     let cursor = |id: &str| {
