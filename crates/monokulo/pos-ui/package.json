@@ -9,7 +9,8 @@
   },
   "dependencies": {
     "solid-js": "next",
-    "@solidjs/web": "next"
+    "@solidjs/web": "next",
+    "@monokulo/ui": "0.1.0"
   },
   "devDependencies": {
     "@solidjs/vite-plugin": "latest",

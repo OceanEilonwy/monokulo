@@ -1,0 +1,16 @@
+import { fileURLToPath } from 'node:url';
+import { defineConfig } from '@playwright/test';
+export default defineConfig({
+  testDir: './tests',
+  outputDir: fileURLToPath(new URL('../../test-results/ui', import.meta.url)),
+  use: { baseURL: 'http://127.0.0.1:4179', browserName: 'chromium' },
+  webServer: [{
+    cwd: fileURLToPath(new URL('../../', import.meta.url)),
+    command: 'npm run build:stylebook && npm run preview -w @monokulo/stylebook -- --port 4179 --strictPort',
+    url: 'http://127.0.0.1:4179', reuseExistingServer: !process.env.CI,
+  }, {
+    cwd: fileURLToPath(new URL('../../', import.meta.url)),
+    command: 'npm run dev -w @monokulo/stylebook -- --port 4180 --strictPort',
+    url: 'http://127.0.0.1:4180', reuseExistingServer: !process.env.CI,
+  }],
+});

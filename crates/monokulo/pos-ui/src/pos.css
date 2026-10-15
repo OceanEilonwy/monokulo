@@ -24,7 +24,7 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
    a border and padding, inputs a focus outline); none of that belongs in
    the terminal, so its own elements start from nothing. The site's own
    status indicator and theme toggle keep the site's styling. */
-#pos-root :where(h1, h2, p, button, input, label, hr, code, small):not(:where(.pos-site-controls *)) {
+#pos-root :where(h1, h2, p, button, input, label, hr, code, small):not(:where(.pos-site-controls *, .mk-btn, .mk-input, .mk-label)) {
   all: unset; box-sizing: border-box; font-family: inherit; color: inherit;
 }
 #pos-root :where(h1, h2, p, hr, label) { display: block; }
@@ -39,12 +39,10 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   font: 500 15px/1.4 var(--font-ui); color: var(--ink); background: var(--paper);
 }
 #pos-root *, #pos-root *::before, #pos-root *::after { box-sizing: border-box; }
-.pos-symbol-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
 
 
 
 
-@keyframes pos-spin { to { transform: rotate(360deg); } }
 /* Keyframes stay at the top level: nested in a style rule (#pos-root below)
    they are not valid CSS, so browsers drop them and the minifier refuses them. */
 @keyframes pos-qr-new { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--state-partial-border) 55%, transparent); } to { box-shadow: 0 0 0 14px transparent; } }
@@ -77,25 +75,6 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .pos-status-link { display: flex; align-items: center; text-decoration: none; }
 
   /* ---- shared controls ---- */
-  .pos-field { display: grid; gap: 5px; }
-  .pos-field-label { font-size: 11px; font-weight: 700; }
-  .pos-field-label span { color: var(--muted); font-weight: 500; }
-  .pos-input {
-    width: 100%; height: 40px; padding: 0 12px; border: 2px solid var(--pos-border); border-radius: 5px;
-    background: var(--pos-field); color: var(--ink); font-size: 13px;
-  }
-  .pos-input::placeholder { color: var(--muted); opacity: .8; }
-  .pos-input:focus-visible, .pos-refund input:focus-visible { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px var(--pos-focus); }
-  .pos-primary {
-    flex: none; display: grid; place-items: center; width: 100%; height: 48px; border: 2px solid var(--btn-primary-bg); border-radius: 5px;
-    background: var(--btn-primary-bg); color: var(--btn-primary-ink); font-size: 17px; font-weight: 800;
-  }
-  .pos-primary:hover:not(:disabled) { background: var(--btn-primary-hover); border-color: var(--btn-primary-hover); }
-  .pos-primary:disabled { background: var(--pos-field); color: var(--pos-disabled-ink); border-color: var(--pos-disabled); }
-  .pos-cancel {
-    flex: none; display: grid; place-items: center; width: 100%; height: 40px; border: 2px solid var(--error); border-radius: 5px;
-    background: var(--pos-field); color: var(--error); font-size: 14px; font-weight: 800;
-  }
   .pos-error { color: var(--error); font-size: 12px; font-weight: 700; }
   .pos-link { font-weight: 800; text-decoration: underline; font-size: 12px; }
   .pos-empty, .pos-loading { color: var(--muted); font-size: 13px; padding: 16px 0; }
@@ -153,32 +132,9 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .pos-keypad.has-stack .pos-amount.len-4 { font-size: 20px; }
   .pos-keypad.has-stack .pos-keys { gap: 8px; }
 
-  /* Every symbol sits centred in the same square box. */
-  .pos-icon { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; color: var(--state-ink); line-height: 0; }
-  .pos-icon > svg, .pos-icon > span { grid-area: 1 / 1; }
-  .pos-coin-mark { stroke: var(--brand-orange); }
-  .pos-icon svg { width: 100%; height: 100%; display: block; overflow: visible; }
-  .pos-icon-overpaid svg { width: 130%; height: 100%; }
-  .pos-spinner {
-    width: 72%; height: 72%; border-radius: 50%;
-    border: 2px solid color-mix(in srgb, var(--state-ink, var(--ink)) 22%, transparent);
-    border-top-color: var(--state-ink, var(--ink)); border-right-color: var(--state-ink, var(--ink));
-    animation: pos-spin 1.6s linear infinite;
-  }
-  /* The logo's loading drawing (`logo.ts`), for a save in progress. */
-  .pos-loading-mark { display: inline-block; width: 16px; height: 16px; color: var(--ink); line-height: 0; }
-  .pos-loading-mark svg { width: 100%; height: 100%; display: block; }
-  @media (prefers-reduced-motion: reduce) { .pos-loading-mark .logo-glow { display: none; } }
-  @media (prefers-reduced-motion: reduce) { .pos-spinner { animation: none; transform: rotate(-35deg); } }
-  .pos-disc {
-    width: 82%; height: 82%; border-radius: 50%;
-    background: conic-gradient(var(--state-ink) 0 var(--progress, 0%), color-mix(in srgb, var(--state-border) 35%, var(--state-bg)) var(--progress, 0%) 100%);
-    box-shadow: inset 0 0 0 1.5px var(--state-border);
-  }
-
   .pos-badge {
     flex: none; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px 0 4px;
-    border: 1px solid var(--state-border); border-radius: 4px; background: var(--state-bg); color: var(--state-ink);
+    border: 1px solid var(--state-border); border-radius: 999px; background: var(--state-bg); color: var(--state-ink);
     font-size: 11px; font-weight: 800; white-space: nowrap;
   }
   .pos-badge .pos-icon { width: 15px; height: 15px; }
@@ -238,11 +194,7 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .pos-address button { font-size: 11px; font-weight: 700; text-decoration: underline; }
   .pos-pay-card hr { height: 1px; background: var(--pos-soft-line); margin: 6px 0 2px; }
   .pos-refund { position: relative; }
-  .pos-refund input {
-    display: block; width: 100%; height: 32px; padding: 0 30px 0 8px; border: 1px solid var(--pos-border); border-radius: 3px;
-    background: var(--pos-field); color: var(--ink); font-size: 11px;
-  }
-  .pos-refund input::placeholder { color: var(--muted); opacity: .8; }
+  .pos-refund .mk-input { padding-right: 30px; }
   .pos-refund.state-invalid input { border-color: var(--error); }
   .pos-refund.state-saved input { border-color: var(--success); }
   .pos-refund-state { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 16px; height: 16px; color: var(--success); }

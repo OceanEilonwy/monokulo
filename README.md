@@ -57,6 +57,13 @@ Step-by-step instructions for every platform are in the **[install guide](https:
 Monokulo builds on nightly Rust, Node 24 and CMake. To run it locally against stagenet:
 
 ```sh
-(cd crates/monokulo/pos-ui && npm ci)
+npm ci
 scripts/dev-run.sh start    # then open http://127.0.0.1:8081
 ```
+
+### Shared UI and stylebook
+
+The framework-independent component library lives in [`packages/ui`](packages/ui),
+with a standalone, HTML-first stylebook in [`apps/stylebook`](apps/stylebook).
+Run `npm ci` at the repository root, then `npm run stylebook`.
+See [the UI architecture and adoption guide](docs/ui-components.md).

@@ -1,0 +1,54 @@
+@import '@monokulo/ui/styles.css';
+
+/* Stylebook shell only. Component appearance belongs to @monokulo/ui. */
+* { box-sizing: border-box; }
+html { scroll-padding-top: 2rem; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: var(--text-base)/var(--leading-body) var(--font-ui); }
+a { color: inherit; text-underline-offset: .2em; }
+h1, h2, h3, p { margin: 0; }
+h1 { font-size: clamp(var(--text-2xl), 5vw, var(--text-display)); letter-spacing: -.04em; }
+h2 { font-size: var(--text-xl); letter-spacing: -.02em; }
+.book-top { padding: 1.25rem 2rem; border-bottom: 1px solid var(--line); display: flex; gap: 1rem; align-items: center; justify-content: space-between; }
+.book-brand { font-weight: 800; text-decoration: none; }
+.book-shell { display: grid; grid-template-columns: 13rem minmax(0, 1fr); max-width: 100rem; margin: auto; }
+.book-nav { align-self: start; position: sticky; top: 0; padding: 2rem; display: grid; gap: .75rem; }
+.book-nav a { text-decoration: none; color: var(--muted); }
+.book-nav a:hover { color: var(--ink); text-decoration: underline; }
+main { min-width: 0; border-left: 1px solid var(--line); padding: clamp(1rem, 4vw, 3rem); }
+.book-intro { max-width: 48rem; margin-bottom: 3rem; }
+.book-kicker { color: var(--muted); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .12em; font-weight: 700; }
+.book-intro p { margin-top: 1rem; }
+.book-section { scroll-margin-top: 1rem; margin-block: 0 3rem; }
+.book-section > p { color: var(--muted); margin-block: .5rem 1.25rem; max-width: 50rem; }
+.book-example { padding: clamp(1rem, 3vw, 2rem); border: 1px solid var(--line); border-radius: var(--radius-md); margin-top: 1rem; background: var(--paper-raised); }
+.book-source { margin-top: 1rem; font-size: var(--text-sm); }
+.book-source summary { cursor: pointer; color: var(--muted); }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; background: var(--surface-sunken); border-radius: var(--radius-sm); font: .8rem/1.6 var(--font-mono); }
+.book-swatch { min-height: 5rem; border-radius: var(--radius-sm); border: 1px solid var(--line); padding: 1rem; }
+.book-theme { display: flex; align-items: center; gap: .5rem; }
+.book-theme[hidden], [hidden] { display: none; }
+.book-theme select { width: auto; }
+.book-contract { margin-top: 1rem; font-size: var(--text-sm); }
+.book-note { font-size: var(--text-sm); color: var(--muted); }
+@media (max-width: 760px) {
+  .book-shell { display: block; }
+  .book-nav { position: static; display: flex; flex-wrap: wrap; gap: .5rem 1rem; padding: 1rem; border-bottom: 1px solid var(--line); }
+  main { border-left: 0; }
+  .book-top { padding: 1rem; flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+.book-nav { max-height: 100vh; overflow-y: auto; }
+.book-icon-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: var(--space-lg); }
+.book-icon-grid > div { display: grid; justify-items: center; gap: var(--space-sm); padding: var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.book-space-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-lg); }
+.book-space-row > code { min-width: 11rem; }
+.book-spacing-demo { padding: var(--space-lg); background: var(--tint-highlight); border: 1px dashed var(--accent-text); }
+.book-example .mk-type-display { overflow-wrap: anywhere; }
+@media (max-width: 760px) { .book-nav { max-height: none; } }
+.book-brand-sample { display: grid; justify-items: center; align-items: end; gap: var(--space-sm); margin: 0; padding: var(--space-md); }
+.book-brand-sample figcaption { color: var(--muted); font-size: var(--text-sm); }
+.book-form-page > a, .book-form-page > .mk-stack > :not(mk-settings-form) { display: none; }
+
+
+.book-form-preview { display: block; width: 100%; height: 38rem; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); }

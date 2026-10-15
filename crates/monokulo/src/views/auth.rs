@@ -80,15 +80,15 @@ pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
                     " to join."
                 }
             } @else {
-                form method="post" action="/dashboard/signup" class="signup-form" {
+                form method="post" action="/dashboard/signup" class="signup-form mk-stack" {
                     input type="hidden" name="invite" value=(data.invite_token);
                     @if let Some(next) = &data.next {
                         input type="hidden" name="next" value=(next);
                     }
-                    label { "Email " input type="email" name="email" required; }
-                    label { "Password " input type="password" name="password" required minlength=(crate::http::MIN_PASSWORD_LEN) autocomplete="new-password"; }
+                    label class="mk-field" { "Email " input class="mk-input" type="email" name="email" required; }
+                    label class="mk-field" { "Password " input class="mk-input" type="password" name="password" required minlength=(crate::http::MIN_PASSWORD_LEN) autocomplete="new-password"; }
                     (super::account::theme_choice(data.theme, None, "You can change it any time from the account menu."))
-                    button type="submit" class="btn-primary" { "Sign up" }
+                    button type="submit" class="mk-btn" data-variant="primary" { "Sign up" }
                 }
             }
             p { "Already have an account? " a href=(with_next("/dashboard/login", data.next.as_deref())) { "Log in" } }
@@ -113,13 +113,13 @@ pub fn login_page(chrome: &PageChrome, data: &LoginViewModel) -> Markup {
             @if let Some(error) = &data.error {
                 p class="error" { (error) }
             }
-            form method="post" action="/dashboard/login" {
+            form method="post" action="/dashboard/login" class="mk-stack" {
                 @if let Some(next) = &data.next {
                     input type="hidden" name="next" value=(next);
                 }
-                label { "Email " input type="email" name="email" required; }
-                label { "Password " input type="password" name="password" required; }
-                button type="submit" class="btn-primary" { "Log in" }
+                label class="mk-field" { "Email " input class="mk-input" type="email" name="email" required; }
+                label class="mk-field" { "Password " input class="mk-input" type="password" name="password" required; }
+                button type="submit" class="mk-btn" data-variant="primary" { "Log in" }
             }
             p { "Need an account? " a href=(with_next("/dashboard/signup", data.next.as_deref())) { "Sign up" } }
         }

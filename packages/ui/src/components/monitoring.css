@@ -1,0 +1,38 @@
+/* Native SVG plots and status headings extracted from live monitoring. */
+.resource-chart { display: block; width: 100%; height: 5rem; background: var(--surface-sunken); border-radius: var(--radius-sm); }
+.chart-layer.chart-engine { fill: var(--chart-engine); }
+.chart-layer.chart-monokulo { fill: var(--chart-monokulo); }
+.chart-limit { stroke-width: 1.5; stroke-dasharray: 4 3; }
+.chart-limit.chart-engine { stroke: var(--chart-engine); }
+.chart-limit.chart-monokulo { stroke: var(--chart-monokulo); }
+.chart-legend { display: flex; flex-wrap: wrap; gap: var(--space-md); list-style: none; padding: 0; margin: var(--space-xs) 0; }
+.chart-swatch { display: inline-block; width: 0.8em; height: 0.8em; border-radius: 2px; margin-right: 0.35em; vertical-align: -0.05em; }
+.chart-swatch.chart-engine { background: var(--chart-engine); }
+.chart-swatch.chart-monokulo { background: var(--chart-monokulo); }
+.sparkline { width: 4rem; height: 1rem; vertical-align: middle; fill: none; stroke: var(--chart-engine); stroke-width: 1.5; }
+.sparkline polyline { vector-effect: non-scaling-stroke; }
+.sparkline circle { fill: var(--chart-engine); stroke: none; }
+.net-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin: 0 0 var(--space-lg); padding-bottom: var(--space-sm); border-bottom: 1px solid var(--line); }
+.net-head h2 { margin: 0; padding: 0; border: 0; font-size: var(--text-xl); font-weight: 800; }
+.net-head .net-head-action { margin: 0 0 0 auto; padding: var(--space-xs) var(--space-md); font-size: var(--text-sm); }
+.net-card h3.caps { margin: var(--space-xl) 0 var(--space-sm); font-size: var(--text-xs); font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.net-card > .net-head + h3.caps { margin-top: 0; }
+.net-card .line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm); margin: var(--space-xs) 0; }
+
+.mk-status-card { min-width: 0; padding: var(--space-lg); border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--paper-raised); }
+.mk-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr)); gap: var(--space-lg); margin: 0; padding-block: var(--space-lg); }
+.mk-metrics > div { min-width: 0; }
+.mk-metrics dt { color: var(--muted); font-size: var(--text-sm); }
+.mk-metrics dd { margin: 0; font-size: var(--text-xl); font-weight: 700; font-variant-numeric: tabular-nums; }
+.mk-chart { margin: 0; display: grid; gap: var(--space-sm); }
+.mk-chart figcaption { font-weight: 700; }
+.mk-chart-axis { display: flex; justify-content: space-between; color: var(--muted); font-size: var(--text-xs); }
+
+.mk-status-heading { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin-bottom: var(--space-sm); }
+.mk-status-heading > :is(h2, h3) { margin: 0; }
+.mk-status-text { font-size: var(--text-sm); font-weight: 500; color: var(--muted); }
+.mk-status-text[data-tone="warning"] { color: var(--warning); }
+.mk-status-text[data-tone="error"] { color: var(--error); }
+.mk-status-text[data-tone="success"] { color: var(--success); }
+/* Monitoring labels describe the heading or sentence they accompany. */
+.net-head > .tag, .scanner-line > .tag { background: none; border: 0; border-radius: 0; padding: 0; font-size: var(--text-sm); font-weight: 500; text-transform: none; letter-spacing: normal; }

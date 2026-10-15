@@ -327,7 +327,7 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                                     div class="error" { (error) }
                                 }
                                 div id="refund-field" class=(if data.refund_address.is_some() { "refund-field is-saved" } else { "refund-field" }) {
-                                    input type="text" id="refund_address" name="refund_address" value=(data.refund_address.as_deref().unwrap_or("")) placeholder="Your Monero refund address" autocomplete="off" spellcheck="false";
+                                    input class="mk-input" type="text" id="refund_address" name="refund_address" value=(data.refund_address.as_deref().unwrap_or("")) placeholder="Your Monero refund address" autocomplete="off" spellcheck="false";
                                     span class="refund-tools" {
                                     span id="refund-save-state" class="refund-save-state" role="status" aria-label=(if data.refund_address.is_some() { "Refund address saved" } else { "" }) {
                                         svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" { path d="m4 12 5 5L20 6" {} }

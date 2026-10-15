@@ -401,11 +401,8 @@ fn collect_browser(log: &Log) -> io::Result<Exit> {
     if let Some(exit) = browser_prerequisites(log) {
         return Ok(exit);
     }
-    if !root()
-        .join("crates/monokulo/pos-ui/node_modules/vite/bin/vite.js")
-        .is_file()
-    {
-        return Ok(log.missing("POS Vite dependencies (run npm ci in crates/monokulo/pos-ui)"));
+    if !root().join("node_modules/vite/bin/vite.js").is_file() {
+        return Ok(log.missing("POS Vite dependencies (run npm ci at the repository root)"));
     }
     // Build every binary the suites run up front, with the one command the
     // Playwright run's global setup and each fixture spec's beforeAll repeat

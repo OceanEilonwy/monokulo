@@ -43,40 +43,8 @@ pub struct WalletAt {
     pub at: usize,
 }
 
-/// The wallet's small steps as a timeline: done ones green, the current
-/// one orange, the rest neutral, joined by lines. On a phone it gives way
-/// to one line ("Wallet · 2 of 3: back up").
-fn wallet_timeline(wallet: WalletAt) -> Markup {
-    let labels = wallet.path.labels();
-    html! {
-        ol class="sub-timeline" aria-label="Wallet steps" {
-            @for (i, label) in labels.iter().enumerate() {
-                @if i == wallet.at {
-                    li aria-current="step" { span class="pill" { (label) } }
-                } @else if i < wallet.at {
-                    li class="done" { span class="pill" { (label) } }
-                } @else {
-                    li { span class="pill" { (label) } }
-                }
-            }
-        }
-    }
-}
-
-/// The one-line form of the wallet's small steps, for a phone.
-fn wallet_line(wallet: WalletAt) -> Markup {
-    let labels = wallet.path.labels();
-    html! {
-        p class="sub-crumbs" {
-            "Wallet · " (wallet.at + 1) " of " (labels.len()) ": "
-            (labels.get(wallet.at).copied().unwrap_or_default().to_lowercase())
-        }
-    }
-}
-
-/// The steps above every setup screen: Store, Wallet, Done. While on
-/// Wallet, its own small steps sit beside it. Done is only ever reached
-/// once the store exists.
+/// Setup progress uses completed tasks, not the index of the active screen.
+/// Done is reached only once the store exists.
 pub fn steps(at: Step, wallet: Option<WalletAt>) -> Markup {
     let all = [
         (Step::Store, "Store"),
@@ -85,27 +53,29 @@ pub fn steps(at: Step, wallet: Option<WalletAt>) -> Markup {
     ];
     let current = all.iter().position(|(s, _)| *s == at).unwrap_or(0);
     html! {
-        ol class="setup-steps" aria-label="Setup progress" {
+        ol class="setup-steps mk-progress-steps" data-design="strip" aria-label="Setup progress" {
             @for (i, (step, label)) in all.iter().enumerate() {
-                @if i == current {
-                    @match (step, wallet) {
-                        (Step::Wallet, Some(wallet)) => {
-                            li class="wallet-group" aria-current="step" {
-                                span class="lbl" { span class="n" { (i + 1) } (label) }
-                                (wallet_timeline(wallet))
-                            }
+                @let complete = i < current || at == Step::Done;
+                @let (value, max) = if complete { (1, 1) } else if *step == Step::Wallet && i == current {
+                    wallet.map(|w| (w.at.min(w.path.labels().len()), w.path.labels().len())).unwrap_or((0, 1))
+                } else { (0, 1) };
+                li class=[(complete && i != current).then_some("done")] aria-current=[(i == current).then_some("step")] {
+                    span {
+                        (label)
+                        small {
+                            @if complete { "Complete" }
+                            @else if i == current {
+                                @if let (Step::Wallet, Some(w)) = (step, wallet) {
+                                    (w.path.labels().get(w.at).copied().unwrap_or_default())
+                                    " · step " (w.at + 1) " of " (max)
+                                } @else { "In progress" }
+                            } @else { "Next" }
                         }
-                        _ => li aria-current="step" { span class="n" { (i + 1) } (label) },
                     }
-                } @else if i < current {
-                    li class="done" { span class="n" { (i + 1) } (label) }
-                } @else {
-                    li { span class="n" { (i + 1) } (label) }
+                    progress class="mk-step-progress" value=(value) max=(max)
+                        aria-label=(format!("{label}: {value} of {max} tasks complete")) {}
                 }
             }
-        }
-        @if let (Step::Wallet, Some(wallet)) = (at, wallet) {
-            (wallet_line(wallet))
         }
     }
 }
@@ -113,9 +83,21 @@ pub fn steps(at: Step, wallet: Option<WalletAt>) -> Markup {
 /// The wallet's small steps on their own, for adding a wallet outside
 /// setup (`/account/wallets/...`).
 pub fn wallet_steps(wallet: WalletAt) -> Markup {
+    let labels = wallet.path.labels();
     html! {
-        (wallet_timeline(wallet))
-        (wallet_line(wallet))
+        ol class="mk-progress-steps" data-design="strip" aria-label="Wallet progress" {
+            li aria-current="step" {
+                span {
+                    "Wallet"
+                    small {
+                        (labels.get(wallet.at).copied().unwrap_or_default())
+                        " · step " (wallet.at + 1) " of " (labels.len())
+                    }
+                }
+                progress class="mk-step-progress" value=(wallet.at.min(labels.len())) max=(labels.len())
+                    aria-label=(format!("Wallet: {} of {} tasks complete", wallet.at.min(labels.len()), labels.len())) {}
+            }
+        }
     }
 }
 
@@ -413,7 +395,9 @@ mod tests {
     fn the_steps_never_say_done_before_the_store_exists() {
         let store = steps(Step::Store, None).into_string();
         assert!(
-            store.contains(r#"<li aria-current="step"><span class="n">1</span>Store</li>"#),
+            store.contains(
+                r#"<li aria-current="step"><span>Store<small>In progress</small></span>"#
+            ),
             "{store}"
         );
         assert!(!store.contains(r#"class="done""#));
@@ -426,12 +410,12 @@ mod tests {
             }),
         )
         .into_string();
-        assert!(wallet.contains(r#"<li class="done"><span class="n">1</span>Store</li>"#));
-        assert!(wallet.contains(r#"<li class="wallet-group" aria-current="step">"#));
-        // The wallet's own steps: Kind done, Back up current, Check to come.
-        assert!(wallet.contains(r#"<li class="done"><span class="pill">Kind</span></li><li aria-current="step"><span class="pill">Back up</span></li><li><span class="pill">Check</span></li>"#), "{wallet}");
-        assert!(wallet.contains("Wallet · 2 of 3: back up"));
-        assert!(wallet.contains(r#"<li><span class="n">3</span>Done</li>"#));
+        assert!(wallet.contains(r#"<li class="done"><span>Store<small>Complete</small></span>"#));
+        assert!(wallet.contains(r#"<li aria-current="step"><span>Wallet"#));
+        assert!(wallet.contains("<small>Back up · step 2 of 3</small>"));
+        assert!(!wallet.contains("sub-timeline"));
+        assert!(!wallet.contains("sub-crumbs"));
+        assert!(wallet.contains(r#"<li><span>Done<small>Next</small></span>"#));
     }
 
     #[test]
@@ -441,9 +425,24 @@ mod tests {
             at: 1,
         })
         .into_string();
-        assert!(html.contains(r#"<li aria-current="step"><span class="pill">Keys</span></li>"#));
-        assert!(html.contains("Wallet · 2 of 2: keys"));
+        assert!(html.contains("<small>Keys · step 2 of 2</small>"));
+        assert!(html.contains(r#"value="1" max="2""#));
+        assert!(!html.contains("sub-timeline"));
         assert!(!html.contains("Back up"));
+    }
+
+    #[test]
+    fn progress_counts_completed_wallet_tasks() {
+        for (path, total) in [(WalletPath::New, 3), (WalletPath::Keys, 2)] {
+            for at in 0..total {
+                let html = steps(Step::Wallet, Some(WalletAt { path, at })).into_string();
+                assert!(html.contains(&format!("value=\"{at}\" max=\"{total}\" aria-label=\"Wallet: {at} of {total} tasks complete\"")));
+            }
+        }
+        let done = steps(Step::Done, None).into_string();
+        assert_eq!(done.matches("value=\"1\" max=\"1\"").count(), 3);
+        let start = steps(Step::Store, None).into_string();
+        assert_eq!(start.matches("value=\"0\" max=\"1\"").count(), 3);
     }
 
     fn store_data() -> StoreStepViewModel {
@@ -597,7 +596,8 @@ mod tests {
                 "{html}"
             );
             assert!(!html.to_lowercase().contains("in person"), "{html}");
-            assert!(html.contains(r#"<li aria-current="step"><span class="n">3</span>Done</li>"#));
+            assert!(html
+                .contains(r#"<li aria-current="step"><span>Done<small>Complete</small></span>"#));
         }
     }
 

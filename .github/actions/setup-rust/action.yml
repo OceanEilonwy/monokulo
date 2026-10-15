@@ -39,7 +39,7 @@ inputs:
     default: 'true'
   npm-lockfiles:
     description: The lock files setup-node's npm cache is keyed on
-    default: crates/monokulo/pos-ui/package-lock.json
+    default: package-lock.json
 
 runs:
   using: composite
@@ -53,7 +53,7 @@ runs:
     - if: inputs.pos-app == 'true'
       name: Install POS app dependencies
       shell: bash
-      run: npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
+      run: npm ci --no-audit --no-fund
     # Nothing in CI is debugged, so dev and test builds optimise the
     # workspace's own crates as Cargo.toml does the dependencies, and keep
     # file and line numbers for backtraces but none of the rest of the debug

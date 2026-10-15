@@ -194,7 +194,7 @@ pub fn invites_section(data: &AdminInvitesViewModel) -> Markup {
 pub fn admin_invites_page(chrome: &PageChrome, data: &AdminInvitesViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
-            nav class="context-nav" aria-label="Breadcrumb" { a href="/" { "Dashboard" } }
+            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/" { "Dashboard" } }
             h1 { "Invites" }
             (invites_section(data))
         }
@@ -1839,7 +1839,7 @@ pub fn settings_fragment(data: &AdminSettingsViewModel, focus_heading: bool) -> 
 pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
-            nav class="context-nav" aria-label="Breadcrumb" { a href="/" { "Dashboard" } }
+            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/" { "Dashboard" } }
             h1 { "Admin settings" }
             (banners(data, false))
             (options_file_bars(data))
@@ -2936,8 +2936,10 @@ mod tests {
             html.contains(&crate::assets::url("settings-form.js")),
             "{html}"
         );
-        assert!(include_str!("../../static/settings-form.js")
-            .contains(r#"mk-settings-card[data-shown-by]"#));
+        assert!(
+            include_str!("../../../../packages/ui/src/components/settings.js")
+                .contains(r#"mk-settings-card[data-shown-by]"#)
+        );
 
         let html = page("plain,snp");
         assert!(html.contains(r#"<mk-settings-card id="card-custody-snp" class="settings-card" name="custody-snp" data-shown-by="key_custody.enabled_backends=snp" role="region" aria-labelledby="card-custody-snp-title"><header class="card-head"><h3 id="card-custody-snp-title">SEV-SNP</h3>"#), "{html}");
@@ -3279,7 +3281,10 @@ mod tests {
             html[at..at + html[at..].find("</div></div>").unwrap()].to_string()
         };
         let success = toast(ToastKind::Success, None);
-        assert!(success.contains(r#"<div class="toast toast-success" role="status" data-toast><span class="toast-icon" aria-hidden="true">✓</span><div class="toast-text"><strong>Webhooks saved and applied</strong><span class="toast-line">One more thing.</span>"#), "{success}");
+        assert!(success.contains(r#"class="toast toast-success" role="status""#));
+        assert!(success.contains(include_str!("../../../../packages/ui/src/icons/check.svg")));
+        assert!(success.contains("<strong>Webhooks saved and applied</strong>"));
+        assert!(success.contains(r#"<span class="toast-line">One more thing.</span>"#));
         assert!(!success.contains("Show"), "{success}");
         assert!(toast(ToastKind::Warning, None)
             .contains(r#"class="toast toast-warning" role="status""#));

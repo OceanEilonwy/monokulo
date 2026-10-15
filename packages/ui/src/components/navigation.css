@@ -1,0 +1,22 @@
+/* Real URLs keep navigation useful without scripts or browser history. */
+.mk-breadcrumbs, .mk-breadcrumbs > ol { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--space-sm); min-width: 0; margin: 0; padding: 0; color: var(--muted); font-size: var(--text-sm); list-style: none; }
+.mk-breadcrumbs li { display: inline-flex; align-items: center; gap: var(--space-sm); min-width: 0; max-width: 100%; }
+.mk-breadcrumbs a { min-width: 0; max-width: min(60vw, 24rem); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; text-decoration: underline; text-underline-offset: .2em; }
+.mk-breadcrumbs [aria-current="page"] { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-breadcrumb-separator { flex: none; color: var(--muted); }
+.mk-back-link { display: inline-flex; align-items: center; gap: var(--space-xs); max-width: 100%; color: var(--muted); text-decoration: underline; text-underline-offset: .2em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mk-back-link::before { content: "←"; flex: none; }
+.mk-breadcrumbs a:hover, .mk-back-link:hover { color: var(--accent-text); }
+.mk-breadcrumbs a:focus-visible, .mk-back-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-sm); }
+/* Legacy application trails contain direct links; a single ancestor is a back link. */
+.mk-breadcrumbs > a:only-child::before { content: "←"; display: inline-block; margin-right: var(--space-xs); }
+
+.mk-back-link, .mk-breadcrumbs > a:only-child { position: relative; padding-inline-start: 1.4em; }
+.mk-back-link::before, .mk-breadcrumbs > a:only-child::before { position: absolute; inset-inline-start: 0; margin: 0; text-decoration: none; }
+
+.mk-breadcrumbs { width: 100%; }
+.mk-breadcrumbs > ol { flex: 1; overflow: hidden; }
+.mk-breadcrumbs li { flex: 0 1 auto; overflow: hidden; }
+.mk-breadcrumbs li:last-child { flex-shrink: 0; max-width: 45%; }
+.mk-breadcrumbs :is(a, [aria-current="page"]) { display: block; }
+.mk-breadcrumbs > a { flex: 0 1 auto; }

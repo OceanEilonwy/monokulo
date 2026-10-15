@@ -17,7 +17,7 @@ for (const name of ['checkout', 'challenge', 'monokulo-client', 'engine-view']) 
 fs.writeFileSync(path.join(output, 'initial.json'), JSON.stringify(initial));
 
 const posDir = path.join(root, 'crates/monokulo/pos-ui');
-const vite = path.join(posDir, 'node_modules/vite/bin/vite.js');
+const vite = path.join(root, 'node_modules/vite/bin/vite.js');
 if (!fs.existsSync(vite)) throw new Error(`missing prerequisite: ${vite}`);
 const build = spawnSync(process.execPath, [vite, 'build', '--config', 'coverage.vite.config.mjs'],
   { cwd: posDir, stdio: 'inherit' });

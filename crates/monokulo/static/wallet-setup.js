@@ -30,7 +30,7 @@
     const card = choice.querySelector('[data-needs-js]');
     const reason = choice.querySelector('[data-needs-js-reason]');
     if (supported && card) {
-      card.classList.remove('unavailable');
+      card.removeAttribute('data-unavailable');
       const tag = card.querySelector('[data-js-tag]');
       if (tag) tag.textContent = 'Recommended';
       const button = card.querySelector('[data-create-wallet]');

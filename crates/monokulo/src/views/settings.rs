@@ -3,7 +3,7 @@
 //! a save. The admin settings page, the Account page, a store's settings
 //! and a wallet's page all use these.
 //!
-//! Each piece is a custom element `static/settings-form.js` defines, but
+//! Each piece is a custom element `packages/ui/src/components/settings.js` defines, but
 //! the markup is complete here, so everything works without JavaScript: the
 //! form is a real `<form method="post">`, the save bar is always shown, and
 //! a save answers with the page again (a redirect with a toast, or the page
@@ -425,13 +425,13 @@ pub fn toast_region(toast: Option<&Toast>, oob: bool) -> Markup {
         div id="settings-toasts" class="toasts" data-fx-oob[oob] {
             @if let Some(toast) = toast {
                 @let (class, icon, role) = match toast.kind {
-                    ToastKind::Success => ("toast toast-success", "\u{2713}", "status"),
-                    ToastKind::Warning => ("toast toast-warning", "!", "status"),
-                    ToastKind::Error => ("toast toast-error", "!", "alert"),
-                    ToastKind::Neutral => ("toast toast-neutral", "\u{2022}", "status"),
+                    ToastKind::Success => ("toast toast-success", include_str!("../../../../packages/ui/src/icons/check.svg"), "status"),
+                    ToastKind::Warning => ("toast toast-warning", include_str!("../../../../packages/ui/src/icons/warning.svg"), "status"),
+                    ToastKind::Error => ("toast toast-error", include_str!("../../../../packages/ui/src/icons/warning.svg"), "alert"),
+                    ToastKind::Neutral => ("toast toast-neutral", include_str!("../../../../packages/ui/src/icons/info.svg"), "status"),
                 };
                 div class=(class) role=(role) data-toast {
-                    span class="toast-icon" aria-hidden="true" { (icon) }
+                    span class="toast-icon" aria-hidden="true" { (maud::PreEscaped(icon)) }
                     div class="toast-text" {
                         strong { (toast.title) }
                         @for line in &toast.lines { span class="toast-line" { (line) } }

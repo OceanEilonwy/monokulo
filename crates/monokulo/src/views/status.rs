@@ -500,7 +500,7 @@ pub fn page(chrome: &PageChrome, data: &StatusPageViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
             @if chrome.logged_in {
-                nav class="context-nav" aria-label="Breadcrumb" { a href="/" { "Dashboard" } }
+                nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/" { "Dashboard" } }
             }
             div class="page-heading" { h1 { "Engine status" } (super::reload_button("/status")) }
             (live_fragment(data))

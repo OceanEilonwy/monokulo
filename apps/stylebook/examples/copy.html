@@ -1,0 +1,8 @@
+<div class="mk-stack"><div class="mk-stack"><p id="copy-label">Payment reference</p><mk-copy copy-label="Copy payment reference"><span class="mk-copy-value mk-mono" data-copy-value tabindex="0" aria-labelledby="copy-label">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span></mk-copy><p class="mk-hint">Focus or tap the value to reveal and select the full text. Copy copies every character, even when the line is ellipsised.</p></div>
+<div class="mk-stack">
+<p>Middle: keep 10 characters at each end</p>
+<mk-copy truncate="middle" head="10" tail="10" copy-label="Copy middle example"><span class="mk-copy-value mk-mono" data-copy-value tabindex="0">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span></mk-copy>
+<p>Three meaningful segments: prefix, internal identifier, suffix</p>
+<mk-copy truncate="segments" segments="0:8,32:8,-8:8" copy-label="Copy segmented example"><span class="mk-copy-value mk-mono" data-copy-value tabindex="0">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span></mk-copy>
+<p class="mk-hint">Use truncate="middle" with head/tail lengths, or truncate="segments" with start:length ranges. Negative starts count from the end. Without JavaScript the full value remains selectable; focus reveals it. All copy modes copy the complete original.</p>
+</div></div>
