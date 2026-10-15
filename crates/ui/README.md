@@ -145,25 +145,26 @@ in the stylebook for their complete HTML contracts.
   events, discard and navigation protection. Do not import it in a POS that
   owns its own form state. `data-placement="inline"` embeds a save bar; otherwise
   it sits at the viewport bottom. `data-persistent` keeps review toasts visible.
-- `@monokulo/ui` additionally registers `mk-copy`, `mk-tabs` and menu dismissal.
-  It does not import the optional settings lifecycle.
+- `@monokulo/ui` registers menu dismissal. It does not import the optional
+  settings lifecycle. Interactive components (Select, Tabs, CopyValue) are
+  islands: `@monokulo/ui/islands` attaches them.
 - `icons/*.svg`: canonical local 24px line icons. Inline SVG inherits text color;
   give the owning button a name, and hide decorative SVG from screen readers.
 
-`mk-copy` requires one `[data-copy-value]` with `class="mk-copy-value"` and
-`tabindex="0"`. Keep the full literal value as its text content, without child
-controls. CSS ellipsis changes presentation only. Focus reveals the text, and
-`user-select: all` allows native copying without JavaScript. The injected Copy
-button reads the current value on each click and uses the Clipboard API. If
-permission is denied or the API is unavailable, it selects the value and gives
-manual-copy instructions. Set `copy-label` to name the value being copied.
-Do not nest this component inside a link or button.
+`CopyValue` (`ui::CopyValue::new(value)`) keeps the whole value as the
+text of its `[data-copy-value]` span: CSS ellipsis changes presentation only,
+focus reveals the text, and `user-select: all` allows copying without
+JavaScript. Once its island attaches, a Copy button copies the value as it
+is at the click, with the Clipboard API; where that's refused or missing, it
+selects the value and says how to copy it by hand. `copy_label` names what is
+copied. Don't put it inside a link or button.
 
-`mk-tabs` wraps `.mk-tabs` anchors and local panel sections with unique IDs.
-Without JavaScript all panels remain visible and anchors scroll to them. The
-upgrade adds tab roles, selection, roving focus and Left/Right/Home/End keys.
-For separate page URLs use `.mk-tabs` alone with `aria-current="page"`. A
-framework may own tab state and reuse the same CSS/ARIA contract instead.
+`Tabs` (`ui::Tabs::new(label, tabs)`) shows its panels one at a time once
+its island attaches: tab roles, selection, roving focus and
+Left/Right/Home/End. Without JavaScript every panel shows and the tabs are
+links to them. For tabs that are separate pages use `TabLinks`, plain links
+with the current one marked; a framework may own tab state and reuse the same
+`.mk-tabs` CSS and ARIA instead.
 
 `.mk-menu` is a native `details` with a named summary and `.mk-menu-content`.
 Use ordinary links/buttons, not `role="menu"`: Tab follows native navigation.
@@ -182,19 +183,15 @@ follows the host document's accessible root font size.
 
 ## Precise truncation
 
-Keep the full value as the text of `[data-copy-value]`. Use:
+`CopyValue` takes `truncate` and the ranges to keep:
 
-```html
-<mk-copy truncate="middle" head="8" tail="8" copy-label="Copy address">
-  <span class="mk-copy-value" data-copy-value tabindex="0">FULL_VALUE</span>
-</mk-copy>
-<mk-copy truncate="segments" segments="0:8,32:6,-8:8">
-  <span class="mk-copy-value" data-copy-value tabindex="0">FULL_VALUE</span>
-</mk-copy>
+```rust
+CopyValue::new(address).copy_label("Copy address").truncate(Truncate::Middle).head(8usize).tail(8usize)
+CopyValue::new(address).truncate(Truncate::Segments).segments("0:8,32:6,-8:8")
 ```
 
-Omit `truncate` for CSS end ellipsis. `middle` keeps the specified prefix/suffix;
-`segments` keeps an ordered list of `start:length` character ranges, adding an
+`End` (the default) is the CSS ellipsis. `Middle` keeps the specified prefix/suffix;
+`Segments` keeps an ordered list of `start:length` character ranges, adding an
 ellipsis for each omitted gap. Negative starts count back from the end. Ranges
 count Unicode code points, not UTF-16 units; invalid/overlapping ranges show the
 full value. Applications choose meaningful ranges (for example a namespace,

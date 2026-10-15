@@ -66,10 +66,10 @@ export function Select(props: SelectProps): JSX.Element {
   const b = setup(props);
   return (
     <div class="mk-select" data-compact={(props.compact ?? false)} ref={b.root} onKeyDown={b.key} onFocusOut={b.leave}>
-      <select class={tokens(`mk-input`, enhanced && `mk-native`)} data-size={(props.compact ?? false) ? "compact" : undefined} name={props.name} id={props.id} aria-label={props.label} required={(props.required ?? false)} disabled={(props.disabled ?? false)} tabindex={enhanced ? "-1" : undefined} aria-hidden={enhanced ? "true" : undefined} ref={b.native} {...rest}>
+      <select class={tokens(`mk-input`, enhanced && `mk-native`)} data-size={(props.compact ?? false) ? `compact` : undefined} name={props.name} id={props.id} aria-label={props.label} required={(props.required ?? false)} disabled={(props.disabled ?? false)} tabindex={enhanced ? `-1` : undefined} aria-hidden={enhanced ? `true` : undefined} ref={b.native} {...rest}>
         <For each={props.options}>
           {(choice) => (
-            <option value={choice.value} selected={choice.selected} disabled={choice.disabled} data-label={choice.data_label} data-logo={choice.logo} data-detail={choice.detail} data-network={choice.network} data-chip={choice.chip} data-chip-tone={choice.current ? "current" : undefined} data-note={choice.note}>
+            <option value={choice.value} selected={choice.selected} disabled={choice.disabled} data-label={choice.data_label} data-logo={choice.logo} data-detail={choice.detail} data-network={choice.network} data-chip={choice.chip} data-chip-tone={choice.current ? `current` : undefined} data-note={choice.note}>
               {choice.text}
             </option>
           )}
@@ -77,7 +77,7 @@ export function Select(props: SelectProps): JSX.Element {
       </select>
       {enhanced ? (
         <>
-          <button class="mk-button" type="button" role="combobox" aria-haspopup="listbox" aria-expanded={b.expanded()} aria-label={b.name()} aria-describedby={b.described()} aria-controls={b.list_id()} aria-activedescendant={b.active_id()} aria-invalid={b.invalid()} disabled={b.disabled()} ref={b.button} onClick={b.toggle}>
+          <button class="mk-button" type="button" role="combobox" aria-haspopup="listbox" aria-expanded={enhanced ? b.expanded() : undefined} aria-label={enhanced ? b.name() : undefined} aria-describedby={enhanced ? b.described() : undefined} aria-controls={enhanced ? b.list_id() : undefined} aria-activedescendant={enhanced ? b.active_id() : undefined} aria-invalid={enhanced ? b.invalid() : undefined} disabled={enhanced ? b.disabled() : undefined} ref={b.button} onClick={b.toggle}>
             <span class="mk-value">
               {b.current() != null ? (
                 <>
@@ -134,16 +134,16 @@ export function Select(props: SelectProps): JSX.Element {
             </span>
             <span class="mk-caret"></span>
           </button>
-          <div class={tokens(`mk-popup`, b.up() && `mk-up`)} id={`${b.list_id()}-popup`} popover={b.popover()} hidden={b.hidden()} ref={b.popup}>
+          <div class={enhanced ? tokens(`mk-popup`, b.up() && `mk-up`) : undefined} id={enhanced ? `${b.list_id()}-popup` : undefined} popover={enhanced ? b.popover() : undefined} hidden={enhanced ? b.hidden() : undefined} ref={b.popup}>
             {b.searching() ? (
-              <input class="mk-input mk-find" type="search" placeholder="Type to find…" autocomplete="off" aria-label="Find" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls={b.list_id()} aria-activedescendant={b.active_id()} ref={b.finder} onInput={b.find} />
+              <input class="mk-input mk-find" type="search" placeholder="Type to find…" autocomplete="off" aria-label="Find" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls={enhanced ? b.list_id() : undefined} aria-activedescendant={enhanced ? b.active_id() : undefined} ref={b.finder} onInput={b.find} />
             ) : (
               null
             )}
-            <ul class="mk-list" id={b.list_id()} role="listbox" aria-label={b.name()} onMouseDown={b.hold}>
+            <ul class="mk-list" id={enhanced ? b.list_id() : undefined} role="listbox" aria-label={enhanced ? b.name() : undefined} onMouseDown={b.hold}>
               <For each={b.shown()}>
                 {(item) => (
-                  <li class={tokens(`mk-option`, item.active && `mk-active`)} id={item.id} data-index={item.index} role="option" aria-selected={item.chosen} aria-disabled={item.disabled ? "true" : undefined} onClick={() => b.choose(item.index)}>
+                  <li class={tokens(`mk-option`, item.active && `mk-active`)} id={item.id} data-index={item.index} role="option" aria-selected={item.chosen} aria-disabled={item.disabled ? `true` : undefined} onClick={(event: Event) => b.choose(item.index, event)}>
                     {item.logo != null ? (
                       <img class="mk-logo" src={item.logo} alt="" />
                     ) : (
@@ -199,7 +199,7 @@ export function Select(props: SelectProps): JSX.Element {
                 )}
               </For>
             </ul>
-            <p class="mk-empty" role="status" hidden={b.matches()}>
+            <p class="mk-empty" role="status" hidden={enhanced ? b.matches() : undefined}>
               Nothing matches.
             </p>
           </div>
@@ -257,7 +257,7 @@ export interface SelectBehaviour {
   readonly toggle: (event: Event) => void;
   readonly find: (event: Event) => void;
   readonly hold: (event: Event) => void;
-  readonly choose: (value: number) => void;
+  readonly choose: (value: number, event: Event) => void;
   readonly root: (element: HTMLElement) => void;
   readonly native: (element: HTMLElement) => void;
   readonly button: (element: HTMLElement) => void;
@@ -284,14 +284,14 @@ export function attachSelect(root: Element, props: SelectProps): () => void {
     const n2 = mark(root, 2);
     if (n2) {
       setAttr(n2, "class", tokens(`mk-input`, enhanced && `mk-native`));
-      setAttr(n2, "tabindex", enhanced ? "-1" : undefined);
-      setAttr(n2, "aria-hidden", enhanced ? "true" : undefined);
+      setAttr(n2, "tabindex", enhanced ? `-1` : undefined);
+      setAttr(n2, "aria-hidden", enhanced ? `true` : undefined);
       b.native(n2);
     }
     const m3 = marker(root, 3);
     if (m3) insert(m3.parentNode!, () => (
         <>
-          <button class="mk-button" type="button" role="combobox" aria-haspopup="listbox" aria-expanded={b.expanded()} aria-label={b.name()} aria-describedby={b.described()} aria-controls={b.list_id()} aria-activedescendant={b.active_id()} aria-invalid={b.invalid()} disabled={b.disabled()} ref={b.button} onClick={b.toggle}>
+          <button class="mk-button" type="button" role="combobox" aria-haspopup="listbox" aria-expanded={enhanced ? b.expanded() : undefined} aria-label={enhanced ? b.name() : undefined} aria-describedby={enhanced ? b.described() : undefined} aria-controls={enhanced ? b.list_id() : undefined} aria-activedescendant={enhanced ? b.active_id() : undefined} aria-invalid={enhanced ? b.invalid() : undefined} disabled={enhanced ? b.disabled() : undefined} ref={b.button} onClick={b.toggle}>
             <span class="mk-value">
               {b.current() != null ? (
                 <>
@@ -348,16 +348,16 @@ export function attachSelect(root: Element, props: SelectProps): () => void {
             </span>
             <span class="mk-caret"></span>
           </button>
-          <div class={tokens(`mk-popup`, b.up() && `mk-up`)} id={`${b.list_id()}-popup`} popover={b.popover()} hidden={b.hidden()} ref={b.popup}>
+          <div class={enhanced ? tokens(`mk-popup`, b.up() && `mk-up`) : undefined} id={enhanced ? `${b.list_id()}-popup` : undefined} popover={enhanced ? b.popover() : undefined} hidden={enhanced ? b.hidden() : undefined} ref={b.popup}>
             {b.searching() ? (
-              <input class="mk-input mk-find" type="search" placeholder="Type to find…" autocomplete="off" aria-label="Find" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls={b.list_id()} aria-activedescendant={b.active_id()} ref={b.finder} onInput={b.find} />
+              <input class="mk-input mk-find" type="search" placeholder="Type to find…" autocomplete="off" aria-label="Find" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls={enhanced ? b.list_id() : undefined} aria-activedescendant={enhanced ? b.active_id() : undefined} ref={b.finder} onInput={b.find} />
             ) : (
               null
             )}
-            <ul class="mk-list" id={b.list_id()} role="listbox" aria-label={b.name()} onMouseDown={b.hold}>
+            <ul class="mk-list" id={enhanced ? b.list_id() : undefined} role="listbox" aria-label={enhanced ? b.name() : undefined} onMouseDown={b.hold}>
               <For each={b.shown()}>
                 {(item) => (
-                  <li class={tokens(`mk-option`, item.active && `mk-active`)} id={item.id} data-index={item.index} role="option" aria-selected={item.chosen} aria-disabled={item.disabled ? "true" : undefined} onClick={() => b.choose(item.index)}>
+                  <li class={tokens(`mk-option`, item.active && `mk-active`)} id={item.id} data-index={item.index} role="option" aria-selected={item.chosen} aria-disabled={item.disabled ? `true` : undefined} onClick={(event: Event) => b.choose(item.index, event)}>
                     {item.logo != null ? (
                       <img class="mk-logo" src={item.logo} alt="" />
                     ) : (
@@ -413,7 +413,7 @@ export function attachSelect(root: Element, props: SelectProps): () => void {
                 )}
               </For>
             </ul>
-            <p class="mk-empty" role="status" hidden={b.matches()}>
+            <p class="mk-empty" role="status" hidden={enhanced ? b.matches() : undefined}>
               Nothing matches.
             </p>
           </div>

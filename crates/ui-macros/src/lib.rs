@@ -651,6 +651,8 @@ enum Cond {
     Truthy(Path),
     Not(Box<Cond>),
     Eq(Path, syn::Path, bool),
+    /// `path == path` (true) or `!=` (false).
+    Same(Path, Path, bool),
     /// `enhanced`: false as the server renders, true once the behaviour runs.
     Enhanced,
 }
@@ -671,6 +673,10 @@ impl Cond {
                 let value = kebab(&variant.segments.last().expect("variant").ident.to_string());
                 quote! { ::ui::ir::Cond::Eq(#p, #value, #equal) }
             }
+            Cond::Same(a, b, equal) => {
+                let (a, b) = (a.ir(), b.ir());
+                quote! { ::ui::ir::Cond::Same(#a, #b, #equal) }
+            }
             Cond::Enhanced => quote! { ::ui::ir::Cond::Enhanced },
         }
     }
@@ -685,6 +691,10 @@ impl Cond {
                 let e = p.expr(scope);
                 quote! { let _ = matches!(#e, #variant); }
             }
+            Cond::Same(a, b, _) => {
+                let (a, b) = (a.expr(scope), b.expr(scope));
+                quote! { let _ = #a == #b; }
+            }
             Cond::Enhanced => quote! {},
         }
     }
@@ -698,6 +708,7 @@ impl Cond {
     fn paths(&self) -> Vec<&Path> {
         match self {
             Cond::Truthy(p) | Cond::Eq(p, _, _) => vec![p],
+            Cond::Same(a, b, _) => vec![a, b],
             Cond::Not(c) => c.paths(),
             Cond::Enhanced => vec![],
         }
@@ -737,7 +748,8 @@ enum Attr {
     Concat(String, Vec<Part>),
     Bool(String, Cond),
     Optional(String, Path),
-    When(String, String, Cond),
+    /// `name="value" if cond`, `name=(path) if cond`, `name={ ... } if cond`
+    When(String, Vec<Part>, Cond),
     Tokens(String, Vec<(Vec<Part>, Option<Cond>)>),
     /// `on:event=handler` or `on:event=handler(path)`; the argument's type
     /// is the handler's, filled in by `prepare`.
@@ -754,6 +766,9 @@ impl Attr {
     /// Whether the attribute is the behaviour's: absent from the server's
     /// markup or different once enhanced.
     fn enhanced(&self) -> bool {
+        if self.paths().iter().any(|p| p.0[0] == "b") {
+            return true;
+        }
         match self {
             Attr::Bool(_, c) | Attr::When(_, _, c) => c.enhanced(),
             Attr::Tokens(_, tokens) => tokens
@@ -777,7 +792,12 @@ impl Attr {
             Attr::Static(..) | Attr::Flag(_) | Attr::Ref(_) => vec![],
             Attr::Value(_, p) | Attr::Optional(_, p) => vec![p],
             Attr::Concat(_, ps) => parts(ps),
-            Attr::Bool(_, c) | Attr::When(_, _, c) => c.paths(),
+            Attr::Bool(_, c) => c.paths(),
+            Attr::When(_, ps, c) => {
+                let mut all = parts(ps);
+                all.extend(c.paths());
+                all
+            }
             Attr::Tokens(_, tokens) => tokens
                 .iter()
                 .flat_map(|(ps, c)| {
@@ -811,9 +831,10 @@ impl Attr {
                 let p = p.ir();
                 quote! { ::ui::ir::Attr::Optional(#n, #p) }
             }
-            Attr::When(n, v, c) => {
+            Attr::When(n, parts, c) => {
                 let c = c.ir();
-                quote! { ::ui::ir::Attr::When(#n, #v, #c) }
+                let parts = parts.iter().map(Part::ir);
+                quote! { ::ui::ir::Attr::When(#n, vec![ #(#parts),* ], #c) }
             }
             Attr::Tokens(n, tokens) => {
                 let tokens = tokens.iter().map(|(parts, cond)| {
@@ -861,7 +882,12 @@ impl Attr {
                 let checks = parts.iter().map(|p| p.check(scope));
                 quote! { #(#checks)* }
             }
-            Attr::Bool(_, c) | Attr::When(_, _, c) => c.check(scope),
+            Attr::Bool(_, c) => c.check(scope),
+            Attr::When(_, parts, c) => {
+                let parts = parts.iter().map(|p| p.check(scope));
+                let c = c.check(scope);
+                quote! { #(#parts)* #c }
+            }
             Attr::Optional(_, p) => {
                 let e = p.expr(scope);
                 quote! { if let ::core::option::Option::Some(value) = &#e { ::ui::AttrValue::check(value); } }
@@ -1064,8 +1090,11 @@ enum Place {
     /// Rendered by the server, outside any loop or `@if let`: the
     /// behaviour can find it again.
     Server,
-    /// Rendered by the server inside a loop or `@if let`: nothing there
-    /// can be attached to.
+    /// Rendered by the server once per item of a prop's list (`@for`, not
+    /// nested): the behaviour attaches to each, by the item's position.
+    Loop,
+    /// Rendered by the server inside `@if let` or a nested loop: nothing
+    /// there can be attached to.
     Repeated,
     /// Inside `@if enhanced`: only the behaviour renders it.
     Enhanced,
@@ -1080,7 +1109,9 @@ fn prepare(
     place: Place,
     marks: &mut u32,
 ) -> Result<()> {
-    let check_path = |p: &Path| -> Result<()> {
+    // `in_attribute`: an attribute that reads `b.*` is the behaviour's,
+    // absent from the server's markup, so it may be anywhere.
+    let check_path = |p: &Path, in_attribute: bool| -> Result<()> {
         if p.0[0] != "b" {
             return Ok(());
         }
@@ -1090,10 +1121,10 @@ fn prepare(
                 "`b` is an interactive component's behaviour: declare one",
             ));
         };
-        if place != Place::Enhanced {
+        if place != Place::Enhanced && !in_attribute {
             return Err(syn::Error::new(
                 p.0[0].span(),
-                "`b.*` is only read inside `@if enhanced`: the server renders without it",
+                "`b.*` is only read inside `@if enhanced` or in an attribute: the server renders without it",
             ));
         }
         match p.0.get(1) {
@@ -1117,7 +1148,7 @@ fn prepare(
                 let mut attaches = false;
                 for attr in attrs.iter_mut() {
                     for p in attr.paths() {
-                        check_path(p)?;
+                        check_path(p, true)?;
                     }
                     if attr.enhanced() {
                         if behaviour.is_none() {
@@ -1164,13 +1195,13 @@ fn prepare(
                     }
                 }
                 if let Some(p) = spread {
-                    check_path(p)?;
+                    check_path(p, false)?;
                 }
                 if attaches && place != Place::Enhanced {
                     if place == Place::Repeated {
                         return Err(syn::Error::new(
                             Span::call_site(),
-                            "a behaviour can't attach to an element inside `@for` or `@if let`",
+                            "a behaviour can't attach to an element inside `@if let` or a nested `@for`",
                         ));
                     }
                     *marks += 1;
@@ -1194,7 +1225,7 @@ fn prepare(
                             "`@if enhanced` is already enhanced here",
                         ))
                     }
-                    Place::Repeated => {
+                    Place::Repeated | Place::Loop => {
                         return Err(syn::Error::new(
                             Span::call_site(),
                             "`@if enhanced` can't be inside `@for` or `@if let`",
@@ -1207,7 +1238,7 @@ fn prepare(
                 prepare(body, behaviour, Place::Enhanced, marks)?;
             }
             Node::Text(_) => {}
-            Node::Value(p) => check_path(p)?,
+            Node::Value(p) => check_path(p, false)?,
             Node::If {
                 cond,
                 then,
@@ -1220,7 +1251,7 @@ fn prepare(
                     ));
                 }
                 for p in cond.paths() {
-                    check_path(p)?;
+                    check_path(p, false)?;
                 }
                 prepare(then, behaviour, place, marks)?;
                 prepare(otherwise, behaviour, place, marks)?;
@@ -1231,7 +1262,7 @@ fn prepare(
                 otherwise,
                 ..
             } => {
-                check_path(path)?;
+                check_path(path, false)?;
                 let inner = if place == Place::Enhanced {
                     place
                 } else {
@@ -1241,11 +1272,12 @@ fn prepare(
                 prepare(otherwise, behaviour, inner, marks)?;
             }
             Node::For { path, body, .. } => {
-                check_path(path)?;
-                let inner = if place == Place::Enhanced {
-                    place
-                } else {
-                    Place::Repeated
+                check_path(path, false)?;
+                let inner = match place {
+                    Place::Enhanced => place,
+                    // Once over a prop's list: its items can be attached to.
+                    Place::Server => Place::Loop,
+                    _ => Place::Repeated,
                 };
                 prepare(body, behaviour, inner, marks)?;
             }
@@ -1398,6 +1430,11 @@ impl Parser {
             return Ok(Cond::Truthy(path));
         };
         self.at += 2;
+        // `Enum::Variant`, or another value.
+        if !(matches!(self.peek(), Some(TokenTree::Ident(_))) && self.is_punct_at(1, ':')) {
+            let other = self.path()?;
+            return Ok(Cond::Same(path, other, equal));
+        }
         let mut variant = Tokens::new();
         variant.extend([self
             .next()
@@ -1612,20 +1649,30 @@ impl Parser {
             return Ok(Attr::Flag(name));
         }
         self.at += 1;
-        if let Some(value) = self.lit_str()? {
+        // A value, then perhaps `if cond`.
+        let value = if let Some(value) = self.lit_str()? {
+            Some(vec![Part::Lit(value)])
+        } else if self.is_group(Delimiter::Parenthesis) {
+            Some(vec![Part::Value(
+                self.group(Delimiter::Parenthesis)?.whole_path()?,
+            )])
+        } else if self.is_group(Delimiter::Brace) {
+            Some(self.group(Delimiter::Brace)?.parts()?)
+        } else {
+            None
+        };
+        if let Some(mut parts) = value {
             if self.is_ident("if") {
                 self.at += 1;
                 let cond = self.cond()?;
-                return Ok(Attr::When(name, value, cond));
+                return Ok(Attr::When(name, parts, cond));
             }
-            return Ok(Attr::Static(name, value));
-        }
-        if self.is_group(Delimiter::Parenthesis) {
-            let path = self.group(Delimiter::Parenthesis)?.whole_path()?;
-            return Ok(Attr::Value(name, path));
-        }
-        if self.is_group(Delimiter::Brace) {
-            let parts = self.group(Delimiter::Brace)?.parts()?;
+            if parts.len() == 1 {
+                return Ok(match parts.remove(0) {
+                    Part::Lit(s) => Attr::Static(name, s),
+                    Part::Value(p) => Attr::Value(name, p),
+                });
+            }
             return Ok(Attr::Concat(name, parts));
         }
         if self.is_group(Delimiter::Bracket) {

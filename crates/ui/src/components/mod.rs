@@ -3,16 +3,20 @@
 //! translation is checked against.
 
 mod actions;
+mod copy;
 mod feedback;
 mod forms;
 mod select;
 mod steps;
+mod tabs;
 
 pub use actions::*;
+pub use copy::*;
 pub use feedback::*;
 pub use forms::*;
 pub use select::*;
 pub use steps::*;
+pub use tabs::*;
 
 use crate::{ComponentInfo, Slot};
 
@@ -54,5 +58,8 @@ pub fn catalogue() -> Vec<Specimens> {
             .partial("select-demo", select::select_demo())
             .partial("book-theme", select::book_theme()),
         specimens(steps::progress_steps_examples()),
+        specimens(tabs::tabs_examples()),
+        specimens(tabs::tab_links_examples()),
+        specimens(copy::copy_value_examples()),
     ]
 }

@@ -34,12 +34,11 @@
 .mk-tabs > :is(a, button) { flex: none; margin: 0; padding: var(--space-sm) var(--space-md); font: inherit; color: var(--ink); text-decoration: none; background: transparent; border: 0; border-bottom: 3px solid transparent; cursor: pointer; }
 .mk-tabs > :is([aria-current="page"], [aria-selected="true"]) { border-bottom-color: var(--tab-current); font-weight: 700; }
 .mk-tabs > :is(a, button):focus-visible, .mk-menu :is(summary, a):focus-visible, .mk-nav a:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
-mk-tabs { display: block; }
 .mk-tab-panels > section { padding-block: var(--space-lg); scroll-margin-top: var(--space-lg); }
 .mk-qr { margin: 0; display: grid; justify-items: start; gap: var(--space-md); min-width: 0; }
 .mk-qr > :is(svg, img), .mk-qr > a > :is(svg, img) { display: block; box-sizing: border-box; width: min(100%, 16rem); height: auto; background: var(--qr-bg); border: 1px solid var(--line); border-radius: var(--radius-sm); }
 .mk-qr figcaption { overflow-wrap: anywhere; }
-mk-copy { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-sm); min-width: 0; }
+.mk-copy { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-sm); min-width: 0; }
 .mk-copy-value { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: all; }
 .mk-copy-value:focus { white-space: normal; overflow-wrap: anywhere; outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .mk-copy-status { grid-column: 1 / -1; color: var(--muted); font-size: var(--text-sm); }
@@ -61,7 +60,7 @@ mk-copy { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items
 .mk-radio-card:has(:checked) { border-color: var(--accent-text); background: var(--tint-highlight); }
 .mk-radio-card input { accent-color: var(--accent-text); }
 .mk-radio-card small { display: block; color: var(--muted); }
-mk-copy [hidden], mk-tabs [hidden] { display: none; }
+.mk-copy [hidden], .mk-tabset [hidden] { display: none; }
 @media (max-width: 640px) { .mk-nav-links { width: 100%; gap: var(--space-md); } }
 
 .mk-qr > a { display: block; max-width: 100%; border-radius: var(--radius-sm); }
@@ -85,10 +84,12 @@ mk-copy [hidden], mk-tabs [hidden] { display: none; }
 .mk-mark > svg { display: block; width: 100%; height: 100%; }
 @media (prefers-reduced-motion: reduce) { .mk-mark .logo-glow { display: none; } }
 
-mk-copy > :is(.mk-copy-value, .mk-copy-preview) { grid-column: 1; grid-row: 1; }
-mk-copy > .mk-btn { grid-column: 2; grid-row: 1; }
+.mk-copy > :is(.mk-copy-value, .mk-copy-preview) { grid-column: 1; grid-row: 1; }
+.mk-copy > .mk-btn { grid-column: 2; grid-row: 1; }
 .mk-copy-preview { user-select: none; cursor: text; min-width: 0; overflow-wrap: anywhere; }
-mk-copy[data-truncated] > .mk-copy-value:not(:focus) { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); }
-mk-copy > .mk-copy-value:focus ~ .mk-copy-preview { display: none; }
+/* Shortened (the behaviour drew a preview): the whole value stays for
+   focus, selection and copying, out of sight until focused. */
+.mk-copy:has(> .mk-copy-preview) > .mk-copy-value:not(:focus) { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); }
+.mk-copy > .mk-copy-value:focus ~ .mk-copy-preview { display: none; }
 
 .mk-page-document .mk-page-frame { height: 100dvh; border: 0; border-radius: 0; }

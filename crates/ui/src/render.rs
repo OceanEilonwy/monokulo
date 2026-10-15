@@ -24,7 +24,7 @@ pub(crate) fn render_info(
         buffer.push_str(behaviour.mount);
         buffer.push_str("\"><script type=\"application/json\" data-props>");
         // `<` escaped, so no value can end the script early.
-        let json = serde_json::to_string(&crate::json::props_json(info, &props)).expect("JSON");
+        let json = serde_json::to_string(&crate::json::island_props(info, &props)).expect("JSON");
         buffer.push_str(&json.replace('<', "\\u003c"));
         buffer.push_str("</script>");
     }
@@ -192,11 +192,16 @@ fn cond(c: &Cond, scope: &Scope<'_>) -> bool {
             };
             (value == variant) == *equal
         }
+        Cond::Same(a, b, equal) => (scope.resolve(a) == scope.resolve(b)) == *equal,
         Cond::Enhanced => false,
     }
 }
 
 fn attribute(attr: &Attr, scope: &Scope<'_>, out: &mut String) {
+    // The behaviour's to set, once it runs.
+    if attr.reads_behaviour() {
+        return;
+    }
     match attr {
         Attr::Static(name, value) => write_attr(name, Some(value), out),
         Attr::Flag(name) => write_attr(name, None, out),
@@ -211,9 +216,9 @@ fn attribute(attr: &Attr, scope: &Scope<'_>, out: &mut String) {
             Value::Null => {}
             value => write_attr(name, Some(&text(value)), out),
         },
-        Attr::When(name, value, c) => {
+        Attr::When(name, list, c) => {
             if cond(c, scope) {
-                write_attr(name, Some(value), out);
+                write_attr(name, Some(&parts(list, scope)), out);
             }
         }
         Attr::Tokens(name, tokens) => {

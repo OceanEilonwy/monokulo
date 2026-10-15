@@ -59,6 +59,12 @@ export function mark(root: Element, n: number): HTMLElement | null {
   return found.find(element => element.closest('mk-island') === root) ?? null;
 }
 
+/** Every server-rendered element with one mark, in order: the elements of
+ *  a loop over a prop's list, one per item. */
+export function marks(root: Element, n: number): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(`[data-mk=\"${n}\"]`)).filter(element => element.closest('mk-island') === root);
+}
+
 /** The comment the server left where enhanced markup goes (`<!--mk:N-->`). */
 export function marker(root: Element, n: number): Comment | null {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
@@ -221,7 +227,7 @@ fn component(info: &'static ComponentInfo, types: &mut Types) -> String {
         }
         for (name, arg) in &b.handlers {
             let param = match arg {
-                Some(ty) => format!("value: {}", types.ts(ty, &mut used)),
+                Some(ty) => format!("value: {}, event: Event", types.ts(ty, &mut used)),
                 None => "event: Event".into(),
             };
             let _ = writeln!(behaviour_fields, "  readonly {name}: ({param}) => void;");
@@ -243,6 +249,8 @@ fn component(info: &'static ComponentInfo, types: &mut Types) -> String {
         uses_for: false,
         uses_tokens: false,
         uses_runtime: Vec::new(),
+        uses_render_effect: false,
+        attaching: false,
     };
     let body = out.children(&info.template, 2);
     let attach = behaviour.map(|_| out.attach(&info.template));
@@ -251,6 +259,9 @@ fn component(info: &'static ComponentInfo, types: &mut Types) -> String {
     let mut solid = Vec::new();
     if behaviour.is_some() {
         solid.extend(["createRoot", "onCleanup"]);
+    }
+    if out.uses_render_effect {
+        solid.push("createRenderEffect");
     }
     if out.uses_for {
         solid.push("For");
@@ -377,6 +388,24 @@ struct Out {
     uses_tokens: bool,
     /// Helpers from runtime.ts the attach function calls.
     uses_runtime: Vec<&'static str>,
+    /// The attach function keeps an attribute up to date.
+    uses_render_effect: bool,
+    /// Writing the markup `attach` inserts: it can't hold a slot, which the
+    /// island's props leave out.
+    attaching: bool,
+}
+
+/// Whether any element in `nodes` is one the behaviour attaches to.
+fn has_marks(nodes: &[Node]) -> bool {
+    nodes.iter().any(|node| match node {
+        Node::Element(e) => e.mark.is_some() || e.children.as_deref().is_some_and(has_marks),
+        Node::If {
+            then, otherwise, ..
+        } => has_marks(then) || has_marks(otherwise),
+        Node::Enhanced { .. } => true,
+        Node::For { body, .. } => has_marks(body),
+        Node::IfLet { .. } | Node::Text(_) | Node::Value(_) => false,
+    })
 }
 
 /// `on:keydown` as Solid's JSX names it.
@@ -460,6 +489,10 @@ impl Out {
                 let op = if *equal { "===" } else { "!==" };
                 format!("{expr} {op} {value:?}")
             }
+            Cond::Same(a, b, equal) => {
+                let op = if *equal { "===" } else { "!==" };
+                format!("{} {op} {}", self.path(a).0, self.path(b).0)
+            }
             Cond::Enhanced => "enhanced".into(),
         }
     }
@@ -493,46 +526,73 @@ impl Out {
             Attr::Value(name, path) | Attr::Optional(name, path) => (*name, self.path(path).0),
             Attr::Concat(name, parts) => (*name, self.parts(parts)),
             Attr::Bool(name, cond) => (*name, self.cond(cond)),
-            Attr::When(name, value, cond) => (
+            Attr::When(name, parts, cond) => (
                 *name,
-                format!("{} ? {value:?} : undefined", self.cond(cond)),
+                format!("{} ? {} : undefined", self.cond(cond), self.parts(parts)),
             ),
-            Attr::Tokens(name, _) => {
-                let jsx = self.attr(attr);
-                let expr = jsx[name.len() + 2..jsx.len() - 1].to_string();
-                (*name, expr)
-            }
+            Attr::Tokens(name, tokens) => (*name, self.tokens(tokens)),
             Attr::On(..) | Attr::Ref(_) => return None,
         };
         Some(value)
     }
 
+    /// A `join[...]` attribute's value: the tokens whose conditions hold.
+    fn tokens(&mut self, tokens: &[(Vec<Part>, Option<Cond>)]) -> String {
+        self.uses_tokens = true;
+        let items: Vec<String> = tokens
+            .iter()
+            .map(|(parts, cond)| {
+                let value = self.parts(parts);
+                match cond {
+                    Some(cond) => format!("{} && {value}", self.cond(cond)),
+                    None => value,
+                }
+            })
+            .collect();
+        format!("tokens({})", items.join(", "))
+    }
+
     /// A handler as a function the event calls.
     fn handler(&self, handler: &str, arg: Option<Path>) -> String {
         match arg {
-            Some(path) => format!("() => b.{handler}({})", self.path(path).0),
+            Some(path) => format!(
+                "(event: Event) => b.{handler}({}, event)",
+                self.path(path).0
+            ),
             None => format!("b.{handler}"),
         }
     }
 
     /// The body of `attach<Name>`: for each element the behaviour attaches
-    /// to, its enhanced attributes, handlers and refs; for each
-    /// `@if enhanced`, its markup inserted at the server's marker.
+    /// to, its enhanced attributes (kept up to date when they read `b.*`),
+    /// handlers and refs; for each `@if enhanced`, its markup inserted at
+    /// the server's marker. Elements in a loop over a prop's list are found
+    /// by their item's position.
     fn attach(&mut self, nodes: &[Node]) -> String {
         let mut s = String::new();
-        self.attach_into(nodes, &mut s);
+        self.attach_into(nodes, &mut s, 2, None);
         s
     }
 
-    fn attach_into(&mut self, nodes: &[Node], s: &mut String) {
+    fn attach_into(&mut self, nodes: &[Node], s: &mut String, depth: usize, index: Option<&str>) {
+        let indent = pad(depth);
         for node in nodes {
             match node {
                 Node::Element(element) => {
                     if let Some(mark) = element.mark {
-                        self.uses_runtime.push("mark");
+                        let find = match index {
+                            Some(i) => {
+                                self.uses_runtime.push("marks");
+                                format!("marks(root, {mark})[{i}]")
+                            }
+                            None => {
+                                self.uses_runtime.push("mark");
+                                format!("mark(root, {mark})")
+                            }
+                        };
                         let _ = writeln!(
                             s,
-                            "    const n{mark} = mark(root, {mark});\n    if (n{mark}) {{"
+                            "{indent}const n{mark} = {find};\n{indent}if (n{mark}) {{"
                         );
                         for attr in element.attrs.iter().filter(|a| a.enhanced()) {
                             match attr {
@@ -540,49 +600,79 @@ impl Out {
                                     self.uses_runtime.push("on");
                                     let _ = writeln!(
                                         s,
-                                        "      on(n{mark}, {event:?}, {});",
+                                        "{indent}  on(n{mark}, {event:?}, {});",
                                         self.handler(handler, *arg)
                                     );
                                 }
                                 Attr::Ref(name) => {
-                                    let _ = writeln!(s, "      b.{name}(n{mark});");
+                                    let _ = writeln!(s, "{indent}  b.{name}(n{mark});");
                                 }
                                 _ => {
                                     self.uses_runtime.push("setAttr");
                                     let (name, value) =
                                         self.attr_value(attr).expect("an attribute");
-                                    let _ =
-                                        writeln!(s, "      setAttr(n{mark}, {name:?}, {value});");
+                                    if attr.reads_behaviour() {
+                                        self.uses_render_effect = true;
+                                        let _ = writeln!(
+                                            s,
+                                            "{indent}  createRenderEffect(() => {value}, (value) => setAttr(n{mark}, {name:?}, value));"
+                                        );
+                                    } else {
+                                        let _ = writeln!(
+                                            s,
+                                            "{indent}  setAttr(n{mark}, {name:?}, {value});"
+                                        );
+                                    }
                                 }
                             }
                         }
-                        s.push_str("    }\n");
+                        let _ = writeln!(s, "{indent}}}");
                     }
                     if let Some(children) = &element.children {
-                        self.attach_into(children, s);
+                        self.attach_into(children, s, depth, index);
                     }
                 }
                 Node::Enhanced { mark, body } => {
                     self.uses_runtime.push("marker");
-                    let jsx = self.expression(body, 4);
+                    self.attaching = true;
+                    let jsx = self.expression(body, depth + 2);
+                    self.attaching = false;
                     let _ = write!(
                         s,
-                        "    const m{mark} = marker(root, {mark});\n    if (m{mark}) insert(m{mark}.parentNode!, () => (\n{jsx}    ), m{mark});\n"
+                        "{indent}const m{mark} = marker(root, {mark});\n{indent}if (m{mark}) insert(m{mark}.parentNode!, () => (\n{jsx}{indent}), m{mark});\n"
                     );
                 }
                 Node::If {
                     then, otherwise, ..
                 } => {
-                    self.attach_into(then, s);
-                    self.attach_into(otherwise, s);
+                    self.attach_into(then, s, depth, index);
+                    self.attach_into(otherwise, s, depth, index);
                 }
-                // `prepare` keeps marks out of loops and `@if let`.
-                Node::IfLet { .. } | Node::For { .. } | Node::Text(_) | Node::Value(_) => {}
+                Node::For { bind, path, body } if index.is_none() && has_marks(body) => {
+                    let (expr, ty) = self.path(path);
+                    let Ty::List(item) = ty else {
+                        panic!("@for runs over a list")
+                    };
+                    let i = format!("{bind}Index");
+                    let _ = writeln!(s, "{indent}({expr}).forEach(({bind}, {i}) => {{");
+                    self.scope.push((bind, (*bind).to_string(), *item));
+                    self.attach_into(body, s, depth + 1, Some(&i));
+                    self.scope.pop();
+                    let _ = writeln!(s, "{indent}}});");
+                }
+                // `prepare` keeps marks out of `@if let` and nested loops.
+                Node::For { .. } | Node::IfLet { .. } | Node::Text(_) | Node::Value(_) => {}
             }
         }
     }
 
     fn attr(&mut self, attr: &Attr) -> String {
+        // An attribute that reads the behaviour's values is the behaviour's:
+        // absent from the markup without it.
+        if attr.reads_behaviour() {
+            let (name, value) = self.attr_value(attr).expect("an attribute");
+            return format!("{name}={{enhanced ? {value} : undefined}}");
+        }
         match attr {
             Attr::Static(name, value) => format!("{name}={}", string_attr(value)),
             Attr::Flag(name) => (*name).to_string(),
@@ -590,23 +680,14 @@ impl Out {
             Attr::Concat(name, parts) => format!("{name}={{{}}}", self.parts(parts)),
             Attr::Bool(name, cond) => format!("{name}={{{}}}", self.cond(cond)),
             Attr::Optional(name, path) => format!("{name}={{{}}}", self.path(path).0),
-            Attr::When(name, value, cond) => {
-                format!("{name}={{{} ? {value:?} : undefined}}", self.cond(cond))
+            Attr::When(name, parts, cond) => {
+                format!(
+                    "{name}={{{} ? {} : undefined}}",
+                    self.cond(cond),
+                    self.parts(parts)
+                )
             }
-            Attr::Tokens(name, tokens) => {
-                self.uses_tokens = true;
-                let items: Vec<String> = tokens
-                    .iter()
-                    .map(|(parts, cond)| {
-                        let value = self.parts(parts);
-                        match cond {
-                            Some(cond) => format!("{} && {value}", self.cond(cond)),
-                            None => value,
-                        }
-                    })
-                    .collect();
-                format!("{name}={{tokens({})}}", items.join(", "))
-            }
+            Attr::Tokens(name, tokens) => format!("{name}={{{}}}", self.tokens(tokens)),
             Attr::On(event, handler, arg) => {
                 format!("{}={{{}}}", event_prop(event), self.handler(handler, *arg))
             }
@@ -643,7 +724,12 @@ impl Out {
                 let _ = writeln!(self.source, "{indent}{}", jsx_text(text));
             }
             Node::Value(path) => {
-                let (expr, _) = self.path(path);
+                let (expr, ty) = self.path(path);
+                assert!(
+                    !(self.attaching && matches!(ty, Ty::Slot)),
+                    "{}: `@if enhanced` can't hold a slot: an island's props leave slots out",
+                    self.info.name
+                );
                 let _ = writeln!(self.source, "{indent}{{{expr}}}");
             }
             Node::Enhanced { body, .. } => {

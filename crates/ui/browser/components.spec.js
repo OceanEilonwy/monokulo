@@ -102,8 +102,8 @@ test('wizard details stay in the top-level segment at desktop and mobile widths'
 
 test('copy uses the full current value, and permission denial offers manual selection', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  await page.goto('/#copy');
-  const value = page.locator('mk-copy [data-copy-value]').first();
+  await page.goto('/#copy-value');
+  const value = page.locator('.mk-copy [data-copy-value]').first();
   const full = await value.textContent();
   await page.getByRole('button', { name: 'Copy payment reference' }).click();
   await expect(page.locator('.mk-copy-status').first()).toHaveText('Copied');
@@ -215,11 +215,12 @@ test('buttons align, breadcrumbs truncate on one line, and feedback has uniform 
 
 test('middle and segmented presentation always copy the complete current value', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  await page.goto('/#copy');
-  for (const mode of ['middle', 'segments']) {
-    const host = page.locator(`mk-copy[truncate="${mode}"]`);
+  await page.goto('/#copy-value');
+  // The CopyValue specimens: 2 is middle, 3 is segments.
+  for (const n of [2, 3]) {
+    const host = page.locator(`#copy-value-${n} .mk-copy`);
     const original = await host.locator('[data-copy-value]').textContent();
-    await expect(host).toHaveAttribute('data-truncated', '');
+    await expect(host.locator('.mk-copy-preview')).toHaveCount(1);
     expect(await host.locator('.mk-copy-preview').textContent()).toContain('…');
     await host.getByRole('button').click();
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(original);
@@ -228,7 +229,7 @@ test('middle and segmented presentation always copy the complete current value',
     expect(await page.evaluate(() => getSelection().toString())).toBe(original);
     await expect(host.locator('.mk-copy-preview')).toBeHidden();
     await host.locator('[data-copy-value]').evaluate(node => { node.textContent = 'short'; });
-    await expect(host).not.toHaveAttribute('data-truncated', '');
+    await expect(host.locator('.mk-copy-preview')).toHaveCount(0);
   }
 });
 

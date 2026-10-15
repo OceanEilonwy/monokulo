@@ -7,4 +7,7 @@ export * from './Alert';
 export * from './Field';
 export * from './Select';
 export * from './ProgressSteps';
+export * from './Tabs';
+export * from './TabLinks';
+export * from './CopyValue';
 export * from './types';

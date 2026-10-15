@@ -16,6 +16,12 @@ export function mark(root: Element, n: number): HTMLElement | null {
   return found.find(element => element.closest('mk-island') === root) ?? null;
 }
 
+/** Every server-rendered element with one mark, in order: the elements of
+ *  a loop over a prop's list, one per item. */
+export function marks(root: Element, n: number): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(`[data-mk="${n}"]`)).filter(element => element.closest('mk-island') === root);
+}
+
 /** The comment the server left where enhanced markup goes (`<!--mk:N-->`). */
 export function marker(root: Element, n: number): Comment | null {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);

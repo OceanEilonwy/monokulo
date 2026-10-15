@@ -67,8 +67,8 @@ pub enum Attr {
     Bool(&'static str, Cond),
     /// `name=[path]`: an `Option`, present while it is set.
     Optional(&'static str, Path),
-    /// `name="value" if cond`
-    When(&'static str, &'static str, Cond),
+    /// `name="value" if cond` (or `(path)`, or `{ parts }`)
+    When(&'static str, Vec<Part>, Cond),
     /// `name=join[ "a" if cond, { (x) "-b" } if cond, ... ]`: the tokens
     /// whose conditions hold, space-separated; absent if none do.
     Tokens(&'static str, Vec<(Vec<Part>, Option<Cond>)>),
@@ -94,9 +94,50 @@ impl Attr {
         }
     }
 
+    /// Every path the attribute reads.
+    pub fn paths(&self) -> Vec<Path> {
+        let parts = |ps: &[Part]| -> Vec<Path> {
+            ps.iter()
+                .filter_map(|p| match p {
+                    Part::Value(p) => Some(*p),
+                    Part::Lit(_) => None,
+                })
+                .collect()
+        };
+        match self {
+            Attr::Static(..) | Attr::Flag(_) | Attr::Ref(_) => vec![],
+            Attr::Value(_, p) | Attr::Optional(_, p) => vec![*p],
+            Attr::Concat(_, ps) => parts(ps),
+            Attr::Bool(_, c) => c.paths(),
+            Attr::When(_, ps, c) => {
+                let mut all = parts(ps);
+                all.extend(c.paths());
+                all
+            }
+            Attr::Tokens(_, tokens) => tokens
+                .iter()
+                .flat_map(|(ps, c)| {
+                    let mut all = parts(ps);
+                    all.extend(c.iter().flat_map(Cond::paths));
+                    all
+                })
+                .collect(),
+            Attr::On(_, _, arg) => arg.iter().copied().collect(),
+        }
+    }
+
+    /// An attribute that reads the behaviour's values (`b.*`): only the
+    /// behaviour sets it, and keeps it up to date.
+    pub fn reads_behaviour(&self) -> bool {
+        !matches!(self, Attr::On(..)) && self.paths().iter().any(|p| p[0] == "b")
+    }
+
     /// Whether the attribute is the behaviour's: absent from the server's
     /// markup, or different once enhanced.
     pub fn enhanced(&self) -> bool {
+        if self.reads_behaviour() {
+            return true;
+        }
         match self {
             Attr::Bool(_, c) | Attr::When(_, _, c) => c.enhanced(),
             Attr::Tokens(_, tokens) => tokens
@@ -123,12 +164,23 @@ pub enum Cond {
     /// `path == Enum::Variant` (true) or `!=` (false), by the variant's
     /// rendered value.
     Eq(Path, &'static str, bool),
+    /// `path == path` (true) or `!=` (false).
+    Same(Path, Path, bool),
     /// `enhanced`: false as the server renders, true once the behaviour
     /// runs.
     Enhanced,
 }
 
 impl Cond {
+    pub fn paths(&self) -> Vec<Path> {
+        match self {
+            Cond::Truthy(p) | Cond::Eq(p, _, _) => vec![*p],
+            Cond::Same(a, b, _) => vec![*a, *b],
+            Cond::Not(c) => c.paths(),
+            Cond::Enhanced => vec![],
+        }
+    }
+
     pub fn enhanced(&self) -> bool {
         match self {
             Cond::Enhanced => true,

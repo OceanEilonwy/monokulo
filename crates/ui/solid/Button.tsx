@@ -44,7 +44,7 @@ export interface ButtonProps extends Omit<JSX.IntrinsicElements["button"], "aria
 export function Button(props: ButtonProps): JSX.Element {
   const rest = omit(props, "children", "variant", "size", "kind", "block", "disabled", "busy");
   return (
-    <button class="mk-btn" type={(props.kind ?? "button")} data-variant={props.variant} data-size={props.size} data-block={(props.block ?? false)} disabled={(props.disabled ?? false)} aria-busy={(props.busy ?? false) ? "true" : undefined} {...rest}>
+    <button class="mk-btn" type={(props.kind ?? "button")} data-variant={props.variant} data-size={props.size} data-block={(props.block ?? false)} disabled={(props.disabled ?? false)} aria-busy={(props.busy ?? false) ? `true` : undefined} {...rest}>
       {props.children}
     </button>
   );

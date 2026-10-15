@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { inspect, key, unaccepted } from './lint.mjs';
-import { truncateValue } from '../web/components/truncate.js';
+import { truncateValue } from '../web/components/truncate.ts';
 
 test('shared controls are required in HTML, JSX and Maud', () => {
   for (const [file, source] of [['x.html', '<button>Save</button>'], ['x.tsx', 'const x = <button>Save</button>;'], ['x.rs', 'button type="submit" { "Save" }']]) {
