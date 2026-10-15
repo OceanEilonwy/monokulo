@@ -24,10 +24,8 @@ language that only reads props. From that one declaration:
 Never edit the generated files. To add or change a component: edit or add
 it in `crates/ui/src/components`, give it examples (they are what the
 stylebook shows and what Solid is checked against), add it to
-`catalogue()`, run `cargo xtask ui`, and keep its CSS and script in
-`crates/ui/web/components`. Behaviour stays in the package's custom
-elements (`mk-select`, `mk-copy`, the settings form): a component only
-decides the markup they upgrade. A caller adds attributes (`fx-*`,
+`catalogue()`, run `cargo xtask ui`, and keep its CSS and behaviour in
+`crates/ui/web/components`. A caller adds attributes (`fx-*`,
 `data-*`, Solid's `onClick`) through the component's spread; `class` and
 `style` belong to the component, so a new look is a new variant, and a
 consumer positions a component with a data attribute or its container.
@@ -35,7 +33,55 @@ consumer positions a component with a data attribute or its container.
 Truly custom visualisations (the engine page's block chart, the logs
 waterfall, wallet backup) stay in the application.
 
-Generated so far: Button, LinkButton, Alert, Field and ProgressSteps.
+## Interactive components: behaviour in Solid, islands on the server
+
+A component with behaviour declares it in `component!`, between its props and
+its template:
+
+```rust
+behaviour "select.behaviour.ts" {
+    expanded: AriaBool,          // a value the template reads as `b.expanded`
+    shown: Vec<SelectItem>,
+    fn toggle,                   // a handler: `on:click=toggle`
+    fn choose(usize),            //   with an argument: `on:click=choose(item.index)`
+    ref native,                  // an element handed over: `ref=native`
+}
+```
+
+The behaviour is Solid, in `web/components/<file>`: `setup(props)` returns
+those values (as accessors), handlers and refs. `cargo xtask ui` writes the
+interface it must meet into the generated component, so TypeScript checks it
+against the Rust declaration. The template keeps all the markup: what only
+the behaviour draws goes inside `@if enhanced { ... }`, attributes that change
+once it runs say `if enhanced`, and `b.*` is only read inside `@if enhanced`
+(the macro refuses it elsewhere, since the server renders without it).
+
+- **The server** renders an interactive component as an island:
+  `<mk-island component="Select" mount="load">`, its props as JSON, then the
+  markup with JavaScript off, a `data-mk` mark on each element the behaviour
+  attaches to and a `<!--mk:N-->` marker where `@if enhanced` goes.
+- **The browser** runs one script, `web/islands.ts` (`ui-islands.js`, built
+  with `vite.islands.config.js`), which defines `<mk-island>`, the one custom
+  element. When an island connects (on load, when visible, or on first
+  interaction, as `mount` says) it calls the generated `attach<Name>`: the
+  behaviour's handlers and refs bind to the server's own elements and its
+  enhanced markup is inserted at the markers. Nothing the server rendered is
+  replaced, so a field keeps its value and focus, and other scripts'
+  listeners and fixi keep working. A fixi swap that removes an island
+  disposes it; one that brings an island in attaches it.
+- **The POS** renders the generated Solid component itself: the same
+  template, `enhanced` true, the same behaviour.
+
+Write behaviour signals that are set while attaching (in a `ref`) with
+`{ ownedWrite: true }`. A script that changes a component's field (a
+select's value) says so with an `input` or `change` event; changes to its
+options or attributes are followed by themselves.
+
+Generated so far: Button, LinkButton, Alert, Field, ProgressSteps and
+Select, the first interactive one: every dropdown on monokulo's pages is
+`ui::Select`. The older custom elements (`mk-copy`, `mk-tabs`, the menu and
+the settings form) still upgrade hand-written markup until they move the
+same way.
 Monokulo's setup steps and sign-up/log-in forms and the POS's Charge,
 order and Reference controls use them. The hand-written examples below
 cover what hasn't moved yet.

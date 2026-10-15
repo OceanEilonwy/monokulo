@@ -7,12 +7,12 @@
 
 use maud::{html, Markup, PreEscaped};
 
-use super::controls::Choice;
 use super::{layout_with_head, reload_button, script, Load, PageChrome};
 use crate::engine_view::present::{
     Bar, ChainView, Lane, MarkView, Panel, Presented, RibbonMark, RoundView, Shape,
 };
 use crate::views::scaling::{network_name, thousands, MachineView, ScanningView, Tile, TileChart};
+use ui::{Choice, Select};
 
 /// Blocks drawn without JavaScript: enough for the widest strip. Those
 /// that don't fit whole wrap out of sight; the script draws as many as fit.
@@ -392,15 +392,21 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
                 // Go does.
                 form class="engine-network" method="get" action="/status/engine" {
                     label for="engine-network" class="visually-hidden" { "Network" }
-                    mk-select compact {
-                        select id="engine-network" name="network" {
-                            @for network in NETWORKS {
-                                @let configured = page.networks.iter().any(|n| n == network);
-                                @let choice = Choice::new(network, network_name(network)).selected(*network == page.network).disabled(!configured);
-                                (if configured { choice } else { choice.note("no node configured") })
-                            }
-                        }
-                    }
+                    (Select::new(
+                        "network",
+                        NETWORKS
+                            .iter()
+                            .map(|network| {
+                                let configured = page.networks.iter().any(|n| n == network);
+                                let choice = Choice::new(network, network_name(network))
+                                    .selected(*network == page.network)
+                                    .disabled(!configured);
+                                if configured { choice } else { choice.note("no node configured") }
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                    .id("engine-network")
+                    .compact(true))
                     button type="submit" class="network-go no-js-only" { "Go" }
                 }
                 (reload_button(&format!("/status/engine?network={}", page.network)))
@@ -505,13 +511,16 @@ fn timeline() -> Markup {
             }
             div class="tl-modes" id="tl-modes" {
                 label for="tl-mode" { "Playback" }
-                mk-select compact {
-                    select id="tl-mode" name="tl-mode" {
-                        option value="live" selected { "Live" }
-                        option value="replay" disabled { "Play" }
-                        option value="paused" { "Pause" }
-                    }
-                }
+                (Select::new(
+                    "tl-mode",
+                    vec![
+                        Choice::new("live", "Live").selected(true),
+                        Choice::new("replay", "Play").disabled(true),
+                        Choice::new("paused", "Pause"),
+                    ],
+                )
+                .id("tl-mode")
+                .compact(true))
                 // How far behind live, under the control: it takes no room
                 // in the row, so the bar never changes width.
                 div class="tl-read" id="tl-read" { span id="tl-text" {} }

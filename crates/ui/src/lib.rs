@@ -26,6 +26,7 @@ pub mod assets;
 pub mod book;
 pub mod components;
 pub mod ir;
+mod json;
 mod render;
 pub mod solid;
 
@@ -76,6 +77,16 @@ pub struct RecordInfo {
     pub name: &'static str,
     pub doc: &'static str,
     pub fields: Vec<FieldInfo>,
+    /// How Rust builds one, when not with a struct literal.
+    pub builder: Option<RecordBuilder>,
+}
+
+/// `#[ui(new(...), skip(...))]` on a [`UiRecord`]: `new`'s arguments, and
+/// fields no setter sets (computed ones).
+#[derive(Debug)]
+pub struct RecordBuilder {
+    pub new: &'static [&'static str],
+    pub skip: &'static [&'static str],
 }
 
 #[derive(Debug)]
@@ -104,6 +115,25 @@ pub struct ComponentInfo {
     pub doc: &'static str,
     pub props: Vec<PropInfo>,
     pub template: Vec<ir::Node>,
+    /// An interactive component's behaviour: the server renders it as an
+    /// island, which the behaviour attaches to in the browser.
+    pub behaviour: Option<BehaviourInfo>,
+}
+
+/// What an interactive component's Solid behaviour gives its template
+/// (`behaviour "file.ts" { ... }` in [`component!`]).
+#[derive(Debug)]
+pub struct BehaviourInfo {
+    /// Its file, in `web/components`.
+    pub file: &'static str,
+    /// When the island attaches: `load`, `visible` or `interaction`.
+    pub mount: &'static str,
+    /// Values the template reads as `b.name`.
+    pub values: Vec<FieldInfo>,
+    /// Handlers `on:event=name` calls, with their argument's type.
+    pub handlers: Vec<(&'static str, Option<Ty>)>,
+    /// Elements handed to it with `ref=name`.
+    pub refs: Vec<&'static str>,
 }
 
 impl ComponentInfo {

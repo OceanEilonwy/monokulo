@@ -9,8 +9,8 @@
 
 use maud::{html, Markup};
 
-use super::controls::Choice;
 use super::{layout, PageChrome};
+use ui::{Choice, Select};
 
 /// One key custody backend a new wallet's keys can go to (part 5).
 pub struct CustodyChoice {
@@ -26,13 +26,13 @@ pub(crate) fn custody_select(choices: &[CustodyChoice]) -> Markup {
         @if choices.len() > 1 {
             label {
                 "Key storage"
-                mk-select {
-                    select name="key_custody_backend" {
-                        @for choice in choices {
-                            (Choice::new(&choice.backend, &choice.label).selected(choice.selected))
-                        }
-                    }
-                }
+                (Select::new(
+                    "key_custody_backend",
+                    choices
+                        .iter()
+                        .map(|choice| Choice::new(&choice.backend, &choice.label).selected(choice.selected))
+                        .collect::<Vec<_>>(),
+                ))
                 span class="field-help" {
                     "Where this wallet's view key is kept. You can move it later from a store's settings, "
                     "by entering the keys again."

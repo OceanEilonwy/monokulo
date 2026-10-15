@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 test('enhanced select supports keyboard, programmatic changes and form reset', async ({ page }) => {
   await page.goto('/');
   const select = page.locator('#currency');
-  const combobox = page.getByRole('combobox', { name: 'Currency' });
+  const combobox = page.getByRole('combobox', { name: 'Currency', exact: true });
   await expect(combobox).toContainText('Australian dollar');
   await combobox.focus();
   await page.keyboard.press('ArrowDown');
@@ -249,13 +249,10 @@ test('full-page settings keep save actions in the footer with and without script
   }
 });
 
-test('wallet selection, pagination and QR destinations are real native links and forms', async ({ browser }) => {
+test('pagination and QR destinations are real native links', async ({ browser }) => {
   const context = await browser.newContext({ javaScriptEnabled: false });
   const page = await context.newPage();
   await page.goto('http://127.0.0.1:4179');
-  await page.getByLabel('Receiving wallet').selectOption('backup');
-  await page.getByRole('button', { name: 'Use wallet', exact: true }).click();
-  await expect(page).toHaveURL(/wallet=backup#wallet-selector/);
   await page.getByRole('navigation', { name: 'Example order pagination' }).getByRole('link', { name: 'Next page', exact: true }).click();
   await expect(page).toHaveURL(/page=3#pagination/);
   await expect(page.locator('#qr > .book-example .mk-qr > a')).toHaveAttribute('href', 'https://example.com/');
@@ -458,7 +455,8 @@ test('chips use title casing, pill borders and attention colors; Current is plai
   await expect(tag).toHaveCSS('border-radius', '999px');
   const payment = page.locator('#compositions .state-pending');
   await expect(payment).toHaveCSS('background-color', await tag.evaluate(el => getComputedStyle(el).backgroundColor));
-  const selector = page.locator('#wallet-selector mk-select');
+  // The Select's wallet specimen.
+  const selector = page.locator('#select-2 .mk-select');
   const current = selector.locator('.mk-button .mk-current');
   await expect(current).toHaveText('Current');
   await expect(current).toHaveCSS('border-top-width', '0px');
@@ -466,5 +464,5 @@ test('chips use title casing, pill borders and attention colors; Current is plai
   await expect(selector.locator('.mk-button .tag-network')).toHaveCount(1);
   await expect(selector.locator('.mk-button .tag')).toHaveCount(0);
   await selector.locator('.mk-button').click();
-  await expect(selector.getByRole('option', { name: /Counter wallet/ }).locator('.mk-current')).toHaveText('Current');
+  await expect(selector.getByRole('option', { name: /Copper Heron/ }).locator('.mk-current')).toHaveText('Current');
 });

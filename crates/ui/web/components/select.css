@@ -1,9 +1,10 @@
-/* `<mk-select>` (select.js): the select the
-   page sent, drawn as a button and a list that floats over the page.
-   Without JavaScript the select is shown as it is. */
-mk-select { display: block; position: relative; }
-mk-select[compact] { display: inline-block; vertical-align: middle; }
-mk-select:defined > select.mk-native { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; pointer-events: none; }
+/* The Select component (crates/ui, select.behaviour.ts): the select the
+   page sent, drawn as a button and a list that floats over the page once
+   its island attaches. Without JavaScript the select is shown as it is. */
+mk-island { display: contents; }
+.mk-select { display: block; position: relative; }
+.mk-select[data-compact] { display: inline-block; vertical-align: middle; }
+.mk-select > select.mk-native { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; pointer-events: none; }
 .mk-button, .mk-button:hover {
   box-sizing: border-box; font: inherit; display: flex; align-items: center; gap: var(--space-sm); width: 100%; margin: 0;
   padding: calc(var(--space-sm) + 1px) calc(var(--space-md) + 1px);
@@ -12,12 +13,12 @@ mk-select:defined > select.mk-native { position: absolute; left: 0; bottom: 0; w
 }
 .mk-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--focus-ring); }
 .mk-button:disabled { opacity: .45; cursor: not-allowed; }
-.mk-invalid .mk-button { border-color: var(--error); box-shadow: 0 0 0 1px var(--error); }
+.mk-button[aria-invalid="true"] { border-color: var(--error); box-shadow: 0 0 0 1px var(--error); }
 .mk-value { display: flex; align-items: center; gap: var(--space-sm); min-width: 0; flex: 1 1 auto; }
 .mk-value .mk-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mk-prompt { color: var(--muted); }
 .mk-caret { margin-left: auto; width: .5em; height: .5em; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: translateY(-25%) rotate(45deg); flex: none; }
-.mk-open .mk-caret { transform: translateY(25%) rotate(-135deg); }
+.mk-button[aria-expanded="true"] .mk-caret { transform: translateY(25%) rotate(-135deg); }
 .mk-logo { width: 1.4em; height: 1.4em; flex: none; border-radius: 22%; object-fit: contain; }
 .mk-detail { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--muted); }
 .mk-note { margin-left: auto; padding-left: var(--space-md); font-size: var(--text-sm); color: var(--muted); text-align: right; }
@@ -28,7 +29,7 @@ mk-select:defined > select.mk-native { position: absolute; left: 0; bottom: 0; w
   background: var(--paper-raised); box-shadow: 0 8px 24px var(--popup-shadow);
 }
 .mk-popup[hidden] { display: none; }
-.mk-up .mk-popup { top: auto; bottom: calc(100% + 4px); }
+.mk-popup.mk-up { top: auto; bottom: calc(100% + 4px); }
 /* In the top layer (the Popover API): placed by the script, in the
    window's coordinates, over any dialog. */
 .mk-popup[popover] { position: fixed; inset: auto; margin: 0; color: var(--ink); overflow: visible; }
@@ -42,8 +43,8 @@ mk-select:defined > select.mk-native { position: absolute; left: 0; bottom: 0; w
 .mk-option[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
 .mk-option .mk-note { font-weight: 400; }
 .mk-empty { margin: 0; padding: var(--space-sm) var(--space-md); color: var(--muted); }
-mk-select[compact] .mk-button { width: auto; min-width: 9rem; padding: .25rem .5rem; }
-mk-select[compact] .mk-popup { white-space: nowrap; }
+.mk-select[data-compact] .mk-button { width: auto; min-width: 9rem; padding: .25rem .5rem; }
+.mk-select[data-compact] .mk-popup { white-space: nowrap; }
 
 /* An on/off setting (`views::switch`): a checkbox drawn as a switch, so it
    works the same without JavaScript. */

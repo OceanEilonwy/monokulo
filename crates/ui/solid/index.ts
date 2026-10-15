@@ -5,5 +5,6 @@ export * from './Button';
 export * from './LinkButton';
 export * from './Alert';
 export * from './Field';
+export * from './Select';
 export * from './ProgressSteps';
 export * from './types';

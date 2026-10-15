@@ -296,7 +296,7 @@ test('the round lanes use the width, their chips on their own row at the right',
 test('the network picker goes at once with JavaScript, with Go without', async ({ page, context, browser }) => {
   await openAsAdmin(page, context);
   await expect(page.locator('.network-go')).toBeHidden();
-  await expect(page.locator('mk-select .mk-button').first()).toBeVisible();
+  await expect(page.locator('.mk-select .mk-button').first()).toBeVisible();
   // Picking a network submits the form: the page loads it.
   await Promise.all([
     page.waitForURL(/\/status\/engine\?network=mainnet$/),

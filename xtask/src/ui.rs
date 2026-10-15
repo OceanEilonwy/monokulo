@@ -22,6 +22,7 @@ pub(crate) const HELP: &str =
 const SOLID: &str = "crates/ui/solid";
 const BOOK: &str = "apps/stylebook/examples/generated";
 const FIXTURES: &str = "crates/ui/browser/solid/generated";
+const PARTIALS: &str = "apps/stylebook/examples/generated/partials";
 
 /// Every generated file, by directory and name.
 fn outputs() -> BTreeMap<&'static str, BTreeMap<String, String>> {
@@ -42,6 +43,13 @@ fn outputs() -> BTreeMap<&'static str, BTreeMap<String, String>> {
         (
             FIXTURES,
             BTreeMap::from([("fixtures.json".to_string(), ui::book::fixtures(&catalogue))]),
+        ),
+        (
+            PARTIALS,
+            ui::book::partials(&catalogue)
+                .into_iter()
+                .map(|(name, html)| (format!("{name}.html"), html))
+                .collect(),
         ),
     ])
 }

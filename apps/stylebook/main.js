@@ -1,4 +1,5 @@
 import '@monokulo/ui';
+import '@monokulo/ui/islands';
 const theme = document.querySelector('#book-theme');
 document.querySelector('.book-theme').hidden = false;
 theme.addEventListener('change', () => {

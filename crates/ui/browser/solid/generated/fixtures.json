@@ -342,6 +342,321 @@
     "title": "Compact"
   },
   {
+    "component": "Select",
+    "html": "<mk-island component=\"Select\" mount=\"load\"><script type=\"application/json\" data-props>{\"compact\":false,\"disabled\":false,\"id\":\"book-currency\",\"label\":\"Base currency\",\"name\":\"currency\",\"options\":[{\"current\":false,\"data_label\":\"Australian Dollar\",\"detail\":\"AUD\",\"disabled\":false,\"label\":\"Australian Dollar\",\"selected\":false,\"text\":\"Australian Dollar (AUD)\",\"value\":\"AUD\"},{\"current\":false,\"data_label\":\"Canadian Dollar\",\"detail\":\"CAD\",\"disabled\":false,\"label\":\"Canadian Dollar\",\"selected\":false,\"text\":\"Canadian Dollar (CAD)\",\"value\":\"CAD\"},{\"current\":false,\"data_label\":\"Swiss Franc\",\"detail\":\"CHF\",\"disabled\":false,\"label\":\"Swiss Franc\",\"selected\":false,\"text\":\"Swiss Franc (CHF)\",\"value\":\"CHF\"},{\"current\":false,\"data_label\":\"Euro\",\"detail\":\"EUR\",\"disabled\":false,\"label\":\"Euro\",\"selected\":true,\"text\":\"Euro (EUR)\",\"value\":\"EUR\"},{\"current\":false,\"data_label\":\"Pound Sterling\",\"detail\":\"GBP\",\"disabled\":false,\"label\":\"Pound Sterling\",\"selected\":false,\"text\":\"Pound Sterling (GBP)\",\"value\":\"GBP\"},{\"current\":false,\"data_label\":\"Japanese Yen\",\"detail\":\"JPY\",\"disabled\":false,\"label\":\"Japanese Yen\",\"selected\":false,\"text\":\"Japanese Yen (JPY)\",\"value\":\"JPY\"},{\"current\":false,\"data_label\":\"New Zealand Dollar\",\"detail\":\"NZD\",\"disabled\":false,\"label\":\"New Zealand Dollar\",\"selected\":false,\"text\":\"New Zealand Dollar (NZD)\",\"value\":\"NZD\"},{\"current\":false,\"data_label\":\"Swedish Krona\",\"detail\":\"SEK\",\"disabled\":false,\"label\":\"Swedish Krona\",\"selected\":false,\"text\":\"Swedish Krona (SEK)\",\"value\":\"SEK\"},{\"current\":false,\"data_label\":\"United States Dollar\",\"detail\":\"USD\",\"disabled\":false,\"label\":\"United States Dollar\",\"selected\":false,\"text\":\"United States Dollar (USD)\",\"value\":\"USD\"},{\"current\":false,\"data_label\":\"Monero\",\"detail\":\"XMR\",\"disabled\":false,\"label\":\"Monero\",\"selected\":false,\"text\":\"Monero (XMR)\",\"value\":\"XMR\"},{\"current\":false,\"data_label\":\"Brazilian Real\",\"detail\":\"BRL\",\"disabled\":false,\"label\":\"Brazilian Real\",\"selected\":false,\"text\":\"Brazilian Real (BRL)\",\"value\":\"BRL\"},{\"current\":false,\"data_label\":\"Indian Rupee\",\"detail\":\"INR\",\"disabled\":false,\"label\":\"Indian Rupee\",\"selected\":false,\"text\":\"Indian Rupee (INR)\",\"value\":\"INR\"}],\"required\":false,\"search\":\"auto\"}</script><div class=\"mk-select\" data-mk=\"1\"><select class=\"mk-input\" name=\"currency\" id=\"book-currency\" aria-label=\"Base currency\" data-mk=\"2\"><option value=\"AUD\" data-label=\"Australian Dollar\" data-detail=\"AUD\">Australian Dollar (AUD)</option><option value=\"CAD\" data-label=\"Canadian Dollar\" data-detail=\"CAD\">Canadian Dollar (CAD)</option><option value=\"CHF\" data-label=\"Swiss Franc\" data-detail=\"CHF\">Swiss Franc (CHF)</option><option value=\"EUR\" selected data-label=\"Euro\" data-detail=\"EUR\">Euro (EUR)</option><option value=\"GBP\" data-label=\"Pound Sterling\" data-detail=\"GBP\">Pound Sterling (GBP)</option><option value=\"JPY\" data-label=\"Japanese Yen\" data-detail=\"JPY\">Japanese Yen (JPY)</option><option value=\"NZD\" data-label=\"New Zealand Dollar\" data-detail=\"NZD\">New Zealand Dollar (NZD)</option><option value=\"SEK\" data-label=\"Swedish Krona\" data-detail=\"SEK\">Swedish Krona (SEK)</option><option value=\"USD\" data-label=\"United States Dollar\" data-detail=\"USD\">United States Dollar (USD)</option><option value=\"XMR\" data-label=\"Monero\" data-detail=\"XMR\">Monero (XMR)</option><option value=\"BRL\" data-label=\"Brazilian Real\" data-detail=\"BRL\">Brazilian Real (BRL)</option><option value=\"INR\" data-label=\"Indian Rupee\" data-detail=\"INR\">Indian Rupee (INR)</option></select><!--mk:3--></div></mk-island>",
+    "props": {
+      "compact": false,
+      "disabled": false,
+      "id": "book-currency",
+      "label": "Base currency",
+      "name": "currency",
+      "options": [
+        {
+          "current": false,
+          "data_label": "Australian Dollar",
+          "detail": "AUD",
+          "disabled": false,
+          "label": "Australian Dollar",
+          "selected": false,
+          "text": "Australian Dollar (AUD)",
+          "value": "AUD"
+        },
+        {
+          "current": false,
+          "data_label": "Canadian Dollar",
+          "detail": "CAD",
+          "disabled": false,
+          "label": "Canadian Dollar",
+          "selected": false,
+          "text": "Canadian Dollar (CAD)",
+          "value": "CAD"
+        },
+        {
+          "current": false,
+          "data_label": "Swiss Franc",
+          "detail": "CHF",
+          "disabled": false,
+          "label": "Swiss Franc",
+          "selected": false,
+          "text": "Swiss Franc (CHF)",
+          "value": "CHF"
+        },
+        {
+          "current": false,
+          "data_label": "Euro",
+          "detail": "EUR",
+          "disabled": false,
+          "label": "Euro",
+          "selected": true,
+          "text": "Euro (EUR)",
+          "value": "EUR"
+        },
+        {
+          "current": false,
+          "data_label": "Pound Sterling",
+          "detail": "GBP",
+          "disabled": false,
+          "label": "Pound Sterling",
+          "selected": false,
+          "text": "Pound Sterling (GBP)",
+          "value": "GBP"
+        },
+        {
+          "current": false,
+          "data_label": "Japanese Yen",
+          "detail": "JPY",
+          "disabled": false,
+          "label": "Japanese Yen",
+          "selected": false,
+          "text": "Japanese Yen (JPY)",
+          "value": "JPY"
+        },
+        {
+          "current": false,
+          "data_label": "New Zealand Dollar",
+          "detail": "NZD",
+          "disabled": false,
+          "label": "New Zealand Dollar",
+          "selected": false,
+          "text": "New Zealand Dollar (NZD)",
+          "value": "NZD"
+        },
+        {
+          "current": false,
+          "data_label": "Swedish Krona",
+          "detail": "SEK",
+          "disabled": false,
+          "label": "Swedish Krona",
+          "selected": false,
+          "text": "Swedish Krona (SEK)",
+          "value": "SEK"
+        },
+        {
+          "current": false,
+          "data_label": "United States Dollar",
+          "detail": "USD",
+          "disabled": false,
+          "label": "United States Dollar",
+          "selected": false,
+          "text": "United States Dollar (USD)",
+          "value": "USD"
+        },
+        {
+          "current": false,
+          "data_label": "Monero",
+          "detail": "XMR",
+          "disabled": false,
+          "label": "Monero",
+          "selected": false,
+          "text": "Monero (XMR)",
+          "value": "XMR"
+        },
+        {
+          "current": false,
+          "data_label": "Brazilian Real",
+          "detail": "BRL",
+          "disabled": false,
+          "label": "Brazilian Real",
+          "selected": false,
+          "text": "Brazilian Real (BRL)",
+          "value": "BRL"
+        },
+        {
+          "current": false,
+          "data_label": "Indian Rupee",
+          "detail": "INR",
+          "disabled": false,
+          "label": "Indian Rupee",
+          "selected": false,
+          "text": "Indian Rupee (INR)",
+          "value": "INR"
+        }
+      ],
+      "required": false,
+      "search": "auto"
+    },
+    "title": "Currency, with a find box from 12 options"
+  },
+  {
+    "component": "Select",
+    "html": "<mk-island component=\"Select\" mount=\"load\"><script type=\"application/json\" data-props>{\"compact\":false,\"disabled\":false,\"id\":\"book-wallet\",\"label\":\"Wallet\",\"name\":\"wallet_id\",\"options\":[{\"current\":false,\"disabled\":true,\"label\":\"Choose a wallet…\",\"selected\":false,\"text\":\"Choose a wallet…\",\"value\":\"\"},{\"chip\":\"Current\",\"current\":true,\"data_label\":\"Copper Heron\",\"detail\":\"48xQ7…v3Rk\",\"disabled\":false,\"label\":\"Copper Heron\",\"network\":\"mainnet\",\"note\":\"2 stores\",\"selected\":true,\"text\":\"Copper Heron (48xQ7…v3Rk) [Mainnet] [Current] - 2 stores\",\"value\":\"w_1\"},{\"current\":false,\"data_label\":\"Feather test\",\"detail\":\"5Bq2…9TtM\",\"disabled\":false,\"label\":\"Feather test\",\"network\":\"stagenet\",\"note\":\"1 store\",\"selected\":false,\"text\":\"Feather test (5Bq2…9TtM) [Stagenet] - 1 store\",\"value\":\"w_2\"},{\"current\":false,\"data_label\":\"Old till\",\"detail\":\"47aa…0QeN\",\"disabled\":true,\"label\":\"Old till\",\"network\":\"mainnet\",\"note\":\"retired\",\"selected\":false,\"text\":\"Old till (47aa…0QeN) [Mainnet] - retired\",\"value\":\"w_3\"}],\"required\":true,\"search\":\"auto\"}</script><div class=\"mk-select\" data-mk=\"1\"><select class=\"mk-input\" name=\"wallet_id\" id=\"book-wallet\" aria-label=\"Wallet\" required data-mk=\"2\"><option value=\"\" disabled>Choose a wallet…</option><option value=\"w_1\" selected data-label=\"Copper Heron\" data-detail=\"48xQ7…v3Rk\" data-network=\"mainnet\" data-chip=\"Current\" data-chip-tone=\"current\" data-note=\"2 stores\">Copper Heron (48xQ7…v3Rk) [Mainnet] [Current] - 2 stores</option><option value=\"w_2\" data-label=\"Feather test\" data-detail=\"5Bq2…9TtM\" data-network=\"stagenet\" data-note=\"1 store\">Feather test (5Bq2…9TtM) [Stagenet] - 1 store</option><option value=\"w_3\" disabled data-label=\"Old till\" data-detail=\"47aa…0QeN\" data-network=\"mainnet\" data-note=\"retired\">Old till (47aa…0QeN) [Mainnet] - retired</option></select><!--mk:3--></div></mk-island>",
+    "props": {
+      "compact": false,
+      "disabled": false,
+      "id": "book-wallet",
+      "label": "Wallet",
+      "name": "wallet_id",
+      "options": [
+        {
+          "current": false,
+          "disabled": true,
+          "label": "Choose a wallet…",
+          "selected": false,
+          "text": "Choose a wallet…",
+          "value": ""
+        },
+        {
+          "chip": "Current",
+          "current": true,
+          "data_label": "Copper Heron",
+          "detail": "48xQ7…v3Rk",
+          "disabled": false,
+          "label": "Copper Heron",
+          "network": "mainnet",
+          "note": "2 stores",
+          "selected": true,
+          "text": "Copper Heron (48xQ7…v3Rk) [Mainnet] [Current] - 2 stores",
+          "value": "w_1"
+        },
+        {
+          "current": false,
+          "data_label": "Feather test",
+          "detail": "5Bq2…9TtM",
+          "disabled": false,
+          "label": "Feather test",
+          "network": "stagenet",
+          "note": "1 store",
+          "selected": false,
+          "text": "Feather test (5Bq2…9TtM) [Stagenet] - 1 store",
+          "value": "w_2"
+        },
+        {
+          "current": false,
+          "data_label": "Old till",
+          "detail": "47aa…0QeN",
+          "disabled": true,
+          "label": "Old till",
+          "network": "mainnet",
+          "note": "retired",
+          "selected": false,
+          "text": "Old till (47aa…0QeN) [Mainnet] - retired",
+          "value": "w_3"
+        }
+      ],
+      "required": true,
+      "search": "auto"
+    },
+    "title": "Wallets, with networks, the current one and notes"
+  },
+  {
+    "component": "Select",
+    "html": "<mk-island component=\"Select\" mount=\"load\"><script type=\"application/json\" data-props>{\"compact\":false,\"disabled\":false,\"id\":\"book-network\",\"label\":\"Network\",\"name\":\"network\",\"options\":[{\"current\":false,\"data_label\":\"\",\"disabled\":false,\"label\":\"\",\"network\":\"mainnet\",\"selected\":false,\"text\":\"[Mainnet]\",\"value\":\"mainnet\"},{\"current\":false,\"data_label\":\"\",\"disabled\":false,\"label\":\"\",\"network\":\"stagenet\",\"selected\":true,\"text\":\"[Stagenet]\",\"value\":\"stagenet\"},{\"current\":false,\"data_label\":\"\",\"disabled\":false,\"label\":\"\",\"network\":\"testnet\",\"selected\":false,\"text\":\"[Testnet]\",\"value\":\"testnet\"}],\"required\":false,\"search\":\"auto\"}</script><div class=\"mk-select\" data-mk=\"1\"><select class=\"mk-input\" name=\"network\" id=\"book-network\" aria-label=\"Network\" data-mk=\"2\"><option value=\"mainnet\" data-label=\"\" data-network=\"mainnet\">[Mainnet]</option><option value=\"stagenet\" selected data-label=\"\" data-network=\"stagenet\">[Stagenet]</option><option value=\"testnet\" data-label=\"\" data-network=\"testnet\">[Testnet]</option></select><!--mk:3--></div></mk-island>",
+    "props": {
+      "compact": false,
+      "disabled": false,
+      "id": "book-network",
+      "label": "Network",
+      "name": "network",
+      "options": [
+        {
+          "current": false,
+          "data_label": "",
+          "disabled": false,
+          "label": "",
+          "network": "mainnet",
+          "selected": false,
+          "text": "[Mainnet]",
+          "value": "mainnet"
+        },
+        {
+          "current": false,
+          "data_label": "",
+          "disabled": false,
+          "label": "",
+          "network": "stagenet",
+          "selected": true,
+          "text": "[Stagenet]",
+          "value": "stagenet"
+        },
+        {
+          "current": false,
+          "data_label": "",
+          "disabled": false,
+          "label": "",
+          "network": "testnet",
+          "selected": false,
+          "text": "[Testnet]",
+          "value": "testnet"
+        }
+      ],
+      "required": false,
+      "search": "auto"
+    },
+    "title": "A network on its own: the badge"
+  },
+  {
+    "component": "Select",
+    "html": "<mk-island component=\"Select\" mount=\"load\"><script type=\"application/json\" data-props>{\"compact\":true,\"disabled\":false,\"id\":\"book-level\",\"label\":\"Level\",\"name\":\"level\",\"options\":[{\"current\":false,\"disabled\":false,\"label\":\"Errors\",\"selected\":false,\"text\":\"Errors\",\"value\":\"error\"},{\"current\":false,\"disabled\":false,\"label\":\"Warnings and up\",\"selected\":true,\"text\":\"Warnings and up\",\"value\":\"warn\"},{\"current\":false,\"disabled\":false,\"label\":\"Info and up\",\"selected\":false,\"text\":\"Info and up\",\"value\":\"info\"},{\"current\":false,\"disabled\":false,\"label\":\"Everything\",\"selected\":false,\"text\":\"Everything\",\"value\":\"debug\"}],\"required\":false,\"search\":\"auto\"}</script><div class=\"mk-select\" data-compact data-mk=\"1\"><select class=\"mk-input\" data-size=\"compact\" name=\"level\" id=\"book-level\" aria-label=\"Level\" data-mk=\"2\"><option value=\"error\">Errors</option><option value=\"warn\" selected>Warnings and up</option><option value=\"info\">Info and up</option><option value=\"debug\">Everything</option></select><!--mk:3--></div></mk-island>",
+    "props": {
+      "compact": true,
+      "disabled": false,
+      "id": "book-level",
+      "label": "Level",
+      "name": "level",
+      "options": [
+        {
+          "current": false,
+          "disabled": false,
+          "label": "Errors",
+          "selected": false,
+          "text": "Errors",
+          "value": "error"
+        },
+        {
+          "current": false,
+          "disabled": false,
+          "label": "Warnings and up",
+          "selected": true,
+          "text": "Warnings and up",
+          "value": "warn"
+        },
+        {
+          "current": false,
+          "disabled": false,
+          "label": "Info and up",
+          "selected": false,
+          "text": "Info and up",
+          "value": "info"
+        },
+        {
+          "current": false,
+          "disabled": false,
+          "label": "Everything",
+          "selected": false,
+          "text": "Everything",
+          "value": "debug"
+        }
+      ],
+      "required": false,
+      "search": "auto"
+    },
+    "title": "Compact, for a toolbar"
+  },
+  {
+    "component": "Select",
+    "html": "<mk-island component=\"Select\" mount=\"load\"><script type=\"application/json\" data-props>{\"compact\":false,\"disabled\":true,\"id\":\"book-language\",\"label\":\"Language\",\"name\":\"language\",\"options\":[{\"current\":false,\"disabled\":false,\"label\":\"English\",\"selected\":true,\"text\":\"English\",\"value\":\"en\"}],\"required\":false,\"search\":\"auto\"}</script><div class=\"mk-select\" data-mk=\"1\"><select class=\"mk-input\" name=\"language\" id=\"book-language\" aria-label=\"Language\" disabled data-mk=\"2\"><option value=\"en\" selected>English</option></select><!--mk:3--></div></mk-island>",
+    "props": {
+      "compact": false,
+      "disabled": true,
+      "id": "book-language",
+      "label": "Language",
+      "name": "language",
+      "options": [
+        {
+          "current": false,
+          "disabled": false,
+          "label": "English",
+          "selected": true,
+          "text": "English",
+          "value": "en"
+        }
+      ],
+      "required": false,
+      "search": "auto"
+    },
+    "title": "Disabled"
+  },
+  {
     "component": "ProgressSteps",
     "html": "<ol class=\"mk-progress-steps\" data-design=\"strip\" aria-label=\"Setup progress\"><li class=\"done\"><span>Store<small>Complete</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"1\" aria-label=\"Store: 1 of 1 tasks complete\"></progress></li><li aria-current=\"step\"><span>Wallet<small>Back up · step 2 of 3</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"3\" aria-label=\"Wallet: 1 of 3 tasks complete\"></progress></li><li><span>Done<small>Next</small></span><progress class=\"mk-step-progress\" value=\"0\" max=\"1\" aria-label=\"Done: 0 of 1 tasks complete\"></progress></li></ol>",
     "props": {

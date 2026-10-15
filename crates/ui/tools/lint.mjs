@@ -19,7 +19,9 @@ export function inspect(file, source) {
   const report = (rule, snippet, line = 1) => findings.push({ file, rule, line, snippet: snippet.replace(/\s+/g, ' ').trim() });
   const checkControl = (tag, attrs, snippet, line) => {
     if (!controls.has(tag) || /\btype\s*=\s*["'](?:hidden|checkbox|radio)["']/.test(attrs)) return;
-    if (!/\bmk-(?:btn|input)\b/.test(attrs)) report('shared-control', snippet, line);
+    // A component's own controls (the Select's button) are what the
+    // library defines; everyone else uses a component or a shared class.
+    if (!file.startsWith('crates/ui/src/') && !/\bmk-(?:btn|input)\b/.test(attrs)) report('shared-control', snippet, line);
   };
   if (file.endsWith('.css')) {
     if (file.endsWith('/tokens.css')) return findings;
@@ -43,7 +45,9 @@ export function inspect(file, source) {
         checkControl(node.tagName, snippet, snippet, location?.startLine);
         if ('data-icon-only' in attrs && !attrs['aria-label'] && !attrs['aria-labelledby']) report('icon-name', snippet, location?.startLine);
         if (attrs.class?.split(/\s+/).includes('mk-btn') && node.tagName === 'a' && !attrs.href) report('link-destination', snippet, location?.startLine);
-        if (node.tagName === 'select' && node.parentNode?.tagName !== 'mk-select') report('native-select-wrapper', snippet, location?.startLine);
+        // Every dropdown is `ui::Select`, rendered from Rust: hand-written
+        // HTML includes its rendering rather than writing a select.
+        if (node.tagName === 'select') report('native-select-wrapper', snippet, location?.startLine);
       }
       (node.childNodes || []).forEach(visit);
     };
@@ -85,13 +89,14 @@ export function unaccepted(findings, baseline) {
 }
 function files(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
-    if (['node_modules', 'dist', 'fixi.js', 'ssexi.js', 'jsQR.js'].includes(entry.name)) return [];
+    // `generated`: what `cargo xtask ui` renders from crates/ui.
+    if (['node_modules', 'dist', 'generated', 'fixi.js', 'ssexi.js', 'jsQR.js'].includes(entry.name)) return [];
     const path = resolve(dir, entry.name);
     return entry.isDirectory() ? files(path) : /\.(css|html|[jt]sx?|rs)$/.test(entry.name) ? [path] : [];
   });
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const roots = ['crates/ui/web', 'crates/ui/src', 'crates/ui/solid', 'apps/stylebook', 'crates/monokulo/pos-ui/src', 'crates/monokulo/src/views', 'crates/monokulo/static'];
+  const roots = ['crates/ui/web', 'crates/ui/src', 'apps/stylebook', 'crates/monokulo/pos-ui/src', 'crates/monokulo/src/views', 'crates/monokulo/static'];
   const findings = roots.flatMap(dir => files(resolve(root, dir))).flatMap(path => inspect(relative(root, path), readFileSync(path, 'utf8')));
   if (process.argv.includes('--write-baseline')) {
     const baseline = {};

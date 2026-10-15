@@ -1,162 +1,7 @@
-//! The site's dropdown and on/off switch (docs/dropdowns.md).
-//!
-//! Every dropdown is a plain `<select>` inside `<mk-select>`
-//! (the `ui` package's `web/components/select.js`), its options written with [`Choice`]: the
-//! option's text says everything in words, for a browser without
-//! JavaScript, and its data attributes give the component the parts to
-//! draw (a logo, a label, a monospace detail, a network badge, a chip, a
-//! note).
+//! The site's on/off switch. Dropdowns are the shared Select component
+//! (`ui::Select`, with `ui::Choice` options).
 
-use maud::{html, Markup, Render};
-
-/// One option of a dropdown.
-#[derive(Debug, Clone, Default)]
-pub struct Choice {
-    value: String,
-    label: String,
-    logo: Option<String>,
-    detail: Option<String>,
-    network: Option<String>,
-    chip: Option<Chip>,
-    note: Option<String>,
-    selected: bool,
-    disabled: bool,
-}
-
-/// A short tag after an option's label. Only [`Chip::Current`] is
-/// coloured: green means one thing, the one in use now.
-#[derive(Debug, Clone)]
-pub enum Chip {
-    Current,
-    Plain(String),
-}
-
-impl Chip {
-    fn text(&self) -> &str {
-        match self {
-            Chip::Current => "Current",
-            Chip::Plain(text) => text,
-        }
-    }
-}
-
-impl Choice {
-    pub fn new(value: impl AsRef<str>, label: impl AsRef<str>) -> Choice {
-        Choice {
-            value: value.as_ref().to_owned(),
-            label: label.as_ref().to_owned(),
-            ..Choice::default()
-        }
-    }
-
-    /// The "Choose…" prompt of a required dropdown with nothing picked
-    /// yet: no value, never pickable, shown until something is.
-    pub fn prompt(label: impl AsRef<str>, shown: bool) -> Choice {
-        Choice::new("", label).disabled(true).selected(shown)
-    }
-
-    /// A small picture before the label (a wallet app's logo), by its
-    /// URL. Drawn by the component only: the option's text has no room
-    /// for it.
-    pub fn logo(mut self, url: impl AsRef<str>) -> Choice {
-        self.logo = Some(url.as_ref().to_owned());
-        self
-    }
-
-    /// Monospace and muted after the label: an address, a currency code.
-    pub fn detail(mut self, detail: impl AsRef<str>) -> Choice {
-        self.detail = Some(detail.as_ref().to_owned());
-        self
-    }
-
-    /// A wallet's Monero network (`mainnet`, `stagenet`, `testnet`), drawn
-    /// as the site's network badge (`views::network_badge`).
-    pub fn network(mut self, network: impl AsRef<str>) -> Choice {
-        self.network = Some(network.as_ref().to_owned());
-        self
-    }
-
-    pub fn chip(mut self, chip: Chip) -> Choice {
-        self.chip = Some(chip);
-        self
-    }
-
-    /// The green Current chip, when `current`.
-    pub fn current(mut self, current: bool) -> Choice {
-        if current {
-            self.chip = Some(Chip::Current);
-        }
-        self
-    }
-
-    /// Muted, at the end: a count, a date, why it can't be picked.
-    pub fn note(mut self, note: impl AsRef<str>) -> Choice {
-        self.note = Some(note.as_ref().to_owned());
-        self
-    }
-
-    pub fn selected(mut self, selected: bool) -> Choice {
-        self.selected = selected;
-        self
-    }
-
-    pub fn disabled(mut self, disabled: bool) -> Choice {
-        self.disabled = disabled;
-        self
-    }
-
-    /// The option's text, as a browser without JavaScript shows it:
-    /// `Label (detail) [Network] [chip] - note`. An option with no label
-    /// (a network on its own) starts at its first part: `[Stagenet]`.
-    pub fn text(&self) -> String {
-        let mut text = self.label.clone();
-        let mut push = |part: String| {
-            if !text.is_empty() {
-                text.push(' ');
-            }
-            text.push_str(&part);
-        };
-        if let Some(detail) = &self.detail {
-            push(format!("({detail})"));
-        }
-        if let Some(network) = &self.network {
-            push(format!("[{}]", super::scaling::network_name(network)));
-        }
-        if let Some(chip) = &self.chip {
-            push(format!("[{}]", chip.text()));
-        }
-        if let Some(note) = &self.note {
-            text.push_str(&format!(" - {note}"));
-        }
-        text
-    }
-
-    fn has_parts(&self) -> bool {
-        self.logo.is_some()
-            || self.detail.is_some()
-            || self.network.is_some()
-            || self.chip.is_some()
-            || self.note.is_some()
-    }
-}
-
-impl Render for Choice {
-    fn render(&self) -> Markup {
-        let parts = self.has_parts();
-        html! {
-            option value=(self.value) selected[self.selected] disabled[self.disabled]
-                data-label=[parts.then_some(&self.label)]
-                data-logo=[self.logo.as_ref()]
-                data-detail=[self.detail.as_ref()]
-                data-network=[self.network.as_ref()]
-                data-chip=[self.chip.as_ref().map(Chip::text)]
-                data-chip-tone=[matches!(self.chip, Some(Chip::Current)).then_some("current")]
-                data-note=[self.note.as_ref()] {
-                (self.text())
-            }
-        }
-    }
-}
+use maud::{html, Markup};
 
 /// An on/off setting: a checkbox drawn as a switch, sent as `true` when on.
 /// An unticked checkbox sends nothing, so a hidden `switches` field names
@@ -185,86 +30,6 @@ pub fn switch(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_option_says_everything_in_words_and_gives_the_component_its_parts() {
-        let html = Choice::new("w_1", "Copper Heron")
-            .detail("48xQ7…v3Rk")
-            .current(true)
-            .note("since 1 Sep 2026")
-            .selected(true)
-            .render()
-            .into_string();
-        assert_eq!(
-            html,
-            r#"<option value="w_1" selected data-label="Copper Heron" data-detail="48xQ7…v3Rk" data-chip="Current" data-chip-tone="current" data-note="since 1 Sep 2026">Copper Heron (48xQ7…v3Rk) [Current] - since 1 Sep 2026</option>"#
-        );
-    }
-
-    #[test]
-    fn an_option_names_its_network_in_words_and_for_the_badge() {
-        let html = Choice::new("w_2", "Feather test")
-            .network("stagenet")
-            .note("1 store")
-            .render()
-            .into_string();
-        assert_eq!(
-            html,
-            r#"<option value="w_2" data-label="Feather test" data-network="stagenet" data-note="1 store">Feather test [Stagenet] - 1 store</option>"#
-        );
-    }
-
-    /// The setup flow's network dropdown: the badge alone, `[Stagenet]`
-    /// without JavaScript.
-    #[test]
-    fn a_network_on_its_own_is_its_badge() {
-        let html = Choice::new("stagenet", "")
-            .network("stagenet")
-            .selected(true)
-            .render()
-            .into_string();
-        assert_eq!(
-            html,
-            r#"<option value="stagenet" selected data-label="" data-network="stagenet">[Stagenet]</option>"#
-        );
-    }
-
-    /// A logo is drawn by the component; the words don't change.
-    #[test]
-    fn a_logo_is_for_the_component_only() {
-        let html = Choice::new("feather", "Feather")
-            .logo("/static/wallet-logos/feather.png")
-            .render()
-            .into_string();
-        assert_eq!(
-            html,
-            r#"<option value="feather" data-label="Feather" data-logo="/static/wallet-logos/feather.png">Feather</option>"#
-        );
-    }
-
-    #[test]
-    fn a_plain_option_is_a_plain_option() {
-        assert_eq!(
-            Choice::new("info", "Info and up").render().into_string(),
-            r#"<option value="info">Info and up</option>"#
-        );
-        assert_eq!(
-            Choice::prompt("Choose a wallet…", true)
-                .render()
-                .into_string(),
-            r#"<option value="" selected disabled>Choose a wallet…</option>"#
-        );
-    }
-
-    #[test]
-    fn only_current_is_green() {
-        let plain = Choice::new("EUR", "Euro")
-            .chip(Chip::Plain("Store's".into()))
-            .render()
-            .into_string();
-        assert!(plain.contains(r#"data-chip="Store's""#), "{plain}");
-        assert!(!plain.contains("data-chip-tone"), "{plain}");
-    }
 
     /// Every Maud `select` in the views and handlers: file, line number,
     /// the line and the line before it.
@@ -300,24 +65,19 @@ mod tests {
         found
     }
 
-    /// The site has one dropdown: a select is always inside `<mk-select>`.
+    /// The site has one dropdown, the shared Select: no page writes a
+    /// `select` of its own.
     #[test]
     fn every_select_is_the_dropdown_component() {
         let bare: Vec<String> = selects()
             .into_iter()
-            .filter(|(_, _, line, before)| {
-                !line.contains("mk-select {")
-                    && !before.trim_end().ends_with("mk-select {")
-                    && !before.trim_end().ends_with("mk-select compact {")
-            })
             .map(|(file, line, text, _)| format!("{file}:{line}: {}", text.trim()))
             .collect();
         assert!(
             bare.is_empty(),
-            "wrap these in mk-select:\n{}",
+            "use ui::Select for these:\n{}",
             bare.join("\n")
         );
-        assert!(selects().len() >= 12, "the scan finds the selects");
     }
 
     #[test]
