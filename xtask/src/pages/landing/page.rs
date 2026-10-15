@@ -42,8 +42,8 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 "Monokulo is a self-hosted Monero payment gateway. It runs on Linux, macOS, Windows or your OpenWrt router, watches the chain with each store’s view key, and tells the store when an order is paid. It never holds a spend key, so it can never move your coins."
                             }
                             div class="actions" {
-                                a class="btn btn-primary" href="#install" { "Install Monokulo" }
-                                a class="btn" href=(github_url) { "Source on GitHub" }
+                                (ui::LinkButton::new("Install Monokulo", "#install").variant(ui::ButtonVariant::Primary))
+                                (ui::LinkButton::new("Source on GitHub", github_url))
                             }
                         }
                     }
@@ -101,8 +101,8 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                             }
                         }
                         div class="actions" {
-                            a class="btn btn-primary" href="#desktop" { "Linux, macOS or Windows" }
-                            a class="btn" href="#openwrt" { "OpenWrt router" }
+                            (ui::LinkButton::new("Linux, macOS or Windows", "#desktop").variant(ui::ButtonVariant::Primary))
+                            (ui::LinkButton::new("OpenWrt router", "#openwrt"))
                         }
                     }
                     section id="desktop" class="install" {
@@ -136,18 +136,8 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                             }
                         }
                         div class="card pad" {
-                            div class="tabs" role="tablist" aria-label="Desktop operating system" hidden {
-                                button type="button" role="tab" id="tab-linux" aria-controls="panel-linux" aria-selected="true" {
-                                    "Linux"
-                                }
-                                button type="button" role="tab" id="tab-macos" aria-controls="panel-macos" aria-selected="false" tabindex="-1" {
-                                    "macOS"
-                                }
-                                button type="button" role="tab" id="tab-windows" aria-controls="panel-windows" aria-selected="false" tabindex="-1" {
-                                    "Windows"
-                                }
-                            }
-                            div class="tabpanel" id="panel-linux" role="tabpanel" aria-labelledby="tab-linux" {
+                            (ui::Tabs::new("Desktop operating system", vec![
+                                ui::Tab { id: "linux".into(), label: "Linux".into(), panel: html! {
                                 h3 class="nojs" { "Linux" }
                                 ol {
                                     li {
@@ -192,8 +182,8 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                         }
                                     }
                                 }
-                            }
-                            div class="tabpanel" id="panel-macos" role="tabpanel" aria-labelledby="tab-macos" {
+                            }.into() },
+                                ui::Tab { id: "macos".into(), label: "macOS".into(), panel: html! {
                                 h3 class="nojs" { "macOS" }
                                 ol {
                                     li {
@@ -244,8 +234,8 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                         }
                                     }
                                 }
-                            }
-                            div class="tabpanel" id="panel-windows" role="tabpanel" aria-labelledby="tab-windows" {
+                            }.into() },
+                                ui::Tab { id: "windows".into(), label: "Windows".into(), panel: html! {
                                 h3 class="nojs" { "Windows" }
                                 ol {
                                     li {
@@ -299,7 +289,8 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                         }
                                     }
                                 }
-                            }
+                            }.into() },
+                            ]))
                         }
                         div class="card pad" {
                             h3 { "Finish setup in your browser" }
@@ -396,9 +387,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 code { "engine.db" }
                                 "). Stop Monokulo before copying the databases. To update, stop it, extract the new ZIP, then start the new executable with your existing key and data."
                             }
-                            p class="note" style="margin-top:var(--space-md)" {
-                                "Never generate a new key for an existing installation. Losing the key makes encrypted data unreadable. Keep it private: anyone with the key and database can read your stores’ details."
-                            }
+                            (ui::Alert::new("Never generate a new key for an existing installation. Losing the key makes encrypted data unreadable. Keep it private: anyone with the key and database can read your stores’ details.", ui::Tone::Warning).quiet(true))
                         }
                     }
                     section id="openwrt" class="install" {
@@ -425,11 +414,11 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                             }
                             div class="target-pick" hidden {
                                 label for="openwrt-target" { "Your OpenWrt version" }
-                                select id="openwrt-target" {
-                                    @for r in repos {
-                                        option value=(r.id()) { "OpenWrt " (r.release) " · " (r.arch) }
-                                    }
-                                }
+                                (ui::Select::new("openwrt_target", repos.iter()
+                                    .map(|r| ui::Choice::new(r.id(), format!("OpenWrt {} · {}", r.release, r.arch)))
+                                    .collect::<Vec<_>>())
+                                    .id("openwrt-target")
+                                    .search(ui::SearchMode::Hide))
                             }
                             p class="muted" style="margin-top:var(--space-sm)" {
                                 "The router can’t hold the Monero blockchain itself. Point Monokulo at a node on your network (a NAS or a desktop running "
@@ -438,15 +427,8 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                             }
                         }
                         div class="card pad" {
-                            div class="tabs" role="tablist" aria-label="How to install" hidden {
-                                button type="button" role="tab" id="tab-web" aria-controls="panel-web" aria-selected="true" {
-                                    "Web (LuCI)"
-                                }
-                                button type="button" role="tab" id="tab-ssh" aria-controls="panel-ssh" aria-selected="false" tabindex="-1" {
-                                    "Terminal (SSH)"
-                                }
-                            }
-                            div class="tabpanel" id="panel-web" role="tabpanel" aria-labelledby="tab-web" {
+                            (ui::Tabs::new("How to install", vec![
+                                ui::Tab { id: "web".into(), label: "Web (LuCI)".into(), panel: html! {
                                 h3 class="nojs" { "In the web interface (LuCI)" }
                                 ol {
                                     li {
@@ -578,8 +560,8 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                         }
                                     }
                                 }
-                            }
-                            div class="tabpanel" id="panel-ssh" role="tabpanel" aria-labelledby="tab-ssh" {
+                            }.into() },
+                                ui::Tab { id: "ssh".into(), label: "Terminal (SSH)".into(), panel: html! {
                                 h3 class="nojs" { "In a terminal (SSH)" }
                                 ol {
                                     li {
@@ -644,7 +626,8 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                         }
                                     }
                                 }
-                            }
+                            }.into() },
+                            ]))
                         }
                         div class="card pad" {
                             h3 { "Config, data and secrets on OpenWrt" }
@@ -667,9 +650,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                             div class="cmd" style="margin-top:var(--space-sm)" {
                                 pre { "scp root@192.168.1.1:/etc/monokulo/secrets monokulo-secrets" }
                             }
-                            p class="note" style="margin-top:var(--space-md)" {
-                                "Keep that file private: with it and a copy of the data folder, anyone can read your stores’ details."
-                            }
+                            (ui::Alert::new("Keep that file private: with it and a copy of the data folder, anyone can read your stores’ details.", ui::Tone::Warning).quiet(true))
                         }
                         div class="card pad" {
                             h3 { "Optional: let customers outside your home pay" }
@@ -719,12 +700,12 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 strong { "Save & Apply" }
                                 "."
                             }
-                            p class="note info" style="margin-top:var(--space-md)" {
+                            (ui::Alert::new(html! {
                                 strong { "Use Traffic Rules, not Port Forwards." }
                                 " Monokulo runs on the router itself, so there’s nothing to forward. Only if your ISP’s modem sits in front of the router do you forward TCP 8081 on "
                                 em { "that" }
                                 " device."
-                            }
+                            }, ui::Tone::Notice).quiet(true))
                             p style="margin-top:var(--space-md)" {
                                 "Then set the "
                                 strong { "public URL" }

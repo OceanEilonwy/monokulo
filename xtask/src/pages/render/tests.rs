@@ -112,8 +112,8 @@ pub(super) fn all(report: &Report) -> Markup {
         div.toolbar {
             span.muted.small #tcount { (plural(all.len(), "test", "tests")) " · " (duration(total_secs(&all))) " in total" }
             div.grp data-filters hidden {
-                button.btn.btn-sm type="button" #expand-all { "Expand all" }
-                button.btn.btn-sm type="button" #collapse-all { "Collapse all" }
+                (ui::Button::new("Expand all").size(ui::ControlSize::Compact).attr("id", "expand-all"))
+                (ui::Button::new("Collapse all").size(ui::ControlSize::Compact).attr("id", "collapse-all"))
             }
         }
         div.card #tbox {

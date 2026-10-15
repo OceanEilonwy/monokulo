@@ -195,14 +195,12 @@ fn page(report: &Report, shell: &Shell, tab: Tab, body: &Markup) -> Markup {
                     }
                     @if !shell.tabs.is_empty() {
                         div.figs { (shell.figures) }
-                        nav.tabs aria-label="Report sections" {
-                            @for (t, n) in shell.tabs.iter().zip(&shell.counts) {
-                                a href=(t.file()) aria-current=[(*t == tab).then_some("page")] {
-                                    (t.label())
-                                    @if let Some(n) = n { span.c { (format::count(*n)) } }
-                                }
-                            }
-                        }
+                        (ui::TabLinks::new("Report sections", shell.tabs.iter().zip(&shell.counts).map(|(t, n)| ui::TabLink {
+                            href: t.file().into(),
+                            label: t.label().into(),
+                            current: *t == tab,
+                            count: n.map(format::count),
+                        }).collect::<Vec<_>>()))
                     }
                     section.view { (body) }
                     footer.foot {

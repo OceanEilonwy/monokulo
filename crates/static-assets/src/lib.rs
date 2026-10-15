@@ -23,7 +23,7 @@ pub enum Policy {
     Public,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Asset {
     /// The file's name, with its extension: what pages ask for.
     pub name: &'static str,
