@@ -35,7 +35,7 @@ inputs:
       shares a cache with another sets this to false and only restores it
     default: 'true'
   pos-app:
-    description: Install the POS app's npm dependencies (only builds of monokulo need them)
+    description: Install the workspace's npm dependencies (builds of monokulo, and the pages site's ui islands, need them)
     default: 'true'
   npm-lockfiles:
     description: The lock files setup-node's npm cache is keyed on
