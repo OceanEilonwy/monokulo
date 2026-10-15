@@ -2,8 +2,12 @@
 // component there and run it again.
 
 import { attachSelect } from './Select';
+import { attachTabs } from './Tabs';
+import { attachCopyValue } from './CopyValue';
 
 /** Each interactive component's attach, by the name its island gives. */
 export const islands: Record<string, (root: Element, props: never) => () => void> = {
   Select: attachSelect,
+  Tabs: attachTabs,
+  CopyValue: attachCopyValue,
 };

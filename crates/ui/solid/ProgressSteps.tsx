@@ -28,7 +28,7 @@ export function ProgressSteps(props: ProgressStepsProps): JSX.Element {
     <ol class="mk-progress-steps" data-design="strip" aria-label={props.label}>
       <For each={props.steps}>
         {(step) => (
-          <li class={step.state === "done" ? "done" : undefined} aria-current={step.state === "current" ? "step" : undefined}>
+          <li class={step.state === "done" ? `done` : undefined} aria-current={step.state === "current" ? `step` : undefined}>
             <span>
               {step.label}
               <small>

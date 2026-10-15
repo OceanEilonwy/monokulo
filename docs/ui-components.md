@@ -72,16 +72,23 @@ once it runs say `if enhanced`, and `b.*` is only read inside `@if enhanced`
 - **The POS** renders the generated Solid component itself: the same
   template, `enhanced` true, the same behaviour.
 
+The behaviour attaches to elements outside `@if enhanced` too: one with an
+`on:` handler, a `ref`, or an attribute that only applies once enhanced is
+marked. That includes each item of a loop over a prop's list (the Tabs'
+tabs and panels), found by its position. An attribute that reads `b.*`
+(`aria-selected="true" if tab.id == b.selected`) is absent from the
+server's markup and kept up to date by the behaviour. An island's props
+leave out slots: the server's markup holds them, and `@if enhanced` can't.
+
 Write behaviour signals that are set while attaching (in a `ref`) with
 `{ ownedWrite: true }`. A script that changes a component's field (a
 select's value) says so with an `input` or `change` event; changes to its
 options or attributes are followed by themselves.
 
-Generated so far: Button, LinkButton, Alert, Field, ProgressSteps and
-Select, the first interactive one: every dropdown on monokulo's pages is
-`ui::Select`. The older custom elements (`mk-copy`, `mk-tabs`, the menu and
-the settings form) still upgrade hand-written markup until they move the
-same way.
+Generated so far: Button, LinkButton, Alert, Field, ProgressSteps,
+TabLinks, and the interactive Select, Tabs and CopyValue. Every dropdown on
+monokulo's pages is `ui::Select`. The menu and the settings form still
+upgrade hand-written markup until they move the same way.
 Monokulo's setup steps and sign-up/log-in forms and the POS's Charge,
 order and Reference controls use them. The hand-written examples below
 cover what hasn't moved yet.

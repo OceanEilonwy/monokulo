@@ -796,5 +796,116 @@
       ]
     },
     "title": "Adding a wallet on its own"
+  },
+  {
+    "component": "Tabs",
+    "html": "<mk-island component=\"Tabs\" mount=\"load\"><script type=\"application/json\" data-props>{\"label\":\"Example POS views\",\"tabs\":[{\"id\":\"example-charge\",\"label\":\"Charge\"},{\"id\":\"example-history\",\"label\":\"History\"},{\"id\":\"example-terminal\",\"label\":\"Terminal\"}]}</script><div class=\"mk-tabset\"><div class=\"mk-tabs\" aria-label=\"Example POS views\" data-mk=\"1\"><a href=\"#example-charge\" id=\"example-charge-tab\" data-mk=\"2\">Charge</a><a href=\"#example-history\" id=\"example-history-tab\" data-mk=\"2\">History</a><a href=\"#example-terminal\" id=\"example-terminal-tab\" data-mk=\"2\">Terminal</a></div><div class=\"mk-tab-panels\"><section id=\"example-charge\" data-mk=\"3\">Enter an amount to start a payment.</section><section id=\"example-history\" data-mk=\"3\">No payments yet.</section><section id=\"example-terminal\" data-mk=\"3\">This terminal is ready to receive payments.</section></div></div></mk-island>",
+    "props": {
+      "label": "Example POS views",
+      "tabs": [
+        {
+          "id": "example-charge",
+          "label": "Charge",
+          "panel": {
+            "$slot": [
+              "Enter an amount to start a payment."
+            ]
+          }
+        },
+        {
+          "id": "example-history",
+          "label": "History",
+          "panel": {
+            "$slot": [
+              "No payments yet."
+            ]
+          }
+        },
+        {
+          "id": "example-terminal",
+          "label": "Terminal",
+          "panel": {
+            "$slot": [
+              "This terminal is ready to receive payments."
+            ]
+          }
+        }
+      ]
+    },
+    "title": "A POS's views"
+  },
+  {
+    "component": "TabLinks",
+    "html": "<nav class=\"mk-tabs\" aria-label=\"Example settings navigation\"><a href=\"#tab-links\" aria-current=\"page\">General</a><a href=\"#select\">Networks</a><a href=\"#alert\">Notifications</a></nav>",
+    "props": {
+      "label": "Example settings navigation",
+      "links": [
+        {
+          "current": true,
+          "href": "#tab-links",
+          "label": "General"
+        },
+        {
+          "current": false,
+          "href": "#select",
+          "label": "Networks"
+        },
+        {
+          "current": false,
+          "href": "#alert",
+          "label": "Notifications"
+        }
+      ]
+    },
+    "title": "Settings sections"
+  },
+  {
+    "component": "CopyValue",
+    "html": "<mk-island component=\"CopyValue\" mount=\"load\"><script type=\"application/json\" data-props>{\"copy_label\":\"Copy payment reference\",\"head\":8,\"tail\":8,\"truncate\":\"end\",\"value\":\"order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789\"}</script><div class=\"mk-copy\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span><!--mk:2--></div></mk-island>",
+    "props": {
+      "copy_label": "Copy payment reference",
+      "head": 8,
+      "tail": 8,
+      "truncate": "end",
+      "value": "order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789"
+    },
+    "title": "Ellipsised at the end"
+  },
+  {
+    "component": "CopyValue",
+    "html": "<mk-island component=\"CopyValue\" mount=\"load\"><script type=\"application/json\" data-props>{\"copy_label\":\"Copy middle example\",\"head\":10,\"tail\":10,\"truncate\":\"middle\",\"value\":\"order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789\"}</script><div class=\"mk-copy\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span><!--mk:2--></div></mk-island>",
+    "props": {
+      "copy_label": "Copy middle example",
+      "head": 10,
+      "tail": 10,
+      "truncate": "middle",
+      "value": "order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789"
+    },
+    "title": "Middle: 10 characters at each end"
+  },
+  {
+    "component": "CopyValue",
+    "html": "<mk-island component=\"CopyValue\" mount=\"load\"><script type=\"application/json\" data-props>{\"copy_label\":\"Copy segmented example\",\"head\":8,\"segments\":\"0:8,32:8,-8:8\",\"tail\":8,\"truncate\":\"segments\",\"value\":\"order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789\"}</script><div class=\"mk-copy\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span><!--mk:2--></div></mk-island>",
+    "props": {
+      "copy_label": "Copy segmented example",
+      "head": 8,
+      "segments": "0:8,32:8,-8:8",
+      "tail": 8,
+      "truncate": "segments",
+      "value": "order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789"
+    },
+    "title": "Segments: prefix, internal id, suffix"
+  },
+  {
+    "component": "CopyValue",
+    "html": "<mk-island component=\"CopyValue\" mount=\"load\"><script type=\"application/json\" data-props>{\"copy_label\":\"Copy wallet id\",\"head\":8,\"tail\":8,\"truncate\":\"end\",\"value\":\"48xQ7v3Rk\"}</script><div class=\"mk-copy\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">48xQ7v3Rk</span><!--mk:2--></div></mk-island>",
+    "props": {
+      "copy_label": "Copy wallet id",
+      "head": 8,
+      "tail": 8,
+      "truncate": "end",
+      "value": "48xQ7v3Rk"
+    },
+    "title": "Short enough to show whole"
   }
 ]

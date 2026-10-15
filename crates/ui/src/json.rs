@@ -69,3 +69,30 @@ pub(crate) fn json_value(ty: &Ty, value: &Value) -> Json {
         (ty, v) => panic!("{v:?} as {ty:?}"),
     }
 }
+
+/// An island's props: everything but slots. The behaviour renders only
+/// what `@if enhanced` holds, which reads no slot, and a slot may be markup
+/// only the server can render.
+pub(crate) fn island_props(info: &'static ComponentInfo, props: &[(&'static str, Value)]) -> Json {
+    let kept: Vec<(&'static str, Value)> = props
+        .iter()
+        .filter_map(|(name, value)| without_slots(value).map(|v| (*name, v)))
+        .collect();
+    props_json(info, &kept)
+}
+
+fn without_slots(value: &Value) -> Option<Value> {
+    match value {
+        Value::Slot(_) => None,
+        Value::List(items) => Some(Value::List(
+            items.iter().filter_map(without_slots).collect(),
+        )),
+        Value::Record(fields) => Some(Value::Record(
+            fields
+                .iter()
+                .map(|(name, v)| (*name, without_slots(v).unwrap_or(Value::Null)))
+                .collect(),
+        )),
+        other => Some(other.clone()),
+    }
+}

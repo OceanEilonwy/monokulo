@@ -66,7 +66,7 @@ export function Field(props: FieldProps): JSX.Element {
       <label for={props.id}>
         {props.label}
       </label>
-      <input class="mk-input" id={props.id} name={props.name} type={(props.kind ?? "text")} value={props.value} placeholder={props.placeholder} autocomplete={props.autocomplete} data-size={props.size} required={(props.required ?? false)} readonly={(props.readonly ?? false)} disabled={(props.disabled ?? false)} aria-invalid={props.error != null ? "true" : undefined} aria-describedby={tokens(props.hint != null && `${props.id}-help`, props.error != null && `${props.id}-error`)} {...rest} />
+      <input class="mk-input" id={props.id} name={props.name} type={(props.kind ?? "text")} value={props.value} placeholder={props.placeholder} autocomplete={props.autocomplete} data-size={props.size} required={(props.required ?? false)} readonly={(props.readonly ?? false)} disabled={(props.disabled ?? false)} aria-invalid={props.error != null ? `true` : undefined} aria-describedby={tokens(props.hint != null && `${props.id}-help`, props.error != null && `${props.id}-error`)} {...rest} />
       {props.hint != null ? (
         <p class="mk-hint" id={`${props.id}-help`}>
           {props.hint}
