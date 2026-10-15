@@ -206,7 +206,7 @@ test.describe('without JavaScript', () => {
       expect(service).toBe('monokulo');
     }
     // Refresh submits the search as it stands: a plain GET.
-    const refresh = page.locator('.logs-head').getByRole('button', { name: 'Refresh' });
+    const refresh = page.locator('.mk-page-header').getByRole('button', { name: 'Refresh' });
     await expect(refresh).toHaveAttribute('form', 'log-search');
     await transitionDone(page);
     await refresh.click();
@@ -263,7 +263,7 @@ test('Refresh and Live sit in the title bar, the histogram above the search, and
   await page.goto(logsUrl(`?q=${encodeURIComponent("http.route = '/dashboard/admin/settings'")}`));
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 800 });
-    const head = page.locator('.logs-head');
+    const head = page.locator('.mk-page-header');
     const title = await head.getByRole('heading', { name: 'Logs', level: 1 }).boundingBox();
     for (const name of ['Refresh', 'Live']) {
       const button = head.getByRole('button', { name });

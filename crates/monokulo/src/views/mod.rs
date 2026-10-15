@@ -4,9 +4,9 @@
 //! The thing that made adding a per-user theme awkward under the old setup
 //! was structural, not cosmetic: every one of the ~20 old templates carried
 //! its own literal `<html>`/`<head>`/`{{> nav}}` - there was no single place
-//! that owned the page shell. [`layout`] and [`nav`] below are that place
-//! now: every page in this module builds its own body content and hands it
-//! to [`layout`], which owns `<!doctype html>` through `</html>`, the shared
+//! that owned the page shell. [`Page`] and [`nav`] below are that place
+//! now: every page in this module builds its header and content and hands
+//! them to [`Page`], which owns `<!doctype html>` through `</html>`, the shared
 //! `<head>` (the colours in `theme.css`, the components in `site.css`), and
 //! the nav bar
 //! (including the theme-toggle form) - so a per-user `data-theme` attribute,
@@ -114,24 +114,20 @@ pub(crate) const THEME_CSS: &str = ui::assets::TOKENS_CSS;
 /// after it.
 pub(crate) const SITE_CSS: &str = include_str!("site.css");
 
-/// Where a page sits (`ui::Breadcrumbs`): links to the pages above it,
-/// nearest last; one link is a back link.
-pub fn breadcrumbs(links: &[(&str, &str)]) -> Markup {
-    let links: Vec<ui::Crumb> = links
-        .iter()
-        .map(|(href, label)| ui::Crumb { href: href.to_string(), label: label.to_string() })
-        .collect();
-    ui::Breadcrumbs::new(links).render()
+/// Where a page sits (`ui::PageHeader`'s crumbs): links to the pages
+/// above it, nearest last; one link is a back link.
+pub fn crumbs(links: &[(&str, &str)]) -> Vec<ui::Crumb> {
+    links.iter().map(|(href, label)| ui::Crumb::new(*href, *label)).collect()
 }
 
-/// Shared back links for store pages and pages nested under Orders.
-pub fn store_breadcrumb(connection_id: &str, display_name: &str, include_orders: bool) -> Markup {
+/// The crumbs of a store's pages, and of pages nested under its Orders.
+pub fn store_crumbs(connection_id: &str, display_name: &str, include_orders: bool) -> Vec<ui::Crumb> {
     let store = format!("/dashboard/stores/{connection_id}");
     let orders = format!("{store}/orders");
     if include_orders {
-        breadcrumbs(&[(&store, display_name), (&orders, "Orders")])
+        crumbs(&[(&store, display_name), (&orders, "Orders")])
     } else {
-        breadcrumbs(&[(&store, display_name)])
+        crumbs(&[(&store, display_name)])
     }
 }
 
@@ -227,21 +223,91 @@ fn theme_attr(theme: Theme) -> Option<&'static str> {
     }
 }
 
-/// The page shell every page in this module renders through: everything
-/// from `<!doctype html>` to `</html>`, nav bar included. `title` is the
-/// full `<title>` text (not auto-suffixed: each caller states its own
-/// title exactly).
 const DEFAULT_VIEWPORT: &str = "width=device-width, initial-scale=1";
 
-pub fn layout(chrome: &PageChrome, title: &str, body: Markup) -> Markup {
-    page_shell(
-        chrome,
-        title,
-        DEFAULT_VIEWPORT,
-        None,
-        Some(nav(chrome)),
-        body,
-    )
+/// A page under the site's bar: its `<title>`, its header and what follows
+/// it, inside `main.wrap`. The header is required, so every page has a
+/// title (`ui::PageHeader`).
+pub struct Page {
+    title: String,
+    header: ui::PageHeader,
+    class: Option<String>,
+    head: Option<Markup>,
+}
+
+impl Page {
+    /// `title` is the full `<title>` text (not auto-suffixed: each caller
+    /// states its own title exactly).
+    pub fn new(title: impl Into<String>, header: ui::PageHeader) -> Self {
+        Page { title: title.into(), header, class: None, head: None }
+    }
+
+    /// Classes beside `wrap` on the page's `main` (`wrap-wide`, `settings-page`).
+    pub fn class(mut self, class: impl Into<String>) -> Self {
+        self.class = Some(class.into());
+        self
+    }
+
+    /// Extra `<head>` content (a page's own stylesheet or script), after
+    /// the shared head.
+    pub fn head(mut self, head: Markup) -> Self {
+        self.head = Some(head);
+        self
+    }
+
+    pub fn render(self, chrome: &PageChrome, content: Markup) -> Markup {
+        let class = match &self.class {
+            Some(class) => format!("wrap {class}"),
+            None => "wrap".to_string(),
+        };
+        let body = html! {
+            main class=(class) {
+                (self.header)
+                (content)
+            }
+        };
+        page_shell(chrome, &self.title, DEFAULT_VIEWPORT, self.head, Some(nav(chrome)), body)
+    }
+}
+
+/// An order without the shop's reference: a dash in a table, and on a
+/// phone's card, where a lone dash says nothing, "No reference".
+pub fn no_reference() -> Markup {
+    html! {
+        span class="muted" {
+            span class="no-value-table" { "—" }
+            em class="no-value-card" { "No reference" }
+        }
+    }
+}
+
+/// What a dialog holds: shown in its dialog, under an `h2` with a ✕, or
+/// without JavaScript as a page of its own, whose header carries the title.
+pub struct DialogContent {
+    pub title_id: String,
+    pub title: Markup,
+    /// Beside the title: a status.
+    pub aside: Option<Markup>,
+    pub body: Markup,
+}
+
+impl DialogContent {
+    /// In its dialog.
+    pub fn in_dialog(self) -> Markup {
+        html! {
+            (ui::DialogTitle::new(self.title_id, self.title).maybe_aside(self.aside.map(ui::Slot::from)))
+            (self.body)
+        }
+    }
+
+    /// As a page: the page's header, and its content.
+    pub fn page(self, crumbs: Vec<ui::Crumb>, size: ui::DialogSize) -> (ui::PageHeader, Markup) {
+        let header = ui::PageHeader::new(self.title)
+            .title_id(self.title_id)
+            .maybe_aside(self.aside.map(ui::Slot::from))
+            .crumbs(crumbs);
+        (header, ui::DialogPage::new(self.body).size(size).render())
+    }
 }
 
 /// Same page shell, but with no nav bar - for a screen deliberately built
@@ -251,25 +317,6 @@ pub fn layout(chrome: &PageChrome, title: &str, body: Markup) -> Markup {
 /// too, even without a nav to toggle it from.
 pub fn layout_bare(chrome: &PageChrome, title: &str, body: Markup) -> Markup {
     page_shell(chrome, title, DEFAULT_VIEWPORT, None, None, body)
-}
-
-/// Same as [`layout`], plus arbitrary extra `<head>` content (e.g. a
-/// conditional `<meta http-equiv="refresh">`) rendered right after the
-/// shared head partial - for the handful of pages that need one.
-pub fn layout_with_head(
-    chrome: &PageChrome,
-    title: &str,
-    extra_head: Markup,
-    body: Markup,
-) -> Markup {
-    page_shell(
-        chrome,
-        title,
-        DEFAULT_VIEWPORT,
-        Some(extra_head),
-        Some(nav(chrome)),
-        body,
-    )
 }
 
 /// [`layout_bare`] plus extra `<head>` content and a custom `viewport`

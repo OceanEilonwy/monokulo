@@ -10,7 +10,7 @@
 
 use maud::{html, Markup};
 
-use super::{layout, PageChrome};
+use super::PageChrome;
 use ui::{Alert, Button, ButtonType, ButtonVariant, Field, InputType, Tone};
 
 /// `error`, when present, means the same thing on both pages: the previous
@@ -68,72 +68,68 @@ fn with_next(path: &str, next: Option<&str>) -> String {
 }
 
 pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
+    let header = ui::PageHeader::new("Sign up");
     let body = html! {
-        div class="wrap" {
-            h1 { "Sign up" }
-            @if let Some(error) = &data.error {
-                (Alert::new(error.as_str(), Tone::Error))
-            }
-            @if data.invite_required {
-                p {
-                    "This instance is invite-only. "
-                    a href="/request-invite" { "Request an invite" }
-                    " to join."
-                }
-            } @else {
-                form method="post" action="/dashboard/signup" class="signup-form mk-stack" {
-                    input type="hidden" name="invite" value=(data.invite_token);
-                    @if let Some(next) = &data.next {
-                        input type="hidden" name="next" value=(next);
-                    }
-                    (Field::new("Email", "signup-email", "email").kind(InputType::Email).required(true).autocomplete("email"))
-                    (Field::new("Password", "signup-password", "password")
-                        .kind(InputType::Password)
-                        .required(true)
-                        .autocomplete("new-password")
-                        .attr("minlength", crate::http::MIN_PASSWORD_LEN.to_string())
-                        .hint(format!("At least {} characters.", crate::http::MIN_PASSWORD_LEN)))
-                    (super::account::theme_choice(data.theme, None, "You can change it any time from the account menu."))
-                    (Button::new("Sign up").variant(ButtonVariant::Primary).kind(ButtonType::Submit))
-                }
-            }
-            p { "Already have an account? " a href=(with_next("/dashboard/login", data.next.as_deref())) { "Log in" } }
+        @if let Some(error) = &data.error {
+            (Alert::new(error.as_str(), Tone::Error))
         }
-    };
-    layout(chrome, "Sign up - Monokulo", body)
-}
-
-pub fn login_page(chrome: &PageChrome, data: &LoginViewModel) -> Markup {
-    let body = html! {
-        div class="wrap" {
-            h1 { "Log in" }
-            @if let Some(site) = &data.connecting_site {
-                (Alert::new(html! {
-                    p { strong { (site) " wants to connect to Monokulo." } }
-                    p {
-                        "Its WooCommerce plugin sent you here. Log in to choose which wallet its payments go to. "
-                        "New to Monokulo? Sign up instead: you'll set up a wallet, then come straight back to this."
-                    }
-                }, Tone::Notice).block(true).quiet(true))
+        @if data.invite_required {
+            p {
+                "This instance is invite-only. "
+                a href="/request-invite" { "Request an invite" }
+                " to join."
             }
-            @if let Some(error) = &data.error {
-                (Alert::new(error.as_str(), Tone::Error))
-            }
-            form method="post" action="/dashboard/login" class="mk-stack" {
+        } @else {
+            form method="post" action="/dashboard/signup" class="signup-form mk-stack" {
+                input type="hidden" name="invite" value=(data.invite_token);
                 @if let Some(next) = &data.next {
                     input type="hidden" name="next" value=(next);
                 }
-                (Field::new("Email", "login-email", "email").kind(InputType::Email).required(true).autocomplete("email"))
-                (Field::new("Password", "login-password", "password")
+                (Field::new("Email", "signup-email", "email").kind(InputType::Email).required(true).autocomplete("email"))
+                (Field::new("Password", "signup-password", "password")
                     .kind(InputType::Password)
                     .required(true)
-                    .autocomplete("current-password"))
-                (Button::new("Log in").variant(ButtonVariant::Primary).kind(ButtonType::Submit))
+                    .autocomplete("new-password")
+                    .attr("minlength", crate::http::MIN_PASSWORD_LEN.to_string())
+                    .hint(format!("At least {} characters.", crate::http::MIN_PASSWORD_LEN)))
+                (super::account::theme_choice(data.theme, None, "You can change it any time from the account menu."))
+                (Button::new("Sign up").variant(ButtonVariant::Primary).kind(ButtonType::Submit))
             }
-            p { "Need an account? " a href=(with_next("/dashboard/signup", data.next.as_deref())) { "Sign up" } }
         }
+        p { "Already have an account? " a href=(with_next("/dashboard/login", data.next.as_deref())) { "Log in" } }
     };
-    layout(chrome, "Log in - Monokulo", body)
+    super::Page::new("Sign up - Monokulo", header).render(chrome, body)
+}
+
+pub fn login_page(chrome: &PageChrome, data: &LoginViewModel) -> Markup {
+    let header = ui::PageHeader::new("Log in");
+    let body = html! {
+        @if let Some(site) = &data.connecting_site {
+            (Alert::new(html! {
+                p { strong { (site) " wants to connect to Monokulo." } }
+                p {
+                    "Its WooCommerce plugin sent you here. Log in to choose which wallet its payments go to. "
+                    "New to Monokulo? Sign up instead: you'll set up a wallet, then come straight back to this."
+                }
+            }, Tone::Notice).block(true).quiet(true))
+        }
+        @if let Some(error) = &data.error {
+            (Alert::new(error.as_str(), Tone::Error))
+        }
+        form method="post" action="/dashboard/login" class="mk-stack" {
+            @if let Some(next) = &data.next {
+                input type="hidden" name="next" value=(next);
+            }
+            (Field::new("Email", "login-email", "email").kind(InputType::Email).required(true).autocomplete("email"))
+            (Field::new("Password", "login-password", "password")
+                .kind(InputType::Password)
+                .required(true)
+                .autocomplete("current-password"))
+            (Button::new("Log in").variant(ButtonVariant::Primary).kind(ButtonType::Submit))
+        }
+        p { "Need an account? " a href=(with_next("/dashboard/signup", data.next.as_deref())) { "Sign up" } }
+    };
+    super::Page::new("Log in - Monokulo", header).render(chrome, body)
 }
 
 #[cfg(test)]

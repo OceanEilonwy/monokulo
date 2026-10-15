@@ -171,6 +171,7 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
 
   /* ---- background orders list (sketch 4) ---- */
   .pos-list { flex: 1; min-height: 0; width: 100%; max-width: 600px; margin: 0 auto; padding: 22px 16px 16px; overflow-y: auto; }
+  .pos-list > [data-pos="back-to-till"] { margin: 0 0 var(--space-sm) calc(-1 * var(--space-sm)); }
   .pos-list h1 { font-size: var(--text-xl); font-weight: 800; letter-spacing: -.03em; line-height: 1.15; }
   .pos-list-subtitle { margin: 3px 0 14px; font-size: var(--text-xs); color: var(--muted); }
   .pos-search { position: relative; }

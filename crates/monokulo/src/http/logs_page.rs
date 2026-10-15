@@ -1371,19 +1371,17 @@ pub async fn pos_session_for_order(
         }
     }
     let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/pos")).await;
+    let header = ui::PageHeader::new("No POS session recorded")
+        .crumbs(crate::views::crumbs(&[("/", "Home"), (LOGS, "Logs")]));
     let body = maud::html! {
-        div class="wrap" {
-            (crate::views::breadcrumbs(&[("/", "Home"), (LOGS, "Logs")]))
-            h1 { "No POS session recorded" }
-            p {
-                "No POS session timeline mentions creating this order. Only orders taken on the POS of a store with "
-                "Diagnostics turned on have one, and only until log retention deletes it."
-            }
+        p {
+            "No POS session timeline mentions creating this order. Only orders taken on the POS of a store with "
+            "Diagnostics turned on have one, and only until log retention deletes it."
         }
     };
     (
         StatusCode::NOT_FOUND,
-        crate::views::layout(&chrome, "No POS session - Monokulo", body),
+        crate::views::Page::new("No POS session - Monokulo", header).render(&chrome, body),
     )
         .into_response()
 }

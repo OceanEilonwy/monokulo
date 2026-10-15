@@ -27,22 +27,31 @@ async function wordsOnTab(page, tab) {
 }
 
 /**
- * The store step's two fields read as one form: side by side, their labels
- * and boxes line up whatever help or error either has; on a phone they
- * stack, name first.
+ * The store step reads as one form: the name and the currency side by side,
+ * their labels and boxes in line whatever help or error either has, and the
+ * website on its own row under them; on a phone all three stack, name first.
  */
 async function expectFieldsInLine(page) {
   const box = async (selector) => page.locator(selector).boundingBox();
-  const [name, site] = [await box('input[name="store_name"]'), await box('input[name="store_site"]')];
-  expect(Math.abs(name.y - site.y)).toBeLessThan(1);
-  expect(Math.abs(name.height - site.height)).toBeLessThan(1);
-  const [nameLabel, siteLabel] = [await box('label[for="store-name"]'), await box('label[for="store-site"]')];
-  expect(Math.abs(nameLabel.y - siteLabel.y)).toBeLessThan(1);
+  const fields = async () => [
+    await box('input[name="store_name"]'),
+    await box('.mk-select:has(#store-currency)'),
+    await box('input[name="store_site"]'),
+  ];
+  const [name, currency, site] = await fields();
+  expect(Math.abs(name.y - currency.y)).toBeLessThan(1);
+  expect(Math.abs(name.height - currency.height)).toBeLessThan(1);
+  expect(currency.x).toBeGreaterThan(name.x + name.width);
+  const [nameLabel, currencyLabel] = [await box('label[for="store-name"]'), await box('label[for="store-currency"]')];
+  expect(Math.abs(nameLabel.y - currencyLabel.y)).toBeLessThan(1);
+  expect(site.y).toBeGreaterThan(name.y + name.height);
+  expect(Math.abs(name.x - site.x)).toBeLessThan(1);
   const size = page.viewportSize();
   await page.setViewportSize({ width: 390, height: 844 });
-  const [phoneName, phoneSite] = [await box('input[name="store_name"]'), await box('input[name="store_site"]')];
-  expect(phoneSite.y).toBeGreaterThan(phoneName.y + phoneName.height);
-  expect(Math.abs(phoneName.x - phoneSite.x)).toBeLessThan(1);
+  const [phoneName, phoneCurrency, phoneSite] = await fields();
+  expect(phoneCurrency.y).toBeGreaterThan(phoneName.y + phoneName.height);
+  expect(phoneSite.y).toBeGreaterThan(phoneCurrency.y + phoneCurrency.height);
+  expect(Math.abs(phoneName.x - phoneCurrency.x)).toBeLessThan(1);
   if (size) await page.setViewportSize(size);
 }
 
@@ -53,7 +62,7 @@ async function toWalletStep(page, name, site) {
   await page.locator('input[name="store_name"]').fill(name);
   await page.locator('input[name="store_site"]').fill(site);
   await page.getByRole('button', { name: 'Next', exact: true }).click();
-  await expect(page.getByRole('heading', { name: `Where should ${name}'s money go?` })).toBeVisible();
+  await expect(page.getByRole('heading', { name: `Where should the money for ${name} go?` })).toBeVisible();
 }
 
 /** Names a new stagenet wallet on the choice screen and starts making it. */

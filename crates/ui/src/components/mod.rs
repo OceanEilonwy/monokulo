@@ -111,7 +111,7 @@ pub fn catalogue() -> Vec<Specimens> {
         specimens(settings::save_bar_examples()),
         specimens(settings::toast_examples()),
         specimens(chrome::site_nav_examples()),
-        specimens(chrome::breadcrumbs_examples()),
+        specimens(chrome::page_header_examples()),
         specimens(chrome::menu_examples()),
         specimens(chrome::menu_item_examples()),
         specimens(chrome::theme_toggle_examples()),

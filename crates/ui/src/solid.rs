@@ -203,6 +203,7 @@ fn literal(value: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
         Value::Enum(s) => format!("{s:?}"),
+        Value::List(items) if items.is_empty() => "[]".to_string(),
         other => panic!("{other:?} can't be a default"),
     }
 }

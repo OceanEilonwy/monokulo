@@ -1750,7 +1750,7 @@ mod tests {
         let retire_page = body_text(get(&router, &format!("{page}/retire"), &cookie).await).await;
         assert!(retire_page.contains(&form), "{retire_page}");
         assert!(
-            retire_page.contains("<h1 id=\"retire-title\" class=\"dialog-title\">Retire \u{201c}New name\u{201d}?</h1>"),
+            retire_page.contains("<h1 id=\"retire-title\">Retire \u{201c}New name\u{201d}?</h1>"),
             "{retire_page}"
         );
 
@@ -1882,7 +1882,7 @@ mod tests {
         let html = body_text(refused).await;
         assert!(html.contains("belong to a different wallet"), "{html}");
         assert!(
-            html.contains(r#"<h1 id="restore-title" class="dialog-title">"#),
+            html.contains(r#"<h1 id="restore-title">"#),
             "the restore page again: {html}"
         );
         assert!(wallets_of(&state, "restore@example.com").is_empty());

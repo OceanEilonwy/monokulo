@@ -2203,7 +2203,7 @@ mod tests {
         );
         // The share icon and order id live in the order title.
         assert!(
-            html.contains(r#"<h1 class="order-title">"#),
+            html.contains(r#"<h1><span class="order-title">"#) && html.contains(r#"<div class="mk-page-actions"><a class="share-btn""#),
             "expected the title banner to carry the share button, got: {html}"
         );
         assert!(

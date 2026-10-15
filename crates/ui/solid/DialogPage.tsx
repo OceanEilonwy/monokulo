@@ -7,7 +7,7 @@ import type { DialogSize } from './types';
 
 /**
  * A dialog's content as a page of its own: where its opener goes
- * without JavaScript.
+ * without JavaScript. The page's header holds its title.
  */
 export interface DialogPageProps {
   children: JSX.Element;
@@ -19,7 +19,7 @@ export interface DialogPageProps {
 
 /**
  * A dialog's content as a page of its own: where its opener goes
- * without JavaScript.
+ * without JavaScript. The page's header holds its title.
  */
 export function DialogPage(props: DialogPageProps): JSX.Element {
   return (

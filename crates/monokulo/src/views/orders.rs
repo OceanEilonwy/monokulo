@@ -4,7 +4,7 @@
 
 use maud::{html, Markup, PreEscaped};
 
-use super::{layout, layout_with_head, PageChrome};
+use super::PageChrome;
 
 /// One row of the orders list page - just the fields the table shows, not
 /// the full engine `OrderView`.
@@ -54,7 +54,7 @@ pub fn orders_table(
             ui::Cell::new(html! { a href=(format!("/dashboard/stores/{connection_id}/orders/{}", order.order_id)) { (super::short_id(order.order_id.as_str())) } })
                 .part(ui::CellPart::Title)
                 .into(),
-            ui::Cell::new(html! { @if let Some(reference) = &order.reference { (reference) } @else { span class="muted" { "—" } } })
+            ui::Cell::new(html! { @if let Some(reference) = &order.reference { (reference) } @else { (super::no_reference()) } })
                 .part(ui::CellPart::Meta)
                 .into(),
             ui::Cell::new(order.source.as_str()).part(ui::CellPart::Meta).into(),
@@ -161,30 +161,23 @@ pub fn list_results(data: &OrdersViewModel, clock: &super::time::Clock) -> Marku
 
 pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
     let base = orders_base(data);
+    let header = ui::PageHeader::new("Orders").crumbs(super::store_crumbs(data.connection_id.as_str(), &data.display_name, false));
     let body = html! {
-        div class="wrap" {
-            (super::store_breadcrumb(data.connection_id.as_str(), &data.display_name, false))
-            h1 { "Orders" }
-            form method="get" action=(base) class="orders-search" role="search"
-                fx-action=(base) fx-target="#orders-results" fx-push-url fx-replace {
-                label for="orders-search" class="sr-only" { "Search orders" }
-                (ui::Input::new("q")
-                    .kind(ui::InputType::Search)
-                    .id("orders-search")
-                    .value(data.search.as_str())
-                    .placeholder("Search by reference or order ID")
-                    .attr("maxlength", "120"))
-                (ui::Button::new("Search").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit))
-                @if !data.search.is_empty() { " " a href=(base) { "Clear" } }
-            }
-            (list_results(data, &chrome.clock))
+        form method="get" action=(base) class="orders-search" role="search"
+            fx-action=(base) fx-target="#orders-results" fx-push-url fx-replace {
+            label for="orders-search" class="sr-only" { "Search orders" }
+            (ui::Input::new("q")
+                .kind(ui::InputType::Search)
+                .id("orders-search")
+                .value(data.search.as_str())
+                .placeholder("Search by reference or order ID")
+                .attr("maxlength", "120"))
+            (ui::Button::new("Search").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit))
+            @if !data.search.is_empty() { " " a href=(base) { "Clear" } }
         }
+        (list_results(data, &chrome.clock))
     };
-    layout(
-        chrome,
-        &format!("Orders - {} - Monokulo", data.display_name),
-        body,
-    )
+    super::Page::new(format!("Orders - {} - Monokulo", data.display_name), header).render(chrome, body)
 }
 
 /// Percent-encodes a query value (a search term).
@@ -260,13 +253,11 @@ const PAGE_STYLE: &str = r#"
 .kv-table td, [data-table="payments"] td { overflow-wrap: anywhere; }
 .kv-table td code, [data-table="payments"] td code { word-break: break-all; }
 [data-table="payments"] th { min-width: 8em; }
-.order-title { display: flex; align-items: center; gap: 0.5em; min-width: 0; }
-.order-title > span { display: flex; align-items: baseline; gap: .3em; min-width: 0; white-space: nowrap; }
+.order-title { display: flex; align-items: baseline; gap: .3em; min-width: 0; white-space: nowrap; }
 .order-title-id { font-size: 0.9em; min-width: 0; }
 /* A small phone: the breadcrumb already says it's an order; the id gets
    the room. */
 @media (max-width: 400px) { .order-title-label { display: none; } }
-.order-title .share-btn { margin-left: auto; }
 .share-btn {
   flex-shrink: 0;
   display: inline-flex;
@@ -382,46 +373,49 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
         style { (PreEscaped(PAGE_STYLE)) }
     };
 
+    let crumbs = super::store_crumbs(data.connection_id.as_str(), &data.display_name, true);
+    let header = match &data.order {
+        Some(order) => ui::PageHeader::new(html! {
+            span class="order-title" { span class="order-title-label" { "Order · " } code class="order-title-id" { (super::short_id(order.order_id.as_str())) } }
+        })
+        .crumbs(crumbs)
+        .actions(html! {
+            a class="share-btn" id="share-payment-link" href=(order.payment_link) target="_blank" rel="noopener"
+               aria-label="Share payment link" title="Share payment link" {
+                svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                    stroke-linejoin="round" aria-hidden="true" focusable="false" {
+                    circle cx="18" cy="5" r="3" {}
+                    circle cx="6" cy="12" r="3" {}
+                    circle cx="18" cy="19" r="3" {}
+                    line x1="8.59" y1="13.51" x2="15.42" y2="17.49" {}
+                    line x1="15.41" y1="6.51" x2="8.59" y2="10.49" {}
+                }
+            }
+            (super::reload_button(&chrome.current_path))
+        }),
+        None => ui::PageHeader::new("Order not found").crumbs(crumbs),
+    };
     let body = html! {
-        div class="wrap" {
-            (super::store_breadcrumb(data.connection_id.as_str(), &data.display_name, true))
-            @if let Some(order) = &data.order {
-                h1 class="order-title" {
-                    (super::reload_button(&chrome.current_path))
-                    span { span class="order-title-label" { "Order · " } code class="order-title-id" { (super::short_id(order.order_id.as_str())) } }
-                    a class="share-btn" id="share-payment-link" href=(order.payment_link) target="_blank" rel="noopener"
-                       aria-label="Share payment link" title="Share payment link" {
-                        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                            stroke-linejoin="round" aria-hidden="true" focusable="false" {
-                            circle cx="18" cy="5" r="3" {}
-                            circle cx="6" cy="12" r="3" {}
-                            circle cx="18" cy="19" r="3" {}
-                            line x1="8.59" y1="13.51" x2="15.42" y2="17.49" {}
-                            line x1="15.41" y1="6.51" x2="8.59" y2="10.49" {}
-                        }
+        @if let Some(order) = &data.order {
+            (ui::Hint::new(html! {
+                "Share the payment link (icon above) with whoever needs to pay this order. "
+                " "
+                (super::logs_link(chrome, "order.id", order.order_id.as_str(), "Logs for this order"))
+                @if order.from_pos && chrome.is_admin {
+                    " "
+                    a class="logs-link" href=(format!("/dashboard/admin/logs/pos?order={}", url::form_urlencoded::byte_serialize(order.order_id.as_str().as_bytes()).collect::<String>())) {
+                        "POS session"
                     }
                 }
-                (ui::Hint::new(html! {
-                    "Share the payment link (icon above) with whoever needs to pay this order. "
-                    " "
-                    (super::logs_link(chrome, "order.id", order.order_id.as_str(), "Logs for this order"))
-                    @if order.from_pos && chrome.is_admin {
-                        " "
-                        a class="logs-link" href=(format!("/dashboard/admin/logs/pos?order={}", url::form_urlencoded::byte_serialize(order.order_id.as_str().as_bytes()).collect::<String>())) {
-                            "POS session"
-                        }
-                    }
-                }))
-                (live_fragment(order, &chrome.clock))
-                // Streams the part above as the order changes, when
-                // JavaScript is on (fixi starts it as soon as it's seen).
-                span hidden fx-action=(format!("/dashboard/stores/{}/orders/{}/events", data.connection_id, order.order_id))
-                    fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect {}
+            }))
+            (live_fragment(order, &chrome.clock))
+            // Streams the part above as the order changes, when
+            // JavaScript is on (fixi starts it as soon as it's seen).
+            span hidden fx-action=(format!("/dashboard/stores/{}/orders/{}/events", data.connection_id, order.order_id))
+                fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect {}
 
-            } @else {
-                h1 { "Order not found" }
-                p { "This order does not exist." }
-            }
+        } @else {
+            p { "This order does not exist." }
         }
         @if data.order.is_some() {
             script { (PreEscaped(SHARE_SCRIPT)) }
@@ -435,7 +429,7 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
         ),
         None => format!("Order not found - {} - Monokulo", data.display_name),
     };
-    layout_with_head(chrome, &title, extra_head, body)
+    super::Page::new(title, header).head(extra_head).render(chrome, body)
 }
 
 #[cfg(test)]

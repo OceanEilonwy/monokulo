@@ -12,7 +12,7 @@ use maud::{html, Markup};
 
 use super::settings::{toast_region, Field, Save, Toast, ToastKind};
 use super::wallets::{RetiredListItem, WalletListItem};
-use super::{layout, script, Load, PageChrome};
+use super::{script, Load, PageChrome};
 use crate::db::Theme;
 use ui::{Choice, Select};
 
@@ -303,7 +303,7 @@ const CHECK_THE_EMAIL: &str =
 fn email_confirm_dialog(saved: &Profile) -> Markup {
     html! {
         (ui::Dialog::new("email-confirm", "email-confirm-title", html! {
-            (ui::DialogTitle::new("email-confirm-title", "Log in with a new email?").in_dialog(true))
+            (ui::DialogTitle::new("email-confirm-title", "Log in with a new email?"))
             p { "From now on you log in with " strong data-email-new {} " instead of " (saved.email) "." }
             (ui::Hint::new(CHECK_THE_EMAIL))
             div class="setting-field" {
@@ -359,33 +359,27 @@ fn security_panel(data: &AccountViewModel) -> Markup {
 pub fn account_page(chrome: &PageChrome, data: &AccountViewModel) -> Markup {
     let tab = data.tab;
     let toast = data.toast();
+    let header = ui::PageHeader::new("Account");
     let body = html! {
-        div class="wrap settings-page" {
-            h1 { "Account" }
-            nav id="settings-tabs" class="tab-bar" aria-label="Account" {
-                @for each in AccountTab::ALL {
-                    a href=(each.href()) aria-current=[(each == tab).then_some("page")] { (each.label()) }
-                }
+        nav id="settings-tabs" class="tab-bar" aria-label="Account" {
+            @for each in AccountTab::ALL {
+                a href=(each.href()) aria-current=[(each == tab).then_some("page")] { (each.label()) }
             }
-            section id="settings-panel" aria-labelledby="settings-panel-title" data-tab=(tab.id()) data-tab-label=(tab.label()) {
-                h2 id="settings-panel-title" class="visually-hidden" { (tab.label()) }
-                @match tab {
-                    AccountTab::Profile => (profile_panel(data)),
-                    AccountTab::Wallets => (super::wallets::list_section(&data.wallets, &data.retired)),
-                    AccountTab::Security => (security_panel(data)),
-                }
-            }
-            (toast_region(toast.as_ref(), false))
-            // The email question: it holds back a save before the settings
-            // components (loaded by every page) count it as sent.
-            (script("account.js", Load::Now))
         }
+        section id="settings-panel" aria-labelledby="settings-panel-title" data-tab=(tab.id()) data-tab-label=(tab.label()) {
+            h2 id="settings-panel-title" class="visually-hidden" { (tab.label()) }
+            @match tab {
+                AccountTab::Profile => (profile_panel(data)),
+                AccountTab::Wallets => (super::wallets::list_section(&data.wallets, &data.retired)),
+                AccountTab::Security => (security_panel(data)),
+            }
+        }
+        (toast_region(toast.as_ref(), false))
+        // The email question: it holds back a save before the settings
+        // components (loaded by every page) count it as sent.
+        (script("account.js", Load::Now))
     };
-    layout(
-        chrome,
-        &format!("{} - Account - Monokulo", tab.label()),
-        body,
-    )
+    super::Page::new(format!("{} - Account - Monokulo", tab.label()), header).class("settings-page").render(chrome, body)
 }
 
 /// Without JavaScript, an email change answers with this page first: the
@@ -397,44 +391,37 @@ pub fn email_confirm_page(
     submitted: &Profile,
     error: Option<&str>,
 ) -> Markup {
+    let header = ui::PageHeader::new("Log in with a new email?").crumbs(super::crumbs(&[("/account", "Account")]));
     let body = html! {
-        div class="wrap settings-page email-confirm-page" {
-            (super::breadcrumbs(&[("/account", "Account")]))
-            h1 { "Log in with a new email?" }
-            @if let Some(error) = error {
-                (ui::Alert::new(error, ui::Tone::Error))
+        @if let Some(error) = error {
+            (ui::Alert::new(error, ui::Tone::Error))
+        }
+        p { "From now on you log in with " strong { (submitted.email) } " instead of " (old_email) "." }
+        (ui::Hint::new(CHECK_THE_EMAIL))
+        form method="post" action="/account/profile" {
+            input type="hidden" name="tab" value="profile";
+            input type="hidden" name="email" value=(submitted.email);
+            input type="hidden" name="theme" value=(submitted.theme.as_str());
+            input type="hidden" name="timezone" value=(submitted.timezone.as_deref().unwrap_or(""));
+            div class="setting-field" {
+                div class="setting-label-row" { label class="setting-label" for="email-again" { "Type the new email again" } }
+                (ui::Input::new("confirm_email")
+                    .id("email-again")
+                    .kind(ui::InputType::Email)
+                    .required(true)
+                    .autocomplete("off")
+                    .attr("autofocus", ""))
             }
-            p { "From now on you log in with " strong { (submitted.email) } " instead of " (old_email) "." }
-            (ui::Hint::new(CHECK_THE_EMAIL))
-            form method="post" action="/account/profile" {
-                input type="hidden" name="tab" value="profile";
-                input type="hidden" name="email" value=(submitted.email);
-                input type="hidden" name="theme" value=(submitted.theme.as_str());
-                input type="hidden" name="timezone" value=(submitted.timezone.as_deref().unwrap_or(""));
-                div class="setting-field" {
-                    div class="setting-label-row" { label class="setting-label" for="email-again" { "Type the new email again" } }
-                    (ui::Input::new("confirm_email")
-                        .id("email-again")
-                        .kind(ui::InputType::Email)
-                        .required(true)
-                        .autocomplete("off")
-                        .attr("autofocus", ""))
-                }
-                (ui::FormActions::new(ui::Slot::many([
-                    ui::Button::new("Change email")
-                        .variant(ui::ButtonVariant::Primary)
-                        .kind(ui::ButtonType::Submit)
-                        .into(),
-                    ui::LinkButton::new("Cancel", "/account").into(),
-                ])))
-            }
+            (ui::FormActions::new(ui::Slot::many([
+                ui::Button::new("Change email")
+                    .variant(ui::ButtonVariant::Primary)
+                    .kind(ui::ButtonType::Submit)
+                    .into(),
+                ui::LinkButton::new("Cancel", "/account").into(),
+            ])))
         }
     };
-    layout(
-        chrome,
-        "Log in with a new email? - Account - Monokulo",
-        body,
-    )
+    super::Page::new("Log in with a new email? - Account - Monokulo", header).class("settings-page email-confirm-page").render(chrome, body)
 }
 
 #[cfg(test)]

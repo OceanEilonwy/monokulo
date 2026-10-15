@@ -17,7 +17,7 @@
 // The page never zooms on the mouse wheel: scrolling scrolls the page.
 (() => {
   "use strict";
-  const page = document.querySelector("main.engine-page[data-network]");
+  const page = document.getElementById("engine-stage");
   if (!page) return;
   const networkSelect = document.getElementById("engine-network");
   // Picking a network goes there; Go is only for a page without JavaScript.
@@ -83,7 +83,8 @@
     timers.clear();
     clearTokens();
   }
-  function showRefresh(show) { page.querySelectorAll("[data-reload]").forEach(el => { el.hidden = !show; }); }
+  // Reload is in the page's header, above the stage.
+  function showRefresh(show) { document.querySelectorAll(".engine-page [data-reload]").forEach(el => { el.hidden = !show; }); }
   const htmlCache = new WeakMap();
   function setHTML(element, html) {
     if (element && htmlCache.get(element) !== html) { element.innerHTML = html; htmlCache.set(element, html); }

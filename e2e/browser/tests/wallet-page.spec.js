@@ -32,7 +32,7 @@ const page_of = (id) => `${fixture.base_url}/account/wallets/${id}`;
 test("a wallet's page is one column: where it lives, stores, details, history, then Retire", async ({ page, context }) => {
   await login(context);
   await page.goto(page_of('w_cake'));
-  const title = page.locator('.wallet-title');
+  const title = page.locator('.mk-page-title');
   await expect(title.getByRole('heading', { name: 'Cake – shop takings' })).toBeVisible();
   await expect(title.locator('.tag-network.is-main')).toHaveText('Mainnet');
   await expect(page.locator('body')).not.toContainText(/real money/i);

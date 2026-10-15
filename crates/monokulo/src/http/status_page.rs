@@ -1622,7 +1622,7 @@ mod tests {
             );
             assert!(
                 html.contains(
-                    r#"<a class="mk-btn" href="/status/engine?network=mainnet"><svg xmlns="http://www.w3.org/2000/svg" class="mk-icon""#
+                    r#"<a class="mk-btn" href="/status/engine?network=mainnet" data-watch-live=""><svg xmlns="http://www.w3.org/2000/svg" class="mk-icon""#
                 ),
                 "an admin is linked to the engine page: {html}"
             );

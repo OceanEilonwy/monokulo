@@ -335,12 +335,12 @@ pub async fn disconnect_form(
             Ok(loaded) => loaded,
             Err(status) => return status.into_response(),
         };
-    if view.active.as_ref().is_none_or(|a| a.id != integration) {
+    let Some(active) = view.active.as_ref().filter(|a| a.id == integration) else {
         return super::dashboard::redirect_303(&format!(
             "/dashboard/stores/{id}/settings#card-connections"
         ));
-    }
-    crate::views::store_site::disconnect_page(&chrome, &view, None).into_response()
+    };
+    crate::views::store_site::disconnect_page(&chrome, &view, active, None).into_response()
 }
 
 /// `POST …/settings/connections/{integration}/disconnect`: once no order
@@ -366,7 +366,7 @@ pub async fn disconnect_submit(
     let refuse = |message: String| {
         (
             StatusCode::UNPROCESSABLE_ENTITY,
-            crate::views::store_site::disconnect_page(&chrome, &view, Some(&message)),
+            crate::views::store_site::disconnect_page(&chrome, &view, active, Some(&message)),
         )
             .into_response()
     };

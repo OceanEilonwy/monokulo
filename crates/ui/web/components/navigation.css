@@ -1,8 +1,16 @@
-/* Where a page sits (Breadcrumbs): links to the pages above it, under
-   the site's bar with room to breathe, a "›" between them; one link alone
-   is a back link, with an arrow. Long names shorten; their title says them
-   whole. Real URLs keep it useful without scripts or browser history. */
-.mk-breadcrumbs { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--space-sm); min-width: 0; width: 100%; margin: var(--space-xl) 0 var(--space-sm); padding: 0; color: var(--muted); font-size: var(--text-sm); }
+/* The top of a page (PageHeader): where it sits, its title, then a flow's
+   progress, under the site's bar with room to breathe. The title row
+   carries the rule under it, so a badge or the page's actions sit on it.
+   Breadcrumbs: links to the pages above, a "›" between them; one link
+   alone is a back link, with an arrow. Long names shorten; their title
+   says them whole. Real URLs keep it useful without scripts or history. */
+.mk-page-header { margin: var(--space-lg) 0 var(--space-md); }
+.mk-page-header:has(> .mk-breadcrumbs) { margin-top: var(--space-xl); }
+.mk-page-title { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); min-width: 0; border-bottom: 2px solid var(--line); padding-bottom: 0.3em; }
+.mk-page-title > h1 { font-size: var(--text-xl); font-weight: 700; letter-spacing: -0.01em; margin: 0; padding: 0; border: 0; min-width: 0; overflow-wrap: anywhere; }
+.mk-page-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); margin-inline-start: auto; }
+.mk-page-header > .mk-wizard-steps { margin: var(--space-lg) 0 0; }
+.mk-breadcrumbs { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--space-sm); min-width: 0; width: 100%; margin: 0 0 var(--space-sm); padding: 0; color: var(--muted); font-size: var(--text-sm); }
 .mk-breadcrumbs > a { flex: 0 1 auto; display: block; min-width: 0; max-width: min(60vw, 24rem); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; text-decoration: underline; text-underline-offset: .2em; }
 .mk-breadcrumbs > a:last-child { flex-shrink: 0; max-width: 45%; }
 .mk-breadcrumbs > a + a::before { content: "›"; display: inline-block; margin-right: var(--space-sm); text-decoration: none; color: var(--muted); }
@@ -11,4 +19,3 @@
 .mk-breadcrumbs > a:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-sm); }
 .mk-breadcrumbs > a:only-child { position: relative; padding-inline-start: 1.4em; }
 .mk-breadcrumbs > a:only-child::before { content: "←"; position: absolute; inset-inline-start: 0; text-decoration: none; }
-.mk-breadcrumbs + :is(h1, .page-heading) { margin-top: var(--space-xs); }

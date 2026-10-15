@@ -637,7 +637,7 @@ async fn a_deliverys_detail_is_a_page_without_javascript() {
     assert!(html.contains(r#"<h1 id="delivery-"#), "{html}");
     // The head: the title, the status at its right; then the facts.
     assert!(
-        html.contains(r#"class="dialog-title"><span>Delivery of <span class="event-name">order.confirming</span></span><span class="tag tag-slow">retrying</span></h1>"#),
+        html.contains(r#"<span>Delivery of <span class="event-name">order.confirming</span></span></h1><span class="tag tag-slow">retrying</span>"#),
         "{html}"
     );
     assert!(

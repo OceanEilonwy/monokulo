@@ -36,6 +36,10 @@ pub struct StoreDraft {
     pub store_name: String,
     #[serde(default)]
     pub store_site: String,
+    /// What the store prices in; on the first visit, a guess from the
+    /// browser's languages.
+    #[serde(default)]
+    pub base_currency: String,
     /// The plugin's platform, its shop's address, where to send its key,
     /// and its nonce (`/connect/{platform}`).
     #[serde(default)]
@@ -82,6 +86,7 @@ impl StoreDraft {
 pub(super) struct ValidStore {
     name: String,
     site: String,
+    base_currency: String,
     plugin: Option<views::setup::PluginReturn>,
     confirmations_required: Option<u64>,
     order_expiry_seconds: Option<i64>,
@@ -105,7 +110,19 @@ async fn store_page(
     let plugin_host = draft
         .has_plugin()
         .then(|| crate::stores::normalize_site(&draft.site_url).unwrap_or_default());
+    let selected = draft.base_currency.clone();
+    let currencies = state
+        .db
+        .read(move |db| crate::currencies::currency_options(db, &selected))
+        .await
+        .unwrap_or_default();
+    let currency = currencies
+        .iter()
+        .find(|c| c.selected)
+        .map_or_else(|| "XMR".to_owned(), |c| c.code.clone());
     let data = StoreStepViewModel {
+        currency,
+        currencies,
         name: draft.store_name.clone(),
         site: plugin_host
             .clone()
@@ -175,9 +192,22 @@ pub(super) async fn check(
         (Ok(site), Some(taken)) => Err(site_error(taken, site)),
         (Err(e), _) => Err(e),
     };
+    // The dropdown only offers known currencies: anything else is XMR.
+    let requested = draft.base_currency.clone();
+    let base_currency = state
+        .db
+        .read(move |db| crate::currencies::resolve_currency(db, &requested))
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "XMR".to_owned());
     match (name, site) {
         (Ok(name), Ok(site)) => {
-            let mut fields = vec![("store_name", name.clone()), ("store_site", site.clone())];
+            let mut fields = vec![
+                ("store_name", name.clone()),
+                ("store_site", site.clone()),
+                ("base_currency", base_currency.clone()),
+            ];
             fields.extend(draft.carried());
             Ok(ValidStore {
                 context: SetupContext {
@@ -186,6 +216,7 @@ pub(super) async fn check(
                 },
                 name,
                 site,
+                base_currency,
                 plugin,
                 confirmations_required: draft.confirmations_required.parse().ok(),
                 order_expiry_seconds: draft.order_expiry_seconds.parse().ok(),
@@ -219,8 +250,20 @@ fn site_error(taken: SiteTaken, site: String) -> SiteError {
 pub async fn store_form(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Query(draft): Query<StoreDraft>,
+    headers: axum::http::HeaderMap,
+    Query(mut draft): Query<StoreDraft>,
 ) -> Response {
+    if draft.base_currency.is_empty() {
+        // A new store prices through Coingecko (its default provider): a
+        // currency from the browser only when this instance has it, or the
+        // till couldn't charge in it. XMR otherwise.
+        let languages = headers
+            .get(axum::http::header::ACCEPT_LANGUAGE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        let priced = state.exchange_rate.is_available(crate::exchange_rate_config::COINGECKO);
+        draft.base_currency = crate::currencies::new_store_default(priced, languages).to_owned();
+    }
     store_page(&state, &user, &draft, None, None).await
 }
 
@@ -299,7 +342,7 @@ async fn make_store(
         domains: Vec::new(),
         confirmations_required: store.confirmations_required,
         order_expiry_seconds: store.order_expiry_seconds,
-        base_currency: "XMR".to_owned(),
+        base_currency: store.base_currency.clone(),
         key_custody_backend: None,
         wallet_id: Some(wallet.id.clone()),
     };

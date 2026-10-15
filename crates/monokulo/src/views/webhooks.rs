@@ -12,7 +12,7 @@
 use maud::{html, Markup};
 
 use super::time::Clock;
-use super::{layout, short_id, PageChrome};
+use super::{short_id, DialogContent, PageChrome};
 use crate::db::{DeliveryRow, DeliveryState, WebhookHealth, WebhookRow};
 
 /// How many of a webhook's deliveries a page of them shows: in its fold on
@@ -422,26 +422,21 @@ pub fn dialogs(card: &WebhooksCard) -> Markup {
     html! {
         @for entry in &card.webhooks {
             (ui::Dialog::new(delete_dialog_id(entry.webhook.id.as_str()), format!("{}-delete-title", entry.webhook.id),
-                delete_content(&card.store_id, entry, true)))
+                delete_content(&card.store_id, entry).in_dialog()))
             @for delivery in &entry.recent {
                 (ui::Dialog::new(dialog_id(delivery.id), format!("delivery-{}-title", delivery.id),
-                    detail_content(&card.store_id, &card.clock, card.max_attempts, &entry.webhook, delivery, true))
+                    detail_content(&card.store_id, &card.clock, card.max_attempts, &entry.webhook, delivery).in_dialog())
                     .size(ui::DialogSize::Wide))
             }
         }
     }
 }
 
-fn heading(id: &str, title: Markup, in_dialog: bool) -> Markup {
-    html! { (ui::DialogTitle::new(id, title).in_dialog(in_dialog)) }
-}
-
 /// "Delete this webhook?": what stops, and the button.
-pub fn delete_content(store_id: &str, entry: &WebhookEntry, in_dialog: bool) -> Markup {
+pub fn delete_content(store_id: &str, entry: &WebhookEntry) -> DialogContent {
     let paths = Paths::new(store_id);
     let id = entry.webhook.id.as_str();
-    html! {
-        (heading(&format!("{id}-delete-title"), html! { "Delete this webhook?" }, in_dialog))
+    let body = html! {
         p { code class="wh-url" { (entry.webhook.url) } " stops receiving this store's order events at once, and its deliveries are deleted with it." }
         @if let Some(plugin) = &entry.plugin {
             (ui::Alert::new(
@@ -462,6 +457,12 @@ pub fn delete_content(store_id: &str, entry: &WebhookEntry, in_dialog: bool) -> 
                     .into(),
             ])))
         }
+    };
+    DialogContent {
+        title_id: format!("{id}-delete-title"),
+        title: html! { "Delete this webhook?" },
+        aside: None,
+        body,
     }
 }
 
@@ -474,8 +475,7 @@ pub fn detail_content(
     max_attempts: u32,
     webhook: &WebhookRow,
     delivery: &DeliveryRow,
-    in_dialog: bool,
-) -> Markup {
+) -> DialogContent {
     let paths = Paths::new(store_id);
     let state = delivery.state();
     let path = url::Url::parse(&webhook.url).map_or_else(
@@ -546,17 +546,8 @@ pub fn detail_content(
             }
         }
     }
-    html! {
-        // The title, its status at the top right (beside the close button
-        // in a dialog), then what it is, one fact a line.
-        div class="delivery-head" {
-            (ui::DialogTitle::new(
-                format!("delivery-{}-title", delivery.id),
-                html! { span { "Delivery of " span class="event-name" { (delivery.event_type) } } },
-            )
-            .in_dialog(in_dialog)
-            .aside(state_tag(state)))
-        }
+    // The title, its status beside it, then what it is, one fact a line.
+    let body = html! {
         (ui::Facts::new(facts).attr("data-facts", "delivery"))
         h4 class="mini-h" { "Attempts" }
         @if delivery.attempts.is_empty() {
@@ -606,6 +597,12 @@ pub fn detail_content(
                 ui::Button::new("Send again now").kind(ui::ButtonType::Submit).into(),
             ])))
         }
+    };
+    DialogContent {
+        title_id: format!("delivery-{}-title", delivery.id),
+        title: html! { span { "Delivery of " span class="event-name" { (delivery.event_type) } } },
+        aside: Some(state_tag(state).render()),
+        body,
     }
 }
 
@@ -662,24 +659,9 @@ fn indented_json(json: &str) -> String {
     out
 }
 
-/// A page of the store's settings around `content`, in a box of `class`
-/// when it has one (`deliveries-page`, the page's whole width, for the
-/// table).
-fn page(
-    chrome: &PageChrome,
-    store_id: &str,
-    store_name: &str,
-    title: &str,
-    class: &str,
-    content: Markup,
-) -> Markup {
-    let body = html! {
-        div class="wrap settings-page" {
-            (super::store_breadcrumb(store_id, store_name, false))
-            @if class.is_empty() { (content) } @else { div class=(class) { (content) } }
-        }
-    };
-    layout(chrome, &format!("{title} - {store_name} - Monokulo"), body)
+/// A page of the store's settings.
+fn page(store_name: &str, title: &str, header: ui::PageHeader) -> super::Page {
+    super::Page::new(format!("{title} - {store_name} - Monokulo"), header).class("settings-page")
 }
 
 /// `GET …/settings/webhooks/{webhook}/deliveries/{delivery}`: the detail
@@ -692,36 +674,17 @@ pub fn detail_page(
     delivery: &DeliveryRow,
 ) -> Markup {
     let store_id = webhook.store_id.as_str();
-    page(
-        chrome,
-        store_id,
-        store_name,
-        "Webhook delivery",
-        "",
-        ui::DialogPage::new(detail_content(
-            store_id,
-            &chrome.clock,
-            max_attempts,
-            webhook,
-            delivery,
-            false,
-        ))
-        .size(ui::DialogSize::Wide)
-        .render(),
-    )
+    let (header, body) = detail_content(store_id, &chrome.clock, max_attempts, webhook, delivery)
+        .page(super::store_crumbs(store_id, store_name, false), ui::DialogSize::Wide);
+    page(store_name, "Webhook delivery", header).render(chrome, body)
 }
 
 /// `GET …/settings/webhooks/{webhook}/delete`: the question as a page.
 pub fn delete_page(chrome: &PageChrome, store_name: &str, entry: &WebhookEntry) -> Markup {
     let store_id = entry.webhook.store_id.as_str();
-    page(
-        chrome,
-        store_id,
-        store_name,
-        "Delete webhook",
-        "",
-        ui::DialogPage::new(delete_content(store_id, entry, false)).render(),
-    )
+    let (header, body) = delete_content(store_id, entry)
+        .page(super::store_crumbs(store_id, store_name, false), ui::DialogSize::Confirm);
+    page(store_name, "Delete webhook", header).render(chrome, body)
 }
 
 /// `GET …/settings/webhooks/{webhook}/deliveries[?page=N]`: a page of
@@ -734,20 +697,16 @@ pub fn all_page(
 ) -> Markup {
     let store_id = entry.webhook.store_id.as_str();
     let paths = Paths::new(store_id);
-    page(
-        chrome,
-        store_id,
-        store_name,
-        "Webhook deliveries",
-        "deliveries-page",
-        html! {
-            h1 { "Deliveries" }
+    let header = ui::PageHeader::new("Deliveries").crumbs(super::store_crumbs(store_id, store_name, false));
+    let body = html! {
+        div class="deliveries-page" {
             p { code class="wh-url" { (entry.webhook.url) } }
             (ui::Hint::new(format!("Newest first, {PAGE} a page.")))
             (deliveries_results(&paths, &chrome.clock, max_attempts, entry))
             p { a href=(paths.settings()) { "Back to the store's settings" } }
-        },
-    )
+        }
+    };
+    page(store_name, "Webhook deliveries", header).render(chrome, body)
 }
 
 #[cfg(test)]

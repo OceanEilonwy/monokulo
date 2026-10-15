@@ -165,9 +165,10 @@ Existing Rust palette checks also inspect the embedded package component CSS.
 For POS adoption use the existing `pos-responsive-layout` and terminal browser
 suites, plus `cargo test -p monokulo --lib http::pos::tests`.
 
-Breadcrumbs/back links, nested wizard progress and action cards are also shared.
-Application breadcrumb trails retain `context-nav` only for page spacing;
-`mk-breadcrumbs` owns their appearance. Setup/wallet progress integrates the active task and position inside the
+Every page under the site's bar starts with a `PageHeader`: breadcrumbs (one
+link is a back link), the required title, then a wizard's progress; a badge or
+status beside the title and the page's actions at its right. `views::Page`
+takes one, so a page can't be built without a title. Setup/wallet progress integrates the active task and position inside the
 top-level segment, including on mobile, without a separate subtask row. Wallet choice cards use
 `mk-action-card`, shared buttons and native GET submission; creating a wallet
 still requires browser capabilities. The stylebook shows WooCommerce as a

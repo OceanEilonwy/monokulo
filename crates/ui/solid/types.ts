@@ -60,9 +60,9 @@ export type DotPlace = "nav" | "pos";
 export type FormMethod = "post" | "get";
 
 /**
- * A heading's level.
+ * A heading's level. A page's own title, the `h1`, is its `PageHeader`'s.
  */
-export type HeadingLevel = "h1" | "h2" | "h3" | "h4";
+export type HeadingLevel = "h2" | "h3" | "h4";
 
 /**
  * How the instance is, as the status dot shows it.
@@ -213,7 +213,7 @@ export interface Choice {
 }
 
 /**
- * One link of [`Breadcrumbs`].
+ * One link of a [`PageHeader`]'s breadcrumbs.
  */
 export interface Crumb {
   readonly href: string;

@@ -205,9 +205,9 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
     // The title bar: Refresh submits the search as it stands (a plain GET
     // without script), Live streams after the newest line shown.
     let head = &html[html
-        .find(r#"<div class="logs-head">"#)
+        .find(r#"<header class="mk-page-header">"#)
         .expect("a title bar")
-        ..html.find(r#"<div class="logs-body">"#).unwrap()];
+        ..html.find(r#"</header>"#).unwrap()];
     assert!(
         head.contains("<h1>Logs</h1>")
             && head.contains(r#"<button class="mk-btn" type="submit" data-size="compact" form="log-search">"#)
