@@ -4,7 +4,7 @@
 use maud::{html, Markup};
 
 use super::orders::{lookup_payment_card, orders_table, OrderRowViewModel};
-use super::{layout, script, Load, PageChrome};
+use super::{layout, PageChrome};
 
 pub struct StoreDetailData {
     pub connection_id: crate::db::ConnectionId,
@@ -54,9 +54,10 @@ pub struct FailingDomainWarning {
 pub fn compact_embed_warning(connection_id: &str) -> Markup {
     let settings = format!("/dashboard/stores/{connection_id}/settings#verified-domains");
     html! {
-        div class="embed-warning is-compact" id="embed-warning" {
-            strong { "Any website can show this store's checkout." } " " a href=(settings) { "Verify your domains" }
-        }
+        (ui::Alert::new(html! { a href=(settings) { "Verify your domains" } }, ui::Tone::Warning)
+            .title("Any website can show this store's checkout.")
+            .quiet(true)
+            .attr("id", "embed-warning"))
     }
 }
 
@@ -75,50 +76,52 @@ pub struct StoreDetailViewModel {
 
 fn embed_warnings(connection_id: &str, warnings: &EmbedWarnings) -> Markup {
     let settings = format!("/dashboard/stores/{connection_id}/settings#verified-domains");
+    let dismiss = format!("/dashboard/stores/{connection_id}/embed-warning/dismiss");
     html! {
         @if warnings.shown_nowhere {
-            div class="embed-warning is-error" role="alert" {
-                strong { "No website can show this store's checkout" }
-                span {
-                    "Only verified domains are allowed, and none is verified right now. "
-                    a href=(settings) { "Check your domains in Settings" } ", or turn the restriction off there."
-                }
-            }
+            (ui::Alert::new(html! {
+                "Only verified domains are allowed, and none is verified right now. "
+                a href=(settings) { "Check your domains in Settings" } ", or turn the restriction off there."
+            }, ui::Tone::Error)
+            .title("No website can show this store's checkout")
+            .block(true))
         }
         @for failing in &warnings.failing {
-            div class="embed-warning is-error" role="alert" {
-                @if failing.lapsed {
-                    strong { (failing.domain) " is no longer verified" }
-                    span {
-                        "The TXT record at " code { (failing.record_name) } " has been missing for " (failing.missing_for) ". "
-                        "Publish it again, then " a href=(settings) { "check it in Settings" } "."
-                    }
-                } @else {
-                    strong { (failing.domain) " failed its DNS check" }
-                    span {
-                        "The TXT record at " code { (failing.record_name) } " has been missing for " (failing.missing_for) ". "
-                        "If it isn't back within " (failing.counts_for) ", " (failing.domain) " will stop counting as verified"
-                        @if warnings.restricted { " and stop being able to show this checkout" }
-                        ". " a href=(settings) { "Check it in Settings" } "."
-                    }
-                }
+            @if failing.lapsed {
+                (ui::Alert::new(html! {
+                    "The TXT record at " code { (failing.record_name) } " has been missing for " (failing.missing_for) ". "
+                    "Publish it again, then " a href=(settings) { "check it in Settings" } "."
+                }, ui::Tone::Error)
+                .title(format!("{} is no longer verified", failing.domain))
+                .block(true))
+            } @else {
+                (ui::Alert::new(html! {
+                    "The TXT record at " code { (failing.record_name) } " has been missing for " (failing.missing_for) ". "
+                    "If it isn't back within " (failing.counts_for) ", " (failing.domain) " will stop counting as verified"
+                    @if warnings.restricted { " and stop being able to show this checkout" }
+                    ". " a href=(settings) { "Check it in Settings" } "."
+                }, ui::Tone::Error)
+                .title(format!("{} failed its DNS check", failing.domain))
+                .block(true))
             }
         }
         @if warnings.restricted {
         } @else if warnings.any_site_dismissed {
             (compact_embed_warning(connection_id))
         } @else {
-            div class="embed-warning" id="embed-warning" {
-                strong { "Any website can show this store's checkout" }
-                span {
-                    "If a scam site embeds it, that site's victims would pay you, and you'd be the one they come to. "
-                    a href=(settings) { "Verify your domains" } " in Settings and allow only them."
+            (ui::Alert::new(html! {
+                "If a scam site embeds it, that site's victims would pay you, and you'd be the one they come to. "
+                a href=(settings) { "Verify your domains" } " in Settings and allow only them."
+            }, ui::Tone::Warning)
+            .title("Any website can show this store's checkout")
+            .actions(html! {
+                form method="post" action=(dismiss) fx-action=(dismiss) fx-method="POST" fx-target="#embed-warning" {
+                    (ui::Button::new("Dismiss").kind(ui::ButtonType::Submit).size(ui::ControlSize::Compact))
                 }
-                form method="post" action=(format!("/dashboard/stores/{connection_id}/embed-warning/dismiss"))
-                    fx-action=(format!("/dashboard/stores/{connection_id}/embed-warning/dismiss")) fx-method="POST" fx-target="#embed-warning" {
-                    (ui::Button::new("Dismiss").kind(ui::ButtonType::Submit))
-                }
-            }
+            })
+            .block(true)
+            .quiet(true)
+            .attr("id", "embed-warning"))
         }
     }
 }
@@ -137,6 +140,39 @@ fn fact_row(name: &str, value: Markup) -> ui::Slot {
         ui::Slot::from(ui::Cell::new(value)),
     ]))
     .into()
+}
+
+/// A keypad, for the POS tile.
+fn pos_icon() -> Markup {
+    html! {
+        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round" aria-hidden="true" focusable="false" {
+            rect x="4" y="3" width="16" height="18" rx="2" {}
+            circle cx="8.5" cy="8.5" r="0.6" fill="currentColor" stroke="none" {}
+            circle cx="12" cy="8.5" r="0.6" fill="currentColor" stroke="none" {}
+            circle cx="15.5" cy="8.5" r="0.6" fill="currentColor" stroke="none" {}
+            circle cx="8.5" cy="12" r="0.6" fill="currentColor" stroke="none" {}
+            circle cx="12" cy="12" r="0.6" fill="currentColor" stroke="none" {}
+            circle cx="15.5" cy="12" r="0.6" fill="currentColor" stroke="none" {}
+            circle cx="8.5" cy="15.5" r="0.6" fill="currentColor" stroke="none" {}
+            circle cx="12" cy="15.5" r="0.6" fill="currentColor" stroke="none" {}
+            circle cx="15.5" cy="15.5" r="0.6" fill="currentColor" stroke="none" {}
+            line x1="8" y1="18.5" x2="16" y2="18.5" {}
+        }
+    }
+}
+
+/// A page with a plus, for the new order tile.
+fn new_order_icon() -> Markup {
+    html! {
+        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round" aria-hidden="true" focusable="false" {
+            path d="M6 3h9l3 3v15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" {}
+            path d="M15 3v3h3" {}
+            line x1="12" y1="11" x2="12" y2="17" {}
+            line x1="9" y1="14" x2="15" y2="14" {}
+        }
+    }
 }
 
 pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
@@ -185,45 +221,15 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                     p { (super::logs_link(chrome, "store.id", store.connection_id.as_str(), "This store's logs")) }
                 }
 
+                // The POS needs JavaScript: without it, its tile says so.
                 div class="widget-links" {
-                    a class="mk-btn widget-link pos-launch-disabled" id="pos-launch" data-href=(format!("/dashboard/stores/{}/pos", store.connection_id)) aria-disabled="true" tabindex="-1" {
-                        span class="widget-link-icon" {
-                            svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                stroke-linejoin="round" aria-hidden="true" focusable="false" {
-                                rect x="4" y="3" width="16" height="18" rx="2" {}
-                                circle cx="8.5" cy="8.5" r="0.6" fill="currentColor" stroke="none" {}
-                                circle cx="12" cy="8.5" r="0.6" fill="currentColor" stroke="none" {}
-                                circle cx="15.5" cy="8.5" r="0.6" fill="currentColor" stroke="none" {}
-                                circle cx="8.5" cy="12" r="0.6" fill="currentColor" stroke="none" {}
-                                circle cx="12" cy="12" r="0.6" fill="currentColor" stroke="none" {}
-                                circle cx="15.5" cy="12" r="0.6" fill="currentColor" stroke="none" {}
-                                circle cx="8.5" cy="15.5" r="0.6" fill="currentColor" stroke="none" {}
-                                circle cx="12" cy="15.5" r="0.6" fill="currentColor" stroke="none" {}
-                                circle cx="15.5" cy="15.5" r="0.6" fill="currentColor" stroke="none" {}
-                                line x1="8" y1="18.5" x2="16" y2="18.5" {}
-                            }
-                        }
-                        span class="widget-link-text" {
-                            span class="widget-link-title" { "POS Terminal" }
-                            span class="widget-link-hint" id="pos-launch-hint" { "Requires JS" }
-                        }
-                    }
-                    (script("store-detail.js", Load::Now))
-                    a class="mk-btn widget-link" href=(format!("/dashboard/stores/{}/orders/new", store.connection_id)) {
-                        span class="widget-link-icon" {
-                            svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                stroke-linejoin="round" aria-hidden="true" focusable="false" {
-                                path d="M6 3h9l3 3v15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" {}
-                                path d="M15 3v3h3" {}
-                                line x1="12" y1="11" x2="12" y2="17" {}
-                                line x1="9" y1="14" x2="15" y2="14" {}
-                            }
-                        }
-                        span class="widget-link-text" {
-                            span class="widget-link-title" { "Create an order" }
-                            span class="widget-link-hint" { "For one-off custom payments" }
-                        }
-                    }
+                    (ui::LaunchTile::new("POS Terminal", "Full-screen keypad for in-person sales", pos_icon())
+                        .href(format!("/dashboard/stores/{}/pos", store.connection_id))
+                        .attr("data-only", "script"))
+                    (ui::LaunchTile::new("POS Terminal", "Requires JavaScript", pos_icon())
+                        .attr("data-only", "no-script"))
+                    (ui::LaunchTile::new("Create an order", "For one-off custom payments", new_order_icon())
+                        .href(format!("/dashboard/stores/{}/orders/new", store.connection_id)))
                 }
 
                 h2 { "Recent orders" }
@@ -297,7 +303,7 @@ mod tests {
             },
         )
         .into_string();
-        assert!(html.contains(r#"<div class="embed-warning" id="embed-warning"><strong>Any website can show this store's checkout</strong>"#), "got: {html}");
+        assert!(html.contains(r#"<div class="warning" id="embed-warning"><strong class="alert-title">Any website can show this store's checkout</strong>"#), "got: {html}");
         assert!(html.contains(r#"action="/dashboard/stores/conn_1/embed-warning/dismiss""#));
         assert!(html.contains(r#"href="/dashboard/stores/conn_1/settings#verified-domains""#));
 
@@ -327,7 +333,7 @@ mod tests {
             ..base_store()
         };
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
-        assert!(html.contains(r#"<div class="embed-warning is-compact" id="embed-warning"><strong>Any website can show this store's checkout.</strong>"#), "got: {html}");
+        assert!(html.contains(r#"<p class="warning" id="embed-warning"><strong class="alert-title">Any website can show this store's checkout.</strong>"#), "got: {html}");
         assert!(
             !html.contains("embed-warning/dismiss"),
             "a dismissed warning offers nothing more to dismiss"
@@ -338,7 +344,7 @@ mod tests {
         ));
         assert!(html.contains("old.example is no longer verified"));
         assert_eq!(
-            html.matches(r#"class="embed-warning is-error" role="alert""#)
+            html.matches(r#"<div class="error" role="alert"><strong class="alert-title">"#)
                 .count(),
             2
         );
@@ -358,7 +364,7 @@ mod tests {
             ..base_store()
         };
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
-        assert!(!html.contains(r#"class="embed-warning"#), "got: {html}");
+        assert!(!html.contains(r#"class="alert-title""#), "got: {html}");
 
         let store = StoreDetailData {
             wallet: None,
@@ -465,9 +471,10 @@ mod tests {
             html.contains("Settings <span aria-hidden=\"true\">→</span>"),
             "expected the Settings arrow: {html}"
         );
-        assert!(html.contains(r#"data-href="/dashboard/stores/conn_1/pos""#));
-        assert!(html.contains("Requires JS"));
-        assert!(html.contains(r#"aria-disabled="true""#));
+        // The POS needs JavaScript: its tile is a link only with it.
+        assert!(html.contains(r#"<a class="mk-launch-tile" href="/dashboard/stores/conn_1/pos" data-only="script">"#), "{html}");
+        assert!(html.contains(r#"<a class="mk-launch-tile" aria-disabled="true" data-only="no-script">"#), "{html}");
+        assert!(html.contains("Requires JavaScript"));
         assert!(html.contains(r#"href="/dashboard/stores/conn_1/orders/new""#));
     }
 

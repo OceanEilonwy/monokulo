@@ -148,15 +148,12 @@ pub fn list_results(data: &OrdersViewModel, clock: &super::time::Clock) -> Marku
                 (orders_table(data.connection_id.as_str(), &data.orders, clock))
             }
             @if data.page > 0 || data.has_more {
-                p class="orders-pages" {
-                    @if data.page > 0 {
-                        a href=(page_link(data.page - 1)) rel="prev" fx-action=(page_link(data.page - 1)) fx-target="#orders-results" fx-push-url { "← Newer" }
-                    }
-                    @if data.page > 0 && data.has_more { " · " }
-                    @if data.has_more {
-                        a href=(page_link(data.page + 1)) rel="next" fx-action=(page_link(data.page + 1)) fx-target="#orders-results" fx-push-url { "Older →" }
-                    }
-                }
+                (ui::Pagination::new("Orders pages")
+                    .maybe_previous((data.page > 0).then(|| page_link(data.page - 1)))
+                    .maybe_next(data.has_more.then(|| page_link(data.page + 1)))
+                    .previous_label("Newer")
+                    .next_label("Older")
+                    .fixi_target("#orders-results"))
             }
         }
     }
@@ -474,6 +471,30 @@ mod tests {
             html.contains(r#"href="/dashboard/stores/conn_1""#),
             "expected a back-to-store link"
         );
+    }
+
+    /// A middle page of a search links to the newer and older pages, the
+    /// search kept, fixi swapping each into the results.
+    #[test]
+    fn a_middle_page_links_newer_and_older_keeping_the_search() {
+        let data = OrdersViewModel {
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+            display_name: "shop.example.com".to_string(),
+            orders: Vec::new(),
+            search: "wc".to_string(),
+            page: 2,
+            has_more: true,
+        };
+        let html = list_results(&data, &chrome().clock).into_string();
+        assert!(html.contains(concat!(
+            r##"<nav class="mk-pagination" aria-label="Orders pages">"##,
+            r##"<a href="/dashboard/stores/conn_1/orders?q=wc&amp;page=1" rel="prev" fx-action="/dashboard/stores/conn_1/orders?q=wc&amp;page=1" fx-target="#orders-results" fx-push-url="">← Newer</a>"##,
+            r##"<a href="/dashboard/stores/conn_1/orders?q=wc&amp;page=3" rel="next" fx-action="/dashboard/stores/conn_1/orders?q=wc&amp;page=3" fx-target="#orders-results" fx-push-url="">Older →</a></nav>"##,
+        )), "{html}");
+
+        // The first and only page has nowhere to go.
+        let html = list_results(&OrdersViewModel { page: 0, has_more: false, ..data }, &chrome().clock).into_string();
+        assert!(!html.contains("mk-pagination"), "{html}");
     }
 
     /// A real order id is long: the list shows it as `views::short_id`

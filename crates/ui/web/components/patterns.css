@@ -14,6 +14,7 @@
 .mk-copy { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-sm); min-width: 0; }
 .mk-copy-value { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: all; }
 .mk-copy-value:focus { white-space: normal; overflow-wrap: anywhere; outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.mk-copy-status:empty { display: none; }
 .mk-copy-status { grid-column: 1 / -1; color: var(--muted); font-size: var(--text-sm); }
 .mk-table-scroll { max-width: 100%; overflow-x: auto; }
 .mk-table { width: 100%; border-collapse: collapse; text-align: start; font-size: var(--text-sm); }

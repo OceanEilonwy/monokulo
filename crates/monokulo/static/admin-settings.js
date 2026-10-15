@@ -3,7 +3,8 @@
 // toasts are the settings components (the ui crate's islands); without
 // either script the page already works: rows open to be edited, Move up and
 // Move down reorder, and each button saves at once. This adds:
-//   - node rows reorder by dragging their handle (or its arrow keys), and
+//   - node rows, reordered by their sortable list (dragged by their handle,
+//     or its arrow keys), are named and numbered for their new places, and
 //     Remove takes a row out; both are unsaved changes like any other, and
 //     a new order counts as one change however many rows it moves;
 //   - "Add another" adds a blank row;
@@ -137,135 +138,18 @@
 
   // ---- reordering node rows --------------------------------------------
 
-  // A drag moves its row as the pointer goes: the row follows the pointer,
-  // the rows it passes slide out of its way, and each row's place (Primary,
-  // Fallback N) is said again at once. Letting go settles the row into its
-  // slot; it counts as a change only if the order differs from where the
-  // drag started.
-  var drag = null;
-  var calm = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)");
+  // Each list is a ui sortable list: its island drags a row by its handle
+  // (or moves it with the handle's arrow keys), the rows it passes sliding
+  // out of its way. Each place it takes renames the rows' fields and says
+  // their places again at once; a new order once settled is a change.
+  document.addEventListener("mk-reorder", function (event) {
+    if (event.target.hasAttribute("data-node-rows")) renumber(event.target);
+  });
 
-  function moveRow(row, before) {
-    var list = row.parentNode;
-    list.insertBefore(row, before);
-    row.setAttribute("data-node-moved", "");
-    renumber(list);
+  document.addEventListener("mk-reordered", function (event) {
+    if (!event.target.hasAttribute("data-node-rows")) return;
+    event.detail.item.setAttribute("data-node-moved", "");
     changed();
-  }
-
-  // Rows other than `except` slide from where they were to where they now
-  // are (the rows were measured in `tops` before the move).
-  function slide(list, except, tops) {
-    if (calm && calm.matches) return;
-    Array.prototype.forEach.call(list.querySelectorAll("[data-node-row]"), function (row) {
-      if (row === except || !tops.has(row)) return;
-      var by = tops.get(row) - row.getBoundingClientRect().top;
-      if (!by) return;
-      row.style.transition = "none";
-      row.style.transform = "translateY(" + by + "px)";
-      row.getBoundingClientRect();
-      row.style.transition = "";
-      row.style.transform = "";
-    });
-  }
-
-  function measure(list) {
-    var tops = new Map();
-    Array.prototype.forEach.call(list.querySelectorAll("[data-node-row]"), function (row) {
-      tops.set(row, row.getBoundingClientRect().top);
-    });
-    return tops;
-  }
-
-  // Where the dragged row belongs for a pointer at `y`: before the first
-  // other row whose middle is below it, and never after the blank rows.
-  function slotFor(row, y) {
-    var list = row.parentNode;
-    var others = Array.prototype.filter.call(list.children, function (el) {
-      return el !== row && el.hasAttribute("data-node-row");
-    });
-    for (var i = 0; i < others.length; i++) {
-      var el = others[i];
-      if (el.hasAttribute("data-node-add")) return el;
-      var box = el.getBoundingClientRect();
-      if (y < box.top + box.height / 2) return el;
-    }
-    return null;
-  }
-
-  // The row's top in its slot, without the offset it's drawn at.
-  function follow(y) {
-    var row = drag.row;
-    var slotTop = row.getBoundingClientRect().top - drag.offset;
-    drag.offset = y - drag.grab - slotTop;
-    row.style.transform = "translateY(" + drag.offset + "px)";
-  }
-
-  // Pointer events, so a finger drags a row as a mouse does.
-  document.addEventListener("pointerdown", function (event) {
-    var handle = event.target.closest && event.target.closest("[data-node-handle]");
-    if (!handle || event.button !== 0) return;
-    event.preventDefault();
-    var row = handle.closest("[data-node-row]");
-    drag = {
-      row: row,
-      handle: handle,
-      startNext: row.nextElementSibling,
-      grab: event.clientY - row.getBoundingClientRect().top,
-      offset: 0
-    };
-    row.classList.add("is-dragging");
-    handle.setPointerCapture(event.pointerId);
-  });
-
-  document.addEventListener("pointermove", function (event) {
-    if (!drag) return;
-    var row = drag.row, list = row.parentNode;
-    var before = slotFor(row, event.clientY);
-    if (before !== row.nextElementSibling) {
-      var tops = measure(list);
-      list.insertBefore(row, before);
-      renumber(list);
-      slide(list, row, tops);
-    }
-    follow(event.clientY);
-  });
-
-  function endDrag(cancelled) {
-    if (!drag) return;
-    var row = drag.row, list = row.parentNode, startNext = drag.startNext;
-    drag = null;
-    if (cancelled && row.nextElementSibling !== startNext) {
-      var tops = measure(list);
-      list.insertBefore(row, startNext);
-      renumber(list);
-      slide(list, row, tops);
-    }
-    // Settle into the slot from where it was let go.
-    row.classList.remove("is-dragging");
-    row.style.transform = "";
-    if (row.nextElementSibling !== startNext) {
-      row.setAttribute("data-node-moved", "");
-      changed();
-    }
-  }
-  document.addEventListener("pointerup", function () { endDrag(false); });
-  document.addEventListener("pointercancel", function () { endDrag(true); });
-
-  document.addEventListener("keydown", function (event) {
-    var handle = event.target.closest && event.target.closest("[data-node-handle]");
-    if (!handle || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
-    event.preventDefault();
-    var row = handle.closest("[data-node-row]");
-    if (event.key === "ArrowUp") {
-      var above = row.previousElementSibling;
-      if (above) moveRow(row, above);
-    } else {
-      var below = row.nextElementSibling;
-      if (below && !below.hasAttribute("data-node-add")) moveRow(row, below.nextElementSibling);
-    }
-    var again = row.querySelector("[data-node-handle]");
-    if (again) again.focus();
   });
 
   // ---- clicks -----------------------------------------------------------
@@ -273,8 +157,6 @@
   document.addEventListener("click", function (event) {
     var target = event.target.closest ? event.target : null;
     if (!target) return;
-    // The handle drags; it doesn't open its row.
-    if (target.closest("[data-node-handle]")) { event.preventDefault(); return; }
     var remove = target.closest("[data-node-remove]");
     if (remove) {
       event.preventDefault();
@@ -295,7 +177,7 @@
       each(fresh, 'input[type="text"]', function (box) { box.value = ""; box.defaultValue = ""; box.removeAttribute("data-saved"); });
       each(fresh, "[data-node-tls]", function (box) { box.checked = false; box.defaultChecked = false; });
       each(fresh, 'input[name$="_self_signed"]', function (box) { box.checked = true; box.defaultChecked = true; });
-      fresh.open = true;
+      fresh.querySelector("details").open = true;
       rows.appendChild(fresh);
       renumber(rows);
       showSelfSigned(fresh);

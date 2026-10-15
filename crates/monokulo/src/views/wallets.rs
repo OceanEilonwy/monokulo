@@ -476,19 +476,25 @@ pub fn create_page(chrome: &PageChrome, flow: Flow<'_>, data: &CreateViewModel) 
                         "These words are the wallet. Anyone with them can spend from it; without them, nobody can get it "
                         "back, not even us. Save them one of these ways."
                     }
-                    div class="app-tabs" role="tablist" aria-label="Where to save it" {
-                        @for (i, app) in WALLET_APPS.iter().enumerate() {
-                            button type="button" role="tab" id=(format!("tab-{}", app.key)) aria-controls=(format!("app-{}", app.key)) aria-selected=(if i == 0 { "true" } else { "false" }) data-app-tab=(app.key) {
-                                @for logo in app.logos { (app_logo(logo, 22, None)) }
-                                (app.tab)
-                            }
-                        }
-                        button type="button" role="tab" id="tab-paper" aria-controls="app-paper" aria-selected="false" data-app-tab="paper" { "On paper" }
-                    }
-                    @for (i, app) in WALLET_APPS.iter().enumerate() {
-                        (app_panel(app, i == 0, &height))
-                    }
-                    (paper_panel())
+                    (ui::Tabs::new(
+                        "Where to save it",
+                        WALLET_APPS
+                            .iter()
+                            .map(|app| ui::Tab {
+                                id: format!("app-{}", app.key),
+                                label: html! {
+                                    span class="app-tab" { @for logo in app.logos { (app_logo(logo, 22, None)) } (app.tab) }
+                                }
+                                .into(),
+                                panel: app_panel(app, &height).into(),
+                            })
+                            .chain([ui::Tab {
+                                id: "app-paper".into(),
+                                label: "On paper".into(),
+                                panel: paper_panel().into(),
+                            }])
+                            .collect::<Vec<_>>(),
+                    ))
                     div class="step-foot" {
                         (ui::LinkButton::new("Back", back.as_str()))
                         (ui::Button::new("Skip backup…").attr("data-go", "skip"))
@@ -591,7 +597,7 @@ fn print_button() -> Markup {
 /// One wallet app's tab: the words (and its QR code, for an app that scans
 /// one) shown straight away, how to restore the wallet in it, and the box
 /// its owner ticks once it has.
-fn app_panel(app: &WalletApp, shown: bool, height: &str) -> Markup {
+fn app_panel(app: &WalletApp, height: &str) -> Markup {
     let legacy = app.method == AppMethod::TypeLegacyWords;
     let phrase = html! {
         div class="phrase-box" {
@@ -612,7 +618,7 @@ fn app_panel(app: &WalletApp, shown: bool, height: &str) -> Markup {
         }
     };
     html! {
-        div class="app-panel" id=(format!("app-{}", app.key)) role="tabpanel" aria-labelledby=(format!("tab-{}", app.key)) data-app-panel=(app.key) hidden[!shown] {
+        div data-app-panel=(app.key) {
             @match app.method.qr_kind() {
                 Some(kind) => {
                     div class="phrase-split" {
@@ -637,7 +643,7 @@ fn app_panel(app: &WalletApp, shown: bool, height: &str) -> Markup {
 /// The "On paper" tab: the 16 words to write down or print.
 fn paper_panel() -> Markup {
     html! {
-        div class="app-panel" id="app-paper" role="tabpanel" aria-labelledby="tab-paper" data-app-panel="paper" hidden {
+        div data-app-panel="paper" {
             div class="phrase-box print-sheet" {
                 (phrase_head("Write these 16 words down", print_button()))
                 ol class="seed-words" data-words aria-label="Recovery phrase" {}
@@ -645,7 +651,7 @@ fn paper_panel() -> Markup {
                     fact("Phrase type", "Polyseed, 16 words".into()),
                     fact("Wallet birthday", html! { "Today " (ui::Hint::new("(kept in the phrase, so apps restore quickly)").inline(true)) }.into()),
                 ]))
-                p class="hint no-print" { "No copy button on purpose: other apps can read your clipboard." }
+                (ui::Hint::new("No copy button on purpose: other apps can read your clipboard.").attr("data-only", "screen"))
             }
             (ui::Checkbox::new()
                 .text("I've written all 16 words down, in order, and put them somewhere safe.")

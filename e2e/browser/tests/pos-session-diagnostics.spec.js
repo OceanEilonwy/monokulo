@@ -100,7 +100,7 @@ test('a POS session reads as one timeline, from opting in to the last event', as
   await expect(page.locator('.pos-order-heading h1')).toHaveText('Table 4');
   await page.getByRole('button', { name: 'Cancel order…' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Cancel order' }).click();
-  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Cancelled');
+  await expect(page.locator('.pos-order-heading .tag')).toContainText('Cancelled');
   await page.reload();
   await expect(page.locator('#pos-root')).toHaveAttribute('data-client-logging', 'true');
 

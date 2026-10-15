@@ -118,9 +118,10 @@
 
   // -- Back up ----------------------------------------------------------------
 
-  const currentApp = () =>
-    ($('[data-app-tab][aria-selected="true"]') || {}).dataset?.appTab || 'cake';
-  const currentPanel = () => $(`[data-app-panel="${currentApp()}"]`);
+  // The tab shown: the ui Tabs hide the others' panels (every panel shows
+  // until they attach, the first counting as shown).
+  const currentPanel = () => $$('[data-app-panel]').find((panel) => !panel.parentElement.hidden);
+  const currentApp = () => currentPanel().dataset.appPanel;
   const next = $('[data-go="check"]');
 
   const updateNext = () => {
@@ -163,17 +164,7 @@
     updateNext();
   };
 
-  const chooseApp = (key) => {
-    for (const tab of $$('[data-app-tab]')) {
-      tab.setAttribute('aria-selected', tab.dataset.appTab === key ? 'true' : 'false');
-    }
-    for (const panel of $$('[data-app-panel]')) panel.hidden = panel.dataset.appPanel !== key;
-    updateNext();
-  };
-
-  for (const tab of $$('[data-app-tab]')) {
-    tab.addEventListener('click', () => chooseApp(tab.dataset.appTab));
-  }
+  root.addEventListener('mk-tab', updateNext);
   for (const box of $$('[data-backed-up]')) box.addEventListener('change', updateNext);
 
   root.addEventListener('click', (event) => {
@@ -377,7 +368,6 @@
       fail(`The wallet couldn't be made: ${error.message}`);
       return;
     }
-    chooseApp('cake');
     show('backup');
   })();
 })();

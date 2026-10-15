@@ -629,7 +629,7 @@
   },
   {
     "component": "Tag",
-    "html": "<span class=\"tag tag-muted\">⚙Options file</span>",
+    "html": "<span class=\"tag tag-muted\"><span class=\"tag-icon\" aria-hidden=\"true\">⚙</span>Options file</span>",
     "props": {
       "children": {
         "$slot": [

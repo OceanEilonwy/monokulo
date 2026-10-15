@@ -48,10 +48,12 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
 
   // The legend opens from the (?) and closes with Escape.
   await page.locator('#engine-help summary').click();
-  await expect(page.locator('.help-body')).toBeVisible();
-  await expect(page.locator('.help-body')).toContainText('hash check');
+  const legend = page.locator('#engine-help .engine-legend');
+  await expect(legend).toBeVisible();
+  await expect(legend).toContainText('hash check');
   await page.keyboard.press('Escape');
-  await expect(page.locator('.help-body')).toBeHidden();
+  await expect(legend).toBeHidden();
+  await expect(page.locator('#engine-help summary')).toBeFocused();
 
   const timingDetails = page.locator('#engine-round [data-round-breakdown]');
   await timingDetails.locator('summary').click();
@@ -76,6 +78,7 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await events.locator('tr', { hasText: "The node's chain differs from block 3,412,881" }).click();
   await expect(mode()).toHaveValue('paused');
   await expect(page.locator('#d-reorg')).toHaveAttribute('open', '');
+  await expect(page.locator('#d-reorg')).toHaveAttribute('data-alert', '');
   await expect(page.locator('#d-reorg summary')).toContainText('Reorg from 3,412,881');
   await captureCoverageStage(page, 'engine-reorg', test.info(), shot);
 
@@ -295,7 +298,7 @@ test('the round lanes use the width, their chips on their own row at the right',
 
 test('the network picker goes at once with JavaScript, with Go without', async ({ page, context, browser }) => {
   await openAsAdmin(page, context);
-  await expect(page.locator('.network-go')).toBeHidden();
+  await expect(page.locator('.engine-network').getByRole('button', { name: 'Go' })).toBeHidden();
   await expect(page.locator('.mk-select .mk-button').first()).toBeVisible();
   // Picking a network submits the form: the page loads it.
   await Promise.all([
@@ -313,7 +316,7 @@ test('the network picker goes at once with JavaScript, with Go without', async (
   await plain.goto(`${fixture.base_url}/status/engine`);
   await expect(plain.locator('#engine-network')).toBeVisible();
   await expect(plain.locator('#engine-network option[value="testnet"]')).toBeDisabled();
-  await plain.locator('.network-go').click();
+  await plain.locator('.engine-network').getByRole('button', { name: 'Go' }).click();
   await expect(plain).toHaveURL(/\/status\/engine\?network=mainnet$/);
   await noJs.close();
 });

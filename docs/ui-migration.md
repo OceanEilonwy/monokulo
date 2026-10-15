@@ -3,48 +3,42 @@
 Every server-rendered page (monokulo's views, the pages site) and the POS
 use `crates/ui` components for everything shared; only the custom
 visualisations stay application markup (the engine page's block chart and
-timeline, the logs histogram and trace waterfall, the proof-of-work pip
-chain, wallet backup, the checkout's stage tracker and the testing
-report's charts). This file tracks what has moved.
+timeline, the logs histogram, trace waterfall and log rows, the
+proof-of-work pip chain, wallet backup words, and the testing report's
+figures, trees and charts). This file tracks what has moved.
 
 | Pattern | Component | Status |
 |---|---|---|
-| Buttons, button links, icon buttons and links | `Button`, `LinkButton`, `IconButton`, `IconLink`, `FormActions` | monokulo done; pages site's landing |
-| Text inputs, text areas, checkboxes, switches, radio cards | `Field`, `Input`, `TextArea`, `Checkbox`, `Switch`, `RadioCards` | monokulo done |
+| Buttons, button links, icon buttons and links, launchers | `Button`, `LinkButton`, `IconButton`, `IconLink`, `FormActions`, `LaunchTile` | done |
+| Text inputs (with actions inside), text areas, checkboxes, switches, radio cards | `Field`, `Input`, `TextArea`, `Checkbox`, `Switch`, `RadioCards` | done |
 | Notes under a field, values set elsewhere | `FieldNote`, `LockedValue` | done |
-| Dropdowns | `Select` | done (pages site's OpenWrt version too) |
-| Settings pages | `SettingsForm`, `SettingsCard`, `Setting`, `SaveBar`, `Toast` | done |
-| Setup progress | `WizardSteps` | done |
-| Panels, messages, hints, headings | `Panel`, `Alert`, `Hint`, `Heading` | monokulo done; pages site's notes |
-| Facts, tags, network badges, short values | `Facts`, `Tag`, `NetworkBadge`, `ShortValue` | monokulo done |
-| Disclosures, checklists, timelines | `Disclosure`, `Checks`, `Timeline` | monokulo done |
-| Tables | `Table`, `Row`, `Cell` | monokulo done |
-| Dialogs | `Dialog`, `DialogTitle`, `DialogActions`, `DialogPage` | done; `confirm-dialogs.js` gone |
-| Copy a value | `CopyValue` | component; app adoption to do |
-| The POS | `Button`, `Field`, `Input`, `ShortValue`, `Dialog` (cancel asks in a dialog, not `window.confirm`) | its own order cards, keypad, status art and stage tracker stay the POS's |
-| In-page tabs, page tabs | `Tabs`, `TabLinks` | pages site (install tabs, docs, testing report) |
-| Site bar, account menu, theme switch, status dot | `SiteNav`, `Menu`, `ThemeToggle`, `StatusDot` | done (pages site and POS too) |
+| Dropdowns | `Select` | done |
+| Settings pages | `SettingsForm`, `SettingsCard`, `Setting` (stacked or a row), `SaveBar`, `Toast` | done |
+| Progress | `WizardSteps` (setup), `ProgressSteps` (a payment's stage) | done (checkout and POS share the stage) |
+| Panels, messages, hints, headings | `Panel` (raised or tile), `Alert` (with a title and actions), `Hint`, `Heading` | done |
+| Facts, tags, network badges, short values | `Facts`, `Tag` (tones, order states, an icon), `NetworkBadge`, `ShortValue` | done |
+| Disclosures, help, checklists, timelines | `Disclosure` (plain, boxed, More options, compact, row), `HelpTip`, `Checks`, `Timeline` | done |
+| Ordered lists the user reorders | `SortableList`, `SortableItem`, `SortHandle` | admin's Monero nodes |
+| Tables, cards, paging | `Table`, `Row`, `Cell`, `Card`, `Pagination` | done (logs' Older loads more lines in place: not paging) |
+| Dialogs | `Dialog`, `DialogTitle`, `DialogActions`, `DialogPage` | done; no `window.confirm` left |
+| Copying | `CopyValue`, `CopyBlock` | checkout and POS address; the site's commands |
+| Tabs and filters | `Tabs` (labels may hold logos; `mk-tab`), `TabLinks`, `SegmentedControl` | done |
+| Site bar, menus, theme switch, status dot | `SiteNav`, `Menu`, `MenuItem`, `ThemeToggle`, `StatusDot` | done |
+| Shown only with or without scripts, on screen or paper | `data-only` on any component | done |
 
 ### Left as page markup, and why
 
-- Custom visualisations, as above, and the engine page's `details.mini`
-  panels and help popover, the node rows' drag-to-reorder `details`, the
-  log rows' `details`, the wallets' test-networks fold.
-- The checkout's copy-address and refund scan/upload buttons, drawn inside
-  the field by the checkout's own CSS; its read-only address text area.
-- The store page's launcher tiles (`.widget-link`: the POS one has no
-  `href` until its script gives it one) and embed warnings.
-- The backup screen's wallet-app tabs: logos in their labels, driven by
-  `wallet-setup.js`.
-- The account menu's Log out (a menu item), pagination links,
-  `span.tag-active`, `dl.dns-record`.
+- The custom visualisations above.
+- The POS's background-order stack (small horizontal chips) and its hidden
+  file input.
+- The wallets' test-networks fold; `span.tag-active`; `dl.dns-record`.
 
 ### Gaps worth a component or variant
 
-A `Field` for a text area; `CellPart::Detail`; a dashed, flex-summary
-disclosure look; a pill-shaped toggle button (the query help's chips);
-utility visibility (`no-js-only`, `js-only`, `no-print`) on a component,
-for now a wrapping `span`.
+A `Field` for a text area; `CellPart::Detail`; attributes on `Setting`
+(a field shown only while a box is ticked needs a wrapping `div`); a
+SettingsCard that doesn't count a sortable row's fields when the page
+counts the row itself.
 
 ## Converting a page
 

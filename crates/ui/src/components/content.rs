@@ -275,13 +275,13 @@ component! {
         tone: Option<TagTone>,
         state: Option<OrderState>,
         short: Option<String>,
-        /// Before the words: an inline SVG, `aria-hidden`.
+        /// Before the words: an inline SVG or a status symbol.
         icon: Option<Slot>,
         rest: Attrs,
     }
     html {
         span class=join["tag", { "tag-" (tone) } if tone, { "state-" (state) } if state] ..rest {
-            @if let Some(icon) = icon { (icon) }
+            @if let Some(icon) = icon { span class="tag-icon" aria-hidden="true" { (icon) } }
             @if let Some(short) = short {
                 span class="label-long" { (children) }
                 span class="label-short" aria-hidden="true" { (short) }
