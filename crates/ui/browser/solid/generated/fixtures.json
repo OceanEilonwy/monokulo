@@ -731,6 +731,264 @@
     "title": "A wallet's history"
   },
   {
+    "component": "Table",
+    "html": "<div class=\"table-scroll\"><table class=\"table-cards\"><thead><tr><th>Order</th><th>Status</th><th>Amount</th></tr></thead><tbody><tr><td class=\"card-title\">Coffee</td><td class=\"card-status\"><span class=\"tag state-paid\">Paid</span></td><td class=\"card-amount\">0.02 XMR</td></tr><tr><td class=\"card-title\">Tea</td><td class=\"card-status\"><span class=\"tag state-pending\"><span class=\"label-long\">Waiting for payment</span><span class=\"label-short\" aria-hidden=\"true\">Waiting</span></span></td><td class=\"card-amount\">0.01 XMR</td></tr></tbody></table></div>",
+    "props": {
+      "children": {
+        "$slot": [
+          {
+            "$component": "Row",
+            "props": {
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "Cell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "Coffee"
+                        ]
+                      },
+                      "header": false,
+                      "optional": false,
+                      "part": "title"
+                    }
+                  },
+                  {
+                    "$component": "Cell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          {
+                            "$component": "Tag",
+                            "props": {
+                              "children": {
+                                "$slot": [
+                                  "Paid"
+                                ]
+                              },
+                              "state": "paid"
+                            }
+                          }
+                        ]
+                      },
+                      "header": false,
+                      "optional": false,
+                      "part": "status"
+                    }
+                  },
+                  {
+                    "$component": "Cell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "0.02 XMR"
+                        ]
+                      },
+                      "header": false,
+                      "optional": false,
+                      "part": "amount"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "$component": "Row",
+            "props": {
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "Cell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "Tea"
+                        ]
+                      },
+                      "header": false,
+                      "optional": false,
+                      "part": "title"
+                    }
+                  },
+                  {
+                    "$component": "Cell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          {
+                            "$component": "Tag",
+                            "props": {
+                              "children": {
+                                "$slot": [
+                                  "Waiting for payment"
+                                ]
+                              },
+                              "short": "Waiting",
+                              "state": "pending"
+                            }
+                          }
+                        ]
+                      },
+                      "header": false,
+                      "optional": false,
+                      "part": "status"
+                    }
+                  },
+                  {
+                    "$component": "Cell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "0.01 XMR"
+                        ]
+                      },
+                      "header": false,
+                      "optional": false,
+                      "part": "amount"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "head": {
+        "$slot": [
+          {
+            "$component": "Row",
+            "props": {
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "Cell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "Order"
+                        ]
+                      },
+                      "header": true,
+                      "optional": false
+                    }
+                  },
+                  {
+                    "$component": "Cell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "Status"
+                        ]
+                      },
+                      "header": true,
+                      "optional": false
+                    }
+                  },
+                  {
+                    "$component": "Cell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "Amount"
+                        ]
+                      },
+                      "header": true,
+                      "optional": false
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "look": "cards",
+      "scroll": true
+    },
+    "title": "Orders, cards on a phone"
+  },
+  {
+    "component": "Table",
+    "html": "<div class=\"table-scroll\"><table class=\"kv-table\"><tbody><tr><th>Network</th><td>Mainnet</td></tr><tr><th>Height</th><td>3,412,001</td></tr></tbody></table></div>",
+    "props": {
+      "children": {
+        "$slot": [
+          {
+            "$component": "Row",
+            "props": {
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "Cell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "Network"
+                        ]
+                      },
+                      "header": true,
+                      "optional": false
+                    }
+                  },
+                  {
+                    "$component": "Cell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "Mainnet"
+                        ]
+                      },
+                      "header": false,
+                      "optional": false
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "$component": "Row",
+            "props": {
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "Cell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "Height"
+                        ]
+                      },
+                      "header": true,
+                      "optional": false
+                    }
+                  },
+                  {
+                    "$component": "Cell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "3,412,001"
+                        ]
+                      },
+                      "header": false,
+                      "optional": false
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "look": "facts",
+      "scroll": true
+    },
+    "title": "Facts"
+  },
+  {
     "component": "Dialog",
     "html": "<dialog id=\"book-dialog\" class=\"settings-dialog confirm-dialog\" aria-labelledby=\"book-dialog-title\" data-mk=\"1\" data-island=\"Dialog\" data-props=\"{&quot;confirms_when&quot;:&quot;changed&quot;,&quot;id&quot;:&quot;book-dialog&quot;}\"><h2 id=\"book-dialog-title\" class=\"dialog-title\">Retire this wallet?<button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></h2><p class=\"hint\">Takes it out of every list and deletes its keys from Monokulo.</p><div class=\"dialog-actions\"><button class=\"mk-btn\" type=\"button\" data-closes-dialog=\"\">Cancel</button><button class=\"mk-btn\" type=\"button\" data-variant=\"danger\">Retire wallet</button></div></dialog>",
     "props": {
@@ -1038,6 +1296,233 @@
       "size": "compact"
     },
     "title": "Compact"
+  },
+  {
+    "component": "Input",
+    "html": "<input class=\"mk-input\" type=\"url\" name=\"webhook_url\" placeholder=\"https://shop.example/webhook\" aria-label=\"Webhook URL\">",
+    "props": {
+      "disabled": false,
+      "invalid": false,
+      "kind": "url",
+      "label": "Webhook URL",
+      "name": "webhook_url",
+      "placeholder": "https://shop.example/webhook",
+      "readonly": false,
+      "required": false
+    },
+    "title": "A URL"
+  },
+  {
+    "component": "Input",
+    "html": "<input class=\"mk-input\" type=\"number\" name=\"confirmations\" value=\"-1\" aria-label=\"Confirmations\" aria-invalid=\"true\">",
+    "props": {
+      "disabled": false,
+      "invalid": true,
+      "kind": "number",
+      "label": "Confirmations",
+      "name": "confirmations",
+      "readonly": false,
+      "required": false,
+      "value": "-1"
+    },
+    "title": "Refused"
+  },
+  {
+    "component": "Input",
+    "html": "<input class=\"mk-input\" type=\"search\" name=\"q\" aria-label=\"Search\" data-size=\"compact\">",
+    "props": {
+      "disabled": false,
+      "invalid": false,
+      "kind": "search",
+      "label": "Search",
+      "name": "q",
+      "readonly": false,
+      "required": false,
+      "size": "compact"
+    },
+    "title": "Compact"
+  },
+  {
+    "component": "TextArea",
+    "html": "<textarea class=\"mk-input\" name=\"note\" rows=\"3\" placeholder=\"For the customer's receipt\" aria-label=\"Note\"></textarea>",
+    "props": {
+      "disabled": false,
+      "invalid": false,
+      "label": "Note",
+      "name": "note",
+      "placeholder": "For the customer's receipt",
+      "readonly": false,
+      "required": false,
+      "rows": 3
+    },
+    "title": "A note"
+  },
+  {
+    "component": "Checkbox",
+    "html": "<label class=\"check-line\"><input type=\"checkbox\" value=\"on\"><span>I've written all 16 words down, in order, and put them somewhere safe.</span></label>",
+    "props": {
+      "checked": false,
+      "disabled": false,
+      "text": {
+        "$slot": [
+          "I've written all 16 words down, in order, and put them somewhere safe."
+        ]
+      },
+      "value": "on"
+    },
+    "title": "With what it means"
+  },
+  {
+    "component": "Checkbox",
+    "html": "<label class=\"check-line\"><input type=\"checkbox\" name=\"ssl\" value=\"on\" checked><span>Use TLS</span></label>",
+    "props": {
+      "checked": true,
+      "disabled": false,
+      "name": "ssl",
+      "text": {
+        "$slot": [
+          "Use TLS"
+        ]
+      },
+      "value": "on"
+    },
+    "title": "Ticked"
+  },
+  {
+    "component": "Checkbox",
+    "html": "<input type=\"checkbox\" class=\"mk-checkbox\" name=\"use_node\" value=\"on\" aria-label=\"Use node.example.com\">",
+    "props": {
+      "checked": false,
+      "disabled": false,
+      "label": "Use node.example.com",
+      "name": "use_node",
+      "value": "on"
+    },
+    "title": "In a table"
+  },
+  {
+    "component": "Switch",
+    "html": "<label class=\"switch\"><input type=\"checkbox\" role=\"switch\" name=\"book.accept\" value=\"true\" id=\"book-switch-on\" checked><span class=\"switch-track\" aria-hidden=\"true\"></span><span class=\"switch-on\" aria-hidden=\"true\">On</span><span class=\"switch-off\" aria-hidden=\"true\">Off</span></label>",
+    "props": {
+      "disabled": false,
+      "id": "book-switch-on",
+      "name": "book.accept",
+      "on": true
+    },
+    "title": "On"
+  },
+  {
+    "component": "Switch",
+    "html": "<label class=\"switch\"><input type=\"checkbox\" role=\"switch\" name=\"book.notify\" value=\"true\" id=\"book-switch-off\"><span class=\"switch-track\" aria-hidden=\"true\"></span><span class=\"switch-on\" aria-hidden=\"true\">On</span><span class=\"switch-off\" aria-hidden=\"true\">Off</span></label>",
+    "props": {
+      "disabled": false,
+      "id": "book-switch-off",
+      "name": "book.notify",
+      "on": false
+    },
+    "title": "Off"
+  },
+  {
+    "component": "Switch",
+    "html": "<label class=\"switch\"><input type=\"checkbox\" role=\"switch\" name=\"book.locked\" value=\"true\" id=\"book-switch-disabled\" disabled><span class=\"switch-track\" aria-hidden=\"true\"></span><span class=\"switch-on\" aria-hidden=\"true\">On</span><span class=\"switch-off\" aria-hidden=\"true\">Off</span></label>",
+    "props": {
+      "disabled": true,
+      "id": "book-switch-disabled",
+      "name": "book.locked",
+      "on": false
+    },
+    "title": "Disabled"
+  },
+  {
+    "component": "RadioCards",
+    "html": "<div class=\"radio-cards is-compact\"><label class=\"radio-card\"><input type=\"radio\" name=\"book_theme\" value=\"system\" checked>System</label><label class=\"radio-card\"><input type=\"radio\" name=\"book_theme\" value=\"light\">Light</label><label class=\"radio-card\"><input type=\"radio\" name=\"book_theme\" value=\"dark\">Dark</label></div>",
+    "props": {
+      "cards": [
+        {
+          "checked": true,
+          "label": {
+            "$slot": [
+              "System"
+            ]
+          },
+          "value": "system"
+        },
+        {
+          "checked": false,
+          "label": {
+            "$slot": [
+              "Light"
+            ]
+          },
+          "value": "light"
+        },
+        {
+          "checked": false,
+          "label": {
+            "$slot": [
+              "Dark"
+            ]
+          },
+          "value": "dark"
+        }
+      ],
+      "compact": true,
+      "name": "book_theme"
+    },
+    "title": "A theme"
+  },
+  {
+    "component": "IconButton",
+    "html": "<button type=\"button\" class=\"mk-btn icon-only\" aria-label=\"Send again\" title=\"Send again\">↻</button>",
+    "props": {
+      "disabled": false,
+      "icon": {
+        "$slot": [
+          "↻"
+        ]
+      },
+      "kind": "button",
+      "label": "Send again"
+    },
+    "title": "Send again"
+  },
+  {
+    "component": "FormActions",
+    "html": "<div class=\"form-actions\"><button class=\"mk-btn\" type=\"submit\" data-variant=\"primary\">Add webhook</button><a class=\"mk-btn\" href=\"#component-form-actions\">Cancel</a></div>",
+    "props": {
+      "children": {
+        "$slot": [
+          {
+            "$component": "Button",
+            "props": {
+              "block": false,
+              "busy": false,
+              "children": {
+                "$slot": [
+                  "Add webhook"
+                ]
+              },
+              "disabled": false,
+              "kind": "submit",
+              "variant": "primary"
+            }
+          },
+          {
+            "$component": "LinkButton",
+            "props": {
+              "block": false,
+              "children": {
+                "$slot": [
+                  "Cancel"
+                ]
+              },
+              "href": "#component-form-actions"
+            }
+          }
+        ]
+      }
+    },
+    "title": "Save and Cancel"
   },
   {
     "component": "Select",

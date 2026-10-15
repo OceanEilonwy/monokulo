@@ -12,7 +12,7 @@
 .mk-fieldset > legend { padding-inline: var(--space-xs); font-weight: 700; }
 .mk-hint, .mk-error { margin: 0; font-size: var(--text-sm); color: var(--muted); }
 .mk-error { color: var(--error); }
-.mk-input { box-sizing: border-box; display: block; width: 100%; min-width: 0; min-height: 2.5rem; margin: 0; padding: var(--space-sm) var(--space-md); font: inherit; border: 1px solid var(--control-border); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--ink); }
+.mk-input { box-sizing: border-box; display: block; width: 100%; min-width: 0; min-height: 2.5rem; margin: 0; padding: calc(var(--space-sm) + 1px) calc(var(--space-md) + 1px); font: inherit; border: 1px solid var(--control-border); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--ink); }
 textarea.mk-input { resize: vertical; }
 .mk-input::placeholder { color: var(--muted); opacity: 1; }
 .mk-input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-color: var(--focus-ring); }

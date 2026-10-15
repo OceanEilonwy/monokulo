@@ -33,7 +33,8 @@ function props(value: Json): unknown {
 
 /** A DOM tree as comparable data: attributes sorted, text merged, empty
  *  text and comments dropped. Form controls compare their live value,
- *  since frameworks set it as a property rather than an attribute. The
+ *  since frameworks set it as a property rather than an attribute (and an
+ *  input's checked state the same way). The
  *  server's island attributes (`data-island`, its props, `data-mount`) and
  *  attach marks (`data-mk`) are for the behaviour, not the markup: they're
  *  left out. */
@@ -41,12 +42,12 @@ function canon(node: Node): unknown {
   if (node.nodeType === Node.TEXT_NODE) return node.textContent;
   const element = node as Element;
   const attrs = [...element.attributes]
-    .filter(a => !(a.name === 'value' && element instanceof HTMLInputElement)
+    .filter(a => !(['value', 'checked'].includes(a.name) && element instanceof HTMLInputElement)
       && !(a.name === 'selected' && element instanceof HTMLOptionElement)
       && !['data-mk', 'data-island', 'data-props', 'data-mount'].includes(a.name))
     .map(a => [a.name, a.value])
     .sort();
-  if (element instanceof HTMLInputElement) attrs.push(['(value)', element.value]);
+  if (element instanceof HTMLInputElement) attrs.push(['(value)', element.value], ['(checked)', String(element.checked)]);
   if (element instanceof HTMLOptionElement) attrs.push(['(selected)', String(element.selected)]);
   const children: unknown[] = [];
   let text = '';

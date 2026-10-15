@@ -91,3 +91,55 @@ details.disclosure > summary { display: inline; color: var(--ink); text-decorati
 details.disclosure > summary::after { content: " \25BE"; color: var(--muted); }
 details.disclosure[open] > summary::after { content: " \25B4"; }
 details.disclosure > summary:hover { color: var(--accent-text); }
+
+/* Tables (Table, Row, Cell). */
+table { border-collapse: collapse; width: 100%; margin: 0.8em 0; }
+th, td { border: 1px solid var(--line); padding: var(--space-xs) var(--space-sm); text-align: left; vertical-align: top; }
+/* A code/pre value inside a table cell (an address, a txid) shouldn't carry
+   its own box on top of the cell's own border - the cell border is enough. */
+td code, td pre, th code, th pre { background: none; border: none; padding: 0; }
+th { background: var(--table-head-bg); color: var(--table-head-ink); font-weight: 700; }
+/* `color-mix` with `transparent`, not a flat `rgba(0,0,0,...)`: a literal
+   black tint darkens a light surface but is imperceptible on a dark one.
+   Mixing a sliver of `--ink` itself means the stripe darkens in light mode
+   (ink is near-black) and lightens in dark mode (ink is near-white) from
+   the same rule. */
+tr:nth-child(even) td { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+/* A table sits in its own scroll box, so however wide it gets, the page
+   never scrolls sideways on a phone. */
+.table-scroll { overflow-x: auto; margin: 0.8em 0; }
+.table-scroll > table { margin: 0; }
+/* Phones (the same 640px as the nav): a table drops the columns marked
+   optional, and a `.table-cards` table turns each row into a card - title
+   and status, then amount and date, then the rest. */
+@media (max-width: 640px) {
+  .col-optional { display: none; }
+  table.table-cards, table.table-cards tbody { display: block; }
+  table.table-cards thead { display: none; }
+  table.table-cards tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-xs) var(--space-md); align-items: center; padding: var(--space-sm) var(--space-md); margin-bottom: var(--space-sm); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
+  table.table-cards td { display: block; min-width: 0; padding: 0; border: 0; background: none; }
+  table.table-cards .card-title { grid-column: 1; grid-row: 1; font-weight: 700; }
+  table.table-cards .card-status { grid-column: 2; grid-row: 1; justify-self: end; }
+  table.table-cards .card-amount { grid-column: 1; grid-row: 2; font-weight: 700; }
+  table.table-cards .card-when { grid-column: 2; grid-row: 2; justify-self: end; color: var(--muted); font-size: var(--text-sm); }
+  table.table-cards .card-meta { grid-column: 1 / -1; color: var(--muted); font-size: var(--text-sm); }
+  table.table-cards .card-meta:empty { display: none; }
+}
+/* A phone: a table of facts (`.kv-table`) puts each label over its value,
+   and a `.table-stack` table (settings rows with inputs and buttons) turns
+   each row into a box of its cells, each named by its `data-label`. */
+@media (max-width: 640px) {
+  .kv-table, .kv-table tbody, .kv-table tr, .kv-table th, .kv-table td { display: block; width: auto; }
+  .kv-table { border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
+  .kv-table th, .kv-table td, .kv-table tr:nth-child(even) td { border: 0; padding: 0; background: none; }
+  .kv-table tr { padding: var(--space-sm) var(--space-md); border-bottom: 1px solid var(--line); }
+  .kv-table tr:last-child { border-bottom: 0; }
+  .kv-table th { color: var(--muted); font-size: var(--text-xs); }
+  .kv-table td code { word-break: break-all; }
+  table.table-stack, table.table-stack tbody, table.table-stack tr, table.table-stack td { display: block; width: auto; }
+  table.table-stack thead { display: none; }
+  table.table-stack tr { padding: var(--space-sm) var(--space-md); margin-bottom: var(--space-sm); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
+  table.table-stack td, table.table-stack tr:nth-child(even) td { border: 0; padding: var(--space-xs) 0; background: none; overflow-wrap: anywhere; }
+  table.table-stack td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: var(--text-xs); font-weight: 700; }
+  table.table-stack td:empty { display: none; }
+}

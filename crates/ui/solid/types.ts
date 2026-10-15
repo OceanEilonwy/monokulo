@@ -25,6 +25,11 @@ export type ButtonVariant = "primary" | "danger" | "quiet";
 export type CardSurface = "grouped";
 
 /**
+ * Where a cell goes when its row is a card on a phone.
+ */
+export type CellPart = "title" | "status" | "amount" | "when" | "meta";
+
+/**
  * Where a check stands.
  */
 export type CheckMark = "ok" | "no" | "then";
@@ -86,6 +91,12 @@ export type OrderState = "pending" | "unconfirmed" | "confirming" | "partial" | 
 export type Popover = "manual";
 
 /**
+ * A checkbox's or radio button's state as saved (`data-saved`), for a
+ * settings form to tell what changed when a refused save shows another.
+ */
+export type Saved = "on" | "off";
+
+/**
  * Whether the list has a find box.
  */
 export type SearchMode = "auto" | "show" | "hide";
@@ -94,6 +105,11 @@ export type SearchMode = "auto" | "show" | "hide";
  * Where a step stands.
  */
 export type StepState = "done" | "current" | "next";
+
+/**
+ * How a table changes on a phone.
+ */
+export type TableLook = "plain" | "cards" | "stack" | "facts";
 
 /**
  * How a tag reads, beside its words.
@@ -196,6 +212,23 @@ export interface Fact {
    */
   readonly term: string;
   readonly value: JSX.Element;
+}
+
+/**
+ * One choice of [`RadioCards`].
+ */
+export interface RadioCard {
+  readonly value: string;
+  readonly label: JSX.Element;
+  /**
+   * Before the label: a picture of the choice.
+   */
+  readonly picture?: JSX.Element;
+  readonly checked: boolean;
+  /**
+   * Whether this is the choice as saved, when the form marks changes.
+   */
+  readonly saved?: Saved;
 }
 
 /**

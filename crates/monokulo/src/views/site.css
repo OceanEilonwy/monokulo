@@ -172,62 +172,14 @@ html.js .no-js-only { display: none; }
    delete (`admin_invites.html.hbs`) - struck through and faded so it reads
    as gone-but-still-visible-for-confirmation, not a live row. */
 .row-deleted td { opacity: 0.45; text-decoration: line-through; }
-table { border-collapse: collapse; width: 100%; margin: 0.8em 0; }
-th, td { border: 1px solid var(--line); padding: var(--space-xs) var(--space-sm); text-align: left; vertical-align: top; }
-/* A code/pre value inside a table cell (an address, a txid) shouldn't carry
-   its own box on top of the cell's own border - the cell border is enough. */
-td code, td pre, th code, th pre { background: none; border: none; padding: 0; }
-th { background: var(--table-head-bg); color: var(--table-head-ink); font-weight: 700; }
-/* `color-mix` with `transparent`, not a flat `rgba(0,0,0,...)`: a literal
-   black tint darkens a light surface but is imperceptible on a dark one.
-   Mixing a sliver of `--ink` itself means the stripe darkens in light mode
-   (ink is near-black) and lightens in dark mode (ink is near-white) from
-   the same rule. */
-tr:nth-child(even) td { background: color-mix(in srgb, var(--ink) 5%, transparent); }
-/* A table sits in its own scroll box, so however wide it gets, the page
-   never scrolls sideways on a phone. */
-.table-scroll { overflow-x: auto; margin: 0.8em 0; }
-.table-scroll > table { margin: 0; }
 .nowrap { white-space: nowrap; }
-/* Phones (the same 640px as the nav): a table drops the columns marked
-   optional, and a `.table-cards` table turns each row into a card - title
-   and status, then amount and date, then the rest. */
 @media (max-width: 640px) {
-  .col-optional { display: none; }
-  table.table-cards, table.table-cards tbody { display: block; }
-  table.table-cards thead { display: none; }
-  table.table-cards tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-xs) var(--space-md); align-items: center; padding: var(--space-sm) var(--space-md); margin-bottom: var(--space-sm); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
-  table.table-cards td { display: block; min-width: 0; padding: 0; border: 0; background: none; }
-  table.table-cards .card-title { grid-column: 1; grid-row: 1; font-weight: 700; }
-  table.table-cards .card-status { grid-column: 2; grid-row: 1; justify-self: end; }
-  table.table-cards .card-amount { grid-column: 1; grid-row: 2; font-weight: 700; }
-  table.table-cards .card-when { grid-column: 2; grid-row: 2; justify-self: end; color: var(--muted); font-size: 0.85em; }
-  table.table-cards .card-meta { grid-column: 1 / -1; color: var(--muted); font-size: 0.85em; }
-  table.table-cards .card-meta:empty { display: none; }
   /* The status page's nodes: the verdict beside the height, then what
      went wrong across the card; reachability only when it's a problem. */
   table.node-table td.card-amount { display: contents; font-weight: 400; }
   table.node-table td.card-amount > .verdict { grid-column: 1; grid-row: 2; }
   table.node-table td.card-amount > .sub { grid-column: 1 / -1; }
   table.node-table .card-meta.is-quiet { display: none; }
-}
-/* A phone: a table of facts (`.kv-table`) puts each label over its value,
-   and a `.table-stack` table (settings rows with inputs and buttons) turns
-   each row into a box of its cells, each named by its `data-label`. */
-@media (max-width: 640px) {
-  .kv-table, .kv-table tbody, .kv-table tr, .kv-table th, .kv-table td { display: block; width: auto; }
-  .kv-table { border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
-  .kv-table th, .kv-table td, .kv-table tr:nth-child(even) td { border: 0; padding: 0; background: none; }
-  .kv-table tr { padding: var(--space-sm) var(--space-md); border-bottom: 1px solid var(--line); }
-  .kv-table tr:last-child { border-bottom: 0; }
-  .kv-table th { color: var(--muted); font-size: 0.8em; }
-  .kv-table td code { word-break: break-all; }
-  table.table-stack, table.table-stack tbody, table.table-stack tr, table.table-stack td { display: block; width: auto; }
-  table.table-stack thead { display: none; }
-  table.table-stack tr { padding: var(--space-sm) var(--space-md); margin-bottom: var(--space-sm); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
-  table.table-stack td, table.table-stack tr:nth-child(even) td { border: 0; padding: var(--space-xs) 0; background: none; overflow-wrap: anywhere; }
-  table.table-stack td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: 0.8em; font-weight: 700; }
-  table.table-stack td:empty { display: none; }
 }
 /* Highlights the whole row containing a native browser find-in-page match
    (Ctrl+F / Cmd+F) - no JS. `::target-text` is the pseudo-element the
@@ -495,8 +447,6 @@ input[aria-invalid="true"] { border-color: var(--error); }
 .phrase-head h3 { margin: 0; font-size: 1.05rem; }
 .phrase-head .card-spacer { flex: 1; }
 .phrase-head button { margin: 0; }
-button.icon-only { display: inline-flex; align-items: center; justify-content: center; width: 2.1rem; height: 2.1rem; padding: 0; margin: 0; }
-button.icon-only svg { width: 1.1rem; height: 1.1rem; }
 .qr-col { display: grid; justify-items: center; gap: var(--space-xs); margin: var(--space-md) 0; }
 .qr-col .hint { margin: 0; text-align: center; }
 .qr-frame { background: var(--qr-bg); padding: var(--space-md); border-radius: var(--radius-sm); border: 1px solid var(--line); }
@@ -505,8 +455,6 @@ button.icon-only svg { width: 1.1rem; height: 1.1rem; }
 .seed-words.legacy { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .seed-words li { display: flex; gap: var(--space-sm); align-items: baseline; padding: var(--space-sm) var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--paper-raised); font-family: var(--font-mono); font-weight: 600; overflow-wrap: anywhere; }
 .seed-words li::before { content: attr(data-n); min-width: 1.3rem; text-align: right; color: var(--muted); font-size: .8rem; }
-.check-line { display: flex; gap: var(--space-sm); align-items: flex-start; font-weight: 600; }
-.check-line input { width: auto; margin: .25rem 0 0; accent-color: var(--accent-text); }
 
 /* Check: each word picked from four. */
 .word-quiz { display: grid; gap: var(--space-lg); margin: var(--space-md) 0; }
@@ -522,8 +470,6 @@ button.icon-only svg { width: 1.1rem; height: 1.1rem; }
 .countdown { font-variant-numeric: tabular-nums; }
 .field-error { display: block; color: var(--error); font-weight: 700; font-size: .88em; margin-top: .15em; }
 .field-ok { display: block; color: var(--success); font-weight: 700; font-size: .88em; margin-top: .15em; }
-.form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--space-md); }
-.form-actions .spacer { flex-grow: 1; }
 .skip-warning { border: 2px solid var(--error); border-radius: var(--radius-md); background: var(--paper-raised); padding: var(--space-xl); margin: 1.2rem 0; }
 .skip-warning h2 { border-bottom: 0; margin-top: var(--space-sm); }
 
@@ -557,18 +503,10 @@ button.icon-only svg { width: 1.1rem; height: 1.1rem; }
 }
 
 /* Wallets (docs/wallets.md): radio cards and a wallet's page. */
-.radio-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: var(--space-md); margin: var(--space-sm) 0; border: 0; padding: 0; }
-.radio-card { display: flex; align-items: center; gap: var(--space-md); margin: 0; padding: var(--space-md) var(--space-lg); border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--paper-raised); font-weight: 400; cursor: pointer; }
-.radio-card:has(input:checked) { border-color: var(--ink); background: var(--tint-highlight); }
-.radio-card input { width: auto; margin: 0; accent-color: var(--accent-text); }
-.radio-card[aria-disabled="true"] { cursor: not-allowed; background: var(--surface-sunken); border-style: dashed; }
-.radio-card[aria-disabled="true"] > *:not(.tag) { opacity: .45; }
 /* The theme as three radio cards, each with a small picture of a page in
    it (`views::account::theme_choice`). The pictures keep their own look
    whatever theme the page is in, so they're drawn from the two roles that
    don't change between themes. */
-.themes { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: var(--space-sm); }
-.themes .radio-card { padding: var(--space-sm) var(--space-md); gap: var(--space-sm); }
 .mini-page { --mini-light: var(--qr-bg); --mini-dark: color-mix(in srgb, var(--media-bg) 82%, var(--qr-bg)); flex: none; display: grid; grid-template-rows: 0.6rem 1fr; width: 2.6rem; height: 1.9rem; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); }
 .mini-page .bar { border-bottom: 2px solid var(--brand-orange); }
 .mini-page.light, .mini-page.light .bar { background: var(--mini-light); }
@@ -691,7 +629,7 @@ button.icon-only svg { width: 1.1rem; height: 1.1rem; }
 .act-slots { display: grid; grid-template-columns: max-content 1.75rem; gap: var(--space-sm); align-items: center; justify-content: end; }
 .act-slot { width: 1.75rem; }
 /* "Send again" as an icon: a 28px target, the row's own height. */
-.row-acts button.icon-only { width: 1.75rem; height: 1.75rem; }
+.row-acts .icon-only { width: 1.75rem; height: 1.75rem; min-height: 0; }
 .wh-deliveries { margin-top: var(--space-xs); }
 .wh-deliveries > .table-scroll { margin-top: var(--space-sm); }
 .mini-h { margin: var(--space-md) 0 var(--space-xs); font-size: 0.75rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }

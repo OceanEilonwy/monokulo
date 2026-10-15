@@ -270,9 +270,7 @@ pub fn deliveries_table(
                                     @if state == DeliveryState::GaveUp {
                                         form method="post" action=(paths.send_again(webhook.id.as_str(), delivery.id)) class="inline-form" {
                                             // An icon, so the row stays narrow enough to show it.
-                                            button type="submit" class="icon-only send-again" aria-label="Send again" title="Send again" {
-                                                (super::wallets::regenerate_icon())
-                                            }
+                                            (ui::IconButton::new("Send again", super::wallets::regenerate_icon()).kind(ui::ButtonType::Submit))
                                         }
                                     } @else {
                                         span class="act-slot" aria-hidden="true" {}

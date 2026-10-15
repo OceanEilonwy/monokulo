@@ -131,8 +131,8 @@ pub fn website_field(view: &SiteView, shown: &str) -> Markup {
                     @if !view.site.is_empty() { " Changing or removing it asks first." }
                 })
                 .render(html! {
-                    input type="text" id="store-site" name="store_site" value=(shown) inputmode="url" autocomplete="url"
-                        placeholder="shop.example" data-saved=(view.site);
+                    (ui::Input::new("store_site").id("store-site").value(shown).autocomplete("url")
+                        .placeholder("shop.example").attr("inputmode", "url").attr("data-saved", view.site.as_str()))
                 }))
         },
     }
@@ -532,7 +532,7 @@ mod tests {
         let v = view(false, None);
         let field = website_field(&v, "shop.example").into_string();
         assert!(
-            field.contains(r#"name="store_site" value="shop.example""#)
+            field.contains(r#"name="store_site" id="store-site" value="shop.example""#)
                 && field.contains(r#"data-saved="shop.example""#),
             "{field}"
         );

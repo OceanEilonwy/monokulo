@@ -574,9 +574,7 @@ fn phrase_head(title: &str, extra: Markup) -> Markup {
     html! {
         div class="phrase-head" {
             h3 { (title) }
-            button type="button" class="icon-only regen" data-regenerate aria-label="Make a different phrase" title="Make a different phrase" {
-                (regenerate_icon())
-            }
+            (ui::IconButton::new("Make a different phrase", regenerate_icon()).attr("data-regenerate", ""))
             (extra)
         }
     }
