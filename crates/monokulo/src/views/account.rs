@@ -379,7 +379,9 @@ pub fn account_page(chrome: &PageChrome, data: &AccountViewModel) -> Markup {
         // components (loaded by every page) count it as sent.
         (script("account.js", Load::Now))
     };
-    super::Page::new(format!("{} - Account - Monokulo", tab.label()), header).class("settings-page").render(chrome, body)
+    super::Page::new(format!("{} - Account - Monokulo", tab.label()), header)
+        .class("settings-page")
+        .render(chrome, body)
 }
 
 /// Without JavaScript, an email change answers with this page first: the
@@ -391,7 +393,8 @@ pub fn email_confirm_page(
     submitted: &Profile,
     error: Option<&str>,
 ) -> Markup {
-    let header = ui::PageHeader::new("Log in with a new email?").crumbs(super::crumbs(&[("/account", "Account")]));
+    let header = ui::PageHeader::new("Log in with a new email?")
+        .crumbs(super::crumbs(&[("/account", "Account")]));
     let body = html! {
         @if let Some(error) = error {
             (ui::Alert::new(error, ui::Tone::Error))
@@ -421,7 +424,9 @@ pub fn email_confirm_page(
             ])))
         }
     };
-    super::Page::new("Log in with a new email? - Account - Monokulo", header).class("settings-page email-confirm-page").render(chrome, body)
+    super::Page::new("Log in with a new email? - Account - Monokulo", header)
+        .class("settings-page email-confirm-page")
+        .render(chrome, body)
 }
 
 #[cfg(test)]
@@ -620,7 +625,9 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"name="current_password" id="current-password" autocomplete="current-password">"#),
+            html.contains(
+                r#"name="current_password" id="current-password" autocomplete="current-password">"#
+            ),
             "{html}"
         );
         assert!(
@@ -660,7 +667,10 @@ mod tests {
         ] {
             assert!(html.contains(hidden), "{hidden} in {html}");
         }
-        assert!(html.contains(r#"name="confirm_email" id="email-again" autocomplete="off" required"#), "{html}");
+        assert!(
+            html.contains(r#"name="confirm_email" id="email-again" autocomplete="off" required"#),
+            "{html}"
+        );
         assert!(
             html.contains(r#"<p class="error" role="alert">That isn't the same email.</p>"#),
             "{html}"

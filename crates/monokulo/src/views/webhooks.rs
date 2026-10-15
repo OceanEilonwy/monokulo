@@ -675,15 +675,20 @@ pub fn detail_page(
 ) -> Markup {
     let store_id = webhook.store_id.as_str();
     let (header, body) = detail_content(store_id, &chrome.clock, max_attempts, webhook, delivery)
-        .page(super::store_crumbs(store_id, store_name, false), ui::DialogSize::Wide);
+        .page(
+            super::store_crumbs(store_id, store_name, false),
+            ui::DialogSize::Wide,
+        );
     page(store_name, "Webhook delivery", header).render(chrome, body)
 }
 
 /// `GET …/settings/webhooks/{webhook}/delete`: the question as a page.
 pub fn delete_page(chrome: &PageChrome, store_name: &str, entry: &WebhookEntry) -> Markup {
     let store_id = entry.webhook.store_id.as_str();
-    let (header, body) = delete_content(store_id, entry)
-        .page(super::store_crumbs(store_id, store_name, false), ui::DialogSize::Confirm);
+    let (header, body) = delete_content(store_id, entry).page(
+        super::store_crumbs(store_id, store_name, false),
+        ui::DialogSize::Confirm,
+    );
     page(store_name, "Delete webhook", header).render(chrome, body)
 }
 
@@ -697,7 +702,8 @@ pub fn all_page(
 ) -> Markup {
     let store_id = entry.webhook.store_id.as_str();
     let paths = Paths::new(store_id);
-    let header = ui::PageHeader::new("Deliveries").crumbs(super::store_crumbs(store_id, store_name, false));
+    let header =
+        ui::PageHeader::new("Deliveries").crumbs(super::store_crumbs(store_id, store_name, false));
     let body = html! {
         div class="deliveries-page" {
             p { code class="wh-url" { (entry.webhook.url) } }

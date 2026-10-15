@@ -201,9 +201,15 @@ pub fn name_check(name: &str, problem: Option<&str>) -> Markup {
 /// `wallet-setup.js` turns it on.
 pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) -> Markup {
     let header = match flow {
-        Flow::Setup(setup) => ui::PageHeader::new(html! { "Where should the money for " (setup.store_name) " go?" })
-            .crumbs(super::crumbs(&[(&format!("/setup?{}", setup.query()), "Store")])),
-        Flow::Account => ui::PageHeader::new("Add a wallet").crumbs(super::crumbs(&[("/account?tab=wallets", "Wallets")])),
+        Flow::Setup(setup) => {
+            ui::PageHeader::new(html! { "Where should the money for " (setup.store_name) " go?" })
+                .crumbs(super::crumbs(&[(
+                    &format!("/setup?{}", setup.query()),
+                    "Store",
+                )]))
+        }
+        Flow::Account => ui::PageHeader::new("Add a wallet")
+            .crumbs(super::crumbs(&[("/account?tab=wallets", "Wallets")])),
     }
     .progress(flow.steps(WalletPath::New, 0));
     let body = html! {
@@ -337,7 +343,9 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
         Flow::Setup(_) => "Choose a wallet - Monokulo",
         Flow::Account => "Add a wallet - Monokulo",
     };
-    super::Page::new(title, header).class("wallet-choice").render(chrome, body)
+    super::Page::new(title, header)
+        .class("wallet-choice")
+        .render(chrome, body)
 }
 
 // -- Bringing your own wallet ----------------------------------------------
@@ -445,7 +453,8 @@ pub fn create_page(chrome: &PageChrome, flow: Flow<'_>, data: &CreateViewModel) 
         .map(|h| h.to_string())
         .unwrap_or_default();
     let back = flow.choice_href(&data.name, &data.network);
-    let header = ui::PageHeader::new("Create a new wallet").crumbs(super::crumbs(&[(&back, "Wallet kind")]));
+    let header =
+        ui::PageHeader::new("Create a new wallet").crumbs(super::crumbs(&[(&back, "Wallet kind")]));
     let body = html! {
         noscript {
             (ui::Alert::new(html! {
@@ -757,21 +766,23 @@ fn wallets_table(wallets: &[&WalletListItem], with_network: bool) -> Markup {
         let network = with_network.then(|| {
             ui::Slot::from(ui::Cell::new(super::network_icon(&w.network)).part(ui::CellPart::Meta))
         });
-        ui::Row::new(ui::Slot::many(network.into_iter().chain([
-            ui::Cell::new(html! { a href=(format!("/account/wallets/{}", w.id)) { (w.name) } })
-                .part(ui::CellPart::Title)
+        ui::Row::new(ui::Slot::many(
+            network.into_iter().chain([
+                ui::Cell::new(html! { a href=(format!("/account/wallets/{}", w.id)) { (w.name) } })
+                    .part(ui::CellPart::Title)
+                    .into(),
+                ui::Cell::new(w.kind).part(ui::CellPart::When).into(),
+                ui::Cell::new(html! { code { (super::short_address(&w.address)) } })
+                    .part(ui::CellPart::Detail)
+                    .into(),
+                ui::Cell::new(html! {
+                    (w.stores)
+                    span class="card-unit" { @if w.stores == 1 { " store" } @else { " stores" } }
+                })
+                .part(ui::CellPart::Status)
                 .into(),
-            ui::Cell::new(w.kind).part(ui::CellPart::When).into(),
-            ui::Cell::new(html! { code { (super::short_address(&w.address)) } })
-                .part(ui::CellPart::Detail)
-                .into(),
-            ui::Cell::new(html! {
-                (w.stores)
-                span class="card-unit" { @if w.stores == 1 { " store" } @else { " stores" } }
-            })
-            .part(ui::CellPart::Status)
-            .into(),
-        ])))
+            ]),
+        ))
         .into()
     });
     html! {
@@ -994,7 +1005,9 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
             (ui::Dialog::new("retire-dialog", "retire-title", retire_content(w, &data.retire, &data.stores, None).in_dialog()))
         }
     };
-    super::Page::new(format!("{} - Wallets - Monokulo", w.name), header).class("wallet-page").render(chrome, body)
+    super::Page::new(format!("{} - Wallets - Monokulo", w.name), header)
+        .class("wallet-page")
+        .render(chrome, body)
 }
 
 fn events_count(n: usize) -> String {
@@ -1190,27 +1203,39 @@ fn retire_content(
             orders,
             until,
         } => vec![
-            check(*in_use == 0, "No store takes payments into it", html! {
-                @if stores.is_empty() {
-                    (if *in_use == 1 { "A store does".to_owned() } else { format!("{in_use} stores do") })
-                }
-                @for store in stores {
-                    span class="fix-line" {
-                        (store.name) " does · "
-                        a href=(change_wallet_link(&store.id)) { "change its wallet" }
+            check(
+                *in_use == 0,
+                "No store takes payments into it",
+                html! {
+                    @if stores.is_empty() {
+                        (if *in_use == 1 { "A store does".to_owned() } else { format!("{in_use} stores do") })
                     }
-                }
-            }),
-            check(*orders == 0, "No order on it can still be paid", html! {
-                @match until {
-                    Some(until) => { "until about " (until) }
-                    None => { (if *orders == 1 { "1 order can".to_owned() } else { format!("{orders} orders can") }) }
-                }
-            }),
+                    @for store in stores {
+                        span class="fix-line" {
+                            (store.name) " does · "
+                            a href=(change_wallet_link(&store.id)) { "change its wallet" }
+                        }
+                    }
+                },
+            ),
+            check(
+                *orders == 0,
+                "No order on it can still be paid",
+                html! {
+                    @match until {
+                        Some(until) => { "until about " (until) }
+                        None => { (if *orders == 1 { "1 order can".to_owned() } else { format!("{orders} orders can") }) }
+                    }
+                },
+            ),
         ],
-        RetireState::Unknown => vec![check(false, "Monokulo can't check right now", html! {
-            a href=(action) { "try again" }
-        })],
+        RetireState::Unknown => vec![check(
+            false,
+            "Monokulo can't check right now",
+            html! {
+                a href=(action) { "try again" }
+            },
+        )],
         RetireState::Retired => vec![check(true, "Already retired", html! {})],
     };
     let body = html! {
@@ -1247,13 +1272,22 @@ fn retire_content(
             ])))
         }
     };
-    DialogContent { title_id: "retire-title".into(), title, aside: None, body }
+    DialogContent {
+        title_id: "retire-title".into(),
+        title,
+        aside: None,
+        body,
+    }
 }
 
 /// One row of the retire checklist: ✓, or ✕ with its fix beside it.
 fn check(ok: bool, what: &str, fix: Markup) -> ui::Check {
     ui::Check {
-        mark: if ok { ui::CheckMark::Ok } else { ui::CheckMark::No },
+        mark: if ok {
+            ui::CheckMark::Ok
+        } else {
+            ui::CheckMark::No
+        },
         what: what.into(),
         fix: (!ok).then(|| fix.into()),
     }
@@ -1295,7 +1329,12 @@ fn restore_content(
             ])))
         }
     };
-    DialogContent { title_id: "restore-title".into(), title, aside: None, body }
+    DialogContent {
+        title_id: "restore-title".into(),
+        title,
+        aside: None,
+        body,
+    }
 }
 
 /// A page holding a wallet dialog's content, for a browser without
@@ -1306,7 +1345,10 @@ fn dialog_page(
     title: &str,
     content: DialogContent,
 ) -> Markup {
-    let crumbs = super::crumbs(&[("/account?tab=wallets", "Wallets"), (&wallet_path(w), &w.name)]);
+    let crumbs = super::crumbs(&[
+        ("/account?tab=wallets", "Wallets"),
+        (&wallet_path(w), &w.name),
+    ]);
     let (header, body) = content.page(crumbs, ui::DialogSize::Confirm);
     super::Page::new(format!("{title} {} - Wallets - Monokulo", w.name), header)
         .class("wallet-page")
@@ -1321,12 +1363,7 @@ pub fn retire_page(
     stores: &[WalletStore],
     error: Option<&str>,
 ) -> Markup {
-    dialog_page(
-        chrome,
-        w,
-        "Retire",
-        retire_content(w, state, stores, error),
-    )
+    dialog_page(chrome, w, "Retire", retire_content(w, state, stores, error))
 }
 
 /// `GET /account/wallets/{id}/restore`: the restore dialog as a page.
@@ -1336,12 +1373,7 @@ pub fn restore_page(
     restore: &RestoreForm,
     error: Option<&str>,
 ) -> Markup {
-    dialog_page(
-        chrome,
-        w,
-        "Restore",
-        restore_content(w, restore, error),
-    )
+    dialog_page(chrome, w, "Restore", restore_content(w, restore, error))
 }
 
 /// After a wallet in a picker: how many stores use it.
@@ -1414,7 +1446,11 @@ mod tests {
             "{html}"
         );
         // The one orange button.
-        assert_eq!(html.matches(r#"data-variant="primary""#).count(), 1, "{html}");
+        assert_eq!(
+            html.matches(r#"data-variant="primary""#).count(),
+            1,
+            "{html}"
+        );
     }
 
     #[test]
@@ -1443,8 +1479,14 @@ mod tests {
             fold.contains(r#"<td class="card-meta"><span class="tag-network is-test" data-size="icon" title="Stagenet">"#),
             "{fold}"
         );
-        assert!(fold.contains(r#"<span class="tag-network-name">Stagenet</span>"#), "{fold}");
-        assert!(fold.contains(r#"<span class="tag-network-name">Testnet</span>"#), "{fold}");
+        assert!(
+            fold.contains(r#"<span class="tag-network-name">Stagenet</span>"#),
+            "{fold}"
+        );
+        assert!(
+            fold.contains(r#"<span class="tag-network-name">Testnet</span>"#),
+            "{fold}"
+        );
         assert!(!html.contains("tag-slow"), "{html}");
     }
 
@@ -1900,13 +1942,18 @@ mod tests {
             until: None,
         };
         let page = retire_page(&chrome, &w, &state, &[], Some("Type it exactly.")).into_string();
-        assert!(page.contains("<h1 id=\"retire-title\">Retire \u{201c}Shop takings\u{201d}?</h1>"), "{page}");
+        assert!(
+            page.contains("<h1 id=\"retire-title\">Retire \u{201c}Shop takings\u{201d}?</h1>"),
+            "{page}"
+        );
         assert!(
             page.contains(r#"<p class="error" role="alert">Type it exactly.</p>"#),
             "{page}"
         );
         assert!(!page.contains("dialog-x"), "{page}");
-        let content = retire_content(&w, &state, &[], None).in_dialog().into_string();
+        let content = retire_content(&w, &state, &[], None)
+            .in_dialog()
+            .into_string();
         let after_title = |html: &str| html[html.find("<p>Retiring").unwrap()..].to_owned();
         let plain = retire_page(&chrome, &w, &state, &[], None).into_string();
         assert!(
@@ -1919,7 +1966,10 @@ mod tests {
             snp_entry: None,
         };
         let page = restore_page(&chrome, &w, &restore, None).into_string();
-        assert!(page.contains("<h1 id=\"restore-title\">Restore \u{201c}Shop takings\u{201d}</h1>"), "{page}");
+        assert!(
+            page.contains("<h1 id=\"restore-title\">Restore \u{201c}Shop takings\u{201d}</h1>"),
+            "{page}"
+        );
         assert!(
             page.contains(
                 r#"<form method="post" action="/account/wallets/w_Shop takings/restore">"#

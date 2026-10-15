@@ -35,14 +35,20 @@ pub(super) fn panel_examples() -> Vec<(&'static str, Panel)> {
         .look(PanelLook::Tile)
     };
     vec![
-        ("A tile", tile("Watch-only", "Each store gives Monokulo its view key, never its spend key.")),
         (
-        "A part of a page",
-        Panel::new(Slot::many([
-            Slot::from(Heading::new("Webhook").level(HeadingLevel::H3)),
-            Slot::from(Hint::new("Monokulo posts each order's changes here.")),
-        ])),
-    ),
+            "A tile",
+            tile(
+                "Watch-only",
+                "Each store gives Monokulo its view key, never its spend key.",
+            ),
+        ),
+        (
+            "A part of a page",
+            Panel::new(Slot::many([
+                Slot::from(Heading::new("Webhook").level(HeadingLevel::H3)),
+                Slot::from(Hint::new("Monokulo posts each order's changes here.")),
+            ])),
+        ),
     ]
 }
 
@@ -140,7 +146,10 @@ component! {
 
 pub(super) fn hint_examples() -> Vec<(&'static str, Hint)> {
     vec![
-        ("Under a field", Hint::new("Shown to customers on the payment page.")),
+        (
+            "Under a field",
+            Hint::new("Shown to customers on the payment page."),
+        ),
         ("In a line", Hint::new("(optional)").inline(true)),
     ]
 }
@@ -278,22 +287,47 @@ pub(super) fn tag_examples() -> Vec<(&'static str, Tag)> {
         ("Plain", Tag::new("Default")),
         ("Healthy", Tag::new("Healthy").tone(TagTone::Ok)),
         ("Down", Tag::new("Down").tone(TagTone::Error)),
-        ("Not checked", Tag::new("Not checked").tone(TagTone::Unknown)),
+        (
+            "Not checked",
+            Tag::new("Not checked").tone(TagTone::Unknown),
+        ),
         ("Syncing", Tag::new("Syncing").tone(TagTone::Syncing)),
         ("Slow", Tag::new("Slow").tone(TagTone::Slow)),
-        ("Muted, with an icon", Tag::new("Options file").tone(TagTone::Muted).icon(Slot::from("⚙"))),
-        ("Dashed: a default", Tag::new("Default").tone(TagTone::Dashed)),
+        (
+            "Muted, with an icon",
+            Tag::new("Options file")
+                .tone(TagTone::Muted)
+                .icon(Slot::from("⚙")),
+        ),
+        (
+            "Dashed: a default",
+            Tag::new("Default").tone(TagTone::Dashed),
+        ),
         (
             "An order waiting, shorter on a phone",
             Tag::new("Waiting for payment")
                 .state(OrderState::Pending)
                 .short("Waiting"),
         ),
-        ("An order seen", Tag::new("Payment seen, unconfirmed").state(OrderState::Unconfirmed).short("Seen")),
-        ("An order confirming", Tag::new("Confirming").state(OrderState::Confirming)),
+        (
+            "An order seen",
+            Tag::new("Payment seen, unconfirmed")
+                .state(OrderState::Unconfirmed)
+                .short("Seen"),
+        ),
+        (
+            "An order confirming",
+            Tag::new("Confirming").state(OrderState::Confirming),
+        ),
         ("An order paid", Tag::new("Paid").state(OrderState::Paid)),
-        ("An order expired", Tag::new("Expired").state(OrderState::Expired)),
-        ("An order cancelled", Tag::new("Cancelled").state(OrderState::Cancelled)),
+        (
+            "An order expired",
+            Tag::new("Expired").state(OrderState::Expired),
+        ),
+        (
+            "An order cancelled",
+            Tag::new("Cancelled").state(OrderState::Cancelled),
+        ),
     ]
 }
 
@@ -333,8 +367,14 @@ pub(super) fn network_badge_examples() -> Vec<(&'static str, NetworkBadge)> {
     vec![
         ("Mainnet", NetworkBadge::new("Mainnet").main(true)),
         ("A test network", NetworkBadge::new("Stagenet")),
-        ("Mainnet, icon only", NetworkBadge::new("Mainnet").main(true).icon_only(true)),
-        ("A test network, icon only", NetworkBadge::new("Stagenet").icon_only(true)),
+        (
+            "Mainnet, icon only",
+            NetworkBadge::new("Mainnet").main(true).icon_only(true),
+        ),
+        (
+            "A test network, icon only",
+            NetworkBadge::new("Stagenet").icon_only(true),
+        ),
     ]
 }
 
@@ -427,7 +467,10 @@ pub(super) fn disclosure_examples() -> Vec<(&'static str, Disclosure)> {
     vec![
         (
             "Plain",
-            Disclosure::new("How it's checked", "Every block is checked against two nodes."),
+            Disclosure::new(
+                "How it's checked",
+                "Every block is checked against two nodes.",
+            ),
         ),
         (
             "Boxed help",
@@ -436,16 +479,28 @@ pub(super) fn disclosure_examples() -> Vec<(&'static str, Disclosure)> {
         ),
         (
             "More options",
-            Disclosure::new("More options", "Leave on mainnet unless this is a test wallet.")
-                .look(DisclosureLook::MoreOptions),
+            Disclosure::new(
+                "More options",
+                "Leave on mainnet unless this is a test wallet.",
+            )
+            .look(DisclosureLook::MoreOptions),
         ),
         (
             "Compact",
             Disclosure::new(
-                Slot::many([Slot::from(Tag::new("Scanning").tone(TagTone::Syncing)), Slot::from(" 1 block behind")]),
+                Slot::many([
+                    Slot::from(Tag::new("Scanning").tone(TagTone::Syncing)),
+                    Slot::from(" 1 block behind"),
+                ]),
                 Facts::new(vec![
-                    Fact { term: "Progress".into(), value: "1 block behind".into() },
-                    Fact { term: "Requests".into(), value: "None yet".into() },
+                    Fact {
+                        term: "Progress".into(),
+                        value: "1 block behind".into(),
+                    },
+                    Fact {
+                        term: "Requests".into(),
+                        value: "None yet".into(),
+                    },
                 ]),
             )
             .look(DisclosureLook::Compact)
@@ -453,8 +508,11 @@ pub(super) fn disclosure_examples() -> Vec<(&'static str, Disclosure)> {
         ),
         (
             "A row",
-            Disclosure::new("Primary · node.example.com:18081", "The node's address, and whether it uses TLS.")
-                .look(DisclosureLook::Row),
+            Disclosure::new(
+                "Primary · node.example.com:18081",
+                "The node's address, and whether it uses TLS.",
+            )
+            .look(DisclosureLook::Row),
         ),
     ]
 }
@@ -523,8 +581,16 @@ pub(super) fn checks_examples() -> Vec<(&'static str, Checks)> {
         "Before removing a website",
         Checks::new(vec![
             check(CheckMark::Ok, "No plugin is connected to it", None),
-            check(CheckMark::No, "No order from shop.example.com can still be paid", Some("2 can be paid until about 14:20")),
-            check(CheckMark::Then, "Checkouts embedded on shop.example.com stop loading", None),
+            check(
+                CheckMark::No,
+                "No order from shop.example.com can still be paid",
+                Some("2 can be paid until about 14:20"),
+            ),
+            check(
+                CheckMark::Then,
+                "Checkouts embedded on shop.example.com stop loading",
+                None,
+            ),
         ]),
     )]
 }
@@ -635,8 +701,18 @@ pub(super) fn table_examples() -> Vec<(&'static str, Table)> {
         (
             "Orders, cards on a phone",
             Table::new(Slot::many([
-                row("Coffee", Tag::new("Paid").state(OrderState::Paid), "0.02 XMR"),
-                row("Tea", Tag::new("Waiting for payment").state(OrderState::Pending).short("Waiting"), "0.01 XMR"),
+                row(
+                    "Coffee",
+                    Tag::new("Paid").state(OrderState::Paid),
+                    "0.02 XMR",
+                ),
+                row(
+                    "Tea",
+                    Tag::new("Waiting for payment")
+                        .state(OrderState::Pending)
+                        .short("Waiting"),
+                    "0.01 XMR",
+                ),
             ]))
             .head(head)
             .look(TableLook::Cards),
@@ -644,8 +720,15 @@ pub(super) fn table_examples() -> Vec<(&'static str, Table)> {
         (
             "Facts",
             Table::new(Slot::many([
-                Row::new(Slot::many([Cell::new("Network").header(true).into(), Slot::from(Cell::new("Mainnet"))])).into(),
-                Slot::from(Row::new(Slot::many([Cell::new("Height").header(true).into(), Slot::from(Cell::new("3,412,001"))]))),
+                Row::new(Slot::many([
+                    Cell::new("Network").header(true).into(),
+                    Slot::from(Cell::new("Mainnet")),
+                ]))
+                .into(),
+                Slot::from(Row::new(Slot::many([
+                    Cell::new("Height").header(true).into(),
+                    Slot::from(Cell::new("3,412,001")),
+                ]))),
             ]))
             .look(TableLook::Facts),
         ),
@@ -846,9 +929,17 @@ pub(super) fn card_examples() -> Vec<(&'static str, Card)> {
         "An order",
         Card::new("Table 4")
             .subtitle("Created 14:02")
-            .status(Tag::new("Waiting for payment").state(OrderState::Pending).short("Waiting"))
+            .status(
+                Tag::new("Waiting for payment")
+                    .state(OrderState::Pending)
+                    .short("Waiting"),
+            )
             .amount("0.42 XMR")
             .detail("Expires in 52 min")
-            .action(crate::LinkButton::new("Open", "#component-card").variant(crate::ButtonVariant::Quiet).size(crate::ControlSize::Compact)),
+            .action(
+                crate::LinkButton::new("Open", "#component-card")
+                    .variant(crate::ButtonVariant::Quiet)
+                    .size(crate::ControlSize::Compact),
+            ),
     )]
 }

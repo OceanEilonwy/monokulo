@@ -52,7 +52,16 @@ fn islands() -> Asset {
             let vite = root().join("node_modules/vite/bin/vite.js");
             let status = Command::new("node")
                 .arg(&vite)
-                .args(["build", "--config", "vite.islands.config.js", "--mode", "production", "--logLevel", "warn", "--outDir"])
+                .args([
+                    "build",
+                    "--config",
+                    "vite.islands.config.js",
+                    "--mode",
+                    "production",
+                    "--logLevel",
+                    "warn",
+                    "--outDir",
+                ])
                 .arg(&out)
                 .arg("--emptyOutDir")
                 .current_dir(&ui)
@@ -67,7 +76,9 @@ fn islands() -> Asset {
             let _ = fs::remove_dir(&lock);
         }
     }
-    let bytes: &'static [u8] = fs::read(&file).expect("the islands build wrote ui-islands.js").leak();
+    let bytes: &'static [u8] = fs::read(&file)
+        .expect("the islands build wrote ui-islands.js")
+        .leak();
     let hex = static_assets::hex16(static_assets::fnv1a64(bytes));
     Asset {
         name: "ui-islands.js",

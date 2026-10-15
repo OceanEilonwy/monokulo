@@ -206,11 +206,12 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
     // without script), Live streams after the newest line shown.
     let head = &html[html
         .find(r#"<header class="mk-page-header">"#)
-        .expect("a title bar")
-        ..html.find(r#"</header>"#).unwrap()];
+        .expect("a title bar")..html.find(r#"</header>"#).unwrap()];
     assert!(
         head.contains("<h1>Logs</h1>")
-            && head.contains(r#"<button class="mk-btn" type="submit" data-size="compact" form="log-search">"#)
+            && head.contains(
+                r#"<button class="mk-btn" type="submit" data-size="compact" form="log-search">"#
+            )
             && head.contains("<span>Refresh</span>"),
         "{head}"
     );
@@ -259,7 +260,8 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
     );
     assert!(
         html.contains(r#"<dialog id="query-help""#)
-            && html.contains(r#"<button class="mk-btn" type="button" data-chip="">order.id</button>"#),
+            && html
+                .contains(r#"<button class="mk-btn" type="button" data-chip="">order.id</button>"#),
         "property names listed in the help: {html}"
     );
     let (status, _, syntax) = s.get("/dashboard/admin/logs/syntax", false).await;

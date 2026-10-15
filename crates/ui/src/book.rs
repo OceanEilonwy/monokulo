@@ -341,7 +341,11 @@ fn rust_value(ty: &Ty, value: &Value, depth: usize) -> String {
                         } else {
                             v
                         };
-                        if optional { format!("Some({v})") } else { v }
+                        if optional {
+                            format!("Some({v})")
+                        } else {
+                            v
+                        }
                     };
                     format!("{name}: {v}")
                 })

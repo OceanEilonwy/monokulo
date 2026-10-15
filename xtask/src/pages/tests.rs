@@ -681,7 +681,10 @@ fn the_tabs_read_in_the_order_the_report_is_read() {
         &f.path("live"),
     ]);
     let page = f.page("index.html");
-    let nav = page.split("<nav class=\"mk-tabs\" aria-label=\"Report sections\"").nth(1).unwrap();
+    let nav = page
+        .split("<nav class=\"mk-tabs\" aria-label=\"Report sections\"")
+        .nth(1)
+        .unwrap();
     let nav = nav.split("</nav>").next().unwrap();
     let files: Vec<&str> = nav
         .split("href=\"")

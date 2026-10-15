@@ -129,7 +129,11 @@ fn embed_warnings(connection_id: &str, warnings: &EmbedWarnings) -> Markup {
 /// A store's health as a tag: `"ok"` or `"error"`
 /// (`http::orders::health_of_tenant_lookup`), in words.
 pub fn health_tag(health: &str, label: &str) -> ui::Tag {
-    let tone = if health == "ok" { ui::TagTone::Ok } else { ui::TagTone::Error };
+    let tone = if health == "ok" {
+        ui::TagTone::Ok
+    } else {
+        ui::TagTone::Error
+    };
     ui::Tag::new(label).tone(tone)
 }
 
@@ -177,7 +181,9 @@ fn new_order_icon() -> Markup {
 
 pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
     let header = match &data.store {
-        Some(store) => ui::PageHeader::new(store.display_name.as_str()).crumbs(super::crumbs(&[("/", "Home")])),
+        Some(store) => {
+            ui::PageHeader::new(store.display_name.as_str()).crumbs(super::crumbs(&[("/", "Home")]))
+        }
         None => ui::PageHeader::new("Store not found"),
     };
     let body = html! {
@@ -471,7 +477,12 @@ mod tests {
         );
         // The POS needs JavaScript: its tile is a link only with it.
         assert!(html.contains(r#"<a class="mk-launch-tile" href="/dashboard/stores/conn_1/pos" data-only="script">"#), "{html}");
-        assert!(html.contains(r#"<a class="mk-launch-tile" aria-disabled="true" data-only="no-script">"#), "{html}");
+        assert!(
+            html.contains(
+                r#"<a class="mk-launch-tile" aria-disabled="true" data-only="no-script">"#
+            ),
+            "{html}"
+        );
         assert!(html.contains("Requires JavaScript"));
         assert!(html.contains(r#"href="/dashboard/stores/conn_1/orders/new""#));
     }

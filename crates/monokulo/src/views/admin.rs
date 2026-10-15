@@ -1772,7 +1772,10 @@ fn network_card(
         format!("Used by {} stores", network.tenant_count)
     };
     let blank = NodeRowView {
-        row: crate::admin_nodes::NodeRow { self_signed: true, ..Default::default() },
+        row: crate::admin_nodes::NodeRow {
+            self_signed: true,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let rows = html! {
@@ -1985,7 +1988,11 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
         (node_clear_dialog())
         (script("admin-settings.js", Load::Now))
     };
-    super::Page::new(format!("{} - Admin settings - Monokulo", data.tab.label()), header).render(chrome, body)
+    super::Page::new(
+        format!("{} - Admin settings - Monokulo", data.tab.label()),
+        header,
+    )
+    .render(chrome, body)
 }
 
 #[cfg(test)]
@@ -2229,7 +2236,10 @@ mod tests {
 
     #[test]
     fn a_tab_is_found_by_its_id_and_anything_else_is_general() {
-        for tab in SettingsTab::ALL.into_iter().filter(|tab| *tab != SettingsTab::Files) {
+        for tab in SettingsTab::ALL
+            .into_iter()
+            .filter(|tab| *tab != SettingsTab::Files)
+        {
             assert_eq!(SettingsTab::from_id(Some(tab.id())), tab);
         }
         assert_eq!(SettingsTab::from_id(None), SettingsTab::General);
@@ -2477,7 +2487,10 @@ mod tests {
 
     #[test]
     fn each_tab_shows_only_its_own_settings() {
-        for tab in SettingsTab::ALL.into_iter().filter(|tab| *tab != SettingsTab::Files) {
+        for tab in SettingsTab::ALL
+            .into_iter()
+            .filter(|tab| *tab != SettingsTab::Files)
+        {
             let html = page(&full_view(tab));
             for (key, owner, placed, _) in PLACEMENTS
                 .iter()
@@ -2606,7 +2619,10 @@ mod tests {
 
     #[test]
     fn banners_are_above_the_tab_bar_on_every_tab() {
-        for tab in SettingsTab::ALL.into_iter().filter(|tab| *tab != SettingsTab::Files) {
+        for tab in SettingsTab::ALL
+            .into_iter()
+            .filter(|tab| *tab != SettingsTab::Files)
+        {
             let data = AdminSettingsViewModel {
                 notices: vec![
                     Notice::Error("Something is broken.".into()),

@@ -51,10 +51,24 @@ component! {
 
 pub(super) fn field_note_examples() -> Vec<(&'static str, FieldNote)> {
     vec![
-        ("Help", FieldNote::new("The node's host and port, like node.example.com:18089.")),
-        ("A problem", FieldNote::new("Add the port, like node.example.com:18081.").tone(NoteTone::Problem)),
-        ("Pending", FieldNote::new("Saved - restart needed for it to take effect.").tone(NoteTone::Pending)),
-        ("Fine, said as it changes", FieldNote::new("✓ Free to use.").tone(NoteTone::Fine).live(true)),
+        (
+            "Help",
+            FieldNote::new("The node's host and port, like node.example.com:18089."),
+        ),
+        (
+            "A problem",
+            FieldNote::new("Add the port, like node.example.com:18081.").tone(NoteTone::Problem),
+        ),
+        (
+            "Pending",
+            FieldNote::new("Saved - restart needed for it to take effect.").tone(NoteTone::Pending),
+        ),
+        (
+            "Fine, said as it changes",
+            FieldNote::new("✓ Free to use.")
+                .tone(NoteTone::Fine)
+                .live(true),
+        ),
     ]
 }
 
@@ -92,8 +106,14 @@ component! {
 
 pub(super) fn locked_value_examples() -> Vec<(&'static str, LockedValue)> {
     vec![
-        ("Set elsewhere", LockedValue::new("https://pay.example.com").id("book-locked")),
-        ("A secret", LockedValue::new("").id("book-locked-secret").secret(true)),
+        (
+            "Set elsewhere",
+            LockedValue::new("https://pay.example.com").id("book-locked"),
+        ),
+        (
+            "A secret",
+            LockedValue::new("").id("book-locked-secret").secret(true),
+        ),
     ]
 }
 
@@ -279,7 +299,13 @@ pub(super) fn input_examples() -> Vec<(&'static str, Input)> {
                 .label("Confirmations")
                 .invalid(true),
         ),
-        ("Compact", Input::new("q").kind(InputType::Search).label("Search").size(ControlSize::Compact)),
+        (
+            "Compact",
+            Input::new("q")
+                .kind(InputType::Search)
+                .label("Search")
+                .size(ControlSize::Compact),
+        ),
         (
             "With actions inside",
             Input::new("refund_address")
@@ -326,7 +352,9 @@ component! {
 pub(super) fn text_area_examples() -> Vec<(&'static str, TextArea)> {
     vec![(
         "A note",
-        TextArea::new("note").label("Note").placeholder("For the customer's receipt"),
+        TextArea::new("note")
+            .label("Note")
+            .placeholder("For the customer's receipt"),
     )]
 }
 
@@ -372,8 +400,20 @@ pub(super) fn checkbox_examples() -> Vec<(&'static str, Checkbox)> {
             Checkbox::new()
                 .text("I've written all 16 words down, in order, and put them somewhere safe."),
         ),
-        ("Ticked", Checkbox::new().text("Use TLS").name("ssl").value("on").checked(true)),
-        ("In a table", Checkbox::new().name("use_node").label("Use node.example.com")),
+        (
+            "Ticked",
+            Checkbox::new()
+                .text("Use TLS")
+                .name("ssl")
+                .value("on")
+                .checked(true),
+        ),
+        (
+            "In a table",
+            Checkbox::new()
+                .name("use_node")
+                .label("Use node.example.com"),
+        ),
     ]
 }
 
@@ -387,7 +427,11 @@ pub enum Saved {
 
 impl From<bool> for Saved {
     fn from(on: bool) -> Self {
-        if on { Saved::On } else { Saved::Off }
+        if on {
+            Saved::On
+        } else {
+            Saved::Off
+        }
     }
 }
 
@@ -426,7 +470,10 @@ pub(super) fn switch_examples() -> Vec<(&'static str, Switch)> {
     vec![
         ("On", Switch::new("book.accept", "book-switch-on").on(true)),
         ("Off", Switch::new("book.notify", "book-switch-off")),
-        ("Disabled", Switch::new("book.locked", "book-switch-disabled").disabled(true)),
+        (
+            "Disabled",
+            Switch::new("book.locked", "book-switch-disabled").disabled(true),
+        ),
     ]
 }
 
@@ -478,7 +525,11 @@ pub(super) fn radio_cards_examples() -> Vec<(&'static str, RadioCards)> {
         "A theme",
         RadioCards::new(
             "book_theme",
-            vec![card("system", "System", true), card("light", "Light", false), card("dark", "Dark", false)],
+            vec![
+                card("system", "System", true),
+                card("light", "Light", false),
+                card("dark", "Dark", false),
+            ],
         )
         .compact(true),
     )]
@@ -506,10 +557,7 @@ component! {
 }
 
 pub(super) fn icon_button_examples() -> Vec<(&'static str, IconButton)> {
-    vec![(
-        "Send again",
-        IconButton::new("Send again", "↻"),
-    )]
+    vec![("Send again", IconButton::new("Send again", "↻"))]
 }
 
 component! {
@@ -531,7 +579,10 @@ component! {
 }
 
 pub(super) fn icon_link_examples() -> Vec<(&'static str, IconLink)> {
-    vec![("Refresh", IconLink::new("Refresh page", "#component-icon-link", "↻"))]
+    vec![(
+        "Refresh",
+        IconLink::new("Refresh page", "#component-icon-link", "↻"),
+    )]
 }
 
 component! {
@@ -550,7 +601,10 @@ pub(super) fn form_actions_examples() -> Vec<(&'static str, FormActions)> {
     vec![(
         "Save and Cancel",
         FormActions::new(crate::Slot::many([
-            crate::Button::new("Add webhook").variant(crate::ButtonVariant::Primary).kind(ButtonType::Submit).into(),
+            crate::Button::new("Add webhook")
+                .variant(crate::ButtonVariant::Primary)
+                .kind(ButtonType::Submit)
+                .into(),
             crate::Slot::from(crate::LinkButton::new("Cancel", "#component-form-actions")),
         ])),
     )]

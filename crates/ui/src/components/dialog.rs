@@ -66,10 +66,16 @@ pub(super) fn dialog_examples() -> Vec<(&'static str, Dialog)> {
     let body = |id: &str| {
         Slot::many([
             DialogTitle::new(format!("{id}-title"), "Retire this wallet?").into(),
-            Slot::from(crate::Hint::new("Takes it out of every list and deletes its keys from Monokulo.")),
+            Slot::from(crate::Hint::new(
+                "Takes it out of every list and deletes its keys from Monokulo.",
+            )),
             DialogActions::new(Slot::many([
-                crate::Button::new("Cancel").attr("data-closes-dialog", "").into(),
-                Slot::from(crate::Button::new("Retire wallet").variant(crate::ButtonVariant::Danger)),
+                crate::Button::new("Cancel")
+                    .attr("data-closes-dialog", "")
+                    .into(),
+                Slot::from(
+                    crate::Button::new("Retire wallet").variant(crate::ButtonVariant::Danger),
+                ),
             ]))
             .into(),
         ])
@@ -100,7 +106,10 @@ component! {
 
 pub(super) fn dialog_title_examples() -> Vec<(&'static str, DialogTitle)> {
     vec![
-        ("A question", DialogTitle::new("book-title-dialog", "Delete this webhook?")),
+        (
+            "A question",
+            DialogTitle::new("book-title-dialog", "Delete this webhook?"),
+        ),
         (
             "With a status",
             DialogTitle::new("book-title-status", "Delivery of order.paid")
@@ -148,10 +157,14 @@ pub(super) fn dialog_page_examples() -> Vec<(&'static str, DialogPage)> {
     vec![(
         "A question",
         DialogPage::new(Slot::many([
-            Slot::from(crate::Hint::new("Takes it out of every list and deletes its keys from Monokulo.")),
+            Slot::from(crate::Hint::new(
+                "Takes it out of every list and deletes its keys from Monokulo.",
+            )),
             DialogActions::new(Slot::many([
                 crate::LinkButton::new("Cancel", "#component-dialog-page").into(),
-                Slot::from(crate::Button::new("Retire wallet").variant(crate::ButtonVariant::Danger)),
+                Slot::from(
+                    crate::Button::new("Retire wallet").variant(crate::ButtonVariant::Danger),
+                ),
             ]))
             .into(),
         ])),

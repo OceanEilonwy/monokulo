@@ -261,7 +261,9 @@ pub async fn store_form(
             .get(axum::http::header::ACCEPT_LANGUAGE)
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default();
-        let priced = state.exchange_rate.is_available(crate::exchange_rate_config::COINGECKO);
+        let priced = state
+            .exchange_rate
+            .is_available(crate::exchange_rate_config::COINGECKO);
         draft.base_currency = crate::currencies::new_store_default(priced, languages).to_owned();
     }
     store_page(&state, &user, &draft, None, None).await

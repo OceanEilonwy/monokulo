@@ -2,7 +2,6 @@
 //! without JavaScript, and their data attributes give the enhanced list its
 //! parts.
 
-use maud::Render;
 use ui::{Choice, Select};
 
 fn option(choice: Choice) -> String {

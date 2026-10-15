@@ -494,8 +494,14 @@ fn refund_actions(data: &CheckoutViewModel) -> ui::Slot {
     };
     ui::Slot::many([
         saved.into(),
-        ui::IconButton::new("Scan refund QR", scan).attr("id", "scan-refund").flag("hidden").into(),
-        ui::IconButton::new("Choose QR image", image).attr("id", "upload-refund").flag("hidden").into(),
+        ui::IconButton::new("Scan refund QR", scan)
+            .attr("id", "scan-refund")
+            .flag("hidden")
+            .into(),
+        ui::IconButton::new("Choose QR image", image)
+            .attr("id", "upload-refund")
+            .flag("hidden")
+            .into(),
     ])
 }
 
@@ -569,7 +575,10 @@ fn live_payments(data: &CheckoutViewModel) -> Markup {
     let rows = data.payments.iter().map(|payment| {
         ui::Slot::from(ui::Row::new(ui::Slot::many([
             ui::Cell::new(super::short_id(&payment.txid)).into(),
-            ui::Cell::new(html! { span class="nowrap" { (super::trim_xmr(&payment.amount_xmr)) " XMR" } }).into(),
+            ui::Cell::new(
+                html! { span class="nowrap" { (super::trim_xmr(&payment.amount_xmr)) " XMR" } },
+            )
+            .into(),
             ui::Slot::from(ui::Cell::new(if payment.is_zero_conf {
                 "mempool".to_string()
             } else {
@@ -719,7 +728,11 @@ const SHARE_SCRIPT: &str = r#"
 
 pub fn share_page(chrome: &PageChrome, data: &CheckoutShareViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(SHARE_STYLE)) } };
-    let header = ui::PageHeader::new(if data.found { "Pay with Monero" } else { "Order not found" });
+    let header = ui::PageHeader::new(if data.found {
+        "Pay with Monero"
+    } else {
+        "Order not found"
+    });
     let body = html! {
         @if data.found {
             (ui::Hint::new("Complete the payment below - this page stays up to date on its own, so it's safe to bookmark or come back to later."))
@@ -731,7 +744,10 @@ pub fn share_page(chrome: &PageChrome, data: &CheckoutShareViewModel) -> Markup 
             p { "This payment link is invalid, or the order it refers to no longer exists." }
         }
     };
-    super::Page::new("Pay with Monero", header).class("share-wrap").head(extra_head).render(chrome, body)
+    super::Page::new("Pay with Monero", header)
+        .class("share-wrap")
+        .head(extra_head)
+        .render(chrome, body)
 }
 
 #[cfg(test)]

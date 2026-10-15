@@ -347,7 +347,8 @@ fn property_row(name: &str, value: Markup, act: Markup) -> ui::Row {
 /// opened, with a way back to the search it came from.
 pub fn row_page(chrome: &PageChrome, row_view: Option<&RowView>, back_url: &str) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
-    let header = ui::PageHeader::new("Log line").crumbs(super::crumbs(&[("/", "Home"), (&back_url, "Logs")]));
+    let header = ui::PageHeader::new("Log line")
+        .crumbs(super::crumbs(&[("/", "Home"), (back_url, "Logs")]));
     let body = html! {
         @if let Some(r) = row_view {
             div class="log-rows" { (row(r)) }
@@ -356,7 +357,10 @@ pub fn row_page(chrome: &PageChrome, row_view: Option<&RowView>, back_url: &str)
         }
         p { a href=(back_url) { "Back to the search" } }
     };
-    super::Page::new("Log line - Monokulo", header).class("wrap-wide").head(extra_head).render(chrome, body)
+    super::Page::new("Log line - Monokulo", header)
+        .class("wrap-wide")
+        .head(extra_head)
+        .render(chrome, body)
 }
 
 /// The "Older" control: a plain link to the next page, which fixi turns
@@ -473,44 +477,49 @@ pub fn saved_searches(saved: &[SavedLogSearch], query_string: &str, error: Optio
         1 => Some("1 search".to_string()),
         n => Some(format!("{n} searches")),
     };
-    super::settings::plain_card_with_meta("saved-searches", "Saved searches", meta.as_deref(), html! {
-        @if let Some(error) = error {
-            (ui::Alert::new(error, ui::Tone::Error).attr("data-fx-focus", ""))
-        }
-        @if saved.is_empty() {
-            (ui::Hint::new("None yet. Save a search to come back to it in one click."))
-        } @else {
-            (ui::Table::new(html! {
-                @for s in saved {
-                    tr {
-                        td { a href=(format!("/dashboard/admin/logs?{}", s.query_string)) { (s.name) } }
-                        td class="row-acts" {
-                            (fixi(format!("/dashboard/admin/logs/saved/{}/delete", s.id))(html! {
-                                (ui::Button::new("Remove")
-                                    .size(ui::ControlSize::Compact)
-                                    .kind(ui::ButtonType::Submit)
-                                    .attr("aria-label", format!("Remove {}", s.name)))
-                            }))
+    super::settings::plain_card_with_meta(
+        "saved-searches",
+        "Saved searches",
+        meta.as_deref(),
+        html! {
+            @if let Some(error) = error {
+                (ui::Alert::new(error, ui::Tone::Error).attr("data-fx-focus", ""))
+            }
+            @if saved.is_empty() {
+                (ui::Hint::new("None yet. Save a search to come back to it in one click."))
+            } @else {
+                (ui::Table::new(html! {
+                    @for s in saved {
+                        tr {
+                            td { a href=(format!("/dashboard/admin/logs?{}", s.query_string)) { (s.name) } }
+                            td class="row-acts" {
+                                (fixi(format!("/dashboard/admin/logs/saved/{}/delete", s.id))(html! {
+                                    (ui::Button::new("Remove")
+                                        .size(ui::ControlSize::Compact)
+                                        .kind(ui::ButtonType::Submit)
+                                        .attr("aria-label", format!("Remove {}", s.name)))
+                                }))
+                            }
                         }
                     }
-                }
-            })
-            .scroll(false)
-            .attr("data-table", "saved-searches"))
-        }
-        (fixi("/dashboard/admin/logs/saved".to_string())(html! {
-            (super::settings::Field::new("Save this search as", "saved-search-name")
-                .help(Some("saved-search-name-help"), html! { "Its text, filters and time range, as they are now." })
-                .render(html! {
-                    (ui::Input::new("name")
-                        .id("saved-search-name")
-                        .described_by("saved-search-name-help")
-                        .required(true)
-                        .attr("maxlength", "80"))
-                }))
-            (ui::FormActions::new(ui::Button::new("Save search").kind(ui::ButtonType::Submit)))
-        }))
-    })
+                })
+                .scroll(false)
+                .attr("data-table", "saved-searches"))
+            }
+            (fixi("/dashboard/admin/logs/saved".to_string())(html! {
+                (super::settings::Field::new("Save this search as", "saved-search-name")
+                    .help(Some("saved-search-name-help"), html! { "Its text, filters and time range, as they are now." })
+                    .render(html! {
+                        (ui::Input::new("name")
+                            .id("saved-search-name")
+                            .described_by("saved-search-name-help")
+                            .required(true)
+                            .attr("maxlength", "80"))
+                    }))
+                (ui::FormActions::new(ui::Button::new("Save search").kind(ui::ButtonType::Submit)))
+            }))
+        },
+    )
 }
 
 fn select(name: &str, label: &str, options: &[(&str, &str)], current: &str) -> Markup {
@@ -618,11 +627,14 @@ fn syntax_dialog(names: &[String]) -> Markup {
 /// browser without script.
 pub fn syntax_page(chrome: &PageChrome, names: &[String]) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
-    let header = ui::PageHeader::new("Search syntax").crumbs(super::crumbs(&[("/dashboard/admin/logs", "Logs")]));
+    let header = ui::PageHeader::new("Search syntax")
+        .crumbs(super::crumbs(&[("/dashboard/admin/logs", "Logs")]));
     let body = html! {
         div class="qh-page" { (syntax(names, false)) }
     };
-    super::Page::new("Search syntax - Monokulo", header).head(extra_head).render(chrome, body)
+    super::Page::new("Search syntax - Monokulo", header)
+        .head(extra_head)
+        .render(chrome, body)
 }
 
 /// Live's stream when the page opens on an older page; the script takes
@@ -631,29 +643,31 @@ const LIVE_NONE: &str = "/dashboard/admin/logs/tail";
 
 pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
-    let header = ui::PageHeader::new("Logs").crumbs(super::crumbs(&[("/", "Home")])).actions(html! {
-        // Submits the search as it stands: its newest lines.
-        (ui::Button::new(html! { (icon(REFRESH_ICON)) span { "Refresh" } })
+    let header = ui::PageHeader::new("Logs")
+        .crumbs(super::crumbs(&[("/", "Home")]))
+        .actions(html! {
+            // Submits the search as it stands: its newest lines.
+            (ui::Button::new(html! { (icon(REFRESH_ICON)) span { "Refresh" } })
+                .size(ui::ControlSize::Compact)
+                .kind(ui::ButtonType::Submit)
+                .attr("form", "log-search"))
+            // Streams from `#log-rows`' tail URL (the page's script);
+            // without script, hidden.
+            (ui::Button::new(html! {
+                span class="i-play" { (icon(PLAY_ICON)) }
+                span class="i-pause" { (icon(PAUSE_ICON)) }
+                span class="log-live-label" { "Live" }
+            })
             .size(ui::ControlSize::Compact)
-            .kind(ui::ButtonType::Submit)
-            .attr("form", "log-search"))
-        // Streams from `#log-rows`' tail URL (the page's script);
-        // without script, hidden.
-        (ui::Button::new(html! {
-            span class="i-play" { (icon(PLAY_ICON)) }
-            span class="i-pause" { (icon(PAUSE_ICON)) }
-            span class="log-live-label" { "Live" }
-        })
-        .size(ui::ControlSize::Compact)
-        .disabled(vm.tail_url.is_none())
-        .attr("id", "log-live")
-        .attr("aria-pressed", "false")
-        .attr("fx-action", vm.tail_url.as_deref().unwrap_or(LIVE_NONE))
-        .attr("fx-target", "#log-rows")
-        .attr("fx-swap", "afterbegin")
-        .attr("fx-sse-reconnect", "")
-        .attr("data-only", "script"))
-    });
+            .disabled(vm.tail_url.is_none())
+            .attr("id", "log-live")
+            .attr("aria-pressed", "false")
+            .attr("fx-action", vm.tail_url.as_deref().unwrap_or(LIVE_NONE))
+            .attr("fx-target", "#log-rows")
+            .attr("fx-swap", "afterbegin")
+            .attr("fx-sse-reconnect", "")
+            .attr("data-only", "script"))
+        });
     let body = html! {
         div class="logs-body" {
             form id="log-search" class="logs-search" method="get" action="/dashboard/admin/logs"
@@ -700,7 +714,10 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
         (saved_searches(&vm.saved, &vm.query_string, vm.saved_error.as_deref()))
         (script("logs.js", Load::Now))
     };
-    super::Page::new("Logs - Monokulo", header).class("wrap-wide").head(extra_head).render(chrome, body)
+    super::Page::new("Logs - Monokulo", header)
+        .class("wrap-wide")
+        .head(extra_head)
+        .render(chrome, body)
 }
 
 /// One event of a POS session timeline.
@@ -751,7 +768,10 @@ pub struct PosTimelineViewModel {
 /// offline or hidden called out.
 pub fn pos_timeline_page(chrome: &PageChrome, vm: &PosTimelineViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) (PreEscaped(TIMELINE_STYLE)) } };
-    let header = ui::PageHeader::new("POS session").crumbs(super::crumbs(&[("/", "Home"), ("/dashboard/admin/logs", "Logs")]));
+    let header = ui::PageHeader::new("POS session").crumbs(super::crumbs(&[
+        ("/", "Home"),
+        ("/dashboard/admin/logs", "Logs"),
+    ]));
     let body = html! {
         (ui::Hint::new(html! {
             code { (vm.session) }
@@ -796,7 +816,10 @@ pub fn pos_timeline_page(chrome: &PageChrome, vm: &PosTimelineViewModel) -> Mark
             }
         }
     };
-    super::Page::new("POS session - Monokulo", header).class("wrap-wide").head(extra_head).render(chrome, body)
+    super::Page::new("POS session - Monokulo", header)
+        .class("wrap-wide")
+        .head(extra_head)
+        .render(chrome, body)
 }
 
 const TIMELINE_STYLE: &str = r#"
@@ -843,8 +866,11 @@ pub struct TraceViewModel {
 /// lines in order.
 pub fn trace_page(chrome: &PageChrome, vm: &TraceViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
-    let header = ui::PageHeader::new(html! { "Trace " code { (vm.trace_id) } })
-        .crumbs(super::crumbs(&[("/", "Home"), ("/dashboard/admin/logs", "Logs")]));
+    let header =
+        ui::PageHeader::new(html! { "Trace " code { (vm.trace_id) } }).crumbs(super::crumbs(&[
+            ("/", "Home"),
+            ("/dashboard/admin/logs", "Logs"),
+        ]));
     let body = html! {
         @for problem in &vm.problems { (status_problem(problem)) }
         @if vm.spans.is_empty() {
@@ -878,5 +904,8 @@ pub fn trace_page(chrome: &PageChrome, vm: &TraceViewModel) -> Markup {
         (ui::Hint::new(html! { a href=(vm.logs_url) { "Search these lines" } }))
         div class="log-rows" { @for r in &vm.rows { (row(r)) } }
     };
-    super::Page::new("Trace - Monokulo", header).class("wrap-wide").head(extra_head).render(chrome, body)
+    super::Page::new("Trace - Monokulo", header)
+        .class("wrap-wide")
+        .head(extra_head)
+        .render(chrome, body)
 }

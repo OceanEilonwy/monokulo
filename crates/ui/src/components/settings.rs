@@ -414,7 +414,9 @@ pub(super) fn settings_form_examples() -> Vec<(&'static str, SettingsForm)> {
     let store_name = Setting::new(
         "Store name",
         "book-settings-name-input",
-        crate::Input::new("name").id("book-settings-name-input").value("Corner store"),
+        crate::Input::new("name")
+            .id("book-settings-name-input")
+            .value("Corner store"),
     );
     vec![(
         "A card, its settings and the save bar",
@@ -460,7 +462,10 @@ pub(super) fn setting_examples() -> Vec<(&'static str, Setting)> {
             Setting::new(
                 "Use TLS",
                 "book-setting-tls",
-                crate::Checkbox::new().id("book-setting-tls").name("tls").described_by("book-setting-tls-help"),
+                crate::Checkbox::new()
+                    .id("book-setting-tls")
+                    .name("tls")
+                    .described_by("book-setting-tls-help"),
             )
             .help("Connect with https. Most nodes on port 18081 don't use it.")
             .help_id("book-setting-tls-help"),
@@ -558,4 +563,3 @@ pub(super) fn toast_examples() -> Vec<(&'static str, Toast)> {
         ),
     ]
 }
-

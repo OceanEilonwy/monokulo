@@ -62,7 +62,13 @@ pub(super) fn wizard_steps_examples() -> Vec<(&'static str, WizardSteps)> {
         (
             "Setup, backing up a new wallet",
             setup(
-                step("Wallet", "Back up · step 2 of 3", 1, 3, WizardState::Current),
+                step(
+                    "Wallet",
+                    "Back up · step 2 of 3",
+                    1,
+                    3,
+                    WizardState::Current,
+                ),
                 next(),
             ),
         ),
@@ -197,7 +203,11 @@ pub(super) fn progress_steps_examples() -> Vec<(&'static str, ProgressSteps)> {
         (
             "Part paid",
             payment(
-                vec![step("Send", Part), step("Confirm", Todo), step("Paid", Todo)],
+                vec![
+                    step("Send", Part),
+                    step("Confirm", Todo),
+                    step("Paid", Todo),
+                ],
                 "Part paid",
                 "0.2 XMR in; send the other 0.22 XMR.",
                 OrderState::Partial,
@@ -224,7 +234,11 @@ pub(super) fn progress_steps_examples() -> Vec<(&'static str, ProgressSteps)> {
         (
             "Expired",
             payment(
-                vec![step("Send", Fail), step("Confirm", Todo), step("Paid", Todo)],
+                vec![
+                    step("Send", Fail),
+                    step("Confirm", Todo),
+                    step("Paid", Todo),
+                ],
                 "Expired",
                 "Nothing arrived in time; ask for a new order.",
                 OrderState::Expired,

@@ -899,8 +899,11 @@ fn save_bar(store: &StoreSettingsData) -> Markup {
 
 pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
     let header = match &data.store {
-        Some(store) => ui::PageHeader::new("Settings")
-            .crumbs(super::store_crumbs(store.connection_id.as_str(), &store.display_name, false)),
+        Some(store) => ui::PageHeader::new("Settings").crumbs(super::store_crumbs(
+            store.connection_id.as_str(),
+            &store.display_name,
+            false,
+        )),
         None => ui::PageHeader::new("Store not found"),
     };
     let body = html! {
@@ -936,7 +939,9 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
         Some(store) => format!("Settings - {} - Monokulo", store.display_name),
         None => "Store not found - Monokulo".to_string(),
     };
-    super::Page::new(title, header).class("settings-page").render(chrome, body)
+    super::Page::new(title, header)
+        .class("settings-page")
+        .render(chrome, body)
 }
 
 /// Adding, checking and removing the domains this store has proved it owns

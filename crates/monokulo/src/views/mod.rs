@@ -84,8 +84,8 @@ pub mod checkout;
 pub mod connect;
 pub mod controls;
 pub mod create_order;
-pub mod home;
 pub mod engine;
+pub mod home;
 
 pub mod key_entry;
 mod logo_art;
@@ -117,11 +117,18 @@ pub(crate) const SITE_CSS: &str = include_str!("site.css");
 /// Where a page sits (`ui::PageHeader`'s crumbs): links to the pages
 /// above it, nearest last; one link is a back link.
 pub fn crumbs(links: &[(&str, &str)]) -> Vec<ui::Crumb> {
-    links.iter().map(|(href, label)| ui::Crumb::new(*href, *label)).collect()
+    links
+        .iter()
+        .map(|(href, label)| ui::Crumb::new(*href, *label))
+        .collect()
 }
 
 /// The crumbs of a store's pages, and of pages nested under its Orders.
-pub fn store_crumbs(connection_id: &str, display_name: &str, include_orders: bool) -> Vec<ui::Crumb> {
+pub fn store_crumbs(
+    connection_id: &str,
+    display_name: &str,
+    include_orders: bool,
+) -> Vec<ui::Crumb> {
     let store = format!("/dashboard/stores/{connection_id}");
     let orders = format!("{store}/orders");
     if include_orders {
@@ -239,7 +246,12 @@ impl Page {
     /// `title` is the full `<title>` text (not auto-suffixed: each caller
     /// states its own title exactly).
     pub fn new(title: impl Into<String>, header: ui::PageHeader) -> Self {
-        Page { title: title.into(), header, class: None, head: None }
+        Page {
+            title: title.into(),
+            header,
+            class: None,
+            head: None,
+        }
     }
 
     /// Classes beside `wrap` on the page's `main` (`wrap-wide`, `settings-page`).
@@ -266,7 +278,14 @@ impl Page {
                 (content)
             }
         };
-        page_shell(chrome, &self.title, DEFAULT_VIEWPORT, self.head, Some(nav(chrome)), body)
+        page_shell(
+            chrome,
+            &self.title,
+            DEFAULT_VIEWPORT,
+            self.head,
+            Some(nav(chrome)),
+            body,
+        )
     }
 }
 
@@ -486,11 +505,15 @@ pub fn order_state(status: impl Into<DisplayStatus>) -> (&'static str, ui::Order
     use OrderStatus::*;
     match status.into() {
         DisplayStatus::Order(Pending) => ("Waiting for payment", ui::OrderState::Pending, false),
-        DisplayStatus::Order(Unconfirmed) => {
-            ("Payment seen, unconfirmed", ui::OrderState::Unconfirmed, false)
-        }
+        DisplayStatus::Order(Unconfirmed) => (
+            "Payment seen, unconfirmed",
+            ui::OrderState::Unconfirmed,
+            false,
+        ),
         DisplayStatus::Order(Confirming) => ("Confirming", ui::OrderState::Confirming, false),
-        DisplayStatus::Order(Partial) => ("Partial payment received", ui::OrderState::Partial, false),
+        DisplayStatus::Order(Partial) => {
+            ("Partial payment received", ui::OrderState::Partial, false)
+        }
         DisplayStatus::Order(Paid) => ("Paid", ui::OrderState::Paid, true),
         DisplayStatus::Order(Overpaid) => ("Overpaid", ui::OrderState::Overpaid, true),
         DisplayStatus::Order(Expired) => ("Expired", ui::OrderState::Expired, true),
@@ -732,17 +755,27 @@ mod tests {
     fn a_network_badge_always_says_the_network_and_marks_mainnet_apart() {
         let main = network_badge("mainnet").into_string();
         assert!(
-            main.starts_with(r#"<span class="tag-network is-main"><svg viewBox="0 0 24 24" aria-hidden="true">"#),
+            main.starts_with(
+                r#"<span class="tag-network is-main"><svg viewBox="0 0 24 24" aria-hidden="true">"#
+            ),
             "{main}"
         );
-        assert!(main.ends_with(r#"</svg><span class="tag-network-name">Mainnet</span></span>"#), "{main}");
+        assert!(
+            main.ends_with(r#"</svg><span class="tag-network-name">Mainnet</span></span>"#),
+            "{main}"
+        );
         for (network, word) in [("stagenet", "Stagenet"), ("testnet", "Testnet")] {
             let test = network_badge(network).into_string();
             assert!(
                 test.starts_with(r#"<span class="tag-network is-test">"#),
                 "{test}"
             );
-            assert!(test.ends_with(&format!(r#"</svg><span class="tag-network-name">{word}</span></span>"#)), "{test}");
+            assert!(
+                test.ends_with(&format!(
+                    r#"</svg><span class="tag-network-name">{word}</span></span>"#
+                )),
+                "{test}"
+            );
         }
         assert!(test_networks_badge()
             .into_string()
@@ -844,7 +877,10 @@ mod tests {
         let mut chrome = signed_in("rachel.dz@example.org", false, Theme::System);
         chrome.current_path = "/".into();
         let html = nav(&chrome).into_string();
-        assert!(html.contains(r#"<a href="/" aria-current="page">Home</a>"#), "{html}");
+        assert!(
+            html.contains(r#"<a href="/" aria-current="page">Home</a>"#),
+            "{html}"
+        );
         let html = nav(&PageChrome::from_user(None, "/")).into_string();
         assert!(!html.contains(">Home</a>"), "{html}");
     }
@@ -867,8 +903,9 @@ mod tests {
         };
         let who = at("<strong>rachel.dz@example.org</strong><small>Admin</small>");
         let account = at(r#"<a class="menu-item" href="/account"><span>Account</span></a>"#);
-        let wallets =
-            at(r#"<a class="menu-item" href="/account?tab=wallets"><span>Wallets</span><span class="menu-note">3</span></a>"#);
+        let wallets = at(
+            r#"<a class="menu-item" href="/account?tab=wallets"><span>Wallets</span><span class="menu-note">3</span></a>"#,
+        );
         let theme = at(r#"<form method="post" action="/dashboard/theme" class="nav-theme-form">"#);
         let times = at(r##"<a class="menu-item" href="/account#card-time""##);
         let logout = at(r#"action="/dashboard/logout""#);
@@ -886,7 +923,12 @@ mod tests {
             ),
             "{menu}"
         );
-        assert!(menu.contains(r#"<button type="submit" class="menu-item"><span>Log out</span></button>"#), "{menu}");
+        assert!(
+            menu.contains(
+                r#"<button type="submit" class="menu-item"><span>Log out</span></button>"#
+            ),
+            "{menu}"
+        );
 
         let merchant = nav(&signed_in("ann@example.org", false, Theme::System)).into_string();
         assert!(merchant.contains("<small>Merchant</small>"), "{merchant}");

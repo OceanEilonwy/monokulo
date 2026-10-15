@@ -9,7 +9,7 @@
 use maud::{html, Markup};
 
 use super::PageChrome;
-use ui::{WizardSteps, WizardStep as Segment, WizardState};
+use ui::{WizardState, WizardStep as Segment, WizardSteps};
 
 /// The three steps of setup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,7 +169,11 @@ pub struct StoreStepViewModel {
 /// Any store takes payments at the till; a website lets it show the
 /// checkout on its pages and connect the WooCommerce plugin too.
 pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
-    let title = if data.plugin_host.is_some() { "Connect your WooCommerce shop" } else { "Set up a store" };
+    let title = if data.plugin_host.is_some() {
+        "Connect your WooCommerce shop"
+    } else {
+        "Set up a store"
+    };
     let header = ui::PageHeader::new(title).progress(steps(Step::Store, None));
     let body = html! {
         @if let Some(host) = &data.plugin_host {
@@ -240,7 +244,9 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
             }
         }
     };
-    super::Page::new("Set up a store - Monokulo", header).class("setup-store").render(chrome, body)
+    super::Page::new("Set up a store - Monokulo", header)
+        .class("setup-store")
+        .render(chrome, body)
 }
 
 /// What a field on the store step is for, between its label and its input.
@@ -316,8 +322,13 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
     let primary = |on: bool| on.then_some(ui::ButtonVariant::Primary);
     let till_primary = data.plugin.is_none() && !has_site;
     let guide_primary = data.plugin.is_none() && has_site;
-    let title = if data.plugin.is_some() { "is connected" } else { "is set up" };
-    let header = ui::PageHeader::new(html! { (data.name) " " (title) }).progress(steps(Step::Done, None));
+    let title = if data.plugin.is_some() {
+        "is connected"
+    } else {
+        "is set up"
+    };
+    let header =
+        ui::PageHeader::new(html! { (data.name) " " (title) }).progress(steps(Step::Done, None));
     let body = html! {
         p class="store-summary" {
             @if has_site && !data.has_orders {

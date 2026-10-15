@@ -2,7 +2,10 @@
 
 use maud::{html, Markup, PreEscaped};
 pub use shared::proof::{NodeVerdict, ProofState};
-use ui::{Alert, Button, ButtonType, Cell, CellPart, Disclosure, Fact, Facts, Hint, LinkButton, Panel, Row, Slot, Table, TableLook, Tag, TagTone, Tone};
+use ui::{
+    Alert, Button, ButtonType, Cell, CellPart, Disclosure, Fact, Facts, Hint, LinkButton, Panel,
+    Row, Slot, Table, TableLook, Tag, TagTone, Tone,
+};
 
 use super::scaling::{network_name, thousands};
 use super::PageChrome;
@@ -370,7 +373,9 @@ fn node_table(network: &StatusNetworkView) -> Markup {
                 .part(CellPart::Amount),
             ));
         }
-        cells.push(Slot::from(Cell::new(node.height_display.as_str()).part(CellPart::When)));
+        cells.push(Slot::from(
+            Cell::new(node.height_display.as_str()).part(CellPart::When),
+        ));
         let reachable = if node.is_reachable {
             Tag::new("reachable").tone(TagTone::Ok)
         } else {
@@ -505,8 +510,16 @@ fn announcements_section(announcements: &AnnouncementsView) -> Markup {
 /// The ZMQ publishers, a row each, and its last failure on a row under it.
 fn publishers_table(publishers: &[PublisherView]) -> Markup {
     let head = Row::new(Slot::many(
-        ["Node", "Publisher", "State", "Transactions", "Blocks", "Last", "Connections"]
-            .map(|name| Slot::from(Cell::new(name).header(true))),
+        [
+            "Node",
+            "Publisher",
+            "State",
+            "Transactions",
+            "Blocks",
+            "Last",
+            "Connections",
+        ]
+        .map(|name| Slot::from(Cell::new(name).header(true))),
     ));
     let rows = publishers.iter().flat_map(|publisher| {
         let state = if publisher.connected {
@@ -517,14 +530,18 @@ fn publishers_table(publishers: &[PublisherView]) -> Markup {
         let row = Slot::from(Row::new(Slot::many([
             Slot::from(Cell::new(html! { code { (publisher.node) } })),
             Slot::from(Cell::new(html! { code { (publisher.endpoint) } })),
-            Slot::from(Cell::new(html! { (state) " " span class="muted" { (publisher.state_display) } })),
+            Slot::from(Cell::new(
+                html! { (state) " " span class="muted" { (publisher.state_display) } },
+            )),
             Slot::from(Cell::new(publisher.pool_announcements.to_string())),
             Slot::from(Cell::new(publisher.block_announcements.to_string())),
             Slot::from(Cell::new(publisher.last_announcement_display.as_str())),
             Slot::from(Cell::new(publisher.connections.to_string())),
         ])));
         let error = publisher.last_error.as_ref().map(|error| {
-            Slot::from(Row::new(Cell::new(Hint::new(error.as_str()).inline(true)).attr("colspan", "7")))
+            Slot::from(Row::new(
+                Cell::new(Hint::new(error.as_str()).inline(true)).attr("colspan", "7"),
+            ))
         });
         std::iter::once(row).chain(error)
     });
@@ -908,7 +925,9 @@ mod tests {
             ],
         ));
         assert!(
-            html.contains(r#"<div class="table-scroll"><table class="table-cards" data-table="nodes">"#),
+            html.contains(
+                r#"<div class="table-scroll"><table class="table-cards" data-table="nodes">"#
+            ),
             "{html}"
         );
         assert!(

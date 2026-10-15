@@ -1384,7 +1384,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            !html.contains(r#"<select name="network""#),
+            !html.contains(r#"<select class="mk-input" name="network""#),
             "the network isn't asked twice"
         );
         // The CLI help names the secret view key line and the public spend key line.
@@ -1666,7 +1666,8 @@ mod tests {
             "{retire}"
         );
         assert!(
-            retire.contains(r#"<button class="mk-btn" type="button" data-variant="danger" disabled"#),
+            retire
+                .contains(r#"<button class="mk-btn" type="button" data-variant="danger" disabled"#),
             "{retire}"
         );
     }
