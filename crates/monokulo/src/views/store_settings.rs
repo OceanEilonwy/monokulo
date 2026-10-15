@@ -1005,9 +1005,11 @@ fn verified_domains_card(store: &StoreSettingsData) -> Markup {
                                     form method="post" action=(format!("{base}/domains/{}/check", domain.id)) {
                                         (ui::Button::new("Check now").kind(ui::ButtonType::Submit))
                                     }
+                                    // Without JavaScript Remove removes; with it, it asks first.
                                     form method="post" action=(format!("{base}/domains/{}/delete", domain.id))
-                                        onsubmit="return confirm('Remove this domain? You would need a new DNS record to verify it again.');" {
-                                        (ui::Button::new("Remove").kind(ui::ButtonType::Submit))
+                                        id=(format!("domain-delete-{}", domain.id)) {
+                                        (ui::Button::new("Remove").kind(ui::ButtonType::Submit)
+                                            .attr("data-opens-dialog", format!("domain-remove-{}", domain.id)))
                                     }
                                 }
                             }
@@ -1017,6 +1019,18 @@ fn verified_domains_card(store: &StoreSettingsData) -> Markup {
                 .look(ui::TableLook::Stack)
                 .scroll(false)
                 .attr("data-table", "domains"))
+                @for domain in &store.embed_domains {
+                    @let id = format!("domain-remove-{}", domain.id);
+                    (ui::Dialog::new(id.as_str(), format!("{id}-title"), html! {
+                        (ui::DialogTitle::new(format!("{id}-title"), html! { "Remove " (domain.domain) "?" }).in_dialog(true))
+                        p { "You would need a new DNS record to verify it again." }
+                        (ui::DialogActions::new(html! {
+                            (ui::Button::new("Keep it").attr("data-closes-dialog", ""))
+                            (ui::Button::new("Remove domain").variant(ui::ButtonVariant::Danger).kind(ui::ButtonType::Submit)
+                                .attr("form", format!("domain-delete-{}", domain.id)))
+                        }))
+                    }))
+                }
             }
             form method="post" action=(format!("{base}/domains")) {
                 (Field::new("Domain", "new-domain")

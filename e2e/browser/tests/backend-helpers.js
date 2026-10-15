@@ -268,8 +268,22 @@ async function transitionDone(page) {
   await expect.poll(() => page.evaluate(() => !document.activeViewTransition)).toBe(true);
 }
 
+/**
+ * Answers the question a save asks when it leaves a network stores use
+ * with no node (`#node-clear-dialog`): `Save anyway` or `Keep editing`.
+ * Returns what it said.
+ */
+async function answerNodeQuestion(page, answer) {
+  const dialog = page.locator('#node-clear-dialog');
+  await expect(dialog).toBeVisible();
+  const said = await dialog.locator('[data-node-clear-text]').textContent();
+  await dialog.getByRole('button', { name: answer }).click();
+  await expect(dialog).toBeHidden();
+  return said;
+}
+
 module.exports = {
-  useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, fillNodes, nodeAddressBoxes, saveEngineSettings,
+  answerNodeQuestion, useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, fillNodes, nodeAddressBoxes, saveEngineSettings,
   settingsTabOf, openSettingsTab, fillSettings, openNodes, pressSave, expectSaved,
   SETTINGS_TABS, reloadUntil, connectStore, createStore, addWallet, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY, WALLET_NAME,
 };

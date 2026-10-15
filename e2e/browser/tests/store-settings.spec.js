@@ -161,9 +161,9 @@ test('the Verified domains form lays its field out like every other setting, and
   await card.getByRole('button', { name: 'Add domain' }).click();
   const row = page.locator('#card-verified-domains tr', { hasText: 'layout-check.example' });
   await expect(row).toContainText('_monokulo.layout-check.example');
-  // Removing asks first (a confirm), as before.
-  page.once('dialog', (dialog) => dialog.accept());
+  // Removing asks first, in a dialog.
   await row.getByRole('button', { name: 'Remove' }).click();
+  await page.getByRole('dialog', { name: 'Remove layout-check.example?' }).getByRole('button', { name: 'Remove domain' }).click();
   await expect(page.locator('#card-verified-domains')).not.toContainText('layout-check.example');
 });
 

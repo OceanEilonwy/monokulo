@@ -1937,6 +1937,25 @@ pub fn settings_fragment(data: &AdminSettingsViewModel, focus_heading: bool) -> 
     }
 }
 
+/// The question a save asks when it leaves a network stores use with no
+/// node (`admin-settings.js` fills in which, opens it, and saves on Save
+/// anyway). Without JavaScript the save goes through and the page says so.
+fn node_clear_dialog() -> Markup {
+    ui::Dialog::new(
+        "node-clear-dialog",
+        "node-clear-title",
+        html! {
+            (ui::DialogTitle::new("node-clear-title", "Save without a node?").in_dialog(true))
+            p data-node-clear-text {}
+            (ui::DialogActions::new(html! {
+                (ui::Button::new("Keep editing").attr("data-closes-dialog", ""))
+                (ui::Button::new("Save anyway").variant(ui::ButtonVariant::Danger).attr("data-node-clear-go", ""))
+            }))
+        },
+    )
+    .render()
+}
+
 pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
@@ -1947,6 +1966,7 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
             (tab_bar(data, false))
             (settings_panel(data, false))
             (toasts(data, false))
+            (node_clear_dialog())
             (script("admin-settings.js", Load::Now))
         }
     };
