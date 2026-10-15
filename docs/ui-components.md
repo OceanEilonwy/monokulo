@@ -229,3 +229,25 @@ marks, POS status art, monitoring charts/status summaries, wallet selection,
 pagination, footer-based settings pages, and the selected grouped page form and its many-edits preview.
 `/form-page.html` is a full-page footer specimen. `#page-hierarchy` demonstrates
 using sections and separators instead of nested cards. The flat progress strip is the only step design; native progress values count completed tasks.
+
+## fixi and islands
+
+Islands (Solid behaviours) are for what happens inside a component: a
+dropdown opening, a card counting its changes, a toast closing. fixi
+(with ssexi for server-sent events, and `fx-glue.js`) is for server round
+trips: submit or navigate, and swap in the HTML the server answers with.
+Every `fx-*` element is a real form or link, so without JavaScript the
+browser does the same request and gets the whole page; one endpoint and
+one renderer serve both. Its uses: settings saves and tabs, paging and
+search on orders, logs and invites, loading a log row's details and older
+rows, the status, logs, order and checkout live streams.
+
+Islands and fixi compose: what a swap brings in attaches, what it takes
+away lets go. A behaviour that needs to know about a request listens for
+fixi's events (the settings form re-enables Save on `fx:finally`). Don't
+use fixi for component behaviour, and don't fetch-and-swap from a
+behaviour: that is fixi again. A page that becomes one island with JSON
+saves is the case to revisit, one page at a time.
+
+fixi, ssexi and the glue are 6.4 KB gzipped; the islands script, mostly
+Solid's runtime, 28 KB.
