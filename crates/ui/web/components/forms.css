@@ -43,7 +43,10 @@ a.mk-launch-tile[href]:hover { background: var(--btn-hover-bg); border-color: va
 .mk-launch-tile-hint { font-size: var(--text-sm); opacity: .85; }
 /* An input with buttons inside its right edge (Input actions). */
 .mk-input-with-actions { position: relative; display: block; min-width: 0; }
-.mk-input-with-actions > .mk-input { padding-right: calc(var(--space-sm) + 2 * 2.1rem + var(--space-xs)); }
+/* Typed text stops short of the actions, however many there are. */
+.mk-input-with-actions > .mk-input { padding-right: calc(var(--space-sm) + 2.1rem); }
+.mk-input-with-actions:has(> .mk-input-actions > :nth-child(2)) > .mk-input { padding-right: calc(var(--space-sm) + 2 * 2.1rem + var(--space-xs)); }
+.mk-input-with-actions:has(> .mk-input-actions > :nth-child(3)) > .mk-input { padding-right: calc(var(--space-sm) + 3 * 2.1rem + 2 * var(--space-xs)); }
 .mk-input-actions { position: absolute; top: 50%; right: var(--space-xs); transform: translateY(-50%); display: flex; gap: var(--space-xs); }
 .mk-input-actions > .mk-btn.icon-only { border-color: transparent; background: transparent; }
 .mk-input-actions > .mk-btn.icon-only:hover { background: var(--btn-hover-bg); }

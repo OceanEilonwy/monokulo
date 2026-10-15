@@ -100,7 +100,7 @@ test('the wizard strip counts completed tasks and keeps its detail on a phone', 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
-test('copy takes the whole current value, and a refused clipboard selects it to copy by hand', async ({ page, context }) => {
+test('copy takes the whole current value; a refused clipboard copies the selection, or leaves it to copy by hand', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.goto('/#component-copy-value');
   const value = page.locator('#component-copy-value-1 [data-copy-value]');
@@ -112,7 +112,13 @@ test('copy takes the whole current value, and a refused clipboard selects it to 
   await value.evaluate(el => { el.textContent = 'updated value <literal> & complete'; });
   await copy.click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('updated value <literal> & complete');
+  // A refused clipboard: the value selected and copied the old way...
   await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { value: { writeText: () => Promise.reject(new Error('denied')) }, configurable: true }));
+  await copy.click();
+  await expect(page.locator('#component-copy-value-1 .mk-copy-status')).toHaveText('Copied');
+  expect(await page.evaluate(() => getSelection().toString())).toBe('updated value <literal> & complete');
+  // ...or, where that's refused too, left selected to copy by hand.
+  await page.evaluate(() => { document.execCommand = () => false; });
   await copy.click();
   await expect(page.locator('#component-copy-value-1 .mk-copy-status')).toContainText('copy command');
   expect(await page.evaluate(() => getSelection().toString())).toBe('updated value <literal> & complete');

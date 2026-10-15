@@ -14,10 +14,11 @@ export function setup(props: CopyBlockProps): CopyBlockBehaviour {
     const all = code?.textContent ?? '';
     const marker = props.comment;
     if (!marker) return all;
-    return all.split('\n').map(line => {
-      const at = line.indexOf(marker);
-      return at < 0 ? line : line.slice(0, at).trimEnd();
-    }).join('\n');
+    // A note starts the line or follows a space: `#` inside a word (a URL's
+    // fragment, `$#`) is part of the command.
+    const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const note = new RegExp(`(^|\\s)${escaped}.*$`);
+    return all.split('\n').map(line => line.replace(note, '').trimEnd()).join('\n');
   };
 
   return {

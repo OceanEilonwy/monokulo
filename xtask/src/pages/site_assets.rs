@@ -110,7 +110,7 @@ static BAKED: &[Asset] = &[
     asset!(text "theme.css", ui::assets::TOKENS_CSS, CSS),
     asset!(text "ui.css", ui::assets::COMPONENTS_CSS, CSS),
     asset!(from "styles.css", "src/pages/assets/styles.css", CSS),
-    // The landing page's tabs and copy buttons, and the testing report's
+    // The landing page's OpenWrt version picker, and the testing report's
     // filters and screenshot viewer.
     asset!(from "landing.js", "src/pages/assets/landing/landing.js", JS),
     asset!(from "coverage.js", "src/pages/assets/coverage/coverage.js", JS),

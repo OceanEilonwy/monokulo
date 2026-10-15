@@ -228,7 +228,7 @@ pub(super) fn properties(report: &Report) -> Markup {
         }
         @if example > 0 && cases > 0 {
             @let per = per_case(example, cases).unwrap_or_default();
-            div.card.pad.read {
+            (ui::Panel::new(html! { div.read {
                 div {
                     h3 { "Reading the bars below" }
                     p { "While a history plays out, the engine keeps a tally of every situation it lands in, like a refused database write or the chain reorganising. " b { "Times" } " is the tally across all " (int(cases)) " histories from last night. One history can hit the same situation many times, so a tally can be bigger than " (int(cases)) ". " b { "#/H" } " is the average per history." }
@@ -244,11 +244,11 @@ pub(super) fn properties(report: &Report) -> Markup {
                         b { "Passed" } span { "after every refusal the engine reported the problem and every balance stayed right" }
                     }
                 }
-            }
+            } }).look(ui::PanelLook::Tile))
         }
         div.two {
-            div.card.pad.obs { (commands(obs).unwrap_or_default()) (observed(&SETUPS, obs, cases).unwrap_or_default()) }
-            div.card.pad.obs { (observed(&FAULTS, obs, cases).unwrap_or_default()) (observed(&RULES, obs, cases).unwrap_or_default()) }
+            (ui::Panel::new(html! { div.obs { (commands(obs).unwrap_or_default()) (observed(&SETUPS, obs, cases).unwrap_or_default()) } }).look(ui::PanelLook::Tile))
+            (ui::Panel::new(html! { div.obs { (observed(&FAULTS, obs, cases).unwrap_or_default()) (observed(&RULES, obs, cases).unwrap_or_default()) } }).look(ui::PanelLook::Tile))
         }
         div.card {
             div.tree {
