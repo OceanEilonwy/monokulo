@@ -12,15 +12,31 @@ test.afterEach(async () => { await stopCoverageFixture(fixture?.process); });
 
 function posUrl() { return `${fixture.base_url}/dashboard/stores/${fixture.connection_id}/pos`; }
 
-test('real POS backgrounds, reloads, reopens, cancels, and searches an order', async ({ page }) => {
+/** Rings up `reference` and backgrounds it, so the background orders
+ * sidebar (the POS's only way to its order list) stays on screen. */
+async function keepOneInBackground(request, reference = 'Kept open') {
+  const headers = { cookie: `session=${fixture.session}` };
+  const created = await request.post(`${posUrl()}/orders`, { headers, data: { amount: '0.001', merchant_order_id: reference, request_key: reference.replace(/\W+/g, '-') } });
+  expect(created.ok()).toBeTruthy();
+  const { order_id } = await created.json();
+  expect((await request.post(`${posUrl()}/orders/${encodeURIComponent(order_id)}/background`, { headers })).ok()).toBeTruthy();
+}
+
+async function openOrderList(page) {
+  await page.getByRole('button', { name: 'View all →' }).click();
+}
+
+test('real POS backgrounds, reloads, reopens, cancels, and searches an order', async ({ page, request }) => {
+  await keepOneInBackground(request);
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card .pos-qr svg')).toBeVisible();
   await page.getByRole('button', { name: 'Background order', exact: true }).click();
-  await expect(page.locator('.pos-stack-card')).toContainText('Fixture o');
+  const fixtureCard = page.locator('.pos-stack-card', { hasText: 'Fixture o' });
+  await expect(fixtureCard).toBeVisible();
   await captureCoverageStage(page, 'pos-background-stack', test.info());
   await page.reload();
-  await expect(page.locator('.pos-stack-card')).toBeVisible();
-  await page.locator('.pos-stack-card').click();
+  await expect(fixtureCard).toBeVisible();
+  await fixtureCard.click();
   await expect(page.locator('.pos-order-heading h1')).toHaveText('Fixture order');
   await expect(page.locator('.pos-pay-card .pos-qr svg')).toBeVisible();
   await page.getByRole('button', { name: 'Cancel order…' }).click();
@@ -31,10 +47,9 @@ test('real POS backgrounds, reloads, reopens, cancels, and searches an order', a
   await expect(page.locator('.pos-pay-card.is-spent')).toBeVisible();
   await expect(page.locator('.mk-stage')).toContainText('Cancelled.');
   await page.getByRole('button', { name: 'New order' }).click();
-  // Nothing is backgrounded any more, so the stack is gone; the top bar
-  // still reaches the list.
-  await expect(page.locator('.pos-stack')).toHaveCount(0);
-  await page.getByRole('button', { name: 'All orders' }).click();
+  // Only the order kept open is left in the background.
+  await expect(page.locator('.pos-stack-card')).toHaveCount(1);
+  await openOrderList(page);
   await page.getByRole('button', { name: /Finished/ }).click();
   await expect(page.locator('.mk-card .tag')).toContainText('Cancelled');
   await page.getByRole('searchbox', { name: 'Search reference or order ID' }).fill('fixture');
@@ -502,7 +517,7 @@ test('busy store sees every open order at once and narrows them by search', asyn
   test.setTimeout(60000);
   await ringUp(request, 44, 'Table');
   await page.goto(posUrl());
-  await page.getByRole('button', { name: 'All orders' }).click();
+  await openOrderList(page);
   const cards = page.locator('.mk-card');
   // All 45 open orders (the fixture order and 44 tables): no paging.
   await expect(cards).toHaveCount(45);
@@ -521,8 +536,7 @@ test('an order list that failed to load when the POS opened comes back with Retr
     : route.continue()));
   await page.goto(posUrl());
   await expect(page.locator('.pos-error')).toContainText('The payment engine is busy');
-  // The list is reachable even with nothing loaded, and Retry reloads it.
-  await page.getByRole('button', { name: 'All orders' }).click();
+  // With nothing loaded there is no sidebar, so the keypad offers Retry.
   await page.getByRole('button', { name: 'Retry' }).click();
   await expect(page.locator('.pos-error')).toHaveCount(0);
   // The sale that was in progress when the POS opened is back on screen.
@@ -728,7 +742,7 @@ test('merchant denies the camera or picks a broken photo: the card says what to 
 test('clearing a search brings the whole order list back', async ({ page, request }) => {
   await ringUp(request, 3, 'Table');
   await page.goto(posUrl());
-  await page.getByRole('button', { name: 'All orders' }).click();
+  await openOrderList(page);
   const cards = page.locator('.mk-card');
   await expect(cards).toHaveCount(4);
   const search = page.getByRole('searchbox', { name: 'Search reference or order ID' });
@@ -741,11 +755,12 @@ test('clearing a search brings the whole order list back', async ({ page, reques
 });
 
 async function openFinishedTab(page) {
-  await page.getByRole('button', { name: 'All orders' }).click();
+  await openOrderList(page);
   await page.getByRole('button', { name: /Finished/ }).click();
 }
 
 test('an order finished at the counter moves to Finished for this session only', async ({ page, request }) => {
+  await keepOneInBackground(request);
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/paid`);
@@ -759,7 +774,8 @@ test('an order finished at the counter moves to Finished for this session only',
   await expect(note.getByRole('link', { name: 'See all orders →' })).toHaveAttribute('href', `/dashboard/stores/${fixture.connection_id}/orders`);
   await captureCoverageStage(page, 'pos-finished-tab', test.info());
   await page.getByRole('button', { name: /Active/ }).click();
-  await expect(page.locator('.mk-card')).toHaveCount(0);
+  await expect(page.locator('.mk-card')).toHaveCount(1);
+  await expect(page.locator('.mk-card')).toContainText('Kept open');
   // Nothing is loaded into Finished: after a reload it starts empty.
   await page.reload();
   await openFinishedTab(page);
@@ -769,11 +785,12 @@ test('an order finished at the counter moves to Finished for this session only',
 });
 
 test('a backgrounded order that is paid while the merchant serves someone else moves to Finished', async ({ page, request }) => {
+  await keepOneInBackground(request);
   await page.goto(posUrl());
   await page.getByRole('button', { name: 'Background order', exact: true }).click();
-  await expect(page.locator('.pos-stack-card')).toHaveCount(1);
+  await expect(page.locator('.pos-stack-card')).toHaveCount(2);
   await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/paid`);
-  await expect(page.locator('.pos-stack-card')).toHaveCount(0);
+  await expect(page.locator('.pos-stack-card')).toHaveCount(1);
   await openFinishedTab(page);
   await expect(page.locator('.mk-card .tag')).toContainText('Paid');
 });
@@ -782,6 +799,7 @@ test('finished orders drop off the tab 24 hours after they finished', async ({ p
   // The page's time stands still from the start: only the test moves it,
   // so the order finishes at a moment the test knows exactly.
   await pauseClockAt(page, new Date());
+  await keepOneInBackground(request);
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/paid`);
@@ -796,9 +814,10 @@ test('finished orders drop off the tab 24 hours after they finished', async ({ p
   await expect(page.getByRole('button', { name: 'Finished · 0' })).toBeVisible();
 });
 
-test('a search with no match in this session links to searching all orders', async ({ page }) => {
+test('a search with no match in this session links to searching all orders', async ({ page, request }) => {
+  await keepOneInBackground(request);
   await page.goto(posUrl());
-  await page.getByRole('button', { name: 'All orders' }).click();
+  await openOrderList(page);
   await page.getByRole('searchbox', { name: 'Search reference or order ID' }).fill('wc-1042');
   const empty = page.locator('.pos-empty');
   await expect(empty).toHaveText('No matches from this session. Search all orders →');
@@ -842,7 +861,7 @@ test('on a tablet or desktop the POS uses the whole screen, with the open orders
     await page.getByRole('button', { name: 'Background order', exact: true }).click();
     await expect(page.locator('.pos-keypad')).toBeVisible();
   }
-  await page.getByRole('button', { name: 'All orders' }).click();
+  await openOrderList(page);
   const cards = await page.locator('.mk-card').evaluateAll(els => els.map(el => el.getBoundingClientRect().y));
   expect(new Set(cards.map(Math.round)).size, 'several cards to a row').toBeLessThan(cards.length);
   // On a phone the payment view has no room for the sidebar.
