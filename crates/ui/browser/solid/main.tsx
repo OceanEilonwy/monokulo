@@ -20,7 +20,10 @@ function props(value: Json): unknown {
       return (value.$slot as Json[]).map(part => {
         if (typeof part === 'string') return part;
         const { $component, props: inner } = part as { $component: string; props: Json };
-        return createComponent(registry[$component], props(inner) as Record<string, unknown>);
+        const given = props(inner) as Record<string, unknown>;
+        // Every island without its behaviour's markup: what the server renders.
+        if ($component in islands) given.enhanced = false;
+        return createComponent(registry[$component], given);
       });
     }
     return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, props(inner)]));
@@ -31,25 +34,23 @@ function props(value: Json): unknown {
 /** A DOM tree as comparable data: attributes sorted, text merged, empty
  *  text and comments dropped. Form controls compare their live value,
  *  since frameworks set it as a property rather than an attribute. The
- *  server's island wrapper, its props and its attach marks (`data-mk`) are
- *  for the behaviour, not the markup: they're left out. */
+ *  server's island attributes (`data-island`, its props, `data-mount`) and
+ *  attach marks (`data-mk`) are for the behaviour, not the markup: they're
+ *  left out. */
 function canon(node: Node): unknown {
   if (node.nodeType === Node.TEXT_NODE) return node.textContent;
   const element = node as Element;
   const attrs = [...element.attributes]
     .filter(a => !(a.name === 'value' && element instanceof HTMLInputElement)
-      && !(a.name === 'selected' && element instanceof HTMLOptionElement) && a.name !== 'data-mk')
+      && !(a.name === 'selected' && element instanceof HTMLOptionElement)
+      && !['data-mk', 'data-island', 'data-props', 'data-mount'].includes(a.name))
     .map(a => [a.name, a.value])
     .sort();
   if (element instanceof HTMLInputElement) attrs.push(['(value)', element.value]);
   if (element instanceof HTMLOptionElement) attrs.push(['(selected)', String(element.selected)]);
   const children: unknown[] = [];
   let text = '';
-  const unwrapped = (node: Node): Node[] =>
-    node instanceof HTMLElement && node.localName === 'mk-island'
-      ? [...node.childNodes].filter(c => !(c instanceof HTMLScriptElement)).flatMap(unwrapped)
-      : [node];
-  for (const child of [...element.childNodes].flatMap(unwrapped)) {
+  for (const child of Array.from(element.childNodes)) {
     if (child.nodeType === Node.TEXT_NODE) { text += child.textContent; continue; }
     if (child.nodeType !== Node.ELEMENT_NODE) continue;
     if (text) { children.push(text); text = ''; }

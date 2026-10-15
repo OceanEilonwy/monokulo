@@ -1858,7 +1858,9 @@ mod tests {
         // One orange button, the save bar's Save; the red one is Retire's.
         assert_eq!(html.matches("btn-primary").count(), 1, "{html}");
         assert!(
-            html.contains(r#"class="btn-primary" data-save>Save</button>"#),
+            html.contains(
+                r#"class="btn-primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7-->"#
+            ),
             "{html}"
         );
     }

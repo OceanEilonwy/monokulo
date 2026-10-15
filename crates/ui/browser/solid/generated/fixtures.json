@@ -153,7 +153,7 @@
   },
   {
     "component": "LinkButton",
-    "html": "<a class=\"mk-btn\" href=\"#link-button\" data-variant=\"primary\">Add a store</a>",
+    "html": "<a class=\"mk-btn\" href=\"#component-link-button\" data-variant=\"primary\">Add a store</a>",
     "props": {
       "block": false,
       "children": {
@@ -161,14 +161,14 @@
           "Add a store"
         ]
       },
-      "href": "#link-button",
+      "href": "#component-link-button",
       "variant": "primary"
     },
     "title": "Primary"
   },
   {
     "component": "LinkButton",
-    "html": "<a class=\"mk-btn\" href=\"#link-button\">Watch it live</a>",
+    "html": "<a class=\"mk-btn\" href=\"#component-link-button\">Watch it live</a>",
     "props": {
       "block": false,
       "children": {
@@ -176,13 +176,13 @@
           "Watch it live"
         ]
       },
-      "href": "#link-button"
+      "href": "#component-link-button"
     },
     "title": "Secondary"
   },
   {
     "component": "LinkButton",
-    "html": "<a class=\"mk-btn\" href=\"#link-button\" data-size=\"compact\">Discard changes</a>",
+    "html": "<a class=\"mk-btn\" href=\"#component-link-button\" data-size=\"compact\">Discard changes</a>",
     "props": {
       "block": false,
       "children": {
@@ -190,7 +190,7 @@
           "Discard changes"
         ]
       },
-      "href": "#link-button",
+      "href": "#component-link-button",
       "size": "compact"
     },
     "title": "Compact"
@@ -343,7 +343,7 @@
   },
   {
     "component": "Select",
-    "html": "<mk-island component=\"Select\" mount=\"load\"><script type=\"application/json\" data-props>{\"compact\":false,\"disabled\":false,\"id\":\"book-currency\",\"label\":\"Base currency\",\"name\":\"currency\",\"options\":[{\"current\":false,\"data_label\":\"Australian Dollar\",\"detail\":\"AUD\",\"disabled\":false,\"label\":\"Australian Dollar\",\"selected\":false,\"text\":\"Australian Dollar (AUD)\",\"value\":\"AUD\"},{\"current\":false,\"data_label\":\"Canadian Dollar\",\"detail\":\"CAD\",\"disabled\":false,\"label\":\"Canadian Dollar\",\"selected\":false,\"text\":\"Canadian Dollar (CAD)\",\"value\":\"CAD\"},{\"current\":false,\"data_label\":\"Swiss Franc\",\"detail\":\"CHF\",\"disabled\":false,\"label\":\"Swiss Franc\",\"selected\":false,\"text\":\"Swiss Franc (CHF)\",\"value\":\"CHF\"},{\"current\":false,\"data_label\":\"Euro\",\"detail\":\"EUR\",\"disabled\":false,\"label\":\"Euro\",\"selected\":true,\"text\":\"Euro (EUR)\",\"value\":\"EUR\"},{\"current\":false,\"data_label\":\"Pound Sterling\",\"detail\":\"GBP\",\"disabled\":false,\"label\":\"Pound Sterling\",\"selected\":false,\"text\":\"Pound Sterling (GBP)\",\"value\":\"GBP\"},{\"current\":false,\"data_label\":\"Japanese Yen\",\"detail\":\"JPY\",\"disabled\":false,\"label\":\"Japanese Yen\",\"selected\":false,\"text\":\"Japanese Yen (JPY)\",\"value\":\"JPY\"},{\"current\":false,\"data_label\":\"New Zealand Dollar\",\"detail\":\"NZD\",\"disabled\":false,\"label\":\"New Zealand Dollar\",\"selected\":false,\"text\":\"New Zealand Dollar (NZD)\",\"value\":\"NZD\"},{\"current\":false,\"data_label\":\"Swedish Krona\",\"detail\":\"SEK\",\"disabled\":false,\"label\":\"Swedish Krona\",\"selected\":false,\"text\":\"Swedish Krona (SEK)\",\"value\":\"SEK\"},{\"current\":false,\"data_label\":\"United States Dollar\",\"detail\":\"USD\",\"disabled\":false,\"label\":\"United States Dollar\",\"selected\":false,\"text\":\"United States Dollar (USD)\",\"value\":\"USD\"},{\"current\":false,\"data_label\":\"Monero\",\"detail\":\"XMR\",\"disabled\":false,\"label\":\"Monero\",\"selected\":false,\"text\":\"Monero (XMR)\",\"value\":\"XMR\"},{\"current\":false,\"data_label\":\"Brazilian Real\",\"detail\":\"BRL\",\"disabled\":false,\"label\":\"Brazilian Real\",\"selected\":false,\"text\":\"Brazilian Real (BRL)\",\"value\":\"BRL\"},{\"current\":false,\"data_label\":\"Indian Rupee\",\"detail\":\"INR\",\"disabled\":false,\"label\":\"Indian Rupee\",\"selected\":false,\"text\":\"Indian Rupee (INR)\",\"value\":\"INR\"}],\"required\":false,\"search\":\"auto\"}</script><div class=\"mk-select\" data-mk=\"1\"><select class=\"mk-input\" name=\"currency\" id=\"book-currency\" aria-label=\"Base currency\" data-mk=\"2\"><option value=\"AUD\" data-label=\"Australian Dollar\" data-detail=\"AUD\">Australian Dollar (AUD)</option><option value=\"CAD\" data-label=\"Canadian Dollar\" data-detail=\"CAD\">Canadian Dollar (CAD)</option><option value=\"CHF\" data-label=\"Swiss Franc\" data-detail=\"CHF\">Swiss Franc (CHF)</option><option value=\"EUR\" selected data-label=\"Euro\" data-detail=\"EUR\">Euro (EUR)</option><option value=\"GBP\" data-label=\"Pound Sterling\" data-detail=\"GBP\">Pound Sterling (GBP)</option><option value=\"JPY\" data-label=\"Japanese Yen\" data-detail=\"JPY\">Japanese Yen (JPY)</option><option value=\"NZD\" data-label=\"New Zealand Dollar\" data-detail=\"NZD\">New Zealand Dollar (NZD)</option><option value=\"SEK\" data-label=\"Swedish Krona\" data-detail=\"SEK\">Swedish Krona (SEK)</option><option value=\"USD\" data-label=\"United States Dollar\" data-detail=\"USD\">United States Dollar (USD)</option><option value=\"XMR\" data-label=\"Monero\" data-detail=\"XMR\">Monero (XMR)</option><option value=\"BRL\" data-label=\"Brazilian Real\" data-detail=\"BRL\">Brazilian Real (BRL)</option><option value=\"INR\" data-label=\"Indian Rupee\" data-detail=\"INR\">Indian Rupee (INR)</option></select><!--mk:3--></div></mk-island>",
+    "html": "<div class=\"mk-select\" data-mk=\"1\" data-island=\"Select\" data-props=\"{&quot;label&quot;:&quot;Base currency&quot;,&quot;search&quot;:&quot;auto&quot;}\"><select class=\"mk-input\" name=\"currency\" id=\"book-currency\" aria-label=\"Base currency\" data-mk=\"2\"><option value=\"AUD\" data-label=\"Australian Dollar\" data-detail=\"AUD\">Australian Dollar (AUD)</option><option value=\"CAD\" data-label=\"Canadian Dollar\" data-detail=\"CAD\">Canadian Dollar (CAD)</option><option value=\"CHF\" data-label=\"Swiss Franc\" data-detail=\"CHF\">Swiss Franc (CHF)</option><option value=\"EUR\" selected data-label=\"Euro\" data-detail=\"EUR\">Euro (EUR)</option><option value=\"GBP\" data-label=\"Pound Sterling\" data-detail=\"GBP\">Pound Sterling (GBP)</option><option value=\"JPY\" data-label=\"Japanese Yen\" data-detail=\"JPY\">Japanese Yen (JPY)</option><option value=\"NZD\" data-label=\"New Zealand Dollar\" data-detail=\"NZD\">New Zealand Dollar (NZD)</option><option value=\"SEK\" data-label=\"Swedish Krona\" data-detail=\"SEK\">Swedish Krona (SEK)</option><option value=\"USD\" data-label=\"United States Dollar\" data-detail=\"USD\">United States Dollar (USD)</option><option value=\"XMR\" data-label=\"Monero\" data-detail=\"XMR\">Monero (XMR)</option><option value=\"BRL\" data-label=\"Brazilian Real\" data-detail=\"BRL\">Brazilian Real (BRL)</option><option value=\"INR\" data-label=\"Indian Rupee\" data-detail=\"INR\">Indian Rupee (INR)</option></select><!--mk:3--></div>",
     "props": {
       "compact": false,
       "disabled": false,
@@ -479,7 +479,7 @@
   },
   {
     "component": "Select",
-    "html": "<mk-island component=\"Select\" mount=\"load\"><script type=\"application/json\" data-props>{\"compact\":false,\"disabled\":false,\"id\":\"book-wallet\",\"label\":\"Wallet\",\"name\":\"wallet_id\",\"options\":[{\"current\":false,\"disabled\":true,\"label\":\"Choose a wallet…\",\"selected\":false,\"text\":\"Choose a wallet…\",\"value\":\"\"},{\"chip\":\"Current\",\"current\":true,\"data_label\":\"Copper Heron\",\"detail\":\"48xQ7…v3Rk\",\"disabled\":false,\"label\":\"Copper Heron\",\"network\":\"mainnet\",\"note\":\"2 stores\",\"selected\":true,\"text\":\"Copper Heron (48xQ7…v3Rk) [Mainnet] [Current] - 2 stores\",\"value\":\"w_1\"},{\"current\":false,\"data_label\":\"Feather test\",\"detail\":\"5Bq2…9TtM\",\"disabled\":false,\"label\":\"Feather test\",\"network\":\"stagenet\",\"note\":\"1 store\",\"selected\":false,\"text\":\"Feather test (5Bq2…9TtM) [Stagenet] - 1 store\",\"value\":\"w_2\"},{\"current\":false,\"data_label\":\"Old till\",\"detail\":\"47aa…0QeN\",\"disabled\":true,\"label\":\"Old till\",\"network\":\"mainnet\",\"note\":\"retired\",\"selected\":false,\"text\":\"Old till (47aa…0QeN) [Mainnet] - retired\",\"value\":\"w_3\"}],\"required\":true,\"search\":\"auto\"}</script><div class=\"mk-select\" data-mk=\"1\"><select class=\"mk-input\" name=\"wallet_id\" id=\"book-wallet\" aria-label=\"Wallet\" required data-mk=\"2\"><option value=\"\" disabled>Choose a wallet…</option><option value=\"w_1\" selected data-label=\"Copper Heron\" data-detail=\"48xQ7…v3Rk\" data-network=\"mainnet\" data-chip=\"Current\" data-chip-tone=\"current\" data-note=\"2 stores\">Copper Heron (48xQ7…v3Rk) [Mainnet] [Current] - 2 stores</option><option value=\"w_2\" data-label=\"Feather test\" data-detail=\"5Bq2…9TtM\" data-network=\"stagenet\" data-note=\"1 store\">Feather test (5Bq2…9TtM) [Stagenet] - 1 store</option><option value=\"w_3\" disabled data-label=\"Old till\" data-detail=\"47aa…0QeN\" data-network=\"mainnet\" data-note=\"retired\">Old till (47aa…0QeN) [Mainnet] - retired</option></select><!--mk:3--></div></mk-island>",
+    "html": "<div class=\"mk-select\" data-mk=\"1\" data-island=\"Select\" data-props=\"{&quot;label&quot;:&quot;Wallet&quot;,&quot;search&quot;:&quot;auto&quot;}\"><select class=\"mk-input\" name=\"wallet_id\" id=\"book-wallet\" aria-label=\"Wallet\" required data-mk=\"2\"><option value=\"\" disabled>Choose a wallet…</option><option value=\"w_1\" selected data-label=\"Copper Heron\" data-detail=\"48xQ7…v3Rk\" data-network=\"mainnet\" data-chip=\"Current\" data-chip-tone=\"current\" data-note=\"2 stores\">Copper Heron (48xQ7…v3Rk) [Mainnet] [Current] - 2 stores</option><option value=\"w_2\" data-label=\"Feather test\" data-detail=\"5Bq2…9TtM\" data-network=\"stagenet\" data-note=\"1 store\">Feather test (5Bq2…9TtM) [Stagenet] - 1 store</option><option value=\"w_3\" disabled data-label=\"Old till\" data-detail=\"47aa…0QeN\" data-network=\"mainnet\" data-note=\"retired\">Old till (47aa…0QeN) [Mainnet] - retired</option></select><!--mk:3--></div>",
     "props": {
       "compact": false,
       "disabled": false,
@@ -540,7 +540,7 @@
   },
   {
     "component": "Select",
-    "html": "<mk-island component=\"Select\" mount=\"load\"><script type=\"application/json\" data-props>{\"compact\":false,\"disabled\":false,\"id\":\"book-network\",\"label\":\"Network\",\"name\":\"network\",\"options\":[{\"current\":false,\"data_label\":\"\",\"disabled\":false,\"label\":\"\",\"network\":\"mainnet\",\"selected\":false,\"text\":\"[Mainnet]\",\"value\":\"mainnet\"},{\"current\":false,\"data_label\":\"\",\"disabled\":false,\"label\":\"\",\"network\":\"stagenet\",\"selected\":true,\"text\":\"[Stagenet]\",\"value\":\"stagenet\"},{\"current\":false,\"data_label\":\"\",\"disabled\":false,\"label\":\"\",\"network\":\"testnet\",\"selected\":false,\"text\":\"[Testnet]\",\"value\":\"testnet\"}],\"required\":false,\"search\":\"auto\"}</script><div class=\"mk-select\" data-mk=\"1\"><select class=\"mk-input\" name=\"network\" id=\"book-network\" aria-label=\"Network\" data-mk=\"2\"><option value=\"mainnet\" data-label=\"\" data-network=\"mainnet\">[Mainnet]</option><option value=\"stagenet\" selected data-label=\"\" data-network=\"stagenet\">[Stagenet]</option><option value=\"testnet\" data-label=\"\" data-network=\"testnet\">[Testnet]</option></select><!--mk:3--></div></mk-island>",
+    "html": "<div class=\"mk-select\" data-mk=\"1\" data-island=\"Select\" data-props=\"{&quot;label&quot;:&quot;Network&quot;,&quot;search&quot;:&quot;auto&quot;}\"><select class=\"mk-input\" name=\"network\" id=\"book-network\" aria-label=\"Network\" data-mk=\"2\"><option value=\"mainnet\" data-label=\"\" data-network=\"mainnet\">[Mainnet]</option><option value=\"stagenet\" selected data-label=\"\" data-network=\"stagenet\">[Stagenet]</option><option value=\"testnet\" data-label=\"\" data-network=\"testnet\">[Testnet]</option></select><!--mk:3--></div>",
     "props": {
       "compact": false,
       "disabled": false,
@@ -586,7 +586,7 @@
   },
   {
     "component": "Select",
-    "html": "<mk-island component=\"Select\" mount=\"load\"><script type=\"application/json\" data-props>{\"compact\":true,\"disabled\":false,\"id\":\"book-level\",\"label\":\"Level\",\"name\":\"level\",\"options\":[{\"current\":false,\"disabled\":false,\"label\":\"Errors\",\"selected\":false,\"text\":\"Errors\",\"value\":\"error\"},{\"current\":false,\"disabled\":false,\"label\":\"Warnings and up\",\"selected\":true,\"text\":\"Warnings and up\",\"value\":\"warn\"},{\"current\":false,\"disabled\":false,\"label\":\"Info and up\",\"selected\":false,\"text\":\"Info and up\",\"value\":\"info\"},{\"current\":false,\"disabled\":false,\"label\":\"Everything\",\"selected\":false,\"text\":\"Everything\",\"value\":\"debug\"}],\"required\":false,\"search\":\"auto\"}</script><div class=\"mk-select\" data-compact data-mk=\"1\"><select class=\"mk-input\" data-size=\"compact\" name=\"level\" id=\"book-level\" aria-label=\"Level\" data-mk=\"2\"><option value=\"error\">Errors</option><option value=\"warn\" selected>Warnings and up</option><option value=\"info\">Info and up</option><option value=\"debug\">Everything</option></select><!--mk:3--></div></mk-island>",
+    "html": "<div class=\"mk-select\" data-compact data-mk=\"1\" data-island=\"Select\" data-props=\"{&quot;label&quot;:&quot;Level&quot;,&quot;search&quot;:&quot;auto&quot;}\"><select class=\"mk-input\" data-size=\"compact\" name=\"level\" id=\"book-level\" aria-label=\"Level\" data-mk=\"2\"><option value=\"error\">Errors</option><option value=\"warn\" selected>Warnings and up</option><option value=\"info\">Info and up</option><option value=\"debug\">Everything</option></select><!--mk:3--></div>",
     "props": {
       "compact": true,
       "disabled": false,
@@ -634,7 +634,7 @@
   },
   {
     "component": "Select",
-    "html": "<mk-island component=\"Select\" mount=\"load\"><script type=\"application/json\" data-props>{\"compact\":false,\"disabled\":true,\"id\":\"book-language\",\"label\":\"Language\",\"name\":\"language\",\"options\":[{\"current\":false,\"disabled\":false,\"label\":\"English\",\"selected\":true,\"text\":\"English\",\"value\":\"en\"}],\"required\":false,\"search\":\"auto\"}</script><div class=\"mk-select\" data-mk=\"1\"><select class=\"mk-input\" name=\"language\" id=\"book-language\" aria-label=\"Language\" disabled data-mk=\"2\"><option value=\"en\" selected>English</option></select><!--mk:3--></div></mk-island>",
+    "html": "<div class=\"mk-select\" data-mk=\"1\" data-island=\"Select\" data-props=\"{&quot;label&quot;:&quot;Language&quot;,&quot;search&quot;:&quot;auto&quot;}\"><select class=\"mk-input\" name=\"language\" id=\"book-language\" aria-label=\"Language\" disabled data-mk=\"2\"><option value=\"en\" selected>English</option></select><!--mk:3--></div>",
     "props": {
       "compact": false,
       "disabled": true,
@@ -799,7 +799,7 @@
   },
   {
     "component": "Tabs",
-    "html": "<mk-island component=\"Tabs\" mount=\"load\"><script type=\"application/json\" data-props>{\"label\":\"Example POS views\",\"tabs\":[{\"id\":\"example-charge\",\"label\":\"Charge\"},{\"id\":\"example-history\",\"label\":\"History\"},{\"id\":\"example-terminal\",\"label\":\"Terminal\"}]}</script><div class=\"mk-tabset\"><div class=\"mk-tabs\" aria-label=\"Example POS views\" data-mk=\"1\"><a href=\"#example-charge\" id=\"example-charge-tab\" data-mk=\"2\">Charge</a><a href=\"#example-history\" id=\"example-history-tab\" data-mk=\"2\">History</a><a href=\"#example-terminal\" id=\"example-terminal-tab\" data-mk=\"2\">Terminal</a></div><div class=\"mk-tab-panels\"><section id=\"example-charge\" data-mk=\"3\">Enter an amount to start a payment.</section><section id=\"example-history\" data-mk=\"3\">No payments yet.</section><section id=\"example-terminal\" data-mk=\"3\">This terminal is ready to receive payments.</section></div></div></mk-island>",
+    "html": "<div class=\"mk-tabset\" data-island=\"Tabs\" data-props=\"{&quot;tabs&quot;:[{&quot;id&quot;:&quot;example-charge&quot;,&quot;label&quot;:&quot;Charge&quot;},{&quot;id&quot;:&quot;example-history&quot;,&quot;label&quot;:&quot;History&quot;},{&quot;id&quot;:&quot;example-terminal&quot;,&quot;label&quot;:&quot;Terminal&quot;}]}\"><div class=\"mk-tabs\" aria-label=\"Example POS views\" data-mk=\"1\"><a href=\"#example-charge\" id=\"example-charge-tab\" data-mk=\"2\">Charge</a><a href=\"#example-history\" id=\"example-history-tab\" data-mk=\"2\">History</a><a href=\"#example-terminal\" id=\"example-terminal-tab\" data-mk=\"2\">Terminal</a></div><div class=\"mk-tab-panels\"><section id=\"example-charge\" data-mk=\"3\">Enter an amount to start a payment.</section><section id=\"example-history\" data-mk=\"3\">No payments yet.</section><section id=\"example-terminal\" data-mk=\"3\">This terminal is ready to receive payments.</section></div></div>",
     "props": {
       "label": "Example POS views",
       "tabs": [
@@ -836,23 +836,23 @@
   },
   {
     "component": "TabLinks",
-    "html": "<nav class=\"mk-tabs\" aria-label=\"Example settings navigation\"><a href=\"#tab-links\" aria-current=\"page\">General</a><a href=\"#select\">Networks</a><a href=\"#alert\">Notifications</a></nav>",
+    "html": "<nav class=\"mk-tabs\" aria-label=\"Example settings navigation\"><a href=\"#component-tab-links\" aria-current=\"page\">General</a><a href=\"#component-select\">Networks</a><a href=\"#component-alert\">Notifications</a></nav>",
     "props": {
       "label": "Example settings navigation",
       "links": [
         {
           "current": true,
-          "href": "#tab-links",
+          "href": "#component-tab-links",
           "label": "General"
         },
         {
           "current": false,
-          "href": "#select",
+          "href": "#component-select",
           "label": "Networks"
         },
         {
           "current": false,
-          "href": "#alert",
+          "href": "#component-alert",
           "label": "Notifications"
         }
       ]
@@ -861,7 +861,7 @@
   },
   {
     "component": "CopyValue",
-    "html": "<mk-island component=\"CopyValue\" mount=\"load\"><script type=\"application/json\" data-props>{\"copy_label\":\"Copy payment reference\",\"head\":8,\"tail\":8,\"truncate\":\"end\",\"value\":\"order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789\"}</script><div class=\"mk-copy\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span><!--mk:2--></div></mk-island>",
+    "html": "<div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy payment reference&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span><!--mk:2--></div>",
     "props": {
       "copy_label": "Copy payment reference",
       "head": 8,
@@ -873,7 +873,7 @@
   },
   {
     "component": "CopyValue",
-    "html": "<mk-island component=\"CopyValue\" mount=\"load\"><script type=\"application/json\" data-props>{\"copy_label\":\"Copy middle example\",\"head\":10,\"tail\":10,\"truncate\":\"middle\",\"value\":\"order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789\"}</script><div class=\"mk-copy\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span><!--mk:2--></div></mk-island>",
+    "html": "<div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy middle example&quot;,&quot;head&quot;:10,&quot;tail&quot;:10,&quot;truncate&quot;:&quot;middle&quot;,&quot;value&quot;:&quot;order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span><!--mk:2--></div>",
     "props": {
       "copy_label": "Copy middle example",
       "head": 10,
@@ -885,7 +885,7 @@
   },
   {
     "component": "CopyValue",
-    "html": "<mk-island component=\"CopyValue\" mount=\"load\"><script type=\"application/json\" data-props>{\"copy_label\":\"Copy segmented example\",\"head\":8,\"segments\":\"0:8,32:8,-8:8\",\"tail\":8,\"truncate\":\"segments\",\"value\":\"order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789\"}</script><div class=\"mk-copy\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span><!--mk:2--></div></mk-island>",
+    "html": "<div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy segmented example&quot;,&quot;head&quot;:8,&quot;segments&quot;:&quot;0:8,32:8,-8:8&quot;,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;segments&quot;,&quot;value&quot;:&quot;order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789</span><!--mk:2--></div>",
     "props": {
       "copy_label": "Copy segmented example",
       "head": 8,
@@ -898,7 +898,7 @@
   },
   {
     "component": "CopyValue",
-    "html": "<mk-island component=\"CopyValue\" mount=\"load\"><script type=\"application/json\" data-props>{\"copy_label\":\"Copy wallet id\",\"head\":8,\"tail\":8,\"truncate\":\"end\",\"value\":\"48xQ7v3Rk\"}</script><div class=\"mk-copy\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">48xQ7v3Rk</span><!--mk:2--></div></mk-island>",
+    "html": "<div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy wallet id&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;48xQ7v3Rk&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">48xQ7v3Rk</span><!--mk:2--></div>",
     "props": {
       "copy_label": "Copy wallet id",
       "head": 8,
@@ -907,5 +907,277 @@
       "value": "48xQ7v3Rk"
     },
     "title": "Short enough to show whole"
+  },
+  {
+    "component": "SettingsForm",
+    "html": "<div class=\"mk-settings-form\" data-label=\"Store settings\" data-mk=\"1\" data-island=\"SettingsForm\" data-props=\"{&quot;label&quot;:&quot;Store settings&quot;}\"><form method=\"get\" action=\"#component-settings-form\" id=\"book-settings-form\" data-mk=\"2\"><section id=\"card-book-details\" class=\"settings-card\" data-name=\"book-details\" role=\"region\" aria-labelledby=\"card-book-details-title\" data-mk=\"1\" data-island=\"SettingsCard\" data-props=\"{&quot;failed&quot;:false,&quot;hidden&quot;:false,&quot;name&quot;:&quot;book-details&quot;,&quot;title&quot;:&quot;Store details&quot;}\"><header class=\"card-head\"><h3 id=\"card-book-details-title\">Store details</h3><span class=\"card-state\" data-card-state><!--mk:2--></span><span class=\"card-spacer\"></span><!--mk:5--></header><div class=\"card-body\"><div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{&quot;row&quot;:false}\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-settings-name-input\">Store name</label><span class=\"changed-mark\">changed</span></div><div class=\"mk-field\"><label for=\"book-settings-name-input\">Name</label><input class=\"mk-input\" id=\"book-settings-name-input\" name=\"name\" type=\"text\"></div></div></div></section><div id=\"book-form-save-bar\" class=\"save-bar\" data-placement=\"inline\" role=\"region\" aria-label=\"Example form's save changes\" data-mk=\"1\" data-island=\"SaveBar\" data-props=\"{&quot;failed&quot;:false,&quot;save_label&quot;:&quot;Save&quot;}\"><div class=\"save-bar-inner\"><p class=\"save-bar-message\" data-save-bar-message tabindex=\"-1\"><span data-mk=\"2\">Saving changes the store straight away.</span><!--mk:3--></p><div class=\"save-bar-actions\" data-mk=\"4\"><a class=\"btn\" href=\"#component-settings-form\" data-discard-all data-mk=\"5\">Discard changes</a><button type=\"submit\" class=\"btn-primary\" data-save data-mk=\"6\"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div></form></div>",
+    "props": {
+      "action": "#component-settings-form",
+      "children": {
+        "$slot": [
+          {
+            "$component": "SettingsCard",
+            "props": {
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "Setting",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          {
+                            "$component": "Field",
+                            "props": {
+                              "disabled": false,
+                              "id": "book-settings-name-input",
+                              "kind": "text",
+                              "label": "Name",
+                              "name": "name",
+                              "readonly": false,
+                              "required": false
+                            }
+                          }
+                        ]
+                      },
+                      "group": false,
+                      "id": "book-settings-name-input",
+                      "label": "Store name",
+                      "row": false
+                    }
+                  }
+                ]
+              },
+              "failed": false,
+              "focus_saved": false,
+              "hidden": false,
+              "name": "book-details",
+              "readonly": false,
+              "title": "Store details"
+            }
+          },
+          {
+            "$component": "SaveBar",
+            "props": {
+              "discard_href": "#component-settings-form",
+              "failed": false,
+              "focus": false,
+              "id": "book-form-save-bar",
+              "inline": true,
+              "message": {
+                "$slot": [
+                  "Saving changes the store straight away."
+                ]
+              },
+              "region_label": "Example form's save changes",
+              "save_label": "Save"
+            }
+          }
+        ]
+      },
+      "form_id": "book-settings-form",
+      "framed": false,
+      "label": "Store settings",
+      "method": "get"
+    },
+    "title": "A card, its settings and the save bar"
+  },
+  {
+    "component": "SettingsCard",
+    "html": "<section id=\"card-book-saved\" class=\"settings-card\" data-name=\"book-saved\" role=\"region\" aria-labelledby=\"card-book-saved-title\" data-mk=\"1\" data-island=\"SettingsCard\" data-props=\"{&quot;failed&quot;:false,&quot;hidden&quot;:false,&quot;name&quot;:&quot;book-saved&quot;,&quot;title&quot;:&quot;Payments&quot;}\"><header class=\"card-head\"><h3 id=\"card-book-saved-title\">Payments</h3><span class=\"card-state\" data-card-state><!--mk:2--></span><span class=\"card-spacer\"></span><span class=\"card-meta card-saved\" data-card-saved data-mk=\"4\">Saved 12 Oct, 09:30</span><!--mk:5--></header><div class=\"card-body\">Its settings.</div></section>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Its settings."
+        ]
+      },
+      "failed": false,
+      "focus_saved": false,
+      "hidden": false,
+      "name": "book-saved",
+      "readonly": false,
+      "saved": "12 Oct, 09:30",
+      "title": "Payments"
+    },
+    "title": "Saved"
+  },
+  {
+    "component": "SettingsCard",
+    "html": "<section id=\"card-book-refused\" class=\"settings-card is-failed\" data-name=\"book-refused\" role=\"region\" aria-labelledby=\"card-book-refused-title\" data-mk=\"1\" data-island=\"SettingsCard\" data-props=\"{&quot;failed&quot;:true,&quot;hidden&quot;:false,&quot;name&quot;:&quot;book-refused&quot;,&quot;title&quot;:&quot;Webhooks&quot;}\"><header class=\"card-head\"><h3 id=\"card-book-refused-title\">Webhooks</h3><span class=\"card-state\" data-card-state><!--mk:2--><span class=\"mk-status-text\" data-tone=\"error\" data-card-failed data-mk=\"3\">Not saved</span></span><span class=\"card-spacer\"></span><!--mk:5--></header><div class=\"card-body\"><p class=\"error\" role=\"alert\" data-mk=\"6\">The URL must use https.</p>Its settings.</div></section>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Its settings."
+        ]
+      },
+      "failed": true,
+      "focus_saved": false,
+      "hidden": false,
+      "message": "The URL must use https.",
+      "name": "book-refused",
+      "readonly": false,
+      "title": "Webhooks"
+    },
+    "title": "Refused"
+  },
+  {
+    "component": "SettingsCard",
+    "html": "<section id=\"card-book-readonly\" class=\"settings-card\" data-name=\"book-readonly\" role=\"region\" aria-labelledby=\"card-book-readonly-title\" data-mk=\"1\" data-island=\"SettingsCard\" data-props=\"{&quot;failed&quot;:false,&quot;hidden&quot;:false,&quot;name&quot;:&quot;book-readonly&quot;,&quot;title&quot;:&quot;Server&quot;}\"><header class=\"card-head\"><h3 id=\"card-book-readonly-title\">Server</h3><span class=\"card-state\" data-card-state><!--mk:2--></span><span class=\"card-spacer\"></span><span class=\"card-meta\">Can't be changed here</span></header><div class=\"card-body\">Its settings.</div></section>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Its settings."
+        ]
+      },
+      "failed": false,
+      "focus_saved": false,
+      "hidden": false,
+      "name": "book-readonly",
+      "readonly": true,
+      "title": "Server"
+    },
+    "title": "Read only"
+  },
+  {
+    "component": "Setting",
+    "html": "<div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{&quot;row&quot;:false}\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-setting-confirmations\">Confirmations</label><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-confirmations-help\">Blocks a payment waits for before it counts as paid.</p><div class=\"mk-field\"><label for=\"book-setting-confirmations\">Blocks</label><input class=\"mk-input\" id=\"book-setting-confirmations\" name=\"confirmations\" type=\"text\"></div></div>",
+    "props": {
+      "children": {
+        "$slot": [
+          {
+            "$component": "Field",
+            "props": {
+              "disabled": false,
+              "id": "book-setting-confirmations",
+              "kind": "text",
+              "label": "Blocks",
+              "name": "confirmations",
+              "readonly": false,
+              "required": false
+            }
+          }
+        ]
+      },
+      "group": false,
+      "help": {
+        "$slot": [
+          "Blocks a payment waits for before it counts as paid."
+        ]
+      },
+      "help_id": "book-setting-confirmations-help",
+      "id": "book-setting-confirmations",
+      "label": "Confirmations",
+      "row": false
+    },
+    "title": "With help"
+  },
+  {
+    "component": "Setting",
+    "html": "<div class=\"setting-field\" role=\"group\" aria-labelledby=\"book-setting-accept\" aria-describedby=\"book-setting-accept-help\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{&quot;row&quot;:false}\"><div class=\"setting-label-row\"><span class=\"setting-label\" id=\"book-setting-accept\">Accept</span><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-accept-help\">What a payment may arrive as.</p>Its checkboxes.</div>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Its checkboxes."
+        ]
+      },
+      "described_by": "book-setting-accept-help",
+      "group": true,
+      "help": {
+        "$slot": [
+          "What a payment may arrive as."
+        ]
+      },
+      "help_id": "book-setting-accept-help",
+      "id": "book-setting-accept",
+      "label": "Accept",
+      "row": false
+    },
+    "title": "A group"
+  },
+  {
+    "component": "SaveBar",
+    "html": "<div id=\"book-save-bar\" class=\"save-bar\" data-placement=\"inline\" role=\"region\" aria-label=\"Example save bar\" data-mk=\"1\" data-island=\"SaveBar\" data-props=\"{&quot;failed&quot;:false,&quot;save_label&quot;:&quot;Save&quot;}\"><div class=\"save-bar-inner\"><p class=\"save-bar-message\" data-save-bar-message tabindex=\"-1\"><span data-mk=\"2\">Saving writes the changes on this tab.</span><!--mk:3--></p><div class=\"save-bar-actions\" data-mk=\"4\"><a class=\"btn\" href=\"#component-save-bar\" data-discard-all data-mk=\"5\">Discard changes</a><button type=\"submit\" class=\"btn-primary\" data-save data-mk=\"6\"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div>",
+    "props": {
+      "discard_href": "#component-save-bar",
+      "failed": false,
+      "focus": false,
+      "id": "book-save-bar",
+      "inline": true,
+      "message": {
+        "$slot": [
+          "Saving writes the changes on this tab."
+        ]
+      },
+      "region_label": "Example save bar",
+      "save_label": "Save"
+    },
+    "title": "Its message"
+  },
+  {
+    "component": "SaveBar",
+    "html": "<div id=\"book-save-bar-refused\" class=\"save-bar is-failed\" data-placement=\"inline\" role=\"region\" aria-label=\"Example refused save bar\" data-mk=\"1\" data-island=\"SaveBar\" data-props=\"{&quot;failed&quot;:true,&quot;save_label&quot;:&quot;Save&quot;}\"><div class=\"save-bar-inner\"><p class=\"save-bar-message\" data-save-bar-message tabindex=\"-1\"><span data-mk=\"2\">Nothing saved. The URL must use https.</span><!--mk:3--></p><div class=\"save-bar-actions\" data-mk=\"4\"><a class=\"btn\" href=\"#component-save-bar\" data-discard-all data-mk=\"5\">Discard changes</a><button type=\"submit\" class=\"btn-primary\" data-save data-mk=\"6\"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div>",
+    "props": {
+      "discard_href": "#component-save-bar",
+      "failed": true,
+      "focus": false,
+      "id": "book-save-bar-refused",
+      "inline": true,
+      "message": {
+        "$slot": [
+          "Nothing saved. The URL must use https."
+        ]
+      },
+      "region_label": "Example refused save bar",
+      "save_label": "Save"
+    },
+    "title": "After a refused save"
+  },
+  {
+    "component": "Toast",
+    "html": "<div class=\"toast toast-success\" role=\"status\" data-toast data-persistent data-mk=\"1\" data-island=\"Toast\" data-props=\"{&quot;kind&quot;:&quot;success&quot;}\"><span class=\"toast-icon\" aria-hidden=\"true\"><svg class=\"mk-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m4 12 5 5L20 6\"></path></svg></span><div class=\"toast-text\"><strong>Changes saved and applied</strong></div><!--mk:2--></div>",
+    "props": {
+      "kind": "success",
+      "lines": [],
+      "persistent": true,
+      "title": "Changes saved and applied"
+    },
+    "title": "Saved"
+  },
+  {
+    "component": "Toast",
+    "html": "<div class=\"toast toast-warning\" role=\"status\" data-toast data-persistent data-mk=\"1\" data-island=\"Toast\" data-props=\"{&quot;kind&quot;:&quot;warning&quot;}\"><span class=\"toast-icon\" aria-hidden=\"true\"><svg class=\"mk-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m12 3 10 18H2Z M12 9v5M12 17v1\"></path></svg></span><div class=\"toast-text\"><strong>Saved</strong><span class=\"toast-line\">Restart the engine to apply the new node.</span></div><!--mk:2--></div>",
+    "props": {
+      "kind": "warning",
+      "lines": [
+        "Restart the engine to apply the new node."
+      ],
+      "persistent": true,
+      "title": "Saved"
+    },
+    "title": "Waits for a restart"
+  },
+  {
+    "component": "Toast",
+    "html": "<div class=\"toast toast-error\" role=\"alert\" data-toast data-persistent data-mk=\"1\" data-island=\"Toast\" data-props=\"{&quot;kind&quot;:&quot;error&quot;}\"><span class=\"toast-icon\" aria-hidden=\"true\"><svg class=\"mk-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m12 3 10 18H2Z M12 9v5M12 17v1\"></path></svg></span><div class=\"toast-text\"><strong>Nothing saved</strong><span class=\"toast-line\">The URL must use https.</span><a class=\"toast-show\" href=\"#card-book-refused\" data-show-card=\"book-refused\">Show</a></div><!--mk:2--></div>",
+    "props": {
+      "kind": "error",
+      "lines": [
+        "The URL must use https."
+      ],
+      "persistent": true,
+      "show": "book-refused",
+      "title": "Nothing saved"
+    },
+    "title": "Refused"
+  },
+  {
+    "component": "Toast",
+    "html": "<div class=\"toast toast-neutral\" role=\"status\" data-toast data-persistent data-mk=\"1\" data-island=\"Toast\" data-props=\"{&quot;kind&quot;:&quot;neutral&quot;}\"><span class=\"toast-icon\" aria-hidden=\"true\"><svg class=\"mk-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\"></circle><path d=\"M12 11v6M12 7v1\"></path></svg></span><div class=\"toast-text\"><strong>Nothing changed</strong></div><!--mk:2--></div>",
+    "props": {
+      "kind": "neutral",
+      "lines": [],
+      "persistent": true,
+      "title": "Nothing changed"
+    },
+    "title": "Nothing to save"
   }
 ]

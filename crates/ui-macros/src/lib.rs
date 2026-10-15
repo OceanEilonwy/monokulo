@@ -215,6 +215,9 @@ struct Behaviour {
     handlers: Vec<(Ident, Option<Type>)>,
     /// `ref name`: an element the behaviour is handed (`ref=name`).
     refs: Vec<Ident>,
+    /// `uses(a, b)`: the props the behaviour reads, all that an island
+    /// carries; without it, every prop.
+    uses: Option<Vec<Ident>>,
 }
 
 impl Behaviour {
@@ -240,6 +243,7 @@ impl Parse for Behaviour {
             values: Vec::new(),
             handlers: Vec::new(),
             refs: Vec::new(),
+            uses: None,
         };
         while !content.is_empty() {
             let attrs = content.call(Attribute::parse_outer)?;
@@ -259,7 +263,12 @@ impl Parse for Behaviour {
                 behaviour.refs.push(content.parse()?);
             } else {
                 let name: Ident = content.parse()?;
-                if name == "mount" && !content.peek(syn::Token![:]) {
+                if name == "uses" && content.peek(syn::token::Paren) {
+                    let inner;
+                    syn::parenthesized!(inner in content);
+                    let list = inner.parse_terminated(Ident::parse, syn::Token![,])?;
+                    behaviour.uses = Some(list.into_iter().collect());
+                } else if name == "mount" && !content.peek(syn::Token![:]) {
                     let mode: Ident = content.parse()?;
                     if !["load", "visible", "interaction"].contains(&mode.to_string().as_str()) {
                         return Err(syn::Error::new(
@@ -413,6 +422,13 @@ fn expand_component(input: ComponentInput) -> syn::Result<Tokens> {
     let mut nodes = Parser::new(template).nodes()?;
     let mut marks = 0;
     prepare(&mut nodes, behaviour.as_ref(), Place::Server, &mut marks)?;
+    // An interactive component's root element is its island.
+    if behaviour.is_some() && !matches!(nodes.as_slice(), [Node::Element { .. }]) {
+        return Err(syn::Error::new(
+            name.span(),
+            "an interactive component's template is one element: its island",
+        ));
+    }
 
     // The constructor and setters.
     let required: Vec<&Prop> = props
@@ -545,6 +561,25 @@ fn expand_component(input: ComponentInput) -> syn::Result<Tokens> {
                 }
             });
             let refs = b.refs.iter().map(Ident::to_string);
+            let uses = match &b.uses {
+                Some(list) => {
+                    for used in list {
+                        if !props.iter().any(|p| &p.ident == used) {
+                            return Err(syn::Error::new(used.span(), format!("no prop `{used}`")));
+                        }
+                    }
+                    // And what the attach itself reads: the template's
+                    // enhanced attributes and markup, and the lists it
+                    // attaches to the items of.
+                    let mut all: Vec<String> = list.iter().map(Ident::to_string).collect();
+                    attach_reads(&nodes, false, &mut all);
+                    all.retain(|name| props.iter().any(|p| p.ident == name));
+                    all.sort();
+                    all.dedup();
+                    quote! { ::core::option::Option::Some(vec![ #(#all),* ]) }
+                }
+                None => quote! { ::core::option::Option::None },
+            };
             (
                 quote! { , b: &#behaviour_struct },
                 quote! {
@@ -560,6 +595,7 @@ fn expand_component(input: ComponentInput) -> syn::Result<Tokens> {
                         values: vec![ #(#values),* ],
                         handlers: vec![ #(#handlers),* ],
                         refs: vec![ #(#refs),* ],
+                        uses: #uses,
                     })
                 },
             )
@@ -763,6 +799,21 @@ enum Attr {
 }
 
 impl Attr {
+    /// The attribute's name; `None` for `on:` and `ref=`.
+    fn name(&self) -> Option<&str> {
+        match self {
+            Attr::Static(n, _)
+            | Attr::Flag(n)
+            | Attr::Value(n, _)
+            | Attr::Concat(n, _)
+            | Attr::Bool(n, _)
+            | Attr::Optional(n, _)
+            | Attr::When(n, _, _)
+            | Attr::Tokens(n, _) => Some(n),
+            Attr::On { .. } | Attr::Ref(_) => None,
+        }
+    }
+
     /// Whether the attribute is the behaviour's: absent from the server's
     /// markup or different once enhanced.
     fn enhanced(&self) -> bool {
@@ -922,11 +973,13 @@ enum Node {
         /// attaches to: `data-mk="N"`.
         mark: Option<u32>,
     },
-    /// `@if enhanced { ... }`: markup only the behaviour renders, at a
-    /// `<!--mk:N-->` marker the server leaves.
+    /// `@if enhanced { ... } @else { ... }`: markup only the behaviour
+    /// renders, at a `<!--mk:N-->` marker the server leaves; and what the
+    /// server renders in its place, which the behaviour takes away.
     Enhanced {
         mark: u32,
         body: Vec<Node>,
+        fallback: Vec<Node>,
     },
     Text(String),
     Value(Path),
@@ -981,9 +1034,14 @@ impl Node {
                     ::ui::ir::Node::Element(::ui::ir::Element { tag: #tag, attrs: vec![ #(#attrs),* ], spread: #spread, children: #children, mark: #mark })
                 }
             }
-            Node::Enhanced { mark, body } => {
+            Node::Enhanced {
+                mark,
+                body,
+                fallback,
+            } => {
                 let body = body.iter().map(Node::ir);
-                quote! { ::ui::ir::Node::Enhanced { mark: #mark, body: vec![ #(#body),* ] } }
+                let fallback = fallback.iter().map(Node::ir);
+                quote! { ::ui::ir::Node::Enhanced { mark: #mark, body: vec![ #(#body),* ], fallback: vec![ #(#fallback),* ] } }
             }
             Node::Text(s) => quote! { ::ui::ir::Node::Text(#s) },
             Node::Value(p) => {
@@ -1038,9 +1096,10 @@ impl Node {
                     children.iter().flatten().map(|c| c.check(scope)).collect();
                 quote! { #(#attrs)* #spread #(#children)* }
             }
-            Node::Enhanced { body, .. } => {
+            Node::Enhanced { body, fallback, .. } => {
                 let body: Vec<Tokens> = body.iter().map(|n| n.check(scope)).collect();
-                quote! { #(#body)* }
+                let fallback: Vec<Tokens> = fallback.iter().map(|n| n.check(scope)).collect();
+                quote! { #(#body)* #(#fallback)* }
             }
             Node::Text(_) => quote! {},
             Node::Value(p) => {
@@ -1082,6 +1141,87 @@ impl Node {
             }
         }
     }
+}
+
+/// The props the attach code reads: in enhanced attributes, in
+/// `@if enhanced` markup, and the lists whose items it attaches to.
+fn attach_reads(nodes: &[Node], enhanced: bool, out: &mut Vec<String>) {
+    fn push(out: &mut Vec<String>, p: &Path) {
+        out.push(p.0[0].to_string());
+    }
+    for node in nodes {
+        match node {
+            Node::Element {
+                attrs, children, ..
+            } => {
+                for attr in attrs.iter().filter(|a| enhanced || a.enhanced()) {
+                    for p in attr.paths() {
+                        push(out, p);
+                    }
+                }
+                if let Some(children) = children {
+                    attach_reads(children, enhanced, out);
+                }
+            }
+            Node::Enhanced { body, .. } => attach_reads(body, true, out),
+            Node::Text(_) => {}
+            Node::Value(p) => {
+                if enhanced {
+                    push(out, p);
+                }
+            }
+            Node::If {
+                cond,
+                then,
+                otherwise,
+            } => {
+                if enhanced {
+                    for p in cond.paths() {
+                        push(out, p);
+                    }
+                }
+                attach_reads(then, enhanced, out);
+                attach_reads(otherwise, enhanced, out);
+            }
+            Node::IfLet {
+                path,
+                then,
+                otherwise,
+                ..
+            } => {
+                if enhanced {
+                    push(out, path);
+                }
+                attach_reads(then, enhanced, out);
+                attach_reads(otherwise, enhanced, out);
+            }
+            Node::For { path, body, .. } => {
+                // Its items are attached to, or rendered by the behaviour.
+                if enhanced || marked(body) {
+                    push(out, path);
+                }
+                attach_reads(body, enhanced, out);
+            }
+        }
+    }
+}
+
+/// Whether anything in `nodes` is attached to.
+fn marked(nodes: &[Node]) -> bool {
+    nodes.iter().any(|node| match node {
+        Node::Element { mark, children, .. } => {
+            mark.is_some() || children.as_deref().is_some_and(marked)
+        }
+        Node::Enhanced { .. } => true,
+        Node::If {
+            then, otherwise, ..
+        }
+        | Node::IfLet {
+            then, otherwise, ..
+        } => marked(then) || marked(otherwise),
+        Node::For { body, .. } => marked(body),
+        Node::Text(_) | Node::Value(_) => false,
+    })
 }
 
 /// Where a node is, for `prepare`.
@@ -1145,6 +1285,22 @@ fn prepare(
                 mark,
                 ..
             } => {
+                // One name twice: the server's, and the behaviour's once it
+                // runs (it reads `b.*`). Nothing else may repeat.
+                for (i, attr) in attrs.iter().enumerate() {
+                    let Some(name) = attr.name() else { continue };
+                    for other in &attrs[i + 1..] {
+                        if other.name() == Some(name) {
+                            let reads = |a: &Attr| a.paths().iter().any(|p| p.0[0] == "b");
+                            if reads(attr) == reads(other) {
+                                return Err(syn::Error::new(
+                                    Span::call_site(),
+                                    format!("`{name}` twice: only the server's and then the behaviour's (reading `b.*`)"),
+                                ));
+                            }
+                        }
+                    }
+                }
                 let mut attaches = false;
                 for attr in attrs.iter_mut() {
                     for p in attr.paths() {
@@ -1211,7 +1367,14 @@ fn prepare(
                     prepare(children, behaviour, place, marks)?;
                 }
             }
-            Node::Enhanced { mark, body } => {
+            Node::Enhanced {
+                mark,
+                body,
+                fallback,
+            } => {
+                // The server's fallback is taken away whole: nothing in it
+                // is attached to.
+                prepare(fallback, behaviour, Place::Repeated, marks)?;
                 if behaviour.is_none() {
                     return Err(syn::Error::new(
                         Span::call_site(),
@@ -1542,13 +1705,19 @@ impl Parser {
         {
             self.at += 1;
             let body = self.block()?;
-            if self.is_punct('@')
+            let fallback = if self.is_punct('@')
                 && matches!(self.peek_at(1), Some(TokenTree::Ident(i)) if i == "else")
             {
-                return self
-                    .error("`@if enhanced` has no `@else`: the server renders what's outside it");
+                self.at += 2;
+                self.block()?
+            } else {
+                Vec::new()
+            };
+            Node::Enhanced {
+                mark: 0,
+                body,
+                fallback,
             }
-            Node::Enhanced { mark: 0, body }
         } else {
             let cond = self.cond()?;
             let then = self.block()?;

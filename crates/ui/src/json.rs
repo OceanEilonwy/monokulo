@@ -74,8 +74,10 @@ pub(crate) fn json_value(ty: &Ty, value: &Value) -> Json {
 /// what `@if enhanced` holds, which reads no slot, and a slot may be markup
 /// only the server can render.
 pub(crate) fn island_props(info: &'static ComponentInfo, props: &[(&'static str, Value)]) -> Json {
+    let uses = info.behaviour.as_ref().and_then(|b| b.uses.as_ref());
     let kept: Vec<(&'static str, Value)> = props
         .iter()
+        .filter(|(name, _)| uses.is_none_or(|uses| uses.contains(name)))
         .filter_map(|(name, value)| without_slots(value).map(|v| (*name, v)))
         .collect();
     props_json(info, &kept)

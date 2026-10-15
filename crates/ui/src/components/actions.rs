@@ -120,15 +120,16 @@ pub(super) fn link_button_examples() -> Vec<(&'static str, LinkButton)> {
     vec![
         (
             "Primary",
-            LinkButton::new("Add a store", "#link-button").variant(ButtonVariant::Primary),
+            LinkButton::new("Add a store", "#component-link-button")
+                .variant(ButtonVariant::Primary),
         ),
         (
             "Secondary",
-            LinkButton::new("Watch it live", "#link-button"),
+            LinkButton::new("Watch it live", "#component-link-button"),
         ),
         (
             "Compact",
-            LinkButton::new("Discard changes", "#link-button").size(ControlSize::Compact),
+            LinkButton::new("Discard changes", "#component-link-button").size(ControlSize::Compact),
         ),
     ]
 }

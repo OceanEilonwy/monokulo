@@ -469,7 +469,7 @@ async fn the_card_shows_each_webhooks_health_and_its_deliveries() {
         2
     );
     // The add form: the settings pattern (name, help, control).
-    assert!(html.contains(r#"<mk-setting class="setting-field"><div class="setting-label-row"><label class="setting-label" for="webhook-url">URL</label>"#), "{html}");
+    assert!(html.contains(r#"<div class="setting-label-row"><label class="setting-label" for="webhook-url">URL</label>"#), "{html}");
     assert!(html.contains(r#"<p class="field-help" id="webhook-url-help">"#));
     assert!(
         !html.contains("never-shown"),

@@ -56,19 +56,25 @@ the behaviour draws goes inside `@if enhanced { ... }`, attributes that change
 once it runs say `if enhanced`, and `b.*` is only read inside `@if enhanced`
 (the macro refuses it elsewhere, since the server renders without it).
 
-- **The server** renders an interactive component as an island:
-  `<mk-island component="Select" mount="load">`, its props as JSON, then the
-  markup with JavaScript off, a `data-mk` mark on each element the behaviour
-  attaches to and a `<!--mk:N-->` marker where `@if enhanced` goes.
+- **The server** renders an interactive component's markup as it is with
+  JavaScript off. Its root element is the island: `data-island="Select"`
+  names the component, `data-props` holds the props its behaviour reads
+  (`uses(...)` in the behaviour block, and what the attach itself reads),
+  `data-mount` says when it attaches. A `data-mk` mark is on each element
+  the behaviour attaches to, and a `<!--mk:N-->` marker where `@if enhanced`
+  goes; an `@if enhanced { } @else { }`'s fallback sits between that marker
+  and `<!--/mk:N-->`.
 - **The browser** runs one script, `web/islands.ts` (`ui-islands.js`, built
-  with `vite.islands.config.js`), which defines `<mk-island>`, the one custom
-  element. When an island connects (on load, when visible, or on first
-  interaction, as `mount` says) it calls the generated `attach<Name>`: the
-  behaviour's handlers and refs bind to the server's own elements and its
-  enhanced markup is inserted at the markers. Nothing the server rendered is
-  replaced, so a field keeps its value and focus, and other scripts'
-  listeners and fixi keep working. A fixi swap that removes an island
-  disposes it; one that brings an island in attaches it.
+  with `vite.islands.config.js`): one MutationObserver attaches every island
+  on the page and those fixi or a script add, at once, when visible or on
+  first interaction, and lets go of those taken away. Attaching calls the
+  generated `attach<Name>`: the behaviour's handlers and refs bind to the
+  server's own elements, its enhanced markup is inserted at the markers, and
+  any fallback goes. Nothing else the server rendered is replaced, so a
+  field keeps its value and focus, and other scripts' listeners and fixi
+  keep working. There are no custom elements, and no wrapper elements to
+  change what CSS selectors match; an island inside another (a setting in a
+  card in a form) attaches on its own.
 - **The POS** renders the generated Solid component itself: the same
   template, `enhanced` true, the same behaviour.
 
@@ -86,9 +92,11 @@ select's value) says so with an `input` or `change` event; changes to its
 options or attributes are followed by themselves.
 
 Generated so far: Button, LinkButton, Alert, Field, ProgressSteps,
-TabLinks, and the interactive Select, Tabs and CopyValue. Every dropdown on
-monokulo's pages is `ui::Select`. The menu and the settings form still
-upgrade hand-written markup until they move the same way.
+TabLinks, and the interactive Select, Tabs, CopyValue and the settings
+pages' SettingsForm, SettingsCard, Setting, SaveBar and Toast. Every
+dropdown and every settings page on monokulo is these. The settings
+islands share one store per form (`settings.store.ts`). Only the menu
+(`menu.js`) still upgrades hand-written markup.
 Monokulo's setup steps and sign-up/log-in forms and the POS's Charge,
 order and Reference controls use them. The hand-written examples below
 cover what hasn't moved yet.
@@ -176,10 +184,9 @@ and facts; network and order-status badges; settings page forms, save bars and
 changed/failed states; alerts/toasts; spinners/progress; QR presentation;
 ellipsis/copy; tables, empty states and confirmation dialogs.
 
-Settings CSS/JS and order-status badge styling were extracted from the app,
-not reimplemented for the preview. The fingerprinted `settings-form.js` URL
-still serves the same behaviour from the package. The revised success toast
-therefore appears in the app as well as the stylebook. Other new patterns are
+Settings CSS and order-status badge styling were extracted from the app,
+not reimplemented for the preview; the settings components are the app's own,
+so what the stylebook shows is what the pages render. Other new patterns are
 available for adoption; this pass does not replace every legacy page's markup.
 Specialized engine charts, POS keypads and wallet recovery workflows remain
 application compositions. Their underlying reusable controls belong here;

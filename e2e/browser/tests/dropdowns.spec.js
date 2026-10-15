@@ -14,12 +14,12 @@ async function login(context) {
 }
 const store = '/dashboard/stores/coverage-store';
 
-// The markup `ui::Select` renders around a select (crates/ui): an island
-// the page's islands script attaches its behaviour to. Only `search` is
-// read from the props once the select is on the page.
+// The markup `ui::Select` renders around a select (crates/ui): its root is
+// an island the page's islands script attaches its behaviour to. Only
+// `search` is read from the props once the select is on the page.
 const ISLAND = (select, search = 'auto') =>
-  `<mk-island component="Select"><script type="application/json" data-props>{"search":"${search}"}</script>` +
-  `<div class="mk-select" data-mk="1">${select.replace('<select', '<select class="mk-input" data-mk="2"')}<!--mk:3--></div></mk-island>`;
+  `<div class="mk-select" data-mk="1" data-island="Select" data-props='{"search":"${search}"}'>` +
+  `${select.replace('<select', '<select class="mk-input" data-mk="2"')}<!--mk:3--></div>`;
 
 test('a dropdown floats over the page, picks with the mouse and saves through the real select', async ({ page, context }) => {
   await login(context);

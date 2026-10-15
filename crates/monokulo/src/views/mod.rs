@@ -319,10 +319,9 @@ fn page_shell(
                     (script("fx-glue.js", Load::Defer))
                     (script("fixi.js", Load::Defer))
                     (script("ssexi.js", Load::Defer))
-                    // The shared components' islands (every Select).
+                    // The shared components' islands: every Select, settings
+                    // form, copy value and tabs (`ui`).
                     (script("ui-islands.js", Load::Module))
-                    // Every settings form (`views::settings`).
-                    (script("settings-form.js", Load::Defer))
                 }
                 @if let Some(extra_head) = extra_head {
                     (extra_head)

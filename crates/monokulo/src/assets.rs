@@ -42,8 +42,6 @@ pub static ASSETS: &[Asset] = &[
     // The shared components' behaviours: each interactive one (a Select)
     // renders as an island this attaches to (`build.rs`).
     asset!(built "ui-islands.js", "/ui-islands/ui-islands.js", JS),
-    // Every settings form (`views::settings`).
-    asset!(text "settings-form.js", ui::assets::SETTINGS_JS, JS),
     // Browser problem reports (`http::telemetry_client`).
     asset!("telemetry.js", JS),
     // The checkout embed (`views::checkout`), the QR decoder it and the

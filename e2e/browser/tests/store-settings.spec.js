@@ -1,6 +1,6 @@
 // A store's settings page (crates/monokulo/src/views/store_settings.rs): its
 // settings are cards in one form with one save bar (the settings components,
-// static/settings-form.js); the wallet, the keys, the domains and the
+// crates/ui); the wallet, the keys, the domains and the
 // webhooks are cards of their own beside it. Every save works without
 // JavaScript too.
 const { test, expect } = require('../coverage-test');
@@ -47,7 +47,7 @@ test('a change marks its card and shows the save bar, and Discard puts it back',
   await field.fill('7');
   await expect(card).toHaveClass(/is-dirty/);
   await expect(card.locator('[data-unsaved]')).toHaveText('1 unsaved');
-  await expect(card.locator('mk-setting.is-changed .changed-mark').first()).toBeVisible();
+  await expect(card.locator('.setting-field.is-changed .changed-mark').first()).toBeVisible();
   await expect(bar).toBeVisible();
   await expect(bar).toContainText('1 unsaved change in Confirmation thresholds');
   expect((await events(page, 'mk-dirty')).at(-1)).toEqual({ count: 1, groups: ['confirmation-thresholds'] });
@@ -146,7 +146,7 @@ test('the Verified domains form lays its field out like every other setting, and
   await login(context);
   await page.goto(fixture.base_url + store + '/settings#card-verified-domains');
   const card = page.locator('#card-verified-domains');
-  const field = card.locator('form mk-setting.setting-field');
+  const field = card.locator('form .setting-field');
   await expect(field).toHaveCount(1);
   // Name, then help, then the control, as the settings components have them.
   const label = await field.locator('label.setting-label').boundingBox();

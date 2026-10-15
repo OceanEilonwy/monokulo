@@ -3837,7 +3837,12 @@ mod tests {
         )
         .await;
         assert!(html.contains("<strong>Settings saved</strong>"), "{html}");
-        assert_eq!(html.matches("data-card-saved>Saved<").count(), 2, "{html}");
+        assert_eq!(
+            html.matches(r#"data-card-saved data-mk="4">Saved<"#)
+                .count(),
+            2,
+            "{html}"
+        );
 
         // The same values again: nothing to save.
         let response = send(&everything("EUR", "3")).await.unwrap();
@@ -3850,7 +3855,12 @@ mod tests {
         let response = send(&everything("USD", "abc")).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let html = body_text(response).await;
-        assert!(html.contains(r#"<mk-settings-card id="card-confirmation-thresholds" class="settings-card is-failed""#), "{html}");
+        assert!(
+            html.contains(
+                r#"<section id="card-confirmation-thresholds" class="settings-card is-failed""#
+            ),
+            "{html}"
+        );
         assert!(
             html.contains("Enter a whole number of confirmations."),
             "{html}"

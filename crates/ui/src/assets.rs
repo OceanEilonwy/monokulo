@@ -31,10 +31,6 @@ pub const COMPONENTS_CSS: &str = concat!(
     include_str!("../web/components/monitoring.css"),
 );
 
-/// The settings form's components (`<mk-settings-form>`, cards, save bar,
-/// toasts): change tracking, discard and saving.
-pub const SETTINGS_JS: &str = include_str!("../web/components/settings.js");
-
 /// The UI typeface, Manrope, Latin subset, by weight.
 pub const MANROPE_500: &[u8] = include_bytes!("../web/fonts/manrope-500.woff2");
 pub const MANROPE_700: &[u8] = include_bytes!("../web/fonts/manrope-700.woff2");

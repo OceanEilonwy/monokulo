@@ -47,31 +47,50 @@ import { onCleanup } from 'solid-js';
 
 /** The tokens of a `join[...]` attribute that are present, space-separated;
  *  `undefined`, so the attribute is left out, when none are. */
-export function tokens(...items: (string | false | undefined)[]): string | undefined {
-  const present = items.filter((item): item is string => typeof item === 'string');
-  return present.length > 0 ? present.join(' ') : undefined;
+export function tokens<T extends string>(...items: (T | false | undefined)[]): T | undefined {
+  const present = items.filter((item): item is T => typeof item === 'string');
+  // One token is one of the literals given (a `role`); several, a list.
+  return present.length > 0 ? (present.join(' ') as T) : undefined;
 }
 
+/** The island an element is in: the nearest `data-island` around it. */
+const islandOf = (node: Node | null): Element | null | undefined =>
+  (node instanceof Element ? node : node?.parentElement)?.closest('[data-island]');
+
 /** The server-rendered element an island's behaviour attaches to
- *  (`data-mk`), not one of a nested island's. */
+ *  (`data-mk`), not one of a nested island's. The root is the island. */
 export function mark(root: Element, n: number): HTMLElement | null {
+  if (root instanceof HTMLElement && root.dataset.mk === String(n)) return root;
   const found = Array.from(root.querySelectorAll<HTMLElement>(`[data-mk=\"${n}\"]`));
-  return found.find(element => element.closest('mk-island') === root) ?? null;
+  return found.find(element => islandOf(element) === root) ?? null;
 }
 
 /** Every server-rendered element with one mark, in order: the elements of
  *  a loop over a prop's list, one per item. */
 export function marks(root: Element, n: number): HTMLElement[] {
-  return Array.from(root.querySelectorAll<HTMLElement>(`[data-mk=\"${n}\"]`)).filter(element => element.closest('mk-island') === root);
+  return Array.from(root.querySelectorAll<HTMLElement>(`[data-mk=\"${n}\"]`)).filter(element => islandOf(element) === root);
 }
 
 /** The comment the server left where enhanced markup goes (`<!--mk:N-->`). */
 export function marker(root: Element, n: number): Comment | null {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    if (node.nodeValue === `mk:${n}` && node.parentElement?.closest('mk-island') === root) return node as Comment;
+    if (node.nodeValue === `mk:${n}` && islandOf(node) === root) return node as Comment;
   }
   return null;
+}
+
+/** Takes away what the server rendered between a marker and its end
+ *  (`<!--/mk:N-->`): an `@if enhanced`'s fallback. */
+export function clear(marker: Comment, n: number): void {
+  let node = marker.nextSibling;
+  while (node) {
+    const next = node.nextSibling;
+    const end = node.nodeType === Node.COMMENT_NODE && node.nodeValue === `/mk:${n}`;
+    node.remove();
+    if (end) return;
+    node = next;
+  }
 }
 
 /** Sets an attribute as JSX would: `true` present and empty, `false` or
@@ -632,14 +651,27 @@ impl Out {
                         self.attach_into(children, s, depth, index);
                     }
                 }
-                Node::Enhanced { mark, body } => {
+                Node::Enhanced {
+                    mark,
+                    body,
+                    fallback,
+                } => {
                     self.uses_runtime.push("marker");
                     self.attaching = true;
                     let jsx = self.expression(body, depth + 2);
                     self.attaching = false;
+                    let _ = writeln!(
+                        s,
+                        "{indent}const m{mark} = marker(root, {mark});\n{indent}if (m{mark}) {{"
+                    );
+                    if !fallback.is_empty() {
+                        // The server's fallback goes.
+                        self.uses_runtime.push("clear");
+                        let _ = writeln!(s, "{indent}  clear(m{mark}, {mark});");
+                    }
                     let _ = write!(
                         s,
-                        "{indent}const m{mark} = marker(root, {mark});\n{indent}if (m{mark}) insert(m{mark}.parentNode!, () => (\n{jsx}{indent}), m{mark});\n"
+                        "{indent}  insert(m{mark}.parentNode!, () => (\n{jsx}{indent}  ), m{mark});\n{indent}}}\n"
                     );
                 }
                 Node::If {
@@ -732,15 +764,45 @@ impl Out {
                 );
                 let _ = writeln!(self.source, "{indent}{{{expr}}}");
             }
-            Node::Enhanced { body, .. } => {
+            Node::Enhanced { body, fallback, .. } => {
                 let body = self.expression(body, depth + 1);
+                let fallback = self.expression(fallback, depth + 1);
                 let _ = write!(
                     self.source,
-                    "{indent}{{enhanced ? (\n{body}{indent}) : (\n{indent}  null\n{indent})}}\n"
+                    "{indent}{{enhanced ? (\n{body}{indent}) : (\n{fallback}{indent})}}\n"
                 );
             }
             Node::Element(element) => {
-                let mut attrs: Vec<String> = element.attrs.iter().map(|a| self.attr(a)).collect();
+                // An attribute both the server and the behaviour set: the
+                // server's until the behaviour runs, then the behaviour's.
+                let mut attrs = Vec::new();
+                for attr in &element.attrs {
+                    let takeover = !attr.reads_behaviour()
+                        && element
+                            .attrs
+                            .iter()
+                            .any(|other| other.reads_behaviour() && other.name() == attr.name());
+                    let taken = attr.reads_behaviour()
+                        && element
+                            .attrs
+                            .iter()
+                            .any(|other| !other.reads_behaviour() && other.name() == attr.name());
+                    if taken {
+                        continue;
+                    }
+                    if takeover {
+                        let behaviours = element
+                            .attrs
+                            .iter()
+                            .find(|other| other.reads_behaviour() && other.name() == attr.name())
+                            .expect("checked");
+                        let (name, server) = self.attr_value(attr).expect("an attribute");
+                        let (_, enhanced) = self.attr_value(behaviours).expect("an attribute");
+                        attrs.push(format!("{name}={{enhanced ? {enhanced} : {server}}}"));
+                    } else {
+                        attrs.push(self.attr(attr));
+                    }
+                }
                 if let Some(path) = element.spread {
                     attrs.push(format!("{{...{}}}", path[0]));
                 }

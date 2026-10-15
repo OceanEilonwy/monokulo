@@ -45,7 +45,7 @@ for (const theme of ['light', 'dark']) {
     await page.locator('#book-theme').selectOption(theme, { force: true });
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    await expect(page.locator('#button-8 button')).toBeDisabled();
+    await expect(page.locator('#component-button-8 button')).toBeDisabled();
     const input = page.locator('#book-email');
     await expect(input).toHaveAccessibleDescription('Enter a complete email address.');
     await input.focus();
@@ -86,9 +86,9 @@ test('breadcrumbs, back links and action cards retain native behaviour without J
 test('wizard details stay in the top-level segment at desktop and mobile widths', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto('/');
-  const wallet = page.locator('#progress-steps-1 [aria-current="step"]');
+  const wallet = page.locator('#component-progress-steps-1 [aria-current="step"]');
   await expect(wallet).toHaveText('WalletBack up · step 2 of 3');
-  await expect(page.locator('#progress-steps .mk-substeps, #progress-steps .mk-step-summary')).toHaveCount(0);
+  await expect(page.locator('#component-progress-steps .mk-substeps, #component-progress-steps .mk-step-summary')).toHaveCount(0);
   await page.setViewportSize({ width: 320, height: 740 });
   await expect(wallet.locator('small')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -102,7 +102,7 @@ test('wizard details stay in the top-level segment at desktop and mobile widths'
 
 test('copy uses the full current value, and permission denial offers manual selection', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  await page.goto('/#copy-value');
+  await page.goto('/#component-copy-value');
   const value = page.locator('.mk-copy [data-copy-value]').first();
   const full = await value.textContent();
   await page.getByRole('button', { name: 'Copy payment reference' }).click();
@@ -197,7 +197,7 @@ test('buttons align, breadcrumbs truncate on one line, and feedback has uniform 
   await page.goto('/');
   const heights = await page.locator('#icon-buttons .mk-btn').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
   expect(Math.max(...heights) - Math.min(...heights)).toBeLessThan(1);
-  const feedback = await page.locator('#toasts .toast, #alert .mk-alert').evaluateAll(nodes => nodes.map(node => {
+  const feedback = await page.locator('#component-toast .toast, #component-alert .mk-alert').evaluateAll(nodes => nodes.map(node => {
     const css = getComputedStyle(node);
     return { borders: [css.borderTopWidth, css.borderRightWidth, css.borderBottomWidth, css.borderLeftWidth], background: css.backgroundColor };
   }));
@@ -215,10 +215,10 @@ test('buttons align, breadcrumbs truncate on one line, and feedback has uniform 
 
 test('middle and segmented presentation always copy the complete current value', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  await page.goto('/#copy-value');
+  await page.goto('/#component-copy-value');
   // The CopyValue specimens: 2 is middle, 3 is segments.
   for (const n of [2, 3]) {
-    const host = page.locator(`#copy-value-${n} .mk-copy`);
+    const host = page.locator(`#component-copy-value-${n} .mk-copy`);
     const original = await host.locator('[data-copy-value]').textContent();
     await expect(host.locator('.mk-copy-preview')).toHaveCount(1);
     expect(await host.locator('.mk-copy-preview').textContent()).toContain('…');
@@ -298,7 +298,7 @@ test('selected progress strip uses completed tasks without JavaScript', async ({
   await page.goto('/');
   // The progress strip's first four specimens: setup at each stage.
   for (const [n, value, max] of [[1, 1, 3], [2, 1, 2], [3, 2, 3], [4, 1, 1]]) {
-    const strip = page.locator(`#progress-steps-${n} ol`);
+    const strip = page.locator(`#component-progress-steps-${n} ol`);
     await expect(strip).toHaveAccessibleName('Setup progress');
     const progress = strip.locator('progress').nth(1);
     await expect(progress).toHaveAttribute('value', String(value));
@@ -313,13 +313,13 @@ test('selected progress strip uses completed tasks without JavaScript', async ({
 
 test('feedback icons share a size and text alignment; empty tables have breathing room', async ({ page }) => {
   await page.goto('/');
-  const metrics = await page.locator('#toasts .toast').evaluateAll(toasts => toasts.map(toast => {
+  const metrics = await page.locator('#component-toast .toast').evaluateAll(toasts => toasts.map(toast => {
     const box = toast.getBoundingClientRect();
     const icon = toast.querySelector('.toast-icon').getBoundingClientRect();
     const text = toast.querySelector('.toast-text').getBoundingClientRect();
     return { iconWidth: icon.width, iconHeight: icon.height, textOffset: text.x - box.x };
   }));
-  expect(metrics).toHaveLength(3);
+  expect(metrics).toHaveLength(4);
   expect(metrics.every(metric => metric.iconWidth === 24 && metric.iconHeight === 24)).toBe(true);
   expect(new Set(metrics.map(metric => metric.textOffset)).size).toBe(1);
   const empty = page.locator('#data-display .mk-empty-state');
@@ -343,8 +343,8 @@ test('page forms track edits and fit narrow screens with native fallbacks', asyn
       await input.fill('Updated shop');
       await expect(page.getByRole('button', { name: 'Save settings' })).toBeVisible();
       if (javaScriptEnabled) {
-        await expect(page.locator('mk-settings-card').first()).toHaveClass(/is-dirty/);
-        await page.locator('mk-settings-card').first().getByRole('button', { name: 'Discard', exact: true }).click();
+        await expect(page.locator('.settings-card').first()).toHaveClass(/is-dirty/);
+        await page.locator('.settings-card').first().getByRole('button', { name: 'Discard', exact: true }).click();
         await expect(input).toHaveValue('Corner store');
       }
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -425,9 +425,10 @@ test('many-edits preview centers the footer summary and discards all seven chang
     await page.setViewportSize({ width, height: 900 });
     await page.goto('/form-grouped.html?edits=many');
     const summary = page.locator('[data-save-bar-message]');
-    await expect(summary).toHaveText('7 unsaved changes in Store details, Payments and Receipts');
-    await expect(page.locator('mk-setting.is-changed')).toHaveCount(7);
-    await expect(page.locator('mk-settings-card.is-dirty')).toHaveCount(3);
+    // What shows: the server's own message waits, hidden, for a refusal.
+    await expect(summary).toHaveText('7 unsaved changes in Store details, Payments and Receipts', { useInnerText: true });
+    await expect(page.locator('.setting-field.is-changed')).toHaveCount(7);
+    await expect(page.locator('.settings-card.is-dirty')).toHaveCount(3);
     const placement = await summary.evaluate(el => {
       const range = document.createRange();
       range.selectNodeContents(el);
@@ -444,7 +445,7 @@ test('many-edits preview centers the footer summary and discards all seven chang
     expect(placement.fits).toBe(true);
     await expect(page.getByRole('button', { name: 'Save settings' })).toBeInViewport();
     await page.getByRole('link', { name: 'Discard changes', exact: true }).click();
-    await expect(page.locator('mk-setting.is-changed')).toHaveCount(0);
+    await expect(page.locator('.setting-field.is-changed')).toHaveCount(0);
     await expect(page.locator('#grouped-name')).toHaveValue('Corner store');
   }
 });
@@ -457,7 +458,7 @@ test('chips use title casing, pill borders and attention colors; Current is plai
   const payment = page.locator('#compositions .state-pending');
   await expect(payment).toHaveCSS('background-color', await tag.evaluate(el => getComputedStyle(el).backgroundColor));
   // The Select's wallet specimen.
-  const selector = page.locator('#select-2 .mk-select');
+  const selector = page.locator('#component-select-2 .mk-select');
   const current = selector.locator('.mk-button .mk-current');
   await expect(current).toHaveText('Current');
   await expect(current).toHaveCSS('border-top-width', '0px');

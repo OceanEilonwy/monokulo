@@ -289,7 +289,8 @@ export function attachSelect(root: Element, props: SelectProps): () => void {
       b.native(n2);
     }
     const m3 = marker(root, 3);
-    if (m3) insert(m3.parentNode!, () => (
+    if (m3) {
+      insert(m3.parentNode!, () => (
         <>
           <button class="mk-button" type="button" role="combobox" aria-haspopup="listbox" aria-expanded={enhanced ? b.expanded() : undefined} aria-label={enhanced ? b.name() : undefined} aria-describedby={enhanced ? b.described() : undefined} aria-controls={enhanced ? b.list_id() : undefined} aria-activedescendant={enhanced ? b.active_id() : undefined} aria-invalid={enhanced ? b.invalid() : undefined} disabled={enhanced ? b.disabled() : undefined} ref={b.button} onClick={b.toggle}>
             <span class="mk-value">
@@ -418,7 +419,8 @@ export function attachSelect(root: Element, props: SelectProps): () => void {
             </p>
           </div>
         </>
-    ), m3);
+      ), m3);
+    }
     return dispose;
   });
 }

@@ -9,7 +9,7 @@ Rust crate `ui` (`Cargo.toml`) and the npm package `@monokulo/ui`
 | `src/components/*.rs` | each component's props and markup (`component!`) and its examples | hand |
 | `web/components/*.css` | its appearance, painted with `web/tokens.css`'s roles | hand |
 | `web/components/*.behaviour.ts` | an interactive component's behaviour, in Solid | hand |
-| `web/islands.ts` | `<mk-island>`: attaches behaviours to server-rendered markup | hand |
+| `web/islands.ts` | attaches behaviours to the islands in server-rendered markup | hand |
 | `web/components/*.js` | older behaviours: custom elements that upgrade hand-written markup, until they move to `component!` | hand |
 | `web/` (tokens, fonts, icons, brand, status) | the foundations | hand (`brand/` by `cargo xtask logo`) |
 | `solid/` | the Solid components the POS imports | `cargo xtask ui` |
@@ -138,13 +138,8 @@ in the stylebook for their complete HTML contracts.
 - `patterns.css`: typography (`mk-type-*`), icons (`mk-icon`), input actions,
   spinner/progress, navigation and account disclosure, tabs, QR presentation,
   copy values, tables, empty states, radio cards and dialogs.
-- `settings.css` and optional `@monokulo/ui/settings`: the existing settings
-  form/card/field/save-bar and toast implementation, now shared with Rust.
-  Import the script **once**, on pages with one settings form. It retains the
-  existing application lifecycle (native submission or fixi swaps), dirty-state
-  events, discard and navigation protection. Do not import it in a POS that
-  owns its own form state. `data-placement="inline"` embeds a save bar; otherwise
-  it sits at the viewport bottom. `data-persistent` keeps review toasts visible.
+- `settings.css`: the settings components' look (SettingsForm, SettingsCard,
+  Setting, SaveBar, Toast; crates/ui).
 - `@monokulo/ui` registers menu dismissal. It does not import the optional
   settings lifecycle. Interactive components (Select, Tabs, CopyValue) are
   islands: `@monokulo/ui/islands` attaches them.
@@ -229,9 +224,9 @@ Changes to text or these attributes update the preview automatically.
 
 The flat progress strip is the only supported step design.
 
-The selected page-form design uses `mk-settings-card.settings-card[data-surface="grouped"]`.
+The selected page-form design is a framed `SettingsForm` of `SettingsCard`s with `surface(CardSurface::Grouped)`.
 The `.card-head` remains outside the bordered `.mk-setting-group` containers
-inside `.card-body`. Each group contains `.mk-setting-row` fields with a
+inside `.card-body`. Each group contains `Setting`s with `row(true)` (`.mk-setting-row`) with a
 description and `.mk-setting-control`; adjacent rows share divider lines.
 Controls stack below descriptions on narrow screens. Existing dirty/error
 badges, group discard and footer save behaviour still apply.

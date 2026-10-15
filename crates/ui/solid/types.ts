@@ -20,9 +20,19 @@ export type ButtonType = "button" | "submit" | "reset";
 export type ButtonVariant = "primary" | "danger" | "quiet";
 
 /**
+ * A settings card's look.
+ */
+export type CardSurface = "grouped";
+
+/**
  * A control's size. Without one it is the normal size.
  */
 export type ControlSize = "compact" | "touch";
+
+/**
+ * How a form is sent.
+ */
+export type FormMethod = "post" | "get";
 
 /**
  * The kind of text an input takes: phones show the matching keyboard.
@@ -45,6 +55,11 @@ export type SearchMode = "auto" | "show" | "hide";
 export type StepState = "done" | "current" | "next";
 
 /**
+ * How a save went.
+ */
+export type ToastKind = "success" | "warning" | "error" | "neutral";
+
+/**
  * What a message says about how something went. The words say it; the
  * colour only backs them up.
  */
@@ -55,6 +70,18 @@ export type Tone = "success" | "warning" | "error";
  * is copied, and what focus reveals.
  */
 export type Truncate = "end" | "middle" | "segments";
+
+/**
+ * A card in the save bar's message: one with unsaved changes.
+ */
+export interface ChangedCard {
+  readonly name: string;
+  readonly title: string;
+  /**
+   * What comes before it: nothing, ", " or " and ".
+   */
+  readonly before: string;
+}
 
 /**
  * One option of a [`Select`]. Its text says everything in words, for a

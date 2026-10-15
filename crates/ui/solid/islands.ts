@@ -4,10 +4,20 @@
 import { attachSelect } from './Select';
 import { attachTabs } from './Tabs';
 import { attachCopyValue } from './CopyValue';
+import { attachSettingsForm } from './SettingsForm';
+import { attachSettingsCard } from './SettingsCard';
+import { attachSetting } from './Setting';
+import { attachSaveBar } from './SaveBar';
+import { attachToast } from './Toast';
 
 /** Each interactive component's attach, by the name its island gives. */
 export const islands: Record<string, (root: Element, props: never) => () => void> = {
   Select: attachSelect,
   Tabs: attachTabs,
   CopyValue: attachCopyValue,
+  SettingsForm: attachSettingsForm,
+  SettingsCard: attachSettingsCard,
+  Setting: attachSetting,
+  SaveBar: attachSaveBar,
+  Toast: attachToast,
 };
