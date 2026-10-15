@@ -335,14 +335,6 @@
     "count": 1,
     "snippet": "input type=\"email\" id=\"email\" name=\"email\" value=(shown.email) required autocomplete=\"email\" data-email-input data-saved=[refused.then_some(&saved.email)];"
   },
-  "crates/monokulo/src/views/account.rs:shared-control:4be1807123b5c729": {
-    "count": 1,
-    "snippet": "select id=\"timezone\" name=\"timezone\" data-saved=[refused.then(|| saved.timezone.clone().unwrap_or_default())] {"
-  },
-  "crates/monokulo/src/views/account.rs:shared-control:a6b4dc14def8268d": {
-    "count": 1,
-    "snippet": "select id=\"language\" disabled {"
-  },
   "crates/monokulo/src/views/account.rs:shared-control:a13bf14bef0389b7": {
     "count": 1,
     "snippet": "input type=\"email\" id=\"email-again\" name=\"confirm_email\" autocomplete=\"off\" data-email-again;"
@@ -382,10 +374,6 @@
   "crates/monokulo/src/views/admin.rs:shared-control:103f2ce3d8218858": {
     "count": 1,
     "snippet": "input type=\"number\" name=(name) value=(field.value) min=[min] max=[max] step=\"1\" id=(id) aria-describedby=[help] data-saved=[saved];"
-  },
-  "crates/monokulo/src/views/admin.rs:shared-control:f539c7932d18241b": {
-    "count": 2,
-    "snippet": "select name=(name) id=(id) aria-describedby=[help] data-saved=[saved] {"
   },
   "crates/monokulo/src/views/admin.rs:shared-control:ec5d571a2ad69725": {
     "count": 1,
@@ -443,10 +431,6 @@
     "count": 1,
     "snippet": "input type=\"file\" id=\"refund-image\" accept=\"image/*\" hidden;"
   },
-  "crates/monokulo/src/views/connect.rs:shared-control:0049f5c87ab5559f": {
-    "count": 1,
-    "snippet": "select name=\"key_custody_backend\" {"
-  },
   "crates/monokulo/src/views/connect.rs:shared-control:f62b09aa87cdf272": {
     "count": 1,
     "snippet": "button type=\"submit\" class=\"btn-primary\" {"
@@ -459,10 +443,6 @@
     "count": 1,
     "snippet": "input type=\"text\" id=\"currency\" name=\"currency\" value=\"XMR\" readonly;"
   },
-  "crates/monokulo/src/views/create_order.rs:shared-control:d3f007e868b7211e": {
-    "count": 1,
-    "snippet": "select id=\"currency\" name=\"currency\" {"
-  },
   "crates/monokulo/src/views/create_order.rs:shared-control:ec5a0b72483f0d7a": {
     "count": 1,
     "snippet": "input type=\"text\" id=\"merchant_order_id\" name=\"merchant_order_id\" value=(data.merchant_order_id);"
@@ -471,17 +451,9 @@
     "count": 1,
     "snippet": "button type=\"submit\" class=\"btn-primary\" {"
   },
-  "crates/monokulo/src/views/engine.rs:shared-control:71224b0e2a3c2d9b": {
-    "count": 1,
-    "snippet": "select id=\"engine-network\" name=\"network\" {"
-  },
   "crates/monokulo/src/views/engine.rs:shared-control:97930429f93672a8": {
     "count": 1,
     "snippet": "button type=\"submit\" class=\"network-go no-js-only\" {"
-  },
-  "crates/monokulo/src/views/engine.rs:shared-control:599c727c4b6ed3d9": {
-    "count": 1,
-    "snippet": "select id=\"tl-mode\" name=\"tl-mode\" {"
   },
   "crates/monokulo/src/views/key_entry.rs:shared-control:b5ac7001639dc427": {
     "count": 1,
@@ -502,10 +474,6 @@
   "crates/monokulo/src/views/logs.rs:shared-control:fe3d96bf1eca333b": {
     "count": 1,
     "snippet": "button type=\"submit\" {"
-  },
-  "crates/monokulo/src/views/logs.rs:shared-control:0842c2408b96ad53": {
-    "count": 1,
-    "snippet": "select name=(name) aria-label=(label) {"
   },
   "crates/monokulo/src/views/logs.rs:shared-control:32e313608413860a": {
     "count": 1,
@@ -831,17 +799,9 @@
     "count": 1,
     "snippet": "button type=\"submit\" class=\"btn-secondary\" {"
   },
-  "crates/monokulo/src/views/store_settings.rs:shared-control:f8c6bc4bc6ef7639": {
-    "count": 1,
-    "snippet": "select name=\"backend\" {"
-  },
   "crates/monokulo/src/views/store_settings.rs:shared-control:fe3d96bf1eca333b": {
     "count": 7,
     "snippet": "button type=\"submit\" {"
-  },
-  "crates/monokulo/src/views/store_settings.rs:shared-control:1842af4a338d65b0": {
-    "count": 1,
-    "snippet": "select name=\"wallet_id\" required {"
   },
   "crates/monokulo/src/views/store_settings.rs:shared-control:9c0ec3f2dea5e8cf": {
     "count": 2,
@@ -850,10 +810,6 @@
   "crates/monokulo/src/views/store_settings.rs:shared-control:c314e466c395ff4c": {
     "count": 1,
     "snippet": "input type=\"text\" id=\"store-name\" name=\"store_name\" value=(name) maxlength=(crate::stores::MAX_NAME_LEN) required data-saved=[store.saved_attr(&store.display_name)];"
-  },
-  "crates/monokulo/src/views/store_settings.rs:shared-control:c1a88890f872cbff": {
-    "count": 1,
-    "snippet": "select name=\"base_currency\" id=\"base-currency\" data-saved=[store.saved_attr(&store.base_currency)] {"
   },
   "crates/monokulo/src/views/store_settings.rs:shared-control:453c32939885fb5b": {
     "count": 1,
@@ -903,14 +859,6 @@
     "count": 1,
     "snippet": "button type=\"button\" class=\"btn-danger\" disabled aria-describedby=\"disconnect-why\" {"
   },
-  "crates/monokulo/src/views/wallets.rs:shared-control:8f673560b650611c": {
-    "count": 1,
-    "snippet": "select name=\"network\" id=\"wallet-network\" {"
-  },
-  "crates/monokulo/src/views/wallets.rs:shared-control:0e0be9b55f65aeaa": {
-    "count": 1,
-    "snippet": "select id=\"existing-wallet\" name=\"wallet_id\" required {"
-  },
   "crates/monokulo/src/views/wallets.rs:shared-control:fe3d96bf1eca333b": {
     "count": 1,
     "snippet": "button type=\"submit\" {"
@@ -922,10 +870,6 @@
   "crates/monokulo/src/views/wallets.rs:shared-control:f62b09aa87cdf272": {
     "count": 2,
     "snippet": "button type=\"submit\" class=\"btn-primary\" {"
-  },
-  "crates/monokulo/src/views/wallets.rs:shared-control:5f1f2f836886028f": {
-    "count": 1,
-    "snippet": "select name=\"app\" {"
   },
   "crates/monokulo/src/views/wallets.rs:shared-control:0e2bd71489530682": {
     "count": 1,

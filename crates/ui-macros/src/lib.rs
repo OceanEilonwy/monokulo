@@ -118,10 +118,40 @@ pub fn derive_ui_enum(input: TokenStream) -> TokenStream {
 // ---------------------------------------------------------------------------
 
 /// An item of a list prop: a plain struct of named fields, each a type the
-/// templates can read.
-#[proc_macro_derive(UiRecord)]
+/// templates can read. A record built by a builder rather than a struct
+/// literal says so, for the stylebook's Rust examples:
+/// `#[ui(new(value, label), skip(text))]` is `Name::new(value, label)`, then
+/// a setter per other field that isn't its default, leaving out `skip`'s.
+#[proc_macro_derive(UiRecord, attributes(ui))]
 pub fn derive_ui_record(input: TokenStream) -> TokenStream {
     let item = syn::parse_macro_input!(input as ItemStruct);
+    let mut new_args: Vec<String> = Vec::new();
+    let mut skip: Vec<String> = Vec::new();
+    let mut builder = false;
+    for attr in item.attrs.iter().filter(|a| a.path().is_ident("ui")) {
+        let parsed = attr.parse_nested_meta(|meta| {
+            let list = if meta.path.is_ident("new") {
+                builder = true;
+                &mut new_args
+            } else if meta.path.is_ident("skip") {
+                &mut skip
+            } else {
+                return Err(meta.error("expected new(...) or skip(...)"));
+            };
+            meta.parse_nested_meta(|field| {
+                list.push(field.path.require_ident()?.to_string());
+                Ok(())
+            })
+        });
+        if let Err(e) = parsed {
+            return e.to_compile_error().into();
+        }
+    }
+    let builder = if builder {
+        quote! { ::core::option::Option::Some(::ui::RecordBuilder { new: &[ #(#new_args),* ], skip: &[ #(#skip),* ] }) }
+    } else {
+        quote! { ::core::option::Option::None }
+    };
     let name = &item.ident;
     let name_str = name.to_string();
     let doc = doc_of(&item.attrs);
@@ -151,6 +181,7 @@ pub fn derive_ui_record(input: TokenStream) -> TokenStream {
                         name: #name_str,
                         doc: #doc,
                         fields: vec![ #(#infos),* ],
+                        builder: #builder,
                     })
                 }
                 ::ui::Ty::Record(info)
@@ -167,15 +198,104 @@ pub fn derive_ui_record(input: TokenStream) -> TokenStream {
 
 struct ComponentInput {
     item: ItemStruct,
+    behaviour: Option<Behaviour>,
     template: Tokens,
+}
+
+/// `behaviour "file.ts" { ... }`: what an interactive component's Solid
+/// behaviour (`web/components/<file>`) gives its template.
+struct Behaviour {
+    file: LitStr,
+    /// When the island attaches: `load` (the default), `visible` or
+    /// `interaction`.
+    mount: String,
+    /// `name: Type`: a value the template reads as `b.name`.
+    values: Vec<(Ident, Type, String)>,
+    /// `fn name` or `fn name(Type)`: a handler `on:event=name` calls.
+    handlers: Vec<(Ident, Option<Type>)>,
+    /// `ref name`: an element the behaviour is handed (`ref=name`).
+    refs: Vec<Ident>,
+}
+
+impl Behaviour {
+    fn value(&self, name: &Ident) -> bool {
+        self.values.iter().any(|(n, _, _)| n == name)
+    }
+    fn handler(&self, name: &Ident) -> Option<&Option<Type>> {
+        self.handlers
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, t)| t)
+    }
+}
+
+impl Parse for Behaviour {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let file: LitStr = input.parse()?;
+        let content;
+        syn::braced!(content in input);
+        let mut behaviour = Behaviour {
+            file,
+            mount: "load".into(),
+            values: Vec::new(),
+            handlers: Vec::new(),
+            refs: Vec::new(),
+        };
+        while !content.is_empty() {
+            let attrs = content.call(Attribute::parse_outer)?;
+            if content.peek(syn::Token![fn]) {
+                content.parse::<syn::Token![fn]>()?;
+                let name: Ident = content.parse()?;
+                let arg = if content.peek(syn::token::Paren) {
+                    let inner;
+                    syn::parenthesized!(inner in content);
+                    Some(inner.parse::<Type>()?)
+                } else {
+                    None
+                };
+                behaviour.handlers.push((name, arg));
+            } else if content.peek(syn::Token![ref]) {
+                content.parse::<syn::Token![ref]>()?;
+                behaviour.refs.push(content.parse()?);
+            } else {
+                let name: Ident = content.parse()?;
+                if name == "mount" && !content.peek(syn::Token![:]) {
+                    let mode: Ident = content.parse()?;
+                    if !["load", "visible", "interaction"].contains(&mode.to_string().as_str()) {
+                        return Err(syn::Error::new(
+                            mode.span(),
+                            "mount load, visible or interaction",
+                        ));
+                    }
+                    behaviour.mount = mode.to_string();
+                } else {
+                    content.parse::<syn::Token![:]>()?;
+                    let ty: Type = content.parse()?;
+                    behaviour.values.push((name, ty, doc_of(&attrs)));
+                }
+            }
+            if !content.is_empty() {
+                content.parse::<syn::Token![,]>()?;
+            }
+        }
+        Ok(behaviour)
+    }
 }
 
 impl Parse for ComponentInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let item: ItemStruct = input.parse()?;
-        let keyword: Ident = input.parse()?;
+        let mut keyword: Ident = input.parse()?;
+        let mut behaviour = None;
+        if keyword == "behaviour" {
+            behaviour = Some(input.parse()?);
+            keyword = input.parse()?;
+        }
         if keyword != "html" {
-            return Err(syn::Error::new(keyword.span(), "expected `html { ... }`"));
+            return Err(syn::Error::new(
+                keyword.span(),
+                "expected `behaviour \"file.ts\" { ... }` or `html { ... }`",
+            ));
         }
         let content;
         syn::braced!(content in input);
@@ -183,7 +303,11 @@ impl Parse for ComponentInput {
         if !input.is_empty() {
             return Err(input.error("nothing may follow the template"));
         }
-        Ok(Self { item, template })
+        Ok(Self {
+            item,
+            behaviour,
+            template,
+        })
     }
 }
 
@@ -233,7 +357,11 @@ pub fn component(input: TokenStream) -> TokenStream {
 }
 
 fn expand_component(input: ComponentInput) -> syn::Result<Tokens> {
-    let ComponentInput { mut item, template } = input;
+    let ComponentInput {
+        mut item,
+        behaviour,
+        template,
+    } = input;
     let name = item.ident.clone();
     let name_str = name.to_string();
     let doc = doc_of(&item.attrs);
@@ -247,6 +375,12 @@ fn expand_component(input: ComponentInput) -> syn::Result<Tokens> {
     let mut props = Vec::new();
     for field in fields.named.iter_mut() {
         let ident = field.ident.clone().expect("named");
+        if ident == "b" || ident == "enhanced" {
+            return Err(syn::Error::new(
+                ident.span(),
+                "`b` and `enhanced` are the template's own names",
+            ));
+        }
         let mut default = None;
         let mut kept = Vec::new();
         for attr in field.attrs.drain(..) {
@@ -276,7 +410,9 @@ fn expand_component(input: ComponentInput) -> syn::Result<Tokens> {
         });
     }
 
-    let nodes = Parser::new(template).nodes()?;
+    let mut nodes = Parser::new(template).nodes()?;
+    let mut marks = 0;
+    prepare(&mut nodes, behaviour.as_ref(), Place::Server, &mut marks)?;
 
     // The constructor and setters.
     let required: Vec<&Prop> = props
@@ -348,6 +484,14 @@ fn expand_component(input: ComponentInput) -> syn::Result<Tokens> {
                     self.#ident.push(name, "");
                     self
                 }
+                /// Adds an attribute when there's a value for it.
+                #[must_use]
+                pub fn maybe_attr(mut self, name: impl ::core::convert::Into<::std::string::String>, value: ::core::option::Option<impl ::core::convert::Into<::std::string::String>>) -> Self {
+                    if let ::core::option::Option::Some(value) = value {
+                        self.#ident.push(name, value);
+                    }
+                    self
+                }
             }),
         }
     }
@@ -376,8 +520,56 @@ fn expand_component(input: ComponentInput) -> syn::Result<Tokens> {
     });
     let ir = nodes.iter().map(Node::ir);
 
-    // Every name the template reads, type-checked.
+    // Every name the template reads, type-checked. A behaviour's values
+    // are `b`'s fields.
     let mut scope = Vec::new();
+    let behaviour_struct = format_ident!("__UiBehaviour{}", name);
+    let (behaviour_param, behaviour_check, behaviour_info) = match &behaviour {
+        Some(b) => {
+            scope.push(format_ident!("b"));
+            let fields = b.values.iter().map(|(n, t, _)| quote! { #n: #t });
+            let file = &b.file;
+            let file_str = file.value();
+            let mount = &b.mount;
+            let values = b.values.iter().map(|(n, t, d)| {
+                let n = n.to_string();
+                quote! { ::ui::FieldInfo { name: #n, ty: <#t as ::ui::UiType>::ty(), doc: #d } }
+            });
+            let handlers = b.handlers.iter().map(|(n, t)| {
+                let n = n.to_string();
+                match t {
+                    Some(t) => {
+                        quote! { (#n, ::core::option::Option::Some(<#t as ::ui::UiType>::ty())) }
+                    }
+                    None => quote! { (#n, ::core::option::Option::None) },
+                }
+            });
+            let refs = b.refs.iter().map(Ident::to_string);
+            (
+                quote! { , b: &#behaviour_struct },
+                quote! {
+                    #[allow(dead_code, non_camel_case_types)]
+                    struct #behaviour_struct { #(#fields),* }
+                    // The behaviour's file is there.
+                    const _: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/web/components/", #file));
+                },
+                quote! {
+                    ::core::option::Option::Some(::ui::BehaviourInfo {
+                        file: #file_str,
+                        mount: #mount,
+                        values: vec![ #(#values),* ],
+                        handlers: vec![ #(#handlers),* ],
+                        refs: vec![ #(#refs),* ],
+                    })
+                },
+            )
+        }
+        None => (
+            quote! {},
+            quote! {},
+            quote! { ::core::option::Option::None },
+        ),
+    };
     let checks: Vec<Tokens> = nodes.iter().map(|n| n.check(&mut scope)).collect();
     let check_fn = format_ident!("__ui_check_{}", name);
 
@@ -403,6 +595,7 @@ fn expand_component(input: ComponentInput) -> syn::Result<Tokens> {
                     doc: #doc,
                     props: vec![ #(#prop_infos),* ],
                     template: vec![ #(#ir),* ],
+                    behaviour: #behaviour_info,
                 })
             }
             fn props(&self) -> ::std::vec::Vec<(&'static str, ::ui::Value)> {
@@ -416,8 +609,10 @@ fn expand_component(input: ComponentInput) -> syn::Result<Tokens> {
             }
         }
 
+        #behaviour_check
+
         #[allow(dead_code, unused_variables, non_snake_case, clippy::all)]
-        fn #check_fn(props: &#name) {
+        fn #check_fn(props: &#name #behaviour_param) {
             #(#checks)*
         }
     })
@@ -456,6 +651,8 @@ enum Cond {
     Truthy(Path),
     Not(Box<Cond>),
     Eq(Path, syn::Path, bool),
+    /// `enhanced`: false as the server renders, true once the behaviour runs.
+    Enhanced,
 }
 
 impl Cond {
@@ -474,6 +671,7 @@ impl Cond {
                 let value = kebab(&variant.segments.last().expect("variant").ident.to_string());
                 quote! { ::ui::ir::Cond::Eq(#p, #value, #equal) }
             }
+            Cond::Enhanced => quote! { ::ui::ir::Cond::Enhanced },
         }
     }
     fn check(&self, scope: &[Ident]) -> Tokens {
@@ -487,6 +685,21 @@ impl Cond {
                 let e = p.expr(scope);
                 quote! { let _ = matches!(#e, #variant); }
             }
+            Cond::Enhanced => quote! {},
+        }
+    }
+    fn enhanced(&self) -> bool {
+        match self {
+            Cond::Enhanced => true,
+            Cond::Not(c) => c.enhanced(),
+            _ => false,
+        }
+    }
+    fn paths(&self) -> Vec<&Path> {
+        match self {
+            Cond::Truthy(p) | Cond::Eq(p, _, _) => vec![p],
+            Cond::Not(c) => c.paths(),
+            Cond::Enhanced => vec![],
         }
     }
 }
@@ -526,9 +739,58 @@ enum Attr {
     Optional(String, Path),
     When(String, String, Cond),
     Tokens(String, Vec<(Vec<Part>, Option<Cond>)>),
+    /// `on:event=handler` or `on:event=handler(path)`; the argument's type
+    /// is the handler's, filled in by `prepare`.
+    On {
+        event: String,
+        handler: Ident,
+        arg: Option<(Path, Option<Type>)>,
+    },
+    /// `ref=name`
+    Ref(Ident),
 }
 
 impl Attr {
+    /// Whether the attribute is the behaviour's: absent from the server's
+    /// markup or different once enhanced.
+    fn enhanced(&self) -> bool {
+        match self {
+            Attr::Bool(_, c) | Attr::When(_, _, c) => c.enhanced(),
+            Attr::Tokens(_, tokens) => tokens
+                .iter()
+                .any(|(_, c)| c.as_ref().is_some_and(Cond::enhanced)),
+            Attr::On { .. } | Attr::Ref(_) => true,
+            _ => false,
+        }
+    }
+    fn paths(&self) -> Vec<&Path> {
+        fn parts(parts: &[Part]) -> Vec<&Path> {
+            parts
+                .iter()
+                .filter_map(|p| match p {
+                    Part::Value(p) => Some(p),
+                    Part::Lit(_) => None,
+                })
+                .collect()
+        }
+        match self {
+            Attr::Static(..) | Attr::Flag(_) | Attr::Ref(_) => vec![],
+            Attr::Value(_, p) | Attr::Optional(_, p) => vec![p],
+            Attr::Concat(_, ps) => parts(ps),
+            Attr::Bool(_, c) | Attr::When(_, _, c) => c.paths(),
+            Attr::Tokens(_, tokens) => tokens
+                .iter()
+                .flat_map(|(ps, c)| {
+                    let mut all = parts(ps);
+                    if let Some(c) = c {
+                        all.extend(c.paths());
+                    }
+                    all
+                })
+                .collect(),
+            Attr::On { arg, .. } => arg.iter().map(|(p, _)| p).collect(),
+        }
+    }
     fn ir(&self) -> Tokens {
         match self {
             Attr::Static(n, v) => quote! { ::ui::ir::Attr::Static(#n, #v) },
@@ -567,6 +829,25 @@ impl Attr {
                 });
                 quote! { ::ui::ir::Attr::Tokens(#n, vec![ #(#tokens),* ]) }
             }
+            Attr::On {
+                event,
+                handler,
+                arg,
+            } => {
+                let handler = handler.to_string();
+                let arg = match arg {
+                    Some((p, _)) => {
+                        let p = p.ir();
+                        quote! { ::core::option::Option::Some(#p) }
+                    }
+                    None => quote! { ::core::option::Option::None },
+                };
+                quote! { ::ui::ir::Attr::On(#event, #handler, #arg) }
+            }
+            Attr::Ref(name) => {
+                let name = name.to_string();
+                quote! { ::ui::ir::Attr::Ref(#name) }
+            }
         }
     }
     fn check(&self, scope: &[Ident]) -> Tokens {
@@ -593,6 +874,14 @@ impl Attr {
                 });
                 quote! { #(#checks)* }
             }
+            Attr::On { arg, .. } => match arg {
+                Some((p, Some(ty))) => {
+                    let e = p.expr(scope);
+                    quote! { let _: &#ty = &#e; }
+                }
+                _ => quote! {},
+            },
+            Attr::Ref(_) => quote! {},
         }
     }
 }
@@ -603,6 +892,15 @@ enum Node {
         attrs: Vec<Attr>,
         spread: Option<Path>,
         children: Option<Vec<Node>>,
+        /// Set by `prepare` on a server-rendered element the behaviour
+        /// attaches to: `data-mk="N"`.
+        mark: Option<u32>,
+    },
+    /// `@if enhanced { ... }`: markup only the behaviour renders, at a
+    /// `<!--mk:N-->` marker the server leaves.
+    Enhanced {
+        mark: u32,
+        body: Vec<Node>,
     },
     Text(String),
     Value(Path),
@@ -632,7 +930,12 @@ impl Node {
                 attrs,
                 spread,
                 children,
+                mark,
             } => {
+                let mark = match mark {
+                    Some(m) => quote! { ::core::option::Option::Some(#m) },
+                    None => quote! { ::core::option::Option::None },
+                };
                 let attrs = attrs.iter().map(Attr::ir);
                 let spread = match spread {
                     Some(p) => {
@@ -649,8 +952,12 @@ impl Node {
                     None => quote! { ::core::option::Option::None },
                 };
                 quote! {
-                    ::ui::ir::Node::Element(::ui::ir::Element { tag: #tag, attrs: vec![ #(#attrs),* ], spread: #spread, children: #children })
+                    ::ui::ir::Node::Element(::ui::ir::Element { tag: #tag, attrs: vec![ #(#attrs),* ], spread: #spread, children: #children, mark: #mark })
                 }
+            }
+            Node::Enhanced { mark, body } => {
+                let body = body.iter().map(Node::ir);
+                quote! { ::ui::ir::Node::Enhanced { mark: #mark, body: vec![ #(#body),* ] } }
             }
             Node::Text(s) => quote! { ::ui::ir::Node::Text(#s) },
             Node::Value(p) => {
@@ -705,6 +1012,10 @@ impl Node {
                     children.iter().flatten().map(|c| c.check(scope)).collect();
                 quote! { #(#attrs)* #spread #(#children)* }
             }
+            Node::Enhanced { body, .. } => {
+                let body: Vec<Tokens> = body.iter().map(|n| n.check(scope)).collect();
+                quote! { #(#body)* }
+            }
             Node::Text(_) => quote! {},
             Node::Value(p) => {
                 let e = p.expr(scope);
@@ -745,6 +1056,202 @@ impl Node {
             }
         }
     }
+}
+
+/// Where a node is, for `prepare`.
+#[derive(Clone, Copy, PartialEq)]
+enum Place {
+    /// Rendered by the server, outside any loop or `@if let`: the
+    /// behaviour can find it again.
+    Server,
+    /// Rendered by the server inside a loop or `@if let`: nothing there
+    /// can be attached to.
+    Repeated,
+    /// Inside `@if enhanced`: only the behaviour renders it.
+    Enhanced,
+}
+
+/// Checks a template's use of its behaviour and marks what the behaviour
+/// attaches to: `b.*` only where only the behaviour renders, handlers and
+/// refs it declares, and nothing to attach inside a loop.
+fn prepare(
+    nodes: &mut [Node],
+    behaviour: Option<&Behaviour>,
+    place: Place,
+    marks: &mut u32,
+) -> Result<()> {
+    let check_path = |p: &Path| -> Result<()> {
+        if p.0[0] != "b" {
+            return Ok(());
+        }
+        let Some(b) = behaviour else {
+            return Err(syn::Error::new(
+                p.0[0].span(),
+                "`b` is an interactive component's behaviour: declare one",
+            ));
+        };
+        if place != Place::Enhanced {
+            return Err(syn::Error::new(
+                p.0[0].span(),
+                "`b.*` is only read inside `@if enhanced`: the server renders without it",
+            ));
+        }
+        match p.0.get(1) {
+            Some(name) if b.value(name) => Ok(()),
+            Some(name) => Err(syn::Error::new(
+                name.span(),
+                format!("the behaviour has no value `{name}`"),
+            )),
+            None => Err(syn::Error::new(p.0[0].span(), "name a value: `b.name`")),
+        }
+    };
+    for node in nodes {
+        match node {
+            Node::Element {
+                attrs,
+                spread,
+                children,
+                mark,
+                ..
+            } => {
+                let mut attaches = false;
+                for attr in attrs.iter_mut() {
+                    for p in attr.paths() {
+                        check_path(p)?;
+                    }
+                    if attr.enhanced() {
+                        if behaviour.is_none() {
+                            return Err(syn::Error::new(
+                                Span::call_site(),
+                                "`enhanced`, `on:` and `ref=` need a behaviour",
+                            ));
+                        }
+                        attaches = true;
+                    }
+                    match attr {
+                        Attr::On { handler, arg, .. } => {
+                            let b = behaviour.expect("checked");
+                            let Some(ty) = b.handler(handler) else {
+                                return Err(syn::Error::new(
+                                    handler.span(),
+                                    format!("the behaviour has no `fn {handler}`"),
+                                ));
+                            };
+                            match (arg, ty) {
+                                (Some((_, slot)), Some(ty)) => *slot = Some(ty.clone()),
+                                (None, None) => {}
+                                (Some(_), None) => {
+                                    return Err(syn::Error::new(
+                                        handler.span(),
+                                        format!("`fn {handler}` takes no argument"),
+                                    ))
+                                }
+                                (None, Some(_)) => {
+                                    return Err(syn::Error::new(
+                                        handler.span(),
+                                        format!("`fn {handler}` takes an argument"),
+                                    ))
+                                }
+                            }
+                        }
+                        Attr::Ref(name) if !behaviour.expect("checked").refs.contains(name) => {
+                            return Err(syn::Error::new(
+                                name.span(),
+                                format!("the behaviour has no `ref {name}`"),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(p) = spread {
+                    check_path(p)?;
+                }
+                if attaches && place != Place::Enhanced {
+                    if place == Place::Repeated {
+                        return Err(syn::Error::new(
+                            Span::call_site(),
+                            "a behaviour can't attach to an element inside `@for` or `@if let`",
+                        ));
+                    }
+                    *marks += 1;
+                    *mark = Some(*marks);
+                }
+                if let Some(children) = children {
+                    prepare(children, behaviour, place, marks)?;
+                }
+            }
+            Node::Enhanced { mark, body } => {
+                if behaviour.is_none() {
+                    return Err(syn::Error::new(
+                        Span::call_site(),
+                        "`@if enhanced` needs a behaviour",
+                    ));
+                }
+                match place {
+                    Place::Enhanced => {
+                        return Err(syn::Error::new(
+                            Span::call_site(),
+                            "`@if enhanced` is already enhanced here",
+                        ))
+                    }
+                    Place::Repeated => {
+                        return Err(syn::Error::new(
+                            Span::call_site(),
+                            "`@if enhanced` can't be inside `@for` or `@if let`",
+                        ))
+                    }
+                    Place::Server => {}
+                }
+                *marks += 1;
+                *mark = *marks;
+                prepare(body, behaviour, Place::Enhanced, marks)?;
+            }
+            Node::Text(_) => {}
+            Node::Value(p) => check_path(p)?,
+            Node::If {
+                cond,
+                then,
+                otherwise,
+            } => {
+                if cond.enhanced() {
+                    return Err(syn::Error::new(
+                        Span::call_site(),
+                        "write `@if enhanced { ... }` on its own, with no `@else`",
+                    ));
+                }
+                for p in cond.paths() {
+                    check_path(p)?;
+                }
+                prepare(then, behaviour, place, marks)?;
+                prepare(otherwise, behaviour, place, marks)?;
+            }
+            Node::IfLet {
+                path,
+                then,
+                otherwise,
+                ..
+            } => {
+                check_path(path)?;
+                let inner = if place == Place::Enhanced {
+                    place
+                } else {
+                    Place::Repeated
+                };
+                prepare(then, behaviour, inner, marks)?;
+                prepare(otherwise, behaviour, inner, marks)?;
+            }
+            Node::For { path, body, .. } => {
+                check_path(path)?;
+                let inner = if place == Place::Enhanced {
+                    place
+                } else {
+                    Place::Repeated
+                };
+                prepare(body, behaviour, inner, marks)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 struct Parser {
@@ -880,6 +1387,9 @@ impl Parser {
             return Ok(Cond::Not(Box::new(self.cond()?)));
         }
         let path = self.path()?;
+        if path.0.len() == 1 && path.0[0] == "enhanced" {
+            return Ok(Cond::Enhanced);
+        }
         let equal = if self.is_punct('=') && self.is_punct_at(1, '=') {
             true
         } else if self.is_punct('!') && self.is_punct_at(1, '=') {
@@ -988,6 +1498,20 @@ impl Parser {
                 then,
                 otherwise,
             }
+        } else if self.is_ident("enhanced")
+            && self.peek_at(1).is_some_and(
+                |t| matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace),
+            )
+        {
+            self.at += 1;
+            let body = self.block()?;
+            if self.is_punct('@')
+                && matches!(self.peek_at(1), Some(TokenTree::Ident(i)) if i == "else")
+            {
+                return self
+                    .error("`@if enhanced` has no `@else`: the server renders what's outside it");
+            }
+            Node::Enhanced { mark: 0, body }
         } else {
             let cond = self.cond()?;
             let then = self.block()?;
@@ -1026,6 +1550,7 @@ impl Parser {
                     attrs,
                     spread,
                     children: Some(children),
+                    mark: None,
                 });
             }
             if self.is_punct(';') {
@@ -1035,6 +1560,7 @@ impl Parser {
                     attrs,
                     spread,
                     children: None,
+                    mark: None,
                 });
             }
             if self.is_punct('.') && self.is_punct_at(1, '.') {
@@ -1054,6 +1580,26 @@ impl Parser {
 
     fn attr(&mut self) -> Result<Attr> {
         let name = self.hyphenated()?;
+        if name == "on" && self.is_punct(':') {
+            self.at += 1;
+            let event = self.hyphenated()?;
+            self.expect_punct('=')?;
+            let handler = self.ident()?;
+            let arg = if self.is_group(Delimiter::Parenthesis) {
+                Some((self.group(Delimiter::Parenthesis)?.whole_path()?, None))
+            } else {
+                None
+            };
+            return Ok(Attr::On {
+                event,
+                handler,
+                arg,
+            });
+        }
+        if name == "ref" {
+            self.expect_punct('=')?;
+            return Ok(Attr::Ref(self.ident()?));
+        }
         if self.is_group(Delimiter::Bracket) {
             let mut inner = self.group(Delimiter::Bracket)?;
             let cond = inner.cond()?;

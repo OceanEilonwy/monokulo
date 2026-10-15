@@ -319,8 +319,8 @@ fn page_shell(
                     (script("fx-glue.js", Load::Defer))
                     (script("fixi.js", Load::Defer))
                     (script("ssexi.js", Load::Defer))
-                    // Every dropdown (`views::controls`).
-                    (script("mk-select.js", Load::Defer))
+                    // The shared components' islands (every Select).
+                    (script("ui-islands.js", Load::Module))
                     // Every settings form (`views::settings`).
                     (script("settings-form.js", Load::Defer))
                 }
@@ -488,7 +488,7 @@ pub fn test_networks_badge() -> Markup {
 }
 
 /// The icons of [`network_badge`]: a coin marked M for mainnet, a flask
-/// for a test network. `mk-select` (crates/ui/web/components/select.js) draws the same two.
+/// for a test network. The Select component (crates/ui) draws the same two.
 fn network_tag(main: bool, word: &str) -> Markup {
     html! {
         span class=(if main { "tag-network is-main" } else { "tag-network is-test" }) {

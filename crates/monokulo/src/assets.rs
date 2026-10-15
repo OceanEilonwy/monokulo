@@ -39,8 +39,9 @@ pub static ASSETS: &[Asset] = &[
     asset!("fx-glue.js", JS),
     asset!("fixi.js", JS),
     asset!("ssexi.js", JS),
-    // Every dropdown (`views::controls`).
-    asset!(text "mk-select.js", ui::assets::SELECT_JS, JS),
+    // The shared components' behaviours: each interactive one (a Select)
+    // renders as an island this attaches to (`build.rs`).
+    asset!(built "ui-islands.js", "/ui-islands/ui-islands.js", JS),
     // Every settings form (`views::settings`).
     asset!(text "settings-form.js", ui::assets::SETTINGS_JS, JS),
     // Browser problem reports (`http::telemetry_client`).

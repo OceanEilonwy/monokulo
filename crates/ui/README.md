@@ -8,7 +8,9 @@ Rust crate `ui` (`Cargo.toml`) and the npm package `@monokulo/ui`
 |---|---|---|
 | `src/components/*.rs` | each component's props and markup (`component!`) and its examples | hand |
 | `web/components/*.css` | its appearance, painted with `web/tokens.css`'s roles | hand |
-| `web/components/*.js` | its behaviour: light-DOM custom elements that upgrade its markup | hand |
+| `web/components/*.behaviour.ts` | an interactive component's behaviour, in Solid | hand |
+| `web/islands.ts` | `<mk-island>`: attaches behaviours to server-rendered markup | hand |
+| `web/components/*.js` | older behaviours: custom elements that upgrade hand-written markup, until they move to `component!` | hand |
 | `web/` (tokens, fonts, icons, brand, status) | the foundations | hand (`brand/` by `cargo xtask logo`) |
 | `solid/` | the Solid components the POS imports | `cargo xtask ui` |
 | `browser/solid/generated/` | the examples as fixtures, for the equivalence test | `cargo xtask ui` |
@@ -82,12 +84,14 @@ with controls. Application validation supplies `aria-invalid` and linked error
 text; the library does not validate business rules. Use buttons for actions,
 anchors for navigation, and real form actions for server-rendered workflows.
 
-`mk-select` wraps a native select, which remains the submitted field. Set its
-`value` or `selectedIndex` to update it; listen to the native `change` event.
-Programmatic assignment does not synthesize a change event. It supports
-`compact` and `search="auto|show|hide"`, plus option display metadata described
-in [select.js](web/components/select.js). The registration is idempotent.
-Without JavaScript the native select is usable. The `.switch` contract styles
+Every dropdown is the `Select` component (`ui::Select` with `ui::Choice`
+options): a native select, which remains the submitted field, and, once its
+island attaches, a button and a list drawn over it (`select.behaviour.ts`).
+Set the select's `value` and dispatch `input` or `change` to update it; listen
+to its native `change` event. It takes `compact` and `search` (auto, show,
+hide); each `Choice`'s parts (logo, detail, network, chip, note) are written
+into the option's text too, so without JavaScript the native select says
+everything. See [interactive components](../../docs/ui-components.md#interactive-components-behaviour-in-solid-islands-on-the-server). The `.switch` contract styles
 a native checkbox, retaining native submission and keyboard behaviour.
 
 Keep component appearance here. Consumers may position components, but should
@@ -223,9 +227,8 @@ Changes to text or these attributes update the preview automatically.
   SVGs. Inline the assets to inherit theme roles. Namespace clip-path IDs when
   rendering repeated inline instances (the stylebook does this at build time).
   `.mk-mark` supplies sizing and reduced-motion handling.
-- Wallet selector: compose `mk-select` with the existing option metadata
-  (`data-label`, `data-detail`, `data-network`, `data-chip`, `data-note`). The
-  stylebook’s native option text includes every important part as a fallback.
+- Wallet selector: a `Select` whose `Choice`s carry a detail, a network, the
+  Current chip and a note; the stylebook's Select section shows one.
 
 The flat progress strip is the only supported step design.
 

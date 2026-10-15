@@ -18,9 +18,9 @@
 
 use maud::{html, Markup};
 
-use super::controls::Choice;
 use super::settings::{plain_card, toast_region, Card, Field, Save, Toast, ToastKind};
 use super::{layout, PageChrome};
+use ui::{Choice, Select};
 
 /// One row of the FX-provider settings dropdown.
 pub struct FxProviderOption {
@@ -422,13 +422,14 @@ fn key_storage_card(store: &StoreSettingsData, key_storage: &KeyStorageView) -> 
             form method="post" action=(action) {
                 label {
                     "Move to"
-                    mk-select {
-                        select name="backend" {
-                            @for choice in &key_storage.move_to {
-                                (Choice::new(&choice.backend, &choice.label).selected(choice.selected))
-                            }
-                        }
-                    }
+                    (Select::new(
+                        "backend",
+                        key_storage
+                            .move_to
+                            .iter()
+                            .map(|choice| Choice::new(&choice.backend, &choice.label).selected(choice.selected))
+                            .collect::<Vec<_>>(),
+                    ))
                 }
                 (super::key_entry::key_fields(
                     "",
@@ -479,14 +480,16 @@ fn wallet_card(store: &StoreSettingsData) -> Markup {
             form method="post" action=(action) fx-submit-on-change {
                 label {
                     "Wallet"
-                    mk-select {
-                        select name="wallet_id" required {
-                            @if picked.is_none() { (Choice::prompt("Choose a wallet…", true)) }
-                            @for choice in &wallet.choices {
-                                (wallet_choice(choice, picked))
-                            }
-                        }
-                    }
+                    (Select::new(
+                        "wallet_id",
+                        picked
+                            .is_none()
+                            .then(|| Choice::prompt("Choose a wallet…", true))
+                            .into_iter()
+                            .chain(wallet.choices.iter().map(|choice| wallet_choice(choice, picked)))
+                            .collect::<Vec<_>>(),
+                    )
+                    .required(true))
                     span class="field-help" {
                         "The store takes new payments into the wallet picked here."
                         @if wallet.current.is_some() { " A store can only change to a wallet on its own network." }
@@ -540,20 +543,19 @@ fn wallet_card(store: &StoreSettingsData) -> Markup {
     )
 }
 
-fn wallet_choice(choice: &WalletChoice, picked: Option<&str>) -> Markup {
+fn wallet_choice(choice: &WalletChoice, picked: Option<&str>) -> Choice {
     let note = match (choice.current, choice.other_stores) {
         (true, 0) => "this store only".to_owned(),
         (_, 0) => "no other stores".to_owned(),
         (_, 1) => "1 other store".to_owned(),
         (_, n) => format!("{n} other stores"),
     };
-    let option = Choice::new(&choice.id, &choice.name)
+    Choice::new(&choice.id, &choice.name)
         .detail(&choice.short_address)
         .network(&choice.network)
         .current(choice.current)
         .note(note)
-        .selected(picked == Some(choice.id.as_str()));
-    html! { (option) }
+        .selected(picked == Some(choice.id.as_str()))
 }
 
 /// What happens to the orders already open, said before the change.
@@ -609,13 +611,16 @@ fn base_currency_card(store: &StoreSettingsData) -> Markup {
                 "custom threshold this store currently has - an amount in a currency you're no longer using means nothing."
             })
             .render(html! {
-                mk-select {
-                    select name="base_currency" id="base-currency" data-saved=[store.saved_attr(&store.base_currency)] {
-                        @for opt in &store.base_currency_options {
-                            (Choice::new(&opt.code, &opt.description).detail(&opt.code).selected(opt.code == shown))
-                        }
-                    }
-                }
+                (Select::new(
+                    "base_currency",
+                    store
+                        .base_currency_options
+                        .iter()
+                        .map(|opt| Choice::new(&opt.code, &opt.description).detail(&opt.code).selected(opt.code == shown))
+                        .collect::<Vec<_>>(),
+                )
+                .id("base-currency")
+                .maybe_attr("data-saved", store.saved_attr(&store.base_currency)))
             }),
     )
 }

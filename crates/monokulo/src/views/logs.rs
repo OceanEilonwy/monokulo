@@ -489,16 +489,15 @@ pub fn saved_searches(saved: &[SavedLogSearch], query_string: &str, error: Optio
 
 fn select(name: &str, label: &str, options: &[(&str, &str)], current: &str) -> Markup {
     html! {
-        label {
-            span class="sr-only" { (label) }
-            mk-select compact {
-                select name=(name) aria-label=(label) {
-                    @for (value, text) in options {
-                        (super::controls::Choice::new(*value, *text).selected(*value == current))
-                    }
-                }
-            }
-        }
+        (ui::Select::new(
+            name,
+            options
+                .iter()
+                .map(|(value, text)| ui::Choice::new(*value, *text).selected(*value == current))
+                .collect::<Vec<_>>(),
+        )
+        .label(label)
+        .compact(true))
     }
 }
 

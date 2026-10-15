@@ -8,11 +8,11 @@
 
 use maud::{html, Markup};
 
-use super::controls::Choice;
 use super::settings::{self, Card, Field, Save, Toast, ToastKind};
 use super::setup::{SetupContext, WalletAt, WalletPath};
 use super::{layout, layout_with_head, PageChrome};
 use crate::wallets::{AppMethod, WalletApp, WALLET_APPS};
+use ui::{Choice, Select};
 
 /// Where a wallet is being added: in setup's Wallet step, on the way to
 /// making a store, or from the Account page.
@@ -128,17 +128,15 @@ pub(super) fn regenerate_icon() -> Markup {
 /// The setup flow's network dropdown: each network as its badge
 /// (`views::network_badge`), `[Stagenet]` without JavaScript.
 fn network_select(selected: &str) -> Markup {
-    html! {
-        mk-select {
-            select name="network" id="wallet-network" {
-                @for network in ["mainnet", "stagenet", "testnet"] {
-                    (Choice::new(network, "")
-                        .network(network)
-                        .selected(network == selected))
-                }
-            }
-        }
-    }
+    let networks = ["mainnet", "stagenet", "testnet"]
+        .iter()
+        .map(|network| {
+            Choice::new(network, "")
+                .network(network)
+                .selected(*network == selected)
+        })
+        .collect::<Vec<_>>();
+    html! { (Select::new("network", networks).id("wallet-network")) }
 }
 
 /// "Where do I find these keys?": where each app shows a wallet's private
@@ -233,16 +231,20 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
                 form method="post" action="/setup/wallet/existing" class="already" {
                     (flow.hidden())
                     label for="existing-wallet" { strong { "Use a wallet you already added" } }
-                    mk-select {
-                        select id="existing-wallet" name="wallet_id" required {
-                            @for w in &data.wallets {
-                                (Choice::new(&w.wallet.id, &w.wallet.name)
+                    (Select::new(
+                        "wallet_id",
+                        data.wallets
+                            .iter()
+                            .map(|w| {
+                                Choice::new(&w.wallet.id, &w.wallet.name)
                                     .detail(super::short_address_text(&w.wallet.primary_address))
                                     .network(&w.wallet.network)
-                                    .note(stores_label(w.store_count)))
-                            }
-                        }
-                    }
+                                    .note(stores_label(w.store_count))
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                    .id("existing-wallet")
+                    .required(true))
                     button type="submit" { "Use this wallet" }
                 }
                 p class="or-divider" role="separator" { "or" }
@@ -403,17 +405,17 @@ pub fn app_field(selected: &str) -> Markup {
     html! {
         label {
             "Which app is it in? " span class="hint" { "(optional)" }
-            mk-select {
-                select name="app" {
-                    (Choice::new("", "Not saying").selected(selected.is_empty()))
-                    @for app in WALLET_APPS {
-                        (Choice::new(app.key, app.name)
+            (Select::new(
+                "app",
+                std::iter::once(Choice::new("", "Not saying").selected(selected.is_empty()))
+                    .chain(WALLET_APPS.iter().map(|app| {
+                        Choice::new(app.key, app.name)
                             .logo(crate::assets::url(&format!("wallet-logos/{}.png", app.key)))
-                            .selected(selected == app.key))
-                    }
-                    (Choice::new("other", "Other").selected(selected == "other"))
-                }
-            }
+                            .selected(selected == app.key)
+                    }))
+                    .chain([Choice::new("other", "Other").selected(selected == "other")])
+                    .collect::<Vec<_>>(),
+            ))
             span class="field-help" { "The wallet's page then says where its keys and recovery phrase live." }
         }
     }

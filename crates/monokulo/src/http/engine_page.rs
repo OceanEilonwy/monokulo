@@ -727,7 +727,8 @@ mod tests {
             places.windows(2).all(|pair| pair[0] < pair[1]),
             "out of order: {places:?}"
         );
-        assert!(html.contains(r#"<label for="engine-network" class="visually-hidden">Network</label><mk-select compact><select id="engine-network" name="network">"#));
+        assert!(html.contains(r#"<label for="engine-network" class="visually-hidden">Network</label><mk-island component="Select""#));
+        assert!(html.contains(r#"<select class="mk-input" data-size="compact" name="network" id="engine-network" data-mk="2">"#));
         // The breakdown's summary says what it is; the round is the card's
         // heading.
         assert!(

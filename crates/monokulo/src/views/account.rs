@@ -10,11 +10,11 @@
 
 use maud::{html, Markup};
 
-use super::controls::Choice;
 use super::settings::{toast_region, Field, Save, Toast, ToastKind};
 use super::wallets::{RetiredListItem, WalletListItem};
 use super::{layout, script, Load, PageChrome};
 use crate::db::Theme;
+use ui::{Choice, Select};
 
 /// The page's tabs, as `?tab=` names them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -260,22 +260,24 @@ fn profile_panel(data: &AccountViewModel) -> Markup {
                 (Field::new("Time zone", "timezone")
                     .help(None, html! { "Every date and time on the site is shown in this zone. Automatic follows this browser." })
                     .render(html! {
-                        mk-select {
-                            select id="timezone" name="timezone" data-saved=[refused.then(|| saved.timezone.clone().unwrap_or_default())] {
-                                (automatic.selected(shown.timezone.is_none()))
-                                @for name in super::time::zone_names() {
-                                    @let selected = shown.timezone.as_deref() == Some(name.as_str());
-                                    (Choice::new(&name, &name).selected(selected))
-                                }
-                            }
-                        }
+                        (Select::new(
+                            "timezone",
+                            std::iter::once(automatic.selected(shown.timezone.is_none()))
+                                .chain(super::time::zone_names().into_iter().map(|name| {
+                                    let selected = shown.timezone.as_deref() == Some(name.as_str());
+                                    Choice::new(&name, &name).selected(selected)
+                                }))
+                                .collect::<Vec<_>>(),
+                        )
+                        .id("timezone")
+                        .maybe_attr("data-saved", refused.then(|| saved.timezone.clone().unwrap_or_default())))
                     }))
                 (Field::new("Language", "language")
                     .help(None, html! { "Only English for now: more languages come with translation." })
                     .render(html! {
-                        mk-select {
-                            select id="language" disabled { (Choice::new("en", "English").selected(true)) }
-                        }
+                        (Select::new("language", vec![Choice::new("en", "English").selected(true)])
+                            .id("language")
+                            .disabled(true))
                     }))
             }))
             (email_confirm_dialog(saved))
@@ -492,7 +494,7 @@ mod tests {
             html.contains("Automatic - this browser: Europe/London"),
             "{html}"
         );
-        assert!(html.contains(r#"<select id="language" disabled><option value="en" selected>English</option></select>"#), "{html}");
+        assert!(html.contains(r#"<select class="mk-input" name="language" id="language" disabled data-mk="2"><option value="en" selected>English</option></select>"#), "{html}");
         assert!(
             html.contains("more languages come with translation"),
             "{html}"
@@ -541,7 +543,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"<select id="timezone" name="timezone" data-saved="Australia/Perth">"#),
+            html.contains(r#"<select class="mk-input" name="timezone" id="timezone" data-mk="2" data-saved="Australia/Perth">"#),
             "{html}"
         );
         assert!(

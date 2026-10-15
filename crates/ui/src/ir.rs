@@ -32,6 +32,12 @@ pub enum Node {
         path: Path,
         body: Vec<Node>,
     },
+    /// `@if enhanced { }`: what only the behaviour renders, where the
+    /// server leaves the marker `<!--mk:N-->`.
+    Enhanced {
+        mark: u32,
+        body: Vec<Node>,
+    },
 }
 
 #[derive(Debug)]
@@ -42,6 +48,9 @@ pub struct Element {
     pub spread: Option<Path>,
     /// `None` for a void element (`input ...;`).
     pub children: Option<Vec<Node>>,
+    /// An element the behaviour attaches to (its `on:` handlers, `ref`,
+    /// and attributes that differ once enhanced): `data-mk="N"`.
+    pub mark: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -63,6 +72,10 @@ pub enum Attr {
     /// `name=join[ "a" if cond, { (x) "-b" } if cond, ... ]`: the tokens
     /// whose conditions hold, space-separated; absent if none do.
     Tokens(&'static str, Vec<(Vec<Part>, Option<Cond>)>),
+    /// `on:event=handler` or `on:event=handler(path)`: the behaviour's.
+    On(&'static str, &'static str, Option<Path>),
+    /// `ref=name`: hands the element to the behaviour.
+    Ref(&'static str),
 }
 
 impl Attr {
@@ -76,6 +89,21 @@ impl Attr {
             | Attr::Optional(n, _)
             | Attr::When(n, _, _)
             | Attr::Tokens(n, _) => n,
+            Attr::On(..) => "on:",
+            Attr::Ref(_) => "ref",
+        }
+    }
+
+    /// Whether the attribute is the behaviour's: absent from the server's
+    /// markup, or different once enhanced.
+    pub fn enhanced(&self) -> bool {
+        match self {
+            Attr::Bool(_, c) | Attr::When(_, _, c) => c.enhanced(),
+            Attr::Tokens(_, tokens) => tokens
+                .iter()
+                .any(|(_, c)| c.as_ref().is_some_and(Cond::enhanced)),
+            Attr::On(..) | Attr::Ref(_) => true,
+            _ => false,
         }
     }
 }
@@ -95,4 +123,17 @@ pub enum Cond {
     /// `path == Enum::Variant` (true) or `!=` (false), by the variant's
     /// rendered value.
     Eq(Path, &'static str, bool),
+    /// `enhanced`: false as the server renders, true once the behaviour
+    /// runs.
+    Enhanced,
+}
+
+impl Cond {
+    pub fn enhanced(&self) -> bool {
+        match self {
+            Cond::Enhanced => true,
+            Cond::Not(c) => c.enhanced(),
+            _ => false,
+        }
+    }
 }

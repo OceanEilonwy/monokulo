@@ -9,16 +9,33 @@ pub fn render_component<C: Component>(component: &C, buffer: &mut String) {
     render_info(C::info(), component.props(), buffer);
 }
 
+/// An interactive component renders as an island: its markup inside
+/// `<mk-island>`, with its props as JSON for the behaviour that attaches in
+/// the browser. Without JavaScript the markup is all there is.
 pub(crate) fn render_info(
     info: &'static ComponentInfo,
     props: Vec<(&'static str, Value)>,
     buffer: &mut String,
 ) {
+    if let Some(behaviour) = &info.behaviour {
+        buffer.push_str("<mk-island component=\"");
+        buffer.push_str(info.name);
+        buffer.push_str("\" mount=\"");
+        buffer.push_str(behaviour.mount);
+        buffer.push_str("\"><script type=\"application/json\" data-props>");
+        // `<` escaped, so no value can end the script early.
+        let json = serde_json::to_string(&crate::json::props_json(info, &props)).expect("JSON");
+        buffer.push_str(&json.replace('<', "\\u003c"));
+        buffer.push_str("</script>");
+    }
     let scope = Scope {
         props: &props,
         binds: Vec::new(),
     };
     nodes(&info.template, &scope, buffer);
+    if info.behaviour.is_some() {
+        buffer.push_str("</mk-island>");
+    }
 }
 
 struct Scope<'a> {
@@ -70,6 +87,9 @@ fn nodes(list: &[Node], scope: &Scope<'_>, out: &mut String) {
                 for attr in &element.attrs {
                     attribute(attr, scope, out);
                 }
+                if let Some(mark) = element.mark {
+                    out.push_str(&format!(" data-mk=\"{mark}\""));
+                }
                 if let Some(path) = element.spread {
                     let Value::Attrs(attrs) = scope.resolve(path) else {
                         panic!("a spread takes Attrs");
@@ -90,6 +110,7 @@ fn nodes(list: &[Node], scope: &Scope<'_>, out: &mut String) {
                     out.push('>');
                 }
             }
+            Node::Enhanced { mark, .. } => out.push_str(&format!("<!--mk:{mark}-->")),
             Node::Text(text) => escape(text, out),
             Node::Value(path) => content(scope.resolve(path), out),
             Node::If {
@@ -171,6 +192,7 @@ fn cond(c: &Cond, scope: &Scope<'_>) -> bool {
             };
             (value == variant) == *equal
         }
+        Cond::Enhanced => false,
     }
 }
 
@@ -204,6 +226,7 @@ fn attribute(attr: &Attr, scope: &Scope<'_>, out: &mut String) {
                 write_attr(name, Some(&present.join(" ")), out);
             }
         }
+        Attr::On(..) | Attr::Ref(_) => {}
     }
 }
 

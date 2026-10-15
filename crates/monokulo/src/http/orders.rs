@@ -3722,7 +3722,7 @@ mod tests {
             .unwrap();
         let html = body_text(response).await;
         assert!(
-            html.contains(r#"<select id="currency" name="currency">"#),
+            html.contains(r#"<select class="mk-input" name="currency" id="currency" data-mk="2">"#),
             "expected a real currency dropdown, got: {html}"
         );
         assert!(
@@ -4274,7 +4274,9 @@ mod tests {
             "expected a clear rejection message, got: {html}"
         );
         assert!(
-            html.contains(r#"name="base_currency" id="base-currency" data-saved="XMR""#),
+            html.contains(
+                r#"name="base_currency" id="base-currency" data-mk="2" data-saved="XMR""#
+            ),
             "the store's base currency must still be the original default, got: {html}"
         );
     }

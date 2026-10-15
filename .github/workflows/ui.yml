@@ -39,6 +39,7 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
       - run: npm run lint:ui
+      - run: npm run typecheck -w @monokulo/ui
       - run: npm run test:ui:unit
       - run: npm run build:ui
       - run: npm run test:ui

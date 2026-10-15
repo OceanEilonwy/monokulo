@@ -5,10 +5,10 @@
 
 use maud::{html, Markup};
 
-use super::controls::Choice;
 use super::settings::{Card, Field, Save};
 pub use super::settings::{Toast, ToastKind};
 use super::{layout, script, Load, PageChrome};
+use ui::{Choice, Select};
 
 /// `error` means the same thing every other page's own re-render-on-
 /// rejection `error` field does; `email` is echoed back into the form on a
@@ -1020,13 +1020,16 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
             saved.map(|saved| saved == "true"),
         ),
         SettingKindView::Choice { choices } => html! {
-            mk-select {
-                select name=(name) id=(id) aria-describedby=[help] data-saved=[saved] {
-                    @for choice in choices {
-                        (Choice::new(choice, choice).selected(&field.value == choice))
-                    }
-                }
-            }
+            (Select::new(
+                name,
+                choices
+                    .iter()
+                    .map(|choice| Choice::new(choice, choice).selected(&field.value == choice))
+                    .collect::<Vec<_>>(),
+            )
+            .id(id.as_str())
+            .maybe_attr("aria-describedby", help)
+            .maybe_attr("data-saved", saved))
         },
         // Every choice ticked is sent under the one name; an empty one
         // first, so ticking none still says so.
@@ -1064,23 +1067,37 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
                 .and_then(|saved| saved.trim().parse::<u64>().ok())
                 .filter(|saved| *saved > *now && *saved != until)
                 .zip(saved_until_label.as_deref());
+            let mut choices = Vec::new();
+            if on {
+                choices.push(
+                    Choice::new(until.to_string(), format!("On until {until_label}"))
+                        .selected(true),
+                );
+            }
+            if let Some((saved, label)) = saved_on {
+                choices.push(Choice::new(saved.to_string(), format!("On until {label}")));
+            }
+            // Off, a time already past posts as it is, so it isn't read as a
+            // change.
+            choices.push(
+                Choice::new(
+                    (if on || until == 0 { 0 } else { until }).to_string(),
+                    "Off",
+                )
+                .selected(!on),
+            );
+            for (hours, label) in [
+                (1, "On for 1 hour"),
+                (4, "On for 4 hours"),
+                (24, "On for 24 hours"),
+            ] {
+                choices.push(Choice::new((now + hours * 3600).to_string(), label));
+            }
             html! {
-                mk-select {
-                    select name=(name) id=(id) aria-describedby=[help] data-saved=[saved] {
-                        @if on {
-                            (Choice::new(until.to_string(), format!("On until {until_label}")).selected(true))
-                        }
-                        @if let Some((saved, label)) = saved_on {
-                            (Choice::new(saved.to_string(), format!("On until {label}")))
-                        }
-                        // Off, a time already past posts as it is, so it isn't
-                        // read as a change.
-                        (Choice::new((if on || until == 0 { 0 } else { until }).to_string(), "Off").selected(!on))
-                        @for (hours, label) in [(1, "On for 1 hour"), (4, "On for 4 hours"), (24, "On for 24 hours")] {
-                            (Choice::new((now + hours * 3600).to_string(), label))
-                        }
-                    }
-                }
+                (Select::new(name, choices)
+                    .id(id.as_str())
+                    .maybe_attr("aria-describedby", help)
+                    .maybe_attr("data-saved", saved))
             }
         }
         _ => {

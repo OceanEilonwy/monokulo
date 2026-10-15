@@ -5,7 +5,9 @@
 
 use std::fmt::Write;
 
-use serde_json::{json, Map, Value as Json};
+use serde_json::json;
+
+use crate::json::{json_value, props_json};
 
 use crate::components::Specimens;
 use crate::render::render_info;
@@ -73,6 +75,18 @@ pub fn sections(catalogue: &[Specimens]) -> String {
         s.push_str("</div></section>\n");
     }
     s
+}
+
+/// Each partial a hand-written stylebook page includes, by its name.
+pub fn partials(catalogue: &[Specimens]) -> Vec<(&'static str, String)> {
+    catalogue
+        .iter()
+        .flat_map(|s| {
+            s.partials
+                .iter()
+                .map(|(name, slot)| (*name, render(slot) + "\n"))
+        })
+        .collect()
 }
 
 /// The examples as the Solid harness takes them: each one's props, and the
@@ -284,6 +298,30 @@ fn rust_value(ty: &Ty, value: &Value, depth: usize) -> String {
                 .collect();
             format!("vec![{}\n{}]", items.join(""), "    ".repeat(depth))
         }
+        (Ty::Record(info), Value::Record(fields)) if info().builder.is_some() => {
+            let info = info();
+            let builder = info.builder.as_ref().expect("a builder");
+            let field = |name: &str| info.fields.iter().find(|f| f.name == name).expect("field");
+            let value = |name: &str| &fields.iter().find(|(n, _)| *n == name).expect("value").1;
+            let args: Vec<String> = builder
+                .new
+                .iter()
+                .map(|name| rust_value(&field(name).ty, value(name), depth))
+                .collect();
+            let mut s = format!("{}::new({})", info.name, args.join(", "));
+            for (name, v) in fields {
+                if builder.new.contains(name) || builder.skip.contains(name) {
+                    continue;
+                }
+                match v {
+                    Value::Null | Value::Bool(false) => {}
+                    v => {
+                        let _ = write!(s, ".{name}({})", rust_value(&field(name).ty, v, depth));
+                    }
+                }
+            }
+            s
+        }
         (Ty::Record(info), Value::Record(fields)) => {
             let info = info();
             let fields: Vec<String> = fields
@@ -353,66 +391,5 @@ fn solid_component(
     match children {
         Some(c) => format!("<{open}>{c}</{}>", info.name),
         None => format!("<{open} />"),
-    }
-}
-
-// --- Fixture JSON -----------------------------------------------------------
-
-fn props_json(info: &'static ComponentInfo, props: &[(&'static str, Value)]) -> Json {
-    let mut map = Map::new();
-    for (name, value) in props {
-        let prop = info.prop(name).expect("prop");
-        match value {
-            Value::Null => {}
-            Value::Attrs(a) => {
-                for (k, v) in &a.0 {
-                    map.insert(k.clone(), Json::String(v.clone()));
-                }
-            }
-            v => {
-                map.insert((*name).to_string(), json_value(&prop.ty, v));
-            }
-        }
-    }
-    Json::Object(map)
-}
-
-fn json_value(ty: &Ty, value: &Value) -> Json {
-    match (ty, value) {
-        (Ty::Option(inner), v) => json_value(inner, v),
-        (_, Value::Text(s)) => Json::String(s.clone()),
-        (_, Value::Bool(b)) => Json::Bool(*b),
-        (_, Value::Number(n)) => json!(n),
-        (_, Value::Enum(s)) => Json::String((*s).to_string()),
-        (_, Value::Null) => Json::Null,
-        (Ty::List(item), Value::List(items)) => {
-            Json::Array(items.iter().map(|v| json_value(item, v)).collect())
-        }
-        (Ty::Record(info), Value::Record(fields)) => {
-            let info = info();
-            let mut map = Map::new();
-            for (name, v) in fields {
-                let field = info.fields.iter().find(|f| f.name == *name).expect("field");
-                map.insert((*name).to_string(), json_value(&field.ty, v));
-            }
-            Json::Object(map)
-        }
-        (_, Value::Slot(slot)) => Json::Object(Map::from_iter([(
-            "$slot".to_string(),
-            Json::Array(
-                slot.parts
-                    .iter()
-                    .map(|part| match part {
-                        SlotPart::Text(t) => Json::String(t.clone()),
-                        SlotPart::Component { info, props } => json!({
-                            "$component": info.name,
-                            "props": props_json(info, props),
-                        }),
-                        SlotPart::Html(_) => panic!("examples are components and text"),
-                    })
-                    .collect(),
-            ),
-        )])),
-        (ty, v) => panic!("{v:?} as {ty:?}"),
     }
 }

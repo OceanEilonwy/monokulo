@@ -1,5 +1,6 @@
 //! Builds the POS terminal app (`pos-ui/`, Solid 2 + Vite) into `OUT_DIR`,
-//! where `http::pay` embeds it, and key custody's browser module (the
+//! where `http::pay` embeds it, the shared components' islands script
+//! (`crates/ui`, the same toolchain), and key custody's browser module (the
 //! `key-custody` crate for `wasm32-unknown-unknown`), which `http::key_entry`
 //! embeds; the built files are not kept in git.
 //!
@@ -80,6 +81,29 @@ fn main() {
             "the POS build did not produce {file}"
         );
     }
+
+    // The shared components' islands (crates/ui/web/islands.ts): the
+    // behaviour every interactive component on the server's pages attaches.
+    let islands = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("ui-islands");
+    run(
+        &workspace.join("crates/ui"),
+        &vite,
+        &[
+            "build",
+            "--config",
+            "vite.islands.config.js",
+            "--mode",
+            mode,
+            "--outDir",
+            islands.to_str().unwrap(),
+            "--emptyOutDir",
+        ],
+        mode,
+    );
+    assert!(
+        islands.join("ui-islands.js").exists(),
+        "the islands build did not produce ui-islands.js"
+    );
 
     build_key_custody_wasm(&manifest);
     build_wallet_setup_wasm(&manifest);

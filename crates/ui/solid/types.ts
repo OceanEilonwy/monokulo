@@ -3,6 +3,11 @@
 
 
 /**
+ * An ARIA state that takes the words `true` and `false`.
+ */
+export type AriaBool = "true" | "false";
+
+/**
  * What a button does in its form.
  */
 export type ButtonType = "button" | "submit" | "reset";
@@ -24,6 +29,16 @@ export type ControlSize = "compact" | "touch";
 export type InputType = "text" | "email" | "password" | "number" | "url" | "search" | "tel";
 
 /**
+ * A popover that only script opens and closes.
+ */
+export type Popover = "manual";
+
+/**
+ * Whether the list has a find box.
+ */
+export type SearchMode = "auto" | "show" | "hide";
+
+/**
  * Where a step stands.
  */
 export type StepState = "done" | "current" | "next";
@@ -33,6 +48,64 @@ export type StepState = "done" | "current" | "next";
  * colour only backs them up.
  */
 export type Tone = "success" | "warning" | "error";
+
+/**
+ * One option of a [`Select`]. Its text says everything in words, for a
+ * browser without JavaScript (`Label (detail) [Network] [chip] - note`);
+ * the enhanced list draws the same parts on their own: a logo, a label, a
+ * monospace detail, a network badge, a chip, a note.
+ */
+export interface Choice {
+  readonly value: string;
+  readonly label: string;
+  /**
+   * `data-label`: the label on its own, when the text has more parts.
+   */
+  readonly data_label?: string;
+  readonly logo?: string;
+  readonly detail?: string;
+  readonly network?: string;
+  readonly chip?: string;
+  /**
+   * The chip is Current: the one in use now, the only green one.
+   */
+  readonly current: boolean;
+  readonly note?: string;
+  readonly selected: boolean;
+  readonly disabled: boolean;
+  /**
+   * The option's text: every part, in words.
+   */
+  readonly text: string;
+}
+
+/**
+ * An option as the enhanced button and list draw it (`select.behaviour.ts`).
+ */
+export interface SelectItem {
+  readonly index: number;
+  readonly id: string;
+  readonly label?: string;
+  readonly logo?: string;
+  readonly detail?: string;
+  /**
+   * The network's name, for its badge.
+   */
+  readonly network?: string;
+  readonly mainnet: boolean;
+  readonly chip?: string;
+  readonly current: boolean;
+  /**
+   * Only in the list, not the button.
+   */
+  readonly note?: string;
+  /**
+   * `aria-selected`.
+   */
+  readonly chosen: AriaBool;
+  readonly active: boolean;
+  readonly disabled: boolean;
+}
 
 /**
  * One segment of a progress strip.

@@ -1,7 +1,10 @@
 //! The package's web side, for Rust consumers: the stylesheets, scripts,
 //! fonts and icons in `web/`, which npm consumers import as `@monokulo/ui`.
 //! A server bakes these into its binary and serves them itself; nothing is
-//! read from disk at run time.
+//! read from disk at run time. The islands' script (`web/islands.ts`, the
+//! interactive components' Solid behaviours) needs a bundler: a server
+//! builds it with Vite (`vite.islands.config.js`), as monokulo's build
+//! script does.
 
 /// Every colour, spacing, radius and type token, light and dark: the only
 /// place a colour is defined.
@@ -27,9 +30,6 @@ pub const COMPONENTS_CSS: &str = concat!(
     "\n",
     include_str!("../web/components/monitoring.css"),
 );
-
-/// `<mk-select>`: every dropdown's enhancement.
-pub const SELECT_JS: &str = include_str!("../web/components/select.js");
 
 /// The settings form's components (`<mk-settings-form>`, cards, save bar,
 /// toasts): change tracking, discard and saving.

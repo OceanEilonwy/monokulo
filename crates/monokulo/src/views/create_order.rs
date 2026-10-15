@@ -54,13 +54,14 @@ pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
                         "exchange rate provider (in this store's settings) to offer others."
                     }
                 } @else {
-                    mk-select {
-                        select id="currency" name="currency" {
-                            @for currency in &data.order_currency_options {
-                                (super::controls::Choice::new(currency, currency).selected(*currency == data.currency))
-                            }
-                        }
-                    }
+                    (ui::Select::new(
+                        "currency",
+                        data.order_currency_options
+                            .iter()
+                            .map(|currency| ui::Choice::new(currency, currency).selected(*currency == data.currency))
+                            .collect::<Vec<_>>(),
+                    )
+                    .id("currency"))
                     span class="field-help" {
                         "\"XMR\" always works, with no provider needed. Any other currency here comes from this "
                         "store's own exchange rate provider (in this store's settings)."
