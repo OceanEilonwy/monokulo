@@ -237,7 +237,7 @@ fn network_card(network: &StatusNetworkView, engine_page: bool) -> Markup {
     let name = network_name(&network.network);
     let scanner = &network.scanner;
     let scanner_tag = html! {
-        span class=(format!("tag {}", scanner.status_tag_class)) { (scanner.status_label) }
+        span class="mk-status-text" data-tone=[tone(&scanner.status_tag_class)] { (scanner.status_label) }
     };
     html! {
         div class="box net-card" id=(format!("network-{}", network.network)) {
@@ -246,7 +246,7 @@ fn network_card(network: &StatusNetworkView, engine_page: bool) -> Markup {
                 (scanner_tag)
                 @if let Some(proof) = &network.proof {
                     @let (label, class) = proof_tag(proof.state);
-                    span class=(format!("tag {class}")) { (label) }
+                    span class="mk-status-text" data-tone=[tone(class)] { (label) }
                 }
                 @if engine_page {
                     a class="btn net-head-action" href=(format!("/status/engine?network={}", network.network)) { "Watch it live" }
@@ -279,6 +279,18 @@ fn network_card(network: &StatusNetworkView, engine_page: bool) -> Markup {
                 (announcements_section(announcements))
             }
         }
+    }
+}
+
+/// The words' tone for a status beside a title, from the tag class it
+/// would have as a chip: the words say the state, the colour only backs
+/// them up.
+fn tone(tag_class: &str) -> Option<&'static str> {
+    match tag_class {
+        "tag-ok" => Some("success"),
+        "tag-error" => Some("error"),
+        "tag-warn" => Some("warning"),
+        _ => None,
     }
 }
 
@@ -713,8 +725,8 @@ mod tests {
         assert!(
             html.contains(concat!(
                 r#"<div class="net-head"><h2>Mainnet</h2>"#,
-                r#"<span class="tag tag-ok">scanning</span>"#,
-                r#"<span class="tag tag-ok">proof checked</span>"#,
+                r#"<span class="mk-status-text" data-tone="success">scanning</span>"#,
+                r#"<span class="mk-status-text" data-tone="success">proof checked</span>"#,
             )),
             "{html}"
         );
@@ -737,7 +749,7 @@ mod tests {
         });
         assert!(html.contains("<h2>Stagenet</h2>"), "{html}");
         assert!(html.contains("<h2>Testnet</h2>"), "{html}");
-        assert!(html.contains(r#"<span class="tag tag-unknown">finding an anchor</span>"#));
+        assert!(html.contains(r#"<span class="mk-status-text">finding an anchor</span>"#));
         assert!(
             html.contains("<p>Waiting for 2 of 3 nodes to agree on an anchor.</p>"),
             "while anchoring, the engine's sentence and no window: {html}"
@@ -772,7 +784,7 @@ mod tests {
             ..empty()
         });
         assert!(
-            html.contains(r#"<p class="line scanner-line"><span class="tag tag-ok">scanning</span> last tick 2s ago · 41,203 ticks · 3 stores scanned last tick</p>"#),
+            html.contains(r#"<p class="line scanner-line"><span class="mk-status-text" data-tone="success">scanning</span> last tick 2s ago · 41,203 ticks · 3 stores scanned last tick</p>"#),
             "{html}"
         );
     }
@@ -1020,7 +1032,7 @@ mod tests {
         proof.state = ProofState::Held;
         proof.summary = "Every node's chain left the proven one more than 720 blocks back.".into();
         let html = render(&admin_with(proof, vec![]));
-        assert!(html.contains(r#"<span class="tag tag-error">settlement held</span>"#));
+        assert!(html.contains(r#"<span class="mk-status-text" data-tone="error">settlement held</span>"#));
         assert!(
             html.contains(concat!(
                 r#"<div class="proof-held"><p>Every node's chain left the proven one more than 720 blocks back.</p>"#,

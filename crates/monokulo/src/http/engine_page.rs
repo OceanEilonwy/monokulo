@@ -709,7 +709,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("no {needle:?} in the page"))
         };
         let order = [
-            r#"<nav class="context-nav" aria-label="Breadcrumb"><a href="/status">Status</a></nav><div class="engine-titlebar"><h1>Engine</h1><details class="engine-help""#,
+            r#"<nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb"><a href="/status">Status</a></nav><div class="engine-titlebar"><h1>Engine</h1><details class="engine-help""#,
             r#"<span class="titlebar-spacer"></span><form class="engine-network" method="get" action="/status/engine">"#,
             r#"<button type="submit" class="network-go no-js-only">Go</button></form><a class="btn btn-secondary reload" href="/status/engine?network=stagenet""#,
             r#"id="engine-summary""#,

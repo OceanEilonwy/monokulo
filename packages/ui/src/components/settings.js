@@ -110,7 +110,7 @@
   function clearFailure(card) {
     if (!card.classList.contains("is-failed")) return;
     card.classList.remove("is-failed");
-    each(card, ".card-body > p.error[role=alert], [data-card-state] .badge-error", function (el) { el.remove(); });
+    each(card, ".card-body > p.error[role=alert], [data-card-state] [data-card-failed]", function (el) { el.remove(); });
   }
 
   function discardCard(card) {
@@ -165,7 +165,8 @@
       if (count > 0) {
         if (!badge && state) {
           badge = document.createElement("span");
-          badge.className = "badge badge-unsaved";
+          badge.className = "mk-status-text";
+          badge.setAttribute("data-tone", "changed");
           badge.setAttribute("data-unsaved", "");
           state.insertBefore(badge, state.firstChild);
         }

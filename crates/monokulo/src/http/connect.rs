@@ -714,7 +714,7 @@ mod tests {
         let store_id = crate::http::test_support::store_made(&made);
         let done = body_text(get(router, &location(&made), cookie).await).await;
         assert!(done.contains("Back to WooCommerce"), "{done}");
-        assert!(done.contains(r#"<li aria-current="step"><span class="n">3</span>Done</li>"#));
+        assert!(done.contains(r#"<li aria-current="step"><span>Done<small>Complete</small></span>"#));
         router
             .clone()
             .oneshot(form_request(

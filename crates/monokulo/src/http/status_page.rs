@@ -1587,7 +1587,7 @@ mod tests {
             assert_eq!(window.behind(), 2);
             let html = crate::views::status::live_fragment(&admin).into_string();
             for expected in [
-                r#"<span class="tag tag-ok">proof checked</span>"#,
+                r#"<span class="mk-status-text" data-tone="success">proof checked</span>"#,
                 "Orders settle on blocks up to <strong>118</strong>, proven by the engine itself.",
                 r#"<span class="tag tag-unknown">2 behind the tip</span>"#,
                 "<dt>Anchor</dt><dd>Block 100, 2 of 3 nodes agreed, 2h ago</dd>",
@@ -1610,7 +1610,7 @@ mod tests {
             super::super::seed_status_for_tests(&state.engine, held);
             let admin = super::super::status_view(&state, true).await;
             let html = crate::views::status::live_fragment(&admin).into_string();
-            assert!(html.contains(r#"<span class="tag tag-error">settlement held</span>"#));
+            assert!(html.contains(r#"<span class="mk-status-text" data-tone="error">settlement held</span>"#));
             assert!(admin.networks[0].proof.as_ref().unwrap().window.is_none());
             assert!(
                 html.contains(

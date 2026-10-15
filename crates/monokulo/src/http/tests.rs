@@ -1072,7 +1072,7 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
 
     let html = body_text(cookie_get(&router, "/setup", &cookie).await).await;
     assert!(html.contains("<h1>Set up a store</h1>"), "{html}");
-    assert!(html.contains(r#"<li aria-current="step"><span class="n">1</span>Store</li>"#));
+    assert!(html.contains(r#"<li aria-current="step"><span>Store<small>In progress</small></span>"#));
 
     let store_step = [
         ("store_name", "  Bakery "),
@@ -1104,7 +1104,7 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
         !html.contains("Use a wallet you already added"),
         "none yet: {html}"
     );
-    assert!(html.contains(r#"<li class="done"><span class="n">1</span>Store</li>"#));
+    assert!(html.contains(r#"<li class="done"><span>Store<small>Complete</small></span>"#));
     assert!(
         !html.contains("Base currency"),
         "defaults, not asked: {html}"

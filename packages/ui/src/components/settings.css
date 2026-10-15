@@ -170,9 +170,3 @@ body:has(.save-bar):not(:has(.save-bar:not([data-placement="inline"]))) { paddin
   }
   .mk-form-layout[data-layout="grouped"] .save-bar-inner { grid-template-columns: minmax(0, 1fr); }
 }
-
-/* Settings metadata is plain text, not a category chip. Keep legacy badge
-   hooks for enhancement and server-rendered validation. */
-.card-state .badge { background: none; border: 0; border-radius: 0; padding: 0; font-size: var(--text-sm); font-weight: 500; color: var(--muted); }
-.card-state .badge-unsaved { color: var(--card-changed); }
-.card-state .badge-error { color: var(--error); }
