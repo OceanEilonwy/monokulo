@@ -28,6 +28,13 @@ export function TabLinks(props: TabLinksProps): JSX.Element {
         {(link) => (
           <a href={link.href} aria-current={link.current ? `page` : undefined}>
             {link.label}
+            {link.count != null ? (
+              <span class="mk-tab-count">
+                {link.count}
+              </span>
+            ) : (
+              null
+            )}
           </a>
         )}
       </For>

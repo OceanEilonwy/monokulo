@@ -44,20 +44,19 @@
     for (var i = MAX_ROWS; i < rows.length; i++) rows[i].remove();
   });
   // Syntax opens its help as a dialog instead of following the link to the
-  // same help as a page. Use puts an example in the box; a name chip adds
-  // that name to it.
-  var help = document.getElementById("query-help"), helpLink = document.getElementById("query-help-link");
-  var box = document.getElementById("log-q");
-  if (help && helpLink && box && typeof help.showModal === "function") {
-    helpLink.addEventListener("click", function (evt) { evt.preventDefault(); help.showModal(); });
+  // same help as a page (the dialog's island). Use puts an example in the
+  // box; a name chip adds that name to it. Focus goes to the box once the
+  // dialog has closed, after the island gives it back to Syntax.
+  var help = document.getElementById("query-help"), box = document.getElementById("log-q");
+  if (help && box && typeof help.showModal === "function") {
     help.addEventListener("click", function (evt) {
       if (evt.target === help) { help.close(); return; }
-      var use = evt.target.closest(".qh-use"), chip = evt.target.closest(".qh-chip");
+      var use = evt.target.closest("[data-q]"), chip = evt.target.closest("[data-chip]");
       if (!use && !chip) return;
       evt.preventDefault();
       box.value = use ? use.dataset.q : (box.value.trim() ? box.value.trim() + " and " : "") + chip.textContent + " ";
+      help.addEventListener("close", function () { box.focus(); }, { once: true });
       help.close();
-      box.focus();
     });
   }
 })();

@@ -2,6 +2,7 @@
 // component there and run it again.
 
 import type { JSX } from '@solidjs/web';
+import type { PageWidth } from './types';
 
 /**
  * The site's bar: the brand on the left, then the links, the status
@@ -26,6 +27,11 @@ export interface SiteNavProps {
    * Beside the hamburger, in sight on a phone: the status dot.
    */
   status?: JSX.Element;
+  /**
+   * The width of the page under it, which its row lines up with.
+   * @default "normal"
+   */
+  width?: PageWidth;
 }
 
 /**
@@ -35,7 +41,7 @@ export interface SiteNavProps {
  */
 export function SiteNav(props: SiteNavProps): JSX.Element {
   return (
-    <nav class="site-nav">
+    <nav class="site-nav" data-width={(props.width ?? "normal") === "wide" ? `wide` : undefined}>
       <div class="wrap site-nav-row">
         <a href={(props.home ?? "/")} class="site-nav-brand">
           {props.brand}

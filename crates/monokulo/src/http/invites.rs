@@ -620,7 +620,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
-        assert!(html.contains(r#"<form method="post" action="/request-invite">"#));
+        assert!(html.contains(r#"<form method="post" action="/request-invite" class="mk-stack">"#));
     }
 
     #[tokio::test]
@@ -875,7 +875,7 @@ mod tests {
             .unwrap();
         let html = body_text(after_delete).await;
         assert!(
-            html.contains(r#"class="row-deleted""#),
+            html.contains("data-deleted"),
             "expected the one-time struck-through row, got: {html}"
         );
         assert!(
@@ -887,7 +887,7 @@ mod tests {
         let reload = admin_invites_get(&router, &cookie).await;
         let html = body_text(reload).await;
         assert!(
-            !html.contains(r#"class="row-deleted""#),
+            !html.contains("data-deleted"),
             "the struck-through addendum must only ever show once, right after the delete"
         );
         assert!(!html.contains("a@example.com"));

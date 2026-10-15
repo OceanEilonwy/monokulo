@@ -182,10 +182,15 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
                 div class="two-fields" {
                     div class="setting-field" {
                         div class="setting-label-row" { label class="setting-label" for="store-name" { "Store name" } }
-                        p class="field-help hint" { "Shown on your dashboard, the till and the checkout." }
-                        input id="store-name" type="text" name="store_name" value=(data.name) maxlength=(crate::stores::MAX_NAME_LEN)
-                            autocomplete="organization" required aria-invalid=[data.name_error.as_ref().map(|_| "true")]
-                            aria-describedby=[data.name_error.as_ref().map(|_| "store-name-error")];
+                        (field_help("Shown on your dashboard, the till and the checkout."))
+                        (ui::Input::new("store_name")
+                            .id("store-name")
+                            .value(data.name.clone())
+                            .autocomplete("organization")
+                            .required(true)
+                            .invalid(data.name_error.is_some())
+                            .maybe_described_by(data.name_error.as_ref().map(|_| "store-name-error".to_string()))
+                            .attr("maxlength", crate::stores::MAX_NAME_LEN.to_string()))
                         @if let Some(error) = &data.name_error {
                             span class="field-check bad" id="store-name-error" { "✕ " (error) }
                         }
@@ -193,13 +198,18 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
                     div class="setting-field site-field" {
                         div class="setting-label-row" {
                             label class="setting-label" for="store-site" { "Your website" }
-                            @if data.plugin_host.is_none() { span class="hint" { "(optional)" } }
+                            @if data.plugin_host.is_none() { (ui::Hint::new("(optional)").inline(true)) }
                         }
-                        p class="field-help hint" { "Needed for the checkout on your pages or for the WooCommerce plugin. Leave it empty to take payments at the till only." }
-                        input id="store-site" type="text" name="store_site" value=(data.site) inputmode="url"
-                            autocomplete="url" placeholder="shop.example" readonly[data.plugin_host.is_some()]
-                            aria-invalid=[data.site_error.as_ref().map(|_| "true")]
-                            aria-describedby=[data.site_error.as_ref().map(|_| "store-site-error")];
+                        (field_help("Needed for the checkout on your pages or for the WooCommerce plugin. Leave it empty to take payments at the till only."))
+                        (ui::Input::new("store_site")
+                            .id("store-site")
+                            .value(data.site.clone())
+                            .placeholder("shop.example")
+                            .autocomplete("url")
+                            .readonly(data.plugin_host.is_some())
+                            .invalid(data.site_error.is_some())
+                            .maybe_described_by(data.site_error.as_ref().map(|_| "store-site-error".to_string()))
+                            .attr("inputmode", "url"))
                         @match &data.site_error {
                             Some(SiteError::Invalid(why)) => span class="field-check bad" id="store-site-error" { "✕ " (why) },
                             Some(SiteError::Yours { id, name, site }) => span class="field-check bad" id="store-site-error" {
@@ -212,18 +222,23 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
                         }
                     }
                 }
-                p class="hint site-hint" {
+                (ui::Hint::new(
                     "Checkouts on any page of the site work. Subdomains (pay.shop.example) work too, once you verify the domain in the store's settings."
-                }
+                ))
                 div class="step-foot" {
-                    a class="btn" href="/" { "Cancel" }
+                    (ui::LinkButton::new("Cancel", "/"))
                     span class="spacer" {}
-                    button type="submit" class="btn-primary" { "Next" }
+                    (ui::Button::new("Next").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit))
                 }
             }
         }
     };
     layout(chrome, "Set up a store - Monokulo", body)
+}
+
+/// What a field on the store step is for, between its label and its input.
+fn field_help(text: &str) -> ui::Hint {
+    ui::Hint::new(text).attr("data-field-help", "")
 }
 
 // -- Done ----------------------------------------------------------------------
@@ -276,7 +291,7 @@ pub fn plugin_return_form(store_id: &str, plugin: &PluginReturn, label: &str) ->
             input type="hidden" name="site_url" value=(plugin.site_url);
             input type="hidden" name="return_url" value=(plugin.return_url);
             input type="hidden" name="nonce" value=(plugin.nonce);
-            button type="submit" class="btn-primary" { (label) }
+            (ui::Button::new(label).variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit))
         }
     }
 }
@@ -291,7 +306,7 @@ pub fn plugin_return_form(store_id: &str, plugin: &PluginReturn, label: &str) ->
 pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
     let id = &data.store_id;
     let has_site = !data.site.is_empty();
-    let primary = |on: bool| if on { "btn btn-primary" } else { "btn" };
+    let primary = |on: bool| on.then_some(ui::ButtonVariant::Primary);
     let till_primary = data.plugin.is_none() && !has_site;
     let guide_primary = data.plugin.is_none() && has_site;
     let body = html! {
@@ -303,7 +318,9 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
                 h1 { (data.name) " is set up" }
             }
             p class="store-summary" {
-                @if has_site && !data.has_orders { span class="tag tag-unknown not-yet" { "Not taking payments yet" } " " }
+                @if has_site && !data.has_orders {
+                    (ui::Tag::new("Not taking payments yet").tone(ui::TagTone::Unknown).attr("data-not-yet", "")) " "
+                }
                 (summary(data))
             }
             @if data.skipped_backup { (skipped_warning()) }
@@ -313,17 +330,18 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
                     p {
                         strong { "Add the checkout to your site" }
                         @if has_site {
-                            span class="hint" { "A script tag and a button on " (data.site) ", or a call from your server. The guide shows both, and how to verify the domain." }
+                            (ui::Hint::new(format!("A script tag and a button on {}, or a call from your server. The guide shows both, and how to verify the domain.", data.site)).inline(true))
                         } @else {
-                            span class="hint" { "It runs on your website: add your site in the store's settings first." }
+                            (ui::Hint::new("It runs on your website: add your site in the store's settings first.").inline(true))
                         }
                     }
                     @if has_site {
-                        a class=(format!("{} docs-link", primary(guide_primary))) href=(super::DOCS_URL) target="_blank" rel="noopener" {
-                            "Open the guide " (super::external_link_icon())
-                        }
+                        (ui::LinkButton::new(html! { "Open the guide " (super::external_link_icon()) }, super::DOCS_URL)
+                            .maybe_variant(primary(guide_primary))
+                            .attr("target", "_blank")
+                            .attr("rel", "noopener"))
                     } @else {
-                        a class="btn" href=(format!("{}#card-store", settings_link(id))) { "Add your site" }
+                        (ui::LinkButton::new("Add your site", format!("{}#card-store", settings_link(id))))
                     }
                 }
                 li {
@@ -331,37 +349,38 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
                     p {
                         strong { "Install the WooCommerce plugin" }
                         @if data.plugin.is_some() {
-                            span class="hint" {
-                                "Go back to WooCommerce to give the plugin on " (data.site) " its key. Monero then shows at checkout once you "
-                                "turn it on in WooCommerce → Settings → Payments."
-                            }
+                            (ui::Hint::new(format!(
+                                "Go back to WooCommerce to give the plugin on {} its key. Monero then shows at checkout once you \
+                                 turn it on in WooCommerce → Settings → Payments.",
+                                data.site
+                            )).inline(true))
                         } @else {
-                            span class="hint" {
-                                "In WordPress: Plugins, Add New, search for Monokulo, then Connect it from WooCommerce → Settings → Payments. "
-                                "It finds this store by its site."
-                            }
+                            (ui::Hint::new(
+                                "In WordPress: Plugins, Add New, search for Monokulo, then Connect it from WooCommerce → Settings → Payments. \
+                                 It finds this store by its site."
+                            ).inline(true))
                         }
                     }
                     @if let Some(plugin) = &data.plugin {
                         (plugin_return_form(id, plugin, "Back to WooCommerce"))
                     } @else {
-                        a class="btn docs-link" href=(super::docs_url("woocommerce/")) target="_blank" rel="noopener" {
-                            "Plugin guide " (super::external_link_icon())
-                        }
+                        (ui::LinkButton::new(html! { "Plugin guide " (super::external_link_icon()) }, super::docs_url("woocommerce/"))
+                            .attr("target", "_blank")
+                            .attr("rel", "noopener"))
                     }
                 }
                 li {
                     span class="num" { "3" }
                     p {
                         strong { "Open the till (POS)" }
-                        span class="hint" { "On the phone or tablet you take payments with. Customers scan a QR code." }
+                        (ui::Hint::new("On the phone or tablet you take payments with. Customers scan a QR code.").inline(true))
                     }
-                    a class=(primary(till_primary)) href=(format!("/dashboard/stores/{id}/pos")) { "Open the till" }
+                    (ui::LinkButton::new("Open the till", format!("/dashboard/stores/{id}/pos")).maybe_variant(primary(till_primary)))
                 }
             }
             @if has_site { (public_key_help(&data.public_key)) }
             div class="step-foot" {
-                a class="btn" href=(settings_link(id)) { "Store settings" }
+                (ui::LinkButton::new("Store settings", settings_link(id)))
                 span class="spacer" {}
                 a href=(format!("/dashboard/stores/{id}")) { "Go to " (data.name) "'s page" }
             }
@@ -372,19 +391,21 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
 
 fn skipped_warning() -> Markup {
     html! {
-        p class="warning" { "The wallet's recovery phrase was not backed up. Payments to it can't be spent unless you have it." }
+        (ui::Alert::new(
+            "The wallet's recovery phrase was not backed up. Payments to it can't be spent unless you have it.",
+            ui::Tone::Warning,
+        )
+        .quiet(true))
     }
 }
 
 fn public_key_help(public_key: &str) -> Markup {
     html! {
-        details class="keys-help" {
-            summary { "Your store's public key" }
-            div class="keys-help-body" {
-                pre { (public_key) }
-                p class="hint" { "The guide tells you where it goes. It's safe to publish: it names the store and can't move money." }
-            }
-        }
+        (ui::Disclosure::new("Your store's public key", html! {
+            pre { (public_key) }
+            (ui::Hint::new("The guide tells you where it goes. It's safe to publish: it names the store and can't move money."))
+        })
+        .look(ui::DisclosureLook::Boxed))
     }
 }
 
@@ -470,8 +491,8 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("<h1>Set up a store</h1>"), "{html}");
-        assert!(html.contains(r#"name="store_name" value="Bakery""#));
-        assert!(html.contains(r#"name="store_site" value="shop.example""#));
+        assert!(html.contains(r#"name="store_name" id="store-name" value="Bakery""#));
+        assert!(html.contains(r#"name="store_site" id="store-site" value="shop.example""#));
         assert!(
             html.contains(r#"<label class="setting-label" for="store-site">Your website</label><span class="hint">(optional)</span>"#),
             "{html}"
@@ -557,12 +578,13 @@ mod tests {
 
     /// The one orange button on Done.
     fn primary(html: &str) -> &str {
+        const PRIMARY: &str = r#"data-variant="primary""#;
         assert_eq!(
-            html.matches("btn-primary").count(),
+            html.matches(PRIMARY).count(),
             1,
             "one primary button: {html}"
         );
-        let at = html.find("btn-primary").unwrap();
+        let at = html.find(PRIMARY).unwrap();
         let rest = &html[at..];
         &rest[..rest.find("</").unwrap()]
     }
@@ -641,7 +663,7 @@ mod tests {
             html.contains("add your site in the store's settings first"),
             "{html}"
         );
-        assert!(html.contains(r#"<a class="btn" href="/dashboard/stores/c_1/settings#card-store">Add your site</a>"#), "{html}");
+        assert!(html.contains(r#"<a class="mk-btn" href="/dashboard/stores/c_1/settings#card-store">Add your site</a>"#), "{html}");
         assert!(!html.contains("Open the guide"), "{html}");
         assert!(!html.contains("Not taking payments yet"), "{html}");
     }

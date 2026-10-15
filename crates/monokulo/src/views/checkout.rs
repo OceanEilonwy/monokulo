@@ -192,7 +192,7 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 @keyframes qr-new { from { box-shadow: 0 0 0 6px color-mix(in srgb, var(--state-partial-border) 55%, transparent); } to { box-shadow: 0 0 0 22px transparent; } }
 @media (prefers-reduced-motion: reduce) { .qr-new svg { animation: none; } }
 .qr-note { margin: -.6em 0 1.2em; font-size: .75em; color: var(--muted); }
-.payments-table { font-size: 0.8em; margin-top: 1.2em; }
+[data-table="payments"] { font-size: 0.8em; margin-top: 1.2em; }
 .meta { margin-top: 1.4em; font-size: 0.8em; color: var(--muted); text-align: left; }
 .refresh-toggle { margin: 0 0 .5em; text-align: right; font-size: .85em; }
 .refund-field { display: grid; align-items: center; margin: .5em 0; }
@@ -222,7 +222,7 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .checkout-compact .qr-wrap { margin-bottom: .5em; }
 .checkout-compact .qr-wrap svg { width: min(42vh, 208px); height: auto; }
 .checkout-compact .section { margin-top: .7em; padding-top: .7em; }
-.checkout-compact .meta, .checkout-compact .payments-table { display: none; }
+.checkout-compact .meta, .checkout-compact [data-table="payments"] { display: none; }
 .checkout-compact .amount { font-size: clamp(1.1rem, 8cqi, 1.8rem); font-weight: 800; margin: .1em 0; }
 .checkout-compact .fiat-amount { font-size: .8em; margin-bottom: .4em; }
 .checkout-compact .qr-wrap { margin-bottom: .3em; }
@@ -323,10 +323,15 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                             fx-method="POST" fx-trigger="refund:save" fx-swap="none" fx-own-errors {
                                 label for="refund_address" { "Refund address " span class="field-help" style="display:inline" { "(optional)" } }
                                 @if let Some(error) = &data.refund_address_error {
-                                    div class="error" { (error) }
+                                    (ui::Alert::new(error.as_str(), ui::Tone::Error))
                                 }
                                 div id="refund-field" class=(if data.refund_address.is_some() { "refund-field is-saved" } else { "refund-field" }) {
-                                    input class="mk-input" type="text" id="refund_address" name="refund_address" value=(data.refund_address.as_deref().unwrap_or("")) placeholder="Your Monero refund address" autocomplete="off" spellcheck="false";
+                                    (ui::Input::new("refund_address")
+                                        .id("refund_address")
+                                        .value(data.refund_address.as_deref().unwrap_or(""))
+                                        .placeholder("Your Monero refund address")
+                                        .autocomplete("off")
+                                        .attr("spellcheck", "false"))
                                     span class="refund-tools" {
                                     span id="refund-save-state" class="refund-save-state" role="status" aria-label=(if data.refund_address.is_some() { "Refund address saved" } else { "" }) {
                                         svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" { path d="m4 12 5 5L20 6" {} }
@@ -348,7 +353,7 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                                     "If this order needs a refund, this address is recorded for the merchant to use. "
                                     "Refunds are not sent automatically."
                                 }
-                                noscript { button type="submit" class="btn-secondary" { "Save" } }
+                                noscript { (ui::FormActions::new(ui::Button::new("Save").kind(ui::ButtonType::Submit))) }
                         }
                     } }
 
@@ -651,23 +656,29 @@ fn live_progress(data: &CheckoutViewModel) -> Markup {
 }
 
 fn live_payments(data: &CheckoutViewModel) -> Markup {
+    let rows = data.payments.iter().map(|payment| {
+        ui::Slot::from(ui::Row::new(ui::Slot::many([
+            ui::Cell::new(super::short_id(&payment.txid)).into(),
+            ui::Cell::new(html! { span class="nowrap" { (super::trim_xmr(&payment.amount_xmr)) " XMR" } }).into(),
+            ui::Slot::from(ui::Cell::new(if payment.is_zero_conf {
+                "mempool".to_string()
+            } else {
+                payment.confirmations.to_string()
+            })),
+        ])))
+    });
     html! {
         div id="live-payments" data-live {
             @if !data.payments.is_empty() {
                 div class="section" {
-                    table class="payments-table" {
-                        caption class="sr-only" { "Individual payments received toward this order" }
-                        thead { tr { th scope="col" { "Tx" } th scope="col" { "Amount" } th scope="col" { "Confirmations" } } }
-                        tbody id="payments-body" {
-                            @for payment in &data.payments {
-                                tr {
-                                    td { (super::short_id(&payment.txid)) }
-                                    td class="nowrap" { (super::trim_xmr(&payment.amount_xmr)) " XMR" }
-                                    td { @if payment.is_zero_conf { "mempool" } @else { (payment.confirmations) } }
-                                }
-                            }
-                        }
-                    }
+                    (ui::Table::new(ui::Slot::many(rows))
+                        .head(ui::Row::new(ui::Slot::many(
+                            ["Tx", "Amount", "Confirmations"]
+                                .map(|name| ui::Slot::from(ui::Cell::new(name).header(true).attr("scope", "col"))),
+                        )))
+                        .caption("Individual payments received toward this order")
+                        .scroll(false)
+                        .attr("data-table", "payments"))
                 }
             }
         }
@@ -792,7 +803,7 @@ pub fn share_page(chrome: &PageChrome, data: &CheckoutShareViewModel) -> Markup 
                 section class="share-card" {
                     header class="share-card-head" {
                         h1 { "Pay with Monero" }
-                        p class="hint" { "Complete the payment below - this page stays up to date on its own, so it's safe to bookmark or come back to later." }
+                        (ui::Hint::new("Complete the payment below - this page stays up to date on its own, so it's safe to bookmark or come back to later."))
                     }
                     iframe class="share-frame" id="checkout-frame" src=(share_frame_src(chrome, data)) title="Monero payment" {}
                 }
@@ -859,7 +870,7 @@ mod tests {
         ));
         assert!(html.contains(r#"<noscript><p class="refresh-toggle"><a href="/pay/pk_abc123/orders/pay_abc123?refresh=false">Auto Refresh: ON</a></p></noscript>"#), "got: {html}");
         assert!(html.contains(
-            r#"<noscript><button type="submit" class="btn-secondary">Save</button></noscript>"#
+            r#"<noscript><div class="form-actions"><button class="mk-btn" type="submit">Save</button></div></noscript>"#
         ));
         assert!(
             !html.contains(r#"<nav class="site-nav""#),

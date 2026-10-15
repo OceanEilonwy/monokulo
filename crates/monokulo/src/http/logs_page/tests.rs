@@ -210,7 +210,7 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
         ..html.find(r#"<div class="logs-body">"#).unwrap()];
     assert!(
         head.contains("<h1>Logs</h1>")
-            && head.contains(r#"<button type="submit" form="log-search""#)
+            && head.contains(r#"<button class="mk-btn" type="submit" data-size="compact" form="log-search">"#)
             && head.contains("<span>Refresh</span>"),
         "{head}"
     );
@@ -254,12 +254,12 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
     );
     // Syntax help: a link to its own page, opened as a dialog by script.
     assert!(
-        html.contains(r#"id="query-help-link" href="/dashboard/admin/logs/syntax""#),
+        html.contains(r#"href="/dashboard/admin/logs/syntax" id="query-help-link""#),
         "{html}"
     );
     assert!(
         html.contains(r#"<dialog id="query-help""#)
-            && html.contains(r#"<button type="button" class="qh-chip">order.id</button>"#),
+            && html.contains(r#"<button class="mk-btn" type="button" data-chip="">order.id</button>"#),
         "property names listed in the help: {html}"
     );
     let (status, _, syntax) = s.get("/dashboard/admin/logs/syntax", false).await;
@@ -328,7 +328,7 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
         "{fragment}"
     );
     assert!(
-        fragment.contains(r#"<td class="act"><a href="#),
+        fragment.contains(r#"<td data-act=""><a href="#),
         "Find and Exclude sit in their own column: {fragment}"
     );
 
@@ -469,7 +469,7 @@ async fn older_pages_follow_as_links_or_appended_by_fixi() {
     let (_, _, html) = s.get("/dashboard/admin/logs", false).await;
     assert_eq!(html.matches(r#"<details class="log-row""#).count(), 100);
     let older = html
-        .split(r#"<a class="btn btn-secondary" href=""#)
+        .split(r#"<a class="mk-btn" href=""#)
         .find(|part| part.contains("before="))
         .expect("an Older link");
     let older = older.split('"').next().unwrap().replace("&amp;", "&");
@@ -482,7 +482,7 @@ async fn older_pages_follow_as_links_or_appended_by_fixi() {
         "no tail on an older page: {page_two}"
     );
     assert!(
-        page_two.contains(r#"aria-pressed="false" disabled"#),
+        page_two.contains(r#"disabled id="log-live" aria-pressed="false""#),
         "{page_two}"
     );
 
@@ -607,7 +607,7 @@ async fn searches_are_saved_and_removed_with_or_without_fixi() {
     )
     .unwrap();
     assert!(
-        fragment.starts_with(r#"<section id="saved-searches""#)
+        fragment.starts_with(r#"<div class="box" id="saved-searches""#)
             && fragment.contains("Give the search a name"),
         "{fragment}"
     );

@@ -54,7 +54,7 @@
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .page-heading h1 { flex: 1; }
 details:is(.keys-help, .more-options) { margin: var(--space-md) 0; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
-details:is(.keys-help, .more-options) > summary:not(.btn) { display: block; padding: var(--space-md) var(--space-lg); font-weight: 700; border-radius: var(--radius-md); }
+details:is(.keys-help, .more-options) > summary { display: block; padding: var(--space-md) var(--space-lg); font-weight: 700; border-radius: var(--radius-md); }
 details:is(.keys-help, .more-options) > summary:hover { background: var(--surface-sunken); }
 details:is(.keys-help, .more-options)[open] > summary { border-bottom: 1px solid var(--line); border-radius: var(--radius-md) var(--radius-md) 0 0; }
 .keys-help-body, details.more-options > .setting-field { padding: var(--space-md) var(--space-lg); margin: 0; }
@@ -88,11 +88,16 @@ details.more-options { margin: var(--space-xl) 0; }
 .checks .fix-line { display: block; }
 .checks .then .mark { color: var(--muted); }
 .checks .fix { overflow-wrap: anywhere; }
-/* A plain disclosure: its summary an underlined line with an arrow. */
-details.disclosure > summary { display: inline; color: var(--ink); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
-details.disclosure > summary::after { content: " \25BE"; color: var(--muted); }
-details.disclosure[open] > summary::after { content: " \25B4"; }
-details.disclosure > summary:hover { color: var(--accent-text); }
+/* A disclosure's summary reads as a link: underlined, the accent when
+   hovered; a plain one is a line in the text. */
+details:is(.disclosure, .keys-help, .more-options) > summary { color: var(--ink); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+details:is(.disclosure, .keys-help, .more-options) > summary:hover { color: var(--accent-text); }
+details.disclosure > summary { display: inline; }
+details:is(.disclosure, .keys-help, .more-options) > summary { cursor: pointer; list-style: none; }
+details:is(.disclosure, .keys-help, .more-options) > summary::-webkit-details-marker { display: none; }
+/* Every look: a caret that turns over when open. */
+details:is(.disclosure, .keys-help, .more-options) > summary::after { content: " \25BE"; color: var(--muted); }
+details:is(.disclosure, .keys-help, .more-options)[open] > summary::after { content: " \25B4"; }
 
 /* Tables (Table, Row, Cell). */
 table { border-collapse: collapse; width: 100%; margin: 0.8em 0; }

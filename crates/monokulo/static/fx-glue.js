@@ -14,7 +14,7 @@
 //   fx-sse-reconnect reconnect a dropped event stream (ssexi), sending
 //                    Last-Event-ID, and pause it while the tab is hidden;
 //                    a named "done" event ends it for good. While a stream
-//                    is open, the page's Reload button (.reload) is hidden.
+//                    is open, the page's Reload button ([data-reload]) is hidden.
 // and on a form:
 //   fx-submit-on-change  submit when a select, checkbox or date changes.
 //
@@ -170,10 +170,10 @@
   // it comes back if the stream fails for good. A stream whose subject
   // can't change any more says "done", and isn't reconnected.
   document.addEventListener("fx:sse:open", function () {
-    document.querySelectorAll(".reload").forEach(function (b) { b.hidden = true; });
+    document.querySelectorAll("[data-reload]").forEach(function (b) { b.hidden = true; });
   });
   document.addEventListener("fx:sse:error", function () {
-    document.querySelectorAll(".reload").forEach(function (b) { b.hidden = false; });
+    document.querySelectorAll("[data-reload]").forEach(function (b) { b.hidden = false; });
   });
   document.addEventListener("fx:sse:done", function (evt) {
     evt.detail.cfg.sse.close();

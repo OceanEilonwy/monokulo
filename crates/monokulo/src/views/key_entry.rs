@@ -66,15 +66,25 @@ pub fn key_fields(
     html! {
         label {
             "View key (hex)"
-            input type="password" name="view_key_hex" value=(view_key_hex) required[required] pattern="[0-9a-fA-F]{64}" autocomplete="off" placeholder="64 hex characters" data-key-custody="view";
+            (key_input("view_key_hex", view_key_hex, required).kind(ui::InputType::Password).attr("data-key-custody", "view"))
             span class="field-help" { (view_help) }
         }
         label {
             "Spend public key (hex)"
-            input type="text" name="spend_pubkey_hex" value=(spend_pubkey_hex) required[required] pattern="[0-9a-fA-F]{64}" autocomplete="off" placeholder="64 hex characters" data-key-custody="spend";
+            (key_input("spend_pubkey_hex", spend_pubkey_hex, required).attr("data-key-custody", "spend"))
             span class="field-help" { (spend_help) }
         }
     }
+}
+
+/// A key's input: 64 hex characters.
+fn key_input(name: &str, value: &str, required: bool) -> ui::Input {
+    ui::Input::new(name)
+        .value(value)
+        .required(required)
+        .autocomplete("off")
+        .placeholder("64 hex characters")
+        .attr("pattern", "[0-9a-fA-F]{64}")
 }
 
 /// The encrypted key entry: what it protects, and the key-custody-cli steps
@@ -84,10 +94,10 @@ pub fn key_fields(
 pub fn snp_section(entry: &SnpKeyEntry, backend_field: Option<&str>) -> Markup {
     match entry {
         SnpKeyEntry::Unavailable(why) => html! {
-            p class="warning" role="status" { (why) }
+            (ui::Alert::new(why.as_str(), ui::Tone::Warning))
         },
         SnpKeyEntry::Limited(why) => html! {
-            div class="error" role="alert" { (why) }
+            (ui::Alert::new(why.as_str(), ui::Tone::Error).block(true))
         },
         SnpKeyEntry::Ready(ready) => ready_section(ready, backend_field),
     }
@@ -100,7 +110,7 @@ pub fn snp_bundle(entry: &SnpKeyEntry) -> Markup {
     match entry {
         SnpKeyEntry::Ready(ready) => html! {
             div data-key-custody-bundle=(ready.bundle_json) data-key-custody-id-key=[ready.id_key_digest.as_deref()] data-key-custody-min-svn=(ready.min_guest_svn) data-key-custody-min-tcb=(ready.min_tcb) {
-                p class="notice" role="status" data-key-custody-status hidden {}
+                (status_line())
             }
             // The script fetches its module from where the page says.
             script src=(crate::assets::url("key-custody.js")) data-module=(crate::assets::url("key-custody.wasm")) defer {}
@@ -109,78 +119,93 @@ pub fn snp_bundle(entry: &SnpKeyEntry) -> Markup {
     }
 }
 
+/// Where `key-custody.js` says how the encryption went.
+fn status_line() -> ui::Alert {
+    ui::Alert::new("", ui::Tone::Notice)
+        .attr("data-key-custody-status", "")
+        .attr("hidden", "")
+}
+
 fn ready_section(ready: &SnpReady, backend_field: Option<&str>) -> Markup {
-    html! {
-        div class="box" data-key-custody-bundle=(ready.bundle_json) data-key-custody-id-key=[ready.id_key_digest.as_deref()] data-key-custody-min-svn=(ready.min_guest_svn) data-key-custody-min-tcb=(ready.min_tcb) data-key-custody-backend-field=[backend_field] {
-            h3 { "SEV-SNP key storage: your keys are encrypted for the engine" }
-            p class="hint" {
-                "With SEV-SNP key storage, your keys are encrypted so that only the engine, running in an AMD "
-                "SEV-SNP confidential machine, can read them. This server only passes them on. In this browser, "
-                "the page checks the engine's attestation and encrypts the keys you typed above when you submit."
-            }
-            p class="notice" role="status" data-key-custody-status hidden {}
-            @if let Some(digest) = &ready.trust_id_key {
-                p class="warning" {
-                    "This instance's engine image is not signed by the official monokulo key. It is trusted "
-                    "here by the digest " code { (digest) } ". Before you rely on it, confirm that digest "
-                    "with this instance's operator another way, not from this page."
-                }
-            }
-            details class="help-disclosure" {
-                summary { "Without JavaScript, or for the strongest guarantee: use key-custody-cli" }
-                p class="hint" {
-                    "key-custody-cli runs on your own computer and checks the engine against AMD's root "
-                    "certificate and the engine signing key built into it, so it doesn't depend on this site."
-                }
-                ol class="steps" {
-                    li {
-                        @if ready.downloads.is_empty() {
-                            "This monokulo (" (ready.version) ") isn't a release build, so there's no download for it: "
-                            "build key-custody-cli from its source: "
-                            a href=(ready.source_url) rel="noopener" target="_blank" { "key-custody-cli source" } "."
-                        } @else {
-                            "Download key-custody-cli " (ready.version) " (the version that matches this site) for your computer:"
-                            ul {
-                                @for download in &ready.downloads {
-                                    li {
-                                        a href=(download.url) rel="noopener" { (download.label) }
-                                        " (" a href=(download.checksum_url) rel="noopener" { "SHA-256" } ")"
-                                    }
+    let content = html! {
+        h3 { "SEV-SNP key storage: your keys are encrypted for the engine" }
+        (ui::Hint::new(html! {
+            "With SEV-SNP key storage, your keys are encrypted so that only the engine, running in an AMD "
+            "SEV-SNP confidential machine, can read them. This server only passes them on. In this browser, "
+            "the page checks the engine's attestation and encrypts the keys you typed above when you submit."
+        }))
+        (status_line())
+        @if let Some(digest) = &ready.trust_id_key {
+            (ui::Alert::new(html! {
+                "This instance's engine image is not signed by the official monokulo key. It is trusted "
+                "here by the digest " code { (digest) } ". Before you rely on it, confirm that digest "
+                "with this instance's operator another way, not from this page."
+            }, ui::Tone::Warning).quiet(true))
+        }
+        (ui::Disclosure::new("Without JavaScript, or for the strongest guarantee: use key-custody-cli", html! {
+            (ui::Hint::new(html! {
+                "key-custody-cli runs on your own computer and checks the engine against AMD's root "
+                "certificate and the engine signing key built into it, so it doesn't depend on this site."
+            }))
+            ol class="steps" {
+                li {
+                    @if ready.downloads.is_empty() {
+                        "This monokulo (" (ready.version) ") isn't a release build, so there's no download for it: "
+                        "build key-custody-cli from its source: "
+                        a href=(ready.source_url) rel="noopener" target="_blank" { "key-custody-cli source" } "."
+                    } @else {
+                        "Download key-custody-cli " (ready.version) " (the version that matches this site) for your computer:"
+                        ul {
+                            @for download in &ready.downloads {
+                                li {
+                                    a href=(download.url) rel="noopener" { (download.label) }
+                                    " (" a href=(download.checksum_url) rel="noopener" { "SHA-256" } ")"
                                 }
                             }
-                            @if let Some(verify) = &ready.verify_command {
-                                "Check the file was built by this project's release, not just served next to its checksum: "
-                                code { (verify) } ". "
-                            }
-                            "Or read and build it from its "
-                            a href=(ready.source_url) rel="noopener" target="_blank" { "source" } "."
                         }
-                    }
-                    @if ready.bundle_is_file {
-                        li {
-                            "Save " a href=(ready.bundle_path) download="key-custody-bundle.json" { "this form's bundle" }
-                            " as key-custody-bundle.json, in the folder you run the command from."
+                        @if let Some(verify) = &ready.verify_command {
+                            "Check the file was built by this project's release, not just served next to its checksum: "
+                            code { (verify) } ". "
                         }
+                        "Or read and build it from its "
+                        a href=(ready.source_url) rel="noopener" target="_blank" { "source" } "."
                     }
+                }
+                @if ready.bundle_is_file {
                     li {
-                        "Run this, and type your view key and spend public key when it asks:"
-                        pre class="dns-record" { code { (ready.command) } }
+                        "Save " a href=(ready.bundle_path) download="key-custody-bundle.json" { "this form's bundle" }
+                        " as key-custody-bundle.json, in the folder you run the command from."
                     }
-                    li {
-                        label {
-                            "Paste what it prints here"
-                            textarea name="encrypted_keys" rows="4" autocomplete="off" spellcheck="false" {}
-                            span class="field-help" {
-                                "Leave the key fields above empty when you use this. The bundle is for this form "
-                                "only: if the page is reloaded, run the command again."
-                            }
+                }
+                li {
+                    "Run this, and type your view key and spend public key when it asks:"
+                    pre class="dns-record" { code { (ready.command) } }
+                }
+                li {
+                    label {
+                        "Paste what it prints here"
+                        (ui::TextArea::new("encrypted_keys").rows(4usize).attr("autocomplete", "off").attr("spellcheck", "false"))
+                        span class="field-help" {
+                            "Leave the key fields above empty when you use this. The bundle is for this form "
+                            "only: if the page is reloaded, run the command again."
                         }
                     }
                 }
             }
-            script src=(crate::assets::url("key-custody.js")) data-module=(crate::assets::url("key-custody.wasm")) defer {}
-        }
+        }).attr("data-disclosure", "key-custody-cli"))
+        script src=(crate::assets::url("key-custody.js")) data-module=(crate::assets::url("key-custody.wasm")) defer {}
+    };
+    let mut panel = ui::Panel::new(content).attr("data-key-custody-bundle", ready.bundle_json.as_str());
+    if let Some(digest) = &ready.id_key_digest {
+        panel = panel.attr("data-key-custody-id-key", digest.as_str());
     }
+    panel = panel
+        .attr("data-key-custody-min-svn", ready.min_guest_svn.to_string())
+        .attr("data-key-custody-min-tcb", ready.min_tcb.as_str());
+    if let Some(field) = backend_field {
+        panel = panel.attr("data-key-custody-backend-field", field);
+    }
+    html! { (panel) }
 }
 
 #[cfg(test)]

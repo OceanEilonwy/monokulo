@@ -2188,7 +2188,7 @@ mod tests {
             "a point-in-time page without JS, never a meta refresh: {html}"
         );
         assert!(
-            html.contains(r#"class="btn btn-secondary reload""#),
+            html.contains(r#"aria-label="Refresh page" title="Refresh page" data-reload"#),
             "a Reload button instead: {html}"
         );
         // The real point of this follow-up: a real, absolute, shareable
@@ -2556,7 +2556,7 @@ mod tests {
             "the limits are offered while haveno is: {html}"
         );
         assert!(
-            html.contains(r#"name="haveno_max_spread_pct" value="5""#),
+            html.contains(r#"name="haveno_max_spread_pct" id="haveno-max-spread-pct" value="5""#),
             "defaults are shown: {html}"
         );
 
@@ -2599,11 +2599,11 @@ mod tests {
 
         let html = get_with_bearer(&router, &settings_uri, &session).await;
         assert!(
-            html.contains(r#"name="haveno_currencies" value="EUR, USD""#),
+            html.contains(r#"name="haveno_currencies" id="haveno-currencies" value="EUR, USD""#),
             "the saved values come back: {html}"
         );
         assert!(
-            html.contains(r#"name="haveno_max_spread_pct" value="2.5""#),
+            html.contains(r#"name="haveno_max_spread_pct" id="haveno-max-spread-pct" value="2.5""#),
             "{html}"
         );
     }
@@ -3663,7 +3663,7 @@ mod tests {
         let create_order_html = body_text(create_order_response).await;
         assert!(
             create_order_html.contains(
-                r#"<input type="text" id="currency" name="currency" value="XMR" readonly>"#
+                r#"<input class="mk-input" type="text" name="currency" id="currency" value="XMR" readonly>"#
             ),
             "expected a readonly XMR currency field, got: {create_order_html}"
         );
@@ -3866,7 +3866,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"name="confirmations_required" value="abc""#),
+            html.contains(r#"name="confirmations_required" id="confirmations-required" value="abc""#),
             "what was sent: {html}"
         );
         assert!(html.contains(r#"data-saved="EUR""#), "{html}");
@@ -4003,7 +4003,7 @@ mod tests {
             .unwrap();
         let html = body_text(page).await;
         assert!(
-            html.contains(r#"name="confirmations_required" value="10""#),
+            html.contains(r#"name="confirmations_required" id="confirmations-required" value="10""#),
             "expected the ordinary default after unchecking: {html}"
         );
         assert!(

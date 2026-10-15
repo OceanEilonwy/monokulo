@@ -86,6 +86,11 @@ export type InputType = "text" | "email" | "password" | "number" | "url" | "sear
 export type OrderState = "pending" | "unconfirmed" | "confirming" | "partial" | "paid" | "overpaid" | "expired" | "cancelled" | "double-spend" | "offline" | "unknown";
 
 /**
+ * How wide a page's column is.
+ */
+export type PageWidth = "normal" | "wide";
+
+/**
  * A popover that only script opens and closes.
  */
 export type Popover = "manual";
@@ -305,4 +310,8 @@ export interface TabLink {
    * The page this is.
    */
   readonly current: boolean;
+  /**
+   * How many things the page holds, beside its label.
+   */
+  readonly count?: string;
 }

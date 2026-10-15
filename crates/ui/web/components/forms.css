@@ -8,7 +8,7 @@
 .mk-checkbox { margin: 0; accent-color: var(--accent-text); }
 .form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin-top: var(--space-md); }
 .form-actions .spacer { flex-grow: 1; }
-.form-actions :is(button, .btn) { margin: 0; }
+.form-actions button { margin: 0; }
 .radio-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: var(--space-md); margin: var(--space-sm) 0; border: 0; padding: 0; }
 .radio-card { display: flex; align-items: center; gap: var(--space-md); margin: 0; padding: var(--space-md) var(--space-lg); border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--paper-raised); font-weight: 400; cursor: pointer; }
 .radio-card:has(input:checked) { border-color: var(--ink); background: var(--tint-highlight); }

@@ -1487,6 +1487,20 @@
     "title": "Send again"
   },
   {
+    "component": "IconLink",
+    "html": "<a class=\"mk-btn icon-only\" href=\"#component-icon-link\" aria-label=\"Refresh page\" title=\"Refresh page\">↻</a>",
+    "props": {
+      "href": "#component-icon-link",
+      "icon": {
+        "$slot": [
+          "↻"
+        ]
+      },
+      "label": "Refresh page"
+    },
+    "title": "Refresh"
+  },
+  {
     "component": "FormActions",
     "html": "<div class=\"form-actions\"><button class=\"mk-btn\" type=\"submit\" data-variant=\"primary\">Add webhook</button><a class=\"mk-btn\" href=\"#component-form-actions\">Cancel</a></div>",
     "props": {
@@ -2019,7 +2033,7 @@
   },
   {
     "component": "TabLinks",
-    "html": "<nav class=\"mk-tabs\" aria-label=\"Example settings navigation\"><a href=\"#component-tab-links\" aria-current=\"page\">General</a><a href=\"#component-select\">Networks</a><a href=\"#component-alert\">Notifications</a></nav>",
+    "html": "<nav class=\"mk-tabs\" aria-label=\"Example settings navigation\"><a href=\"#component-tab-links\" aria-current=\"page\">General</a><a href=\"#component-select\">Networks</a><a href=\"#component-alert\">Notifications<span class=\"mk-tab-count\">3</span></a></nav>",
     "props": {
       "label": "Example settings navigation",
       "links": [
@@ -2034,6 +2048,7 @@
           "label": "Networks"
         },
         {
+          "count": "3",
           "current": false,
           "href": "#component-alert",
           "label": "Notifications"
@@ -2093,7 +2108,7 @@
   },
   {
     "component": "SettingsForm",
-    "html": "<div class=\"mk-settings-form\" data-label=\"Store settings\" data-mk=\"1\" data-island=\"SettingsForm\" data-props=\"{&quot;label&quot;:&quot;Store settings&quot;}\"><form method=\"get\" action=\"#component-settings-form\" id=\"book-settings-form\" data-mk=\"2\"><section id=\"card-book-details\" class=\"settings-card\" data-name=\"book-details\" role=\"region\" aria-labelledby=\"card-book-details-title\" data-mk=\"1\" data-island=\"SettingsCard\" data-props=\"{&quot;failed&quot;:false,&quot;hidden&quot;:false,&quot;name&quot;:&quot;book-details&quot;,&quot;title&quot;:&quot;Store details&quot;}\"><header class=\"card-head\"><h3 id=\"card-book-details-title\">Store details</h3><span class=\"card-state\" data-card-state><!--mk:2--></span><span class=\"card-spacer\"></span><!--mk:5--></header><div class=\"card-body\"><div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{&quot;row&quot;:false}\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-settings-name-input\">Store name</label><span class=\"changed-mark\">changed</span></div><div class=\"mk-field\"><label for=\"book-settings-name-input\">Name</label><input class=\"mk-input\" id=\"book-settings-name-input\" name=\"name\" type=\"text\"></div></div></div></section><div id=\"book-form-save-bar\" class=\"save-bar\" data-placement=\"inline\" role=\"region\" aria-label=\"Example form's save changes\" data-mk=\"1\" data-island=\"SaveBar\" data-props=\"{&quot;failed&quot;:false,&quot;save_label&quot;:&quot;Save&quot;}\"><div class=\"save-bar-inner\"><p class=\"save-bar-message\" data-save-bar-message tabindex=\"-1\"><span data-mk=\"2\">Saving changes the store straight away.</span><!--mk:3--></p><div class=\"save-bar-actions\" data-mk=\"4\"><a class=\"btn\" href=\"#component-settings-form\" data-discard-all data-mk=\"5\">Discard changes</a><button type=\"submit\" class=\"btn-primary\" data-save data-mk=\"6\"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div></form></div>",
+    "html": "<div class=\"mk-settings-form\" data-label=\"Store settings\" data-mk=\"1\" data-island=\"SettingsForm\" data-props=\"{&quot;label&quot;:&quot;Store settings&quot;}\"><form method=\"get\" action=\"#component-settings-form\" id=\"book-settings-form\" data-mk=\"2\"><section id=\"card-book-details\" class=\"settings-card\" data-name=\"book-details\" role=\"region\" aria-labelledby=\"card-book-details-title\" data-mk=\"1\" data-island=\"SettingsCard\" data-props=\"{&quot;failed&quot;:false,&quot;hidden&quot;:false,&quot;name&quot;:&quot;book-details&quot;,&quot;title&quot;:&quot;Store details&quot;}\"><header class=\"card-head\"><h3 id=\"card-book-details-title\">Store details</h3><span class=\"card-state\" data-card-state><!--mk:2--></span><span class=\"card-spacer\"></span><!--mk:5--></header><div class=\"card-body\"><div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{&quot;row&quot;:false}\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-settings-name-input\">Store name</label><span class=\"changed-mark\">changed</span></div><div class=\"mk-field\"><label for=\"book-settings-name-input\">Name</label><input class=\"mk-input\" id=\"book-settings-name-input\" name=\"name\" type=\"text\"></div></div></div></section><div id=\"book-form-save-bar\" class=\"save-bar\" data-placement=\"inline\" role=\"region\" aria-label=\"Example form's save changes\" data-mk=\"1\" data-island=\"SaveBar\" data-props=\"{&quot;failed&quot;:false,&quot;save_label&quot;:&quot;Save&quot;}\"><div class=\"save-bar-inner\"><p class=\"save-bar-message\" data-save-bar-message tabindex=\"-1\"><span data-mk=\"2\">Saving changes the store straight away.</span><!--mk:3--></p><div class=\"save-bar-actions\" data-mk=\"4\"><a class=\"mk-btn\" href=\"#component-settings-form\" data-discard-all data-mk=\"5\">Discard changes</a><button type=\"submit\" class=\"mk-btn\" data-variant=\"primary\" data-save data-mk=\"6\"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div></form></div>",
     "props": {
       "action": "#component-settings-form",
       "children": {
@@ -2278,7 +2293,7 @@
   },
   {
     "component": "SaveBar",
-    "html": "<div id=\"book-save-bar\" class=\"save-bar\" data-placement=\"inline\" role=\"region\" aria-label=\"Example save bar\" data-mk=\"1\" data-island=\"SaveBar\" data-props=\"{&quot;failed&quot;:false,&quot;save_label&quot;:&quot;Save&quot;}\"><div class=\"save-bar-inner\"><p class=\"save-bar-message\" data-save-bar-message tabindex=\"-1\"><span data-mk=\"2\">Saving writes the changes on this tab.</span><!--mk:3--></p><div class=\"save-bar-actions\" data-mk=\"4\"><a class=\"btn\" href=\"#component-save-bar\" data-discard-all data-mk=\"5\">Discard changes</a><button type=\"submit\" class=\"btn-primary\" data-save data-mk=\"6\"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div>",
+    "html": "<div id=\"book-save-bar\" class=\"save-bar\" data-placement=\"inline\" role=\"region\" aria-label=\"Example save bar\" data-mk=\"1\" data-island=\"SaveBar\" data-props=\"{&quot;failed&quot;:false,&quot;save_label&quot;:&quot;Save&quot;}\"><div class=\"save-bar-inner\"><p class=\"save-bar-message\" data-save-bar-message tabindex=\"-1\"><span data-mk=\"2\">Saving writes the changes on this tab.</span><!--mk:3--></p><div class=\"save-bar-actions\" data-mk=\"4\"><a class=\"mk-btn\" href=\"#component-save-bar\" data-discard-all data-mk=\"5\">Discard changes</a><button type=\"submit\" class=\"mk-btn\" data-variant=\"primary\" data-save data-mk=\"6\"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div>",
     "props": {
       "discard_href": "#component-save-bar",
       "failed": false,
@@ -2297,7 +2312,7 @@
   },
   {
     "component": "SaveBar",
-    "html": "<div id=\"book-save-bar-refused\" class=\"save-bar is-failed\" data-placement=\"inline\" role=\"region\" aria-label=\"Example refused save bar\" data-mk=\"1\" data-island=\"SaveBar\" data-props=\"{&quot;failed&quot;:true,&quot;save_label&quot;:&quot;Save&quot;}\"><div class=\"save-bar-inner\"><p class=\"save-bar-message\" data-save-bar-message tabindex=\"-1\"><span data-mk=\"2\">Nothing saved. The URL must use https.</span><!--mk:3--></p><div class=\"save-bar-actions\" data-mk=\"4\"><a class=\"btn\" href=\"#component-save-bar\" data-discard-all data-mk=\"5\">Discard changes</a><button type=\"submit\" class=\"btn-primary\" data-save data-mk=\"6\"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div>",
+    "html": "<div id=\"book-save-bar-refused\" class=\"save-bar is-failed\" data-placement=\"inline\" role=\"region\" aria-label=\"Example refused save bar\" data-mk=\"1\" data-island=\"SaveBar\" data-props=\"{&quot;failed&quot;:true,&quot;save_label&quot;:&quot;Save&quot;}\"><div class=\"save-bar-inner\"><p class=\"save-bar-message\" data-save-bar-message tabindex=\"-1\"><span data-mk=\"2\">Nothing saved. The URL must use https.</span><!--mk:3--></p><div class=\"save-bar-actions\" data-mk=\"4\"><a class=\"mk-btn\" href=\"#component-save-bar\" data-discard-all data-mk=\"5\">Discard changes</a><button type=\"submit\" class=\"mk-btn\" data-variant=\"primary\" data-save data-mk=\"6\"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div>",
     "props": {
       "discard_href": "#component-save-bar",
       "failed": true,
@@ -2416,7 +2431,8 @@
             }
           }
         ]
-      }
+      },
+      "width": "normal"
     },
     "title": "Signed out"
   },

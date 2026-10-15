@@ -123,10 +123,10 @@ export function SaveBar(props: SaveBarProps): JSX.Element {
           )}
         </p>
         <div class="save-bar-actions" hidden={enhanced ? b.leaving() : undefined}>
-          <a class="btn" href={props.discard_href} data-discard-all onClick={b.discard_all}>
+          <a class="mk-btn" href={props.discard_href} data-discard-all onClick={b.discard_all}>
             Discard changes
           </a>
-          <button type="submit" class="btn-primary" data-save disabled={enhanced ? b.saving() : undefined} aria-busy={enhanced ? b.saving() ? `true` : undefined : undefined} ref={b.save}>
+          <button type="submit" class="mk-btn" data-variant="primary" data-save disabled={enhanced ? b.saving() : undefined} aria-busy={enhanced ? b.saving() ? `true` : undefined : undefined} ref={b.save}>
             {enhanced ? (
               <>
                 {b.saving() ? (
@@ -150,13 +150,13 @@ export function SaveBar(props: SaveBarProps): JSX.Element {
           <>
             {b.leaving() ? (
               <div class="save-bar-actions" data-leave-actions>
-                <button type="button" data-leave="stay" onClick={b.stay}>
+                <button type="button" class="mk-btn" data-leave="stay" onClick={b.stay}>
                   Stay here
                 </button>
-                <button type="button" data-leave="discard" onClick={b.discard_and_go}>
+                <button type="button" class="mk-btn" data-leave="discard" onClick={b.discard_and_go}>
                   Discard and go
                 </button>
-                <button type="button" class="btn-primary" data-leave="save" onClick={b.save_and_go} ref={b.go_save}>
+                <button type="button" class="mk-btn" data-variant="primary" data-leave="save" onClick={b.save_and_go} ref={b.go_save}>
                   Save and go
                 </button>
               </div>
@@ -309,13 +309,13 @@ export function attachSaveBar(root: Element, props: SaveBarProps): () => void {
         <>
           {b.leaving() ? (
             <div class="save-bar-actions" data-leave-actions>
-              <button type="button" data-leave="stay" onClick={b.stay}>
+              <button type="button" class="mk-btn" data-leave="stay" onClick={b.stay}>
                 Stay here
               </button>
-              <button type="button" data-leave="discard" onClick={b.discard_and_go}>
+              <button type="button" class="mk-btn" data-leave="discard" onClick={b.discard_and_go}>
                 Discard and go
               </button>
-              <button type="button" class="btn-primary" data-leave="save" onClick={b.save_and_go} ref={b.go_save}>
+              <button type="button" class="mk-btn" data-variant="primary" data-leave="save" onClick={b.save_and_go} ref={b.go_save}>
                 Save and go
               </button>
             </div>

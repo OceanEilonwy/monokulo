@@ -114,14 +114,14 @@ pub fn duration(ms: u64) -> String {
 }
 
 /// A delivery's status as a tag: its word and its tint.
-fn state_tag(state: DeliveryState) -> Markup {
-    let (class, word) = match state {
-        DeliveryState::Delivered => ("tag-ok", "delivered"),
-        DeliveryState::Retrying => ("tag-slow", "retrying"),
-        DeliveryState::Queued => ("tag-unknown", "queued"),
-        DeliveryState::GaveUp => ("tag-error", "gave up"),
+fn state_tag(state: DeliveryState) -> ui::Tag {
+    let (tone, word) = match state {
+        DeliveryState::Delivered => (ui::TagTone::Ok, "delivered"),
+        DeliveryState::Retrying => (ui::TagTone::Slow, "retrying"),
+        DeliveryState::Queued => (ui::TagTone::Unknown, "queued"),
+        DeliveryState::GaveUp => (ui::TagTone::Error, "gave up"),
     };
-    html! { span class=(format!("tag {class}")) { (word) } }
+    ui::Tag::new(word).tone(tone)
 }
 
 /// What went wrong, briefly: a status code, or the error's first words.
@@ -159,8 +159,8 @@ fn health_line(card: &WebhooksCard, entry: &WebhookEntry) -> Markup {
     html! {
         p class="wh-health" {
             @if health.gave_up > 0 {
-                span class="tag tag-error" { "gave up" }
-                span class="hint" {
+                (ui::Tag::new("gave up").tone(ui::TagTone::Error))
+                (ui::Hint::new(html! {
                     (plural(health.gave_up, "delivery", "deliveries"))
                     @if let Some(last) = &health.latest_gave_up {
                         @if let Some(at) = last.gave_up_at {
@@ -172,13 +172,15 @@ fn health_line(card: &WebhooksCard, entry: &WebhookEntry) -> Markup {
                     @if health.waiting > 0 {
                         " · " (plural(health.waiting, "more waiting", "more waiting"))
                     }
-                }
+                }).inline(true))
                 form method="post" action=(paths.retry_failed(entry.webhook.id.as_str())) class="inline-form" {
-                    button type="submit" class="btn-sm" { "Retry failed (" (health.gave_up) ")" }
+                    (ui::Button::new(format!("Retry failed ({})", health.gave_up))
+                        .size(ui::ControlSize::Compact)
+                        .kind(ui::ButtonType::Submit))
                 }
             } @else if health.retrying > 0 {
-                span class="tag tag-slow" { "retrying" }
-                span class="hint" {
+                (ui::Tag::new("retrying").tone(ui::TagTone::Slow))
+                (ui::Hint::new(html! {
                     @if let Some(next) = health.next_attempt_at {
                         "next try at " (clock.text(next)) ", " (clock.relative(next))
                     }
@@ -187,23 +189,23 @@ fn health_line(card: &WebhooksCard, entry: &WebhookEntry) -> Markup {
                         (failure(worst.last_status_code, worst.last_error.as_deref())) ")"
                     }
                     " · " (plural(health.waiting, "delivery waiting", "deliveries waiting"))
-                }
+                }).inline(true))
             } @else if health.waiting > 0 {
-                span class="tag tag-unknown" { "sending" }
-                span class="hint" { (plural(health.waiting, "delivery", "deliveries")) " about to be sent" }
+                (ui::Tag::new("sending").tone(ui::TagTone::Unknown))
+                (ui::Hint::new(format!("{} about to be sent", plural(health.waiting, "delivery", "deliveries"))).inline(true))
             } @else if let Some(last) = &health.latest_delivered {
-                span class="tag tag-ok" { "delivering" }
-                span class="hint" {
+                (ui::Tag::new("delivering").tone(ui::TagTone::Ok))
+                (ui::Hint::new(html! {
                     @if let Some(at) = last.delivered_at { "last " (clock.relative(at)) }
                     @if let Some(status) = last.last_status_code {
                         " · " (status)
                         @if let Some(ms) = last.last_duration_ms { " in " (duration(ms)) }
                     }
                     " · " (super::scaling::thousands(health.delivered_recently)) " delivered in the last " (RECENT_DAYS) " days"
-                }
+                }).inline(true))
             } @else {
-                span class="tag tag-unknown" { "no deliveries yet" }
-                span class="hint" { "It gets the store's next order event." }
+                (ui::Tag::new("no deliveries yet").tone(ui::TagTone::Unknown))
+                (ui::Hint::new("It gets the store's next order event.").inline(true))
             }
         }
     }
@@ -219,70 +221,69 @@ pub fn deliveries_table(
     webhook: &WebhookRow,
     deliveries: &[DeliveryRow],
 ) -> Markup {
-    html! {
-        div class="table-scroll" {
-            table class="table-stack del-table" {
-                thead { tr {
-                    th { "Status" } th { "Event" } th { "Order" } th { "Time" }
-                    th { "Response" } th { "Took" } th { "Attempt" } th { span class="visually-hidden" { "Actions" } }
-                } }
-                tbody {
-                    @for delivery in deliveries {
-                        @let state = delivery.state();
-                        tr {
-                            td data-label="Status" { (state_tag(state)) }
-                            td data-label="Event" { code { (delivery.event_type) } }
-                            td data-label="Order" {
-                                a href=(paths.order(delivery.order_id.as_str())) { (short_id(delivery.order_id.as_str())) }
+    let head = html! { tr {
+        th { "Status" } th { "Event" } th { "Order" } th { "Time" }
+        th { "Response" } th { "Took" } th { "Attempt" } th { span class="visually-hidden" { "Actions" } }
+    } };
+    let rows = html! {
+        @for delivery in deliveries {
+            @let state = delivery.state();
+            tr {
+                td data-label="Status" { (state_tag(state)) }
+                td data-label="Event" { code { (delivery.event_type) } }
+                td data-label="Order" {
+                    a href=(paths.order(delivery.order_id.as_str())) { (short_id(delivery.order_id.as_str())) }
+                }
+                td data-label="Time" { (clock.time(delivery.last_attempt_at.unwrap_or(delivery.created_at))) }
+                td data-label="Response" {
+                    @match delivery.last_status_code {
+                        Some(status) => code { (status) },
+                        None => code { "—" },
+                    }
+                }
+                td data-label="Took" {
+                    @if delivery.last_status_code.is_none() && delivery.last_error.is_some() {
+                        // One word where it can be: the row stays narrow.
+                        (short_error(delivery.last_error.as_deref().unwrap_or_default())
+                            .trim_start_matches("connection ")
+                            .to_string())
+                    } @else if let Some(ms) = delivery.last_duration_ms {
+                        (duration(ms))
+                    } @else {
+                        span class="muted" { "-" }
+                    }
+                }
+                td data-label="Attempt" {
+                    @match state {
+                        DeliveryState::Queued => span class="muted" { "-" },
+                        DeliveryState::Delivered => (delivery.attempt_count),
+                        _ => { (delivery.attempt_count) " of " (max_attempts) },
+                    }
+                }
+                // Two fixed slots, the same in every row: Details,
+                // then Send again or nothing, so each lines up.
+                td class="row-acts" {
+                    div class="act-slots" {
+                        a href=(paths.detail(webhook.id.as_str(), delivery.id))
+                            data-opens-dialog=(dialog_id(delivery.id)) { "Details" }
+                        @if state == DeliveryState::GaveUp {
+                            form method="post" action=(paths.send_again(webhook.id.as_str(), delivery.id)) class="inline-form" {
+                                // An icon, so the row stays narrow enough to show it.
+                                (ui::IconButton::new("Send again", super::wallets::regenerate_icon()).kind(ui::ButtonType::Submit))
                             }
-                            td data-label="Time" { (clock.time(delivery.last_attempt_at.unwrap_or(delivery.created_at))) }
-                            td data-label="Response" {
-                                @match delivery.last_status_code {
-                                    Some(status) => code { (status) },
-                                    None => code { "—" },
-                                }
-                            }
-                            td data-label="Took" {
-                                @if delivery.last_status_code.is_none() && delivery.last_error.is_some() {
-                                    // One word where it can be: the row stays narrow.
-                                    (short_error(delivery.last_error.as_deref().unwrap_or_default())
-                                        .trim_start_matches("connection ")
-                                        .to_string())
-                                } @else if let Some(ms) = delivery.last_duration_ms {
-                                    (duration(ms))
-                                } @else {
-                                    span class="muted" { "-" }
-                                }
-                            }
-                            td data-label="Attempt" {
-                                @match state {
-                                    DeliveryState::Queued => span class="muted" { "-" },
-                                    DeliveryState::Delivered => (delivery.attempt_count),
-                                    _ => { (delivery.attempt_count) " of " (max_attempts) },
-                                }
-                            }
-                            // Two fixed slots, the same in every row: Details,
-                            // then Send again or nothing, so each lines up.
-                            td class="row-acts" {
-                                div class="act-slots" {
-                                    a href=(paths.detail(webhook.id.as_str(), delivery.id))
-                                        data-opens-dialog=(dialog_id(delivery.id)) { "Details" }
-                                    @if state == DeliveryState::GaveUp {
-                                        form method="post" action=(paths.send_again(webhook.id.as_str(), delivery.id)) class="inline-form" {
-                                            // An icon, so the row stays narrow enough to show it.
-                                            (ui::IconButton::new("Send again", super::wallets::regenerate_icon()).kind(ui::ButtonType::Submit))
-                                        }
-                                    } @else {
-                                        span class="act-slot" aria-hidden="true" {}
-                                    }
-                                }
-                            }
+                        } @else {
+                            span class="act-slot" aria-hidden="true" {}
                         }
                     }
                 }
             }
         }
-    }
+    };
+    ui::Table::new(rows)
+        .head(head)
+        .look(ui::TableLook::Stack)
+        .attr("data-table", "deliveries")
+        .render()
 }
 
 /// One page of the webhook's deliveries with "← Newer" and "Older →"
@@ -340,17 +341,17 @@ pub fn card(card: &WebhooksCard, error: Markup) -> Markup {
         html! {
             (error)
             @if let Some(secret) = &card.created_secret {
-                div class="box" data-webhook-secret {
+                (ui::Panel::new(html! {
                     h3 { "Webhook created" }
                     p {
                         "Its signing secret (verify the " code { "X-Monokulo-Signature" } " header with this - shown once, right now, and never again):"
                     }
                     pre { (secret) }
-                    p class="hint" { "Store it somewhere safe before leaving this page. If you lose it, delete this webhook and add a new one." }
-                }
+                    (ui::Hint::new("Store it somewhere safe before leaving this page. If you lose it, delete this webhook and add a new one."))
+                }).flag("data-webhook-secret"))
             }
             @if card.unavailable {
-                p class="error" role="alert" { "Couldn't read this store's webhooks. Reload the page to try again." }
+                (ui::Alert::new("Couldn't read this store's webhooks. Reload the page to try again.", ui::Tone::Error))
             } @else if card.webhooks.is_empty() {
                 p class="muted" { "No webhooks yet. Monokulo can tell your server when an order is paid, confirming or expired." }
             }
@@ -360,18 +361,25 @@ pub fn card(card: &WebhooksCard, error: Markup) -> Markup {
                     div class="wh-head" {
                         code class="wh-url" { (entry.webhook.url) }
                         @if let Some(plugin) = &entry.plugin {
-                            span class="tag tag-unknown" { (plugin) }
+                            (ui::Tag::new(plugin.as_str()).tone(ui::TagTone::Unknown))
                         }
                         span class="card-spacer" {}
-                        a class="btn btn-sm btn-danger" href=(paths.delete(id)) data-opens-dialog=(delete_dialog_id(id)) { "Delete" }
+                        (ui::LinkButton::new("Delete", paths.delete(id))
+                            .variant(ui::ButtonVariant::Danger)
+                            .size(ui::ControlSize::Compact)
+                            .attr("data-opens-dialog", delete_dialog_id(id)))
                     }
                     (health_line(card, entry))
                     @if !entry.recent.is_empty() {
-                        details class="wh-deliveries" open[entry.health.retrying > 0 || entry.health.gave_up > 0] {
-                            summary { "Recent deliveries " span class="hint" { "(" (PAGE) " a page)" } }
-                            (deliveries_results(&paths, &card.clock, card.max_attempts, entry))
-                            p class="hint" { a href=(paths.all(id)) { "All deliveries for this webhook" } }
-                        }
+                        (ui::Disclosure::new(
+                            html! { "Recent deliveries " (ui::Hint::new(format!("({PAGE} a page)")).inline(true)) },
+                            html! {
+                                (deliveries_results(&paths, &card.clock, card.max_attempts, entry))
+                                (ui::Hint::new(html! { a href=(paths.all(id)) { "All deliveries for this webhook" } }))
+                            },
+                        )
+                        .open(entry.health.retrying > 0 || entry.health.gave_up > 0)
+                        .attr("data-disclosure", "deliveries"))
                     }
                 }
             }
@@ -383,8 +391,12 @@ pub fn card(card: &WebhooksCard, error: Markup) -> Markup {
                         "Private and loopback addresses are refused at delivery."
                     })
                     .render(html! {
-                        input type="url" name="url" id="webhook-url" aria-describedby="webhook-url-help"
-                            placeholder="https://your-endpoint.example.com/monokulo-webhook" required;
+                        (ui::Input::new("url")
+                            .id("webhook-url")
+                            .kind(ui::InputType::Url)
+                            .described_by("webhook-url-help")
+                            .placeholder("https://your-endpoint.example.com/monokulo-webhook")
+                            .required(true))
                     }))
                 (super::settings::Field::new("Custom headers (optional)", "webhook-headers")
                     .help(Some("webhook-headers-help"), html! {
@@ -392,12 +404,13 @@ pub fn card(card: &WebhooksCard, error: Markup) -> Markup {
                         "webhook, alongside the signature headers Monokulo always includes."
                     })
                     .render(html! {
-                        textarea name="extra_headers" id="webhook-headers" aria-describedby="webhook-headers-help" rows="3"
-                            placeholder="X-Api-Key: your-value\nAnother-Header: another-value" {}
+                        (ui::TextArea::new("extra_headers")
+                            .id("webhook-headers")
+                            .described_by("webhook-headers-help")
+                            .rows(3usize)
+                            .placeholder("X-Api-Key: your-value\nAnother-Header: another-value"))
                     }))
-                div class="form-actions" {
-                    button type="submit" { "Add webhook" }
-                }
+                (ui::FormActions::new(ui::Button::new("Add webhook").kind(ui::ButtonType::Submit)))
             }
         },
     )
@@ -431,16 +444,23 @@ pub fn delete_content(store_id: &str, entry: &WebhookEntry, in_dialog: bool) -> 
         (heading(&format!("{id}-delete-title"), html! { "Delete this webhook?" }, in_dialog))
         p { code class="wh-url" { (entry.webhook.url) } " stops receiving this store's order events at once, and its deliveries are deleted with it." }
         @if let Some(plugin) = &entry.plugin {
-            p class="error" { "The " (plugin) " plugin uses it: orders won't be updated in the shop until the plugin connects again." }
+            (ui::Alert::new(
+                format!("The {plugin} plugin uses it: orders won't be updated in the shop until the plugin connects again."),
+                ui::Tone::Error,
+            )
+            .quiet(true))
         }
         @if entry.health.waiting > 0 {
             p { (plural(entry.health.waiting, "delivery still waiting is", "deliveries still waiting are")) " never sent." }
         }
         form method="post" action=(paths.delete(id)) {
-            div class="dialog-actions" {
-                a class="btn" href=(paths.settings()) data-closes-dialog { "Cancel" }
-                button type="submit" class="btn-danger" { "Delete webhook" }
-            }
+            (ui::DialogActions::new(ui::Slot::many([
+                ui::LinkButton::new("Cancel", paths.settings()).flag("data-closes-dialog").into(),
+                ui::Button::new("Delete webhook")
+                    .variant(ui::ButtonVariant::Danger)
+                    .kind(ui::ButtonType::Submit)
+                    .into(),
+            ])))
         }
     }
 }
@@ -489,57 +509,60 @@ pub fn detail_content(
     }
     request.push('\n');
     request.push_str(&body);
+    let fact = |term: &str, value: Markup| ui::Fact {
+        term: term.into(),
+        value: value.into(),
+    };
+    let mut facts = vec![
+        fact(
+            "Endpoint",
+            html! { span class="endpoint" { (webhook.url) } },
+        ),
+        fact(
+            "Order",
+            html! { a href=(paths.order(delivery.order_id.as_str())) { (short_id(delivery.order_id.as_str())) } },
+        ),
+    ];
+    match state {
+        DeliveryState::Retrying | DeliveryState::Queued => {
+            if let Some(next) = delivery.next_attempt_at {
+                facts.push(fact(
+                    "Next try",
+                    html! { (clock.text(next)) " (" (clock.relative(next)) ")" },
+                ));
+            }
+        }
+        DeliveryState::Delivered => {
+            if let Some(at) = delivery.delivered_at {
+                facts.push(fact("Delivered", html! { (clock.text(at)) }));
+            }
+        }
+        DeliveryState::GaveUp => {
+            if let Some(at) = delivery.gave_up_at {
+                facts.push(fact(
+                    "Gave up",
+                    html! { (clock.text(at)) ", after " (plural(u64::from(delivery.attempt_count), "attempt", "attempts")) },
+                ));
+            }
+        }
+    }
     html! {
         // The title, its status at the top right (beside the close button
         // in a dialog), then what it is, one fact a line.
         div class="delivery-head" {
-            @let title_id = format!("delivery-{}-title", delivery.id);
-            @if in_dialog {
-                h2 id=(title_id) class="dialog-title" { "Delivery of " span class="event-name" { (delivery.event_type) } }
-            } @else {
-                h1 id=(title_id) class="dialog-title" { "Delivery of " span class="event-name" { (delivery.event_type) } }
-            }
-            div class="delivery-head-end" {
-                (state_tag(state))
-                @if in_dialog {
-                    button type="button" class="dialog-x" aria-label="Close" data-closes-dialog { "×" }
-                }
-            }
+            (ui::DialogTitle::new(
+                format!("delivery-{}-title", delivery.id),
+                html! { span { "Delivery of " span class="event-name" { (delivery.event_type) } } },
+            )
+            .in_dialog(in_dialog)
+            .aside(state_tag(state)))
         }
-        dl class="facts delivery-facts" {
-            dt { "Endpoint" }
-            dd class="endpoint" { (webhook.url) }
-            dt { "Order" }
-            dd { a href=(paths.order(delivery.order_id.as_str())) { (short_id(delivery.order_id.as_str())) } }
-            @match state {
-                DeliveryState::Retrying | DeliveryState::Queued => {
-                    @if let Some(next) = delivery.next_attempt_at {
-                        dt { "Next try" }
-                        dd { (clock.text(next)) " (" (clock.relative(next)) ")" }
-                    }
-                }
-                DeliveryState::Delivered => {
-                    @if let Some(at) = delivery.delivered_at {
-                        dt { "Delivered" }
-                        dd { (clock.text(at)) }
-                    }
-                }
-                DeliveryState::GaveUp => {
-                    @if let Some(at) = delivery.gave_up_at {
-                        dt { "Gave up" }
-                        dd { (clock.text(at)) ", after " (plural(u64::from(delivery.attempt_count), "attempt", "attempts")) }
-                    }
-                }
-            }
-        }
+        (ui::Facts::new(facts).attr("data-facts", "delivery"))
         h4 class="mini-h" { "Attempts" }
         @if delivery.attempts.is_empty() {
             p class="muted" { "Not tried yet." }
         } @else {
-            div class="table-scroll" {
-                table class="table-stack" {
-                    thead { tr { th { "#" } th { "Sent" } th { "Response" } th { "Took" } } }
-                    tbody {
+            (ui::Table::new(html! {
                         @for attempt in delivery.attempts.iter().rev() {
                             tr {
                                 td data-label="#" { (attempt.n) @if state != DeliveryState::Delivered && attempt.n > 0 { span class="muted" { " of " (max_attempts) } } }
@@ -556,31 +579,32 @@ pub fn detail_content(
                                 td data-label="Took" { (duration(attempt.ms)) }
                             }
                         }
-                    }
-                }
-            }
+            })
+            .head(html! { tr { th { "#" } th { "Sent" } th { "Response" } th { "Took" } } })
+            .look(ui::TableLook::Stack))
         }
-        details class="req" {
-            summary { "Request" }
+        (ui::Disclosure::new("Request", html! {
             pre { (request) }
-            p class="hint" { "The body is laid out here for reading; it's sent on one line, exactly as signed. The signing secret is never shown again: verify with the copy you saved." }
-        }
+            (ui::Hint::new("The body is laid out here for reading; it's sent on one line, exactly as signed. The signing secret is never shown again: verify with the copy you saved."))
+        })
+        .attr("data-disclosure", "request"))
         @if let Some(response) = &delivery.last_response {
-            details class="req" {
-                summary { "Last response " span class="hint" { "(first " (crate::webhooks::delivery::RESPONSE_EXCERPT_BYTES) " bytes)" } }
-                pre { (response) }
-            }
+            (ui::Disclosure::new(
+                html! {
+                    "Last response "
+                    (ui::Hint::new(format!("(first {} bytes)", crate::webhooks::delivery::RESPONSE_EXCERPT_BYTES)).inline(true))
+                },
+                html! { pre { (response) } },
+            )
+            .attr("data-disclosure", "request"))
         } @else if let Some(error) = &delivery.last_error {
-            details class="req" {
-                summary { "Last error" }
-                pre { (error) }
-            }
+            (ui::Disclosure::new("Last error", html! { pre { (error) } }).attr("data-disclosure", "request"))
         }
         form method="post" action=(paths.send_again(webhook.id.as_str(), delivery.id)) {
-            div class="dialog-actions" {
-                a class="btn" href=(paths.settings()) data-closes-dialog { "Close" }
-                button type="submit" { "Send again now" }
-            }
+            (ui::DialogActions::new(ui::Slot::many([
+                ui::LinkButton::new("Close", paths.settings()).flag("data-closes-dialog").into(),
+                ui::Button::new("Send again now").kind(ui::ButtonType::Submit).into(),
+            ])))
         }
     }
 }
@@ -719,7 +743,7 @@ pub fn all_page(
         html! {
             h1 { "Deliveries" }
             p { code class="wh-url" { (entry.webhook.url) } }
-            p class="hint" { "Newest first, " (PAGE) " a page." }
+            (ui::Hint::new(format!("Newest first, {PAGE} a page.")))
             (deliveries_results(&paths, &chrome.clock, max_attempts, entry))
             p { a href=(paths.settings()) { "Back to the store's settings" } }
         },

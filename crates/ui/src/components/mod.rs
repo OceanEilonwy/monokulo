@@ -84,6 +84,7 @@ pub fn catalogue() -> Vec<Specimens> {
         specimens(forms::switch_examples()),
         specimens(forms::radio_cards_examples()),
         specimens(forms::icon_button_examples()),
+        specimens(forms::icon_link_examples()),
         specimens(forms::form_actions_examples()),
         specimens(select::select_examples())
             .partial("select-demo", select::select_demo())

@@ -70,14 +70,16 @@ pub fn existing_store_page(
                 "connects to that store: the same orders, settings and wallet."
             }
             div class="step-foot" {
-                a class="btn" href=(crate::stores::site_link(&request.host)) { "Cancel" }
+                (ui::LinkButton::new("Cancel", crate::stores::site_link(&request.host)))
                 span class="spacer" {}
                 form method="post" action=(format!("/connect/{}", request.platform)) class="inline-form" {
                     input type="hidden" name="connection_id" value=(store_id);
                     input type="hidden" name="site_url" value=(request.site_url);
                     input type="hidden" name="return_url" value=(request.return_url);
                     input type="hidden" name="nonce" value=(request.nonce);
-                    button type="submit" class="btn-primary" { "Connect to " (store_name) }
+                    (ui::Button::new(format!("Connect to {store_name}"))
+                        .variant(ui::ButtonVariant::Primary)
+                        .kind(ui::ButtonType::Submit))
                 }
             }
         }
@@ -94,7 +96,7 @@ pub fn cannot_connect_page(chrome: &PageChrome, host: Option<&str>, why: &str) -
             @if let Some(host) = host {
                 p { "The WooCommerce plugin on " strong { (host) } " asked to connect to your account." }
             }
-            p class="error" role="alert" { (why) }
+            (ui::Alert::new(why, ui::Tone::Error))
             p { a href="/" { "Go to your dashboard" } }
         }
     };
@@ -127,7 +129,7 @@ mod tests {
         assert!(html.contains(r#"name="return_url" value="https://shop.example.com/settings""#));
         assert!(html.contains(r#"name="nonce" value="nonce-abc""#));
         assert!(html.contains("Connect to Corner shop"));
-        assert_eq!(html.matches("btn-primary").count(), 1);
+        assert_eq!(html.matches(r#"data-variant="primary""#).count(), 1);
     }
 
     #[test]

@@ -134,10 +134,10 @@ pub(super) fn domain_views(rows: Vec<StoreDomainRow>, now: i64) -> Vec<EmbedDoma
         .map(|row| {
             let state = DomainState::of(&row, now);
             let (state_tag, state_label, detail) = match state {
-                DomainState::Pending => ("unknown", "Waiting for DNS", None),
-                DomainState::Verified => ("ok", "Verified", None),
+                DomainState::Pending => (ui::TagTone::Unknown, "Waiting for DNS", None),
+                DomainState::Verified => (ui::TagTone::Ok, "Verified", None),
                 DomainState::Failing { since } => (
-                    "error",
+                    ui::TagTone::Error,
                     "Failing",
                     Some(format!(
                         "Record missing for {}. Still counts as verified for {}.",
@@ -146,7 +146,7 @@ pub(super) fn domain_views(rows: Vec<StoreDomainRow>, now: i64) -> Vec<EmbedDoma
                     )),
                 ),
                 DomainState::Lapsed { since } => (
-                    "error",
+                    ui::TagTone::Error,
                     "No longer verified",
                     Some(format!(
                         "Record missing for {}. Publish it again and check.",

@@ -52,13 +52,13 @@ test("a wallet's page is one column: where it lives, stores, details, history, t
   const details = page.locator('#card-details');
   await expect(details.locator('dl.facts dt')).toHaveText(['Address', 'Kind']);
   await expect(details.locator('.short-value')).toBeVisible();
-  const history = page.locator('details.history-fold');
+  const history = page.locator('details[data-disclosure="history"]');
   await expect(history).not.toHaveAttribute('open', '');
   await expect(history.locator('summary')).toContainText('History');
 
   const foot = page.locator('.wallet-foot');
   await expect(foot).toContainText('Retire this wallet');
-  await expect(foot.getByRole('link', { name: 'Retire wallet…' })).toHaveClass(/btn-danger/);
+  await expect(foot.getByRole('link', { name: 'Retire wallet…' })).toHaveAttribute('data-variant', 'danger');
   // Nothing beside the column, and nothing overflows it.
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await captureCoverageStage(page, 'wallets-page', test.info(), { group: GROUP });
@@ -153,7 +153,7 @@ test('a wallet nothing uses is retired by typing its name, then restored with it
   const foot = page.locator('.wallet-foot');
   await expect(foot).toContainText('Restore this wallet');
   const open = foot.getByRole('link', { name: 'Restore wallet…' });
-  await expect(open).not.toHaveClass(/btn-danger|btn-primary/);
+  await expect(open).not.toHaveAttribute('data-variant');
   await expect(page.getByRole('link', { name: 'Retire wallet…' })).toHaveCount(0);
   await captureCoverageStage(page, 'wallets-retired-page', test.info(), { group: GROUP });
 

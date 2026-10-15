@@ -418,9 +418,9 @@ async fn the_card_shows_each_webhooks_health_and_its_deliveries() {
         html.contains(r#"<span class="tag tag-error">gave up</span><span class="hint">1 delivery"#),
         "{html}"
     );
-    assert!(html.contains(&format!(r#"<form method="post" action="{base}/retry-failed" class="inline-form"><button type="submit" class="btn-sm">Retry failed (1)</button>"#)), "{html}");
+    assert!(html.contains(&format!(r#"<form method="post" action="{base}/retry-failed" class="inline-form"><button class="mk-btn" type="submit" data-size="compact">Retry failed (1)</button>"#)), "{html}");
     assert!(
-        html.contains(r#"<details class="wh-deliveries" open>"#),
+        html.contains(r#"<details class="disclosure" open data-disclosure="deliveries">"#),
         "{html}"
     );
     for word in ["delivered", "retrying"] {
@@ -453,9 +453,11 @@ async fn the_card_shows_each_webhooks_health_and_its_deliveries() {
     }
     // Delete: the red danger button, its dialog's confirm red too.
     assert!(html.contains(&format!(
-        r#"<a class="btn btn-sm btn-danger" href="{base}/delete" data-opens-dialog="{webhook}-delete-dialog">Delete</a>"#
+        r#"<a class="mk-btn" href="{base}/delete" data-variant="danger" data-size="compact" data-opens-dialog="{webhook}-delete-dialog">Delete</a>"#
     )));
-    assert!(html.contains(r#"<button type="submit" class="btn-danger">Delete webhook</button>"#));
+    assert!(html.contains(
+        r#"<button class="mk-btn" type="submit" data-variant="danger">Delete webhook</button>"#
+    ));
     // Every row's actions in the same two slots: Details, then Send
     // again or an empty slot.
     assert_eq!(
@@ -525,7 +527,7 @@ async fn a_healthy_webhooks_deliveries_stay_folded_and_an_empty_card_offers_to_a
     .await;
     assert!(html.contains(r#"<span class="tag tag-ok">delivering</span><span class="hint">last 2 min ago · 200 in 184 ms · 3 delivered in the last 30 days</span>"#), "{html}");
     assert!(
-        html.contains(r#"<details class="wh-deliveries">"#),
+        html.contains(r#"<details class="disclosure" data-disclosure="deliveries">"#),
         "{html}"
     );
     assert!(!html.contains("Retry failed"));
@@ -635,11 +637,11 @@ async fn a_deliverys_detail_is_a_page_without_javascript() {
     assert!(html.contains(r#"<h1 id="delivery-"#), "{html}");
     // The head: the title, the status at its right; then the facts.
     assert!(
-        html.contains(r#"class="dialog-title">Delivery of <span class="event-name">order.confirming</span></h1><div class="delivery-head-end"><span class="tag tag-slow">retrying</span></div>"#),
+        html.contains(r#"class="dialog-title"><span>Delivery of <span class="event-name">order.confirming</span></span><span class="tag tag-slow">retrying</span></h1>"#),
         "{html}"
     );
     assert!(
-        html.contains(r#"<dl class="facts delivery-facts"><dt>Endpoint</dt><dd class="endpoint">https://erp.bakery.example/payments/in</dd><dt>Order</dt>"#),
+        html.contains(r#"<dl class="facts" data-facts="delivery"><dt>Endpoint</dt><dd><span class="endpoint">https://erp.bakery.example/payments/in</span></dd><dt>Order</dt>"#),
         "{html}"
     );
     assert!(html.contains("<dt>Next try</dt><dd>"), "{html}");

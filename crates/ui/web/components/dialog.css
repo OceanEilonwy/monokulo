@@ -12,5 +12,5 @@
 .dialog-x, .dialog-x:hover { margin: 0 0 0 auto; padding: 0 var(--space-xs); border: 0; background: none; color: var(--muted); font-size: var(--text-xl); line-height: 1; }
 /* The answers: Cancel, then the action, at the right. */
 .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-sm); margin-top: var(--space-lg); }
-.dialog-actions :is(button, .btn, .mk-btn) { margin: 0; }
+.dialog-actions button { margin: 0; }
 .dialog-actions button[disabled] { opacity: .45; cursor: not-allowed; }

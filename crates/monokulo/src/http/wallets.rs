@@ -1306,7 +1306,7 @@ mod tests {
         assert!(html
             .contains(r#"class="mk-action-card" data-recommended data-unavailable data-needs-js"#));
         assert!(
-            html.contains(r#"formaction="/account/wallets/new" disabled"#),
+            html.contains(r#"<button class="mk-btn" type="submit" data-variant="primary" disabled formaction="/account/wallets/new" data-create-wallet="">"#),
             "{html}"
         );
         assert!(html.contains("Creating a new wallet needs JavaScript"));
@@ -1666,7 +1666,7 @@ mod tests {
             "{retire}"
         );
         assert!(
-            retire.contains(r#"<button type="button" class="btn-danger" disabled"#),
+            retire.contains(r#"<button class="mk-btn" type="button" data-variant="danger" disabled"#),
             "{retire}"
         );
     }
@@ -1735,12 +1735,12 @@ mod tests {
         );
         assert!(html.contains("A wallet needs a name."), "{html}");
         assert!(
-            html.contains(r#"name="name" value="  " maxlength"#),
+            html.contains(r#"name="name" id="wallet-name" value="  " required"#),
             "{html}"
         );
         assert!(html.contains(r#"data-saved="New name""#), "{html}");
         assert!(
-            html.contains(&format!(r#"<a class="btn btn-danger" href="{page}/retire" data-opens-dialog="retire-dialog">Retire wallet…</a>"#)),
+            html.contains(&format!(r#"<a class="mk-btn" href="{page}/retire" data-variant="danger" data-opens-dialog="retire-dialog">Retire wallet…</a>"#)),
             "{html}"
         );
         // No store uses it and no order is open: the name is asked for,
@@ -1797,7 +1797,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(&format!(r#"<a class="btn" href="{page}/restore" data-opens-dialog="restore-dialog">Restore wallet…</a>"#)),
+            html.contains(&format!(r#"<a class="mk-btn" href="{page}/restore" data-opens-dialog="restore-dialog">Restore wallet…</a>"#)),
             "{html}"
         );
         assert!(html.contains("Restore \u{201c}New name\u{201d}"), "{html}");

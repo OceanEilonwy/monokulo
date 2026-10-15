@@ -12,7 +12,7 @@ use crate::engine_view::present::{
     Bar, ChainView, Lane, MarkView, Panel, Presented, RibbonMark, RoundView, Shape,
 };
 use crate::views::scaling::{network_name, thousands, MachineView, ScanningView, Tile, TileChart};
-use ui::{Choice, Select};
+use ui::{Alert, Button, ButtonType, Cell, Checkbox, Choice, Disclosure, Row, Select, Slot, Table, Tone};
 
 /// Blocks drawn without JavaScript: enough for the widest strip. Those
 /// that don't fit whole wrap out of sight; the script draws as many as fit.
@@ -55,7 +55,6 @@ const ENGINE_STYLE: &str = r#"
 .wrap.engine-page > .context-nav { margin: var(--space-sm) 0 0; }
 .engine-titlebar { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); }
 .titlebar-spacer { flex: 1; }
-.engine-titlebar .reload { margin: 0; }
 .engine-tabs { display: inline-flex; height: 26px; border: 1px solid var(--btn-border); border-radius: var(--radius-sm); overflow: hidden; }
 .engine-tabs a, .engine-tabs span { display: flex; align-items: center; padding: 0 11px; font-weight: 700; font-size: 0.8rem; color: var(--btn-ink); background: var(--btn-bg); text-decoration: none; }
 .engine-tabs > * + * { border-left: 1px solid var(--btn-border); }
@@ -268,7 +267,7 @@ const ENGINE_STYLE: &str = r#"
    time and the round's total move with it. */
 .bar.last + .lane-time { margin-left: 9px; }
 .ruler-label { margin-left: 4px; }
-.round-breakdown { margin-top: var(--space-lg); }
+[data-round-breakdown] { margin-top: var(--space-lg); }
 .ribbon-row { display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 6px; }
 .ribbon { display: flex; justify-content: flex-end; align-items: flex-end; height: 30px; overflow: hidden; border-bottom: 1px solid var(--line); }
 .rbar { width: 8px; display: flex; flex-direction: column-reverse; flex: none; border-radius: 2px 2px 0 0; overflow: hidden; }
@@ -286,7 +285,7 @@ details.mini > summary { display: grid; grid-template-columns: 96px minmax(0, 1f
 details.mini > summary:hover { background: var(--tint-hover); }
 details.mini > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 details.mini .body .scan-figures { padding-top: 6px; }
-details.mini .body .slow-block { margin: 6px 0 0; }
+details.mini .body [data-slow-block] { margin: 6px 0 0; }
 details.mini > summary::after { content: ""; width: 6px; height: 6px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); transition: transform 0.2s; }
 details.mini[open] > summary::after { transform: rotate(45deg); }
 details.mini .sum { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 0.75rem; overflow: hidden; white-space: nowrap; }
@@ -310,11 +309,12 @@ details.mini.alert { border-color: var(--error); }
 .engine-events { max-height: 260px; overflow-y: auto; }
 .engine-events table { width: 100%; font-size: 0.75rem; }
 .engine-events td { padding: 2px 8px; }
-.engine-events tr.key td:last-child { font-weight: 700; }
-.engine-events tr.now td { background: var(--tint-highlight); }
+.engine-events tr[data-key] td:last-child { font-weight: 700; }
+.engine-events tr[data-now] td { background: var(--tint-highlight); }
 .engine-events tbody tr { cursor: pointer; }
 .engine-filters { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
-.engine-filters label { display: inline-flex; gap: 3px; align-items: center; font-size: 0.7rem; }
+.engine-filters label { display: inline-flex; gap: 3px; align-items: center; font-size: 0.7rem; font-weight: inherit; }
+.engine-filters input { margin: 0; }
 .token { position: absolute; z-index: 20; pointer-events: none; width: 12px; height: 12px; border-radius: 3px; border: 2px solid var(--paper-raised); background: var(--tier, var(--ink)); box-shadow: 0 0 0 1px var(--ink); }
 .token.pkt { width: auto; height: auto; padding: 0 5px; font: 700 0.62rem/15px var(--font-mono); color: var(--paper-raised); background: var(--viz-tier-blocks); border: 0; box-shadow: none; }
 .token.pkt.chain { background: var(--viz-tier-chain); }
@@ -407,12 +407,12 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
                     )
                     .id("engine-network")
                     .compact(true))
-                    button type="submit" class="network-go no-js-only" { "Go" }
+                    span class="network-go no-js-only" { (Button::new("Go").kind(ButtonType::Submit)) }
                 }
                 (reload_button(&format!("/status/engine?network={}", page.network)))
             }
             @if let Some(error) = &page.error {
-                p class="error" role="alert" { "The engine's activity could not be read: " (error) }
+                (Alert::new(format!("The engine's activity could not be read: {error}"), Tone::Error))
             }
             @if let Some(view) = &page.view {
                 (timeline())
@@ -924,15 +924,14 @@ fn round(view: &Presented, pinned: Option<&RoundView>, network: &str) -> Markup 
                         div class="ruler" { div class="ruler-in" { (end_marker(round)) } }
                         div {}
                     }
-                    details class="round-breakdown" {
-                        summary { "Timing details" }
+                    (Disclosure::new("Timing details", html! {
                         @for lane in &round.lanes {
                             @for bar in &lane.bars {
                                 p { strong { (bar.title) } }
                                 ul { @for detail in &bar.details { li { (detail) } } }
                             }
                         }
-                    }
+                    }).flag("data-round-breakdown"))
                 }
                 None => {
                     header { h2 id="h-round" title="Scanner round for this network since the engine started; resets on engine restart" { "Round" } span class="engine-hint" { "No round recorded yet." } }
@@ -1153,7 +1152,7 @@ fn scanning_body(scanning: Option<&ScanningView>) -> Markup {
         @match scanning {
             Some(scanning) => {
                 @if let Some(slow) = &scanning.slow {
-                    p class="notice slow-block" role="status" { (slow) }
+                    (Alert::new(slow.as_str(), Tone::Notice).flag("data-slow-block"))
                 }
                 dl class="scan-figures" {
                     @for (label, value) in &scanning.rows { dt { (label) } dd { (value) } }
@@ -1189,29 +1188,45 @@ fn events(marks: &[MarkView]) -> Markup {
                 span class="engine-hint" { "newest first; with JavaScript, up to the playback position, and a click goes there" }
                 div class="engine-filters engine-right" id="engine-filters" hidden {
                     @for (tier, name) in TIERS {
-                        label { input type="checkbox" checked data-tier=(tier); span class=(format!("tierchip t-{tier}")) { (name) } }
+                        (Checkbox::new()
+                            .text(html! { span class=(format!("tierchip t-{tier}")) { (name) } })
+                            .checked(true)
+                            .attr("data-tier", tier))
                     }
                 }
             }
+            // The script draws the rows again into the table's body.
             div class="engine-events" {
-                table {
-                    thead { tr { th { "Round" } th { "Tier" } th { "What happened" } } }
-                    tbody id="engine-events" {
-                        @for mark in marks {
-                            tr class=(if mark.key { "key" } else { "" }) {
-                                td class="num" { (thousands(mark.round)) }
-                                td { span class=(format!("tierchip t-{}", mark.tier)) { (crate::engine_view::present::tier_name(mark.tier)) } }
-                                td { (mark.text) }
-                            }
-                        }
-                        @if marks.is_empty() {
-                            tr { td colspan="3" class="engine-hint" { "Nothing recorded yet." } }
-                        }
-                    }
-                }
+                (Table::new(event_rows(marks))
+                    .head(Row::new(Slot::many(
+                        ["Round", "Tier", "What happened"].map(|name| Slot::from(Cell::new(name).header(true))),
+                    )))
+                    .scroll(false)
+                    .attr("id", "engine-events"))
             }
         }
     }
+}
+
+/// The events' rows, a key event's marked `data-key`; a row saying so
+/// when there are none.
+fn event_rows(marks: &[MarkView]) -> Slot {
+    if marks.is_empty() {
+        return Row::new(
+            Cell::new(html! { span class="engine-hint" { "Nothing recorded yet." } }).attr("colspan", "3"),
+        )
+        .into();
+    }
+    Slot::many(marks.iter().map(|mark| {
+        let row = Row::new(Slot::many([
+            Slot::from(Cell::new(thousands(mark.round))),
+            Slot::from(Cell::new(html! {
+                span class=(format!("tierchip t-{}", mark.tier)) { (crate::engine_view::present::tier_name(mark.tier)) }
+            })),
+            Slot::from(Cell::new(mark.text.as_str())),
+        ]));
+        Slot::from(if mark.key { row.flag("data-key") } else { row })
+    }))
 }
 
 #[cfg(test)]

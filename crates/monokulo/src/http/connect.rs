@@ -779,7 +779,7 @@ mod tests {
         let html = body_text(get(&router, &location(&start), &cookie).await).await;
         assert!(html.contains("Connect your WooCommerce shop"), "{html}");
         assert!(
-            html.contains(r#"name="store_site" value="shop.example.com""#),
+            html.contains(r#"name="store_site" id="store-site" value="shop.example.com""#),
             "{html}"
         );
         assert!(html.contains(r#"name="nonce" value="nonce-xyz""#));

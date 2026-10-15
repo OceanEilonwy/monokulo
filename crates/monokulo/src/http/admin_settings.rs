@@ -2383,6 +2383,7 @@ mod tests {
             || html.contains(&format!("value=\"{value}\">"))
             || html.contains(&format!("value=\"{value}\" min"))
             || html.contains(&format!("value=\"{value}\" id="))
+            || html.contains(&format!("value=\"{value}\" aria-describedby="))
             || html.contains(&format!("value=\"{value}\" checked"))
             || html.contains(&format!("\">{value}</textarea>"))
     }
@@ -3372,7 +3373,7 @@ mod tests {
             );
             // What was typed is still there, with what's saved for Discard.
             assert!(
-                html.contains(r#"name="payment.confirmations_required" value="8" min="0" max="720" step="1" id="setting-payment.confirmations_required" aria-describedby="setting-help-payment.confirmations_required" data-saved="10">"#),
+                html.contains(r#"name="payment.confirmations_required" id="setting-payment.confirmations_required" value="8" aria-describedby="setting-help-payment.confirmations_required" min="0" max="720" step="1" data-saved="10">"#),
                 "{html}"
             );
         }
@@ -3394,7 +3395,9 @@ mod tests {
         let html = follow(&router, &cookie, save).await;
         assert!(is_saved(&html), "{html}");
         assert!(
-            html.contains(r#"name="abuse.soft_per_min" value="61""#),
+            html.contains(
+                r#"name="abuse.soft_per_min" id="setting-abuse.soft_per_min" value="61""#
+            ),
             "{html}"
         );
         assert!(

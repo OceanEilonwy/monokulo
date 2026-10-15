@@ -38,17 +38,17 @@ pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
         div class="wrap" {
             (super::store_breadcrumb(data.connection_id.as_str(), &data.display_name, true))
             h1 { "Create order" }
-            p class="hint" { "Creates a real order on the engine and takes you straight to its payment page." }
+            (ui::Hint::new("Creates a real order on the engine and takes you straight to its payment page."))
             @if let Some(error) = &data.order_creation_error {
-                div class="error" { (error) }
+                (ui::Alert::new(error.as_str(), ui::Tone::Error))
             }
             form method="post" action=(format!("/dashboard/stores/{}/orders/new", data.connection_id)) {
                 label for="amount" { "Amount" }
                 input type="hidden" name="request_key" value=(data.request_key);
-                input type="text" id="amount" name="amount" value=(data.amount) required;
+                (ui::Input::new("amount").id("amount").value(data.amount.as_str()).required(true))
                 label for="currency" { "Currency" }
                 @if data.order_currency_is_locked_to_xmr {
-                    input type="text" id="currency" name="currency" value="XMR" readonly;
+                    (ui::Input::new("currency").id("currency").value("XMR").readonly(true))
                     span class="field-help" {
                         "\"XMR\" - the only currency this instance can price an order in right now. Enable an "
                         "exchange rate provider (in this store's settings) to offer others."
@@ -68,12 +68,12 @@ pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
                     }
                 }
                 label for="merchant_order_id" { "Merchant Reference " span class="field-help" style="display:inline" { "(optional)" } }
-                input type="text" id="merchant_order_id" name="merchant_order_id" value=(data.merchant_order_id);
+                (ui::Input::new("merchant_order_id").id("merchant_order_id").value(data.merchant_order_id.as_str()))
                 span class="field-help" {
                     "Your own order/cart id, if you have one - shown on this order's detail page so you can "
                     "match it back to your own records."
                 }
-                button type="submit" class="btn-primary" { "Create order" }
+                (ui::FormActions::new(ui::Button::new("Create order").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)))
             }
         }
     };

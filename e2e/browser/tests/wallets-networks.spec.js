@@ -33,7 +33,7 @@ test('mainnet wallets are the list and the test networks are folded below, shut'
   await expect(head.locator('.tag-network.is-main')).toHaveText('Mainnet');
   await expect(head).toContainText('Real money · 2 wallets');
   // By name, the retired one left out.
-  const main = page.locator('.wallets-table').first();
+  const main = page.locator('table[data-table="wallets"]').first();
   await expect(main.locator('tbody tr td.card-title')).toHaveText(['Cake – shop takings', 'Savings']);
 
   const fold = page.locator('details.test-wallets');
@@ -47,8 +47,8 @@ test('mainnet wallets are the list and the test networks are folded below, shut'
   const rows = fold.locator('tbody tr');
   await expect(rows.locator('td.card-title')).toHaveText(['Feather test', 'POS trial', 'Lab']);
   await expect(rows.locator('.tag-network')).toHaveText(['Stagenet', 'Stagenet', 'Testnet']);
-  await expect(page.locator('details.retired-wallets summary')).toContainText('Retired wallets (1)');
-  await expect(page.locator('.btn-primary')).toHaveCount(1);
+  await expect(page.locator('details[data-disclosure="retired-wallets"] summary')).toContainText('Retired wallets (1)');
+  await expect(page.locator('.btn-primary, .mk-btn[data-variant="primary"]')).toHaveCount(1);
   await captureCoverageStage(page, 'wallets-networks-mixed-open', test.info(), { group: GROUP });
 });
 
@@ -74,11 +74,11 @@ test('on a phone each wallet is a card', async ({ page, context }) => {
   await login(context);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(fixture.base_url + '/account?tab=wallets');
-  const card = page.locator('.wallets-table tbody tr').first();
-  await expect(page.locator('.wallets-table thead').first()).toBeHidden();
+  const card = page.locator('table[data-table="wallets"] tbody tr').first();
+  await expect(page.locator('table[data-table="wallets"] thead').first()).toBeHidden();
   await expect(card).toHaveCSS('display', 'grid');
   await expect(card.locator('td.card-status')).toHaveText('1 store');
-  await expect(page.locator('.wallets-table tbody tr').nth(1).locator('td.card-status')).toHaveText('0 stores');
+  await expect(page.locator('table[data-table="wallets"] tbody tr').nth(1).locator('td.card-status')).toHaveText('0 stores');
   await captureCoverageStage(page, 'wallets-networks-phone', test.info(), { group: GROUP, asIs: true });
 });
 

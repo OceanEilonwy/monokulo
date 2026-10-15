@@ -382,6 +382,28 @@ pub(super) fn icon_button_examples() -> Vec<(&'static str, IconButton)> {
 }
 
 component! {
+    /// A link showing only an icon, looking like an `IconButton`: its
+    /// name, required, is what screen readers say and what hovering shows.
+    pub struct IconLink {
+        /// Where it goes, in words ("Refresh page").
+        label: String,
+        href: String,
+        /// The icon: an inline SVG.
+        icon: Slot,
+        rest: Attrs,
+    }
+    html {
+        a class="mk-btn icon-only" href=(href) aria-label=(label) title=(label) ..rest {
+            (icon)
+        }
+    }
+}
+
+pub(super) fn icon_link_examples() -> Vec<(&'static str, IconLink)> {
+    vec![("Refresh", IconLink::new("Refresh page", "#component-icon-link", "↻"))]
+}
+
+component! {
     /// A form's buttons in a row; a `spacer` pushes the ones after it to
     /// the right.
     pub struct FormActions {

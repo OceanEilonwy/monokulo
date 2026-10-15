@@ -30,13 +30,27 @@ pub fn setup_page(chrome: &PageChrome, data: &SetupViewModel) -> Markup {
                 "and can configure every monokulo and scanner setting from the admin page afterward."
             }
             @if let Some(error) = &data.error {
-                p class="error" { (error) }
+                (ui::Alert::new(error.as_str(), ui::Tone::Error).quiet(true))
             }
-            form method="post" action="/admin/setup" {
-                label { "Email " input type="email" name="email" value=(data.email) required; }
-                label { "Password " input type="password" name="password" required minlength="12"; }
-                label { "Confirm password " input type="password" name="confirm_password" required minlength="12"; }
-                button type="submit" class="btn-primary" { "Create admin account" }
+            form method="post" action="/admin/setup" class="mk-stack" {
+                (ui::Field::new("Email", "setup-email", "email")
+                    .kind(ui::InputType::Email)
+                    .value(data.email.as_str())
+                    .required(true)
+                    .autocomplete("email"))
+                (ui::Field::new("Password", "setup-password", "password")
+                    .kind(ui::InputType::Password)
+                    .required(true)
+                    .autocomplete("new-password")
+                    .attr("minlength", "12"))
+                (ui::Field::new("Confirm password", "setup-confirm-password", "confirm_password")
+                    .kind(ui::InputType::Password)
+                    .required(true)
+                    .autocomplete("new-password")
+                    .attr("minlength", "12"))
+                (ui::FormActions::new(ui::Button::new("Create admin account")
+                    .variant(ui::ButtonVariant::Primary)
+                    .kind(ui::ButtonType::Submit)))
             }
         }
     };
@@ -59,13 +73,21 @@ pub fn request_invite_page(chrome: &PageChrome, data: &RequestInviteViewModel) -
                 p { "Thanks - we'll be in touch if there's a spot for you." }
             } @else {
                 @if let Some(error) = &data.error {
-                    p class="error" { (error) }
+                    (ui::Alert::new(error.as_str(), ui::Tone::Error).quiet(true))
                 }
                 p { "This instance is invite-only right now. Tell us a bit about what you'd like to use it for and we'll follow up." }
-                form method="post" action="/request-invite" {
-                    label { "Email " input type="email" name="email" required; }
-                    label { "Message " textarea name="message" required {} }
-                    button type="submit" class="btn-primary" { "Request an invite" }
+                form method="post" action="/request-invite" class="mk-stack" {
+                    (ui::Field::new("Email", "request-invite-email", "email")
+                        .kind(ui::InputType::Email)
+                        .required(true)
+                        .autocomplete("email"))
+                    div class="mk-field" {
+                        label for="request-invite-message" { "Message" }
+                        (ui::TextArea::new("message").id("request-invite-message").required(true))
+                    }
+                    (ui::FormActions::new(ui::Button::new("Request an invite")
+                        .variant(ui::ButtonVariant::Primary)
+                        .kind(ui::ButtonType::Submit)))
                 }
             }
         }
@@ -106,27 +128,40 @@ pub struct AdminInvitesViewModel {
     pub created_link: Option<String>,
 }
 
-fn invite_row(row: &AdminInviteRequestRow, page: u32) -> Markup {
-    html! {
-        tr class=[row.just_deleted.then_some("row-deleted")] {
-            td { (row.email) }
-            td { (row.message) }
-            td { (row.created_at_display) }
-            td {
-                @if row.just_deleted {
-                    "deleted"
-                } @else {
-                    @if let Some(href) = &row.mailto_href {
-                        a href=(href) { "email invite" }
-                    }
-                    form method="post" action=(format!("/dashboard/admin/invites/{}/delete?page={}", row.id, page)) class="inline-form"
-                        fx-action=(format!("/dashboard/admin/invites/{}/delete?page={}", row.id, page)) fx-method="POST" fx-target="#invites" {
-                        button type="submit" { "delete" }
-                    }
-                }
+fn invite_row(row: &AdminInviteRequestRow, page: u32) -> ui::Row {
+    let actions = html! {
+        @if row.just_deleted {
+            "deleted"
+        } @else {
+            @if let Some(href) = &row.mailto_href {
+                a href=(href) { "email invite" }
+            }
+            form method="post" action=(format!("/dashboard/admin/invites/{}/delete?page={}", row.id, page)) class="inline-form"
+                fx-action=(format!("/dashboard/admin/invites/{}/delete?page={}", row.id, page)) fx-method="POST" fx-target="#invites" {
+                (ui::Button::new("delete").kind(ui::ButtonType::Submit))
             }
         }
+    };
+    let tr = ui::Row::new(ui::Slot::many([
+        ui::Cell::new(row.email.as_str()).into(),
+        ui::Cell::new(row.message.as_str()).into(),
+        ui::Cell::new(row.created_at_display.clone()).into(),
+        ui::Cell::new(actions).into(),
+    ]));
+    if row.just_deleted {
+        tr.flag("data-deleted")
+    } else {
+        tr
     }
+}
+
+/// The invite requests' table, its header and its rows.
+fn invites_table(rows: impl IntoIterator<Item = ui::Row>) -> ui::Table {
+    let head = ui::Row::new(ui::Slot::many(
+        ["Email", "Message", "Requested", "Actions"]
+            .map(|name| ui::Cell::new(name).header(true).into()),
+    ));
+    ui::Table::new(ui::Slot::many(rows.into_iter().map(ui::Slot::from))).head(head)
 }
 
 /// Everything on the invites page below its heading: what fixi swaps back
@@ -136,15 +171,17 @@ pub fn invites_section(data: &AdminInvitesViewModel) -> Markup {
     html! {
         section id="invites" {
             @if let Some(error) = &data.error {
-                p class="error" role="alert" data-fx-focus tabindex="-1" { (error) }
+                (ui::Alert::new(error.as_str(), ui::Tone::Error).flag("data-fx-focus").attr("tabindex", "-1"))
             }
             @if let Some(success) = &data.success {
-                p class="success" role="status" data-fx-focus tabindex="-1" { (success) }
+                (ui::Alert::new(success.as_str(), ui::Tone::Success).flag("data-fx-focus").attr("tabindex", "-1"))
             }
 
             form method="post" action="/dashboard/admin/invites/create-link"
                 fx-action="/dashboard/admin/invites/create-link" fx-method="POST" fx-target=(target) {
-                button type="submit" class="btn-primary" { "Create invite link" }
+                (ui::FormActions::new(ui::Button::new("Create invite link")
+                    .variant(ui::ButtonVariant::Primary)
+                    .kind(ui::ButtonType::Submit)))
             }
             @if let Some(link) = &data.created_link {
                 p { "Share this link - it works once:" }
@@ -153,17 +190,12 @@ pub fn invites_section(data: &AdminInvitesViewModel) -> Markup {
 
             h2 { "Pending requests" }
             @if !data.rows.is_empty() {
-                table {
-                    thead { tr { th { "Email" } th { "Message" } th { "Requested" } th { "Actions" } } }
-                    tbody {
-                        @if let Some(deleted) = &data.just_deleted_row {
-                            (invite_row(deleted, data.page))
-                        }
-                        @for row in &data.rows {
-                            (invite_row(row, data.page))
-                        }
-                    }
-                }
+                (invites_table(
+                    data.just_deleted_row
+                        .iter()
+                        .chain(&data.rows)
+                        .map(|row| invite_row(row, data.page)),
+                ))
                 nav class="pagination" {
                     @if data.has_previous {
                         @let href = format!("/dashboard/admin/invites?page={}", data.previous_page);
@@ -177,15 +209,12 @@ pub fn invites_section(data: &AdminInvitesViewModel) -> Markup {
                 }
                 form method="post" action="/dashboard/admin/invites/delete-all"
                     fx-action="/dashboard/admin/invites/delete-all" fx-method="POST" fx-target=(target) {
-                    button type="submit" { "Delete all" }
+                    (ui::FormActions::new(ui::Button::new("Delete all").kind(ui::ButtonType::Submit)))
                 }
             } @else if let Some(deleted) = &data.just_deleted_row {
-                table {
-                    thead { tr { th { "Email" } th { "Message" } th { "Requested" } th { "Actions" } } }
-                    tbody { (invite_row(deleted, data.page)) }
-                }
+                (invites_table([invite_row(deleted, data.page)]))
             } @else {
-                p class="hint" { "No pending invite requests." }
+                (ui::Hint::new("No pending invite requests."))
             }
         }
     }
@@ -1010,7 +1039,15 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
     let saved = field.saved_value.as_deref();
     match &field.kind {
         SettingKindView::Integer { min, max } => html! {
-            input type="number" name=(name) value=(field.value) min=[min] max=[max] step="1" id=(id) aria-describedby=[help] data-saved=[saved];
+            (ui::Input::new(name)
+                .kind(ui::InputType::Number)
+                .value(field.value.as_str())
+                .maybe_attr("min", min.map(|min| min.to_string()))
+                .maybe_attr("max", max.map(|max| max.to_string()))
+                .attr("step", "1")
+                .id(id)
+                .maybe_described_by(help)
+                .maybe_attr("data-saved", saved))
         },
         SettingKindView::Bool => super::controls::switch(
             name,
@@ -1040,19 +1077,34 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
             html! {
                 input type="hidden" name=(name) value="";
                 @for choice in choices {
-                    label class="inline" {
-                        input type="checkbox" name=(name) value=(choice) checked[chosen.contains(&choice.as_str())]
-                            data-saved=[was.as_ref().map(|was| if was.contains(&choice.as_str()) { "on" } else { "off" })];
-                        " " (choice)
-                    }
+                    (ui::Checkbox::new()
+                        .text(choice.as_str())
+                        .name(name)
+                        .value(choice.as_str())
+                        .checked(chosen.contains(&choice.as_str()))
+                        .maybe_attr("data-saved", was.as_ref().map(|was| if was.contains(&choice.as_str()) { "on" } else { "off" })))
                 }
             }
         }
         SettingKindView::Url => {
-            html! { input type="url" name=(name) value=(field.value) id=(id) aria-describedby=[help] data-saved=[saved]; }
+            html! {
+                (ui::Input::new(name)
+                    .kind(ui::InputType::Url)
+                    .value(field.value.as_str())
+                    .id(id)
+                    .maybe_described_by(help)
+                    .maybe_attr("data-saved", saved))
+            }
         }
         SettingKindView::Json => {
-            html! { textarea name=(name) rows="4" id=(id) aria-describedby=[help] data-saved=[saved] { (field.value) } }
+            html! {
+                (ui::TextArea::new(name)
+                    .rows(4usize)
+                    .value(field.value.as_str())
+                    .id(id)
+                    .maybe_described_by(help)
+                    .maybe_attr("data-saved", saved))
+            }
         }
         SettingKindView::TimeLimit {
             now,
@@ -1101,7 +1153,13 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
             }
         }
         _ => {
-            html! { input type="text" name=(name) value=(field.value) id=(id) aria-describedby=[help] data-saved=[saved]; }
+            html! {
+                (ui::Input::new(name)
+                    .value(field.value.as_str())
+                    .id(id)
+                    .maybe_described_by(help)
+                    .maybe_attr("data-saved", saved))
+            }
         }
     }
 }
@@ -1187,8 +1245,8 @@ fn notices(items: &[Notice]) -> Markup {
     html! {
         @for notice in items {
             @match notice {
-                Notice::Success(text) => p class="success" role="status" { (text) },
-                Notice::Error(text) => p class="error" role="alert" { (text) },
+                Notice::Success(text) => (ui::Alert::new(text.as_str(), ui::Tone::Success)),
+                Notice::Error(text) => (ui::Alert::new(text.as_str(), ui::Tone::Error)),
             }
         }
     }
@@ -1264,13 +1322,15 @@ fn options_file_bars(data: &AdminSettingsViewModel) -> Markup {
                                 }
                             }
                         }
-                        button type="submit" {
-                            (icon(html! {
+                        (ui::Button::new(ui::Slot::many([
+                            icon(html! {
                                 path d="M20 11a8 8 0 1 0-2.3 5.7" {}
                                 path d="M20 4v7h-7" {}
-                            }))
-                            "Reload options file"
-                        }
+                            })
+                            .into(),
+                            "Reload options file".into(),
+                        ]))
+                        .kind(ui::ButtonType::Submit))
                     }
                 }
             }
@@ -1287,10 +1347,10 @@ fn engine_available(data: &AdminSettingsViewModel) -> bool {
 /// (nicer_admin_screen.md T6).
 fn engine_unavailable(data: &AdminSettingsViewModel) -> Markup {
     html! {
-        p class="error engine-unavailable" role="alert" {
-            "Could not reach the configured engine: "
-            @if let Some(engine_error) = &data.engine_error { (engine_error) }
-        }
+        (ui::Alert::new(
+            format!("Could not reach the configured engine: {}", data.engine_error.as_deref().unwrap_or("")),
+            ui::Tone::Error,
+        ))
     }
 }
 /// The cards a tab shows, in order: its fixed ones, with the Monero nodes
@@ -1509,9 +1569,15 @@ fn node_row(
                         code { "http://" } " or " code { "https://" } " in front is fine (" code { "https://" } " also ticks Use TLS); "
                         "an IPv6 address goes in brackets, like " code { "[::1]:18081" } "."
                     }
-                    input type="text" name=(name("address")) id=(id("address")) value=(row.row.address) aria-describedby=(described)
-                        data-saved=[saved_text(|s| &s.address)]
-                        aria-invalid=[row.row.error.as_ref().map(|_| "true")] autocomplete="off" spellcheck="false" inputmode="url";
+                    (ui::Input::new(name("address"))
+                        .id(id("address"))
+                        .value(row.row.address.as_str())
+                        .described_by(described)
+                        .maybe_attr("data-saved", saved_text(|s| &s.address))
+                        .invalid(row.row.error.is_some())
+                        .autocomplete("off")
+                        .attr("spellcheck", "false")
+                        .attr("inputmode", "url"))
                     @if let (Some(error), Some(error_id)) = (&row.row.error, &error_id) {
                         span class="setting-problem" id=(error_id) { (error) }
                     }
@@ -1519,16 +1585,25 @@ fn node_row(
                 div class="setting-field node-tls" {
                     div class="setting-label-row" { label class="setting-label" for=(id("ssl")) { "Use TLS" } }
                     span class="field-help" id=(id("ssl-help")) { "Connect with TLS (https). Off by default; most nodes on port 18081 or 18089 don't use it." }
-                    input type="checkbox" name=(name("ssl")) id=(id("ssl")) value="on" checked[row.row.ssl] aria-describedby=(id("ssl-help")) data-node-tls
-                        data-saved=[saved_box(|s| s.ssl)];
+                    (ui::Checkbox::new()
+                        .name(name("ssl"))
+                        .id(id("ssl"))
+                        .checked(row.row.ssl)
+                        .described_by(id("ssl-help"))
+                        .flag("data-node-tls")
+                        .maybe_attr("data-saved", saved_box(|s| s.ssl)))
                 }
                 div class="setting-field node-self-signed" data-node-self-signed {
                     div class="setting-label-row" { label class="setting-label" for=(id("self_signed")) { "Accept a self-signed certificate" } }
                     span class="field-help" id=(id("self_signed-help")) {
                         "Many community nodes use a self-signed TLS certificate; tick this to accept one. Only used with TLS."
                     }
-                    input type="checkbox" name=(name("self_signed")) id=(id("self_signed")) value="on" checked[row.row.self_signed] aria-describedby=(id("self_signed-help"))
-                        data-saved=[saved_box(|s| s.self_signed)];
+                    (ui::Checkbox::new()
+                        .name(name("self_signed"))
+                        .id(id("self_signed"))
+                        .checked(row.row.self_signed)
+                        .described_by(id("self_signed-help"))
+                        .maybe_attr("data-saved", saved_box(|s| s.self_signed)))
                 }
                 div class="setting-field node-zmq" {
                     div class="setting-label-row" { label class="setting-label" for=(id("zmq_pub")) { "Announcements (ZMQ)" } }
@@ -1537,21 +1612,29 @@ fn node_row(
                         code { "tcp://127.0.0.1:18083" } ". Payments are then seen the moment the node sees them, instead of at the next check. "
                         "Needs an engine built with ZMQ support; leave empty otherwise."
                     }
-                    input type="text" name=(name("zmq_pub")) id=(id("zmq_pub")) value=(row.row.zmq_pub) aria-describedby=(id("zmq_pub-help"))
-                        data-saved=[saved_text(|s| &s.zmq_pub)]
-                        autocomplete="off" spellcheck="false" inputmode="url";
+                    (ui::Input::new(name("zmq_pub"))
+                        .id(id("zmq_pub"))
+                        .value(row.row.zmq_pub.as_str())
+                        .described_by(id("zmq_pub-help"))
+                        .maybe_attr("data-saved", saved_text(|s| &s.zmq_pub))
+                        .autocomplete("off")
+                        .attr("spellcheck", "false")
+                        .attr("inputmode", "url"))
                 }
                 @if let Some(status) = &row.status { (node_status(status)) }
                 @if let Some((at, count)) = position {
-                    div class="node-row-actions" {
+                    @let action = |label: &str, value: String| {
+                        ui::Button::new(label).kind(ui::ButtonType::Submit).attr("name", "node_action").attr("value", value)
+                    };
+                    (ui::FormActions::new(html! {
                         @if at > 0 {
-                            button type="submit" class="no-js-only" name="node_action" value=(format!("up:{n}:{index}")) { "Move up" }
+                            span class="no-js-only" { (action("Move up", format!("up:{n}:{index}"))) }
                         }
                         @if at + 1 < count {
-                            button type="submit" class="no-js-only" name="node_action" value=(format!("down:{n}:{index}")) { "Move down" }
+                            span class="no-js-only" { (action("Move down", format!("down:{n}:{index}"))) }
                         }
-                        button type="submit" name="node_action" value=(format!("remove:{n}:{index}")) data-node-remove { "Remove" }
-                    }
+                        (action("Remove", format!("remove:{n}:{index}")).flag("data-node-remove"))
+                    }))
                 }
             }
         }
@@ -1621,10 +1704,10 @@ fn card_fields(
         @for (i, field) in fields.iter().enumerate() {
             @if site_heading && first_site == Some(i) {
                 h4 { "This site's key entry" }
-                p class="hint" {
+                (ui::Hint::new(html! {
                     "What this site's forms check before they encrypt a merchant's keys. They must match the engine's settings above: "
                     "they are checked against the engine when saved, and the status page shows an alert if they ever differ."
-                }
+                }))
             }
             @if let Some(heading) = field_subheading(&field.key) { h4 { (heading) } }
             (scalar_field(field))
@@ -1669,7 +1752,7 @@ fn settings_card(data: &AdminSettingsViewModel, group: Group) -> Markup {
         card = card.shown_by(ENABLED_BACKENDS, backend);
     }
     card.render(html! {
-        @if let Some(hint) = group.hint() { p class="hint" { (hint) } }
+        @if let Some(hint) = group.hint() { (ui::Hint::new(hint)) }
         (card_fields(group, &fields, data))
     })
 }
@@ -1696,21 +1779,21 @@ fn network_card(
     };
     let rows = html! {
         @if let Some(error) = &network.error {
-            p class="error" role="alert" { (error) }
+            (ui::Alert::new(error.as_str(), ui::Tone::Error))
         } @else if let Some(failure) = failure {
-            p class="error" role="alert" { (failure.message) }
+            (ui::Alert::new(failure.message.as_str(), ui::Tone::Error))
         }
-        p class="hint" {
+        (ui::Hint::new(html! {
             "Fallbacks are tried in order when the one before fails. Open a node to change it"
             span class="js-only" { ", or drag it by its handle to reorder it" } "."
-        }
+        }))
         div class="node-rows" data-node-rows=(n) {
             @for (at, row) in network.rows.iter().enumerate() {
                 (node_row(network, at, row, Some((at, count))))
             }
             (node_row(network, count, &NodeRowView { row: crate::admin_nodes::NodeRow { self_signed: true, ..Default::default() }, ..Default::default() }, None))
         }
-        button type="button" class="js-only node-add-another" data-node-add-another=(n) { "Add another" }
+        div class="js-only node-add-another" { (ui::Button::new("Add another").attr("data-node-add-another", n.as_str())) }
         // Whether this network's blocks' proof of work is checked
         // (`proof_of_work.<network>`).
         @for field in &fields { (scalar_field(field)) }
@@ -1739,10 +1822,7 @@ fn network_card(
             @if open {
                 (rows)
             } @else {
-                details class="node-network-closed" {
-                    summary { "Add a node for " (n) }
-                    (rows)
-                }
+                (ui::Disclosure::new(format!("Add a node for {n}"), rows).flag("data-node-network-closed"))
             }
         })
 }
@@ -1808,20 +1888,20 @@ pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
     html! {
         section id="settings-panel" aria-labelledby="settings-panel-title" data-tab=(tab.id()) data-tab-label=(tab.label()) {
             h2 id="settings-panel-title" tabindex="-1" data-fx-focus[focus] { (tab.label()) }
-            p class="hint" { "Saving writes the options file and applies the change straight away. A setting given on the command line or in the environment is locked here: change it where it is given." }
+            (ui::Hint::new("Saving writes the options file and applies the change straight away. A setting given on the command line or in the environment is locked here: change it where it is given."))
             @if tab == SettingsTab::Abuse {
-                p class="hint" {
+                (ui::Hint::new(html! {
                     "How this instance tells visitors apart and slows down anyone sending too many requests. A visitor "
                     "past the soft limit is asked to pass a short check (automatic with JavaScript, a 10-second wait "
                     "without); past the hard limit they're refused until the minute is up. Signed-in merchants and "
                     "plugins using their store's secret key are never checked."
-                }
+                }))
             }
             @if tab == SettingsTab::Nodes {
-                p class="hint" {
+                (ui::Hint::new(html! {
                     "The Monero nodes the engine reads each network's chain from: a primary, and fallbacks tried when it fails. "
                     "A network with no nodes isn't used. A node that doesn't answer is still saved; one on another network is refused."
-                }
+                }))
             }
             @if tab.engine_only() && !engine_available(data) {
                 (engine_unavailable(data))
@@ -1832,7 +1912,9 @@ pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
                         // Enter in a text box presses a form's first submit
                         // button; here that would be a row's Move or Remove.
                         // This one, first and out of sight, is Save.
-                        button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true" { "Save" }
+                        span class="visually-hidden" {
+                            (ui::Button::new("Save").kind(ui::ButtonType::Submit).attr("tabindex", "-1").attr("aria-hidden", "true"))
+                        }
                     }
                     (tab_cards(data, tab))
                     (save_bar(data))
@@ -2153,7 +2235,7 @@ mod tests {
             submitted: false,
         };
         let html = request_invite_page(&chrome(), &form).into_string();
-        assert!(html.contains(r#"<form method="post" action="/request-invite">"#));
+        assert!(html.contains(r#"<form method="post" action="/request-invite" class="mk-stack">"#));
 
         let thanks = RequestInviteViewModel {
             error: None,
@@ -2240,7 +2322,7 @@ mod tests {
             created_link: None,
         };
         let html = admin_invites_page(&chrome(), &data).into_string();
-        assert!(html.contains(r#"class="row-deleted""#));
+        assert!(html.contains("data-deleted"));
         assert!(html.contains("gone@example.com"));
         assert!(!html.contains("No pending invite requests."));
     }
@@ -2390,7 +2472,7 @@ mod tests {
             );
             assert_eq!(
                 html.matches(
-                    r#"<button type="submit" class="btn-primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7-->"#
+                    r#"<button type="submit" class="mk-btn" data-variant="primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7-->"#
                 )
                 .count(),
                 1,
@@ -2590,7 +2672,7 @@ mod tests {
             } else {
                 assert!(
                     html.contains("<form ")
-                        && html.contains(r#"class="btn-primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7-->"#),
+                        && html.contains(r#"class="mk-btn" data-variant="primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7-->"#),
                     "{tab:?}"
                 );
                 assert!(
@@ -2644,7 +2726,7 @@ mod tests {
             html.contains(concat!(
                 r#"<span class="visually-hidden">From the options file, which saving here writes.</span></span><span class="changed-mark">changed</span></div>"#,
                 r#"<p class="field-help" id="setting-help-engine.url">Where the engine listens.</p>"#,
-                r#"<input type="url" name="engine.url" value="http://scanner.internal""#,
+                r#"<input class="mk-input" type="url" name="engine.url" id="setting-engine.url" value="http://scanner.internal""#,
             )),
             "then what it is for, then its control: {html}"
         );
@@ -2671,7 +2753,7 @@ mod tests {
         let testnet = &html[html.find(r#"data-network="testnet""#).unwrap()..];
         assert!(
             testnet.contains(
-                r#"<details class="node-network-closed"><summary>Add a node for testnet</summary>"#
+                r#"<details class="disclosure" data-node-network-closed=""><summary>Add a node for testnet</summary>"#
             ),
             "{testnet}"
         );
@@ -2717,16 +2799,16 @@ mod tests {
         );
         assert!(block.contains("Fallbacks are tried in order when the one before fails."));
         // The fields, named by network and row.
-        assert!(block.contains(r#"<input type="text" name="node_stagenet_1_address" id="node-stagenet-1-address" value="b.example:2""#), "{block}");
-        assert!(block.contains(r#"<input type="checkbox" name="node_stagenet_1_ssl" id="node-stagenet-1-ssl" value="on" checked"#), "{block}");
-        assert!(block.contains(r#"<input type="checkbox" name="node_stagenet_1_self_signed" id="node-stagenet-1-self_signed" value="on" aria-describedby"#), "{block}");
+        assert!(block.contains(r#"<input class="mk-input" type="text" name="node_stagenet_1_address" id="node-stagenet-1-address" value="b.example:2""#), "{block}");
+        assert!(block.contains(r#"<input type="checkbox" class="mk-checkbox" name="node_stagenet_1_ssl" id="node-stagenet-1-ssl" value="on" checked"#), "{block}");
+        assert!(block.contains(r#"<input type="checkbox" class="mk-checkbox" name="node_stagenet_1_self_signed" id="node-stagenet-1-self_signed" value="on" aria-describedby"#), "{block}");
         assert!(
             block.contains(
                 r#"name="node_stagenet_3_address" id="node-stagenet-3-address" value="""#
             ),
             "the blank row: {block}"
         );
-        assert!(block.contains(r#"<input type="checkbox" name="node_stagenet_3_self_signed" id="node-stagenet-3-self_signed" value="on" checked"#), "self-signed is ticked by default: {block}");
+        assert!(block.contains(r#"<input type="checkbox" class="mk-checkbox" name="node_stagenet_3_self_signed" id="node-stagenet-3-self_signed" value="on" checked"#), "self-signed is ticked by default: {block}");
         // No Move up on the first row, no Move down on the last, none on the blank one.
         let buttons: Vec<&str> = block
             .match_indices(r#"name="node_action" value=""#)
@@ -2750,7 +2832,7 @@ mod tests {
         assert!(block.contains(r#"<div class="setting-label-row"><label class="setting-label" for="node-stagenet-0-address">Address</label></div><span class="field-help" id="node-stagenet-0-address-help">The node's host and port, like <code>node.example.com:18089</code>."#), "{block}");
         // Enter in an address box saves, rather than pressing a row's button.
         let form = &html[html.find("<form ").unwrap()..];
-        assert!(form.find(r#"<button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true">Save</button>"#).unwrap() < form.find(r#"name="node_action""#).unwrap());
+        assert!(form.find(r#"<span class="visually-hidden"><button class="mk-btn" type="submit" tabindex="-1" aria-hidden="true">Save</button></span>"#).unwrap() < form.find(r#"name="node_action""#).unwrap());
     }
 
     /// The Monero nodes tab keeps the node settings and each node's
@@ -2859,7 +2941,7 @@ mod tests {
             Some("node.example.com:18081 is on mainnet, not testnet.".into());
         let html = page(&data);
         assert!(
-            html.contains(r#"value="node.example.com" aria-describedby="node-stagenet-0-address-help node-stagenet-0-error" aria-invalid="true""#),
+            html.contains(r#"value="node.example.com" autocomplete="off" aria-describedby="node-stagenet-0-address-help node-stagenet-0-error" aria-invalid="true""#),
             "{html}"
         );
         assert!(html.contains(r#"<span class="setting-problem" id="node-stagenet-0-error">Add the port, like node.example.com:18081.</span>"#), "{html}");
@@ -3201,7 +3283,7 @@ mod tests {
             "Saving writes the changes on this tab to the options file and applies them."
         ));
         assert!(
-            bar.contains(r#"<a class="btn" href="/dashboard/admin/settings?tab=payments" data-discard-all data-mk="5">Discard changes</a><button type="submit" class="btn-primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7-->"#),
+            bar.contains(r#"<a class="mk-btn" href="/dashboard/admin/settings?tab=payments" data-discard-all data-mk="5">Discard changes</a><button type="submit" class="mk-btn" data-variant="primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7-->"#),
             "{bar}"
         );
         // After every card, last in the form.
@@ -3245,7 +3327,7 @@ mod tests {
         assert!(webhooks.contains(r#"<p class="error" role="alert" data-mk="6">The engine refused the change: order_events.retention_days must be from 1 to 365.</p>"#), "{webhooks}");
         // What was typed, still to fix, with the saved value for Discard.
         assert!(
-            webhooks.contains(r#"name="order_events.retention_days" value="900""#),
+            webhooks.contains(r#"name="order_events.retention_days" id="setting-order_events.retention_days" value="900""#),
             "{webhooks}"
         );
         assert!(webhooks.contains(r#"data-saved="7""#), "{webhooks}");
@@ -3357,8 +3439,8 @@ mod tests {
             block.contains(r#"<details class="node-row" data-node-row="1" data-node-saved="1"><summary class="node-row-summary"><span class="node-handle js-only" role="button" tabindex="0" title="Drag to reorder" aria-label="Reorder Fallback 1: press the up or down arrow" data-node-handle>⠿</span><span class="node-row-name" data-node-place>Fallback 1</span><code class="node-row-address">b.example:2</code><span class="node-row-mark" data-node-mark></span><span class="node-row-status">Reachable, height 5. In use</span></summary>"#),
             "{block}"
         );
-        assert!(block.contains(r#"<button type="submit" class="no-js-only" name="node_action" value="up:stagenet:1">Move up</button>"#), "{block}");
-        assert!(block.contains(r#"<button type="submit" name="node_action" value="remove:stagenet:1" data-node-remove>Remove</button>"#), "{block}");
+        assert!(block.contains(r#"<span class="no-js-only"><button class="mk-btn" type="submit" name="node_action" value="up:stagenet:1">Move up</button></span>"#), "{block}");
+        assert!(block.contains(r#"<button class="mk-btn" type="submit" name="node_action" value="remove:stagenet:1" data-node-remove="">Remove</button>"#), "{block}");
         // The blank row to add one: no handle, no buttons.
         assert!(block.contains(r#"<details class="node-row" data-node-row="2" data-node-add><summary class="node-row-summary"><span class="node-add-mark" aria-hidden="true">+</span><span class="node-row-name" data-node-place>Add a node</span>"#), "{block}");
         // A row with something to fix opens by itself.

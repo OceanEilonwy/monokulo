@@ -69,11 +69,11 @@ test('an admin sees the card titled Mainnet, its nodes and proof of work 3 behin
   expect(sizes[0]).toBeGreaterThan(sizes[1] * 1.5);
   const watch = head.getByRole('link', { name: 'Watch it live' });
   await expect(watch).toHaveAttribute('href', '/status/engine?network=mainnet');
-  await expect(watch).toHaveClass(/btn/);
-  await expect(watch).not.toHaveClass(/btn-primary/);
+  await expect(watch).toHaveClass(/mk-btn/);
+  await expect(watch).not.toHaveAttribute('data-variant');
   await expect(page.locator('a[href^="/status/engine"]')).toHaveCount(1);
 
-  const table = card(page).locator('table.node-table');
+  const table = card(page).locator('table[data-table="nodes"]');
   await expect(table.locator('thead th')).toHaveText(['Node', 'Use', 'Proof of work', 'Height', 'Reachable']);
   const rows = table.locator('tbody tr');
   await expect(rows.locator('td.card-status')).toHaveText(['in use', 'standby', 'left out', 'standby']);
@@ -85,11 +85,11 @@ test('an admin sees the card titled Mainnet, its nodes and proof of work 3 behin
   await expect(card(page).locator('.pline')).toHaveText('Orders settle on blocks up to 3,412,878, proven by the engine itself. 3 behind the tip');
   await expect(card(page).locator('.pips .pip')).toHaveCount(30);
   await expect(card(page).locator('.pips .pip.seen')).toHaveCount(3);
-  await expect(card(page).locator('.pip-anchor')).toHaveText('Anchored at block 3,412,160, 2d ago: every block since then is checked.');
+  await expect(card(page).locator('[data-pip-anchor]')).toHaveText('Anchored at block 3,412,160, 2d ago: every block since then is checked.');
   await expectRingClear(page);
   await captureCoverageStage(page, 'status-network-card-following', test.info(), { group: GROUP, shapes: SHAPES });
 
-  const facts = card(page).locator('details.proof-facts');
+  const facts = card(page).locator('details[data-proof-facts]');
   await facts.locator('summary').click();
   await expect(facts.locator('dt')).toHaveText(['Anchor', 'Checked', 'RandomX keys', 'Last checked']);
   await expect(facts.locator('dd').first()).toHaveText('Block 3,412,160, 2 of 3 nodes agreed, 2d ago');
@@ -117,7 +117,7 @@ test('held, one box gives the reason and a neutral button to take a new anchor',
   await expect(held).toContainText('Every node\'s chain left the proven one more than 720 blocks back');
   const button = held.getByRole('button', { name: 'Take a new anchor' });
   await expect(button).toBeVisible();
-  await expect(button).not.toHaveClass(/btn-primary/);
+  await expect(button).not.toHaveAttribute('data-variant');
   await expect(held.locator('form')).toHaveAttribute('action', '/dashboard/admin/proof/mainnet/reanchor');
   await expect(card(page).locator('.pips')).toHaveCount(0);
   await captureCoverageStage(page, 'status-network-card-held', test.info(), { group: GROUP, shapes: SHAPES });
@@ -128,7 +128,7 @@ test('on a phone each node is a card and the window still reads', async ({ page,
   await login(context);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(fixture.base_url + '/status');
-  const table = card(page).locator('table.node-table');
+  const table = card(page).locator('table[data-table="nodes"]');
   await expect(table.locator('thead')).toBeHidden();
   const rows = table.locator('tbody tr');
   await expect(rows.first()).toHaveCSS('display', 'grid');
@@ -180,7 +180,7 @@ test('without JavaScript the card is the same, and its facts open', async ({ bro
   const page = await context.newPage();
   await page.goto(fixture.base_url + '/status');
   await expect(card(page).locator('.pips .pip.seen')).toHaveCount(3);
-  const facts = card(page).locator('details.proof-facts');
+  const facts = card(page).locator('details[data-proof-facts]');
   await facts.locator('summary').click();
   await expect(facts.locator('dt').first()).toBeVisible();
   await context.close();

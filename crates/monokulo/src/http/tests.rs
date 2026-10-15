@@ -1239,7 +1239,7 @@ async fn a_stores_name_and_site_are_changed_in_its_settings() {
     let settings = format!("/dashboard/stores/{stall}/settings");
     let page = body_text(cookie_get(&router, &settings, &cookie).await).await;
     assert!(
-        page.contains(r#"id="store-name" name="store_name" value="Market stall""#),
+        page.contains(r#"name="store_name" id="store-name" value="Market stall""#),
         "{page}"
     );
     assert!(
@@ -1454,7 +1454,7 @@ async fn a_store_with_no_site_has_a_name_only() {
     .await;
     assert!(done.contains("Saturday market stall is set up"), "{done}");
     assert!(done.contains(&format!(
-        r#"<a class="btn btn-primary" href="/dashboard/stores/{store_id}/pos">Open the till</a>"#
+        r#"<a class="mk-btn" href="/dashboard/stores/{store_id}/pos" data-variant="primary">Open the till</a>"#
     )), "{done}");
     assert!(
         done.contains("add your site in the store's settings first"),
@@ -2406,7 +2406,7 @@ async fn the_status_page_names_its_stream_and_the_stream_sends_the_page_content(
     );
     assert!(
         page.contains(r#"<div id="status-live">"#)
-            && page.contains(r#"class="btn btn-secondary reload""#),
+            && page.contains(r#"aria-label="Refresh page" title="Refresh page" data-reload"#),
         "{page}"
     );
 

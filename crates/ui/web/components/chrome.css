@@ -6,6 +6,9 @@
    toggle - no JS involved in showing/hiding the menu itself) has real
    selectors to work with. Above the breakpoint this all just renders as a
    normal flex row; the checkbox/label stay hidden and irrelevant. */
+/* A page's column, and the bar's row lined up with it. */
+.wrap { max-width: 880px; margin: 0 auto; padding: 0 1.2rem; }
+.site-nav[data-width="wide"] .wrap { max-width: 1120px; }
 .site-nav { background: var(--chrome-bg); color: var(--chrome-ink); border-bottom: 3px solid var(--chrome-rule); }
 .site-nav-row {
   display: flex;
@@ -36,6 +39,7 @@
   font-weight: 600;
   text-decoration: none;
 }
+.site-nav-links a[aria-current="page"] { color: var(--accent-text); }
 .site-nav-links a:hover, .site-nav-links .nav-link-button:hover { color: var(--accent-text); background: none; text-decoration: underline; text-decoration-thickness: 1px; }
 .site-nav-links .nav-logout-form, .site-nav-links .nav-theme-form { margin: 0; display: inline; }
 /* The status dot's link: a 2em box round the dot, and a transparent

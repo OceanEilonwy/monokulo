@@ -1,5 +1,14 @@
 use crate::{component, Slot, UiEnum};
 
+/// How wide a page's column is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]
+pub enum PageWidth {
+    /// A reading width: the app's pages.
+    Normal,
+    /// Room for side-by-side cards: the project's site.
+    Wide,
+}
+
 component! {
     /// The site's bar: the brand on the left, then the links, the status
     /// dot and the account menu. On a phone the links fold into a menu
@@ -14,9 +23,12 @@ component! {
         home: String,
         /// Beside the hamburger, in sight on a phone: the status dot.
         status: Option<Slot>,
+        /// The width of the page under it, which its row lines up with.
+        #[default(PageWidth::Normal)]
+        width: PageWidth,
     }
     html {
-        nav class="site-nav" {
+        nav class="site-nav" data-width="wide" if width == PageWidth::Wide {
             div class="wrap site-nav-row" {
                 a href=(home) class="site-nav-brand" { (brand) }
                 @if let Some(status) = status { (status) }

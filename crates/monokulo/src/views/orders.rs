@@ -43,24 +43,33 @@ pub fn orders_table(
     orders: &[OrderRowViewModel],
     clock: &super::time::Clock,
 ) -> Markup {
+    // On a phone each row is a card (`TableLook::Cards`): order and
+    // status, then amount and date, then reference and source.
+    let head = ui::Row::new(ui::Slot::many(
+        ["Order", "Reference", "Source", "Status", "Amount", "Created"]
+            .map(|name| ui::Slot::from(ui::Cell::new(name).header(true))),
+    ));
+    let rows = orders.iter().map(|order| {
+        ui::Slot::from(ui::Row::new(ui::Slot::many([
+            ui::Cell::new(html! { a href=(format!("/dashboard/stores/{connection_id}/orders/{}", order.order_id)) { (super::short_id(order.order_id.as_str())) } })
+                .part(ui::CellPart::Title)
+                .into(),
+            ui::Cell::new(html! { @if let Some(reference) = &order.reference { (reference) } @else { span class="muted" { "—" } } })
+                .part(ui::CellPart::Meta)
+                .into(),
+            ui::Cell::new(order.source.as_str()).part(ui::CellPart::Meta).into(),
+            ui::Cell::new(super::state_badge(order.status)).part(ui::CellPart::Status).into(),
+            ui::Cell::new(html! { span class="nowrap" { (super::display_amount(&order.amount, &order.currency)) } })
+                .part(ui::CellPart::Amount)
+                .into(),
+            ui::Slot::from(ui::Cell::new(clock.time(order.created_at)).part(ui::CellPart::When)),
+        ])))
+    });
     html! {
-        // On a phone each row is a card (`.table-cards`): order and status,
-        // then amount and date, then reference and source.
-        div class="table-scroll" { table class="orders-table table-cards" {
-            thead { tr { th { "Order" } th { "Reference" } th { "Source" } th { "Status" } th { "Amount" } th { "Created" } } }
-            tbody {
-                @for order in orders {
-                    tr {
-                        td class="card-title" { a href=(format!("/dashboard/stores/{connection_id}/orders/{}", order.order_id)) { (super::short_id(order.order_id.as_str())) } }
-                        td class="card-meta" { @if let Some(reference) = &order.reference { (reference) } @else { span class="muted" { "—" } } }
-                        td class="card-meta" { (order.source) }
-                        td class="card-status" { (super::state_badge(order.status)) }
-                        td class="card-amount nowrap" { (super::display_amount(&order.amount, &order.currency)) }
-                        td class="card-when" { (clock.time(order.created_at)) }
-                    }
-                }
-            }
-        } }
+        (ui::Table::new(ui::Slot::many(rows))
+            .head(head)
+            .look(ui::TableLook::Cards)
+            .attr("data-table", "orders"))
     }
 }
 
@@ -81,20 +90,18 @@ pub fn lookup_payment_card(
         div class="card" id="payment-lookup" {
             h2 { "Look up a transaction" }
             p { "Have a customer's transaction ID? Look it up directly - no need to know which order it belongs to." }
-            p class="hint" {
-                "Payments are watched for while an order is open and for a while after it's paid or expires. "
-                "A payment sent later than that isn't picked up by itself: look it up here to record it."
-            }
+            (ui::Hint::new(
+                "Payments are watched for while an order is open and for a while after it's paid or expires. \
+                 A payment sent later than that isn't picked up by itself: look it up here to record it.",
+            ))
             form method="post" action=(action) fx-action=(action) fx-method="POST" fx-target="#payment-lookup" {
-                input
-                    type="text"
-                    name="txid"
-                    value=(txid_value)
-                    placeholder="Transaction ID (64 hex characters)"
-                    pattern="[0-9a-fA-F]{64}"
-                    maxlength="64"
-                    required;
-                button type="submit" class="btn-primary" { "Look up" }
+                (ui::Input::new("txid")
+                    .value(txid_value)
+                    .placeholder("Transaction ID (64 hex characters)")
+                    .required(true)
+                    .attr("pattern", "[0-9a-fA-F]{64}")
+                    .attr("maxlength", "64"))
+                (ui::FormActions::new(ui::Button::new("Look up").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)))
             }
             @if let Some(message) = message {
                 p role="status" data-fx-focus tabindex="-1" {
@@ -164,8 +171,13 @@ pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
             form method="get" action=(base) class="orders-search" role="search"
                 fx-action=(base) fx-target="#orders-results" fx-push-url fx-replace {
                 label for="orders-search" class="sr-only" { "Search orders" }
-                input type="search" id="orders-search" name="q" value=(data.search) placeholder="Search by reference or order ID" maxlength="120";
-                button type="submit" class="btn-primary" { "Search" }
+                (ui::Input::new("q")
+                    .kind(ui::InputType::Search)
+                    .id("orders-search")
+                    .value(data.search.as_str())
+                    .placeholder("Search by reference or order ID")
+                    .attr("maxlength", "120"))
+                (ui::Button::new("Search").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit))
                 @if !data.search.is_empty() { " " a href=(base) { "Clear" } }
             }
             (list_results(data, &chrome.clock))
@@ -248,9 +260,9 @@ pub struct OrderDetailViewModel {
 const PAGE_STYLE: &str = r#"
 .kv-table th { width: 14em; }
 /* Codes (address, ids, txids) break anywhere; words and badges never do. */
-.kv-table td, .payments-table td { overflow-wrap: anywhere; }
-.kv-table td code, .payments-table td code { word-break: break-all; }
-.payments-table th { min-width: 8em; }
+.kv-table td, [data-table="payments"] td { overflow-wrap: anywhere; }
+.kv-table td code, [data-table="payments"] td code { word-break: break-all; }
+[data-table="payments"] th { min-width: 8em; }
 .order-title { display: flex; align-items: center; gap: 0.5em; min-width: 0; }
 .order-title > span { display: flex; align-items: baseline; gap: .3em; min-width: 0; white-space: nowrap; }
 .order-title-id { font-size: 0.9em; min-width: 0; }
@@ -293,67 +305,77 @@ const SHARE_SCRIPT: &str = r#"(function () {
 /// its fields and payments. Streamed as a whole to replace itself
 /// (`http::orders::order_detail_events`).
 pub fn live_fragment(order: &OrderDetailData, clock: &super::time::Clock) -> Markup {
+    let fact = |name: &str, value: Markup| {
+        ui::Slot::from(ui::Row::new(ui::Slot::many([
+            ui::Cell::new(name).header(true).into(),
+            ui::Slot::from(ui::Cell::new(value)),
+        ])))
+    };
+    let dash = || html! { span class="muted" { "-" } };
+    let mut facts = vec![
+        fact("Order ID", html! { code { (order.order_id) } }),
+        fact(
+            "Merchant Reference",
+            match &order.merchant_order_id {
+                Some(reference) => html! { (reference) },
+                None => dash(),
+            },
+        ),
+        fact("Address", html! { code { (order.address) } }),
+        fact("Amount", html! { (super::display_amount(&order.amount, &order.currency)) }),
+        fact("Exchange rate", html! { (order.rate_display) }),
+        fact("Rate provider", html! { (order.rate_provider) }),
+        fact("XMR amount (piconero)", html! { (order.xmr_amount_piconero) }),
+        fact("Amount received (piconero)", html! { (order.amount_received_piconero) }),
+        fact("Status", super::state_badge(order.status)),
+        fact("Confirmations", html! { (order.confirmations) }),
+        fact("Confirmations required", html! { (order.confirmations_required_display) }),
+        fact("Store base currency (at order creation)", html! { (order.base_currency_display) }),
+        fact("Base currency rate used", html! { (order.base_currency_rate_display) }),
+    ];
+    if let Some(at) = order.double_spend_detected_at {
+        facts.push(fact("Double-spend detected at", clock.time(at)));
+    }
+    facts.extend([
+        fact(
+            "Refund address",
+            match &order.refund_address {
+                Some(address) => html! { code { (address) } },
+                None => dash(),
+            },
+        ),
+        fact("Created at", clock.time(order.created_at)),
+        fact("Expires at", clock.time(order.expires_at)),
+        fact("Updated at", clock.time(order.updated_at)),
+        fact("Scan range", order.scan_range_display.clone()),
+    ]);
+    let payments = order.payments.iter().map(|payment| {
+        ui::Slot::from(ui::Row::new(ui::Slot::many([
+            ui::Cell::new(html! { code { (payment.txid) } }).into(),
+            ui::Cell::new(payment.output_index.to_string()).into(),
+            ui::Cell::new(payment.amount_piconero.to_string()).into(),
+            ui::Cell::new(clock.time(payment.first_seen_at)).into(),
+            ui::Cell::new(payment.block_height_display.clone()).into(),
+            ui::Slot::from(ui::Cell::new(html! {
+                (clock.time_or_dash(payment.voided_at))
+                @if payment.superseded {
+                    " " span class="muted" { "(the same output, paid in another transaction, is the one counted)" }
+                }
+            })),
+        ])))
+    });
     html! {
         div id="order-live" {
-            table class="kv-table" {
-                tr { th { "Order ID" } td { code { (order.order_id) } } }
-                tr {
-                    th { "Merchant Reference" }
-                    td {
-                        @if let Some(v) = &order.merchant_order_id { (v) } @else { span class="muted" { "-" } }
-                    }
-                }
-                tr { th { "Address" } td { code { (order.address) } } }
-                tr { th { "Amount" } td { (super::display_amount(&order.amount, &order.currency)) } }
-                tr { th { "Exchange rate" } td { (order.rate_display) } }
-                tr { th { "Rate provider" } td { (order.rate_provider) } }
-                tr { th { "XMR amount (piconero)" } td { (order.xmr_amount_piconero) } }
-                tr { th { "Amount received (piconero)" } td { (order.amount_received_piconero) } }
-                tr { th { "Status" } td { (super::state_badge(order.status)) } }
-                tr { th { "Confirmations" } td { (order.confirmations) } }
-                tr { th { "Confirmations required" } td { (order.confirmations_required_display) } }
-                tr { th { "Store base currency (at order creation)" } td { (order.base_currency_display) } }
-                tr { th { "Base currency rate used" } td { (order.base_currency_rate_display) } }
-                @if let Some(at) = order.double_spend_detected_at {
-                    tr { th { "Double-spend detected at" } td { (clock.time(at)) } }
-                }
-                tr {
-                    th { "Refund address" }
-                    td {
-                        @if let Some(v) = &order.refund_address { code { (v) } } @else { span class="muted" { "-" } }
-                    }
-                }
-                tr { th { "Created at" } td { (clock.time(order.created_at)) } }
-                tr { th { "Expires at" } td { (clock.time(order.expires_at)) } }
-                tr { th { "Updated at" } td { (clock.time(order.updated_at)) } }
-                tr { th { "Scan range" } td { (order.scan_range_display) } }
-            }
+            (ui::Table::new(ui::Slot::many(facts))
+                .look(ui::TableLook::Facts)
+                .scroll(false))
             h2 { "Payments" }
-            div class="table-scroll" { table class="payments-table" {
-                thead {
-                    tr {
-                        th { "Txid" } th { "Output index" } th { "Amount (piconero)" }
-                        th { "First seen" } th { "Block height" } th { "Voided at" }
-                    }
-                }
-                tbody {
-                    @for payment in &order.payments {
-                        tr {
-                            td { code { (payment.txid) } }
-                            td { (payment.output_index) }
-                            td { (payment.amount_piconero) }
-                            td { (clock.time(payment.first_seen_at)) }
-                            td { (payment.block_height_display) }
-                            td {
-                                (clock.time_or_dash(payment.voided_at))
-                                @if payment.superseded {
-                                    " " span class="muted" { "(the same output, paid in another transaction, is the one counted)" }
-                                }
-                            }
-                        }
-                    }
-                }
-            } }
+            (ui::Table::new(ui::Slot::many(payments))
+                .head(ui::Row::new(ui::Slot::many(
+                    ["Txid", "Output index", "Amount (piconero)", "First seen", "Block height", "Voided at"]
+                        .map(|name| ui::Slot::from(ui::Cell::new(name).header(true))),
+                )))
+                .attr("data-table", "payments"))
         }
     }
 }
@@ -382,7 +404,7 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
                         }
                     }
                 }
-                p class="hint" {
+                (ui::Hint::new(html! {
                     "Share the payment link (icon above) with whoever needs to pay this order. "
                     " "
                     (super::logs_link(chrome, "order.id", order.order_id.as_str(), "Logs for this order"))
@@ -392,7 +414,7 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
                             "POS session"
                         }
                     }
-                }
+                }))
                 (live_fragment(order, &chrome.clock))
                 // Streams the part above as the order changes, when
                 // JavaScript is on (fixi starts it as soon as it's seen).
