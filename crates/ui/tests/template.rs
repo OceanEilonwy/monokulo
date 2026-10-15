@@ -1,7 +1,7 @@
 //! The template language, rendered by the interpreter: every form a
 //! template can take, on a component made for the purpose.
 
-use maud::{html, Render};
+use maud::html;
 use ui::{component, Attrs, Slot, UiEnum, UiRecord};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]

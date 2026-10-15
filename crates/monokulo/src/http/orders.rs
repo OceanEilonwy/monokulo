@@ -2214,8 +2214,7 @@ mod tests {
             "expected the order id inside the title banner, got: {html}"
         );
         assert!(
-            html.contains(r#"id="share-payment-link""#)
-                && html.contains("</svg>Share</a>"),
+            html.contains(r#"id="share-payment-link""#) && html.contains("</svg>Share</a>"),
             "expected a real, labeled share button, got: {html}"
         );
         assert!(
@@ -3388,7 +3387,7 @@ mod tests {
 
         let html = get_page(&router, &session_token, "/account/wallets/import").await;
         assert!(
-            html.contains(r#"<select name="key_custody_backend">"#),
+            html.contains(r#"<select class="mk-input" name="key_custody_backend""#),
             "{html}"
         );
         assert!(
@@ -3866,7 +3865,9 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"name="confirmations_required" id="confirmations-required" value="abc""#),
+            html.contains(
+                r#"name="confirmations_required" id="confirmations-required" value="abc""#
+            ),
             "what was sent: {html}"
         );
         assert!(html.contains(r#"data-saved="EUR""#), "{html}");
@@ -4003,7 +4004,9 @@ mod tests {
             .unwrap();
         let html = body_text(page).await;
         assert!(
-            html.contains(r#"name="confirmations_required" id="confirmations-required" value="10""#),
+            html.contains(
+                r#"name="confirmations_required" id="confirmations-required" value="10""#
+            ),
             "expected the ordinary default after unchecking: {html}"
         );
         assert!(

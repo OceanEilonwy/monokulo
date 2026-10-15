@@ -1091,7 +1091,10 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
         .await
         .unwrap();
     let australian = body_text(australian).await;
-    assert!(australian.contains(r#"<option value="XMR" selected"#), "{australian}");
+    assert!(
+        australian.contains(r#"<option value="XMR" selected"#),
+        "{australian}"
+    );
 
     let store_step = [
         ("store_name", "  Bakery "),
@@ -1169,7 +1172,10 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
         .unwrap();
     assert_eq!(row.name, "Bakery");
     assert_eq!(row.site, "bakery.example");
-    assert_eq!(row.base_currency, "AUD", "the currency chosen on the store step");
+    assert_eq!(
+        row.base_currency, "AUD",
+        "the currency chosen on the store step"
+    );
     let wallet = state
         .db
         .lock()
@@ -2136,7 +2142,9 @@ async fn the_owner_of_a_store_on_a_network_without_a_node_is_alerted_on_every_pa
     );
 
     // Rendered under the nav on normal pages, never in the bare POS layout.
-    let page = crate::views::Page::new("t", ui::PageHeader::new("t")).render(&chrome, maud::html! { p { "body" } }).into_string();
+    let page = crate::views::Page::new("t", ui::PageHeader::new("t"))
+        .render(&chrome, maud::html! { p { "body" } })
+        .into_string();
     assert!(
         page.contains(r#"<p class="error" role="alert">shop.example.com"#),
         "{page}"
@@ -2242,7 +2250,9 @@ async fn browser_reports_are_accepted_up_to_a_small_size_and_only_the_sites_own_
     assert_eq!(script.status(), StatusCode::OK);
 
     let chrome = crate::views::PageChrome::from_user(None, "/");
-    let page = crate::views::Page::new("t", ui::PageHeader::new("t")).render(&chrome, maud::html! {}).into_string();
+    let page = crate::views::Page::new("t", ui::PageHeader::new("t"))
+        .render(&chrome, maud::html! {})
+        .into_string();
     assert!(
         page.contains(&format!(r#"src="{}""#, crate::assets::url("telemetry.js"))),
         "{page}"
@@ -2259,7 +2269,8 @@ async fn store_pages_load_browser_reports_only_once_the_store_opted_in_but_admin
     let (state, owner, _) = state_with_owner_and_store("pk_shop");
     let with_script = async |path: &str| {
         let chrome = super::page_chrome(&state, Some(&owner), path).await;
-        crate::views::Page::new("t", ui::PageHeader::new("t")).render(&chrome, maud::html! {})
+        crate::views::Page::new("t", ui::PageHeader::new("t"))
+            .render(&chrome, maud::html! {})
             .into_string()
             .contains(&crate::assets::url("telemetry.js"))
     };

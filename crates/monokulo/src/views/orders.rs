@@ -46,8 +46,15 @@ pub fn orders_table(
     // On a phone each row is a card (`TableLook::Cards`): order and
     // status, then amount and date, then reference and source.
     let head = ui::Row::new(ui::Slot::many(
-        ["Order", "Reference", "Source", "Status", "Amount", "Created"]
-            .map(|name| ui::Slot::from(ui::Cell::new(name).header(true))),
+        [
+            "Order",
+            "Reference",
+            "Source",
+            "Status",
+            "Amount",
+            "Created",
+        ]
+        .map(|name| ui::Slot::from(ui::Cell::new(name).header(true))),
     ));
     let rows = orders.iter().map(|order| {
         ui::Slot::from(ui::Row::new(ui::Slot::many([
@@ -161,7 +168,11 @@ pub fn list_results(data: &OrdersViewModel, clock: &super::time::Clock) -> Marku
 
 pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
     let base = orders_base(data);
-    let header = ui::PageHeader::new("Orders").crumbs(super::store_crumbs(data.connection_id.as_str(), &data.display_name, false));
+    let header = ui::PageHeader::new("Orders").crumbs(super::store_crumbs(
+        data.connection_id.as_str(),
+        &data.display_name,
+        false,
+    ));
     let body = html! {
         form method="get" action=(base) class="orders-search" role="search"
             fx-action=(base) fx-target="#orders-results" fx-push-url fx-replace {
@@ -177,7 +188,8 @@ pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
         }
         (list_results(data, &chrome.clock))
     };
-    super::Page::new(format!("Orders - {} - Monokulo", data.display_name), header).render(chrome, body)
+    super::Page::new(format!("Orders - {} - Monokulo", data.display_name), header)
+        .render(chrome, body)
 }
 
 /// Percent-encodes a query value (a search term).
@@ -294,16 +306,34 @@ pub fn live_fragment(order: &OrderDetailData, clock: &super::time::Clock) -> Mar
             },
         ),
         fact("Address", html! { code { (order.address) } }),
-        fact("Amount", html! { (super::display_amount(&order.amount, &order.currency)) }),
+        fact(
+            "Amount",
+            html! { (super::display_amount(&order.amount, &order.currency)) },
+        ),
         fact("Exchange rate", html! { (order.rate_display) }),
         fact("Rate provider", html! { (order.rate_provider) }),
-        fact("XMR amount (piconero)", html! { (order.xmr_amount_piconero) }),
-        fact("Amount received (piconero)", html! { (order.amount_received_piconero) }),
+        fact(
+            "XMR amount (piconero)",
+            html! { (order.xmr_amount_piconero) },
+        ),
+        fact(
+            "Amount received (piconero)",
+            html! { (order.amount_received_piconero) },
+        ),
         fact("Status", super::state_badge(order.status)),
         fact("Confirmations", html! { (order.confirmations) }),
-        fact("Confirmations required", html! { (order.confirmations_required_display) }),
-        fact("Store base currency (at order creation)", html! { (order.base_currency_display) }),
-        fact("Base currency rate used", html! { (order.base_currency_rate_display) }),
+        fact(
+            "Confirmations required",
+            html! { (order.confirmations_required_display) },
+        ),
+        fact(
+            "Store base currency (at order creation)",
+            html! { (order.base_currency_display) },
+        ),
+        fact(
+            "Base currency rate used",
+            html! { (order.base_currency_rate_display) },
+        ),
     ];
     if let Some(at) = order.double_spend_detected_at {
         facts.push(fact("Double-spend detected at", clock.time(at)));
@@ -419,7 +449,9 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
         ),
         None => format!("Order not found - {} - Monokulo", data.display_name),
     };
-    super::Page::new(title, header).head(extra_head).render(chrome, body)
+    super::Page::new(title, header)
+        .head(extra_head)
+        .render(chrome, body)
 }
 
 #[cfg(test)]
@@ -477,7 +509,15 @@ mod tests {
         )), "{html}");
 
         // The first and only page has nowhere to go.
-        let html = list_results(&OrdersViewModel { page: 0, has_more: false, ..data }, &chrome().clock).into_string();
+        let html = list_results(
+            &OrdersViewModel {
+                page: 0,
+                has_more: false,
+                ..data
+            },
+            &chrome().clock,
+        )
+        .into_string();
         assert!(!html.contains("mk-pagination"), "{html}");
     }
 
@@ -563,7 +603,10 @@ mod tests {
         };
         let html = detail_page(&chrome(), &data).into_string();
         assert!(html.contains(r#"<nav class="mk-breadcrumbs" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a><a href="/dashboard/stores/conn_1/orders" title="Orders">Orders</a></nav>"#));
-        assert!(html.contains(r#"<h1>Order <span class="order-title-id">pay_abc123</span></h1>"#), "{html}");
+        assert!(
+            html.contains(r#"<h1>Order <span class="order-title-id">pay_abc123</span></h1>"#),
+            "{html}"
+        );
     }
 
     #[test]

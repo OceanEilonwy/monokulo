@@ -193,7 +193,8 @@ fn ready_section(ready: &SnpReady, backend_field: Option<&str>) -> Markup {
         }).attr("data-disclosure", "key-custody-cli"))
         script src=(crate::assets::url("key-custody.js")) data-module=(crate::assets::url("key-custody.wasm")) defer {}
     };
-    let mut panel = ui::Panel::new(content).attr("data-key-custody-bundle", ready.bundle_json.as_str());
+    let mut panel =
+        ui::Panel::new(content).attr("data-key-custody-bundle", ready.bundle_json.as_str());
     if let Some(digest) = &ready.id_key_digest {
         panel = panel.attr("data-key-custody-id-key", digest.as_str());
     }

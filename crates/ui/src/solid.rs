@@ -287,7 +287,9 @@ fn component(info: &'static ComponentInfo, types: &mut Types) -> String {
         solid.extend(["createRoot", "onCleanup"]);
     }
     let owns_refs = body.contains("runWithOwner(owner")
-        || attach.as_ref().is_some_and(|a| a.contains("runWithOwner(owner"));
+        || attach
+            .as_ref()
+            .is_some_and(|a| a.contains("runWithOwner(owner"));
     if owns_refs {
         solid.extend(["getOwner", "runWithOwner"]);
     }
@@ -342,7 +344,10 @@ fn component(info: &'static ComponentInfo, types: &mut Types) -> String {
                 owned.push(format!("{:?}", attr.name()));
             }
             owned.extend(["\"class\"", "\"classList\"", "\"style\""].map(String::from));
-            let base = format!("JSX.IntrinsicElements[{:?}]", out.spread_tag.expect("a spread"));
+            let base = format!(
+                "JSX.IntrinsicElements[{:?}]",
+                out.spread_tag.expect("a spread")
+            );
             owned.sort();
             owned.dedup();
             let _ = writeln!(

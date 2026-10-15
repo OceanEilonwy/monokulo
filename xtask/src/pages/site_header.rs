@@ -69,7 +69,14 @@ mod tests {
                 .collect();
             assert_eq!(
                 labels,
-                ["Monokulo", "How it works", "Install", "Docs", "Testing", "Source code"],
+                [
+                    "Monokulo",
+                    "How it works",
+                    "Install",
+                    "Docs",
+                    "Testing",
+                    "Source code"
+                ],
                 "{section:?} at {root:?}"
             );
             for href in ["#how", "#install", "docs/", "testing/"] {

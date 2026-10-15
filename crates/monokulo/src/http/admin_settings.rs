@@ -3776,8 +3776,14 @@ mod tests {
         );
         // The files are the Files tab's: the other tabs are their settings.
         let general = body_text(get_settings_page(&router, &cookie).await).await;
-        assert!(!general.contains(r#"action="/dashboard/admin/settings/reload""#), "{general}");
-        assert!(general.contains(r#"href="/dashboard/admin/settings?tab=files""#), "{general}");
+        assert!(
+            !general.contains(r#"action="/dashboard/admin/settings/reload""#),
+            "{general}"
+        );
+        assert!(
+            general.contains(r#"href="/dashboard/admin/settings?tab=files""#),
+            "{general}"
+        );
 
         let save = post_settings(
             &router,

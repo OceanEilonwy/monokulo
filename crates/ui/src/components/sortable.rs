@@ -64,7 +64,9 @@ pub(super) fn sortable_list_examples() -> Vec<(&'static str, SortableList)> {
         Slot::from(SortableItem::new(
             crate::Disclosure::new(
                 Slot::many([
-                    Slot::from(SortHandle::new(format!("Reorder {place}: press the up or down arrow"))),
+                    Slot::from(SortHandle::new(format!(
+                        "Reorder {place}: press the up or down arrow"
+                    ))),
                     Slot::from(format!("{place} · {address}")),
                 ]),
                 "The node's address, and whether it uses TLS.",

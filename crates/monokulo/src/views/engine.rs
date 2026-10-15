@@ -12,7 +12,10 @@ use crate::engine_view::present::{
     Bar, ChainView, Lane, MarkView, Panel, Presented, RibbonMark, RoundView, Shape,
 };
 use crate::views::scaling::{network_name, thousands, MachineView, ScanningView, Tile, TileChart};
-use ui::{Alert, Button, ButtonType, Cell, Checkbox, Choice, Disclosure, DisclosureLook, HelpTip, Row, Select, Slot, Table, Tone};
+use ui::{
+    Alert, Button, ButtonType, Cell, Checkbox, Choice, Disclosure, DisclosureLook, HelpTip, Row,
+    Select, Slot, Table, Tone,
+};
 
 /// Blocks drawn without JavaScript: enough for the widest strip. Those
 /// that don't fit whole wrap out of sight; the script draws as many as fit.
@@ -415,7 +418,10 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
             (events(&page.marks))
         }
     };
-    super::Page::new("Engine - Monokulo", header).class("engine-page").head(head).render(chrome, body)
+    super::Page::new("Engine - Monokulo", header)
+        .class("engine-page")
+        .head(head)
+        .render(chrome, body)
 }
 
 /// The "Machine and links" strip: small multiples of the machine's CPU and
@@ -1055,7 +1061,11 @@ fn span_style(start: u64, ms: u64, scale_ms: u64) -> String {
 /// first, open; Reorg opens by itself while one is open (`data-alert`).
 fn panels(view: &Presented, scanning: Option<&ScanningView>) -> Markup {
     let side = &view.side;
-    let panel = |id: &str, summary: Markup, body: Markup| Disclosure::new(summary, body).look(DisclosureLook::Compact).attr("id", id);
+    let panel = |id: &str, summary: Markup, body: Markup| {
+        Disclosure::new(summary, body)
+            .look(DisclosureLook::Compact)
+            .attr("id", id)
+    };
     html! {
         section class="engine-panels" id="engine-panels" aria-label="More about this network" {
             (panel("d-scanning", html! {
@@ -1183,7 +1193,8 @@ fn events(marks: &[MarkView]) -> Markup {
 fn event_rows(marks: &[MarkView]) -> Slot {
     if marks.is_empty() {
         return Row::new(
-            Cell::new(html! { span class="engine-hint" { "Nothing recorded yet." } }).attr("colspan", "3"),
+            Cell::new(html! { span class="engine-hint" { "Nothing recorded yet." } })
+                .attr("colspan", "3"),
         )
         .into();
     }

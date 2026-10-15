@@ -116,12 +116,19 @@ pub fn guess_from_accept_language(header: &str) -> Option<&'static str> {
         .split(',')
         .filter_map(|tag| tag.split(';').next())
         .filter_map(|tag| {
-            let region = tag.trim().split(['-', '_']).skip(1).find(|part| part.len() == 2)?;
+            let region = tag
+                .trim()
+                .split(['-', '_'])
+                .skip(1)
+                .find(|part| part.len() == 2)?;
             let region = region.to_ascii_uppercase();
             if EURO.contains(&region.as_str()) {
                 return Some("EUR");
             }
-            OTHERS.iter().find(|(r, _)| *r == region).map(|(_, code)| *code)
+            OTHERS
+                .iter()
+                .find(|(r, _)| *r == region)
+                .map(|(_, code)| *code)
         })
         .next()
 }
@@ -156,7 +163,10 @@ mod tests {
         assert_eq!(new_store_default(true, "en"), "XMR");
         // Every currency it can name is one a store can choose.
         let db = Db::open_in_memory().unwrap();
-        for region in ["US", "GB", "JP", "AU", "CA", "CH", "CN", "NZ", "SE", "NO", "SG", "HK", "IN", "BR", "MX", "ZA", "KR", "DE"] {
+        for region in [
+            "US", "GB", "JP", "AU", "CA", "CH", "CN", "NZ", "SE", "NO", "SG", "HK", "IN", "BR",
+            "MX", "ZA", "KR", "DE",
+        ] {
             let code = guess_from_accept_language(&format!("en-{region}")).unwrap();
             assert!(is_known_currency(&db, code).unwrap(), "{code}");
         }

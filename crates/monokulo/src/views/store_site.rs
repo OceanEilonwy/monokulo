@@ -349,13 +349,22 @@ pub fn website_content(
             }
         }
     };
-    DialogContent { title_id: id.into(), title, aside: None, body }
+    DialogContent {
+        title_id: id.into(),
+        title,
+        aside: None,
+        body,
+    }
 }
 
 /// C1: disconnecting the connected plugin. Blocked while an order from the
 /// shop can still be paid (or the engine can't say); then what follows,
 /// and the store's name typed.
-pub fn disconnect_content(view: &SiteView, active: &IntegrationView, error: Option<&str>) -> DialogContent {
+pub fn disconnect_content(
+    view: &SiteView,
+    active: &IntegrationView,
+    error: Option<&str>,
+) -> DialogContent {
     let title =
         html! { "Disconnect " (active.name) " from \u{201c}" (view.store_name) "\u{201d}?" };
     let back = view.settings();
@@ -425,10 +434,20 @@ pub fn disconnect_content(view: &SiteView, active: &IntegrationView, error: Opti
             (actions(&back, "Close", disconnect.disabled(true).attr("aria-describedby", "disconnect-why")))
         }
     };
-    DialogContent { title_id: "disconnect-title".into(), title, aside: None, body }
+    DialogContent {
+        title_id: "disconnect-title".into(),
+        title,
+        aside: None,
+        body,
+    }
 }
 
-fn dialog_page(chrome: &PageChrome, view: &SiteView, title: &str, content: DialogContent) -> Markup {
+fn dialog_page(
+    chrome: &PageChrome,
+    view: &SiteView,
+    title: &str,
+    content: DialogContent,
+) -> Markup {
     let crumbs = super::store_crumbs(&view.store_id, &view.store_name, false);
     let (header, body) = content.page(crumbs, ui::DialogSize::Confirm);
     super::Page::new(format!("{title} - {} - Monokulo", view.store_name), header)
@@ -463,7 +482,12 @@ pub fn disconnect_page(
     active: &IntegrationView,
     error: Option<&str>,
 ) -> Markup {
-    dialog_page(chrome, view, "Disconnect", disconnect_content(view, active, error))
+    dialog_page(
+        chrome,
+        view,
+        "Disconnect",
+        disconnect_content(view, active, error),
+    )
 }
 
 #[cfg(test)]
@@ -484,7 +508,9 @@ mod tests {
     }
 
     fn disconnect_html(view: &SiteView) -> String {
-        disconnect_content(view, view.active.as_ref().unwrap(), None).in_dialog().into_string()
+        disconnect_content(view, view.active.as_ref().unwrap(), None)
+            .in_dialog()
+            .into_string()
     }
 
     fn view(active: bool, plugin_open: Option<u64>) -> SiteView {
@@ -520,7 +546,10 @@ mod tests {
             ),
             "{field}"
         );
-        assert!(!field.contains("name=") && field.contains(" disabled>"), "nothing to type or send: {field}");
+        assert!(
+            !field.contains("name=") && field.contains(" disabled>"),
+            "nothing to type or send: {field}"
+        );
         let card = connections_card(&v).into_string();
         assert!(
             card.contains("shop.example · plugin 0.4.0 · connected 3 Oct · last order today"),
@@ -626,8 +655,9 @@ mod tests {
             html.contains(r#"<button class="mk-btn" type="submit" data-variant="danger">Change website</button>"#),
             "{html}"
         );
-        let remove =
-            website_content(&view(false, None), &WebsiteChange::Remove, None, true).in_dialog().into_string();
+        let remove = website_content(&view(false, None), &WebsiteChange::Remove, None, true)
+            .in_dialog()
+            .into_string();
         assert!(
             remove.contains("Remove the website of")
                 && remove.contains(r#"name="remove" value="1""#),

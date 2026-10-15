@@ -175,7 +175,8 @@ pub(super) fn launch_tile_examples() -> Vec<(&'static str, LaunchTile)> {
     vec![
         (
             "Ready",
-            LaunchTile::new("Create an order", "For one-off custom payments", "＋").href("#component-launch-tile"),
+            LaunchTile::new("Create an order", "For one-off custom payments", "＋")
+                .href("#component-launch-tile"),
         ),
         (
             "Waiting for a script",

@@ -103,8 +103,16 @@ component! {
 
 pub(super) fn menu_item_examples() -> Vec<(&'static str, MenuItem)> {
     vec![
-        ("A link with a note", MenuItem::new("Wallets").href("#component-menu-item").note("1")),
-        ("A form's button", MenuItem::new("Log out").post_to("#component-menu-item")),
+        (
+            "A link with a note",
+            MenuItem::new("Wallets")
+                .href("#component-menu-item")
+                .note("1"),
+        ),
+        (
+            "A form's button",
+            MenuItem::new("Log out").post_to("#component-menu-item"),
+        ),
     ]
 }
 
@@ -315,7 +323,10 @@ pub struct Crumb {
 
 impl Crumb {
     pub fn new(href: impl Into<String>, label: impl Into<String>) -> Self {
-        Crumb { href: href.into(), label: label.into() }
+        Crumb {
+            href: href.into(),
+            label: label.into(),
+        }
     }
 }
 
@@ -379,14 +390,26 @@ pub(super) fn page_header_examples() -> Vec<(&'static str, PageHeader)> {
     };
     vec![
         ("A title alone", PageHeader::new("Home")),
-        ("Back to a page", PageHeader::new("Admin settings").crumbs(vec![here("Home")])),
+        (
+            "Back to a page",
+            PageHeader::new("Admin settings").crumbs(vec![here("Home")]),
+        ),
         (
             "Two levels up, with an action",
             PageHeader::new("Order 4f2a")
-                .crumbs(vec![here("Corner store with a long name to see it shortened"), here("Orders")])
+                .crumbs(vec![
+                    here("Corner store with a long name to see it shortened"),
+                    here("Orders"),
+                ])
                 .aside(crate::Tag::new("Paid").tone(crate::TagTone::Ok))
-                .actions(crate::LinkButton::new("Reload", "#component-page-header").size(crate::ControlSize::Compact)),
+                .actions(
+                    crate::LinkButton::new("Reload", "#component-page-header")
+                        .size(crate::ControlSize::Compact),
+                ),
         ),
-        ("In a flow", PageHeader::new("Set up a store").progress(progress(crate::WizardState::Current))),
+        (
+            "In a flow",
+            PageHeader::new("Set up a store").progress(progress(crate::WizardState::Current)),
+        ),
     ]
 }

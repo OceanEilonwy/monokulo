@@ -34,8 +34,11 @@ pub struct CreateOrderData {
 }
 
 pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
-    let header = ui::PageHeader::new("Create order")
-        .crumbs(super::store_crumbs(data.connection_id.as_str(), &data.display_name, true));
+    let header = ui::PageHeader::new("Create order").crumbs(super::store_crumbs(
+        data.connection_id.as_str(),
+        &data.display_name,
+        true,
+    ));
     let body = html! {
         (ui::Hint::new("Creates a real order on the engine and takes you straight to its payment page."))
         @if let Some(error) = &data.order_creation_error {
@@ -70,9 +73,12 @@ pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
         }
     };
     let head = script("create-order.js", Load::Now);
-    super::Page::new(format!("Create order - {} - Monokulo", data.display_name), header)
-        .head(head)
-        .render(chrome, body)
+    super::Page::new(
+        format!("Create order - {} - Monokulo", data.display_name),
+        header,
+    )
+    .head(head)
+    .render(chrome, body)
 }
 
 #[cfg(test)]
