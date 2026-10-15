@@ -771,7 +771,7 @@ fn wallets_table(wallets: &[&WalletListItem], with_network: bool) -> Markup {
                 .into(),
             ui::Cell::new(w.kind).part(ui::CellPart::When).into(),
             ui::Cell::new(html! { code { (super::short_address(&w.address)) } })
-                .attr("data-cell", "detail")
+                .part(ui::CellPart::Detail)
                 .into(),
             ui::Cell::new(html! {
                 (w.stores)

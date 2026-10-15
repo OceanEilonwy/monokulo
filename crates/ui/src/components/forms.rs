@@ -124,17 +124,33 @@ component! {
         #[default(false)]
         disabled: bool,
         size: Option<ControlSize>,
+        /// Several lines of text (a message, a note): a text area, `rows`
+        /// tall, instead of an input; `kind` doesn't apply.
+        #[default(false)]
+        multiline: bool,
+        #[default(4usize)]
+        rows: usize,
         /// More attributes on the input: `minlength`, `inputmode`, `fx-*`.
         rest: Attrs,
     }
     html {
         div class="mk-field" {
             label for=(id) { (label) }
-            input class="mk-input" id=(id) name=(name) type=(kind) value=[value] placeholder=[placeholder]
-                autocomplete=[autocomplete] data-size=[size] required[required] readonly[readonly] disabled[disabled]
-                aria-invalid="true" if error
-                aria-describedby=join[{ (id) "-help" } if hint, { (id) "-error" } if error]
-                ..rest;
+            @if multiline {
+                textarea class="mk-input" id=(id) name=(name) rows=(rows) placeholder=[placeholder]
+                    autocomplete=[autocomplete] required[required] readonly[readonly] disabled[disabled]
+                    aria-invalid="true" if error
+                    aria-describedby=join[{ (id) "-help" } if hint, { (id) "-error" } if error]
+                    ..rest {
+                    @if let Some(value) = value { (value) }
+                }
+            } @else {
+                input class="mk-input" id=(id) name=(name) type=(kind) value=[value] placeholder=[placeholder]
+                    autocomplete=[autocomplete] data-size=[size] required[required] readonly[readonly] disabled[disabled]
+                    aria-invalid="true" if error
+                    aria-describedby=join[{ (id) "-help" } if hint, { (id) "-error" } if error]
+                    ..rest;
+            }
             @if let Some(hint) = hint {
                 p class="mk-hint" id={ (id) "-help" } { (hint) }
             }
@@ -147,6 +163,13 @@ component! {
 
 pub(super) fn field_examples() -> Vec<(&'static str, Field)> {
     vec![
+        (
+            "Several lines",
+            Field::new("Message", "book-message", "message")
+                .multiline(true)
+                .required(true)
+                .hint("Who you are, and what you'll use Monokulo for."),
+        ),
         (
             "With a hint",
             Field::new("Store name", "book-store-name", "name")

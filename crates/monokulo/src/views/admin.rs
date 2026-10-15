@@ -81,10 +81,9 @@ pub fn request_invite_page(chrome: &PageChrome, data: &RequestInviteViewModel) -
                         .kind(ui::InputType::Email)
                         .required(true)
                         .autocomplete("email"))
-                    div class="mk-field" {
-                        label for="request-invite-message" { "Message" }
-                        (ui::TextArea::new("message").id("request-invite-message").required(true))
-                    }
+                    (ui::Field::new("Message", "request-invite-message", "message")
+                        .multiline(true)
+                        .required(true))
                     (ui::FormActions::new(ui::Button::new("Request an invite")
                         .variant(ui::ButtonVariant::Primary)
                         .kind(ui::ButtonType::Submit)))

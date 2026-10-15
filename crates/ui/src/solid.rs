@@ -261,8 +261,14 @@ fn component(info: &'static ComponentInfo, types: &mut Types) -> String {
     used.sort_unstable();
     used.dedup();
 
+    // A rest prop spread on different elements (a `p` or a `div`, an
+    // `input` or a `textarea`) is typed as the last one's, the template's
+    // default branch; on the others it is spread as it comes.
+    let mut targets = Vec::new();
+    spread_targets(&info.template, &mut targets);
     let mut out = Out {
         info,
+        spread_tag: targets.last().map(|t| t.tag),
         source: String::new(),
         scope: Vec::new(),
         uses_for: false,
@@ -324,8 +330,6 @@ fn component(info: &'static ComponentInfo, types: &mut Types) -> String {
     let props_name = format!("{}Props", info.name);
     match rest {
         Some(_) => {
-            let mut targets = Vec::new();
-            spread_targets(&info.template, &mut targets);
             assert!(!targets.is_empty(), "a rest prop is spread somewhere");
             let mut owned: Vec<String> = info
                 .props
@@ -337,14 +341,7 @@ fn component(info: &'static ComponentInfo, types: &mut Types) -> String {
                 owned.push(format!("{:?}", attr.name()));
             }
             owned.extend(["\"class\"", "\"classList\"", "\"style\""].map(String::from));
-            // Spread on different elements (a `p` or a `div`): what they
-            // share, less `ref`, which can't know which it gets.
-            let base = if targets.iter().all(|t| t.tag == targets[0].tag) {
-                format!("JSX.IntrinsicElements[{:?}]", targets[0].tag)
-            } else {
-                owned.push("\"ref\"".into());
-                "JSX.HTMLAttributes<HTMLElement>".to_string()
-            };
+            let base = format!("JSX.IntrinsicElements[{:?}]", out.spread_tag.expect("a spread"));
             owned.sort();
             owned.dedup();
             let _ = writeln!(
@@ -428,6 +425,8 @@ fn spread_targets(nodes: &'static [Node], out: &mut Vec<&'static Element>) {
 
 struct Out {
     info: &'static ComponentInfo,
+    /// The element whose attributes a rest prop is typed as.
+    spread_tag: Option<&'static str>,
     source: String,
     /// Names bound by `@for` and `@if let`: their expression and type.
     scope: Vec<(&'static str, String, Ty)>,
@@ -834,7 +833,11 @@ impl Out {
                     }
                 }
                 if let Some(path) = element.spread {
-                    attrs.push(format!("{{...{}}}", path[0]));
+                    if Some(element.tag) == self.spread_tag {
+                        attrs.push(format!("{{...{}}}", path[0]));
+                    } else {
+                        attrs.push(format!("{{...({} as object)}}", path[0]));
+                    }
                 }
                 let open = if attrs.is_empty() {
                     format!("<{}", element.tag)

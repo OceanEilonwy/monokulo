@@ -11,7 +11,7 @@ import type { ControlSize, InputType } from './types';
  * tied to it for screen readers. The label is required: an input
  * never goes without one.
  */
-export interface FieldProps extends Omit<JSX.IntrinsicElements["input"], "aria-describedby" | "aria-invalid" | "autocomplete" | "class" | "classList" | "data-size" | "disabled" | "error" | "hint" | "id" | "kind" | "label" | "name" | "placeholder" | "readonly" | "required" | "size" | "style" | "type" | "value"> {
+export interface FieldProps extends Omit<JSX.IntrinsicElements["input"], "aria-describedby" | "aria-invalid" | "autocomplete" | "class" | "classList" | "data-size" | "disabled" | "error" | "hint" | "id" | "kind" | "label" | "multiline" | "name" | "placeholder" | "readonly" | "required" | "rows" | "size" | "style" | "type" | "value"> {
   /**
    * What the input is ("Email").
    */
@@ -52,6 +52,16 @@ export interface FieldProps extends Omit<JSX.IntrinsicElements["input"], "aria-d
    */
   disabled?: boolean;
   size?: ControlSize;
+  /**
+   * Several lines of text (a message, a note): a text area, `rows`
+   * tall, instead of an input; `kind` doesn't apply.
+   * @default false
+   */
+  multiline?: boolean;
+  /**
+   * @default 4
+   */
+  rows?: number;
 }
 
 /**
@@ -60,13 +70,25 @@ export interface FieldProps extends Omit<JSX.IntrinsicElements["input"], "aria-d
  * never goes without one.
  */
 export function Field(props: FieldProps): JSX.Element {
-  const rest = omit(props, "label", "id", "name", "kind", "value", "placeholder", "autocomplete", "hint", "error", "required", "readonly", "disabled", "size");
+  const rest = omit(props, "label", "id", "name", "kind", "value", "placeholder", "autocomplete", "hint", "error", "required", "readonly", "disabled", "size", "multiline", "rows");
   return (
     <div class="mk-field">
       <label for={props.id}>
         {props.label}
       </label>
-      <input class="mk-input" id={props.id} name={props.name} type={(props.kind ?? "text")} value={props.value} placeholder={props.placeholder} autocomplete={props.autocomplete} data-size={props.size} required={(props.required ?? false)} readonly={(props.readonly ?? false)} disabled={(props.disabled ?? false)} aria-invalid={props.error != null ? `true` : undefined} aria-describedby={tokens(props.hint != null && `${props.id}-help`, props.error != null && `${props.id}-error`)} {...rest} />
+      {(props.multiline ?? false) ? (
+        <textarea class="mk-input" id={props.id} name={props.name} rows={(props.rows ?? 4)} placeholder={props.placeholder} autocomplete={props.autocomplete} required={(props.required ?? false)} readonly={(props.readonly ?? false)} disabled={(props.disabled ?? false)} aria-invalid={props.error != null ? `true` : undefined} aria-describedby={tokens(props.hint != null && `${props.id}-help`, props.error != null && `${props.id}-error`)} {...(rest as object)}>
+          {props.value != null ? (
+            <>
+              {props.value}
+            </>
+          ) : (
+            null
+          )}
+        </textarea>
+      ) : (
+        <input class="mk-input" id={props.id} name={props.name} type={(props.kind ?? "text")} value={props.value} placeholder={props.placeholder} autocomplete={props.autocomplete} data-size={props.size} required={(props.required ?? false)} readonly={(props.readonly ?? false)} disabled={(props.disabled ?? false)} aria-invalid={props.error != null ? `true` : undefined} aria-describedby={tokens(props.hint != null && `${props.id}-help`, props.error != null && `${props.id}-error`)} {...rest} />
+      )}
       {props.hint != null ? (
         <p class="mk-hint" id={`${props.id}-help`}>
           {props.hint}

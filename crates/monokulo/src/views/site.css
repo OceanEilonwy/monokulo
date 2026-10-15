@@ -429,7 +429,6 @@ table[data-table="wallets"] .card-unit { display: none; }
 .list-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-sm); margin-top: var(--space-lg); }
 .list-foot p { margin: 0; }
 @media (max-width: 640px) {
-  table.table-cards [data-cell="detail"] { grid-column: 1; grid-row: 2; }
   table[data-table="wallets"] .card-unit { display: inline; }
 }
 /* A wallet's page (`views::wallets::detail_page`), one column: its name

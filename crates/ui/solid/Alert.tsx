@@ -12,7 +12,7 @@ import type { Tone } from './types';
  * that asks for something takes a `title` and `actions` (Dismiss, a
  * link to fix it).
  */
-export interface AlertProps extends Omit<JSX.HTMLAttributes<HTMLElement>, "actions" | "block" | "children" | "class" | "classList" | "quiet" | "ref" | "role" | "style" | "title" | "tone"> {
+export interface AlertProps extends Omit<JSX.IntrinsicElements["p"], "actions" | "block" | "children" | "class" | "classList" | "quiet" | "role" | "style" | "title" | "tone"> {
   children: JSX.Element;
   tone: Tone;
   /**
@@ -49,7 +49,7 @@ export function Alert(props: AlertProps): JSX.Element {
       {(props.quiet ?? false) ? (
         <>
           {(props.block ?? false) ? (
-            <div class={props.tone} {...rest}>
+            <div class={props.tone} {...(rest as object)}>
               {props.title != null ? (
                 <>
                   <strong class="alert-title">
@@ -97,7 +97,7 @@ export function Alert(props: AlertProps): JSX.Element {
           {props.tone === "error" ? (
             <>
               {(props.block ?? false) ? (
-                <div class={props.tone} role="alert" {...rest}>
+                <div class={props.tone} role="alert" {...(rest as object)}>
                   {props.title != null ? (
                     <>
                       <strong class="alert-title">
@@ -143,7 +143,7 @@ export function Alert(props: AlertProps): JSX.Element {
           ) : (
             <>
               {(props.block ?? false) ? (
-                <div class={props.tone} role="status" {...rest}>
+                <div class={props.tone} role="status" {...(rest as object)}>
                   {props.title != null ? (
                     <>
                       <strong class="alert-title">
