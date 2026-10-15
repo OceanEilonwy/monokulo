@@ -8,6 +8,7 @@
 const { test, expect } = require('@playwright/test');
 const {
   createStore, useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, fillNodes, saveEngineSettings, openSettingsTab, SETTINGS_TABS, VIEW_KEY, SPEND_PUBKEY, expectSaved, openNodes, pressSave,
+  answerNodeQuestion,
 } = require('./backend-helpers');
 
 useRealStack(test);
@@ -74,24 +75,20 @@ test('clearing a network stores use asks first; one no store uses does not', asy
   // Dismissed: nothing is sent. Proven by the accepted save below being
   // the only post: one the question had sent would have gone out first.
   await fillNodes(page, { stagenet: [] });
-  let asked = '';
-  page.once('dialog', async (dialog) => { asked = dialog.message(); await dialog.dismiss(); });
   await pressSave(page);
-  expect(asked).toContain(expected);
+  expect(await answerNodeQuestion(page, 'Keep editing')).toContain(expected);
 
-  // Accepted: sent, and the red banner says what happened.
-  page.once('dialog', (dialog) => dialog.accept());
+  // Saved anyway: sent, and the red banner says what happened.
   await pressSave(page);
+  await answerNodeQuestion(page, 'Save anyway');
   await expect(page.getByText(/the stagenet network, which no longer has any reachable nodes/)).toBeVisible();
   expect(posts).toBe(1);
 
   // Testnet has no stores: no question.
-  let testnetAsked = false;
-  page.once('dialog', async (dialog) => { testnetAsked = true; await dialog.accept(); });
   await fillNodes(page, { testnet: [] });
   await pressSave(page);
   await expectSaved(page);
-  expect(testnetAsked).toBe(false);
+  await expect(page.locator('#node-clear-dialog')).toBeHidden();
   expect(posts).toBe(2);
 
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
@@ -108,12 +105,12 @@ for (const scheme of ['light', 'dark']) {
       // restart-only setting) on one page.
       await openSettingsTab(page, 'server');
       const threads = Number(await page.locator('input[name="server.worker_threads"]').inputValue());
-      page.once('dialog', (dialog) => dialog.accept());
       // The restart-only setting first, then the node: the banners after
       // the second save are the node's; the restart shows on its field.
       await saveEngineSettings(page, { 'server.worker_threads': String((threads % 8) + 1) });
       await expect(page.locator('#settings-toasts .toast-warning')).toBeVisible();
       await saveNodes(page, { stagenet: [] });
+      await answerNodeQuestion(page, 'Save anyway');
       const red = page.locator('p.error[role="alert"]').first();
       await expect(red).toBeVisible();
       const [color, token] = await red.evaluate((el) => {

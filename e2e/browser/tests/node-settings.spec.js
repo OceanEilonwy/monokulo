@@ -5,7 +5,7 @@
 // can then be connected, and the warnings for restart-only settings and
 // for clearing a network stores use work.
 const { test, expect } = require('@playwright/test');
-const { createStore, useRealStack, fixture, reloadUntil, saveEngineSettings, saveNodes, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY, expectSaved } = require('./backend-helpers');
+const { answerNodeQuestion, createStore, useRealStack, fixture, reloadUntil, saveEngineSettings, saveNodes, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY, expectSaved } = require('./backend-helpers');
 
 useRealStack(test);
 
@@ -43,13 +43,8 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
 
   // 7. Clearing stagenet asks first, then says 1 store is affected, and
   //    the merchant sees an alert everywhere but the POS terminal.
-  let dialogText = '';
-  page.once('dialog', async (dialog) => {
-    dialogText = dialog.message();
-    await dialog.accept();
-  });
   await saveNodes(page, { stagenet: [] });
-  expect(dialogText).toContain('1 store uses the stagenet network');
+  expect(await answerNodeQuestion(page, 'Save anyway')).toContain('1 store uses the stagenet network');
   await expect(page.getByText(/the stagenet network, which no longer has any reachable nodes/)).toBeVisible();
   await reloadUntil(page, base + '/', (html) => html.includes('shop.example.com: payments aren'));
   await page.goto(`${base}/dashboard/stores/${storeId}/pos`);

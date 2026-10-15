@@ -12,6 +12,7 @@ const { captureCoverageStage } = require('../coverage-screenshot');
 const { startFakeNode } = require('../real-stack');
 const {
   useRealStack, fixture, signInAsAdmin, transitionDone, openSettingsTab, saveNodes, nodeAddressBoxes, connectStore, fakeNodeAddress, SETTINGS_TABS, expectSaved, openNodes, pressSave,
+  answerNodeQuestion,
 } = require('./backend-helpers');
 
 useRealStack(test);
@@ -152,14 +153,12 @@ for (const javaScript of [true, false]) {
       expect(await rowAddresses(page, 'testnet')).toEqual([b, '']);
 
       // Testnet has no stores: removing its last node asks nothing.
-      let asked = false;
-      page.once('dialog', async (dialog) => { asked = true; await dialog.accept(); });
       await transitionDone(page);
       await openNodes(page, 'testnet');
       await page.locator('#settings-panel button[name="node_action"][value="remove:testnet:0"]').click();
       if (javaScript) await pressSave(page);
       await expectSaved(page);
-      expect(asked).toBe(false);
+      await expect(page.locator('#node-clear-dialog')).toBeHidden();
       await page.reload();
       await expect(page.locator('#card-network-testnet details[data-node-network-closed] > summary')).toHaveText('Add a node for testnet');
     } finally {
@@ -222,10 +221,8 @@ test('saving without the last node of a network stores use asks first', async ({
   await page.locator('#settings-panel button[name="node_action"][value="remove:stagenet:0"]').click();
   expect(posts).toBe(0);
   expect(await rowAddresses(page, 'stagenet')).toEqual(['']);
-  let asked = '';
-  page.once('dialog', async (dialog) => { asked = dialog.message(); await dialog.dismiss(); });
   await pressSave(page);
-  expect(asked).toMatch(/stores? uses? the stagenet network/);
+  expect(await answerNodeQuestion(page, 'Keep editing')).toMatch(/stores? uses? the stagenet network/);
   // Still unsaved; Discard brings the node back.
   await page.locator('#card-network-stagenet').getByRole('button', { name: 'Discard' }).click();
   await expect.poll(() => rowAddresses(page, 'stagenet')).toEqual([fakeNodeAddress(), '']);

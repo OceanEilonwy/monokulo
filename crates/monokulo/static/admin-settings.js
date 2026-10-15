@@ -8,7 +8,7 @@
 //     a new order counts as one change however many rows it moves;
 //   - "Add another" adds a blank row;
 //   - a row's self-signed box shows only while its Use TLS box is ticked;
-//   - the confirmation before a save leaves a network stores use with no
+//   - the question (a ui dialog) before a save leaves a network stores use with no
 //     node.
 // Everything listens on the document, so it keeps working on the panel
 // fixi swaps in after a save or a tab link.
@@ -310,10 +310,13 @@
 
   // ---- saving -----------------------------------------------------------
 
-  // Before fixi and the settings form (capture): confirm a save that
-  // leaves a network stores use with no node. Cancelling stops both.
+  // Before fixi and the settings form (capture): a save that leaves a
+  // network stores use with no node asks first, in #node-clear-dialog.
+  // Keep editing stops it; Save anyway sends it.
+  var askedAlready = false;
   document.addEventListener("submit", function (event) {
     if (event.target.id !== "settings-form") return;
+    if (askedAlready) { askedAlready = false; return; }
     var cards = event.target.querySelectorAll("[data-network][data-tenant-count]");
     for (var i = 0; i < cards.length; i++) {
       var card = cards[i];
@@ -322,15 +325,28 @@
       var now = 0;
       each(card, '[data-node-row] input[name$="_address"]', function (box) { if (box.value.trim() !== "") now++; });
       if (stores > 0 && before > 0 && now === 0) {
+        var dialog = document.getElementById("node-clear-dialog");
+        if (!dialog || typeof dialog.showModal !== "function") return;
+        event.preventDefault();
         var network = card.getAttribute("data-network");
         var use = stores === 1 ? "1 store uses" : stores + " stores use";
-        if (!window.confirm(use + " the " + network + " network. Without a node, their payments won't be detected. Save anyway?")) {
-          event.preventDefault();
-          return;
-        }
+        dialog.querySelector("[data-node-clear-text]").textContent =
+          use + " the " + network + " network. Without a node, their payments won't be detected.";
+        dialog.showModal();
+        return;
       }
     }
   }, true);
+
+  document.addEventListener("click", function (event) {
+    var go = event.target.closest && event.target.closest("[data-node-clear-go]");
+    if (!go) return;
+    var form = document.getElementById("settings-form");
+    go.closest("dialog").close();
+    if (!form) return;
+    askedAlready = true;
+    form.requestSubmit(form.querySelector("[data-save]") || undefined);
+  });
 
   // ---- after each swap --------------------------------------------------
 
