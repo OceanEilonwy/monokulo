@@ -29,14 +29,6 @@ export interface SettingsFormProps {
    */
   method?: FormMethod;
   /**
-   * The form as a whole page: `header` above, `children` scrolling
-   * in the middle, `footer` (the save bar) always in sight.
-   * @default false
-   */
-  framed?: boolean;
-  header?: JSX.Element;
-  footer?: JSX.Element;
-  /**
    * The form's id: a page has one settings form, `settings-form`.
    * @default "settings-form"
    */
@@ -61,39 +53,8 @@ export function SettingsForm(props: SettingsFormProps): JSX.Element {
   const owner = getOwner();
   return (
     <div class="mk-settings-form" data-label={props.label} ref={(el) => runWithOwner(owner, () => b.host(el))}>
-      <form class={(props.framed ?? false) ? `mk-page-frame mk-form-layout` : undefined} data-layout={(props.framed ?? false) ? `grouped` : undefined} method={(props.method ?? "post")} action={props.action} id={(props.form_id ?? "settings-form")} fx-action={props.fixi_target != null ? `${props.action}` : undefined} fx-method={props.fixi_target != null ? `POST` : undefined} fx-target={props.fixi_target} ref={(el) => runWithOwner(owner, () => b.form(el))}>
-        {props.header != null ? (
-          <header>
-            {props.header}
-          </header>
-        ) : (
-          null
-        )}
-        {(props.framed ?? false) ? (
-          <>
-            <div class="mk-page-body">
-              {props.children}
-            </div>
-            {props.footer != null ? (
-              <footer class="mk-page-footer">
-                {props.footer}
-              </footer>
-            ) : (
-              null
-            )}
-          </>
-        ) : (
-          <>
-            {props.children}
-            {props.footer != null ? (
-              <>
-                {props.footer}
-              </>
-            ) : (
-              null
-            )}
-          </>
-        )}
+      <form method={(props.method ?? "post")} action={props.action} id={(props.form_id ?? "settings-form")} fx-action={props.fixi_target != null ? `${props.action}` : undefined} fx-method={props.fixi_target != null ? `POST` : undefined} fx-target={props.fixi_target} ref={(el) => runWithOwner(owner, () => b.form(el))}>
+        {props.children}
       </form>
     </div>
   );

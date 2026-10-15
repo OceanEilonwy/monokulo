@@ -341,19 +341,6 @@ pub(super) fn book_theme() -> Select {
     .compact(true)
 }
 
-/// The stylebook's form demo: reset, submit and a script changing it.
-pub(super) fn select_demo() -> Select {
-    Select::new(
-        "currency",
-        vec![
-            Choice::new("AUD", "Australian dollar").selected(true),
-            Choice::new("EUR", "Euro"),
-            Choice::new("XMR", "Monero"),
-        ],
-    )
-    .id("currency")
-}
-
 pub(super) fn select_examples() -> Vec<(&'static str, Select)> {
     let currencies = [
         ("AUD", "Australian Dollar"),

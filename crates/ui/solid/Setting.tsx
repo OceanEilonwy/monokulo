@@ -51,12 +51,6 @@ export interface SettingProps {
    */
   label_id?: string;
   /**
-   * A row of a grouped card: what it is on one side, its control on
-   * the other.
-   * @default false
-   */
-  row?: boolean;
-  /**
    * `false` renders the server's markup, without the behaviour's (tests).
    * @default true
    */
@@ -73,63 +67,36 @@ export function Setting(props: SettingProps): JSX.Element {
   const b = setup(props);
   const owner = getOwner();
   return (
-    <div class={enhanced ? tokens(`setting-field`, (props.row ?? false) && `mk-setting-row`, b.changed() && `is-changed`) : tokens(`setting-field`, (props.row ?? false) && `mk-setting-row`)} role={(props.group ?? false) ? `group` : undefined} aria-labelledby={(props.group ?? false) ? `${props.id}` : undefined} aria-describedby={props.described_by} ref={(el) => runWithOwner(owner, () => b.root(el))}>
-      {(props.row ?? false) ? (
-        <>
-          <div>
-            <div class="setting-label-row">
-              <label class="setting-label" id={props.label_id} for={props.id}>
-                {props.label}
-              </label>
-              <span class="changed-mark">
-                changed
-              </span>
-            </div>
-            {props.help != null ? (
-              <p class="mk-hint" id={props.help_id}>
-                {props.help}
-              </p>
-            ) : (
-              null
-            )}
-          </div>
-          <div class="mk-setting-control">
-            {props.children}
-          </div>
-        </>
+    <div class={enhanced ? tokens(`setting-field`, b.changed() && `is-changed`) : "setting-field"} role={(props.group ?? false) ? `group` : undefined} aria-labelledby={(props.group ?? false) ? `${props.id}` : undefined} aria-describedby={props.described_by} ref={(el) => runWithOwner(owner, () => b.root(el))}>
+      <div class="setting-label-row">
+        {(props.group ?? false) ? (
+          <span class="setting-label" id={props.id}>
+            {props.label}
+          </span>
+        ) : (
+          <label class="setting-label" id={props.label_id} for={props.id}>
+            {props.label}
+          </label>
+        )}
+        {props.chip != null ? (
+          <>
+            {props.chip}
+          </>
+        ) : (
+          null
+        )}
+        <span class="changed-mark">
+          changed
+        </span>
+      </div>
+      {props.help != null ? (
+        <p class="field-help" id={props.help_id}>
+          {props.help}
+        </p>
       ) : (
-        <>
-          <div class="setting-label-row">
-            {(props.group ?? false) ? (
-              <span class="setting-label" id={props.id}>
-                {props.label}
-              </span>
-            ) : (
-              <label class="setting-label" id={props.label_id} for={props.id}>
-                {props.label}
-              </label>
-            )}
-            {props.chip != null ? (
-              <>
-                {props.chip}
-              </>
-            ) : (
-              null
-            )}
-            <span class="changed-mark">
-              changed
-            </span>
-          </div>
-          {props.help != null ? (
-            <p class="field-help" id={props.help_id}>
-              {props.help}
-            </p>
-          ) : (
-            null
-          )}
-          {props.children}
-        </>
+        null
       )}
+      {props.children}
     </div>
   );
 }
@@ -152,7 +119,7 @@ export function attachSetting(root: Element, props: SettingProps): () => void {
     const b = setup(props);
     const n1 = mark(root, 1);
     if (n1) {
-      createRenderEffect(() => tokens(`setting-field`, (props.row ?? false) && `mk-setting-row`, b.changed() && `is-changed`), (value) => setAttr(n1, "class", value));
+      createRenderEffect(() => tokens(`setting-field`, b.changed() && `is-changed`), (value) => setAttr(n1, "class", value));
       b.root(n1);
     }
     return dispose;

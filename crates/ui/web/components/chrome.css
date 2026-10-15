@@ -1,11 +1,3 @@
-/* The page chrome (crates/ui/src/components/chrome.rs): the site bar
-   (SiteNav), the account menu (Menu), the theme switch (ThemeToggle) and
-   the status dot (StatusDot). */
-/* Nav bar - a semantic <nav>/<label>/checkbox structure rather than pure
-   inline styles, so the small-screen hamburger below (a plain CSS checkbox
-   toggle - no JS involved in showing/hiding the menu itself) has real
-   selectors to work with. Above the breakpoint this all just renders as a
-   normal flex row; the checkbox/label stay hidden and irrelevant. */
 /* A page's column, and the bar's row lined up with it. */
 .wrap { max-width: 880px; margin: 0 auto; padding: 0 1.2rem; }
 .site-nav[data-width="wide"] .wrap { max-width: 1120px; }

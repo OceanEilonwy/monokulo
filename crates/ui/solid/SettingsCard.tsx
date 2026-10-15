@@ -7,7 +7,6 @@ import { insert, registerDelegatedRoot, unregisterDelegatedRoot } from '@solidjs
 import type { JSX } from '@solidjs/web';
 import { mark, marker, setAttr, tokens } from './runtime';
 import { setup } from '../web/components/settings-card.behaviour';
-import type { CardSurface } from './types';
 
 /**
  * One card of settings, saved together: its title, what its unsaved
@@ -15,7 +14,7 @@ import type { CardSurface } from './types';
  * changes. Its id is `card-{name}`: links to it (the save bar's, a
  * toast's Show) use it.
  */
-export interface SettingsCardProps extends Omit<JSX.IntrinsicElements["section"], "aria-labelledby" | "badge" | "children" | "class" | "classList" | "data-name" | "data-shown-by" | "data-surface" | "extra_class" | "failed" | "focus_saved" | "head" | "hidden" | "id" | "link" | "message" | "name" | "readonly" | "ref" | "role" | "saved" | "shown_by" | "style" | "surface" | "title"> {
+export interface SettingsCardProps extends Omit<JSX.IntrinsicElements["section"], "aria-labelledby" | "badge" | "children" | "class" | "classList" | "data-name" | "data-shown-by" | "extra_class" | "failed" | "focus_saved" | "head" | "hidden" | "id" | "link" | "message" | "name" | "readonly" | "ref" | "role" | "saved" | "shown_by" | "style" | "title"> {
   /**
    * The card's name: `card-{name}` is its id, and events name it.
    */
@@ -71,7 +70,6 @@ export interface SettingsCardProps extends Omit<JSX.IntrinsicElements["section"]
    * controls off (not sent) while hidden.
    */
   shown_by?: string;
-  surface?: CardSurface;
   /**
    * `false` renders the server's markup, without the behaviour's (tests).
    * @default true
@@ -86,12 +84,12 @@ export interface SettingsCardProps extends Omit<JSX.IntrinsicElements["section"]
  * toast's Show) use it.
  */
 export function SettingsCard(props: SettingsCardProps): JSX.Element {
-  const rest = omit(props, "name", "title", "children", "extra_class", "head", "link", "badge", "failed", "message", "saved", "focus_saved", "readonly", "hidden", "shown_by", "surface", "enhanced");
+  const rest = omit(props, "name", "title", "children", "extra_class", "head", "link", "badge", "failed", "message", "saved", "focus_saved", "readonly", "hidden", "shown_by", "enhanced");
   const enhanced = props.enhanced ?? true;
   const b = setup(props);
   const owner = getOwner();
   return (
-    <section id={`card-${props.name}`} class={enhanced ? tokens(`settings-card`, props.extra_class != null && `${props.extra_class}`, b.dirty() && `is-dirty`, b.refused() && `is-failed`) : tokens(`settings-card`, props.extra_class != null && `${props.extra_class}`, (props.failed ?? false) && `is-failed`)} data-name={props.name} data-surface={props.surface} data-shown-by={props.shown_by} hidden={enhanced ? b.off() : (props.hidden ?? false)} role="region" aria-labelledby={`card-${props.name}-title`} ref={(el) => runWithOwner(owner, () => b.root(el))} {...rest}>
+    <section id={`card-${props.name}`} class={enhanced ? tokens(`settings-card`, props.extra_class != null && `${props.extra_class}`, b.dirty() && `is-dirty`, b.refused() && `is-failed`) : tokens(`settings-card`, props.extra_class != null && `${props.extra_class}`, (props.failed ?? false) && `is-failed`)} data-name={props.name} data-shown-by={props.shown_by} hidden={enhanced ? b.off() : (props.hidden ?? false)} role="region" aria-labelledby={`card-${props.name}-title`} ref={(el) => runWithOwner(owner, () => b.root(el))} {...rest}>
       <header class="card-head">
         <h3 id={`card-${props.name}-title`}>
           {props.title}
