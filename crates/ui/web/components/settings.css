@@ -22,9 +22,6 @@
 .tab-bar a:hover { color: var(--accent-text); }
 .tab-bar a[aria-current="page"] { font-weight: 700; border-bottom-color: var(--tab-current); }
 .tab-marker { color: var(--tab-marker); margin-left: 0.35em; font-size: var(--text-xs); }
-/* The settings components (`views::settings`, static/settings-form.js):
-   custom elements, blocks like the elements they stand for. */
-mk-settings-form, mk-settings-card, mk-setting, mk-save-bar { display: block; }
 /* A settings card: a group of settings, saved together. One with unsaved
    changes (with JavaScript) or that a save refused takes the thin edge's
    colour, never a thicker edge. */
@@ -79,9 +76,10 @@ html:has(.save-bar) { scroll-padding-bottom: 7rem; }
 @media (prefers-reduced-motion: reduce) {
   .save-bar [data-save][aria-busy="true"]::before { animation: none; }
 }
-mk-save-bar:defined:not(.is-dirty):not(.is-failed):not(.is-leaving) { display: none; }
+/* Once its island attaches: nothing to save or say, out of sight. */
+.save-bar[data-idle] { display: none; }
 @media (prefers-reduced-motion: no-preference) {
-  mk-save-bar:defined { animation: save-bar-in 0.18s ease-out; }
+  .save-bar.is-dirty, .save-bar.is-leaving { animation: save-bar-in 0.18s ease-out; }
 }
 @keyframes save-bar-in { from { transform: translateY(100%); } to { transform: none; } }
 /* The toast a save leaves, in the corner. Without JavaScript every toast
@@ -162,7 +160,7 @@ body:has(.save-bar):not(:has(.save-bar:not([data-placement="inline"]))) { paddin
 .settings-card[data-surface="grouped"] .is-changed .changed-mark { visibility: visible; }
 .mk-form-layout[data-layout="grouped"] .save-bar-inner { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
 .mk-form-layout[data-layout="grouped"] .save-bar-message { height: 3lh; overflow: auto; align-content: center; text-align: center; }
-.mk-form-layout[data-layout="grouped"] mk-save-bar:defined:not(.is-dirty):not(.is-failed):not(.is-leaving) { display: block; visibility: hidden; }
+.mk-form-layout[data-layout="grouped"] .save-bar[data-idle] { display: block; visibility: hidden; }
 @media (max-width: 560px) {
   .settings-card[data-surface="grouped"] .card-head {
     grid-template-columns: minmax(0, max-content) 7rem;

@@ -124,7 +124,8 @@ export function attachCopyValue(root: Element, props: CopyValueProps): () => voi
       b.value(n1);
     }
     const m2 = marker(root, 2);
-    if (m2) insert(m2.parentNode!, () => (
+    if (m2) {
+      insert(m2.parentNode!, () => (
         <>
           {b.preview() != null ? (
             <span class="mk-copy-preview mk-mono" aria-hidden="true" onClick={b.reveal}>
@@ -140,7 +141,8 @@ export function attachCopyValue(root: Element, props: CopyValueProps): () => voi
             {b.status()}
           </span>
         </>
-    ), m2);
+      ), m2);
+    }
     return dispose;
   });
 }

@@ -134,6 +134,8 @@ pub struct BehaviourInfo {
     pub handlers: Vec<(&'static str, Option<Ty>)>,
     /// Elements handed to it with `ref=name`.
     pub refs: Vec<&'static str>,
+    /// The props it reads, all that an island carries; `None`: every prop.
+    pub uses: Option<Vec<&'static str>>,
 }
 
 impl ComponentInfo {
@@ -386,3 +388,7 @@ impl<T: Truthy + ?Sized> Truthy for &T {
         (**self).truthy()
     }
 }
+
+// An `Option` in an attribute's parts: under a condition that it's set
+// (`{ (extra) } if extra`).
+impl<T: AttrValue> AttrValue for Option<T> {}

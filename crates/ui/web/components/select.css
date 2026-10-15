@@ -1,7 +1,6 @@
 /* The Select component (crates/ui, select.behaviour.ts): the select the
    page sent, drawn as a button and a list that floats over the page once
    its island attaches. Without JavaScript the select is shown as it is. */
-mk-island { display: contents; }
 .mk-select { display: block; position: relative; }
 .mk-select[data-compact] { display: inline-block; vertical-align: middle; }
 .mk-select > select.mk-native { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; pointer-events: none; }

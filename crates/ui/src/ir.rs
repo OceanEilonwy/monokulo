@@ -32,11 +32,14 @@ pub enum Node {
         path: Path,
         body: Vec<Node>,
     },
-    /// `@if enhanced { }`: what only the behaviour renders, where the
-    /// server leaves the marker `<!--mk:N-->`.
+    /// `@if enhanced { } @else { }`: what only the behaviour renders, where
+    /// the server leaves the marker `<!--mk:N-->`; and what the server
+    /// renders in its place, between that marker and `<!--/mk:N-->`, which
+    /// the behaviour takes away.
     Enhanced {
         mark: u32,
         body: Vec<Node>,
+        fallback: Vec<Node>,
     },
 }
 

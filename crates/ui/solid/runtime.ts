@@ -4,31 +4,50 @@ import { onCleanup } from 'solid-js';
 
 /** The tokens of a `join[...]` attribute that are present, space-separated;
  *  `undefined`, so the attribute is left out, when none are. */
-export function tokens(...items: (string | false | undefined)[]): string | undefined {
-  const present = items.filter((item): item is string => typeof item === 'string');
-  return present.length > 0 ? present.join(' ') : undefined;
+export function tokens<T extends string>(...items: (T | false | undefined)[]): T | undefined {
+  const present = items.filter((item): item is T => typeof item === 'string');
+  // One token is one of the literals given (a `role`); several, a list.
+  return present.length > 0 ? (present.join(' ') as T) : undefined;
 }
 
+/** The island an element is in: the nearest `data-island` around it. */
+const islandOf = (node: Node | null): Element | null | undefined =>
+  (node instanceof Element ? node : node?.parentElement)?.closest('[data-island]');
+
 /** The server-rendered element an island's behaviour attaches to
- *  (`data-mk`), not one of a nested island's. */
+ *  (`data-mk`), not one of a nested island's. The root is the island. */
 export function mark(root: Element, n: number): HTMLElement | null {
+  if (root instanceof HTMLElement && root.dataset.mk === String(n)) return root;
   const found = Array.from(root.querySelectorAll<HTMLElement>(`[data-mk="${n}"]`));
-  return found.find(element => element.closest('mk-island') === root) ?? null;
+  return found.find(element => islandOf(element) === root) ?? null;
 }
 
 /** Every server-rendered element with one mark, in order: the elements of
  *  a loop over a prop's list, one per item. */
 export function marks(root: Element, n: number): HTMLElement[] {
-  return Array.from(root.querySelectorAll<HTMLElement>(`[data-mk="${n}"]`)).filter(element => element.closest('mk-island') === root);
+  return Array.from(root.querySelectorAll<HTMLElement>(`[data-mk="${n}"]`)).filter(element => islandOf(element) === root);
 }
 
 /** The comment the server left where enhanced markup goes (`<!--mk:N-->`). */
 export function marker(root: Element, n: number): Comment | null {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    if (node.nodeValue === `mk:${n}` && node.parentElement?.closest('mk-island') === root) return node as Comment;
+    if (node.nodeValue === `mk:${n}` && islandOf(node) === root) return node as Comment;
   }
   return null;
+}
+
+/** Takes away what the server rendered between a marker and its end
+ *  (`<!--/mk:N-->`): an `@if enhanced`'s fallback. */
+export function clear(marker: Comment, n: number): void {
+  let node = marker.nextSibling;
+  while (node) {
+    const next = node.nextSibling;
+    const end = node.nodeType === Node.COMMENT_NODE && node.nodeValue === `/mk:${n}`;
+    node.remove();
+    if (end) return;
+    node = next;
+  }
 }
 
 /** Sets an attribute as JSX would: `true` present and empty, `false` or

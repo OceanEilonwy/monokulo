@@ -1700,16 +1700,21 @@ mod tests {
         );
         // The Details card, a settings form of its own, says it was saved.
         assert!(
-            html.contains(&format!(r#"<mk-settings-form label="Details"><form method="post" action="/account/wallets/{id}/rename" id="settings-form">"#)),
+            html.contains(&format!(
+                r#"<form method="post" action="/account/wallets/{id}/rename" id="settings-form""#
+            )),
             "{html}"
         );
         assert!(
             html.contains(
-                r#"<mk-settings-card id="card-details" class="settings-card" name="details""#
+                r#"<section id="card-details" class="settings-card" data-name="details""#
             ),
             "{html}"
         );
-        assert!(html.contains("data-card-saved>Saved<"), "{html}");
+        assert!(
+            html.contains(r#"data-card-saved data-mk="4">Saved<"#),
+            "{html}"
+        );
         assert!(html.contains("<strong>Renamed</strong>"), "{html}");
 
         // A refused name: the card says why and keeps what was typed.
@@ -1725,7 +1730,7 @@ mod tests {
         assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let html = body_text(refused).await;
         assert!(
-            html.contains(r#"<mk-settings-card id="card-details" class="settings-card is-failed""#),
+            html.contains(r#"<section id="card-details" class="settings-card is-failed""#),
             "{html}"
         );
         assert!(html.contains("A wallet needs a name."), "{html}");

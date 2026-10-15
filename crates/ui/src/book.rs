@@ -14,9 +14,9 @@ use crate::render::render_info;
 use crate::{ComponentInfo, PropInfo, Slot, SlotPart, Ty, Value};
 
 /// A component's section id in the stylebook: `ProgressSteps` as
-/// `progress-steps`.
+/// `component-progress-steps`, apart from any id a component renders.
 pub fn anchor(name: &str) -> String {
-    let mut s = String::new();
+    let mut s = String::from("component-");
     for (i, c) in name.chars().enumerate() {
         if c.is_uppercase() && i > 0 {
             s.push('-');

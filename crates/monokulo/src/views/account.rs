@@ -465,13 +465,11 @@ mod tests {
             html.find(needle)
                 .unwrap_or_else(|| panic!("{needle} in {html}"))
         };
-        let form = at(
-            r#"<mk-settings-form label="Profile"><form method="post" action="/account/profile" id="settings-form">"#,
-        );
+        let form = at(r#"<form method="post" action="/account/profile" id="settings-form""#);
         let email = at(r#"name="email" role="region""#);
         let appearance = at(r#"name="appearance" role="region""#);
-        let time = at(r#"<mk-settings-card id="card-time""#);
-        let bar = at(r#"<mk-save-bar id="save-bar" class="save-bar""#);
+        let time = at(r#"<section id="card-time""#);
+        let bar = at(r#"<div id="save-bar" class="save-bar""#);
         assert!(
             form < email && email < appearance && appearance < time && time < bar,
             "{html}"
@@ -511,8 +509,8 @@ mod tests {
         );
         assert!(
             html.contains(&format!(
-                r#"<script src="{}" defer></script>"#,
-                crate::assets::url("settings-form.js")
+                r#"<script type="module" src="{}"></script>"#,
+                crate::assets::url("ui-islands.js")
             )),
             "{html}"
         );
@@ -531,7 +529,7 @@ mod tests {
         let html = account_page(&chrome(), &data).into_string();
         assert!(
             html.contains(
-                r#"<mk-settings-card id="card-email" class="settings-card is-failed" name="email""#
+                r#"<section id="card-email" class="settings-card is-failed" data-name="email""#
             ),
             "{html}"
         );
@@ -547,12 +545,12 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"<mk-save-bar id="save-bar" class="save-bar is-failed""#),
+            html.contains(r#"<div id="save-bar" class="save-bar is-failed""#),
             "{html}"
         );
         assert!(html.contains(r##"<strong>Nothing saved.</strong> That email is already used by another account. <a href="#card-email" data-show-card="email">Show</a>"##), "{html}");
         assert!(
-            html.contains(r#"<div class="toast toast-error" role="alert" data-toast>"#),
+            html.contains(r#"<div class="toast toast-error" role="alert" data-toast data-mk="1""#),
             "{html}"
         );
     }
@@ -568,7 +566,12 @@ mod tests {
         )
         .into_string();
         assert!(html.contains("<strong>Profile saved</strong><span class=\"toast-line\">You log in with ann@example.org from now on.</span>"), "{html}");
-        assert_eq!(html.matches("data-card-saved>Saved<").count(), 2, "{html}");
+        assert_eq!(
+            html.matches(r#"data-card-saved data-mk="4">Saved<"#)
+                .count(),
+            2,
+            "{html}"
+        );
 
         let html = account_page(
             &chrome(),
@@ -592,7 +595,9 @@ mod tests {
     fn the_security_tab_asks_for_the_current_password_and_a_new_one() {
         let html = account_page(&chrome(), &view(AccountTab::Security, None)).into_string();
         assert!(
-            html.contains(r#"<form method="post" action="/account/password" id="settings-form">"#),
+            html.contains(
+                r#"<form method="post" action="/account/password" id="settings-form" data-mk="2">"#
+            ),
             "{html}"
         );
         assert!(

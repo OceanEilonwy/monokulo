@@ -21,8 +21,6 @@ document.querySelector('#currency').addEventListener('change', event => {
   document.querySelector('#selected-currency').textContent = event.target.value;
 });
 
-import '@monokulo/ui/settings';
-document.querySelectorAll('[data-toast-close]').forEach(button => { button.hidden = false; });
 const dialog = document.querySelector('#example-dialog');
 document.querySelector('[data-open-dialog]').addEventListener('click', event => {
   if (typeof dialog.showModal !== 'function') return;

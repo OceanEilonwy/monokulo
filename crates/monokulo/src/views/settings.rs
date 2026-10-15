@@ -3,36 +3,25 @@
 //! a save. The admin settings page, the Account page, a store's settings
 //! and a wallet's page all use these.
 //!
-//! Each piece is a custom element the `ui` package's `web/components/settings.js` defines, but
-//! the markup is complete here, so everything works without JavaScript: the
-//! form is a real `<form method="post">`, the save bar is always shown, and
-//! a save answers with the page again (a redirect with a toast, or the page
-//! with the refusal and the values that were sent). With JavaScript the
-//! components add the rest:
+//! Each piece is a `ui` component (`ui::SettingsForm`, `SettingsCard`,
+//! `Setting`, `SaveBar`, `Toast`), complete without JavaScript: the form is
+//! a real `<form method="post">`, the save bar is always shown, and a save
+//! answers with the page again (a redirect with a toast, or the page with
+//! the refusal and the values that were sent). Each is an island too; with
+//! JavaScript their behaviours track what changed, mark it, offer Discard,
+//! ask before leaving with changes, and save with fixi or a plain POST
+//! ([`Save`]). See the `ui` crate's `settings` module for the events page
+//! scripts hear (`mk-dirty`, `mk-saved`, `mk-failed`, `mk-count`,
+//! `mk-discard`) and send (`mk-changed`).
 //!
-//! - [`form`] is `<mk-settings-form>` around the `<form>`. It tracks what
-//!   changed, asks before leaving with changes, and saves either with fixi
-//!   (the panel is swapped in place) or with a plain POST and a reload
-//!   ([`Save`]), per form. It sends `mk-dirty` (`{count, groups}`) when the
-//!   number of changes moves, `mk-saved` (`{groups}`) when the page answers
-//!   a save, and `mk-failed` (`{group, message}`) for each card a save
-//!   refused.
-//! - [`Card`] is `<mk-settings-card>`: a group of settings, with its title,
-//!   a badge for its unsaved changes or a refusal, "Saved {at}" after a
-//!   save, and a Discard button for its changes.
-//! - [`Field`] is `<mk-setting>`: one setting, its label, help and control,
-//!   with the "changed" mark an unsaved change shows.
-//! - [`save_bar`] is `<mk-save-bar>`: the page's one Save, shown only while
-//!   something is changed (or a save was refused) when JavaScript runs.
-//! - [`toast_region`] is the corner of the window a save's toast shows in.
-//!
-//! A control counts as a setting when it is inside an `<mk-setting>`; the
-//! admin page's node rows count their own changes (`static/admin-settings.js`
-//! listens for `mk-count` on their card).
+//! These builders are the site's: they say a page's settings in its own
+//! terms and hand them to the components. A control counts as a setting
+//! when it is inside a [`Field`]; the admin page's node rows count their
+//! own changes (`static/admin-settings.js` listens for `mk-count` on their
+//! card).
 
-use std::fmt::Write as _;
-
-use maud::{html, Markup, PreEscaped};
+use maud::{html, Markup, Render};
+pub use ui::ToastKind;
 
 /// How a settings form saves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,23 +34,17 @@ pub enum Save<'a> {
     Reload,
 }
 
-/// The page's settings form: `<mk-settings-form>` around a real
-/// `<form method="post" id="settings-form">` posting to `action`. `label`
-/// names what has unsaved changes when leaving is asked about ("Abuse
-/// protection has unsaved changes"). One per page.
+/// The page's settings form, a real `<form method="post" id="settings-form">`
+/// posting to `action`. `label` names what has unsaved changes when leaving
+/// is asked about ("Abuse protection has unsaved changes"). One per page.
 pub fn form(action: &str, save: Save, label: &str, body: Markup) -> Markup {
     let target = match save {
-        Save::Fixi { target } => Some(target),
+        Save::Fixi { target } => Some(target.to_string()),
         Save::Reload => None,
     };
-    html! {
-        mk-settings-form label=(label) {
-            form method="post" action=(action) id="settings-form"
-                fx-action=[target.map(|_| action)] fx-method=[target.map(|_| "POST")] fx-target=[target] {
-                (body)
-            }
-        }
-    }
+    ui::SettingsForm::new(action, label, body)
+        .maybe_fixi_target(target)
+        .render()
 }
 
 /// A card's element id, from its name: `card-{name}`. Links to a card (the
@@ -70,8 +53,8 @@ pub fn card_id(name: &str) -> String {
     format!("card-{name}")
 }
 
-/// One card of settings, `<mk-settings-card name="…">`, built up and then
-/// rendered around its fields with [`Card::render`].
+/// One card of settings, built up and then rendered around its fields with
+/// [`Card::render`].
 #[derive(Debug, Clone)]
 pub struct Card<'a> {
     name: &'a str,
@@ -91,8 +74,8 @@ pub struct Card<'a> {
 }
 
 impl<'a> Card<'a> {
-    /// A card named `name` (its `name`, and `card-{name}` its id) with
-    /// `title` for its heading.
+    /// A card named `name` (and `card-{name}` its id) with `title` for its
+    /// heading.
     pub fn new(name: &'a str, title: impl Into<String>) -> Card<'a> {
         Card {
             name,
@@ -183,67 +166,22 @@ impl<'a> Card<'a> {
 
     /// The card around `body` (its settings).
     pub fn render(self, body: Markup) -> Markup {
-        let id = card_id(self.name);
-        let title_id = format!("{id}-title");
-        let mut open = String::from("<mk-settings-card");
-        attr(&mut open, "id", &id);
-        let class = match self.class {
-            Some(more) => format!("settings-card {more}"),
-            None => "settings-card".to_string(),
-        };
-        let class = if self.failed {
-            format!("{class} is-failed")
-        } else {
-            class
-        };
-        attr(&mut open, "class", &class);
-        attr(&mut open, "name", self.name);
-        for (name, value) in &self.attrs {
-            attr(&mut open, name, value);
+        let mut card = ui::SettingsCard::new(self.name, self.title, body)
+            .maybe_extra_class(self.class.map(str::to_string))
+            .maybe_head(self.head.map(ui::Slot::from))
+            .maybe_link(self.link.map(ui::Slot::from))
+            .maybe_badge(self.badge.map(ui::Slot::from))
+            .failed(self.failed)
+            .maybe_message(self.message.map(str::to_string))
+            .maybe_saved(self.saved)
+            .focus_saved(self.focus_saved)
+            .readonly(self.readonly)
+            .hidden(self.hidden)
+            .maybe_shown_by(self.shown_by);
+        for (name, value) in self.attrs {
+            card = card.attr(name, value);
         }
-        if let Some(shown_by) = &self.shown_by {
-            attr(&mut open, "data-shown-by", shown_by);
-        }
-        if self.hidden {
-            open.push_str(" hidden");
-        }
-        attr(&mut open, "role", "region");
-        attr(&mut open, "aria-labelledby", &title_id);
-        open.push('>');
-        let focus = self.focus_saved.then_some("-1");
-        html! {
-            (PreEscaped(open))
-            header class="card-head" {
-                h3 id=(title_id) { (self.title) }
-                @if let Some(head) = self.head { (head) }
-                span class="card-state" data-card-state {
-                    @if self.failed {
-                        span class="mk-status-text" data-tone="error" data-card-failed { "Not saved" }
-                    } @else if let Some(badge) = self.badge {
-                        (badge)
-                    }
-                }
-                span class="card-spacer" {}
-                @if let Some(link) = self.link { (link) }
-                @if self.readonly {
-                    span class="card-meta" { "Can't be changed here" }
-                } @else {
-                    @if let (Some(at), false) = (&self.saved, self.failed) {
-                        span class="card-meta card-saved" data-card-saved tabindex=[focus] data-fx-focus[self.focus_saved] {
-                            "Saved" @if !at.is_empty() { " " (at) }
-                        }
-                    }
-                    button type="button" class="card-discard js-only" data-card-discard hidden { "Discard" }
-                }
-            }
-            div class="card-body" {
-                @if let Some(message) = self.message {
-                    p class="error" role="alert" { (message) }
-                }
-                (body)
-            }
-            (PreEscaped("</mk-settings-card>"))
-        }
+        card.render()
     }
 }
 
@@ -271,8 +209,8 @@ pub fn plain_card_with_meta(name: &str, title: &str, meta: Option<&str>, body: M
     }
 }
 
-/// One setting, `<mk-setting>`, built up and then rendered around its
-/// control with [`Field::render`].
+/// One setting, built up and then rendered around its control with
+/// [`Field::render`].
 #[derive(Debug, Clone)]
 pub struct Field<'a> {
     label: &'a str,
@@ -319,56 +257,29 @@ impl<'a> Field<'a> {
 
     /// The setting around `control` (and anything under it).
     pub fn render(self, control: Markup) -> Markup {
-        let help_id = self.help.as_ref().and_then(|(id, _)| *id);
-        let help = html! {
-            @if let Some((id, help)) = &self.help {
-                p class="field-help" id=[id] { (help) }
-            }
-        };
-        html! {
-            @if self.group {
-                mk-setting class="setting-field" role="group" aria-labelledby=(self.id) aria-describedby=[help_id] {
-                    div class="setting-label-row" {
-                        span class="setting-label" id=(self.id) { (self.label) }
-                        @if let Some(chip) = &self.chip { (chip) }
-                        span class="changed-mark" { "changed" }
-                    }
-                    (help)
-                    (control)
-                }
-            } @else {
-                mk-setting class="setting-field" {
-                    div class="setting-label-row" {
-                        label class="setting-label" for=(self.id) { (self.label) }
-                        @if let Some(chip) = &self.chip { (chip) }
-                        span class="changed-mark" { "changed" }
-                    }
-                    (help)
-                    (control)
-                }
-            }
-        }
+        let help_id = self
+            .help
+            .as_ref()
+            .and_then(|(id, _)| id.map(str::to_string));
+        ui::Setting::new(self.label, self.id, control)
+            .group(self.group)
+            .maybe_chip(self.chip.map(ui::Slot::from))
+            .maybe_help(self.help.map(|(_, help)| ui::Slot::from(help)))
+            .maybe_described_by(help_id.clone().filter(|_| self.group))
+            .maybe_help_id(help_id)
+            .render()
     }
 }
 
-/// The page's one save bar, `<mk-save-bar>`, along the bottom of the
-/// window: `message`, then Discard changes (a link to `discard_href`, the
-/// page as saved) and Save. Red after a save that refused something
-/// (`failed`); `focus` gives its message focus after a save fixi swapped in.
+/// The page's one save bar, along the bottom of the window: `message`,
+/// then Discard changes (a link to `discard_href`, the page as saved) and
+/// Save. Red after a save that refused something (`failed`); `focus` gives
+/// its message focus after a save fixi swapped in.
 pub fn save_bar(failed: bool, focus: bool, message: Markup, discard_href: &str) -> Markup {
-    html! {
-        mk-save-bar id="save-bar" class={ "save-bar" @if failed { " is-failed" } } role="region" aria-label="Save changes" {
-          div class="wrap save-bar-inner" {
-            p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus[focus] {
-                (message)
-            }
-            div class="save-bar-actions" {
-                a class="btn" href=(discard_href) data-discard-all { "Discard changes" }
-                button type="submit" class="btn-primary" data-save { "Save" }
-            }
-          }
-        }
-    }
+    ui::SaveBar::new(message, discard_href)
+        .failed(failed)
+        .focus(focus)
+        .render()
 }
 
 /// A small message after a save, in the corner of the window (it fades
@@ -403,177 +314,159 @@ impl Toast {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToastKind {
-    /// Saved and applied.
-    Success,
-    /// Saved, but something waits for a restart.
-    Warning,
-    /// Something wasn't saved.
-    Error,
-    /// Nothing happened (nothing had changed).
-    Neutral,
-}
-
 /// The corner of the window a settings page's toast shows in, with `toast`
 /// in it. A new one comes with every save, so saving twice shows twice.
-/// Without JavaScript it fades by itself (CSS); with it, one saying
-/// something wasn't saved stays until it's closed. `oob` marks it for fixi's
-/// glue to put in place of the page's own when a swap brings it.
+/// `oob` marks it for fixi's glue to put in place of the page's own when a
+/// swap brings it.
 pub fn toast_region(toast: Option<&Toast>, oob: bool) -> Markup {
     html! {
         div id="settings-toasts" class="toasts" data-fx-oob[oob] {
             @if let Some(toast) = toast {
-                @let (class, icon, role) = match toast.kind {
-                    ToastKind::Success => ("toast toast-success", ui::assets::icons::CHECK, "status"),
-                    ToastKind::Warning => ("toast toast-warning", ui::assets::icons::WARNING, "status"),
-                    ToastKind::Error => ("toast toast-error", ui::assets::icons::WARNING, "alert"),
-                    ToastKind::Neutral => ("toast toast-neutral", ui::assets::icons::INFO, "status"),
-                };
-                div class=(class) role=(role) data-toast {
-                    span class="toast-icon" aria-hidden="true" { (maud::PreEscaped(icon)) }
-                    div class="toast-text" {
-                        strong { (toast.title) }
-                        @for line in &toast.lines { span class="toast-line" { (line) } }
-                        @if let Some(card) = &toast.show {
-                            a class="toast-show" href=(format!("#{}", card_id(card))) data-show-card=(card) { "Show" }
-                        }
-                    }
-                    button type="button" class="toast-close js-only" aria-label="Dismiss" data-toast-close { "\u{00D7}" }
-                }
+                (ui::Toast::new(toast.kind, toast.title.clone(), toast.lines.clone()).maybe_show(toast.show.clone()))
             }
         }
     }
-}
-
-/// ` name="value"`, escaped, onto an opening tag being written by hand (a
-/// card's attributes vary by page).
-fn attr(tag: &mut String, name: &str, value: &str) {
-    tag.push(' ');
-    tag.push_str(name);
-    tag.push_str("=\"");
-    let _ = write!(maud::Escaper::new(tag), "{value}");
-    tag.push('"');
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The markup without the islands' props (the JSON the behaviours read),
+    /// which the `ui` crate's tests cover.
+    fn markup(html: Markup) -> String {
+        let html = html.into_string();
+        let mut out = String::new();
+        let mut rest = html.as_str();
+        while let Some(at) = rest.find(" data-props=\"") {
+            out.push_str(&rest[..at]);
+            let after = &rest[at + " data-props=\"".len()..];
+            rest = &after[after.find('"').expect("closed") + 1..];
+        }
+        out.push_str(rest);
+        out
+    }
+
     #[test]
     fn a_form_saves_with_fixi_or_reloads_as_its_page_asks() {
-        let fixi = form(
+        let fixi = markup(form(
             "/x",
             Save::Fixi {
                 target: "#settings-panel",
             },
             "Payments",
             html! { "body" },
-        )
-        .into_string();
+        ));
         assert_eq!(
             fixi,
-            r##"<mk-settings-form label="Payments"><form method="post" action="/x" id="settings-form" fx-action="/x" fx-method="POST" fx-target="#settings-panel">body</form></mk-settings-form>"##
+            r##"<div class="mk-settings-form" data-label="Payments" data-mk="1" data-island="SettingsForm"><form method="post" action="/x" id="settings-form" fx-action="/x" fx-method="POST" fx-target="#settings-panel" data-mk="2">body</form></div>"##
         );
-        let reload = form("/y", Save::Reload, "Profile", html! {}).into_string();
+        let reload = markup(form("/y", Save::Reload, "Profile", html! {}));
         assert_eq!(
             reload,
-            r#"<mk-settings-form label="Profile"><form method="post" action="/y" id="settings-form"></form></mk-settings-form>"#
+            r#"<div class="mk-settings-form" data-label="Profile" data-mk="1" data-island="SettingsForm"><form method="post" action="/y" id="settings-form" data-mk="2"></form></div>"#
         );
     }
 
     #[test]
-    fn a_card_says_how_the_last_save_went_and_offers_discard() {
-        let clean = Card::new("time", "Time")
-            .render(html! { "fields" })
-            .into_string();
+    fn a_card_says_how_the_last_save_went() {
+        let clean = markup(Card::new("time", "Time").render(html! { "fields" }));
         assert_eq!(
             clean,
-            r#"<mk-settings-card id="card-time" class="settings-card" name="time" role="region" aria-labelledby="card-time-title"><header class="card-head"><h3 id="card-time-title">Time</h3><span class="card-state" data-card-state></span><span class="card-spacer"></span><button type="button" class="card-discard js-only" data-card-discard hidden>Discard</button></header><div class="card-body">fields</div></mk-settings-card>"#
+            r#"<section id="card-time" class="settings-card" data-name="time" role="region" aria-labelledby="card-time-title" data-mk="1" data-island="SettingsCard"><header class="card-head"><h3 id="card-time-title">Time</h3><span class="card-state" data-card-state><!--mk:2--></span><span class="card-spacer"></span><!--mk:5--></header><div class="card-body">fields</div></section>"#
         );
-        let saved = Card::new("time", "Time")
-            .saved(Some("14:02"), true)
-            .render(html! {})
-            .into_string();
+        let saved = markup(
+            Card::new("time", "Time")
+                .saved(Some("14:02"), true)
+                .render(html! {}),
+        );
         assert!(
-            saved.contains(r#"<span class="card-meta card-saved" data-card-saved tabindex="-1" data-fx-focus>Saved 14:02</span>"#),
+            saved.contains(r#"<span class="card-meta card-saved" data-card-saved tabindex="-1" data-fx-focus data-mk="4">Saved 14:02</span>"#),
             "{saved}"
         );
-        let just_saved = Card::new("time", "Time")
-            .saved(Some(""), false)
-            .render(html! {})
-            .into_string();
+        let just_saved = markup(
+            Card::new("time", "Time")
+                .saved(Some(""), false)
+                .render(html! {}),
+        );
         assert!(
-            just_saved.contains(r#"data-card-saved>Saved</span>"#),
+            just_saved.contains(r#"data-card-saved data-mk="4">Saved</span>"#),
             "{just_saved}"
         );
-        let failed = Card::new("time", "Time")
-            .failed(true, Some("That zone isn't one we know."))
-            .saved(Some("14:02"), false)
-            .render(html! {})
-            .into_string();
+        let failed = markup(
+            Card::new("time", "Time")
+                .failed(true, Some("That zone isn't one we know."))
+                .saved(Some("14:02"), false)
+                .render(html! {}),
+        );
         assert!(
-            failed
-                .starts_with(r#"<mk-settings-card id="card-time" class="settings-card is-failed""#),
+            failed.starts_with(r#"<section id="card-time" class="settings-card is-failed""#),
             "{failed}"
         );
         assert!(
-            failed.contains(r#"<span class="mk-status-text" data-tone="error" data-card-failed>Not saved</span>"#),
+            failed.contains(r#"<span class="mk-status-text" data-tone="error" data-card-failed data-mk="3">Not saved</span>"#),
             "{failed}"
         );
         assert!(
-            failed.contains(r#"<div class="card-body"><p class="error" role="alert">That zone isn't one we know.</p>"#),
+            failed.contains(r#"<div class="card-body"><p class="error" role="alert" data-mk="6">That zone isn't one we know.</p>"#),
             "{failed}"
         );
         assert!(!failed.contains("data-card-saved"), "{failed}");
-        let readonly = Card::new("cli", "Command line")
-            .readonly(true)
-            .render(html! {})
-            .into_string();
+        let readonly = markup(
+            Card::new("cli", "Command line")
+                .readonly(true)
+                .render(html! {}),
+        );
         assert!(readonly.contains("Can't be changed here"), "{readonly}");
-        assert!(!readonly.contains("data-card-discard"), "{readonly}");
+        // Discard is the behaviour's: only where something can change.
+        assert!(!readonly.contains("<!--mk:5-->"), "{readonly}");
     }
 
     #[test]
     fn a_cards_own_attributes_are_escaped() {
-        let card = Card::new("custody-snp", "SEV-SNP")
-            .class("node-network")
-            .data("data-note", "a \"quoted\" <b>")
-            .shown_by("key_custody.enabled_backends", "snp")
-            .hidden(true)
-            .render(html! {})
-            .into_string();
+        let card = markup(
+            Card::new("custody-snp", "SEV-SNP")
+                .class("node-network")
+                .data("data-note", "a \"quoted\" <b>")
+                .shown_by("key_custody.enabled_backends", "snp")
+                .hidden(true)
+                .render(html! {}),
+        );
         assert!(
-            card.starts_with(r#"<mk-settings-card id="card-custody-snp" class="settings-card node-network" name="custody-snp" data-note="a &quot;quoted&quot; &lt;b&gt;" data-shown-by="key_custody.enabled_backends=snp" hidden role="region""#),
+            card.starts_with(r#"<section id="card-custody-snp" class="settings-card node-network" data-name="custody-snp" data-shown-by="key_custody.enabled_backends=snp" hidden role="region" aria-labelledby="card-custody-snp-title" data-mk="1" data-island="SettingsCard" data-note="a &quot;quoted&quot; &lt;b&gt;""#),
             "{card}"
         );
     }
 
     #[test]
     fn a_setting_has_its_label_its_changed_mark_and_its_help() {
-        let field = Field::new("Name", "name")
-            .help(Some("name-help"), html! { "Only you see it." })
-            .render(html! { input id="name" name="name"; })
-            .into_string();
+        let field = markup(
+            Field::new("Name", "name")
+                .help(Some("name-help"), html! { "Only you see it." })
+                .render(html! { input id="name" name="name"; }),
+        );
         assert_eq!(
             field,
-            r#"<mk-setting class="setting-field"><div class="setting-label-row"><label class="setting-label" for="name">Name</label><span class="changed-mark">changed</span></div><p class="field-help" id="name-help">Only you see it.</p><input id="name" name="name"></mk-setting>"#
+            r#"<div class="setting-field" data-mk="1" data-island="Setting"><div class="setting-label-row"><label class="setting-label" for="name">Name</label><span class="changed-mark">changed</span></div><p class="field-help" id="name-help">Only you see it.</p><input id="name" name="name"></div>"#
         );
-        let group = Field::group("Theme", "theme-label")
-            .render(html! {})
-            .into_string();
+        let group = markup(Field::group("Theme", "theme-label").render(html! {}));
         assert_eq!(
             group,
-            r#"<mk-setting class="setting-field" role="group" aria-labelledby="theme-label"><div class="setting-label-row"><span class="setting-label" id="theme-label">Theme</span><span class="changed-mark">changed</span></div></mk-setting>"#
+            r#"<div class="setting-field" role="group" aria-labelledby="theme-label" data-mk="1" data-island="Setting"><div class="setting-label-row"><span class="setting-label" id="theme-label">Theme</span><span class="changed-mark">changed</span></div></div>"#
         );
     }
 
     #[test]
     fn the_save_bar_saves_and_discards() {
-        let bar = save_bar(true, false, html! { "Nothing saved." }, "/account").into_string();
+        let bar = markup(save_bar(
+            true,
+            false,
+            html! { "Nothing saved." },
+            "/account",
+        ));
         assert_eq!(
             bar,
-            r#"<mk-save-bar id="save-bar" class="save-bar is-failed" role="region" aria-label="Save changes"><div class="wrap save-bar-inner"><p class="save-bar-message" data-save-bar-message tabindex="-1">Nothing saved.</p><div class="save-bar-actions"><a class="btn" href="/account" data-discard-all>Discard changes</a><button type="submit" class="btn-primary" data-save>Save</button></div></div></mk-save-bar>"#
+            r#"<div id="save-bar" class="save-bar is-failed" role="region" aria-label="Save changes" data-mk="1" data-island="SaveBar"><div class="wrap save-bar-inner"><p class="save-bar-message" data-save-bar-message tabindex="-1"><span data-mk="2">Nothing saved.</span><!--mk:3--></p><div class="save-bar-actions" data-mk="4"><a class="btn" href="/account" data-discard-all data-mk="5">Discard changes</a><button type="submit" class="btn-primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div>"#
         );
     }
 
@@ -582,9 +475,9 @@ mod tests {
         let toast = Toast::new(ToastKind::Error, "Not saved")
             .line("Pick a zone.")
             .show("time");
-        let html = toast_region(Some(&toast), false).into_string();
+        let html = markup(toast_region(Some(&toast), false));
         assert!(
-            html.contains(r#"<div class="toast toast-error" role="alert" data-toast>"#),
+            html.contains(r#"<div class="toast toast-error" role="alert" data-toast data-mk="1" data-island="Toast">"#),
             "{html}"
         );
         assert!(

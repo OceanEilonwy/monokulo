@@ -1151,7 +1151,9 @@ mod tests {
     fn diagnostics_are_a_switch_off_until_turned_on() {
         let html = render(base_store());
         assert!(
-            html.contains(r#"<mk-settings-card id="card-diagnostics" class="settings-card" name="diagnostics""#),
+            html.contains(
+                r#"<section id="card-diagnostics" class="settings-card" data-name="diagnostics""#
+            ),
             "got: {html}"
         );
         assert!(html.contains(r#"<input type="hidden" name="switches" value="client_logging">"#));
@@ -1178,14 +1180,14 @@ mod tests {
         };
         let wallet = at(r#"<section id="card-wallet" class="settings-card""#);
         let form = at(
-            r#"<mk-settings-form label="Store settings"><form method="post" action="/dashboard/stores/conn_1/settings" id="settings-form">"#,
+            r#"<form method="post" action="/dashboard/stores/conn_1/settings" id="settings-form""#,
         );
-        let base = at(r#"<mk-settings-card id="card-base-currency""#);
-        let confirmations = at(r#"<mk-settings-card id="card-confirmation-thresholds""#);
-        let fx = at(r#"<mk-settings-card id="card-fx-provider""#);
-        let diagnostics = at(r#"<mk-settings-card id="card-diagnostics""#);
-        let bar = at(r#"<mk-save-bar id="save-bar""#);
-        let end = at("</form></mk-settings-form>");
+        let base = at(r#"<section id="card-base-currency""#);
+        let confirmations = at(r#"<section id="card-confirmation-thresholds""#);
+        let fx = at(r#"<section id="card-fx-provider""#);
+        let diagnostics = at(r#"<section id="card-diagnostics""#);
+        let bar = at(r#"<div id="save-bar""#);
+        let end = form + html[form..].find("</form></div>").expect("the form's end");
         let domains = at(r#"<section id="card-verified-domains" class="settings-card""#);
         let webhooks = at(r#"<section id="card-webhooks" class="settings-card""#);
         assert!(
@@ -1215,7 +1217,7 @@ mod tests {
         );
         assert!(!html.contains("settings-dialogs"), "{html}");
         assert_eq!(html.matches("btn-primary").count(), 1, "{html}");
-        assert!(html.contains(r#"<a class="btn" href="/dashboard/stores/conn_1/settings" data-discard-all>Discard changes</a>"#), "{html}");
+        assert!(html.contains(r#"<a class="btn" href="/dashboard/stores/conn_1/settings" data-discard-all data-mk="5">Discard changes</a>"#), "{html}");
     }
 
     #[test]
@@ -1243,10 +1245,12 @@ mod tests {
         };
         let html = render(store);
         assert!(
-            html.contains(r#"<mk-settings-card id="card-confirmation-thresholds" class="settings-card is-failed""#),
+            html.contains(
+                r#"<section id="card-confirmation-thresholds" class="settings-card is-failed""#
+            ),
             "{html}"
         );
-        assert!(html.contains(r#"<div class="card-body"><p class="error" role="alert">Enter a whole number of confirmations.</p>"#), "{html}");
+        assert!(html.contains(r#"<div class="card-body"><p class="error" role="alert" data-mk="6">Enter a whole number of confirmations.</p>"#), "{html}");
         assert!(
             html.contains(r#"name="confirmations_required" value="abc""#),
             "{html}"
@@ -1262,12 +1266,12 @@ mod tests {
         );
         assert!(html.contains(r#"name="client_logging" value="true" id="client-logging" checked aria-describedby="client-logging-help" data-saved="off">"#), "{html}");
         assert!(
-            html.contains(r#"<mk-save-bar id="save-bar" class="save-bar is-failed""#),
+            html.contains(r#"<div id="save-bar" class="save-bar is-failed""#),
             "{html}"
         );
         assert!(html.contains(r##"<strong>Nothing saved.</strong> Enter a whole number of confirmations. <a href="#card-confirmation-thresholds" data-show-card="confirmation-thresholds">Show</a>"##), "{html}");
         assert!(
-            html.contains(r#"<div class="toast toast-error" role="alert" data-toast>"#),
+            html.contains(r#"<div class="toast toast-error" role="alert" data-toast data-mk="1""#),
             "{html}"
         );
     }
@@ -1281,7 +1285,12 @@ mod tests {
             ])),
             ..base_store()
         });
-        assert_eq!(html.matches("data-card-saved>Saved<").count(), 2, "{html}");
+        assert_eq!(
+            html.matches(r#"data-card-saved data-mk="4">Saved<"#)
+                .count(),
+            2,
+            "{html}"
+        );
         assert!(html.contains("<strong>Settings saved</strong>"), "{html}");
         let html = render(StoreSettingsData {
             outcome: Some(StoreOutcome::Unchanged),
@@ -1483,7 +1492,7 @@ mod tests {
         )
         .into_string();
         assert!(
-            html.contains(r#"<mk-setting class="setting-field"><div class="setting-label-row"><label class="setting-label" for="new-domain">Domain</label><span class="changed-mark">changed</span></div><p class="field-help" id="new-domain-help">Just the domain, like shop.example. Its subdomains are covered too.</p><input type="text" name="domain" id="new-domain" aria-describedby="new-domain-help""#),
+            html.contains(r#"<div class="setting-label-row"><label class="setting-label" for="new-domain">Domain</label><span class="changed-mark">changed</span></div><p class="field-help" id="new-domain-help">Just the domain, like shop.example. Its subdomains are covered too.</p><input type="text" name="domain" id="new-domain" aria-describedby="new-domain-help""#),
             "{html}"
         );
         assert!(html.contains(

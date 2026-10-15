@@ -39,6 +39,7 @@ component! {
         segments: Option<String>,
     }
     behaviour "copy.behaviour.ts" {
+        uses(value, truncate, segments, head, tail),
         /// The shortened value, when it is shorter.
         preview: Option<String>,
         /// What the last copy did, for screen readers too.

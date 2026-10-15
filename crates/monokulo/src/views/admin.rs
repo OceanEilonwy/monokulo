@@ -2390,7 +2390,7 @@ mod tests {
             );
             assert_eq!(
                 html.matches(
-                    r#"<button type="submit" class="btn-primary" data-save>Save</button>"#
+                    r#"<button type="submit" class="btn-primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7-->"#
                 )
                 .count(),
                 1,
@@ -2590,7 +2590,7 @@ mod tests {
             } else {
                 assert!(
                     html.contains("<form ")
-                        && html.contains(r#"class="btn-primary" data-save>Save</button>"#),
+                        && html.contains(r#"class="btn-primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7-->"#),
                     "{tab:?}"
                 );
                 assert!(
@@ -2664,7 +2664,8 @@ mod tests {
         data.engine_networks[2].saved_count = 0;
         let html = page(&data);
         assert!(
-            html.contains(r#"<mk-settings-card id="card-network-mainnet" class="settings-card node-network" name="network-mainnet" data-network="mainnet" data-tenant-count="2" data-saved-count="1" role="region" aria-labelledby="card-network-mainnet-title"><header class="card-head"><h3 id="card-network-mainnet-title">Mainnet</h3><span class="owner-chip">Engine</span><span class="card-meta">Used by 2 stores</span>"#),
+            html.contains(r#"<section id="card-network-mainnet" class="settings-card node-network" data-name="network-mainnet" role="region" aria-labelledby="card-network-mainnet-title""#)
+                && html.contains(r#" data-network="mainnet" data-tenant-count="2" data-saved-count="1"><header class="card-head"><h3 id="card-network-mainnet-title">Mainnet</h3><span class="owner-chip">Engine</span><span class="card-meta">Used by 2 stores</span>"#),
             "{html}"
         );
         let testnet = &html[html.find(r#"data-network="testnet""#).unwrap()..];
@@ -2927,7 +2928,7 @@ mod tests {
         // The snp backend's device and minimum security version sit in its
         // own section, hidden while snp is off; plain has nothing to set.
         let snp = html
-            .find(r#"<mk-settings-card id="card-custody-snp" class="settings-card" name="custody-snp" data-shown-by="key_custody.enabled_backends=snp" hidden"#)
+            .find(r#"<section id="card-custody-snp" class="settings-card" data-name="custody-snp" data-shown-by="key_custody.enabled_backends=snp" hidden"#)
             .expect(&html);
         assert!(
             html.find(r#"name="key_custody.snp_trusted_id_key""#)
@@ -2949,16 +2950,21 @@ mod tests {
             !html.contains(r#"data-shown-by="key_custody.enabled_backends=plain""#),
             "nothing to set up for plain: {html}"
         );
-        // Shown as soon as it's ticked, with JavaScript: the settings
-        // components show a card as its data-shown-by says.
+        // Shown as soon as it's ticked, with JavaScript: the card's
+        // behaviour shows it as its shown_by says.
         assert!(
-            html.contains(&crate::assets::url("settings-form.js")),
+            html.contains(&crate::assets::url("ui-islands.js")),
             "{html}"
         );
-        assert!(ui::assets::SETTINGS_JS.contains(r#"mk-settings-card[data-shown-by]"#));
 
         let html = page("plain,snp");
-        assert!(html.contains(r#"<mk-settings-card id="card-custody-snp" class="settings-card" name="custody-snp" data-shown-by="key_custody.enabled_backends=snp" role="region" aria-labelledby="card-custody-snp-title"><header class="card-head"><h3 id="card-custody-snp-title">SEV-SNP</h3>"#), "{html}");
+        assert!(html.contains(r#"<section id="card-custody-snp" class="settings-card" data-name="custody-snp" data-shown-by="key_custody.enabled_backends=snp" role="region" aria-labelledby="card-custody-snp-title""#), "{html}");
+        assert!(
+            html.contains(
+                r#"<header class="card-head"><h3 id="card-custody-snp-title">SEV-SNP</h3>"#
+            ),
+            "{html}"
+        );
         assert!(html.contains(r#"value="snp" checked"#), "{html}");
     }
 
@@ -3091,10 +3097,10 @@ mod tests {
     /// A card, by id, as the page renders it: from its start to its end.
     fn card<'a>(html: &'a str, group: &str) -> &'a str {
         let start = html
-            .find(&format!(r#"<mk-settings-card id="card-{group}""#))
+            .find(&format!(r#"<section id="card-{group}""#))
             .unwrap_or_else(|| panic!("card-{group} in {html}"));
         let rest = &html[start..];
-        &rest[..rest.find("</mk-settings-card>").unwrap()]
+        &rest[..rest.find("</section>").unwrap()]
     }
 
     #[test]
@@ -3135,11 +3141,9 @@ mod tests {
                 card.contains(&format!(r#"name="{key}""#)),
                 "{group}: {card}"
             );
-            // Its own Discard, shown by the script while it has changes.
-            assert!(
-                card.contains(r#"<button type="button" class="card-discard js-only" data-card-discard hidden>Discard</button>"#),
-                "{card}"
-            );
+            // Its own Discard, the behaviour's (at its marker) while it has
+            // changes.
+            assert!(card.contains(r#"<!--mk:5--></header>"#), "{card}");
         }
         // Subheadings inside a card where it has parts.
         let rates = card(&payments, "exchange-rates");
@@ -3186,22 +3190,22 @@ mod tests {
     fn the_save_bar_is_the_tabs_one_save_and_discard_loads_the_tab_again() {
         let html = page(&full_view(SettingsTab::Payments));
         let form = &html[html.find("<form ").unwrap()..html.find("</form>").unwrap()];
-        let bar = &form[form.find(r#"<mk-save-bar id="save-bar""#).expect(form)..];
+        let bar = &form[form.find(r#"<div id="save-bar""#).expect(form)..];
         assert!(
-            bar.starts_with(r#"<mk-save-bar id="save-bar" class="save-bar" role="region" aria-label="Save changes">"#),
+            bar.starts_with(
+                r#"<div id="save-bar" class="save-bar" role="region" aria-label="Save changes""#
+            ),
             "{bar}"
         );
         assert!(bar.contains(
             "Saving writes the changes on this tab to the options file and applies them."
         ));
         assert!(
-            bar.contains(r#"<a class="btn" href="/dashboard/admin/settings?tab=payments" data-discard-all>Discard changes</a><button type="submit" class="btn-primary" data-save>Save</button>"#),
+            bar.contains(r#"<a class="btn" href="/dashboard/admin/settings?tab=payments" data-discard-all data-mk="5">Discard changes</a><button type="submit" class="btn-primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7-->"#),
             "{bar}"
         );
         // After every card, last in the form.
-        assert!(
-            form.rfind("</mk-settings-card>").unwrap() < form.find(r#"id="save-bar""#).unwrap()
-        );
+        assert!(form.rfind("</section>").unwrap() < form.find(r#"id="save-bar""#).unwrap());
     }
 
     #[test]
@@ -3231,16 +3235,14 @@ mod tests {
 
         let webhooks = card(&html, "webhooks");
         assert!(
-            webhooks.starts_with(
-                r#"<mk-settings-card id="card-webhooks" class="settings-card is-failed""#
-            ),
+            webhooks.starts_with(r#"<section id="card-webhooks" class="settings-card is-failed""#),
             "{webhooks}"
         );
         assert!(
-            webhooks.contains(r#"<span class="mk-status-text" data-tone="error" data-card-failed>Not saved</span>"#),
+            webhooks.contains(r#"<span class="mk-status-text" data-tone="error" data-card-failed data-mk="3">Not saved</span>"#),
             "{webhooks}"
         );
-        assert!(webhooks.contains(r#"<p class="error" role="alert">The engine refused the change: order_events.retention_days must be from 1 to 365.</p>"#), "{webhooks}");
+        assert!(webhooks.contains(r#"<p class="error" role="alert" data-mk="6">The engine refused the change: order_events.retention_days must be from 1 to 365.</p>"#), "{webhooks}");
         // What was typed, still to fix, with the saved value for Discard.
         assert!(
             webhooks.contains(r#"name="order_events.retention_days" value="900""#),
@@ -3252,16 +3254,16 @@ mod tests {
 
         // The card that was saved says when; the others say nothing.
         assert!(card(&html, "exchange-rates").contains(
-            r#"<span class="card-meta card-saved" data-card-saved>Saved 8 Oct, 14:22</span>"#
+            r#"<span class="card-meta card-saved" data-card-saved data-mk="4">Saved 8 Oct, 14:22</span>"#
         ));
         assert!(!card(&html, "orders").contains("Saved 8 Oct"));
 
         // The bar is red, says why, links to the card, and takes focus.
         assert!(
-            html.contains(r#"<mk-save-bar id="save-bar" class="save-bar is-failed""#),
+            html.contains(r#"<div id="save-bar" class="save-bar is-failed""#),
             "{html}"
         );
-        assert!(html.contains(r##"<p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus><strong>Changes partly saved.</strong> The engine refused the change: order_events.retention_days must be from 1 to 365. <a href="#card-webhooks" data-show-card="webhooks">Show</a></p>"##), "{html}");
+        assert!(html.contains(r##"<p class="save-bar-message" data-save-bar-message tabindex="-1" data-fx-focus><span data-mk="2"><strong>Changes partly saved.</strong> The engine refused the change: order_events.retention_days must be from 1 to 365. <a href="#card-webhooks" data-show-card="webhooks">Show</a></span><!--mk:3--></p>"##), "{html}");
         // Nothing saved: no card says it was.
         data.outcome = Some(SaveOutcome::Refused { failures });
         let html = page(&data);
@@ -3275,7 +3277,7 @@ mod tests {
             }],
         });
         let html = page(&data);
-        assert!(html.contains(r#"data-fx-focus><strong>Nothing saved.</strong> Could not reach the configured engine: connection refused</p>"#), "{html}");
+        assert!(html.contains(r#"data-fx-focus><span data-mk="2"><strong>Nothing saved.</strong> Could not reach the configured engine: connection refused</span><!--mk:3--></p>"#), "{html}");
     }
 
     #[test]
@@ -3298,7 +3300,7 @@ mod tests {
         };
         let success = toast(ToastKind::Success, None);
         assert!(success.contains(r#"class="toast toast-success" role="status""#));
-        assert!(success.contains(ui::assets::icons::CHECK));
+        assert!(success.contains(r#"<path d="m4 12 5 5L20 6">"#));
         assert!(success.contains("<strong>Webhooks saved and applied</strong>"));
         assert!(success.contains(r#"<span class="toast-line">One more thing.</span>"#));
         assert!(!success.contains("Show"), "{success}");
@@ -3415,7 +3417,7 @@ mod tests {
         assert_eq!(html.matches("data-fx-focus").count(), 1, "{html}");
         assert!(
             card(&html, "webhooks")
-                .contains(r#"data-card-saved tabindex="-1" data-fx-focus>Saved now"#),
+                .contains(r#"data-card-saved tabindex="-1" data-fx-focus data-mk="4">Saved now"#),
             "{html}"
         );
         data.outcome = Some(SaveOutcome::Refused {

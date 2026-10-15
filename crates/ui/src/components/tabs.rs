@@ -20,6 +20,7 @@ component! {
         tabs: Vec<Tab>,
     }
     behaviour "tabs.behaviour.ts" {
+        uses(tabs),
         /// The shown panel's id.
         selected: String,
         fn pick(String),
@@ -112,9 +113,9 @@ pub(super) fn tab_links_examples() -> Vec<(&'static str, TabLinks)> {
         TabLinks::new(
             "Example settings navigation",
             vec![
-                link("#tab-links", "General", true),
-                link("#select", "Networks", false),
-                link("#alert", "Notifications", false),
+                link("#component-tab-links", "General", true),
+                link("#component-select", "Networks", false),
+                link("#component-alert", "Notifications", false),
             ],
         ),
     )]

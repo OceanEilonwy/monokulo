@@ -7,6 +7,7 @@ mod copy;
 mod feedback;
 mod forms;
 mod select;
+mod settings;
 mod steps;
 mod tabs;
 
@@ -15,6 +16,7 @@ pub use copy::*;
 pub use feedback::*;
 pub use forms::*;
 pub use select::*;
+pub use settings::*;
 pub use steps::*;
 pub use tabs::*;
 
@@ -61,5 +63,30 @@ pub fn catalogue() -> Vec<Specimens> {
         specimens(tabs::tabs_examples()),
         specimens(tabs::tab_links_examples()),
         specimens(copy::copy_value_examples()),
+        specimens(settings::settings_form_examples())
+            .partial(
+                "page-form",
+                settings::page_form(
+                    "#page-forms",
+                    "example",
+                    "example-store-name",
+                    "Save example settings",
+                    "Example save changes",
+                ),
+            )
+            .partial(
+                "form-grouped",
+                settings::page_form(
+                    "./form-grouped.html",
+                    "grouped-details",
+                    "grouped-name",
+                    "Save settings",
+                    "Save changes",
+                ),
+            ),
+        specimens(settings::settings_card_examples()),
+        specimens(settings::setting_examples()),
+        specimens(settings::save_bar_examples()),
+        specimens(settings::toast_examples()),
     ]
 }

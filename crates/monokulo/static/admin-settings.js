@@ -1,6 +1,6 @@
 // The admin settings page's Monero nodes, with JavaScript
 // (crates/monokulo/src/views/admin.rs). The page's cards, save bar and
-// toasts are the settings components (static/settings-form.js); without
+// toasts are the settings components (the ui crate's islands); without
 // either script the page already works: rows open to be edited, Move up and
 // Move down reorder, and each button saves at once. This adds:
 //   - node rows reorder by dragging their handle (or its arrow keys), and
@@ -18,7 +18,6 @@
   var listsAtLoad = {};
 
   function each(root, selector, fn) { Array.prototype.forEach.call(root.querySelectorAll(selector), fn); }
-  function settings() { return document.querySelector("mk-settings-form"); }
 
   function ticks(el) { return el.type === "checkbox" || el.type === "radio"; }
 
@@ -44,7 +43,7 @@
 
   // A network's changes: rows edited, added or taken out, and one more
   // for a new order of the rows that were there. Counted with the card's
-  // own settings (settings-form.js asks with "mk-count").
+  // own settings (the settings card's behaviour asks with "mk-count").
   function networkChanges(card) {
     var rows = Array.prototype.slice.call(card.querySelectorAll("[data-node-row]"));
     var savedCount = Number(card.getAttribute("data-saved-count")) || 0;
@@ -129,9 +128,11 @@
     });
   }
 
+  // The settings form hears that something changed which isn't a
+  // setting's control (a row moved, added or taken out).
   function changed() {
-    var form = settings();
-    if (form && form.changed) form.changed();
+    var form = document.getElementById("settings-form");
+    if (form) form.dispatchEvent(new CustomEvent("mk-changed"));
   }
 
   // ---- reordering node rows --------------------------------------------

@@ -4,8 +4,8 @@
 // address and the old, and the new one typed again. Once they match, the
 // form is sent with it, and the save goes straight through.
 //
-// Loaded before the settings components (static/settings-form.js): a save
-// this holds back never reaches them, so the page still guards the unsaved
+// Loaded before the settings components (the ui crate's islands script): a
+// save this holds back never reaches them, so the page still guards the unsaved
 // change.
 (function () {
   "use strict";

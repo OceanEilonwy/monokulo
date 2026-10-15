@@ -1,7 +1,7 @@
 // @ts-check
 // A wallet's page (crates/monokulo/src/views/wallets.rs, detail_page): its
 // name is a Details card with the settings components (views::settings,
-// static/settings-form.js), saved with the page's save bar: marked when
+// crates/ui), saved with the page's save bar: marked when
 // changed, put back with Discard, renamed with a toast, a refused name kept
 // to fix. Without JavaScript the save bar is always there.
 const { test, expect } = require('../coverage-test');

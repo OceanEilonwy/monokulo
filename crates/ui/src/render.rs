@@ -9,39 +9,44 @@ pub fn render_component<C: Component>(component: &C, buffer: &mut String) {
     render_info(C::info(), component.props(), buffer);
 }
 
-/// An interactive component renders as an island: its markup inside
-/// `<mk-island>`, with its props as JSON for the behaviour that attaches in
-/// the browser. Without JavaScript the markup is all there is.
+/// An interactive component renders as an island: its root element names
+/// it and carries the props its behaviour reads, as JSON, for the behaviour
+/// that attaches in the browser. Without JavaScript the markup is all there
+/// is.
 pub(crate) fn render_info(
     info: &'static ComponentInfo,
     props: Vec<(&'static str, Value)>,
     buffer: &mut String,
 ) {
-    if let Some(behaviour) = &info.behaviour {
-        buffer.push_str("<mk-island component=\"");
-        buffer.push_str(info.name);
-        buffer.push_str("\" mount=\"");
-        buffer.push_str(behaviour.mount);
-        buffer.push_str("\"><script type=\"application/json\" data-props>");
-        // `<` escaped, so no value can end the script early.
+    // An interactive component's root element is its island: it names the
+    // component and carries its props, for the behaviour that attaches in
+    // the browser (web/islands.ts).
+    let island = info.behaviour.as_ref().map(|behaviour| {
         let json = serde_json::to_string(&crate::json::island_props(info, &props)).expect("JSON");
-        buffer.push_str(&json.replace('<', "\\u003c"));
-        buffer.push_str("</script>");
-    }
+        let mut attrs = String::new();
+        write_attr("data-island", Some(info.name), &mut attrs);
+        if behaviour.mount != "load" {
+            write_attr("data-mount", Some(behaviour.mount), &mut attrs);
+        }
+        write_attr("data-props", Some(&json), &mut attrs);
+        attrs
+    });
     let scope = Scope {
+        info,
         props: &props,
         binds: Vec::new(),
+        island: std::cell::Cell::new(island),
     };
     nodes(&info.template, &scope, buffer);
-    if info.behaviour.is_some() {
-        buffer.push_str("</mk-island>");
-    }
 }
 
 struct Scope<'a> {
     props: &'a [(&'static str, Value)],
-    /// `@for` and `@if let` bindings, innermost last.
-    binds: Vec<(&'static str, &'a Value)>,
+    info: &'static ComponentInfo,
+    /// `@for` and `@if let` bindings and their types, innermost last.
+    binds: Vec<(&'static str, &'a Value, Option<crate::Ty>)>,
+    /// The island's attributes, for the root element (the first rendered).
+    island: std::cell::Cell<Option<String>>,
 }
 
 impl<'a> Scope<'a> {
@@ -51,8 +56,8 @@ impl<'a> Scope<'a> {
             .binds
             .iter()
             .rev()
-            .find(|(name, _)| name == first)
-            .map(|(_, v)| *v)
+            .find(|(name, _, _)| name == first)
+            .map(|(_, v, _)| *v)
             .or_else(|| self.props.iter().find(|(n, _)| n == first).map(|(_, v)| v))
             .unwrap_or_else(|| panic!("the template names `{first}`, which no prop or binding is"));
         for field in rest {
@@ -68,12 +73,30 @@ impl<'a> Scope<'a> {
         value
     }
 
-    fn with(&self, name: &'static str, value: &'a Value) -> Scope<'a> {
+    /// A path's type, as the component declares it.
+    fn ty(&self, path: Path) -> Option<crate::Ty> {
+        let (first, rest) = path.split_first()?;
+        let mut ty = match self.binds.iter().rev().find(|(name, _, _)| name == first) {
+            Some((_, _, ty)) => (*ty)?,
+            None => self.info.prop(first)?.ty,
+        };
+        for field in rest {
+            let crate::Ty::Record(record) = ty else {
+                return None;
+            };
+            ty = record().fields.iter().find(|f| f.name == *field)?.ty;
+        }
+        Some(ty)
+    }
+
+    fn with(&self, name: &'static str, value: &'a Value, ty: Option<crate::Ty>) -> Scope<'a> {
         let mut binds = self.binds.clone();
-        binds.push((name, value));
+        binds.push((name, value, ty));
         Scope {
+            info: self.info,
             props: self.props,
             binds,
+            island: std::cell::Cell::new(None),
         }
     }
 }
@@ -89,6 +112,9 @@ fn nodes(list: &[Node], scope: &Scope<'_>, out: &mut String) {
                 }
                 if let Some(mark) = element.mark {
                     out.push_str(&format!(" data-mk=\"{mark}\""));
+                }
+                if let Some(island) = scope.island.take() {
+                    out.push_str(&island);
                 }
                 if let Some(path) = element.spread {
                     let Value::Attrs(attrs) = scope.resolve(path) else {
@@ -110,7 +136,13 @@ fn nodes(list: &[Node], scope: &Scope<'_>, out: &mut String) {
                     out.push('>');
                 }
             }
-            Node::Enhanced { mark, .. } => out.push_str(&format!("<!--mk:{mark}-->")),
+            Node::Enhanced { mark, fallback, .. } => {
+                out.push_str(&format!("<!--mk:{mark}-->"));
+                if !fallback.is_empty() {
+                    nodes(fallback, scope, out);
+                    out.push_str(&format!("<!--/mk:{mark}-->"));
+                }
+            }
             Node::Text(text) => escape(text, out),
             Node::Value(path) => content(scope.resolve(path), out),
             Node::If {
@@ -131,14 +163,24 @@ fn nodes(list: &[Node], scope: &Scope<'_>, out: &mut String) {
                 otherwise,
             } => match scope.resolve(path) {
                 Value::Null => nodes(otherwise, scope, out),
-                value => nodes(then, &scope.with(bind, value), out),
+                value => {
+                    let ty = match scope.ty(path) {
+                        Some(crate::Ty::Option(inner)) => Some(*inner),
+                        other => other,
+                    };
+                    nodes(then, &scope.with(bind, value, ty), out)
+                }
             },
             Node::For { bind, path, body } => {
                 let Value::List(items) = scope.resolve(path) else {
                     panic!("@for runs over a list");
                 };
+                let ty = match scope.ty(path) {
+                    Some(crate::Ty::List(inner)) => Some(*inner),
+                    _ => None,
+                };
                 for item in items {
-                    nodes(body, &scope.with(bind, item), out);
+                    nodes(body, &scope.with(bind, item, ty), out);
                 }
             }
         }
@@ -184,13 +226,20 @@ fn parts(list: &[Part], scope: &Scope<'_>) -> String {
 
 fn cond(c: &Cond, scope: &Scope<'_>) -> bool {
     match c {
-        Cond::Truthy(p) => scope.resolve(p).truthy(),
+        // An `Option` is true when set, even to an empty string.
+        Cond::Truthy(p) => match scope.ty(p) {
+            Some(crate::Ty::Option(_)) => *scope.resolve(p) != Value::Null,
+            _ => scope.resolve(p).truthy(),
+        },
         Cond::Not(c) => !cond(c, scope),
         Cond::Eq(p, variant, equal) => {
-            let Value::Enum(value) = scope.resolve(p) else {
-                panic!("== compares an enum");
+            // An unset `Option` is no variant.
+            let value = match scope.resolve(p) {
+                Value::Enum(value) => Some(*value),
+                Value::Null => None,
+                _ => panic!("== compares an enum"),
             };
-            (value == variant) == *equal
+            (value == Some(*variant)) == *equal
         }
         Cond::Same(a, b, equal) => (scope.resolve(a) == scope.resolve(b)) == *equal,
         Cond::Enhanced => false,

@@ -214,6 +214,7 @@ component! {
         rest: Attrs,
     }
     behaviour "select.behaviour.ts" {
+        uses(search),
         expanded: AriaBool,
         /// The button's accessible name: the select's label.
         name: Option<String>,

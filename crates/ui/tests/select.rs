@@ -81,7 +81,8 @@ fn only_current_is_green() {
 }
 
 /// The server renders the select an island attaches to: the select with
-/// a mark to find it by, and a marker where the button and list go.
+/// a mark to find it by, and a marker where the button and list go. Its
+/// root is the island: it names the component and carries its props.
 #[test]
 fn a_select_is_an_island_around_a_working_select() {
     let html = Select::new("network", vec![Choice::new("mainnet", "Mainnet")])
@@ -93,10 +94,9 @@ fn a_select_is_an_island_around_a_working_select() {
     assert_eq!(
         html,
         concat!(
-            r#"<mk-island component="Select" mount="load"><script type="application/json" data-props>"#,
-            r#"{"aria-describedby":"net-help","compact":false,"disabled":false,"id":"net","name":"network","options":[{"current":false,"disabled":false,"label":"Mainnet","selected":false,"text":"Mainnet","value":"mainnet"}],"required":true,"search":"auto"}"#,
-            r#"</script><div class="mk-select" data-mk="1"><select class="mk-input" name="network" id="net" required data-mk="2" aria-describedby="net-help">"#,
-            r#"<option value="mainnet">Mainnet</option></select><!--mk:3--></div></mk-island>"#
+            r#"<div class="mk-select" data-mk="1" data-island="Select" data-props="{&quot;search&quot;:&quot;auto&quot;}">"#,
+            r#"<select class="mk-input" name="network" id="net" required data-mk="2" aria-describedby="net-help">"#,
+            r#"<option value="mainnet">Mainnet</option></select><!--mk:3--></div>"#
         )
     );
 }

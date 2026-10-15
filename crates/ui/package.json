@@ -12,7 +12,6 @@
     "./navigation.css": "./web/components/navigation.css",
     "./steps.css": "./web/components/steps.css",
     "./action-card.css": "./web/components/action-card.css",
-    "./settings": "./web/components/settings.js",
     "./settings.css": "./web/components/settings.css",
     "./patterns.css": "./web/components/patterns.css",
     "./icons/*": "./web/icons/*",
