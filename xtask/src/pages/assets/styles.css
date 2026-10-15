@@ -28,20 +28,6 @@ pre code{border:0;padding:0;background:none;font-size:inherit}
 @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 
 /* ============================================================
-   Site header (xtask/src/pages/site_header.rs): the brand and the
-   site's links on every page. It sets its own font, sizes and line
-   height, so the page around it cannot change its height.
-   ============================================================ */
-.site-header{background:var(--chrome-bg);color:var(--chrome-ink);border-bottom:3px solid var(--chrome-rule);font:700 15px/1.2 var(--font-ui)}
-.site-header .bar{max-width:1120px;min-height:62px;margin:0 auto;padding:var(--space-md) var(--space-lg);display:flex;align-items:center;justify-content:space-between;gap:var(--space-lg);flex-wrap:wrap}
-.site-header .brand{display:flex;align-items:center;gap:var(--space-sm);color:var(--chrome-ink);text-decoration:none;font-weight:800;font-size:20px}
-.site-header .logo-mark{display:block;flex:none}
-.site-header nav{display:flex;gap:var(--space-lg);flex-wrap:wrap}
-.site-header nav a{color:var(--chrome-ink);text-decoration:none}
-.site-header nav a:hover{text-decoration:underline}
-.site-header nav a[aria-current]{color:var(--accent-text)}
-
-/* ============================================================
    Base: layout
    ============================================================ */
 main{max-width:1120px;margin:0 auto;padding:var(--space-2xl) var(--space-lg) 80px;display:flex;flex-direction:column;gap:var(--space-xl)}
@@ -59,13 +45,6 @@ main{max-width:1120px;margin:0 auto;padding:var(--space-2xl) var(--space-lg) 80p
 /* ============================================================
    Base: controls
    ============================================================ */
-/* Buttons: a link or a button; .btn-primary is the one orange action,
-   .btn-sm the small one beside a table or on a code block. */
-.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 var(--space-xl);border:1px solid var(--btn-border);border-radius:var(--radius-md);background:var(--btn-bg);color:var(--btn-ink);font:700 16px var(--font-ui);text-decoration:none;cursor:pointer}
-.btn:hover{background:var(--btn-hover-bg);border-color:var(--btn-hover-border);color:var(--btn-ink)}
-.btn-primary{background:var(--btn-primary-bg);border-color:var(--btn-primary-bg);color:var(--btn-primary-ink)}
-.btn-primary:hover{background:var(--btn-primary-hover);border-color:var(--btn-primary-hover);color:var(--btn-primary-ink)}
-.btn-sm{min-height:30px;padding:0 var(--space-md);border-radius:var(--radius-sm);font-size:13px}
 
 /* Tabs: links to pages (aria-current) or buttons over panels (aria-selected),
    the current one underlined; .c is a count beside the label. */
@@ -75,9 +54,6 @@ main{max-width:1120px;margin:0 auto;padding:var(--space-2xl) var(--space-lg) 80p
 .tabs>a[aria-current="page"],.tabs>[role=tab][aria-selected="true"]{color:var(--ink);border-bottom-color:var(--tab-current)}
 .tabs .c{font-weight:600;color:var(--muted);font-size:12px;margin-left:4px}
 
-/* A note set apart from the text around it: a warning, or .info. */
-.note{padding:var(--space-md) var(--space-lg);border-radius:var(--radius-md);background:var(--tint-warning);border:1px solid var(--warning);font-size:15px}
-.note.info{background:var(--tint-neutral);border-color:var(--line-strong)}
 
 /* Tables: .tbl scrolls one sideways on a narrow screen; .r is a number column. */
 .tbl{overflow-x:auto}
@@ -110,9 +86,6 @@ main.home{max-width:1040px;gap:56px}
 .install ol>li{display:flex;gap:var(--space-lg)}
 .install ol>li>div{flex:1;min-width:0;display:flex;flex-direction:column;gap:var(--space-sm)}
 .num{flex-shrink:0;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:var(--tint-highlight);border:1px solid var(--accent-text);color:var(--ink);font-weight:800}
-.card>.tabs{margin:-4px 0 var(--space-xl)}
-.tabpanel+.tabpanel{margin-top:var(--space-xl)}
-.js .tabpanel+.tabpanel{margin-top:0}
 .js .nojs{display:none}
 /* A command with its Copy button over the top right corner. */
 .cmd{position:relative}
@@ -128,7 +101,6 @@ main.home{max-width:1040px;gap:56px}
 .path em{font-style:normal;text-decoration:underline;text-underline-offset:3px}
 .target-pick{margin-top:var(--space-md);display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-sm)}
 .target-pick label{font-weight:700}
-.target-pick select{min-height:44px;padding:0 var(--space-md);border:1px solid var(--btn-border);border-radius:var(--radius-md);background:var(--btn-bg);color:var(--btn-ink);font:700 16px var(--font-ui)}
 
 @media (max-width:820px){
   main.home{gap:40px}

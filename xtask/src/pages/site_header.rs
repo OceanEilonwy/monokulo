@@ -1,7 +1,6 @@
 //! The header every page of the GitHub Pages site shares: the brand and the
 //! site's links, the same on the landing page, the docs and the testing
-//! report. Its rules are the "Site header" section of the site's one
-//! stylesheet, `xtask/src/pages/assets/styles.css`.
+//! report: `ui::SiteNav`, monokulo's own bar.
 
 use crate::logo;
 use maud::{html, Markup, PreEscaped};
@@ -28,25 +27,23 @@ pub(super) fn render(current: Section, root: &str, github_url: &str) -> Markup {
         }
     };
     let home = if root.is_empty() { "./" } else { root };
-    html! {
-        header.site-header {
-            div.bar {
-                a.brand href=(home) {
-                    svg.logo-mark width="30" height="30" viewBox="0 0 64 64" aria-hidden="true" focusable="false" {
-                        (PreEscaped(logo::small()))
-                    }
-                    span { "Monokulo" }
-                }
-                nav aria-label="Site" {
-                    a href=(format!("{root}#how")) { "How it works" }
-                    a href=(format!("{root}#install")) { "Install" }
-                    (link(Section::Docs, format!("{root}docs/"), "Docs"))
-                    (link(Section::Testing, format!("{root}testing/"), "Testing"))
-                    a href=(github_url) { "Source code" }
-                }
-            }
+    let brand = html! {
+        svg.site-nav-logo.logo-mark width="30" height="30" viewBox="0 0 64 64" aria-hidden="true" focusable="false" {
+            (PreEscaped(logo::small()))
         }
-    }
+        "Monokulo"
+    };
+    let links = html! {
+        a href=(format!("{root}#how")) { "How it works" }
+        a href=(format!("{root}#install")) { "Install" }
+        (link(Section::Docs, format!("{root}docs/"), "Docs"))
+        (link(Section::Testing, format!("{root}testing/"), "Testing"))
+        a href=(github_url) { "Source code" }
+    };
+    ui::SiteNav::new(brand, links)
+        .home(home)
+        .width(ui::PageWidth::Wide)
+        .render()
 }
 
 #[cfg(test)]
@@ -72,7 +69,7 @@ mod tests {
                 .collect();
             assert_eq!(
                 labels,
-                ["How it works", "Install", "Docs", "Testing", "Source code"],
+                ["Monokulo", "How it works", "Install", "Docs", "Testing", "Source code"],
                 "{section:?} at {root:?}"
             );
             for href in ["#how", "#install", "docs/", "testing/"] {
@@ -95,6 +92,6 @@ mod tests {
         }
         assert!(render(Section::Home, "", GITHUB_URL)
             .0
-            .contains(r#"class="brand" href="./""#));
+            .contains(r#"<a href="./" class="site-nav-brand">"#));
     }
 }

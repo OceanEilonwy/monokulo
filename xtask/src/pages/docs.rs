@@ -130,16 +130,12 @@ pub(super) fn render(page: &Page, markdown: &str) -> Markup {
             body {
                 (site_header::render(Section::Docs, &format!("{up}../"), GITHUB_URL))
                 main.docs-page {
-                    nav.tabs aria-label="Docs" {
-                        @for other in &PAGES {
-                            @let href = if other.dir.is_empty() { format!("{up}./") } else { format!("{up}{}/", other.dir) };
-                            @if other.dir == page.dir {
-                                a href=(href) aria-current="page" { (other.tab) }
-                            } @else {
-                                a href=(href) { (other.tab) }
-                            }
-                        }
-                    }
+                    (ui::TabLinks::new("Docs", PAGES.iter().map(|other| ui::TabLink {
+                        href: if other.dir.is_empty() { format!("{up}./") } else { format!("{up}{}/", other.dir) },
+                        label: other.tab.into(),
+                        current: other.dir == page.dir,
+                        count: None,
+                    }).collect::<Vec<_>>()))
                     article { (markdown_html(markdown)) }
                 }
             }
