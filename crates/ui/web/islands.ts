@@ -13,6 +13,10 @@
 // island's behaviour never renders what's inside its slots.
 import { islands } from '../solid/islands';
 
+// Scripts run: `data-only="script"` shows and `data-only="no-script"`
+// goes (primitives.css).
+document.documentElement.classList.add('js');
+
 const INTERACTION = ['pointerdown', 'focusin', 'keydown'] as const;
 const attached = new WeakMap<Element, () => void>();
 const waiting = new WeakMap<Element, () => void>();

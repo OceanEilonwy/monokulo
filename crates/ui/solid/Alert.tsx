@@ -8,11 +8,21 @@ import type { Tone } from './types';
 /**
  * A message about the page or what just happened: a refused save, a
  * node that's down, a save that went through. An error is announced
- * (`role="alert"`), the rest are statuses, unless `quiet`.
+ * (`role="alert"`), the rest are statuses, unless `quiet`. A message
+ * that asks for something takes a `title` and `actions` (Dismiss, a
+ * link to fix it).
  */
-export interface AlertProps extends Omit<JSX.HTMLAttributes<HTMLElement>, "block" | "children" | "class" | "classList" | "quiet" | "ref" | "role" | "style" | "tone"> {
+export interface AlertProps extends Omit<JSX.HTMLAttributes<HTMLElement>, "actions" | "block" | "children" | "class" | "classList" | "quiet" | "ref" | "role" | "style" | "title" | "tone"> {
   children: JSX.Element;
   tone: Tone;
+  /**
+   * Bold, before the words.
+   */
+  title?: string;
+  /**
+   * Under the words: buttons or links.
+   */
+  actions?: JSX.Element;
   /**
    * Not announced: a message that is part of the page as it loads.
    * @default false
@@ -28,21 +38,57 @@ export interface AlertProps extends Omit<JSX.HTMLAttributes<HTMLElement>, "block
 /**
  * A message about the page or what just happened: a refused save, a
  * node that's down, a save that went through. An error is announced
- * (`role="alert"`), the rest are statuses, unless `quiet`.
+ * (`role="alert"`), the rest are statuses, unless `quiet`. A message
+ * that asks for something takes a `title` and `actions` (Dismiss, a
+ * link to fix it).
  */
 export function Alert(props: AlertProps): JSX.Element {
-  const rest = omit(props, "children", "tone", "quiet", "block");
+  const rest = omit(props, "children", "tone", "title", "actions", "quiet", "block");
   return (
     <>
       {(props.quiet ?? false) ? (
         <>
           {(props.block ?? false) ? (
             <div class={props.tone} {...rest}>
+              {props.title != null ? (
+                <>
+                  <strong class="alert-title">
+                    {props.title}
+                  </strong>
+                  {" "}
+                </>
+              ) : (
+                null
+              )}
               {props.children}
+              {props.actions != null ? (
+                <span class="alert-actions">
+                  {props.actions}
+                </span>
+              ) : (
+                null
+              )}
             </div>
           ) : (
             <p class={props.tone} {...rest}>
+              {props.title != null ? (
+                <>
+                  <strong class="alert-title">
+                    {props.title}
+                  </strong>
+                  {" "}
+                </>
+              ) : (
+                null
+              )}
               {props.children}
+              {props.actions != null ? (
+                <span class="alert-actions">
+                  {props.actions}
+                </span>
+              ) : (
+                null
+              )}
             </p>
           )}
         </>
@@ -52,11 +98,45 @@ export function Alert(props: AlertProps): JSX.Element {
             <>
               {(props.block ?? false) ? (
                 <div class={props.tone} role="alert" {...rest}>
+                  {props.title != null ? (
+                    <>
+                      <strong class="alert-title">
+                        {props.title}
+                      </strong>
+                      {" "}
+                    </>
+                  ) : (
+                    null
+                  )}
                   {props.children}
+                  {props.actions != null ? (
+                    <span class="alert-actions">
+                      {props.actions}
+                    </span>
+                  ) : (
+                    null
+                  )}
                 </div>
               ) : (
                 <p class={props.tone} role="alert" {...rest}>
+                  {props.title != null ? (
+                    <>
+                      <strong class="alert-title">
+                        {props.title}
+                      </strong>
+                      {" "}
+                    </>
+                  ) : (
+                    null
+                  )}
                   {props.children}
+                  {props.actions != null ? (
+                    <span class="alert-actions">
+                      {props.actions}
+                    </span>
+                  ) : (
+                    null
+                  )}
                 </p>
               )}
             </>
@@ -64,11 +144,45 @@ export function Alert(props: AlertProps): JSX.Element {
             <>
               {(props.block ?? false) ? (
                 <div class={props.tone} role="status" {...rest}>
+                  {props.title != null ? (
+                    <>
+                      <strong class="alert-title">
+                        {props.title}
+                      </strong>
+                      {" "}
+                    </>
+                  ) : (
+                    null
+                  )}
                   {props.children}
+                  {props.actions != null ? (
+                    <span class="alert-actions">
+                      {props.actions}
+                    </span>
+                  ) : (
+                    null
+                  )}
                 </div>
               ) : (
                 <p class={props.tone} role="status" {...rest}>
+                  {props.title != null ? (
+                    <>
+                      <strong class="alert-title">
+                        {props.title}
+                      </strong>
+                      {" "}
+                    </>
+                  ) : (
+                    null
+                  )}
                   {props.children}
+                  {props.actions != null ? (
+                    <span class="alert-actions">
+                      {props.actions}
+                    </span>
+                  ) : (
+                    null
+                  )}
                 </p>
               )}
             </>

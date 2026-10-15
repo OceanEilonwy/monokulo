@@ -38,3 +38,15 @@
 .mk-copy:has(> .mk-copy-preview) > .mk-copy-value:not(:focus) { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); }
 .mk-copy > .mk-copy-value:focus ~ .mk-copy-preview { display: none; }
 
+
+/* Lines to copy (CopyBlock): the Copy button over the top right corner. */
+.mk-copy-block { position: relative; min-width: 0; }
+.mk-copy-block > pre { margin: 0; padding: var(--space-md) var(--space-lg); padding-right: 6rem; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-md); font: var(--text-sm)/1.6 var(--font-mono); }
+.mk-copy-block > pre > code { border: 0; padding: 0; background: none; font: inherit; }
+.mk-copy-block > .mk-btn { position: absolute; top: var(--space-sm); right: var(--space-sm); }
+@media (max-width: 520px) { .mk-copy-block > pre { padding: 2.8rem var(--space-md) var(--space-md); } }
+/* One view of a few (SegmentedControl): the pressed one underlined. */
+.mk-segmented { display: flex; flex-wrap: wrap; gap: var(--space-lg); border-bottom: 2px solid var(--line); }
+.mk-segmented > .mk-btn { min-height: 0; padding: 0 0 var(--space-xs); margin-bottom: -2px; border: 0; border-bottom: 4px solid transparent; border-radius: 0; background: none; color: var(--muted); font-size: var(--text-sm); font-weight: 800; }
+.mk-segmented > .mk-btn:hover { background: none; color: var(--ink); }
+.mk-segmented > .mk-btn[aria-pressed="true"] { color: var(--ink); border-bottom-color: var(--tab-current); }

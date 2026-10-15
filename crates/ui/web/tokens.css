@@ -189,6 +189,8 @@
   --space-xl: 24px;
   --space-2xl: 32px;
   --space-3xl: 48px;
+  /* Badge and step captions on a touch screen's dense rows. */
+  --text-2xs: 0.625rem;
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
   --text-base: 1rem;
@@ -196,6 +198,11 @@
   --text-xl: 1.5rem;
   --text-2xl: 2rem;
   --text-display: 3rem;
+  /* A touch screen's large figures between the text sizes and the display:
+     amounts, keypad digits (the POS). */
+  --text-display-sm: 1.375rem;
+  --text-display-md: 1.75rem;
+  --text-display-lg: 2.25rem;
   --leading-body: 1.5;
   --leading-heading: 1.2;
   /* Inside a pill or chip (`.tag`, `.badge`, the wallet step's pills, the

@@ -215,14 +215,27 @@ component! {
         #[default(false)]
         disabled: bool,
         size: Option<ControlSize>,
+        /// Inside its right edge: `IconButton`s (scan a code, choose a
+        /// file). Their own names say what they do.
+        actions: Option<Slot>,
         /// More attributes: `minlength`, `inputmode`, `data-saved`, `fx-*`.
         rest: Attrs,
     }
     html {
-        input class="mk-input" type=(kind) name=(name) id=[id] value=[value] placeholder=[placeholder]
-            autocomplete=[autocomplete] aria-label=[label] aria-describedby=[described_by]
-            aria-invalid="true" if invalid data-size=[size] required[required] readonly[readonly]
-            disabled[disabled] ..rest;
+        @if let Some(actions) = actions {
+            span class="mk-input-with-actions" {
+                input class="mk-input" type=(kind) name=(name) id=[id] value=[value] placeholder=[placeholder]
+                autocomplete=[autocomplete] aria-label=[label] aria-describedby=[described_by]
+                aria-invalid="true" if invalid data-size=[size] required[required] readonly[readonly]
+                disabled[disabled] ..rest;
+                span class="mk-input-actions" { (actions) }
+            }
+        } @else {
+            input class="mk-input" type=(kind) name=(name) id=[id] value=[value] placeholder=[placeholder]
+                autocomplete=[autocomplete] aria-label=[label] aria-describedby=[described_by]
+                aria-invalid="true" if invalid data-size=[size] required[required] readonly[readonly]
+                disabled[disabled] ..rest;
+        }
     }
 }
 
@@ -244,6 +257,16 @@ pub(super) fn input_examples() -> Vec<(&'static str, Input)> {
                 .invalid(true),
         ),
         ("Compact", Input::new("q").kind(InputType::Search).label("Search").size(ControlSize::Compact)),
+        (
+            "With actions inside",
+            Input::new("refund_address")
+                .label("Refund address")
+                .placeholder("Your Monero refund address")
+                .actions(Slot::many([
+                    Slot::from(crate::IconButton::new("Scan refund QR", "⌗")),
+                    Slot::from(crate::IconButton::new("Choose QR image", "▣")),
+                ])),
+        ),
     ]
 }
 

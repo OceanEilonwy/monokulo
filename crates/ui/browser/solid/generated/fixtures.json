@@ -196,6 +196,77 @@
     "title": "Compact"
   },
   {
+    "component": "LaunchTile",
+    "html": "<a class=\"mk-launch-tile\" href=\"#component-launch-tile\"><span class=\"mk-launch-tile-icon\">＋</span><span class=\"mk-launch-tile-text\"><span class=\"mk-launch-tile-title\">Create an order</span><span class=\"mk-launch-tile-hint\">For one-off custom payments</span></span></a>",
+    "props": {
+      "hint": "For one-off custom payments",
+      "href": "#component-launch-tile",
+      "icon": {
+        "$slot": [
+          "＋"
+        ]
+      },
+      "title": "Create an order"
+    },
+    "title": "Ready"
+  },
+  {
+    "component": "LaunchTile",
+    "html": "<a class=\"mk-launch-tile\" aria-disabled=\"true\"><span class=\"mk-launch-tile-icon\">▦</span><span class=\"mk-launch-tile-text\"><span class=\"mk-launch-tile-title\">POS Terminal</span><span class=\"mk-launch-tile-hint\">Requires JavaScript</span></span></a>",
+    "props": {
+      "hint": "Requires JavaScript",
+      "icon": {
+        "$slot": [
+          "▦"
+        ]
+      },
+      "title": "POS Terminal"
+    },
+    "title": "Waiting for a script"
+  },
+  {
+    "component": "SegmentedControl",
+    "html": "<div class=\"mk-segmented\" role=\"group\" aria-label=\"Order status\"><button class=\"mk-btn\" type=\"button\" aria-pressed=\"true\">Active · 3</button><button class=\"mk-btn\" type=\"button\" aria-pressed=\"false\">Finished · 12</button></div>",
+    "props": {
+      "children": {
+        "$slot": [
+          {
+            "$component": "Button",
+            "props": {
+              "aria-pressed": "true",
+              "block": false,
+              "busy": false,
+              "children": {
+                "$slot": [
+                  "Active · 3"
+                ]
+              },
+              "disabled": false,
+              "kind": "button"
+            }
+          },
+          {
+            "$component": "Button",
+            "props": {
+              "aria-pressed": "false",
+              "block": false,
+              "busy": false,
+              "children": {
+                "$slot": [
+                  "Finished · 12"
+                ]
+              },
+              "disabled": false,
+              "kind": "button"
+            }
+          }
+        ]
+      },
+      "label": "Order status"
+    },
+    "title": "Orders by status"
+  },
+  {
     "component": "Alert",
     "html": "<p class=\"error\" role=\"alert\">Could not save. Check the highlighted fields and try again.</p>",
     "props": {
@@ -256,6 +327,75 @@
     "title": "Notice"
   },
   {
+    "component": "Alert",
+    "html": "<div class=\"warning\"><strong class=\"alert-title\">Any website can show this store's checkout</strong> If a scam site embeds it, that site's victims would pay you. Verify your domains in Settings and allow only them.<span class=\"alert-actions\"><button class=\"mk-btn\" type=\"button\" data-size=\"compact\">Dismiss</button></span></div>",
+    "props": {
+      "actions": {
+        "$slot": [
+          {
+            "$component": "Button",
+            "props": {
+              "block": false,
+              "busy": false,
+              "children": {
+                "$slot": [
+                  "Dismiss"
+                ]
+              },
+              "disabled": false,
+              "kind": "button",
+              "size": "compact"
+            }
+          }
+        ]
+      },
+      "block": true,
+      "children": {
+        "$slot": [
+          "If a scam site embeds it, that site's victims would pay you. Verify your domains in Settings and allow only them."
+        ]
+      },
+      "quiet": true,
+      "title": "Any website can show this store's checkout",
+      "tone": "warning"
+    },
+    "title": "Asking for something"
+  },
+  {
+    "component": "Panel",
+    "html": "<div class=\"box\" data-look=\"tile\"><h3>Watch-only</h3><p class=\"hint\">Each store gives Monokulo its view key, never its spend key.</p></div>",
+    "props": {
+      "children": {
+        "$slot": [
+          {
+            "$component": "Heading",
+            "props": {
+              "children": {
+                "$slot": [
+                  "Watch-only"
+                ]
+              },
+              "level": "h3"
+            }
+          },
+          {
+            "$component": "Hint",
+            "props": {
+              "children": {
+                "$slot": [
+                  "Each store gives Monokulo its view key, never its spend key."
+                ]
+              },
+              "inline": false
+            }
+          }
+        ]
+      },
+      "look": "tile"
+    },
+    "title": "A tile"
+  },
+  {
     "component": "Panel",
     "html": "<div class=\"box\"><h3>Webhook</h3><p class=\"hint\">Monokulo posts each order's changes here.</p></div>",
     "props": {
@@ -284,7 +424,8 @@
             }
           }
         ]
-      }
+      },
+      "look": "raised"
     },
     "title": "A part of a page"
   },
@@ -488,6 +629,37 @@
   },
   {
     "component": "Tag",
+    "html": "<span class=\"tag tag-muted\">⚙Options file</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Options file"
+        ]
+      },
+      "icon": {
+        "$slot": [
+          "⚙"
+        ]
+      },
+      "tone": "muted"
+    },
+    "title": "Muted, with an icon"
+  },
+  {
+    "component": "Tag",
+    "html": "<span class=\"tag tag-dashed\">Default</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Default"
+        ]
+      },
+      "tone": "dashed"
+    },
+    "title": "Dashed: a default"
+  },
+  {
+    "component": "Tag",
     "html": "<span class=\"tag state-pending\"><span class=\"label-long\">Waiting for payment</span><span class=\"label-short\" aria-hidden=\"true\">Waiting</span></span>",
     "props": {
       "children": {
@@ -658,6 +830,229 @@
       }
     },
     "title": "More options"
+  },
+  {
+    "component": "Disclosure",
+    "html": "<details class=\"disclosure-compact\" open><summary><span class=\"tag tag-syncing\">Scanning</span> 1 block behind</summary><div class=\"disclosure-body\"><dl class=\"facts\"><dt>Progress</dt><dd>1 block behind</dd><dt>Requests</dt><dd>None yet</dd></dl></div></details>",
+    "props": {
+      "children": {
+        "$slot": [
+          {
+            "$component": "Facts",
+            "props": {
+              "facts": [
+                {
+                  "term": "Progress",
+                  "value": {
+                    "$slot": [
+                      "1 block behind"
+                    ]
+                  }
+                },
+                {
+                  "term": "Requests",
+                  "value": {
+                    "$slot": [
+                      "None yet"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "look": "compact",
+      "open": true,
+      "summary": {
+        "$slot": [
+          {
+            "$component": "Tag",
+            "props": {
+              "children": {
+                "$slot": [
+                  "Scanning"
+                ]
+              },
+              "tone": "syncing"
+            }
+          },
+          " 1 block behind"
+        ]
+      }
+    },
+    "title": "Compact"
+  },
+  {
+    "component": "Disclosure",
+    "html": "<details class=\"disclosure-row\"><summary>Primary · node.example.com:18081</summary><div class=\"disclosure-body\">The node's address, and whether it uses TLS.</div></details>",
+    "props": {
+      "children": {
+        "$slot": [
+          "The node's address, and whether it uses TLS."
+        ]
+      },
+      "look": "row",
+      "open": false,
+      "summary": {
+        "$slot": [
+          "Primary · node.example.com:18081"
+        ]
+      }
+    },
+    "title": "A row"
+  },
+  {
+    "component": "HelpTip",
+    "html": "<details class=\"help-tip\" data-mk=\"1\" data-island=\"HelpTip\" data-props=\"{}\"><summary aria-label=\"How to search\" title=\"How to search\">?</summary><div class=\"help-tip-body\">Fields compare with =, !=, &lt;, &gt;; join them with and, or. Quote text: order.id = 'o_1'.</div></details>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Fields compare with =, !=, <, >; join them with and, or. Quote text: order.id = 'o_1'."
+        ]
+      },
+      "label": "How to search",
+      "wide": false
+    },
+    "title": "Search syntax"
+  },
+  {
+    "component": "SortableList",
+    "html": "<ol class=\"mk-sortable\" aria-label=\"Example nodes\" data-mk=\"1\" data-island=\"SortableList\" data-props=\"{}\"><li class=\"mk-sortable-item\"><details class=\"disclosure-row\"><summary><span class=\"mk-sort-handle\" role=\"button\" tabindex=\"0\" title=\"Drag to reorder\" aria-label=\"Reorder Primary: press the up or down arrow\" data-sortable-handle=\"\" data-only=\"script\">⠿</span>Primary · node-a.example:18081</summary><div class=\"disclosure-body\">The node's address, and whether it uses TLS.</div></details></li><li class=\"mk-sortable-item\"><details class=\"disclosure-row\"><summary><span class=\"mk-sort-handle\" role=\"button\" tabindex=\"0\" title=\"Drag to reorder\" aria-label=\"Reorder Fallback 1: press the up or down arrow\" data-sortable-handle=\"\" data-only=\"script\">⠿</span>Fallback 1 · node-b.example:18081</summary><div class=\"disclosure-body\">The node's address, and whether it uses TLS.</div></details></li><li class=\"mk-sortable-item\"><details class=\"disclosure-row\"><summary><span class=\"mk-sort-handle\" role=\"button\" tabindex=\"0\" title=\"Drag to reorder\" aria-label=\"Reorder Fallback 2: press the up or down arrow\" data-sortable-handle=\"\" data-only=\"script\">⠿</span>Fallback 2 · node-c.example:18081</summary><div class=\"disclosure-body\">The node's address, and whether it uses TLS.</div></details></li><li class=\"mk-sortable-item\" data-sortable-fixed=\"\"><details class=\"disclosure-row\"><summary>+ Add a node</summary><div class=\"disclosure-body\">An address to try last.</div></details></li></ol>",
+    "props": {
+      "children": {
+        "$slot": [
+          {
+            "$component": "SortableItem",
+            "props": {
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "Disclosure",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "The node's address, and whether it uses TLS."
+                        ]
+                      },
+                      "look": "row",
+                      "open": false,
+                      "summary": {
+                        "$slot": [
+                          {
+                            "$component": "SortHandle",
+                            "props": {
+                              "label": "Reorder Primary: press the up or down arrow"
+                            }
+                          },
+                          "Primary · node-a.example:18081"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "fixed": false
+            }
+          },
+          {
+            "$component": "SortableItem",
+            "props": {
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "Disclosure",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "The node's address, and whether it uses TLS."
+                        ]
+                      },
+                      "look": "row",
+                      "open": false,
+                      "summary": {
+                        "$slot": [
+                          {
+                            "$component": "SortHandle",
+                            "props": {
+                              "label": "Reorder Fallback 1: press the up or down arrow"
+                            }
+                          },
+                          "Fallback 1 · node-b.example:18081"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "fixed": false
+            }
+          },
+          {
+            "$component": "SortableItem",
+            "props": {
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "Disclosure",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "The node's address, and whether it uses TLS."
+                        ]
+                      },
+                      "look": "row",
+                      "open": false,
+                      "summary": {
+                        "$slot": [
+                          {
+                            "$component": "SortHandle",
+                            "props": {
+                              "label": "Reorder Fallback 2: press the up or down arrow"
+                            }
+                          },
+                          "Fallback 2 · node-c.example:18081"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "fixed": false
+            }
+          },
+          {
+            "$component": "SortableItem",
+            "props": {
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "Disclosure",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "An address to try last."
+                        ]
+                      },
+                      "look": "row",
+                      "open": false,
+                      "summary": {
+                        "$slot": [
+                          "+ Add a node"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "fixed": true
+            }
+          }
+        ]
+      },
+      "label": "Example nodes"
+    },
+    "title": "Nodes, tried in order"
   },
   {
     "component": "Checks",
@@ -987,6 +1382,91 @@
       "scroll": true
     },
     "title": "Facts"
+  },
+  {
+    "component": "Pagination",
+    "html": "<nav class=\"mk-pagination\" aria-label=\"Invite pages\"><a href=\"#component-pagination\" rel=\"prev\">← Previous</a><span class=\"mk-pagination-status\">Page 2 of 5</span><a href=\"#component-pagination\" rel=\"next\">Next →</a></nav>",
+    "props": {
+      "label": "Invite pages",
+      "next": "#component-pagination",
+      "next_label": "Next",
+      "previous": "#component-pagination",
+      "previous_label": "Previous",
+      "status": "Page 2 of 5"
+    },
+    "title": "Both ways, with where"
+  },
+  {
+    "component": "Pagination",
+    "html": "<nav class=\"mk-pagination\" aria-label=\"Orders pages\"><a href=\"#component-pagination\" rel=\"next\">Older →</a></nav>",
+    "props": {
+      "label": "Orders pages",
+      "next": "#component-pagination",
+      "next_label": "Older",
+      "previous_label": "Previous"
+    },
+    "title": "Newest first, at the start"
+  },
+  {
+    "component": "Card",
+    "html": "<article class=\"mk-card\"><div class=\"mk-card-head\"><div><h3 class=\"mk-card-title\">Table 4</h3><p class=\"mk-card-sub\">Created 14:02</p></div><span class=\"tag state-pending\"><span class=\"label-long\">Waiting for payment</span><span class=\"label-short\" aria-hidden=\"true\">Waiting</span></span></div><p class=\"mk-card-amount\">0.42 XMR</p><div class=\"mk-card-foot\"><small>Expires in 52 min</small><a class=\"mk-btn\" href=\"#component-card\" data-variant=\"quiet\" data-size=\"compact\">Open</a></div></article>",
+    "props": {
+      "action": {
+        "$slot": [
+          {
+            "$component": "LinkButton",
+            "props": {
+              "block": false,
+              "children": {
+                "$slot": [
+                  "Open"
+                ]
+              },
+              "href": "#component-card",
+              "size": "compact",
+              "variant": "quiet"
+            }
+          }
+        ]
+      },
+      "amount": {
+        "$slot": [
+          "0.42 XMR"
+        ]
+      },
+      "detail": {
+        "$slot": [
+          "Expires in 52 min"
+        ]
+      },
+      "status": {
+        "$slot": [
+          {
+            "$component": "Tag",
+            "props": {
+              "children": {
+                "$slot": [
+                  "Waiting for payment"
+                ]
+              },
+              "short": "Waiting",
+              "state": "pending"
+            }
+          }
+        ]
+      },
+      "subtitle": {
+        "$slot": [
+          "Created 14:02"
+        ]
+      },
+      "title": {
+        "$slot": [
+          "Table 4"
+        ]
+      }
+    },
+    "title": "An order"
   },
   {
     "component": "Dialog",
@@ -1341,6 +1821,51 @@
       "size": "compact"
     },
     "title": "Compact"
+  },
+  {
+    "component": "Input",
+    "html": "<span class=\"mk-input-with-actions\"><input class=\"mk-input\" type=\"text\" name=\"refund_address\" placeholder=\"Your Monero refund address\" aria-label=\"Refund address\"><span class=\"mk-input-actions\"><button type=\"button\" class=\"mk-btn icon-only\" aria-label=\"Scan refund QR\" title=\"Scan refund QR\">⌗</button><button type=\"button\" class=\"mk-btn icon-only\" aria-label=\"Choose QR image\" title=\"Choose QR image\">▣</button></span></span>",
+    "props": {
+      "actions": {
+        "$slot": [
+          {
+            "$component": "IconButton",
+            "props": {
+              "disabled": false,
+              "icon": {
+                "$slot": [
+                  "⌗"
+                ]
+              },
+              "kind": "button",
+              "label": "Scan refund QR"
+            }
+          },
+          {
+            "$component": "IconButton",
+            "props": {
+              "disabled": false,
+              "icon": {
+                "$slot": [
+                  "▣"
+                ]
+              },
+              "kind": "button",
+              "label": "Choose QR image"
+            }
+          }
+        ]
+      },
+      "disabled": false,
+      "invalid": false,
+      "kind": "text",
+      "label": "Refund address",
+      "name": "refund_address",
+      "placeholder": "Your Monero refund address",
+      "readonly": false,
+      "required": false
+    },
+    "title": "With actions inside"
   },
   {
     "component": "FieldNote",
@@ -1930,8 +2455,8 @@
     "title": "Disabled"
   },
   {
-    "component": "ProgressSteps",
-    "html": "<ol class=\"mk-progress-steps\" data-design=\"strip\" aria-label=\"Setup progress\"><li class=\"done\"><span>Store<small>Complete</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"1\" aria-label=\"Store: 1 of 1 tasks complete\"></progress></li><li aria-current=\"step\"><span>Wallet<small>Back up · step 2 of 3</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"3\" aria-label=\"Wallet: 1 of 3 tasks complete\"></progress></li><li><span>Done<small>Next</small></span><progress class=\"mk-step-progress\" value=\"0\" max=\"1\" aria-label=\"Done: 0 of 1 tasks complete\"></progress></li></ol>",
+    "component": "WizardSteps",
+    "html": "<ol class=\"mk-wizard-steps\" data-design=\"strip\" aria-label=\"Setup progress\"><li class=\"done\"><span>Store<small>Complete</small></span><progress class=\"mk-wizard-progress\" value=\"1\" max=\"1\" aria-label=\"Store: 1 of 1 tasks complete\"></progress></li><li aria-current=\"step\"><span>Wallet<small>Back up · step 2 of 3</small></span><progress class=\"mk-wizard-progress\" value=\"1\" max=\"3\" aria-label=\"Wallet: 1 of 3 tasks complete\"></progress></li><li><span>Done<small>Next</small></span><progress class=\"mk-wizard-progress\" value=\"0\" max=\"1\" aria-label=\"Done: 0 of 1 tasks complete\"></progress></li></ol>",
     "props": {
       "label": "Setup progress",
       "steps": [
@@ -1961,8 +2486,8 @@
     "title": "Setup, backing up a new wallet"
   },
   {
-    "component": "ProgressSteps",
-    "html": "<ol class=\"mk-progress-steps\" data-design=\"strip\" aria-label=\"Setup progress\"><li class=\"done\"><span>Store<small>Complete</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"1\" aria-label=\"Store: 1 of 1 tasks complete\"></progress></li><li aria-current=\"step\"><span>Wallet<small>Keys · step 2 of 2</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"2\" aria-label=\"Wallet: 1 of 2 tasks complete\"></progress></li><li><span>Done<small>Next</small></span><progress class=\"mk-step-progress\" value=\"0\" max=\"1\" aria-label=\"Done: 0 of 1 tasks complete\"></progress></li></ol>",
+    "component": "WizardSteps",
+    "html": "<ol class=\"mk-wizard-steps\" data-design=\"strip\" aria-label=\"Setup progress\"><li class=\"done\"><span>Store<small>Complete</small></span><progress class=\"mk-wizard-progress\" value=\"1\" max=\"1\" aria-label=\"Store: 1 of 1 tasks complete\"></progress></li><li aria-current=\"step\"><span>Wallet<small>Keys · step 2 of 2</small></span><progress class=\"mk-wizard-progress\" value=\"1\" max=\"2\" aria-label=\"Wallet: 1 of 2 tasks complete\"></progress></li><li><span>Done<small>Next</small></span><progress class=\"mk-wizard-progress\" value=\"0\" max=\"1\" aria-label=\"Done: 0 of 1 tasks complete\"></progress></li></ol>",
     "props": {
       "label": "Setup progress",
       "steps": [
@@ -1992,8 +2517,8 @@
     "title": "Setup, bringing your own wallet"
   },
   {
-    "component": "ProgressSteps",
-    "html": "<ol class=\"mk-progress-steps\" data-design=\"strip\" aria-label=\"Setup progress\"><li class=\"done\"><span>Store<small>Complete</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"1\" aria-label=\"Store: 1 of 1 tasks complete\"></progress></li><li aria-current=\"step\"><span>Wallet<small>Check · step 3 of 3</small></span><progress class=\"mk-step-progress\" value=\"2\" max=\"3\" aria-label=\"Wallet: 2 of 3 tasks complete\"></progress></li><li><span>Done<small>Next</small></span><progress class=\"mk-step-progress\" value=\"0\" max=\"1\" aria-label=\"Done: 0 of 1 tasks complete\"></progress></li></ol>",
+    "component": "WizardSteps",
+    "html": "<ol class=\"mk-wizard-steps\" data-design=\"strip\" aria-label=\"Setup progress\"><li class=\"done\"><span>Store<small>Complete</small></span><progress class=\"mk-wizard-progress\" value=\"1\" max=\"1\" aria-label=\"Store: 1 of 1 tasks complete\"></progress></li><li aria-current=\"step\"><span>Wallet<small>Check · step 3 of 3</small></span><progress class=\"mk-wizard-progress\" value=\"2\" max=\"3\" aria-label=\"Wallet: 2 of 3 tasks complete\"></progress></li><li><span>Done<small>Next</small></span><progress class=\"mk-wizard-progress\" value=\"0\" max=\"1\" aria-label=\"Done: 0 of 1 tasks complete\"></progress></li></ol>",
     "props": {
       "label": "Setup progress",
       "steps": [
@@ -2023,8 +2548,8 @@
     "title": "Setup, checking the backup"
   },
   {
-    "component": "ProgressSteps",
-    "html": "<ol class=\"mk-progress-steps\" data-design=\"strip\" aria-label=\"Setup progress\"><li class=\"done\"><span>Store<small>Complete</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"1\" aria-label=\"Store: 1 of 1 tasks complete\"></progress></li><li class=\"done\"><span>Wallet<small>Complete</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"1\" aria-label=\"Wallet: 1 of 1 tasks complete\"></progress></li><li aria-current=\"step\"><span>Done<small>Complete</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"1\" aria-label=\"Done: 1 of 1 tasks complete\"></progress></li></ol>",
+    "component": "WizardSteps",
+    "html": "<ol class=\"mk-wizard-steps\" data-design=\"strip\" aria-label=\"Setup progress\"><li class=\"done\"><span>Store<small>Complete</small></span><progress class=\"mk-wizard-progress\" value=\"1\" max=\"1\" aria-label=\"Store: 1 of 1 tasks complete\"></progress></li><li class=\"done\"><span>Wallet<small>Complete</small></span><progress class=\"mk-wizard-progress\" value=\"1\" max=\"1\" aria-label=\"Wallet: 1 of 1 tasks complete\"></progress></li><li aria-current=\"step\"><span>Done<small>Complete</small></span><progress class=\"mk-wizard-progress\" value=\"1\" max=\"1\" aria-label=\"Done: 1 of 1 tasks complete\"></progress></li></ol>",
     "props": {
       "label": "Setup progress",
       "steps": [
@@ -2054,8 +2579,8 @@
     "title": "Setup, finished"
   },
   {
-    "component": "ProgressSteps",
-    "html": "<ol class=\"mk-progress-steps\" data-design=\"strip\" aria-label=\"Wallet progress\"><li aria-current=\"step\"><span>Wallet<small>Keys · step 2 of 2</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"2\" aria-label=\"Wallet: 1 of 2 tasks complete\"></progress></li></ol>",
+    "component": "WizardSteps",
+    "html": "<ol class=\"mk-wizard-steps\" data-design=\"strip\" aria-label=\"Wallet progress\"><li aria-current=\"step\"><span>Wallet<small>Keys · step 2 of 2</small></span><progress class=\"mk-wizard-progress\" value=\"1\" max=\"2\" aria-label=\"Wallet: 1 of 2 tasks complete\"></progress></li></ol>",
     "props": {
       "label": "Wallet progress",
       "steps": [
@@ -2071,14 +2596,194 @@
     "title": "Adding a wallet on its own"
   },
   {
+    "component": "ProgressSteps",
+    "html": "<div class=\"mk-stage state-pending\"><ol class=\"mk-track\" aria-label=\"Payment progress\"><li class=\"step-now\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Send<span class=\"visually-hidden\">, now</span></span></li><li class=\"step-todo\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Confirm<span class=\"visually-hidden\">, to come</span></span></li><li class=\"step-todo\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Paid<span class=\"visually-hidden\">, to come</span></span></li></ol><p class=\"mk-stage-msg\" role=\"status\"><strong>Send 0.42 XMR.</strong> Scan the code or copy the address. 58 min left</p></div>",
+    "props": {
+      "compact": false,
+      "label": "Payment progress",
+      "message": {
+        "$slot": [
+          "Scan the code or copy the address. 58 min left"
+        ]
+      },
+      "state": "pending",
+      "steps": [
+        {
+          "label": "Send",
+          "progress": "now"
+        },
+        {
+          "label": "Confirm",
+          "progress": "todo"
+        },
+        {
+          "label": "Paid",
+          "progress": "todo"
+        }
+      ],
+      "title": "Send 0.42 XMR"
+    },
+    "title": "Waiting for a payment"
+  },
+  {
+    "component": "ProgressSteps",
+    "html": "<div class=\"mk-stage state-partial\"><ol class=\"mk-track\" aria-label=\"Payment progress\"><li class=\"step-part\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Send<span class=\"visually-hidden\">, partly done</span></span></li><li class=\"step-todo\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Confirm<span class=\"visually-hidden\">, to come</span></span></li><li class=\"step-todo\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Paid<span class=\"visually-hidden\">, to come</span></span></li></ol><p class=\"mk-stage-msg\" role=\"status\"><strong>Part paid.</strong> 0.2 XMR in; send the other 0.22 XMR.</p></div>",
+    "props": {
+      "compact": false,
+      "label": "Payment progress",
+      "message": {
+        "$slot": [
+          "0.2 XMR in; send the other 0.22 XMR."
+        ]
+      },
+      "state": "partial",
+      "steps": [
+        {
+          "label": "Send",
+          "progress": "part"
+        },
+        {
+          "label": "Confirm",
+          "progress": "todo"
+        },
+        {
+          "label": "Paid",
+          "progress": "todo"
+        }
+      ],
+      "title": "Part paid"
+    },
+    "title": "Part paid"
+  },
+  {
+    "component": "ProgressSteps",
+    "html": "<div class=\"mk-stage state-confirming\"><ol class=\"mk-track\" aria-label=\"Payment progress\"><li class=\"step-done\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m4.5 12.5 5 5 10-11\"></path></svg></span><span class=\"mk-track-name\">Send<span class=\"visually-hidden\">, done</span></span></li><li class=\"step-now\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Confirm<span class=\"visually-hidden\">, now</span></span></li><li class=\"step-todo\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Paid<span class=\"visually-hidden\">, to come</span></span></li></ol><p class=\"mk-stage-msg\" role=\"status\"><strong>Confirming.</strong> Payment seen; 3 of 10 confirmations.</p></div>",
+    "props": {
+      "compact": false,
+      "label": "Payment progress",
+      "message": {
+        "$slot": [
+          "Payment seen; 3 of 10 confirmations."
+        ]
+      },
+      "state": "confirming",
+      "steps": [
+        {
+          "label": "Send",
+          "progress": "done"
+        },
+        {
+          "label": "Confirm",
+          "progress": "now"
+        },
+        {
+          "label": "Paid",
+          "progress": "todo"
+        }
+      ],
+      "title": "Confirming"
+    },
+    "title": "Confirming"
+  },
+  {
+    "component": "ProgressSteps",
+    "html": "<div class=\"mk-stage state-paid\"><ol class=\"mk-track\" aria-label=\"Payment progress\"><li class=\"step-done\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m4.5 12.5 5 5 10-11\"></path></svg></span><span class=\"mk-track-name\">Send<span class=\"visually-hidden\">, done</span></span></li><li class=\"step-done\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m4.5 12.5 5 5 10-11\"></path></svg></span><span class=\"mk-track-name\">Paid<span class=\"visually-hidden\">, done</span></span></li></ol><p class=\"mk-stage-msg\" role=\"status\"><strong>Paid.</strong> Thank you.</p></div>",
+    "props": {
+      "compact": false,
+      "label": "Payment progress",
+      "message": {
+        "$slot": [
+          "Thank you."
+        ]
+      },
+      "state": "paid",
+      "steps": [
+        {
+          "label": "Send",
+          "progress": "done"
+        },
+        {
+          "label": "Paid",
+          "progress": "done"
+        }
+      ],
+      "title": "Paid"
+    },
+    "title": "Paid, counted as soon as seen"
+  },
+  {
+    "component": "ProgressSteps",
+    "html": "<div class=\"mk-stage state-expired\"><ol class=\"mk-track\" aria-label=\"Payment progress\"><li class=\"step-fail\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3\" stroke-linecap=\"round\"><path d=\"M7 7l10 10M17 7 7 17\"></path></svg></span><span class=\"mk-track-name\">Send<span class=\"visually-hidden\">, stopped</span></span></li><li class=\"step-todo\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Confirm<span class=\"visually-hidden\">, to come</span></span></li><li class=\"step-todo\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Paid<span class=\"visually-hidden\">, to come</span></span></li></ol><p class=\"mk-stage-msg\" role=\"status\"><strong>Expired.</strong> Nothing arrived in time; ask for a new order.</p></div>",
+    "props": {
+      "compact": false,
+      "label": "Payment progress",
+      "message": {
+        "$slot": [
+          "Nothing arrived in time; ask for a new order."
+        ]
+      },
+      "state": "expired",
+      "steps": [
+        {
+          "label": "Send",
+          "progress": "fail"
+        },
+        {
+          "label": "Confirm",
+          "progress": "todo"
+        },
+        {
+          "label": "Paid",
+          "progress": "todo"
+        }
+      ],
+      "title": "Expired"
+    },
+    "title": "Expired"
+  },
+  {
+    "component": "ProgressSteps",
+    "html": "<div class=\"mk-stage state-pending\" data-size=\"compact\"><ol class=\"mk-track\" aria-label=\"Payment progress\"><li class=\"step-now\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Send<span class=\"visually-hidden\">, now</span></span></li><li class=\"step-todo\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Confirm<span class=\"visually-hidden\">, to come</span></span></li><li class=\"step-todo\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Paid<span class=\"visually-hidden\">, to come</span></span></li></ol><p class=\"mk-stage-msg\" role=\"status\"><strong>Send 0.42 XMR.</strong> Scan the code.</p></div>",
+    "props": {
+      "compact": true,
+      "label": "Payment progress",
+      "message": {
+        "$slot": [
+          "Scan the code."
+        ]
+      },
+      "state": "pending",
+      "steps": [
+        {
+          "label": "Send",
+          "progress": "now"
+        },
+        {
+          "label": "Confirm",
+          "progress": "todo"
+        },
+        {
+          "label": "Paid",
+          "progress": "todo"
+        }
+      ],
+      "title": "Send 0.42 XMR"
+    },
+    "title": "On the POS"
+  },
+  {
     "component": "Tabs",
-    "html": "<div class=\"mk-tabset\" data-island=\"Tabs\" data-props=\"{&quot;tabs&quot;:[{&quot;id&quot;:&quot;example-charge&quot;,&quot;label&quot;:&quot;Charge&quot;},{&quot;id&quot;:&quot;example-history&quot;,&quot;label&quot;:&quot;History&quot;},{&quot;id&quot;:&quot;example-terminal&quot;,&quot;label&quot;:&quot;Terminal&quot;}]}\"><div class=\"mk-tabs\" aria-label=\"Example POS views\" data-mk=\"1\"><a href=\"#example-charge\" id=\"example-charge-tab\" data-mk=\"2\">Charge</a><a href=\"#example-history\" id=\"example-history-tab\" data-mk=\"2\">History</a><a href=\"#example-terminal\" id=\"example-terminal-tab\" data-mk=\"2\">Terminal</a></div><div class=\"mk-tab-panels\"><section id=\"example-charge\" data-mk=\"3\">Enter an amount to start a payment.</section><section id=\"example-history\" data-mk=\"3\">No payments yet.</section><section id=\"example-terminal\" data-mk=\"3\">This terminal is ready to receive payments.</section></div></div>",
+    "html": "<div class=\"mk-tabset\" data-mk=\"1\" data-island=\"Tabs\" data-props=\"{&quot;tabs&quot;:[{&quot;id&quot;:&quot;example-charge&quot;},{&quot;id&quot;:&quot;example-history&quot;},{&quot;id&quot;:&quot;example-terminal&quot;}]}\"><div class=\"mk-tabs\" aria-label=\"Example POS views\" data-mk=\"2\"><a href=\"#example-charge\" id=\"example-charge-tab\" data-mk=\"3\">Charge</a><a href=\"#example-history\" id=\"example-history-tab\" data-mk=\"3\">History</a><a href=\"#example-terminal\" id=\"example-terminal-tab\" data-mk=\"3\">Terminal</a></div><div class=\"mk-tab-panels\"><section id=\"example-charge\" data-mk=\"4\">Enter an amount to start a payment.</section><section id=\"example-history\" data-mk=\"4\">No payments yet.</section><section id=\"example-terminal\" data-mk=\"4\">This terminal is ready to receive payments.</section></div></div>",
     "props": {
       "label": "Example POS views",
       "tabs": [
         {
           "id": "example-charge",
-          "label": "Charge",
+          "label": {
+            "$slot": [
+              "Charge"
+            ]
+          },
           "panel": {
             "$slot": [
               "Enter an amount to start a payment."
@@ -2087,7 +2792,11 @@
         },
         {
           "id": "example-history",
-          "label": "History",
+          "label": {
+            "$slot": [
+              "History"
+            ]
+          },
           "panel": {
             "$slot": [
               "No payments yet."
@@ -2096,7 +2805,11 @@
         },
         {
           "id": "example-terminal",
-          "label": "Terminal",
+          "label": {
+            "$slot": [
+              "Terminal"
+            ]
+          },
           "panel": {
             "$slot": [
               "This terminal is ready to receive payments."
@@ -2183,8 +2896,18 @@
     "title": "Short enough to show whole"
   },
   {
+    "component": "CopyBlock",
+    "html": "<div class=\"mk-copy-block\" data-island=\"CopyBlock\" data-props=\"{&quot;comment&quot;:&quot;#&quot;,&quot;copy_label&quot;:&quot;Copy the key commands&quot;}\"><pre data-mk=\"1\"><code>umask 077\nopenssl rand -hex 32 &gt; monokulo.key   # keep this file safe</code></pre><!--mk:2--></div>",
+    "props": {
+      "code": "umask 077\nopenssl rand -hex 32 > monokulo.key   # keep this file safe",
+      "comment": "#",
+      "copy_label": "Copy the key commands"
+    },
+    "title": "A command with a note"
+  },
+  {
     "component": "SettingsForm",
-    "html": "<div class=\"mk-settings-form\" data-label=\"Store settings\" data-mk=\"1\" data-island=\"SettingsForm\" data-props=\"{&quot;label&quot;:&quot;Store settings&quot;}\"><form method=\"get\" action=\"#component-settings-form\" id=\"book-settings-form\" data-mk=\"2\"><section id=\"card-book-details\" class=\"settings-card\" data-name=\"book-details\" role=\"region\" aria-labelledby=\"card-book-details-title\" data-mk=\"1\" data-island=\"SettingsCard\" data-props=\"{&quot;failed&quot;:false,&quot;hidden&quot;:false,&quot;name&quot;:&quot;book-details&quot;,&quot;title&quot;:&quot;Store details&quot;}\"><header class=\"card-head\"><h3 id=\"card-book-details-title\">Store details</h3><span class=\"card-state\" data-card-state><!--mk:2--></span><span class=\"card-spacer\"></span><!--mk:5--></header><div class=\"card-body\"><div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{}\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-settings-name-input\">Store name</label><span class=\"changed-mark\">changed</span></div><input class=\"mk-input\" type=\"text\" name=\"name\" id=\"book-settings-name-input\" value=\"Corner store\"></div></div></section><div id=\"book-form-save-bar\" class=\"save-bar\" data-placement=\"inline\" role=\"region\" aria-label=\"Example form's save changes\" data-mk=\"1\" data-island=\"SaveBar\" data-props=\"{&quot;failed&quot;:false,&quot;save_label&quot;:&quot;Save&quot;}\"><div class=\"save-bar-inner\"><p class=\"save-bar-message\" data-save-bar-message tabindex=\"-1\"><span data-mk=\"2\">Saving changes the store straight away.</span><!--mk:3--></p><div class=\"save-bar-actions\" data-mk=\"4\"><a class=\"mk-btn\" href=\"#component-settings-form\" data-discard-all data-mk=\"5\">Discard changes</a><button type=\"submit\" class=\"mk-btn\" data-variant=\"primary\" data-save data-mk=\"6\"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div></form></div>",
+    "html": "<div class=\"mk-settings-form\" data-label=\"Store settings\" data-mk=\"1\" data-island=\"SettingsForm\" data-props=\"{&quot;label&quot;:&quot;Store settings&quot;}\"><form method=\"get\" action=\"#component-settings-form\" id=\"book-settings-form\" data-mk=\"2\"><section id=\"card-book-details\" class=\"settings-card\" data-name=\"book-details\" role=\"region\" aria-labelledby=\"card-book-details-title\" data-mk=\"1\" data-island=\"SettingsCard\" data-props=\"{&quot;failed&quot;:false,&quot;hidden&quot;:false,&quot;name&quot;:&quot;book-details&quot;,&quot;title&quot;:&quot;Store details&quot;}\"><header class=\"card-head\"><h3 id=\"card-book-details-title\">Store details</h3><span class=\"card-state\" data-card-state><!--mk:2--></span><span class=\"card-spacer\"></span><!--mk:5--></header><div class=\"card-body\"><div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{&quot;row&quot;:false}\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-settings-name-input\">Store name</label><span class=\"changed-mark\">changed</span></div><input class=\"mk-input\" type=\"text\" name=\"name\" id=\"book-settings-name-input\" value=\"Corner store\"></div></div></section><div id=\"book-form-save-bar\" class=\"save-bar\" data-placement=\"inline\" role=\"region\" aria-label=\"Example form's save changes\" data-mk=\"1\" data-island=\"SaveBar\" data-props=\"{&quot;failed&quot;:false,&quot;save_label&quot;:&quot;Save&quot;}\"><div class=\"save-bar-inner\"><p class=\"save-bar-message\" data-save-bar-message tabindex=\"-1\"><span data-mk=\"2\">Saving changes the store straight away.</span><!--mk:3--></p><div class=\"save-bar-actions\" data-mk=\"4\"><a class=\"mk-btn\" href=\"#component-settings-form\" data-discard-all data-mk=\"5\">Discard changes</a><button type=\"submit\" class=\"mk-btn\" data-variant=\"primary\" data-save data-mk=\"6\"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div></form></div>",
     "props": {
       "action": "#component-settings-form",
       "children": {
@@ -2216,7 +2939,8 @@
                       },
                       "group": false,
                       "id": "book-settings-name-input",
-                      "label": "Store name"
+                      "label": "Store name",
+                      "row": false
                     }
                   }
                 ]
@@ -2312,7 +3036,7 @@
   },
   {
     "component": "Setting",
-    "html": "<div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{}\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-setting-confirmations\">Confirmations</label><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-confirmations-help\">Blocks a payment waits for before it counts as paid.</p><input class=\"mk-input\" type=\"number\" name=\"confirmations\" id=\"book-setting-confirmations\" value=\"10\" aria-describedby=\"book-setting-confirmations-help\"></div>",
+    "html": "<div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{&quot;row&quot;:false}\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-setting-confirmations\">Confirmations</label><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-confirmations-help\">Blocks a payment waits for before it counts as paid.</p><input class=\"mk-input\" type=\"number\" name=\"confirmations\" id=\"book-setting-confirmations\" value=\"10\" aria-describedby=\"book-setting-confirmations-help\"></div>",
     "props": {
       "children": {
         "$slot": [
@@ -2340,13 +3064,46 @@
       },
       "help_id": "book-setting-confirmations-help",
       "id": "book-setting-confirmations",
-      "label": "Confirmations"
+      "label": "Confirmations",
+      "row": false
     },
     "title": "With help"
   },
   {
     "component": "Setting",
-    "html": "<div class=\"setting-field\" role=\"group\" aria-labelledby=\"book-setting-accept\" aria-describedby=\"book-setting-accept-help\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{}\"><div class=\"setting-label-row\"><span class=\"setting-label\" id=\"book-setting-accept\">Accept</span><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-accept-help\">What a payment may arrive as.</p>Its checkboxes.</div>",
+    "html": "<div class=\"setting-field is-row\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{&quot;row&quot;:true}\"><div class=\"setting-about\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-setting-tls\">Use TLS</label><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-tls-help\">Connect with https. Most nodes on port 18081 don't use it.</p></div><div class=\"setting-control\"><input type=\"checkbox\" class=\"mk-checkbox\" name=\"tls\" id=\"book-setting-tls\" value=\"on\" aria-describedby=\"book-setting-tls-help\"></div></div>",
+    "props": {
+      "children": {
+        "$slot": [
+          {
+            "$component": "Checkbox",
+            "props": {
+              "checked": false,
+              "described_by": "book-setting-tls-help",
+              "disabled": false,
+              "id": "book-setting-tls",
+              "name": "tls",
+              "value": "on"
+            }
+          }
+        ]
+      },
+      "group": false,
+      "help": {
+        "$slot": [
+          "Connect with https. Most nodes on port 18081 don't use it."
+        ]
+      },
+      "help_id": "book-setting-tls-help",
+      "id": "book-setting-tls",
+      "label": "Use TLS",
+      "row": true
+    },
+    "title": "A row"
+  },
+  {
+    "component": "Setting",
+    "html": "<div class=\"setting-field\" role=\"group\" aria-labelledby=\"book-setting-accept\" aria-describedby=\"book-setting-accept-help\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{&quot;row&quot;:false}\"><div class=\"setting-label-row\"><span class=\"setting-label\" id=\"book-setting-accept\">Accept</span><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-accept-help\">What a payment may arrive as.</p>Its checkboxes.</div>",
     "props": {
       "children": {
         "$slot": [
@@ -2362,7 +3119,8 @@
       },
       "help_id": "book-setting-accept-help",
       "id": "book-setting-accept",
-      "label": "Accept"
+      "label": "Accept",
+      "row": false
     },
     "title": "A group"
   },
@@ -2554,6 +3312,37 @@
       "title": "alex@example.test"
     },
     "title": "The account menu"
+  },
+  {
+    "component": "MenuItem",
+    "html": "<a class=\"menu-item\" href=\"#component-menu-item\"><span>Wallets</span><span class=\"menu-note\">1</span></a>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Wallets"
+        ]
+      },
+      "href": "#component-menu-item",
+      "note": {
+        "$slot": [
+          "1"
+        ]
+      }
+    },
+    "title": "A link with a note"
+  },
+  {
+    "component": "MenuItem",
+    "html": "<form method=\"post\" action=\"#component-menu-item\" class=\"menu-form\"><button type=\"submit\" class=\"menu-item\"><span>Log out</span></button></form>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Log out"
+        ]
+      },
+      "post_to": "#component-menu-item"
+    },
+    "title": "A form's button"
   },
   {
     "component": "ThemeToggle",

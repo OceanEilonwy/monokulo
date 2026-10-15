@@ -133,3 +133,81 @@ pub(super) fn link_button_examples() -> Vec<(&'static str, LinkButton)> {
         ),
     ]
 }
+
+component! {
+    /// A tile that opens a tool (the POS, an order form): an icon, a title
+    /// and a line saying what it's for. Without `href` it can't be opened
+    /// yet (a script checks the browser first): marked disabled, the line
+    /// saying why, until the page gives it somewhere to go.
+    pub struct LaunchTile {
+        title: String,
+        /// What it's for, or why it can't be opened.
+        hint: String,
+        /// An inline SVG.
+        icon: Slot,
+        href: Option<String>,
+        /// The hint's id, for a script that rewrites it.
+        hint_id: Option<String>,
+        rest: Attrs,
+    }
+    html {
+        @if let Some(href) = href {
+            a class="mk-launch-tile" href=(href) ..rest {
+                span class="mk-launch-tile-icon" { (icon) }
+                span class="mk-launch-tile-text" {
+                    span class="mk-launch-tile-title" { (title) }
+                    span class="mk-launch-tile-hint" id=[hint_id] { (hint) }
+                }
+            }
+        } @else {
+            a class="mk-launch-tile" aria-disabled="true" ..rest {
+                span class="mk-launch-tile-icon" { (icon) }
+                span class="mk-launch-tile-text" {
+                    span class="mk-launch-tile-title" { (title) }
+                    span class="mk-launch-tile-hint" id=[hint_id] { (hint) }
+                }
+            }
+        }
+    }
+}
+
+pub(super) fn launch_tile_examples() -> Vec<(&'static str, LaunchTile)> {
+    vec![
+        (
+            "Ready",
+            LaunchTile::new("Create an order", "For one-off custom payments", "＋").href("#component-launch-tile"),
+        ),
+        (
+            "Waiting for a script",
+            LaunchTile::new("POS Terminal", "Requires JavaScript", "▦"),
+        ),
+    ]
+}
+
+component! {
+    /// A choice of one view among a few (Active and Finished orders): its
+    /// buttons are `Button`s with `aria-pressed`, the pressed one shown.
+    /// They filter what's on the page; panels to switch between are `Tabs`.
+    pub struct SegmentedControl {
+        /// What is chosen ("Order status").
+        label: String,
+        /// The `Button`s, each `aria-pressed`.
+        children: Slot,
+    }
+    html {
+        div class="mk-segmented" role="group" aria-label=(label) { (children) }
+    }
+}
+
+pub(super) fn segmented_control_examples() -> Vec<(&'static str, SegmentedControl)> {
+    vec![(
+        "Orders by status",
+        SegmentedControl::new(
+            "Order status",
+            Slot::many([
+                Slot::from(Button::new("Active · 3").attr("aria-pressed", "true")),
+                Slot::from(Button::new("Finished · 12").attr("aria-pressed", "false")),
+            ]),
+        ),
+    )]
+}

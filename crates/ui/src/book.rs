@@ -13,7 +13,7 @@ use crate::components::Specimens;
 use crate::render::render_info;
 use crate::{ComponentInfo, PropInfo, Slot, SlotPart, Ty, Value};
 
-/// A component's section id in the stylebook: `ProgressSteps` as
+/// A component's section id in the stylebook: `WizardSteps` as
 /// `component-progress-steps`, apart from any id a component renders.
 pub fn anchor(name: &str) -> String {
     let mut s = String::from("component-");

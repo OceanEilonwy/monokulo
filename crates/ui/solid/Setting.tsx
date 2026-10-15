@@ -51,6 +51,12 @@ export interface SettingProps {
    */
   label_id?: string;
   /**
+   * Its name and help on the left, its control on the right (a
+   * phone stacks them): for a short control in a dense form.
+   * @default false
+   */
+  row?: boolean;
+  /**
    * `false` renders the server's markup, without the behaviour's (tests).
    * @default true
    */
@@ -67,36 +73,76 @@ export function Setting(props: SettingProps): JSX.Element {
   const b = setup(props);
   const owner = getOwner();
   return (
-    <div class={enhanced ? tokens(`setting-field`, b.changed() && `is-changed`) : "setting-field"} role={(props.group ?? false) ? `group` : undefined} aria-labelledby={(props.group ?? false) ? `${props.id}` : undefined} aria-describedby={props.described_by} ref={(el) => runWithOwner(owner, () => b.root(el))}>
-      <div class="setting-label-row">
-        {(props.group ?? false) ? (
-          <span class="setting-label" id={props.id}>
-            {props.label}
-          </span>
-        ) : (
-          <label class="setting-label" id={props.label_id} for={props.id}>
-            {props.label}
-          </label>
-        )}
-        {props.chip != null ? (
-          <>
-            {props.chip}
-          </>
-        ) : (
-          null
-        )}
-        <span class="changed-mark">
-          changed
-        </span>
-      </div>
-      {props.help != null ? (
-        <p class="field-help" id={props.help_id}>
-          {props.help}
-        </p>
+    <div class={enhanced ? tokens(`setting-field`, (props.row ?? false) && `is-row`, b.changed() && `is-changed`) : tokens(`setting-field`, (props.row ?? false) && `is-row`)} role={(props.group ?? false) ? `group` : undefined} aria-labelledby={(props.group ?? false) ? `${props.id}` : undefined} aria-describedby={props.described_by} ref={(el) => runWithOwner(owner, () => b.root(el))}>
+      {(props.row ?? false) ? (
+        <>
+          <div class="setting-about">
+            <div class="setting-label-row">
+              {(props.group ?? false) ? (
+                <span class="setting-label" id={props.id}>
+                  {props.label}
+                </span>
+              ) : (
+                <label class="setting-label" id={props.label_id} for={props.id}>
+                  {props.label}
+                </label>
+              )}
+              {props.chip != null ? (
+                <>
+                  {props.chip}
+                </>
+              ) : (
+                null
+              )}
+              <span class="changed-mark">
+                changed
+              </span>
+            </div>
+            {props.help != null ? (
+              <p class="field-help" id={props.help_id}>
+                {props.help}
+              </p>
+            ) : (
+              null
+            )}
+          </div>
+          <div class="setting-control">
+            {props.children}
+          </div>
+        </>
       ) : (
-        null
+        <>
+          <div class="setting-label-row">
+            {(props.group ?? false) ? (
+              <span class="setting-label" id={props.id}>
+                {props.label}
+              </span>
+            ) : (
+              <label class="setting-label" id={props.label_id} for={props.id}>
+                {props.label}
+              </label>
+            )}
+            {props.chip != null ? (
+              <>
+                {props.chip}
+              </>
+            ) : (
+              null
+            )}
+            <span class="changed-mark">
+              changed
+            </span>
+          </div>
+          {props.help != null ? (
+            <p class="field-help" id={props.help_id}>
+              {props.help}
+            </p>
+          ) : (
+            null
+          )}
+          {props.children}
+        </>
       )}
-      {props.children}
     </div>
   );
 }
@@ -119,7 +165,7 @@ export function attachSetting(root: Element, props: SettingProps): () => void {
     const b = setup(props);
     const n1 = mark(root, 1);
     if (n1) {
-      createRenderEffect(() => tokens(`setting-field`, b.changed() && `is-changed`), (value) => setAttr(n1, "class", value));
+      createRenderEffect(() => tokens(`setting-field`, (props.row ?? false) && `is-row`, b.changed() && `is-changed`), (value) => setAttr(n1, "class", value));
       b.root(n1);
     }
     return dispose;

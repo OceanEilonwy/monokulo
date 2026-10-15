@@ -84,15 +84,15 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   await toWalletStep(page, 'Geomart', 'https://geomart.example/shop?page=2');
 
   // Wallet: its small steps beside it, the name first, checked as it changes.
-  await expect(page.locator('.mk-progress-steps [aria-current="step"] small')).toHaveText('Kind · step 1 of 3');
+  await expect(page.locator('.mk-wizard-steps [aria-current="step"] small')).toHaveText('Kind · step 1 of 3');
   await expect(page.locator('input[name="name"]')).toHaveValue('Geomart takings');
   await expect(page.locator('#wallet-name-check')).toContainText('Free to use');
   await captureCoverageStage(page, 'setup-wallet-choice', test.info(), { group: GROUP });
 
   await startNewWallet(page, 'Geomart takings');
-  await expect(page.locator('[data-screen="backup"] .mk-progress-steps [aria-current="step"] small')).toHaveText('Back up · step 2 of 3');
-  await expect(page.locator('[data-screen="backup"] .mk-step-progress').nth(1)).toHaveAttribute('value', '1');
-  await expect(page.locator('[data-screen="backup"] .mk-step-progress').nth(1)).toHaveAttribute('max', '3');
+  await expect(page.locator('[data-screen="backup"] .mk-wizard-steps [aria-current="step"] small')).toHaveText('Back up · step 2 of 3');
+  await expect(page.locator('[data-screen="backup"] .mk-wizard-progress').nth(1)).toHaveAttribute('value', '1');
+  await expect(page.locator('[data-screen="backup"] .mk-wizard-progress').nth(1)).toHaveAttribute('max', '3');
   // The words and the QR, straight away, with nothing to reveal.
   const cake = page.locator('[data-app-panel="cake"]');
   await expect(cake.locator('[data-words] li')).toHaveCount(16);
@@ -126,7 +126,7 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
 
   // Check: two words, four choices each; a wrong one is marked and can be tried again.
   await expect(page.getByRole('heading', { name: 'Check two words' })).toBeVisible();
-  await expect(page.locator('[data-screen="check"] .mk-step-progress').nth(1)).toHaveAttribute('value', '2');
+  await expect(page.locator('[data-screen="check"] .mk-wizard-progress').nth(1)).toHaveAttribute('value', '2');
   const go = page.locator('[data-check-next]');
   await expect(go).toBeDisabled();
   await expect(go).toContainText('Continue anyway in');
@@ -191,7 +191,7 @@ test('the check lets you go on without answering after 20 seconds', async ({ pag
   await page.goto(base + '/account/wallets/add');
   // Outside setup: the wallet's own steps only.
   await expect(page.getByRole('list', { name: 'Setup progress' })).toHaveCount(0);
-  await expect(page.locator('.mk-progress-steps [aria-current="step"] small')).toHaveText('Kind · step 1 of 3');
+  await expect(page.locator('.mk-wizard-steps [aria-current="step"] small')).toHaveText('Kind · step 1 of 3');
   await startNewWallet(page, 'Patient Wren');
   await page.getByRole('tab', { name: 'On paper' }).click();
   await expect(page.locator('[data-app-panel="paper"] [data-words] li')).toHaveCount(16);
@@ -285,7 +285,7 @@ test.describe('with JavaScript off', () => {
     await page.locator('input[name="name"]').fill('Keys only');
     await page.getByRole('button', { name: 'Bring your own wallet' }).click();
     await expect(page.getByRole('heading', { name: 'Bring your own wallet' })).toBeVisible();
-    await expect(page.locator('.mk-progress-steps [aria-current="step"] small')).toHaveText('Keys · step 2 of 2');
+    await expect(page.locator('.mk-wizard-steps [aria-current="step"] small')).toHaveText('Keys · step 2 of 2');
     await page.getByText('Where do I find these keys?').click();
     await expect(page.getByText('Copy the secret one')).toBeVisible();
     await captureCoverageStage(page, 'wallets-keys-no-javascript', test.info(), { group: 'wallets' });

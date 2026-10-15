@@ -14,7 +14,7 @@ report's charts). This file tracks what has moved.
 | Notes under a field, values set elsewhere | `FieldNote`, `LockedValue` | done |
 | Dropdowns | `Select` | done (pages site's OpenWrt version too) |
 | Settings pages | `SettingsForm`, `SettingsCard`, `Setting`, `SaveBar`, `Toast` | done |
-| Setup progress | `ProgressSteps` | done |
+| Setup progress | `WizardSteps` | done |
 | Panels, messages, hints, headings | `Panel`, `Alert`, `Hint`, `Heading` | monokulo done; pages site's notes |
 | Facts, tags, network badges, short values | `Facts`, `Tag`, `NetworkBadge`, `ShortValue` | monokulo done |
 | Disclosures, checklists, timelines | `Disclosure`, `Checks`, `Timeline` | monokulo done |

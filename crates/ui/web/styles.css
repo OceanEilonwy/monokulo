@@ -5,6 +5,7 @@
 @import './components/content.css';
 @import './components/dialog.css';
 @import './components/forms.css';
+@import './components/sortable.css';
 @import './components/navigation.css';
 @import './components/steps.css';
 @import './components/action-card.css';

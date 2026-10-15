@@ -24,6 +24,8 @@ pub const COMPONENTS_CSS: &str = concat!(
     "\n",
     include_str!("../web/components/forms.css"),
     "\n",
+    include_str!("../web/components/sortable.css"),
+    "\n",
     include_str!("../web/components/navigation.css"),
     "\n",
     include_str!("../web/components/steps.css"),

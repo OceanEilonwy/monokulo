@@ -3,25 +3,47 @@
 
 use crate::{component, Attrs, Slot, UiEnum, UiRecord};
 
+/// A panel's look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]
+pub enum PanelLook {
+    /// Raised off the page, with space above and below.
+    Raised,
+    /// Flat, no outer space: one of a grid of them.
+    Tile,
+}
+
 component! {
-    /// A raised panel holding one part of a page: a form, a set of facts.
+    /// A panel holding one part of a page: a form, a set of facts; or, as
+    /// a tile, one of a grid of them.
     pub struct Panel {
         children: Slot,
+        #[default(PanelLook::Raised)]
+        look: PanelLook,
         rest: Attrs,
     }
     html {
-        div class="box" ..rest { (children) }
+        div class="box" data-look="tile" if look == PanelLook::Tile ..rest { (children) }
     }
 }
 
 pub(super) fn panel_examples() -> Vec<(&'static str, Panel)> {
-    vec![(
+    let tile = |title: &str, text: &str| {
+        Panel::new(Slot::many([
+            Slot::from(Heading::new(title).level(HeadingLevel::H3)),
+            Slot::from(Hint::new(text)),
+        ]))
+        .look(PanelLook::Tile)
+    };
+    vec![
+        ("A tile", tile("Watch-only", "Each store gives Monokulo its view key, never its spend key.")),
+        (
         "A part of a page",
         Panel::new(Slot::many([
             Slot::from(Heading::new("Webhook").level(HeadingLevel::H3)),
             Slot::from(Hint::new("Monokulo posts each order's changes here.")),
         ])),
-    )]
+    ),
+    ]
 }
 
 /// What a message says about how something went. The words say it; the
@@ -41,10 +63,16 @@ pub enum Tone {
 component! {
     /// A message about the page or what just happened: a refused save, a
     /// node that's down, a save that went through. An error is announced
-    /// (`role="alert"`), the rest are statuses, unless `quiet`.
+    /// (`role="alert"`), the rest are statuses, unless `quiet`. A message
+    /// that asks for something takes a `title` and `actions` (Dismiss, a
+    /// link to fix it).
     pub struct Alert {
         children: Slot,
         tone: Tone,
+        /// Bold, before the words.
+        title: Option<String>,
+        /// Under the words: buttons or links.
+        actions: Option<Slot>,
         /// Not announced: a message that is part of the page as it loads.
         #[default(false)]
         quiet: bool,
@@ -55,11 +83,11 @@ component! {
     }
     html {
         @if quiet {
-            @if block { div class=(tone) ..rest { (children) } } @else { p class=(tone) ..rest { (children) } }
+            @if block { div class=(tone) ..rest { @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } } @else { p class=(tone) ..rest { @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } }
         } @else if tone == Tone::Error {
-            @if block { div class=(tone) role="alert" ..rest { (children) } } @else { p class=(tone) role="alert" ..rest { (children) } }
+            @if block { div class=(tone) role="alert" ..rest { @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } } @else { p class=(tone) role="alert" ..rest { @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } }
         } @else {
-            @if block { div class=(tone) role="status" ..rest { (children) } } @else { p class=(tone) role="status" ..rest { (children) } }
+            @if block { div class=(tone) role="status" ..rest { @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } } @else { p class=(tone) role="status" ..rest { @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } }
         }
     }
 }
@@ -76,6 +104,17 @@ pub(super) fn alert_examples() -> Vec<(&'static str, Alert)> {
         ),
         ("Success", Alert::new("Saved.", Tone::Success)),
         ("Notice", Alert::new("No wallets yet.", Tone::Notice).quiet(true)),
+        (
+            "Asking for something",
+            Alert::new(
+                "If a scam site embeds it, that site's victims would pay you. Verify your domains in Settings and allow only them.",
+                Tone::Warning,
+            )
+            .title("Any website can show this store's checkout")
+            .actions(crate::Button::new("Dismiss").size(crate::ControlSize::Compact))
+            .block(true)
+            .quiet(true),
+        ),
     ]
 }
 
@@ -204,6 +243,10 @@ pub enum TagTone {
     Syncing,
     Stalled,
     Slow,
+    /// Information beside a label, not a state: muted, light.
+    Muted,
+    /// Muted, with a dashed edge: what nothing has chosen (a default).
+    Dashed,
 }
 
 /// An order's state: each its own colours, the same wherever an order's
@@ -232,10 +275,13 @@ component! {
         tone: Option<TagTone>,
         state: Option<OrderState>,
         short: Option<String>,
+        /// Before the words: an inline SVG, `aria-hidden`.
+        icon: Option<Slot>,
         rest: Attrs,
     }
     html {
         span class=join["tag", { "tag-" (tone) } if tone, { "state-" (state) } if state] ..rest {
+            @if let Some(icon) = icon { (icon) }
             @if let Some(short) = short {
                 span class="label-long" { (children) }
                 span class="label-short" aria-hidden="true" { (short) }
@@ -254,6 +300,8 @@ pub(super) fn tag_examples() -> Vec<(&'static str, Tag)> {
         ("Not checked", Tag::new("Not checked").tone(TagTone::Unknown)),
         ("Syncing", Tag::new("Syncing").tone(TagTone::Syncing)),
         ("Slow", Tag::new("Slow").tone(TagTone::Slow)),
+        ("Muted, with an icon", Tag::new("Options file").tone(TagTone::Muted).icon(Slot::from("⚙"))),
+        ("Dashed: a default", Tag::new("Default").tone(TagTone::Dashed)),
         (
             "An order waiting, shorter on a phone",
             Tag::new("Waiting for payment")
@@ -345,6 +393,12 @@ pub enum DisclosureLook {
     Boxed,
     /// A boxed "More options" at the end of a form: more space round it.
     MoreOptions,
+    /// A small panel: a one-line summary (a label and a figure) with a
+    /// chevron, its body a few facts. For dense dashboards.
+    Compact,
+    /// A row of a list: a one-line summary, its body a form or details.
+    /// What a `SortableList` holds.
+    Row,
 }
 
 component! {
@@ -360,11 +414,17 @@ component! {
         rest: Attrs,
     }
     html {
-        details class=join["disclosure" if look == DisclosureLook::Plain, "keys-help" if look == DisclosureLook::Boxed, "more-options" if look == DisclosureLook::MoreOptions]
+        details class=join["disclosure" if look == DisclosureLook::Plain, "keys-help" if look == DisclosureLook::Boxed,
+                "more-options" if look == DisclosureLook::MoreOptions, "disclosure-compact" if look == DisclosureLook::Compact,
+                "disclosure-row" if look == DisclosureLook::Row]
             open[open] ..rest {
             summary { (summary) }
             @if look == DisclosureLook::Boxed {
                 div class="keys-help-body" { (children) }
+            } @else if look == DisclosureLook::Compact {
+                div class="disclosure-body" { (children) }
+            } @else if look == DisclosureLook::Row {
+                div class="disclosure-body" { (children) }
             } @else {
                 (children)
             }
@@ -387,6 +447,23 @@ pub(super) fn disclosure_examples() -> Vec<(&'static str, Disclosure)> {
             "More options",
             Disclosure::new("More options", "Leave on mainnet unless this is a test wallet.")
                 .look(DisclosureLook::MoreOptions),
+        ),
+        (
+            "Compact",
+            Disclosure::new(
+                Slot::many([Slot::from(Tag::new("Scanning").tone(TagTone::Syncing)), Slot::from(" 1 block behind")]),
+                Facts::new(vec![
+                    Fact { term: "Progress".into(), value: "1 block behind".into() },
+                    Fact { term: "Requests".into(), value: "None yet".into() },
+                ]),
+            )
+            .look(DisclosureLook::Compact)
+            .open(true),
+        ),
+        (
+            "A row",
+            Disclosure::new("Primary · node.example.com:18081", "The node's address, and whether it uses TLS.")
+                .look(DisclosureLook::Row),
         ),
     ]
 }
@@ -631,4 +708,136 @@ component! {
             td class=join[{ "card-" (part) } if part, "col-optional" if optional] data-label=[label] ..rest { (children) }
         }
     }
+}
+
+component! {
+    /// A "?" that opens help over the page: a `details`, so it opens
+    /// without JavaScript. Once its island attaches, a click outside it or
+    /// Escape closes it, Escape putting focus back on the "?".
+    pub struct HelpTip {
+        /// What the help is about ("What the page shows"): the "?"'s name.
+        label: String,
+        children: Slot,
+        id: Option<String>,
+        /// Room for two columns of help, as wide as the page allows.
+        #[default(false)]
+        wide: bool,
+    }
+    behaviour "help-tip.behaviour.ts" {
+        uses(),
+        ref root,
+    }
+    html {
+        details class="help-tip" id=[id] data-size="wide" if wide ref=root {
+            summary aria-label=(label) title=(label) { "?" }
+            div class="help-tip-body" { (children) }
+        }
+    }
+}
+
+pub(super) fn help_tip_examples() -> Vec<(&'static str, HelpTip)> {
+    vec![(
+        "Search syntax",
+        HelpTip::new(
+            "How to search",
+            "Fields compare with =, !=, <, >; join them with and, or. Quote text: order.id = 'o_1'.",
+        ),
+    )]
+}
+
+component! {
+    /// Links to the pages before and after this one of a long list, and
+    /// where this one is. Real links: with `fixi_target`, fixi swaps the
+    /// next page into that element and keeps the address in step.
+    pub struct Pagination {
+        /// What is paged ("Orders pages").
+        label: String,
+        previous: Option<String>,
+        next: Option<String>,
+        #[default(String::from("Previous"))]
+        previous_label: String,
+        #[default(String::from("Next"))]
+        next_label: String,
+        /// Where this page is ("Page 2 of 5").
+        status: Option<String>,
+        fixi_target: Option<String>,
+    }
+    html {
+        nav class="mk-pagination" aria-label=(label) {
+            @if let Some(previous) = previous {
+                a href=(previous) rel="prev" fx-action=(previous) if fixi_target fx-target=[fixi_target]
+                    fx-push-url="" if fixi_target { "← " (previous_label) }
+            }
+            @if let Some(status) = status { span class="mk-pagination-status" { (status) } }
+            @if let Some(next) = next {
+                a href=(next) rel="next" fx-action=(next) if fixi_target fx-target=[fixi_target]
+                    fx-push-url="" if fixi_target { (next_label) " →" }
+            }
+        }
+    }
+}
+
+pub(super) fn pagination_examples() -> Vec<(&'static str, Pagination)> {
+    vec![
+        (
+            "Both ways, with where",
+            Pagination::new("Invite pages")
+                .previous("#component-pagination")
+                .next("#component-pagination")
+                .status("Page 2 of 5"),
+        ),
+        (
+            "Newest first, at the start",
+            Pagination::new("Orders pages")
+                .next("#component-pagination")
+                .next_label("Older"),
+        ),
+    ]
+}
+
+component! {
+    /// One thing in a list of them, as a card: a title and a line under it,
+    /// its status at the right, a figure (an amount), and a foot with a
+    /// detail and what to do with it. An order on the POS's list.
+    pub struct Card {
+        title: Slot,
+        subtitle: Option<Slot>,
+        /// At the head's right: a `Tag`.
+        status: Option<Slot>,
+        /// The figure: an amount.
+        amount: Option<Slot>,
+        /// Muted, at the foot's left.
+        detail: Option<Slot>,
+        /// At the foot's right: a link or a button.
+        action: Option<Slot>,
+        rest: Attrs,
+    }
+    html {
+        article class="mk-card" ..rest {
+            div class="mk-card-head" {
+                div {
+                    h3 class="mk-card-title" { (title) }
+                    @if let Some(subtitle) = subtitle { p class="mk-card-sub" { (subtitle) } }
+                }
+                @if let Some(status) = status { (status) }
+            }
+            @if let Some(amount) = amount { p class="mk-card-amount" { (amount) } }
+            div class="mk-card-foot" {
+                @if let Some(detail) = detail { small { (detail) } }
+                @if let Some(action) = action { (action) }
+            }
+        }
+    }
+}
+
+pub(super) fn card_examples() -> Vec<(&'static str, Card)> {
+    vec![(
+        "An order",
+        Card::new("Table 4")
+            .subtitle("Created 14:02")
+            .status(Tag::new("Waiting for payment").state(OrderState::Pending).short("Waiting"))
+            .amount("0.42 XMR")
+            .detail("Expires in 52 min")
+            .action(crate::LinkButton::new("Open", "#component-card").variant(crate::ButtonVariant::Quiet).size(crate::ControlSize::Compact)),
+    )]
 }

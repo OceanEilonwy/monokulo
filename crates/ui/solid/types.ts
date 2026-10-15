@@ -47,7 +47,7 @@ export type DialogSize = "confirm" | "wide";
 /**
  * A disclosure's look.
  */
-export type DisclosureLook = "plain" | "boxed" | "more-options";
+export type DisclosureLook = "plain" | "boxed" | "more-options" | "compact" | "row";
 
 /**
  * Where a status dot sits.
@@ -91,6 +91,11 @@ export type OrderState = "pending" | "unconfirmed" | "confirming" | "partial" | 
 export type PageWidth = "normal" | "wide";
 
 /**
+ * A panel's look.
+ */
+export type PanelLook = "raised" | "tile";
+
+/**
  * A popover that only script opens and closes.
  */
 export type Popover = "manual";
@@ -107,9 +112,9 @@ export type Saved = "on" | "off";
 export type SearchMode = "auto" | "show" | "hide";
 
 /**
- * Where a step stands.
+ * How far a step of [`ProgressSteps`] has got.
  */
-export type StepState = "done" | "current" | "next";
+export type StepProgress = "done" | "now" | "part" | "fail" | "todo";
 
 /**
  * How a table changes on a phone.
@@ -119,7 +124,7 @@ export type TableLook = "plain" | "cards" | "stack" | "facts";
 /**
  * How a tag reads, beside its words.
  */
-export type TagTone = "ok" | "error" | "unknown" | "syncing" | "stalled" | "slow";
+export type TagTone = "ok" | "error" | "unknown" | "syncing" | "stalled" | "slow" | "muted" | "dashed";
 
 /**
  * A colour theme.
@@ -142,6 +147,11 @@ export type Tone = "error" | "warning" | "success" | "notice";
  * is copied, and what focus reveals.
  */
 export type Truncate = "end" | "middle" | "segments";
+
+/**
+ * Where a step stands.
+ */
+export type WizardState = "done" | "current" | "next";
 
 /**
  * A card in the save bar's message: one with unsaved changes.
@@ -220,6 +230,14 @@ export interface Fact {
 }
 
 /**
+ * One step of [`ProgressSteps`].
+ */
+export interface ProgressStep {
+  readonly label: string;
+  readonly progress: StepProgress;
+}
+
+/**
  * One choice of [`RadioCards`].
  */
 export interface RadioCard {
@@ -265,30 +283,6 @@ export interface SelectItem {
 }
 
 /**
- * One segment of a progress strip.
- */
-export interface Step {
-  /**
-   * The stage ("Wallet").
-   */
-  readonly label: string;
-  /**
-   * Where it stands, under the label: "Complete", "Next", or the task
-   * in hand and its position ("Back up · step 2 of 3").
-   */
-  readonly detail: string;
-  /**
-   * The stage's tasks done: its bar fills by these.
-   */
-  readonly done: number;
-  /**
-   * The stage's tasks; 1 for a stage with none of its own.
-   */
-  readonly tasks: number;
-  readonly state: StepState;
-}
-
-/**
  * One tab of [`Tabs`]: its label and the panel it shows.
  */
 export interface Tab {
@@ -296,7 +290,10 @@ export interface Tab {
    * The panel's id: the tab links to it.
    */
   readonly id: string;
-  readonly label: string;
+  /**
+   * What the tab says: words, or a logo and words.
+   */
+  readonly label: JSX.Element;
   readonly panel: JSX.Element;
 }
 
@@ -314,4 +311,28 @@ export interface TabLink {
    * How many things the page holds, beside its label.
    */
   readonly count?: string;
+}
+
+/**
+ * One segment of a wizard's strip.
+ */
+export interface WizardStep {
+  /**
+   * The stage ("Wallet").
+   */
+  readonly label: string;
+  /**
+   * Where it stands, under the label: "Complete", "Next", or the task
+   * in hand and its position ("Back up · step 2 of 3").
+   */
+  readonly detail: string;
+  /**
+   * The stage's tasks done: its bar fills by these.
+   */
+  readonly done: number;
+  /**
+   * The stage's tasks; 1 for a stage with none of its own.
+   */
+  readonly tasks: number;
+  readonly state: WizardState;
 }
