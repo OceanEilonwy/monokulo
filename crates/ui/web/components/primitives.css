@@ -21,7 +21,7 @@ textarea.mk-input { resize: vertical; }
 .mk-input[readonly] { background: var(--surface-sunken); }
 .mk-check { display: inline-flex; align-items: baseline; gap: var(--space-sm); margin: 0; font-weight: 400; }
 .mk-check > input { width: auto; margin: 0; accent-color: var(--accent-text); }
-.mk-btn { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; gap: var(--space-sm); min-height: 2.75rem; margin: 0; padding: var(--space-sm) var(--space-lg); border: 1px solid var(--btn-border); border-radius: var(--radius-sm); background: var(--btn-bg); color: var(--btn-ink); font: inherit; font-weight: 700; line-height: 1.4; text-align: center; text-decoration: none; cursor: pointer; }
+.mk-btn { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; gap: var(--space-sm); min-height: 2.75rem; margin: 0; padding: calc(var(--space-sm) + 1px) calc(var(--space-lg) + 1px); border: 1px solid var(--btn-border); border-radius: var(--radius-sm); background: var(--btn-bg); color: var(--btn-ink); font: inherit; font-weight: 700; line-height: 1.4; text-align: center; text-decoration: none; cursor: pointer; }
 .mk-btn:hover { background: var(--btn-hover-bg); color: var(--btn-ink); border-color: var(--btn-hover-border); }
 .mk-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .mk-btn[data-variant="primary"] { background: var(--btn-primary-bg); color: var(--btn-primary-ink); border-color: var(--btn-primary-bg); }

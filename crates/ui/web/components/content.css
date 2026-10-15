@@ -19,6 +19,8 @@
   margin: 1em 0;
 }
 .hint { color: var(--muted); font-size: var(--text-sm); }
+/* Muted words in a line, at its size. */
+.muted { color: var(--muted); }
 /* Admin settings banners after a save (admin_settings_v2.md task 4.5). */
 .warning {
   border: 2px solid var(--warning);
