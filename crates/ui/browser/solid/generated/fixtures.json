@@ -778,6 +778,7 @@
     "component": "Disclosure",
     "html": "<details class=\"disclosure\"><summary>How it's checked</summary>Every block is checked against two nodes.</details>",
     "props": {
+      "alert": false,
       "children": {
         "$slot": [
           "Every block is checked against two nodes."
@@ -797,6 +798,7 @@
     "component": "Disclosure",
     "html": "<details class=\"keys-help\"><summary>Where do I find these keys?</summary><div class=\"keys-help-body\">Settings, then Keys.</div></details>",
     "props": {
+      "alert": false,
       "children": {
         "$slot": [
           "Settings, then Keys."
@@ -816,6 +818,7 @@
     "component": "Disclosure",
     "html": "<details class=\"more-options\"><summary>More options</summary>Leave on mainnet unless this is a test wallet.</details>",
     "props": {
+      "alert": false,
       "children": {
         "$slot": [
           "Leave on mainnet unless this is a test wallet."
@@ -835,6 +838,7 @@
     "component": "Disclosure",
     "html": "<details class=\"disclosure-compact\" open><summary><span class=\"tag tag-syncing\">Scanning</span> 1 block behind</summary><div class=\"disclosure-body\"><dl class=\"facts\"><dt>Progress</dt><dd>1 block behind</dd><dt>Requests</dt><dd>None yet</dd></dl></div></details>",
     "props": {
+      "alert": false,
       "children": {
         "$slot": [
           {
@@ -887,6 +891,7 @@
     "component": "Disclosure",
     "html": "<details class=\"disclosure-row\"><summary>Primary · node.example.com:18081</summary><div class=\"disclosure-body\">The node's address, and whether it uses TLS.</div></details>",
     "props": {
+      "alert": false,
       "children": {
         "$slot": [
           "The node's address, and whether it uses TLS."
@@ -906,6 +911,7 @@
     "component": "HelpTip",
     "html": "<details class=\"help-tip\" data-mk=\"1\" data-island=\"HelpTip\" data-props=\"{}\"><summary aria-label=\"How to search\" title=\"How to search\">?</summary><div class=\"help-tip-body\">Fields compare with =, !=, &lt;, &gt;; join them with and, or. Quote text: order.id = 'o_1'.</div></details>",
     "props": {
+      "anchor": "tip",
       "children": {
         "$slot": [
           "Fields compare with =, !=, <, >; join them with and, or. Quote text: order.id = 'o_1'."
@@ -930,6 +936,7 @@
                   {
                     "$component": "Disclosure",
                     "props": {
+                      "alert": false,
                       "children": {
                         "$slot": [
                           "The node's address, and whether it uses TLS."
@@ -963,6 +970,7 @@
                   {
                     "$component": "Disclosure",
                     "props": {
+                      "alert": false,
                       "children": {
                         "$slot": [
                           "The node's address, and whether it uses TLS."
@@ -996,6 +1004,7 @@
                   {
                     "$component": "Disclosure",
                     "props": {
+                      "alert": false,
                       "children": {
                         "$slot": [
                           "The node's address, and whether it uses TLS."
@@ -1029,6 +1038,7 @@
                   {
                     "$component": "Disclosure",
                     "props": {
+                      "alert": false,
                       "children": {
                         "$slot": [
                           "An address to try last."
@@ -2773,7 +2783,7 @@
   },
   {
     "component": "Tabs",
-    "html": "<div class=\"mk-tabset\" data-mk=\"1\" data-island=\"Tabs\" data-props=\"{&quot;tabs&quot;:[{&quot;id&quot;:&quot;example-charge&quot;},{&quot;id&quot;:&quot;example-history&quot;},{&quot;id&quot;:&quot;example-terminal&quot;}]}\"><div class=\"mk-tabs\" aria-label=\"Example POS views\" data-mk=\"2\"><a href=\"#example-charge\" id=\"example-charge-tab\" data-mk=\"3\">Charge</a><a href=\"#example-history\" id=\"example-history-tab\" data-mk=\"3\">History</a><a href=\"#example-terminal\" id=\"example-terminal-tab\" data-mk=\"3\">Terminal</a></div><div class=\"mk-tab-panels\"><section id=\"example-charge\" data-mk=\"4\">Enter an amount to start a payment.</section><section id=\"example-history\" data-mk=\"4\">No payments yet.</section><section id=\"example-terminal\" data-mk=\"4\">This terminal is ready to receive payments.</section></div></div>",
+    "html": "<div class=\"mk-tabset\" data-mk=\"1\" data-island=\"Tabs\" data-props=\"{&quot;tabs&quot;:[{&quot;id&quot;:&quot;example-charge&quot;},{&quot;id&quot;:&quot;example-history&quot;},{&quot;id&quot;:&quot;example-terminal&quot;}]}\"><div class=\"mk-tabs\" aria-label=\"Example POS views\" data-mk=\"2\"><a href=\"#example-charge\" id=\"example-charge-tab\" data-mk=\"3\">Charge</a><a href=\"#example-history\" id=\"example-history-tab\" data-mk=\"3\">History</a><a href=\"#example-terminal\" id=\"example-terminal-tab\" data-mk=\"3\">Terminal</a></div><div class=\"mk-tab-panels\"><section id=\"example-charge\" data-tab-panel=\"\" data-mk=\"4\">Enter an amount to start a payment.</section><section id=\"example-history\" data-tab-panel=\"\" data-mk=\"4\">No payments yet.</section><section id=\"example-terminal\" data-tab-panel=\"\" data-mk=\"4\">This terminal is ready to receive payments.</section></div></div>",
     "props": {
       "label": "Example POS views",
       "tabs": [
@@ -2907,7 +2917,7 @@
   },
   {
     "component": "SettingsForm",
-    "html": "<div class=\"mk-settings-form\" data-label=\"Store settings\" data-mk=\"1\" data-island=\"SettingsForm\" data-props=\"{&quot;label&quot;:&quot;Store settings&quot;}\"><form method=\"get\" action=\"#component-settings-form\" id=\"book-settings-form\" data-mk=\"2\"><section id=\"card-book-details\" class=\"settings-card\" data-name=\"book-details\" role=\"region\" aria-labelledby=\"card-book-details-title\" data-mk=\"1\" data-island=\"SettingsCard\" data-props=\"{&quot;failed&quot;:false,&quot;hidden&quot;:false,&quot;name&quot;:&quot;book-details&quot;,&quot;title&quot;:&quot;Store details&quot;}\"><header class=\"card-head\"><h3 id=\"card-book-details-title\">Store details</h3><span class=\"card-state\" data-card-state><!--mk:2--></span><span class=\"card-spacer\"></span><!--mk:5--></header><div class=\"card-body\"><div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{&quot;row&quot;:false}\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-settings-name-input\">Store name</label><span class=\"changed-mark\">changed</span></div><input class=\"mk-input\" type=\"text\" name=\"name\" id=\"book-settings-name-input\" value=\"Corner store\"></div></div></section><div id=\"book-form-save-bar\" class=\"save-bar\" data-placement=\"inline\" role=\"region\" aria-label=\"Example form's save changes\" data-mk=\"1\" data-island=\"SaveBar\" data-props=\"{&quot;failed&quot;:false,&quot;save_label&quot;:&quot;Save&quot;}\"><div class=\"save-bar-inner\"><p class=\"save-bar-message\" data-save-bar-message tabindex=\"-1\"><span data-mk=\"2\">Saving changes the store straight away.</span><!--mk:3--></p><div class=\"save-bar-actions\" data-mk=\"4\"><a class=\"mk-btn\" href=\"#component-settings-form\" data-discard-all data-mk=\"5\">Discard changes</a><button type=\"submit\" class=\"mk-btn\" data-variant=\"primary\" data-save data-mk=\"6\"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div></form></div>",
+    "html": "<div class=\"mk-settings-form\" data-label=\"Store settings\" data-mk=\"1\" data-island=\"SettingsForm\" data-props=\"{&quot;label&quot;:&quot;Store settings&quot;}\"><form method=\"get\" action=\"#component-settings-form\" id=\"book-settings-form\" data-mk=\"2\"><section id=\"card-book-details\" class=\"settings-card\" data-name=\"book-details\" role=\"region\" aria-labelledby=\"card-book-details-title\" data-mk=\"1\" data-island=\"SettingsCard\" data-props=\"{&quot;failed&quot;:false,&quot;hidden&quot;:false,&quot;name&quot;:&quot;book-details&quot;,&quot;title&quot;:&quot;Store details&quot;}\"><header class=\"card-head\"><h3 id=\"card-book-details-title\">Store details</h3><span class=\"card-state\" data-card-state><!--mk:2--></span><span class=\"card-spacer\"></span><!--mk:5--></header><div class=\"card-body\"><div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{}\"><div class=\"setting-about\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-settings-name-input\">Store name</label><span class=\"changed-mark\">changed</span></div></div><div class=\"setting-control\"><input class=\"mk-input\" type=\"text\" name=\"name\" id=\"book-settings-name-input\" value=\"Corner store\"></div></div></div></section><div id=\"book-form-save-bar\" class=\"save-bar\" data-placement=\"inline\" role=\"region\" aria-label=\"Example form's save changes\" data-mk=\"1\" data-island=\"SaveBar\" data-props=\"{&quot;failed&quot;:false,&quot;save_label&quot;:&quot;Save&quot;}\"><div class=\"save-bar-inner\"><p class=\"save-bar-message\" data-save-bar-message tabindex=\"-1\"><span data-mk=\"2\">Saving changes the store straight away.</span><!--mk:3--></p><div class=\"save-bar-actions\" data-mk=\"4\"><a class=\"mk-btn\" href=\"#component-settings-form\" data-discard-all data-mk=\"5\">Discard changes</a><button type=\"submit\" class=\"mk-btn\" data-variant=\"primary\" data-save data-mk=\"6\"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div></form></div>",
     "props": {
       "action": "#component-settings-form",
       "children": {
@@ -2939,8 +2949,7 @@
                       },
                       "group": false,
                       "id": "book-settings-name-input",
-                      "label": "Store name",
-                      "row": false
+                      "label": "Store name"
                     }
                   }
                 ]
@@ -3036,7 +3045,7 @@
   },
   {
     "component": "Setting",
-    "html": "<div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{&quot;row&quot;:false}\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-setting-confirmations\">Confirmations</label><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-confirmations-help\">Blocks a payment waits for before it counts as paid.</p><input class=\"mk-input\" type=\"number\" name=\"confirmations\" id=\"book-setting-confirmations\" value=\"10\" aria-describedby=\"book-setting-confirmations-help\"></div>",
+    "html": "<div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{}\"><div class=\"setting-about\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-setting-confirmations\">Confirmations</label><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-confirmations-help\">Blocks a payment waits for before it counts as paid.</p></div><div class=\"setting-control\"><input class=\"mk-input\" type=\"number\" name=\"confirmations\" id=\"book-setting-confirmations\" value=\"10\" aria-describedby=\"book-setting-confirmations-help\"></div></div>",
     "props": {
       "children": {
         "$slot": [
@@ -3064,14 +3073,13 @@
       },
       "help_id": "book-setting-confirmations-help",
       "id": "book-setting-confirmations",
-      "label": "Confirmations",
-      "row": false
+      "label": "Confirmations"
     },
     "title": "With help"
   },
   {
     "component": "Setting",
-    "html": "<div class=\"setting-field is-row\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{&quot;row&quot;:true}\"><div class=\"setting-about\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-setting-tls\">Use TLS</label><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-tls-help\">Connect with https. Most nodes on port 18081 don't use it.</p></div><div class=\"setting-control\"><input type=\"checkbox\" class=\"mk-checkbox\" name=\"tls\" id=\"book-setting-tls\" value=\"on\" aria-describedby=\"book-setting-tls-help\"></div></div>",
+    "html": "<div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{}\"><div class=\"setting-about\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-setting-tls\">Use TLS</label><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-tls-help\">Connect with https. Most nodes on port 18081 don't use it.</p></div><div class=\"setting-control\"><input type=\"checkbox\" class=\"mk-checkbox\" name=\"tls\" id=\"book-setting-tls\" value=\"on\" aria-describedby=\"book-setting-tls-help\"></div></div>",
     "props": {
       "children": {
         "$slot": [
@@ -3096,14 +3104,13 @@
       },
       "help_id": "book-setting-tls-help",
       "id": "book-setting-tls",
-      "label": "Use TLS",
-      "row": true
+      "label": "Use TLS"
     },
-    "title": "A row"
+    "title": "A checkbox"
   },
   {
     "component": "Setting",
-    "html": "<div class=\"setting-field\" role=\"group\" aria-labelledby=\"book-setting-accept\" aria-describedby=\"book-setting-accept-help\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{&quot;row&quot;:false}\"><div class=\"setting-label-row\"><span class=\"setting-label\" id=\"book-setting-accept\">Accept</span><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-accept-help\">What a payment may arrive as.</p>Its checkboxes.</div>",
+    "html": "<div class=\"setting-field\" role=\"group\" aria-labelledby=\"book-setting-accept\" aria-describedby=\"book-setting-accept-help\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{}\"><div class=\"setting-about\"><div class=\"setting-label-row\"><span class=\"setting-label\" id=\"book-setting-accept\">Accept</span><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-accept-help\">What a payment may arrive as.</p></div><div class=\"setting-control\">Its checkboxes.</div></div>",
     "props": {
       "children": {
         "$slot": [
@@ -3119,8 +3126,7 @@
       },
       "help_id": "book-setting-accept-help",
       "id": "book-setting-accept",
-      "label": "Accept",
-      "row": false
+      "label": "Accept"
     },
     "title": "A group"
   },

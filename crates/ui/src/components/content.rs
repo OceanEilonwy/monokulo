@@ -411,10 +411,13 @@ component! {
         look: DisclosureLook,
         #[default(false)]
         open: bool,
+        /// Something in it needs attention: an error's edge (open it too).
+        #[default(false)]
+        alert: bool,
         rest: Attrs,
     }
     html {
-        details class=join["disclosure" if look == DisclosureLook::Plain, "keys-help" if look == DisclosureLook::Boxed,
+        details data-alert="" if alert class=join["disclosure" if look == DisclosureLook::Plain, "keys-help" if look == DisclosureLook::Boxed,
                 "more-options" if look == DisclosureLook::MoreOptions, "disclosure-compact" if look == DisclosureLook::Compact,
                 "disclosure-row" if look == DisclosureLook::Row]
             open[open] ..rest {
@@ -710,6 +713,17 @@ component! {
     }
 }
 
+/// Where a `HelpTip`'s help opens from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]
+pub enum TipAnchor {
+    /// Under the "?", its left edge at the "?"'s.
+    Tip,
+    /// Under the container the page positions (a title bar), from its left
+    /// edge: a wide tip that isn't at the far left then stays on a phone's
+    /// screen.
+    Container,
+}
+
 component! {
     /// A "?" that opens help over the page: a `details`, so it opens
     /// without JavaScript. Once its island attaches, a click outside it or
@@ -722,13 +736,18 @@ component! {
         /// Room for two columns of help, as wide as the page allows.
         #[default(false)]
         wide: bool,
+        /// Where the help opens from.
+        #[default(TipAnchor::Tip)]
+        anchor: TipAnchor,
+        rest: Attrs,
     }
     behaviour "help-tip.behaviour.ts" {
         uses(),
         ref root,
     }
     html {
-        details class="help-tip" id=[id] data-size="wide" if wide ref=root {
+        details class="help-tip" id=[id] data-size="wide" if wide data-anchor="container" if anchor == TipAnchor::Container
+            ..rest ref=root {
             summary aria-label=(label) title=(label) { "?" }
             div class="help-tip-body" { (children) }
         }
@@ -761,9 +780,10 @@ component! {
         /// Where this page is ("Page 2 of 5").
         status: Option<String>,
         fixi_target: Option<String>,
+        rest: Attrs,
     }
     html {
-        nav class="mk-pagination" aria-label=(label) {
+        nav class="mk-pagination" aria-label=(label) ..rest {
             @if let Some(previous) = previous {
                 a href=(previous) rel="prev" fx-action=(previous) if fixi_target fx-target=[fixi_target]
                     fx-push-url="" if fixi_target { "← " (previous_label) }

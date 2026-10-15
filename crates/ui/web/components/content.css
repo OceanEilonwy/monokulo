@@ -165,6 +165,7 @@ details.disclosure-compact > summary::-webkit-details-marker { display: none; }
 details.disclosure-compact > summary::after { content: ""; flex: none; margin-left: auto; width: 6px; height: 6px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); transition: transform .2s; }
 details.disclosure-compact[open] > summary::after { transform: rotate(45deg); }
 details.disclosure-compact > summary:hover { background: var(--tint-hover); }
+details:is(.disclosure-compact, .disclosure-row)[data-alert] { border-color: var(--error); }
 details.disclosure-compact > .disclosure-body { padding: var(--space-xs) var(--space-sm) var(--space-sm); font-size: var(--text-xs); border-top: 1px solid var(--line); }
 /* A row of a list: one line, a form under it once opened. */
 details.disclosure-row { background: var(--paper); border: 1px solid var(--card-border); border-radius: var(--radius-md); min-width: 0; }
@@ -176,6 +177,7 @@ details.disclosure-row > .disclosure-body { padding: var(--space-sm) var(--space
 @media (prefers-reduced-motion: reduce) { details.disclosure-compact > summary::after { transition: none; } }
 /* A help tip: a round "?" and help over the page under it. */
 .help-tip { position: relative; display: inline-block; }
+.help-tip[data-anchor="container"] { position: static; }
 .help-tip > summary { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid var(--btn-border); font-weight: 800; font-size: var(--text-xs); color: var(--btn-ink); background: var(--btn-bg); cursor: pointer; list-style: none; }
 .help-tip > summary::-webkit-details-marker { display: none; }
 .help-tip > summary:hover { border-color: var(--btn-hover-border); }

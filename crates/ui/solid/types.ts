@@ -132,6 +132,11 @@ export type TagTone = "ok" | "error" | "unknown" | "syncing" | "stalled" | "slow
 export type ThemeChoice = "system" | "light" | "dark";
 
 /**
+ * Where a `HelpTip`'s help opens from.
+ */
+export type TipAnchor = "tip" | "container";
+
+/**
  * How a save went.
  */
 export type ToastKind = "success" | "warning" | "error" | "neutral";

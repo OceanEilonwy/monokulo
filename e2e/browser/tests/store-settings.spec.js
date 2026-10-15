@@ -148,12 +148,15 @@ test('the Verified domains form lays its field out like every other setting, and
   const card = page.locator('#card-verified-domains');
   const field = card.locator('form .setting-field');
   await expect(field).toHaveCount(1);
-  // Name, then help, then the control, as the settings components have them.
+  // The name over its help on the left, the control on the right, as the
+  // settings components have them.
+  await page.setViewportSize({ width: 1280, height: 900 });
   const label = await field.locator('label.setting-label').boundingBox();
   const help = await field.locator('.field-help').boundingBox();
   const input = await field.locator('input[name="domain"]').boundingBox();
   expect(label.y).toBeLessThan(help.y);
-  expect(help.y).toBeLessThan(input.y);
+  expect(input.x).toBeGreaterThanOrEqual(help.x + help.width);
+  expect(Math.abs(input.y - label.y)).toBeLessThan(label.height + 8);
   await expect(field.locator('input[name="domain"]')).toHaveAttribute('aria-describedby', 'new-domain-help');
   await expect(card.getByLabel('Domain')).toHaveAttribute('name', 'domain');
   // Adding one works as before: its TXT record is shown.

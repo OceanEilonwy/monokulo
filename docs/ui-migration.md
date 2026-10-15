@@ -13,11 +13,11 @@ figures, trees and charts). This file tracks what has moved.
 | Text inputs (with actions inside), text areas, checkboxes, switches, radio cards | `Field`, `Input`, `TextArea`, `Checkbox`, `Switch`, `RadioCards` | done |
 | Notes under a field, values set elsewhere | `FieldNote`, `LockedValue` | done |
 | Dropdowns | `Select` | done |
-| Settings pages | `SettingsForm`, `SettingsCard`, `Setting` (stacked or a row), `SaveBar`, `Toast` | done |
+| Settings pages | `SettingsForm`, `SettingsCard`, `Setting` (name and help left, control right; a wide control and a phone stack), `SaveBar`, `Toast` | done |
 | Progress | `WizardSteps` (setup), `ProgressSteps` (a payment's stage) | done (checkout and POS share the stage) |
 | Panels, messages, hints, headings | `Panel` (raised or tile), `Alert` (with a title and actions), `Hint`, `Heading` | done |
 | Facts, tags, network badges, short values | `Facts`, `Tag` (tones, order states, an icon), `NetworkBadge`, `ShortValue` | done |
-| Disclosures, help, checklists, timelines | `Disclosure` (plain, boxed, More options, compact, row), `HelpTip`, `Checks`, `Timeline` | done |
+| Disclosures, help, checklists, timelines | `Disclosure` (plain, boxed, More options, compact, row; an alert edge), `HelpTip` (from the tip or its container), `Checks`, `Timeline` | done |
 | Ordered lists the user reorders | `SortableList`, `SortableItem`, `SortHandle` | admin's Monero nodes |
 | Tables, cards, paging | `Table`, `Row`, `Cell`, `Card`, `Pagination` | done (logs' Older loads more lines in place: not paging) |
 | Dialogs | `Dialog`, `DialogTitle`, `DialogActions`, `DialogPage` | done; no `window.confirm` left |
@@ -35,10 +35,7 @@ figures, trees and charts). This file tracks what has moved.
 
 ### Gaps worth a component or variant
 
-A `Field` for a text area; `CellPart::Detail`; attributes on `Setting`
-(a field shown only while a box is ticked needs a wrapping `div`); a
-SettingsCard that doesn't count a sortable row's fields when the page
-counts the row itself.
+A `Field` for a text area; `CellPart::Detail`.
 
 ## Converting a page
 

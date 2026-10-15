@@ -120,7 +120,7 @@
 
   // The tab shown: the ui Tabs hide the others' panels (every panel shows
   // until they attach, the first counting as shown).
-  const currentPanel = () => $$('[data-app-panel]').find((panel) => !panel.parentElement.hidden);
+  const currentPanel = () => $$('[data-app-panel]').find((panel) => !panel.closest('[data-tab-panel]').hidden);
   const currentApp = () => currentPanel().dataset.appPanel;
   const next = $('[data-go="check"]');
 

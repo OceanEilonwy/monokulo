@@ -13,7 +13,8 @@
 //! Page scripts hear about it with events on the form's host element:
 //! `mk-dirty` (`{count, groups}`), `mk-saved` (`{groups}`) and `mk-failed`
 //! (`{group, message}`); on a card, `mk-count` (`{changes}`: add changes the
-//! page tracks itself) and `mk-discard` (cancel it to put the card back by
+//! page tracks itself; the card leaves out the settings inside an element
+//! marked `data-counted-by-page`) and `mk-discard` (cancel it to put the card back by
 //! loading the page). A page script that changes what isn't a setting's
 //! control (a node row moved) sends `mk-changed` to the form.
 
@@ -170,9 +171,11 @@ component! {
 }
 
 component! {
-    /// One setting: its name, what it's for, its control, and "changed"
-    /// while it differs from what's saved (a control's `data-saved` after a
-    /// refused save, its default value otherwise).
+    /// One setting: its name and what it's for on the left, its control on
+    /// the right (a phone, or a wide control such as radio cards, a list of
+    /// choices, a text area or a table, puts the control under them), and
+    /// "changed" while it differs from what's saved (a control's
+    /// `data-saved` after a refused save, its default value otherwise).
     pub struct Setting {
         label: String,
         /// The id of the control the label is for; for a group, the
@@ -194,10 +197,8 @@ component! {
         described_by: Option<String>,
         /// The label's own id, for a control that names itself by it.
         label_id: Option<String>,
-        /// Its name and help on the left, its control on the right (a
-        /// phone stacks them): for a short control in a dense form.
-        #[default(false)]
-        row: bool,
+        /// `data-*` attributes of the page's own, `hidden`.
+        rest: Attrs,
     }
     behaviour "setting.behaviour.ts" {
         uses(),
@@ -205,26 +206,10 @@ component! {
         ref root,
     }
     html {
-        div class=join["setting-field", "is-row" if row]
-            class=join["setting-field", "is-row" if row, "is-changed" if b.changed]
-            role="group" if group aria-labelledby=(id) if group aria-describedby=[described_by] ref=root {
-            @if row {
-                div class="setting-about" {
-                    div class="setting-label-row" {
-                        @if group {
-                            span class="setting-label" id=(id) { (label) }
-                        } @else {
-                            label class="setting-label" id=[label_id] for=(id) { (label) }
-                        }
-                        @if let Some(chip) = chip { (chip) }
-                        span class="changed-mark" { "changed" }
-                    }
-                    @if let Some(help) = help {
-                        p class="field-help" id=[help_id] { (help) }
-                    }
-                }
-                div class="setting-control" { (children) }
-            } @else {
+        div class="setting-field"
+            class=join["setting-field", "is-changed" if b.changed]
+            role="group" if group aria-labelledby=(id) if group aria-describedby=[described_by] ..rest ref=root {
+            div class="setting-about" {
                 div class="setting-label-row" {
                     @if group {
                         span class="setting-label" id=(id) { (label) }
@@ -237,8 +222,8 @@ component! {
                 @if let Some(help) = help {
                     p class="field-help" id=[help_id] { (help) }
                 }
-                (children)
             }
+            div class="setting-control" { (children) }
         }
     }
 }
@@ -471,15 +456,14 @@ pub(super) fn setting_examples() -> Vec<(&'static str, Setting)> {
             .help_id("book-setting-confirmations-help"),
         ),
         (
-            "A row",
+            "A checkbox",
             Setting::new(
                 "Use TLS",
                 "book-setting-tls",
                 crate::Checkbox::new().id("book-setting-tls").name("tls").described_by("book-setting-tls-help"),
             )
             .help("Connect with https. Most nodes on port 18081 don't use it.")
-            .help_id("book-setting-tls-help")
-            .row(true),
+            .help_id("book-setting-tls-help"),
         ),
         (
             "A group",

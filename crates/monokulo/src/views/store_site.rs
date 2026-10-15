@@ -106,13 +106,12 @@ fn woo_mark() -> Markup {
 pub fn website_field(view: &SiteView, shown: &str) -> Markup {
     match &view.active {
         Some(active) => html! {
-            div class="setting-field" {
-                div class="setting-label-row" { span class="setting-label" id="store-site-label" { "Your website" } }
-                (ui::LockedValue::new(view.site.as_str()).labelled_by("store-site-label").described_by("store-site-lock"))
+            (ui::Setting::new("Your website", "store-site", html! {
+                (ui::LockedValue::new(view.site.as_str()).id("store-site").described_by("store-site-lock"))
                 (ui::FieldNote::new(html! {
                     "Set by " (active.name) " · " a href="#card-connections" { "see Connections" }
                 }).id("store-site-lock"))
-            }
+            }))
         },
         None => html! {
             (super::settings::Field::new("Your website (optional)", "store-site")
@@ -521,7 +520,7 @@ mod tests {
         let v = view(true, Some(0));
         let field = website_field(&v, "shop.example").into_string();
         assert!(
-            field.contains(r#"<span class="locked-input"><input class="mk-input" type="text" value="shop.example" aria-labelledby="store-site-label" aria-describedby="store-site-lock" disabled>"#),
+            field.contains(r#"<span class="locked-input"><input class="mk-input" type="text" value="shop.example" id="store-site" aria-describedby="store-site-lock" disabled>"#),
             "{field}"
         );
         assert!(

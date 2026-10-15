@@ -1,4 +1,4 @@
-use crate::{component, Slot, UiEnum};
+use crate::{component, Attrs, Slot, UiEnum};
 
 /// How wide a page's column is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]
@@ -77,20 +77,22 @@ component! {
         post_to: Option<String>,
         note: Option<Slot>,
         title: Option<String>,
+        /// On the row's element (the link, the form or the row).
+        rest: Attrs,
     }
     html {
         @if let Some(href) = href {
-            a class="menu-item" href=(href) title=[title] {
+            a class="menu-item" href=(href) title=[title] ..rest {
                 span { (children) }
                 @if let Some(note) = note { span class="menu-note" { (note) } }
             }
         } @else {
             @if let Some(post_to) = post_to {
-                form method="post" action=(post_to) class="menu-form" {
+                form method="post" action=(post_to) class="menu-form" ..rest {
                     button type="submit" class="menu-item" title=[title] { span { (children) } }
                 }
             } @else {
-                div class="menu-item" title=[title] {
+                div class="menu-item" title=[title] ..rest {
                     span { (children) }
                     @if let Some(note) = note { (note) }
                 }

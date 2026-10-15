@@ -485,21 +485,22 @@ fn wallet_card(store: &StoreSettingsData) -> Markup {
             }
             // Picking a wallet sends it at once (static/fx-glue.js), to ask.
             form method="post" action=(action) fx-submit-on-change {
-                label {
-                    "Wallet"
-                    (Select::new(
-                        "wallet_id",
-                        picked
-                            .is_none()
-                            .then(|| Choice::prompt("Choose a wallet…", true))
-                            .into_iter()
-                            .chain(wallet.choices.iter().map(|choice| wallet_choice(choice, picked)))
-                            .collect::<Vec<_>>(),
-                    )
-                    .required(true))
-                    (ui::FieldNote::new(html! { "The store takes new payments into the wallet picked here."
-                        @if wallet.current.is_some() { " A store can only change to a wallet on its own network." } }))
-                }
+                (super::settings::Field::new("Wallet", "store-wallet")
+                    .help(None, html! { "The store takes new payments into the wallet picked here."
+                        @if wallet.current.is_some() { " A store can only change to a wallet on its own network." } })
+                    .render(html! {
+                        (Select::new(
+                            "wallet_id",
+                            picked
+                                .is_none()
+                                .then(|| Choice::prompt("Choose a wallet…", true))
+                                .into_iter()
+                                .chain(wallet.choices.iter().map(|choice| wallet_choice(choice, picked)))
+                                .collect::<Vec<_>>(),
+                        )
+                        .id("store-wallet")
+                        .required(true))
+                    }))
                 @if let (Some(pending), Some(current)) = (&wallet.pending, &wallet.current) {
                     div class="change-confirm" role="status" {
                         h3 { "Change to " (pending.wallet_name) "?" }
@@ -1571,7 +1572,7 @@ mod tests {
         )
         .into_string();
         assert!(
-            html.contains(r#"<div class="setting-label-row"><label class="setting-label" for="new-domain">Domain</label><span class="changed-mark">changed</span></div><p class="field-help" id="new-domain-help">Just the domain, like shop.example. Its subdomains are covered too.</p><input class="mk-input" type="text" name="domain" id="new-domain" placeholder="shop.example" autocomplete="off" aria-describedby="new-domain-help" required spellcheck="false">"#),
+            html.contains(r#"<div class="setting-label-row"><label class="setting-label" for="new-domain">Domain</label><span class="changed-mark">changed</span></div><p class="field-help" id="new-domain-help">Just the domain, like shop.example. Its subdomains are covered too.</p></div><div class="setting-control"><input class="mk-input" type="text" name="domain" id="new-domain" placeholder="shop.example" autocomplete="off" aria-describedby="new-domain-help" required spellcheck="false">"#),
             "{html}"
         );
         assert!(html.contains(

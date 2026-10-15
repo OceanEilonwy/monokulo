@@ -10,7 +10,7 @@ import type { DisclosureLook } from './types';
  * More to see behind a summary: a `details`, so it opens without
  * JavaScript.
  */
-export interface DisclosureProps extends Omit<JSX.IntrinsicElements["details"], "children" | "class" | "classList" | "look" | "open" | "style" | "summary"> {
+export interface DisclosureProps extends Omit<JSX.IntrinsicElements["details"], "alert" | "children" | "class" | "classList" | "data-alert" | "look" | "open" | "style" | "summary"> {
   summary: JSX.Element;
   children: JSX.Element;
   /**
@@ -21,6 +21,11 @@ export interface DisclosureProps extends Omit<JSX.IntrinsicElements["details"], 
    * @default false
    */
   open?: boolean;
+  /**
+   * Something in it needs attention: an error's edge (open it too).
+   * @default false
+   */
+  alert?: boolean;
 }
 
 /**
@@ -28,9 +33,9 @@ export interface DisclosureProps extends Omit<JSX.IntrinsicElements["details"], 
  * JavaScript.
  */
 export function Disclosure(props: DisclosureProps): JSX.Element {
-  const rest = omit(props, "summary", "children", "look", "open");
+  const rest = omit(props, "summary", "children", "look", "open", "alert");
   return (
-    <details class={tokens((props.look ?? "plain") === "plain" && `disclosure`, (props.look ?? "plain") === "boxed" && `keys-help`, (props.look ?? "plain") === "more-options" && `more-options`, (props.look ?? "plain") === "compact" && `disclosure-compact`, (props.look ?? "plain") === "row" && `disclosure-row`)} open={(props.open ?? false)} {...rest}>
+    <details data-alert={(props.alert ?? false) ? `` : undefined} class={tokens((props.look ?? "plain") === "plain" && `disclosure`, (props.look ?? "plain") === "boxed" && `keys-help`, (props.look ?? "plain") === "more-options" && `more-options`, (props.look ?? "plain") === "compact" && `disclosure-compact`, (props.look ?? "plain") === "row" && `disclosure-row`)} open={(props.open ?? false)} {...rest}>
       <summary>
         {props.summary}
       </summary>
