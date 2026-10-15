@@ -192,7 +192,7 @@ test('a settings form marks what changed, discards it, and saves as a form', asy
   await expect(page).toHaveURL(/name=Saved\+example/);
 });
 
-test('buttons share a height, and messages a border all round; a toast is opaque', async ({ page }) => {
+test('buttons share a height, and messages and toasts a border all round on a solid ground', async ({ page }) => {
   await page.goto('/');
   const heights = await page.locator('#component-button-1 .mk-btn, #component-button-2 .mk-btn, #component-button-3 .mk-btn, #component-button-4 .mk-btn')
     .evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
@@ -204,7 +204,7 @@ test('buttons share a height, and messages a border all round; a toast is opaque
   expect(feedback.length).toBeGreaterThan(4);
   for (const item of feedback) {
     expect(new Set(item.borders).size).toBe(1);
-    if (item.toast) expect(item.background).not.toMatch(/rgba\([^)]*,\s*0\)|transparent/);
+    expect(item.background).not.toMatch(/rgba\([^)]*,\s*0\)|transparent/);
   }
 });
 

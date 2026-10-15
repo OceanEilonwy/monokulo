@@ -102,7 +102,7 @@ export function Select(props: SelectProps): JSX.Element {
                     null
                   )}
                   {b.current()!.network != null ? (
-                    <span class={tokens(`tag-network`, b.current()!.mainnet && `is-main`, !(b.current()!.mainnet) && `is-test`)}>
+                    <span class={tokens(`tag-network`, b.current()!.mainnet && `is-main`, !(b.current()!.mainnet) && `is-test`)} data-size={b.current()!.label != null ? `icon` : undefined} title={b.current()!.label != null ? `${b.current()!.network}` : undefined}>
                       {b.current()!.mainnet ? (
                         <svg viewBox="0 0 24 24" aria-hidden="true">
                           <circle cx="12" cy="12" r="9"></circle>
@@ -114,7 +114,9 @@ export function Select(props: SelectProps): JSX.Element {
                           <path d="M7.5 15h9"></path>
                         </svg>
                       )}
-                      {b.current()!.network}
+                      <span class="tag-network-name">
+                        {b.current()!.network}
+                      </span>
                     </span>
                   ) : (
                     null
@@ -165,7 +167,7 @@ export function Select(props: SelectProps): JSX.Element {
                       null
                     )}
                     {item.network != null ? (
-                      <span class={tokens(`tag-network`, item.mainnet && `is-main`, !(item.mainnet) && `is-test`)}>
+                      <span class={tokens(`tag-network`, item.mainnet && `is-main`, !(item.mainnet) && `is-test`)} data-size={item.label != null ? `icon` : undefined} title={item.label != null ? `${item.network}` : undefined}>
                         {item.mainnet ? (
                           <svg viewBox="0 0 24 24" aria-hidden="true">
                             <circle cx="12" cy="12" r="9"></circle>
@@ -177,7 +179,9 @@ export function Select(props: SelectProps): JSX.Element {
                             <path d="M7.5 15h9"></path>
                           </svg>
                         )}
-                        {item.network}
+                        <span class="tag-network-name">
+                          {item.network}
+                        </span>
                       </span>
                     ) : (
                       null
@@ -318,7 +322,7 @@ export function attachSelect(root: Element, props: SelectProps): () => void {
                     null
                   )}
                   {b.current()!.network != null ? (
-                    <span class={tokens(`tag-network`, b.current()!.mainnet && `is-main`, !(b.current()!.mainnet) && `is-test`)}>
+                    <span class={tokens(`tag-network`, b.current()!.mainnet && `is-main`, !(b.current()!.mainnet) && `is-test`)} data-size={b.current()!.label != null ? `icon` : undefined} title={b.current()!.label != null ? `${b.current()!.network}` : undefined}>
                       {b.current()!.mainnet ? (
                         <svg viewBox="0 0 24 24" aria-hidden="true">
                           <circle cx="12" cy="12" r="9"></circle>
@@ -330,7 +334,9 @@ export function attachSelect(root: Element, props: SelectProps): () => void {
                           <path d="M7.5 15h9"></path>
                         </svg>
                       )}
-                      {b.current()!.network}
+                      <span class="tag-network-name">
+                        {b.current()!.network}
+                      </span>
                     </span>
                   ) : (
                     null
@@ -381,7 +387,7 @@ export function attachSelect(root: Element, props: SelectProps): () => void {
                       null
                     )}
                     {item.network != null ? (
-                      <span class={tokens(`tag-network`, item.mainnet && `is-main`, !(item.mainnet) && `is-test`)}>
+                      <span class={tokens(`tag-network`, item.mainnet && `is-main`, !(item.mainnet) && `is-test`)} data-size={item.label != null ? `icon` : undefined} title={item.label != null ? `${item.network}` : undefined}>
                         {item.mainnet ? (
                           <svg viewBox="0 0 24 24" aria-hidden="true">
                             <circle cx="12" cy="12" r="9"></circle>
@@ -393,7 +399,9 @@ export function attachSelect(root: Element, props: SelectProps): () => void {
                             <path d="M7.5 15h9"></path>
                           </svg>
                         )}
-                        {item.network}
+                        <span class="tag-network-name">
+                          {item.network}
+                        </span>
                       </span>
                     ) : (
                       null

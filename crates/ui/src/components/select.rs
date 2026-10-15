@@ -272,13 +272,14 @@ component! {
                             @if let Some(label) = item.label { span class="mk-label" { (label) } }
                             @if let Some(detail) = item.detail { span class="mk-detail" { (detail) } }
                             @if let Some(network) = item.network {
-                                span class=join["tag-network", "is-main" if item.mainnet, "is-test" if !item.mainnet] {
+                                span class=join["tag-network", "is-main" if item.mainnet, "is-test" if !item.mainnet]
+                                    data-size="icon" if item.label title=(network) if item.label {
                                     @if item.mainnet {
                                         svg viewBox="0 0 24 24" aria-hidden="true" { circle cx="12" cy="12" r="9" {} path d="M7 15V9l5 5 5-5v6" {} }
                                     } @else {
                                         svg viewBox="0 0 24 24" aria-hidden="true" { path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3" {} path d="M7.5 15h9" {} }
                                     }
-                                    (network)
+                                    span class="tag-network-name" { (network) }
                                 }
                             }
                             @if let Some(chip) = item.chip {
@@ -304,13 +305,14 @@ component! {
                                 @if let Some(label) = item.label { span class="mk-label" { (label) } }
                                 @if let Some(detail) = item.detail { span class="mk-detail" { (detail) } }
                                 @if let Some(network) = item.network {
-                                    span class=join["tag-network", "is-main" if item.mainnet, "is-test" if !item.mainnet] {
+                                    span class=join["tag-network", "is-main" if item.mainnet, "is-test" if !item.mainnet]
+                                        data-size="icon" if item.label title=(network) if item.label {
                                         @if item.mainnet {
                                             svg viewBox="0 0 24 24" aria-hidden="true" { circle cx="12" cy="12" r="9" {} path d="M7 15V9l5 5 5-5v6" {} }
                                         } @else {
                                             svg viewBox="0 0 24 24" aria-hidden="true" { path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3" {} path d="M7.5 15h9" {} }
                                         }
-                                        (network)
+                                        span class="tag-network-name" { (network) }
                                     }
                                 }
                                 @if let Some(chip) = item.chip {

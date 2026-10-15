@@ -476,20 +476,26 @@ pub fn state_badge(status: impl Into<DisplayStatus> + Copy) -> Markup {
 /// up. Mainnet (real money) has the brand's orange tint and a solid edge;
 /// a test network a neutral tint and a dashed edge.
 pub fn network_badge(network: &str) -> Markup {
-    if network == "mainnet" {
-        network_tag(true, "Mainnet")
-    } else {
-        network_tag(false, &scaling::network_name(network))
-    }
+    html! { (network_tag(network)) }
+}
+
+/// [`network_badge`] as its icon only, its name for screen readers and on
+/// hover: in a table, beside a wallet's name.
+pub fn network_icon(network: &str) -> Markup {
+    html! { (network_tag(network).icon_only(true)) }
 }
 
 /// The badge for the test networks together: the wallets list's fold.
 pub fn test_networks_badge() -> Markup {
-    network_tag(false, "Test networks")
+    html! { (ui::NetworkBadge::new("Test networks")) }
 }
 
-fn network_tag(main: bool, word: &str) -> Markup {
-    html! { (ui::NetworkBadge::new(word).main(main)) }
+fn network_tag(network: &str) -> ui::NetworkBadge {
+    if network == "mainnet" {
+        ui::NetworkBadge::new("Mainnet").main(true)
+    } else {
+        ui::NetworkBadge::new(scaling::network_name(network))
+    }
 }
 
 /// An amount for people to read: XMR without its trailing zeros
@@ -682,18 +688,18 @@ mod tests {
             main.starts_with(r#"<span class="tag-network is-main"><svg viewBox="0 0 24 24" aria-hidden="true">"#),
             "{main}"
         );
-        assert!(main.ends_with("</svg>Mainnet</span>"), "{main}");
+        assert!(main.ends_with(r#"</svg><span class="tag-network-name">Mainnet</span></span>"#), "{main}");
         for (network, word) in [("stagenet", "Stagenet"), ("testnet", "Testnet")] {
             let test = network_badge(network).into_string();
             assert!(
                 test.starts_with(r#"<span class="tag-network is-test">"#),
                 "{test}"
             );
-            assert!(test.ends_with(&format!("</svg>{word}</span>")), "{test}");
+            assert!(test.ends_with(&format!(r#"</svg><span class="tag-network-name">{word}</span></span>"#)), "{test}");
         }
         assert!(test_networks_badge()
             .into_string()
-            .ends_with(r#"</svg>Test networks</span>"#));
+            .ends_with(r#"</svg><span class="tag-network-name">Test networks</span></span>"#));
     }
 
     #[test]

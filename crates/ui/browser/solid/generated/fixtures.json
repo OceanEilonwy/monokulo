@@ -513,7 +513,7 @@
   },
   {
     "component": "Facts",
-    "html": "<dl class=\"facts\"><dt>Network</dt><dd><span class=\"tag-network is-main\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\"></circle><path d=\"M7 15V9l5 5 5-5v6\"></path></svg>Mainnet</span></dd><dt>Watching since</dt><dd>block 3,412,001</dd><dt>Balance</dt><dd>1.25 XMR</dd></dl>",
+    "html": "<dl class=\"facts\"><dt>Network</dt><dd><span class=\"tag-network is-main\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\"></circle><path d=\"M7 15V9l5 5 5-5v6\"></path></svg><span class=\"tag-network-name\">Mainnet</span></span></dd><dt>Watching since</dt><dd>block 3,412,001</dd><dt>Balance</dt><dd>1.25 XMR</dd></dl>",
     "props": {
       "facts": [
         {
@@ -523,6 +523,7 @@
               {
                 "$component": "NetworkBadge",
                 "props": {
+                  "icon_only": false,
                   "main": true,
                   "name": "Mainnet"
                 }
@@ -740,8 +741,9 @@
   },
   {
     "component": "NetworkBadge",
-    "html": "<span class=\"tag-network is-main\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\"></circle><path d=\"M7 15V9l5 5 5-5v6\"></path></svg>Mainnet</span>",
+    "html": "<span class=\"tag-network is-main\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\"></circle><path d=\"M7 15V9l5 5 5-5v6\"></path></svg><span class=\"tag-network-name\">Mainnet</span></span>",
     "props": {
+      "icon_only": false,
       "main": true,
       "name": "Mainnet"
     },
@@ -749,12 +751,33 @@
   },
   {
     "component": "NetworkBadge",
-    "html": "<span class=\"tag-network is-test\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3\"></path><path d=\"M7.5 15h9\"></path></svg>Stagenet</span>",
+    "html": "<span class=\"tag-network is-test\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3\"></path><path d=\"M7.5 15h9\"></path></svg><span class=\"tag-network-name\">Stagenet</span></span>",
     "props": {
+      "icon_only": false,
       "main": false,
       "name": "Stagenet"
     },
     "title": "A test network"
+  },
+  {
+    "component": "NetworkBadge",
+    "html": "<span class=\"tag-network is-main\" data-size=\"icon\" title=\"Mainnet\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\"></circle><path d=\"M7 15V9l5 5 5-5v6\"></path></svg><span class=\"tag-network-name\">Mainnet</span></span>",
+    "props": {
+      "icon_only": true,
+      "main": true,
+      "name": "Mainnet"
+    },
+    "title": "Mainnet, icon only"
+  },
+  {
+    "component": "NetworkBadge",
+    "html": "<span class=\"tag-network is-test\" data-size=\"icon\" title=\"Stagenet\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3\"></path><path d=\"M7.5 15h9\"></path></svg><span class=\"tag-network-name\">Stagenet</span></span>",
+    "props": {
+      "icon_only": true,
+      "main": false,
+      "name": "Stagenet"
+    },
+    "title": "A test network, icon only"
   },
   {
     "component": "ShortValue",

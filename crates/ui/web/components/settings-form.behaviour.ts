@@ -5,7 +5,7 @@
 //
 // Saving is the form's own: a plain POST, or fixi's swap where the form
 // has `fx-action`. A swap brings a new form, which attaches again.
-import { createEffect, onCleanup } from 'solid-js';
+import { createEffect, flush, onCleanup } from 'solid-js';
 import type { SettingsFormBehaviour, SettingsFormProps } from '../../solid/SettingsForm';
 import { createStore, fire, type FormStore } from './settings.store';
 
@@ -104,6 +104,9 @@ export function setup(props: SettingsFormProps): SettingsFormBehaviour {
           return;
         }
         store.setSaving(true);
+        // Save turns busy and disabled now, not at Solid's next update: a
+        // second press as the first is sent finds it so.
+        flush();
       }, true);
 
       listen(window, 'beforeunload', event => {

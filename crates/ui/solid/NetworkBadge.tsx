@@ -19,6 +19,12 @@ export interface NetworkBadgeProps {
    * @default false
    */
   main?: boolean;
+  /**
+   * Only the icon and the edge, its name for screen readers and on
+   * hover: in a table's cell, beside a wallet's name.
+   * @default false
+   */
+  icon_only?: boolean;
 }
 
 /**
@@ -29,7 +35,7 @@ export interface NetworkBadgeProps {
  */
 export function NetworkBadge(props: NetworkBadgeProps): JSX.Element {
   return (
-    <span class={tokens(`tag-network`, (props.main ?? false) && `is-main`, !((props.main ?? false)) && `is-test`)}>
+    <span class={tokens(`tag-network`, (props.main ?? false) && `is-main`, !((props.main ?? false)) && `is-test`)} data-size={(props.icon_only ?? false) ? `icon` : undefined} title={(props.icon_only ?? false) ? `${props.name}` : undefined}>
       <svg viewBox="0 0 24 24" aria-hidden="true">
         {(props.main ?? false) ? (
           <>
@@ -43,7 +49,9 @@ export function NetworkBadge(props: NetworkBadgeProps): JSX.Element {
           </>
         )}
       </svg>
-      {props.name}
+      <span class="tag-network-name">
+        {props.name}
+      </span>
     </span>
   );
 }

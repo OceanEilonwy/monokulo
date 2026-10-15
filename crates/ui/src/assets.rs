@@ -51,4 +51,5 @@ pub mod icons {
     pub const CHECK: &str = include_str!("../web/icons/check.svg").trim_ascii();
     pub const WARNING: &str = include_str!("../web/icons/warning.svg").trim_ascii();
     pub const INFO: &str = include_str!("../web/icons/info.svg").trim_ascii();
+    pub const EYE: &str = include_str!("../web/icons/eye.svg").trim_ascii();
 }

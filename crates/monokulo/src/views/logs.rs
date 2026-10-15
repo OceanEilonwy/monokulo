@@ -463,43 +463,60 @@ pub fn results(vm: &LogsViewModel) -> Markup {
 
 /// The saved searches box: swapped by itself when one is saved or removed.
 pub fn saved_searches(saved: &[SavedLogSearch], query_string: &str, error: Option<&str>) -> Markup {
-    html! {
-        (ui::Panel::new(html! {
-            h2 { "Saved searches" }
-            @if let Some(error) = error {
-                (ui::Alert::new(error, ui::Tone::Error).attr("data-fx-focus", ""))
+    // fixi swaps the whole card for what a save or a removal answers.
+    let fixi = |action: String| {
+        move |body: Markup| {
+            html! {
+                form method="post" action=(action) fx-action=(action) fx-method="POST" fx-target="#card-saved-searches" {
+                    input type="hidden" name="query_string" value=(query_string);
+                    (body)
+                }
             }
-            @if saved.is_empty() {
-                p class="muted" { "None yet." }
-            } @else {
-                ul {
-                    @for s in saved {
-                        li {
-                            a href=(format!("/dashboard/admin/logs?{}", s.query_string)) { (s.name) }
-                            " "
-                            form method="post" action=(format!("/dashboard/admin/logs/saved/{}/delete", s.id)) style="display:inline"
-                                fx-action=(format!("/dashboard/admin/logs/saved/{}/delete", s.id)) fx-method="POST" fx-target="#saved-searches" {
-                                input type="hidden" name="query_string" value=(query_string);
+        }
+    };
+    let meta = match saved.len() {
+        0 => None,
+        1 => Some("1 search".to_string()),
+        n => Some(format!("{n} searches")),
+    };
+    super::settings::plain_card_with_meta("saved-searches", "Saved searches", meta.as_deref(), html! {
+        @if let Some(error) = error {
+            (ui::Alert::new(error, ui::Tone::Error).attr("data-fx-focus", ""))
+        }
+        @if saved.is_empty() {
+            (ui::Hint::new("None yet. Save a search to come back to it in one click."))
+        } @else {
+            (ui::Table::new(html! {
+                @for s in saved {
+                    tr {
+                        td { a href=(format!("/dashboard/admin/logs?{}", s.query_string)) { (s.name) } }
+                        td class="row-acts" {
+                            (fixi(format!("/dashboard/admin/logs/saved/{}/delete", s.id))(html! {
                                 (ui::Button::new("Remove")
+                                    .size(ui::ControlSize::Compact)
                                     .kind(ui::ButtonType::Submit)
                                     .attr("aria-label", format!("Remove {}", s.name)))
-                            }
+                            }))
                         }
                     }
                 }
-            }
-            form method="post" action="/dashboard/admin/logs/saved" fx-action="/dashboard/admin/logs/saved" fx-method="POST" fx-target="#saved-searches" {
-                input type="hidden" name="query_string" value=(query_string);
-                (ui::FormActions::new(ui::Slot::many([
-                    ui::Slot::from(html! {
-                        label { "Save this search as " (ui::Input::new("name").required(true).attr("maxlength", "80")) }
-                    }),
-                    ui::Button::new("Save").kind(ui::ButtonType::Submit).into(),
-                ])))
-            }
-        })
-        .attr("id", "saved-searches"))
-    }
+            })
+            .scroll(false)
+            .attr("data-table", "saved-searches"))
+        }
+        (fixi("/dashboard/admin/logs/saved".to_string())(html! {
+            (super::settings::Field::new("Save this search as", "saved-search-name")
+                .help(Some("saved-search-name-help"), html! { "Its text, filters and time range, as they are now." })
+                .render(html! {
+                    (ui::Input::new("name")
+                        .id("saved-search-name")
+                        .described_by("saved-search-name-help")
+                        .required(true)
+                        .attr("maxlength", "80"))
+                }))
+            (ui::FormActions::new(ui::Button::new("Save search").kind(ui::ButtonType::Submit)))
+        }))
+    })
 }
 
 fn select(name: &str, label: &str, options: &[(&str, &str)], current: &str) -> Markup {
