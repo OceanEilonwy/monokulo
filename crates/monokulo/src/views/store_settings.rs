@@ -877,7 +877,6 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                 (toast_region(store.toast().as_ref(), false))
                 (super::store_site::dialogs(&store.sites))
                 (super::webhooks::dialogs(&store.webhooks))
-                (super::script("confirm-dialogs.js", super::Load::Defer))
             } @else {
                 h1 { "Store not found" }
                 p { "This store doesn't exist, or isn't connected to your account." }

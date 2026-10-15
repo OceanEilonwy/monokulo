@@ -132,7 +132,7 @@ pub fn website_field(view: &SiteView, shown: &str) -> Markup {
                 })
                 .render(html! {
                     input type="text" id="store-site" name="store_site" value=(shown) inputmode="url" autocomplete="url"
-                        placeholder="shop.example" data-site-saved=(view.site);
+                        placeholder="shop.example" data-saved=(view.site);
                 }))
         },
     }
@@ -217,32 +217,20 @@ fn integration_meta(i: &IntegrationView) -> String {
 pub fn dialogs(view: &SiteView) -> Markup {
     html! {
         @if !view.site.is_empty() {
-            dialog id="website-dialog" class="settings-dialog confirm-dialog" aria-labelledby="website-title" {
-                (website_content(view, &WebsiteChange::To(String::new()), None, true))
-            }
-            dialog id="website-remove-dialog" class="settings-dialog confirm-dialog" aria-labelledby="website-remove-title" {
-                (website_content(view, &WebsiteChange::Remove, None, true))
-            }
+            (ui::Dialog::new("website-dialog", "website-title",
+                website_content(view, &WebsiteChange::To(String::new()), None, true)).confirms("store_site"))
+            (ui::Dialog::new("website-remove-dialog", "website-remove-title",
+                website_content(view, &WebsiteChange::Remove, None, true))
+                .confirms("store_site").confirms_when(ui::ConfirmWhen::Emptied))
         }
         @if view.active.is_some() {
-            dialog id="disconnect-dialog" class="settings-dialog confirm-dialog" aria-labelledby="disconnect-title" {
-                (disconnect_content(view, None, true))
-            }
+            (ui::Dialog::new("disconnect-dialog", "disconnect-title", disconnect_content(view, None, true)))
         }
     }
 }
 
 fn heading(id: &str, title: Markup, in_dialog: bool) -> Markup {
-    html! {
-        @if in_dialog {
-            h2 id=(id) class="dialog-title" {
-                (title)
-                button type="button" class="dialog-x" aria-label="Close" data-closes-dialog { "×" }
-            }
-        } @else {
-            h1 id=(id) class="dialog-title" { (title) }
-        }
-    }
+    html! { (ui::DialogTitle::new(id, title).in_dialog(in_dialog)) }
 }
 
 /// One row of a checklist: ✓ done, ✕ not yet with its fix beside it, or →
@@ -341,7 +329,7 @@ pub fn website_content(
                         WebsiteChange::To(new) => {
                             div class="setting-field first" {
                                 div class="setting-label-row" { label class="setting-label" for=(format!("{confirm_id}-site")) { "New website" } }
-                                input type="text" id=(format!("{confirm_id}-site")) name="site" value=(new) inputmode="url" placeholder="shop.example" required;
+                                input type="text" id=(format!("{confirm_id}-site")) name="site" value=(new) inputmode="url" placeholder="shop.example" required data-confirmed;
                             }
                         }
                         WebsiteChange::Remove => { input type="hidden" name="remove" value="1"; }
@@ -436,7 +424,7 @@ fn dialog_page(chrome: &PageChrome, view: &SiteView, title: &str, content: Marku
     let body = html! {
         div class="wrap settings-page" {
             (super::store_breadcrumb(&view.store_id, &view.store_name, false))
-            div class="confirm-dialog-page" { (content) }
+            (ui::DialogPage::new(content))
         }
     };
     layout(
@@ -545,7 +533,7 @@ mod tests {
         let field = website_field(&v, "shop.example").into_string();
         assert!(
             field.contains(r#"name="store_site" value="shop.example""#)
-                && field.contains(r#"data-site-saved="shop.example""#),
+                && field.contains(r#"data-saved="shop.example""#),
             "{field}"
         );
         assert!(

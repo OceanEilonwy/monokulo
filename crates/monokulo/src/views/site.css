@@ -406,10 +406,6 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 .reload svg { width: 1.1rem; height: 1.1rem; }
 .reload[hidden] { display: none; }
 
-/* The Account page's email question. */
-.settings-dialog { width: min(46rem, calc(100vw - 2rem)); max-height: calc(100dvh - 3rem); box-sizing: border-box; padding: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--paper-raised); color: var(--ink); }
-.settings-dialog::backdrop { background: color-mix(in srgb, var(--ink) 45%, transparent); }
-.settings-dialog > h2 { margin-top: 0; }
 
 .engine-network { display: flex; align-items: center; gap: .5rem; margin: 0; }
 .engine-network label, .tl-modes label { margin: 0; }
@@ -581,9 +577,6 @@ button.icon-only svg { width: 1.1rem; height: 1.1rem; }
 .mini-page.system { background: linear-gradient(135deg, var(--mini-light) 50%, var(--mini-dark) 50%); }
 /* The Account page (`views::account`). */
 .settings-page h1 { margin-bottom: var(--space-md); }
-.email-confirm { max-width: 30rem; }
-.dialog-actions { gap: var(--space-sm); margin-top: var(--space-lg); }
-.dialog-actions button { margin: 0; }
 .email-confirm-page { max-width: 34rem; }
 .signup-form .setting-field { margin: var(--space-lg) 0; }
 
@@ -653,16 +646,6 @@ button.icon-only svg { width: 1.1rem; height: 1.1rem; }
 .wallet-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-sm) var(--space-lg); margin-top: var(--space-xl); padding-top: var(--space-lg); border-top: 1px solid var(--line); }
 .wallet-foot p { margin: var(--space-xs) 0 0; }
 .wallet-foot .btn { margin: 0; }
-/* The retire and restore dialogs, and the pages holding the same without
-   JavaScript. */
-.confirm-dialog { width: min(32rem, calc(100vw - 2rem)); }
-.confirm-dialog-page { max-width: 32rem; margin: var(--space-lg) 0; }
-.dialog-title { display: flex; align-items: center; gap: var(--space-sm); font-size: 1.15rem; border: 0; padding: 0; margin: 0 0 var(--space-sm); }
-.confirm-dialog-page .dialog-title { font-size: 1.5rem; }
-.dialog-x, .dialog-x:hover { margin: 0 0 0 auto; padding: 0 var(--space-xs); border: 0; background: none; color: var(--muted); font-size: 1.3em; line-height: 1; }
-.confirm-dialog .dialog-actions, .confirm-dialog-page .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; }
-.dialog-actions .btn { margin: 0; }
-.dialog-actions button[disabled] { opacity: .45; cursor: not-allowed; }
 .confirm-dialog .setting-field, .confirm-dialog-page .setting-field { margin: var(--space-md) 0 0; }
 .confirm-dialog .setting-field .setting-label-row, .confirm-dialog-page .setting-field .setting-label-row { margin: 0 0 var(--space-sm); }
 .confirm-dialog .setting-field.first, .confirm-dialog-page .setting-field.first { margin-top: 0; }
@@ -714,8 +697,6 @@ button.icon-only svg { width: 1.1rem; height: 1.1rem; }
 .mini-h { margin: var(--space-md) 0 var(--space-xs); font-size: 0.75rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
 .req { margin-top: var(--space-sm); }
 .req pre { margin: var(--space-xs) 0; font-size: 0.82em; white-space: pre-wrap; overflow-wrap: anywhere; }
-.delivery-dialog .dialog-actions, .delivery-page .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; }
-.delivery-page { max-width: 46rem; margin: var(--space-lg) 0; }
 /* A delivery's head: its title, then its status at the top right (beside
    the dialog's close button); on a phone the status goes under it. */
 .delivery-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm); margin: 0 0 var(--space-md); }

@@ -963,9 +963,7 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
                     }
                     a class="btn" href=(format!("{}/restore", wallet_path(w))) data-opens-dialog="restore-dialog" { "Restore wallet…" }
                 }
-                dialog id="restore-dialog" class="settings-dialog confirm-dialog" aria-labelledby="restore-title" {
-                    (restore_content(w, restore, None, true))
-                }
+                (ui::Dialog::new("restore-dialog", "restore-title", restore_content(w, restore, None, true)))
             } @else {
                 div class="wallet-foot" {
                     div {
@@ -974,12 +972,9 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
                     }
                     a class="btn btn-danger" href=(format!("{}/retire", wallet_path(w))) data-opens-dialog="retire-dialog" { "Retire wallet…" }
                 }
-                dialog id="retire-dialog" class="settings-dialog confirm-dialog" aria-labelledby="retire-title" {
-                    (retire_content(w, &data.retire, &data.stores, None, true))
-                }
+                (ui::Dialog::new("retire-dialog", "retire-title", retire_content(w, &data.retire, &data.stores, None, true)))
             }
         }
-        (super::script("confirm-dialogs.js", super::Load::Defer))
     };
     layout(chrome, &format!("{} - Wallets - Monokulo", w.name), body)
 }
@@ -1173,14 +1168,7 @@ fn retire_content(
     let action = format!("{}/retire", wallet_path(w));
     let title = html! { "Retire \u{201c}" (w.name) "\u{201d}?" };
     html! {
-        @if in_dialog {
-            h2 id="retire-title" class="dialog-title" {
-                (title)
-                button type="button" class="dialog-x" aria-label="Close" data-closes-dialog { "×" }
-            }
-        } @else {
-            h1 id="retire-title" class="dialog-title" { (title) }
-        }
+        (ui::DialogTitle::new("retire-title", title).in_dialog(in_dialog))
         p { "Retiring deletes its keys from Monokulo, so it stops seeing payments. The money stays in your wallet app." }
         @if let Some(error) = error { p class="error" role="alert" { (error) } }
         ul class="checks" {
@@ -1267,14 +1255,7 @@ fn restore_content(
 ) -> Markup {
     let title = html! { "Restore \u{201c}" (w.name) "\u{201d}" };
     html! {
-        @if in_dialog {
-            h2 id="restore-title" class="dialog-title" {
-                (title)
-                button type="button" class="dialog-x" aria-label="Close" data-closes-dialog { "×" }
-            }
-        } @else {
-            h1 id="restore-title" class="dialog-title" { (title) }
-        }
+        (ui::DialogTitle::new("restore-title", title).in_dialog(in_dialog))
         p { "Paste its keys again and Monokulo watches it as before. It must be the same wallet: the address has to match." }
         @if let Some(error) = error { p class="error" role="alert" { (error) } }
         form method="post" action=(format!("{}/restore", wallet_path(w))) {
@@ -1313,7 +1294,7 @@ fn dialog_page(
                 " › "
                 a href=(wallet_path(w)) { (w.name) }
             }
-            div class="confirm-dialog-page" { (content) }
+            (ui::DialogPage::new(content))
         }
     };
     layout(
@@ -1826,7 +1807,7 @@ mod tests {
             r#"<h3 id="card-details-title">Details</h3>"#,
             r#"<details class="history-fold"><summary>History <span class="hint">1 event</span></summary>"#,
             r#"<div class="wallet-foot"><div><strong>Retire this wallet</strong>"#,
-            r#"<dialog id="retire-dialog" class="settings-dialog confirm-dialog" aria-labelledby="retire-title">"#,
+            r#"<dialog id="retire-dialog""#,
         ];
         let at: Vec<usize> = order
             .iter()
@@ -1854,7 +1835,7 @@ mod tests {
                 && html.contains(r#"id="wallet-name" name="name" value="Shop takings""#),
             "{html}"
         );
-        assert!(html.contains("confirm-dialogs."), "its script: {html}");
+        assert!(html.contains("ui-islands."), "its script: {html}");
         // One orange button, the save bar's Save; the red one is Retire's.
         assert_eq!(html.matches("btn-primary").count(), 1, "{html}");
         assert!(

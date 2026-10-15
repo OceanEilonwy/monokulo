@@ -3,6 +3,7 @@
 @import './components/primitives.css';
 @import './components/select.css';
 @import './components/content.css';
+@import './components/dialog.css';
 @import './components/navigation.css';
 @import './components/steps.css';
 @import './components/action-card.css';
