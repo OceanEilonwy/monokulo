@@ -218,7 +218,7 @@ impl<'a> Card<'a> {
                 @if let Some(head) = self.head { (head) }
                 span class="card-state" data-card-state {
                     @if self.failed {
-                        span class="badge badge-error" { "Not saved" }
+                        span class="mk-status-text" data-tone="error" data-card-failed { "Not saved" }
                     } @else if let Some(badge) = self.badge {
                         (badge)
                     }
@@ -431,7 +431,7 @@ pub fn toast_region(toast: Option<&Toast>, oob: bool) -> Markup {
                     ToastKind::Neutral => ("toast toast-neutral", include_str!("../../../../packages/ui/src/icons/info.svg"), "status"),
                 };
                 div class=(class) role=(role) data-toast {
-                    span class="toast-icon" aria-hidden="true" { (maud::PreEscaped(icon)) }
+                    span class="toast-icon" aria-hidden="true" { (maud::PreEscaped(icon.trim())) }
                     div class="toast-text" {
                         strong { (toast.title) }
                         @for line in &toast.lines { span class="toast-line" { (line) } }
@@ -518,7 +518,7 @@ mod tests {
             "{failed}"
         );
         assert!(
-            failed.contains(r#"<span class="badge badge-error">Not saved</span>"#),
+            failed.contains(r#"<span class="mk-status-text" data-tone="error" data-card-failed>Not saved</span>"#),
             "{failed}"
         );
         assert!(

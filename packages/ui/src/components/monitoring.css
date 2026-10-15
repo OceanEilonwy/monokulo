@@ -30,9 +30,4 @@
 
 .mk-status-heading { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin-bottom: var(--space-sm); }
 .mk-status-heading > :is(h2, h3) { margin: 0; }
-.mk-status-text { font-size: var(--text-sm); font-weight: 500; color: var(--muted); }
-.mk-status-text[data-tone="warning"] { color: var(--warning); }
-.mk-status-text[data-tone="error"] { color: var(--error); }
-.mk-status-text[data-tone="success"] { color: var(--success); }
 /* Monitoring labels describe the heading or sentence they accompany. */
-.net-head > .tag, .scanner-line > .tag { background: none; border: 0; border-radius: 0; padding: 0; font-size: var(--text-sm); font-weight: 500; text-transform: none; letter-spacing: normal; }

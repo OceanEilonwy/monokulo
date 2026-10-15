@@ -133,7 +133,7 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .pos-keypad.has-stack .pos-keys { gap: 8px; }
 
   .pos-badge {
-    flex: none; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px 0 4px;
+    flex: none; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 var(--pill-pad-x) 0 calc(var(--pill-pad-x) / 2);
     border: 1px solid var(--state-border); border-radius: 999px; background: var(--state-bg); color: var(--state-ink);
     font-size: 11px; font-weight: 800; white-space: nowrap;
   }

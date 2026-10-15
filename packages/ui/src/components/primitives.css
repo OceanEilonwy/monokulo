@@ -56,3 +56,10 @@ textarea.mk-input { resize: vertical; }
 .mk-header > h3 { font-size: var(--text-lg); }
 
 .mk-btn > :is(svg, .mk-icon) { width: 1.25em; height: 1.25em; flex: none; }
+/* Status as plain words beside a heading or label: counts, health, saved
+   state. The tone only reinforces the words. */
+.mk-status-text { font-size: var(--text-sm); font-weight: 500; color: var(--muted); }
+.mk-status-text[data-tone="warning"] { color: var(--warning); }
+.mk-status-text[data-tone="error"] { color: var(--error); }
+.mk-status-text[data-tone="success"] { color: var(--success); }
+.mk-status-text[data-tone="changed"] { color: var(--card-changed); }

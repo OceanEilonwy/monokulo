@@ -1373,8 +1373,8 @@ pub async fn pos_session_for_order(
     let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/pos")).await;
     let body = maud::html! {
         div class="wrap" {
-            nav class="context-nav" aria-label="Breadcrumb" {
-                a href="/" { "Dashboard" } " / " a href=(LOGS) { "Logs" }
+            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" {
+                a href="/" { "Dashboard" } span class="mk-breadcrumb-separator" aria-hidden="true" { "›" } a href=(LOGS) { "Logs" }
             }
             h1 { "No POS session recorded" }
             p {
