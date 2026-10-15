@@ -7,7 +7,7 @@ use maud::{html, Markup};
 
 use super::settings::{Card, Field, Save};
 pub use super::settings::{Toast, ToastKind};
-use super::{layout, script, Load, PageChrome};
+use super::{script, Load, PageChrome};
 use ui::{Choice, Select};
 
 /// `error` means the same thing every other page's own re-render-on-
@@ -22,39 +22,37 @@ pub struct SetupViewModel {
 }
 
 pub fn setup_page(chrome: &PageChrome, data: &SetupViewModel) -> Markup {
+    let header = ui::PageHeader::new("Set up your admin account");
     let body = html! {
-        div class="wrap" {
-            h1 { "Set up your admin account" }
-            p {
-                "This is a one-time step. The account created here is this instance's single administrator, "
-                "and can configure every monokulo and scanner setting from the admin page afterward."
-            }
-            @if let Some(error) = &data.error {
-                (ui::Alert::new(error.as_str(), ui::Tone::Error).quiet(true))
-            }
-            form method="post" action="/admin/setup" class="mk-stack" {
-                (ui::Field::new("Email", "setup-email", "email")
-                    .kind(ui::InputType::Email)
-                    .value(data.email.as_str())
-                    .required(true)
-                    .autocomplete("email"))
-                (ui::Field::new("Password", "setup-password", "password")
-                    .kind(ui::InputType::Password)
-                    .required(true)
-                    .autocomplete("new-password")
-                    .attr("minlength", "12"))
-                (ui::Field::new("Confirm password", "setup-confirm-password", "confirm_password")
-                    .kind(ui::InputType::Password)
-                    .required(true)
-                    .autocomplete("new-password")
-                    .attr("minlength", "12"))
-                (ui::FormActions::new(ui::Button::new("Create admin account")
-                    .variant(ui::ButtonVariant::Primary)
-                    .kind(ui::ButtonType::Submit)))
-            }
+        p {
+            "This is a one-time step. The account created here is this instance's single administrator, "
+            "and can configure every monokulo and scanner setting from the admin page afterward."
+        }
+        @if let Some(error) = &data.error {
+            (ui::Alert::new(error.as_str(), ui::Tone::Error).quiet(true))
+        }
+        form method="post" action="/admin/setup" class="mk-stack" {
+            (ui::Field::new("Email", "setup-email", "email")
+                .kind(ui::InputType::Email)
+                .value(data.email.as_str())
+                .required(true)
+                .autocomplete("email"))
+            (ui::Field::new("Password", "setup-password", "password")
+                .kind(ui::InputType::Password)
+                .required(true)
+                .autocomplete("new-password")
+                .attr("minlength", "12"))
+            (ui::Field::new("Confirm password", "setup-confirm-password", "confirm_password")
+                .kind(ui::InputType::Password)
+                .required(true)
+                .autocomplete("new-password")
+                .attr("minlength", "12"))
+            (ui::FormActions::new(ui::Button::new("Create admin account")
+                .variant(ui::ButtonVariant::Primary)
+                .kind(ui::ButtonType::Submit)))
         }
     };
-    layout(chrome, "Set up admin account - Monokulo", body)
+    super::Page::new("Set up admin account - Monokulo", header).render(chrome, body)
 }
 
 pub struct RequestInviteViewModel {
@@ -66,32 +64,30 @@ pub struct RequestInviteViewModel {
 }
 
 pub fn request_invite_page(chrome: &PageChrome, data: &RequestInviteViewModel) -> Markup {
+    let header = ui::PageHeader::new("Request an invite");
     let body = html! {
-        div class="wrap" {
-            h1 { "Request an invite" }
-            @if data.submitted {
-                p { "Thanks - we'll be in touch if there's a spot for you." }
-            } @else {
-                @if let Some(error) = &data.error {
-                    (ui::Alert::new(error.as_str(), ui::Tone::Error).quiet(true))
-                }
-                p { "This instance is invite-only right now. Tell us a bit about what you'd like to use it for and we'll follow up." }
-                form method="post" action="/request-invite" class="mk-stack" {
-                    (ui::Field::new("Email", "request-invite-email", "email")
-                        .kind(ui::InputType::Email)
-                        .required(true)
-                        .autocomplete("email"))
-                    (ui::Field::new("Message", "request-invite-message", "message")
-                        .multiline(true)
-                        .required(true))
-                    (ui::FormActions::new(ui::Button::new("Request an invite")
-                        .variant(ui::ButtonVariant::Primary)
-                        .kind(ui::ButtonType::Submit)))
-                }
+        @if data.submitted {
+            p { "Thanks - we'll be in touch if there's a spot for you." }
+        } @else {
+            @if let Some(error) = &data.error {
+                (ui::Alert::new(error.as_str(), ui::Tone::Error).quiet(true))
+            }
+            p { "This instance is invite-only right now. Tell us a bit about what you'd like to use it for and we'll follow up." }
+            form method="post" action="/request-invite" class="mk-stack" {
+                (ui::Field::new("Email", "request-invite-email", "email")
+                    .kind(ui::InputType::Email)
+                    .required(true)
+                    .autocomplete("email"))
+                (ui::Field::new("Message", "request-invite-message", "message")
+                    .multiline(true)
+                    .required(true))
+                (ui::FormActions::new(ui::Button::new("Request an invite")
+                    .variant(ui::ButtonVariant::Primary)
+                    .kind(ui::ButtonType::Submit)))
             }
         }
     };
-    layout(chrome, "Request an invite - Monokulo", body)
+    super::Page::new("Request an invite - Monokulo", header).render(chrome, body)
 }
 
 /// One row on the admin invites page's pending-requests table - the
@@ -214,14 +210,11 @@ pub fn invites_section(data: &AdminInvitesViewModel) -> Markup {
 }
 
 pub fn admin_invites_page(chrome: &PageChrome, data: &AdminInvitesViewModel) -> Markup {
+    let header = ui::PageHeader::new("Invites").crumbs(super::crumbs(&[("/", "Home")]));
     let body = html! {
-        div class="wrap" {
-            (super::breadcrumbs(&[("/", "Home")]))
-            h1 { "Invites" }
-            (invites_section(data))
-        }
+        (invites_section(data))
     };
-    layout(chrome, "Invites - Monokulo", body)
+    super::Page::new("Invites - Monokulo", header).render(chrome, body)
 }
 
 /// What kind of value a setting takes, which decides its input control
@@ -1971,7 +1964,7 @@ fn node_clear_dialog() -> Markup {
         "node-clear-dialog",
         "node-clear-title",
         html! {
-            (ui::DialogTitle::new("node-clear-title", "Save without a node?").in_dialog(true))
+            (ui::DialogTitle::new("node-clear-title", "Save without a node?"))
             p data-node-clear-text {}
             (ui::DialogActions::new(html! {
                 (ui::Button::new("Keep editing").attr("data-closes-dialog", ""))
@@ -1983,23 +1976,16 @@ fn node_clear_dialog() -> Markup {
 }
 
 pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -> Markup {
+    let header = ui::PageHeader::new("Admin settings").crumbs(super::crumbs(&[("/", "Home")]));
     let body = html! {
-        div class="wrap" {
-            (super::breadcrumbs(&[("/", "Home")]))
-            h1 { "Admin settings" }
-            (banners(data, false))
-            (tab_bar(data, false))
-            (settings_panel(data, false))
-            (toasts(data, false))
-            (node_clear_dialog())
-            (script("admin-settings.js", Load::Now))
-        }
+        (banners(data, false))
+        (tab_bar(data, false))
+        (settings_panel(data, false))
+        (toasts(data, false))
+        (node_clear_dialog())
+        (script("admin-settings.js", Load::Now))
     };
-    layout(
-        chrome,
-        &format!("{} - Admin settings - Monokulo", data.tab.label()),
-        body,
-    )
+    super::Page::new(format!("{} - Admin settings - Monokulo", data.tab.label()), header).render(chrome, body)
 }
 
 #[cfg(test)]

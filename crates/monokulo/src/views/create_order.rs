@@ -8,7 +8,7 @@
 
 use maud::{html, Markup};
 
-use super::{layout_with_head, script, Load, PageChrome};
+use super::{script, Load, PageChrome};
 
 pub struct CreateOrderData {
     pub connection_id: crate::db::ConnectionId,
@@ -34,50 +34,45 @@ pub struct CreateOrderData {
 }
 
 pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
+    let header = ui::PageHeader::new("Create order")
+        .crumbs(super::store_crumbs(data.connection_id.as_str(), &data.display_name, true));
     let body = html! {
-        div class="wrap" {
-            (super::store_breadcrumb(data.connection_id.as_str(), &data.display_name, true))
-            h1 { "Create order" }
-            (ui::Hint::new("Creates a real order on the engine and takes you straight to its payment page."))
-            @if let Some(error) = &data.order_creation_error {
-                (ui::Alert::new(error.as_str(), ui::Tone::Error))
+        (ui::Hint::new("Creates a real order on the engine and takes you straight to its payment page."))
+        @if let Some(error) = &data.order_creation_error {
+            (ui::Alert::new(error.as_str(), ui::Tone::Error))
+        }
+        form method="post" action=(format!("/dashboard/stores/{}/orders/new", data.connection_id)) {
+            label for="amount" { "Amount" }
+            input type="hidden" name="request_key" value=(data.request_key);
+            (ui::Input::new("amount").id("amount").value(data.amount.as_str()).required(true))
+            label for="currency" { "Currency" }
+            @if data.order_currency_is_locked_to_xmr {
+                (ui::Input::new("currency").id("currency").value("XMR").readonly(true))
+                (ui::FieldNote::new(html! { "\"XMR\" - the only currency this instance can price an order in right now. Enable an "
+                    "exchange rate provider (in this store's settings) to offer others." }))
+            } @else {
+                (ui::Select::new(
+                    "currency",
+                    data.order_currency_options
+                        .iter()
+                        .map(|currency| ui::Choice::new(currency, currency).selected(*currency == data.currency))
+                        .collect::<Vec<_>>(),
+                )
+                .id("currency"))
+                (ui::FieldNote::new(html! { "\"XMR\" always works, with no provider needed. Any other currency here comes from this "
+                    "store's own exchange rate provider (in this store's settings)." }))
             }
-            form method="post" action=(format!("/dashboard/stores/{}/orders/new", data.connection_id)) {
-                label for="amount" { "Amount" }
-                input type="hidden" name="request_key" value=(data.request_key);
-                (ui::Input::new("amount").id("amount").value(data.amount.as_str()).required(true))
-                label for="currency" { "Currency" }
-                @if data.order_currency_is_locked_to_xmr {
-                    (ui::Input::new("currency").id("currency").value("XMR").readonly(true))
-                    (ui::FieldNote::new(html! { "\"XMR\" - the only currency this instance can price an order in right now. Enable an "
-                        "exchange rate provider (in this store's settings) to offer others." }))
-                } @else {
-                    (ui::Select::new(
-                        "currency",
-                        data.order_currency_options
-                            .iter()
-                            .map(|currency| ui::Choice::new(currency, currency).selected(*currency == data.currency))
-                            .collect::<Vec<_>>(),
-                    )
-                    .id("currency"))
-                    (ui::FieldNote::new(html! { "\"XMR\" always works, with no provider needed. Any other currency here comes from this "
-                        "store's own exchange rate provider (in this store's settings)." }))
-                }
-                label for="merchant_order_id" { "Merchant Reference " (ui::Hint::new("(optional)").inline(true)) }
-                (ui::Input::new("merchant_order_id").id("merchant_order_id").value(data.merchant_order_id.as_str()))
-                (ui::FieldNote::new(html! { "Your own order/cart id, if you have one - shown on this order's detail page so you can "
-                    "match it back to your own records." }))
-                (ui::FormActions::new(ui::Button::new("Create order").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)))
-            }
+            label for="merchant_order_id" { "Merchant Reference " (ui::Hint::new("(optional)").inline(true)) }
+            (ui::Input::new("merchant_order_id").id("merchant_order_id").value(data.merchant_order_id.as_str()))
+            (ui::FieldNote::new(html! { "Your own order/cart id, if you have one - shown on this order's detail page so you can "
+                "match it back to your own records." }))
+            (ui::FormActions::new(ui::Button::new("Create order").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)))
         }
     };
     let head = script("create-order.js", Load::Now);
-    layout_with_head(
-        chrome,
-        &format!("Create order - {} - Monokulo", data.display_name),
-        head,
-        body,
-    )
+    super::Page::new(format!("Create order - {} - Monokulo", data.display_name), header)
+        .head(head)
+        .render(chrome, body)
 }
 
 #[cfg(test)]

@@ -19,7 +19,7 @@
 use maud::{html, Markup};
 
 use super::settings::{plain_card, toast_region, Card, Field, Save, Toast, ToastKind};
-use super::{layout, PageChrome};
+use super::PageChrome;
 use ui::{Choice, Select};
 
 /// One row of the FX-provider settings dropdown.
@@ -898,45 +898,45 @@ fn save_bar(store: &StoreSettingsData) -> Markup {
 }
 
 pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
+    let header = match &data.store {
+        Some(store) => ui::PageHeader::new("Settings")
+            .crumbs(super::store_crumbs(store.connection_id.as_str(), &store.display_name, false)),
+        None => ui::PageHeader::new("Store not found"),
+    };
     let body = html! {
-        div class="wrap settings-page" {
-            @if let Some(store) = &data.store {
-                (super::store_breadcrumb(store.connection_id.as_str(), &store.display_name, false))
-                h1 { "Settings" }
-                (wallet_card(store))
-                (super::settings::form(
-                    &format!("/dashboard/stores/{}/settings", store.connection_id),
-                    Save::Reload,
-                    "Store settings",
-                    html! {
-                        (store_card(store))
-                        (base_currency_card(store))
-                        (confirmations_card(store))
-                        (fx_provider_card(store))
-                        (diagnostics_card(store))
-                        (save_bar(store))
-                    },
-                ))
-                (super::store_site::connections_card(&store.sites))
-                @if let Some(key_storage) = &store.key_storage {
-                    (key_storage_card(store, key_storage))
-                }
-                (verified_domains_card(store))
-                (webhooks_card(store))
-                (toast_region(store.toast().as_ref(), false))
-                (super::store_site::dialogs(&store.sites))
-                (super::webhooks::dialogs(&store.webhooks))
-            } @else {
-                h1 { "Store not found" }
-                p { "This store doesn't exist, or isn't connected to your account." }
+        @if let Some(store) = &data.store {
+            (wallet_card(store))
+            (super::settings::form(
+                &format!("/dashboard/stores/{}/settings", store.connection_id),
+                Save::Reload,
+                "Store settings",
+                html! {
+                    (store_card(store))
+                    (base_currency_card(store))
+                    (confirmations_card(store))
+                    (fx_provider_card(store))
+                    (diagnostics_card(store))
+                    (save_bar(store))
+                },
+            ))
+            (super::store_site::connections_card(&store.sites))
+            @if let Some(key_storage) = &store.key_storage {
+                (key_storage_card(store, key_storage))
             }
+            (verified_domains_card(store))
+            (webhooks_card(store))
+            (toast_region(store.toast().as_ref(), false))
+            (super::store_site::dialogs(&store.sites))
+            (super::webhooks::dialogs(&store.webhooks))
+        } @else {
+            p { "This store doesn't exist, or isn't connected to your account." }
         }
     };
     let title = match &data.store {
         Some(store) => format!("Settings - {} - Monokulo", store.display_name),
         None => "Store not found - Monokulo".to_string(),
     };
-    layout(chrome, &title, body)
+    super::Page::new(title, header).class("settings-page").render(chrome, body)
 }
 
 /// Adding, checking and removing the domains this store has proved it owns
@@ -1021,7 +1021,7 @@ fn verified_domains_card(store: &StoreSettingsData) -> Markup {
                 @for domain in &store.embed_domains {
                     @let id = format!("domain-remove-{}", domain.id);
                     (ui::Dialog::new(id.as_str(), format!("{id}-title"), html! {
-                        (ui::DialogTitle::new(format!("{id}-title"), html! { "Remove " (domain.domain) "?" }).in_dialog(true))
+                        (ui::DialogTitle::new(format!("{id}-title"), html! { "Remove " (domain.domain) "?" }))
                         p { "You would need a new DNS record to verify it again." }
                         (ui::DialogActions::new(html! {
                             (ui::Button::new("Keep it").attr("data-closes-dialog", ""))
@@ -1487,7 +1487,7 @@ mod tests {
         )
         .into_string();
         assert!(
-            html.contains(r#"<nav class="mk-breadcrumbs" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a></nav><h1>Settings</h1>"#),
+            html.contains(r#"<nav class="mk-breadcrumbs" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a></nav><div class="mk-page-title"><h1>Settings</h1>"#),
             "expected a store link above the Settings heading, got: {html}"
         );
     }

@@ -431,36 +431,6 @@
   },
   {
     "component": "Heading",
-    "html": "<div class=\"page-heading\"><h1>Orders</h1><a class=\"mk-btn\" href=\"#component-heading\" data-size=\"compact\">Reload</a></div>",
-    "props": {
-      "actions": {
-        "$slot": [
-          {
-            "$component": "LinkButton",
-            "props": {
-              "block": false,
-              "children": {
-                "$slot": [
-                  "Reload"
-                ]
-              },
-              "href": "#component-heading",
-              "size": "compact"
-            }
-          }
-        ]
-      },
-      "children": {
-        "$slot": [
-          "Orders"
-        ]
-      },
-      "level": "h1"
-    },
-    "title": "A page's, with an action"
-  },
-  {
-    "component": "Heading",
     "html": "<h2>Recent orders</h2>",
     "props": {
       "children": {
@@ -1515,8 +1485,7 @@
                   "Retire this wallet?"
                 ]
               },
-              "id": "book-dialog-title",
-              "in_dialog": true
+              "id": "book-dialog-title"
             }
           },
           {
@@ -1588,24 +1557,37 @@
           "Delete this webhook?"
         ]
       },
-      "id": "book-title-dialog",
-      "in_dialog": true
+      "id": "book-title-dialog"
     },
-    "title": "In a dialog"
+    "title": "A question"
   },
   {
     "component": "DialogTitle",
-    "html": "<h1 id=\"book-title-page\" class=\"dialog-title\">Delete this webhook?</h1>",
+    "html": "<h2 id=\"book-title-status\" class=\"dialog-title\">Delivery of order.paid<span class=\"dialog-aside\"><span class=\"tag tag-slow\">retrying</span></span><button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></h2>",
     "props": {
-      "children": {
+      "aside": {
         "$slot": [
-          "Delete this webhook?"
+          {
+            "$component": "Tag",
+            "props": {
+              "children": {
+                "$slot": [
+                  "retrying"
+                ]
+              },
+              "tone": "slow"
+            }
+          }
         ]
       },
-      "id": "book-title-page",
-      "in_dialog": false
+      "children": {
+        "$slot": [
+          "Delivery of order.paid"
+        ]
+      },
+      "id": "book-title-status"
     },
-    "title": "On its page"
+    "title": "With a status"
   },
   {
     "component": "DialogActions",
@@ -1647,22 +1629,10 @@
   },
   {
     "component": "DialogPage",
-    "html": "<div class=\"confirm-dialog-page\"><h1 id=\"book-page-title\" class=\"dialog-title\">Retire this wallet?</h1><p class=\"hint\">Takes it out of every list and deletes its keys from Monokulo.</p><div class=\"dialog-actions\"><a class=\"mk-btn\" href=\"#component-dialog-page\">Cancel</a><button class=\"mk-btn\" type=\"button\" data-variant=\"danger\">Retire wallet</button></div></div>",
+    "html": "<div class=\"confirm-dialog-page\"><p class=\"hint\">Takes it out of every list and deletes its keys from Monokulo.</p><div class=\"dialog-actions\"><a class=\"mk-btn\" href=\"#component-dialog-page\">Cancel</a><button class=\"mk-btn\" type=\"button\" data-variant=\"danger\">Retire wallet</button></div></div>",
     "props": {
       "children": {
         "$slot": [
-          {
-            "$component": "DialogTitle",
-            "props": {
-              "children": {
-                "$slot": [
-                  "Retire this wallet?"
-                ]
-              },
-              "id": "book-page-title",
-              "in_dialog": false
-            }
-          },
           {
             "$component": "Hint",
             "props": {
@@ -3328,36 +3298,135 @@
     "title": "Signed out"
   },
   {
-    "component": "Breadcrumbs",
-    "html": "<nav class=\"mk-breadcrumbs\" aria-label=\"Breadcrumb\"><a href=\"#component-breadcrumbs\" title=\"Home\">Home</a></nav>",
+    "component": "PageHeader",
+    "html": "<header class=\"mk-page-header\"><div class=\"mk-page-title\"><h1>Home</h1></div></header>",
     "props": {
-      "label": "Breadcrumb",
-      "links": [
+      "crumbs": [],
+      "title": {
+        "$slot": [
+          "Home"
+        ]
+      }
+    },
+    "title": "A title alone"
+  },
+  {
+    "component": "PageHeader",
+    "html": "<header class=\"mk-page-header\"><nav class=\"mk-breadcrumbs\" aria-label=\"Breadcrumb\"><a href=\"#component-page-header\" title=\"Home\">Home</a></nav><div class=\"mk-page-title\"><h1>Admin settings</h1></div></header>",
+    "props": {
+      "crumbs": [
         {
-          "href": "#component-breadcrumbs",
+          "href": "#component-page-header",
           "label": "Home"
         }
-      ]
+      ],
+      "title": {
+        "$slot": [
+          "Admin settings"
+        ]
+      }
     },
     "title": "Back to a page"
   },
   {
-    "component": "Breadcrumbs",
-    "html": "<nav class=\"mk-breadcrumbs\" aria-label=\"Breadcrumb\"><a href=\"#component-breadcrumbs\" title=\"Corner store with a long name to see it shortened\">Corner store with a long name to see it shortened</a><a href=\"#component-breadcrumbs\" title=\"Orders\">Orders</a></nav>",
+    "component": "PageHeader",
+    "html": "<header class=\"mk-page-header\"><nav class=\"mk-breadcrumbs\" aria-label=\"Breadcrumb\"><a href=\"#component-page-header\" title=\"Corner store with a long name to see it shortened\">Corner store with a long name to see it shortened</a><a href=\"#component-page-header\" title=\"Orders\">Orders</a></nav><div class=\"mk-page-title\"><h1>Order 4f2a</h1><span class=\"tag tag-ok\">Paid</span><div class=\"mk-page-actions\"><a class=\"mk-btn\" href=\"#component-page-header\" data-size=\"compact\">Reload</a></div></div></header>",
     "props": {
-      "label": "Breadcrumb",
-      "links": [
+      "actions": {
+        "$slot": [
+          {
+            "$component": "LinkButton",
+            "props": {
+              "block": false,
+              "children": {
+                "$slot": [
+                  "Reload"
+                ]
+              },
+              "href": "#component-page-header",
+              "size": "compact"
+            }
+          }
+        ]
+      },
+      "aside": {
+        "$slot": [
+          {
+            "$component": "Tag",
+            "props": {
+              "children": {
+                "$slot": [
+                  "Paid"
+                ]
+              },
+              "tone": "ok"
+            }
+          }
+        ]
+      },
+      "crumbs": [
         {
-          "href": "#component-breadcrumbs",
+          "href": "#component-page-header",
           "label": "Corner store with a long name to see it shortened"
         },
         {
-          "href": "#component-breadcrumbs",
+          "href": "#component-page-header",
           "label": "Orders"
         }
-      ]
+      ],
+      "title": {
+        "$slot": [
+          "Order 4f2a"
+        ]
+      }
     },
-    "title": "Two levels up"
+    "title": "Two levels up, with an action"
+  },
+  {
+    "component": "PageHeader",
+    "html": "<header class=\"mk-page-header\"><div class=\"mk-page-title\"><h1>Set up a store</h1></div><ol class=\"mk-wizard-steps\" data-design=\"strip\" aria-label=\"Setup progress\"><li aria-current=\"step\"><span>Store<small>In progress</small></span><progress class=\"mk-wizard-progress\" value=\"0\" max=\"1\" aria-label=\"Store: 0 of 1 tasks complete\"></progress></li><li><span>Wallet<small>Next</small></span><progress class=\"mk-wizard-progress\" value=\"0\" max=\"1\" aria-label=\"Wallet: 0 of 1 tasks complete\"></progress></li><li><span>Done<small>Next</small></span><progress class=\"mk-wizard-progress\" value=\"0\" max=\"1\" aria-label=\"Done: 0 of 1 tasks complete\"></progress></li></ol></header>",
+    "props": {
+      "crumbs": [],
+      "progress": {
+        "$slot": [
+          {
+            "$component": "WizardSteps",
+            "props": {
+              "label": "Setup progress",
+              "steps": [
+                {
+                  "detail": "In progress",
+                  "done": 0,
+                  "label": "Store",
+                  "state": "current",
+                  "tasks": 1
+                },
+                {
+                  "detail": "Next",
+                  "done": 0,
+                  "label": "Wallet",
+                  "state": "next",
+                  "tasks": 1
+                },
+                {
+                  "detail": "Next",
+                  "done": 0,
+                  "label": "Done",
+                  "state": "next",
+                  "tasks": 1
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "title": {
+        "$slot": [
+          "Set up a store"
+        ]
+      }
+    },
+    "title": "In a flow"
   },
   {
     "component": "Menu",

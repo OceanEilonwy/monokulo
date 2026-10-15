@@ -85,7 +85,7 @@ test('on a phone each wallet is a card', async ({ page, context }) => {
 test("a wallet's page shows its network beside its name", async ({ page, context }) => {
   await login(context);
   await page.goto(fixture.base_url + '/account/wallets/w_feather');
-  const title = page.locator('.wallet-title');
+  const title = page.locator('.mk-page-title');
   await expect(title.getByRole('heading', { name: 'Feather test' })).toBeVisible();
   await expect(title.locator('.tag-network.is-test')).toHaveText('Stagenet');
   await expect(page.locator('.where-banner strong')).toHaveText('Brought in from Feather');

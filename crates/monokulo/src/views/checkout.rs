@@ -20,7 +20,7 @@ use maud::{html, Markup, PreEscaped};
 
 use super::{DisplayStatus, OrderStatus};
 
-use super::{layout_bare, layout_bare_with_head, layout_with_head, script, Load, PageChrome};
+use super::{layout_bare, layout_bare_with_head, script, Load, PageChrome};
 
 /// One payment row on the checkout page's payments table - mirrors the
 /// engine's own `PaymentViewModel` field-for-field.
@@ -665,11 +665,8 @@ pub struct CheckoutShareViewModel {
 /// surface is the checkout's own background (`--paper-raised`), so the
 /// frame's edge doesn't show and the payment reads as one panel.
 const SHARE_STYLE: &str = r#"
-.share-wrap { max-width: 840px; margin: 1.6rem auto; }
-.share-card { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
-.share-card-head { padding: var(--space-xl) 1.2rem 0; text-align: center; }
-.share-card-head h1 { margin: 0 0 .25em; border: 0; padding: 0; }
-.share-card-head .hint { margin: 0 auto; max-width: 34em; }
+.share-wrap { max-width: 840px; }
+.share-card { margin-top: var(--space-md); background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
 .share-frame {
   width: 100%;
   display: block;
@@ -686,19 +683,26 @@ const SHARE_SCRIPT: &str = r#"
 (function () {
   var frame = document.getElementById("checkout-frame");
   if (!frame) return;
+  // The checkout's own box, not the frame's document: that is at least as
+  // tall as the frame, so measuring it would never let the frame shrink.
+  function content(doc) {
+    return doc && (doc.getElementById("checkout-root") || doc.body);
+  }
   function resize() {
     try {
-      var doc = frame.contentDocument;
-      var height = doc && doc.documentElement && doc.documentElement.scrollHeight;
+      var el = content(frame.contentDocument);
+      if (!el) return;
+      var style = frame.contentWindow.getComputedStyle(el);
+      var height = Math.ceil(el.getBoundingClientRect().bottom + frame.contentWindow.scrollY + (parseFloat(style.marginBottom) || 0));
       if (height) frame.style.height = height + "px";
     } catch (e) { /* not ready yet, or something unexpected - keep the CSS fallback */ }
   }
   frame.addEventListener("load", function () {
     resize();
     try {
-      var doc = frame.contentDocument;
-      if (doc && typeof ResizeObserver === "function") {
-        new ResizeObserver(resize).observe(doc.documentElement);
+      var el = content(frame.contentDocument);
+      if (el && typeof ResizeObserver === "function") {
+        new ResizeObserver(resize).observe(el);
       }
     } catch (e) {}
   });
@@ -707,24 +711,19 @@ const SHARE_SCRIPT: &str = r#"
 
 pub fn share_page(chrome: &PageChrome, data: &CheckoutShareViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(SHARE_STYLE)) } };
+    let header = ui::PageHeader::new(if data.found { "Pay with Monero" } else { "Order not found" });
     let body = html! {
-        div class="wrap share-wrap" {
-            @if data.found {
-                section class="share-card" {
-                    header class="share-card-head" {
-                        h1 { "Pay with Monero" }
-                        (ui::Hint::new("Complete the payment below - this page stays up to date on its own, so it's safe to bookmark or come back to later."))
-                    }
-                    iframe class="share-frame" id="checkout-frame" src=(share_frame_src(chrome, data)) title="Monero payment" {}
-                }
-                script { (PreEscaped(SHARE_SCRIPT)) }
-            } @else {
-                h1 { "Order not found" }
-                p { "This payment link is invalid, or the order it refers to no longer exists." }
+        @if data.found {
+            (ui::Hint::new("Complete the payment below - this page stays up to date on its own, so it's safe to bookmark or come back to later."))
+            section class="share-card" {
+                iframe class="share-frame" id="checkout-frame" src=(share_frame_src(chrome, data)) title="Monero payment" {}
             }
+            script { (PreEscaped(SHARE_SCRIPT)) }
+        } @else {
+            p { "This payment link is invalid, or the order it refers to no longer exists." }
         }
     };
-    layout_with_head(chrome, "Pay with Monero", extra_head, body)
+    super::Page::new("Pay with Monero", header).class("share-wrap").head(extra_head).render(chrome, body)
 }
 
 #[cfg(test)]

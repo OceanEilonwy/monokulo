@@ -82,10 +82,85 @@ pub fn currency_options(db: &Db, selected: &str) -> Result<Vec<CurrencyOptionVie
         .collect())
 }
 
+/// The currency a new store most likely prices in, from its merchant's
+/// browser languages (`Accept-Language`, in its order): the first with a
+/// region whose currency is in the `currencies` table ("en-AU" is AUD,
+/// "de-AT" EUR). `None` when no language names one; the store step then
+/// offers XMR.
+pub fn guess_from_accept_language(header: &str) -> Option<&'static str> {
+    const EURO: &[&str] = &[
+        "AT", "BE", "CY", "DE", "EE", "ES", "FI", "FR", "GR", "HR", "IE", "IT", "LT", "LU", "LV",
+        "MT", "NL", "PT", "SI", "SK",
+    ];
+    const OTHERS: &[(&str, &str)] = &[
+        ("US", "USD"),
+        ("GB", "GBP"),
+        ("JP", "JPY"),
+        ("AU", "AUD"),
+        ("CA", "CAD"),
+        ("CH", "CHF"),
+        ("LI", "CHF"),
+        ("CN", "CNY"),
+        ("NZ", "NZD"),
+        ("SE", "SEK"),
+        ("NO", "NOK"),
+        ("SG", "SGD"),
+        ("HK", "HKD"),
+        ("IN", "INR"),
+        ("BR", "BRL"),
+        ("MX", "MXN"),
+        ("ZA", "ZAR"),
+        ("KR", "KRW"),
+    ];
+    header
+        .split(',')
+        .filter_map(|tag| tag.split(';').next())
+        .filter_map(|tag| {
+            let region = tag.trim().split(['-', '_']).skip(1).find(|part| part.len() == 2)?;
+            let region = region.to_ascii_uppercase();
+            if EURO.contains(&region.as_str()) {
+                return Some("EUR");
+            }
+            OTHERS.iter().find(|(r, _)| *r == region).map(|(_, code)| *code)
+        })
+        .next()
+}
+
+/// What a new store's currency starts as: the browser's guess when a new
+/// store can price it (`can_price_fiat`), else XMR, which the till always
+/// can charge in.
+pub fn new_store_default(can_price_fiat: bool, accept_language: &str) -> &'static str {
+    can_price_fiat
+        .then(|| guess_from_accept_language(accept_language))
+        .flatten()
+        .unwrap_or("XMR")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::Db;
+
+    #[test]
+    fn a_browsers_first_language_with_a_known_region_names_the_currency() {
+        assert_eq!(guess_from_accept_language("en-AU,en;q=0.9"), Some("AUD"));
+        assert_eq!(guess_from_accept_language("de-AT"), Some("EUR"));
+        assert_eq!(guess_from_accept_language("zh-Hant-HK"), Some("HKD"));
+        assert_eq!(guess_from_accept_language("fr, en-GB;q=0.8"), Some("GBP"));
+        assert_eq!(guess_from_accept_language("en, fr"), None);
+        assert_eq!(guess_from_accept_language("es-AR"), None);
+        assert_eq!(guess_from_accept_language(""), None);
+        // Only where a new store could price it: XMR otherwise.
+        assert_eq!(new_store_default(true, "en-AU"), "AUD");
+        assert_eq!(new_store_default(false, "en-AU"), "XMR");
+        assert_eq!(new_store_default(true, "en"), "XMR");
+        // Every currency it can name is one a store can choose.
+        let db = Db::open_in_memory().unwrap();
+        for region in ["US", "GB", "JP", "AU", "CA", "CH", "CN", "NZ", "SE", "NO", "SG", "HK", "IN", "BR", "MX", "ZA", "KR", "DE"] {
+            let code = guess_from_accept_language(&format!("en-{region}")).unwrap();
+            assert!(is_known_currency(&db, code).unwrap(), "{code}");
+        }
+    }
 
     #[test]
     fn the_canonical_code_itself_resolves_case_insensitively() {

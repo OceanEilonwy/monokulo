@@ -17,7 +17,7 @@
 
 use maud::{html, Markup};
 
-use super::{layout, PageChrome};
+use super::{DialogContent, PageChrome};
 
 /// A plugin connected to the store, now or before.
 pub struct IntegrationView {
@@ -209,19 +209,15 @@ pub fn dialogs(view: &SiteView) -> Markup {
     html! {
         @if !view.site.is_empty() {
             (ui::Dialog::new("website-dialog", "website-title",
-                website_content(view, &WebsiteChange::To(String::new()), None, true)).confirms("store_site"))
+                website_content(view, &WebsiteChange::To(String::new()), None, true).in_dialog()).confirms("store_site"))
             (ui::Dialog::new("website-remove-dialog", "website-remove-title",
-                website_content(view, &WebsiteChange::Remove, None, true))
+                website_content(view, &WebsiteChange::Remove, None, true).in_dialog())
                 .confirms("store_site").confirms_when(ui::ConfirmWhen::Emptied))
         }
-        @if view.active.is_some() {
-            (ui::Dialog::new("disconnect-dialog", "disconnect-title", disconnect_content(view, None, true)))
+        @if let Some(active) = &view.active {
+            (ui::Dialog::new("disconnect-dialog", "disconnect-title", disconnect_content(view, active, None).in_dialog()))
         }
     }
-}
-
-fn heading(id: &str, title: Markup, in_dialog: bool) -> Markup {
-    html! { (ui::DialogTitle::new(id, title).in_dialog(in_dialog)) }
 }
 
 /// One row of a checklist: ✓ done, ✕ not yet with its fix beside it, or →
@@ -270,7 +266,7 @@ pub fn website_content(
     change: &WebsiteChange,
     error: Option<&str>,
     in_dialog: bool,
-) -> Markup {
+) -> DialogContent {
     let remove = matches!(change, WebsiteChange::Remove);
     let id = if remove && in_dialog {
         "website-remove-title"
@@ -307,8 +303,7 @@ pub fn website_content(
             }),
         ));
     }
-    html! {
-        (heading(id, title, in_dialog))
+    let body = html! {
         @if remove {
             p { "Its checkout runs on its website: without one, the store takes payments at the till only." }
         } @else {
@@ -353,16 +348,14 @@ pub fn website_content(
                 }
             }
         }
-    }
+    };
+    DialogContent { title_id: id.into(), title, aside: None, body }
 }
 
 /// C1: disconnecting the connected plugin. Blocked while an order from the
 /// shop can still be paid (or the engine can't say); then what follows,
 /// and the store's name typed.
-pub fn disconnect_content(view: &SiteView, error: Option<&str>, in_dialog: bool) -> Markup {
-    let Some(active) = &view.active else {
-        return html! {};
-    };
+pub fn disconnect_content(view: &SiteView, active: &IntegrationView, error: Option<&str>) -> DialogContent {
     let title =
         html! { "Disconnect " (active.name) " from \u{201c}" (view.store_name) "\u{201d}?" };
     let back = view.settings();
@@ -414,8 +407,7 @@ pub fn disconnect_content(view: &SiteView, error: Option<&str>, in_dialog: bool)
     };
     let disconnect =
         ui::Button::new(format!("Disconnect {}", active.name)).variant(ui::ButtonVariant::Danger);
-    html! {
-        (heading("disconnect-title", title, in_dialog))
+    let body = html! {
         p {
             "The store's secret key changes, so the plugin on " (active.site) " can't make orders: the shop stops taking "
             "Monero until you connect it again from the plugin."
@@ -432,21 +424,16 @@ pub fn disconnect_content(view: &SiteView, error: Option<&str>, in_dialog: bool)
                 .attr("id", "disconnect-why"))
             (actions(&back, "Close", disconnect.disabled(true).attr("aria-describedby", "disconnect-why")))
         }
-    }
+    };
+    DialogContent { title_id: "disconnect-title".into(), title, aside: None, body }
 }
 
-fn dialog_page(chrome: &PageChrome, view: &SiteView, title: &str, content: Markup) -> Markup {
-    let body = html! {
-        div class="wrap settings-page" {
-            (super::store_breadcrumb(&view.store_id, &view.store_name, false))
-            (ui::DialogPage::new(content))
-        }
-    };
-    layout(
-        chrome,
-        &format!("{title} - {} - Monokulo", view.store_name),
-        body,
-    )
+fn dialog_page(chrome: &PageChrome, view: &SiteView, title: &str, content: DialogContent) -> Markup {
+    let crumbs = super::store_crumbs(&view.store_id, &view.store_name, false);
+    let (header, body) = content.page(crumbs, ui::DialogSize::Confirm);
+    super::Page::new(format!("{title} - {} - Monokulo", view.store_name), header)
+        .class("settings-page")
+        .render(chrome, body)
 }
 
 /// `GET /dashboard/stores/{id}/settings/website`: B1 as a page.
@@ -470,13 +457,13 @@ pub fn website_page(
 
 /// `GET /dashboard/stores/{id}/settings/connections/{integration}/disconnect`:
 /// C1 as a page.
-pub fn disconnect_page(chrome: &PageChrome, view: &SiteView, error: Option<&str>) -> Markup {
-    dialog_page(
-        chrome,
-        view,
-        "Disconnect",
-        disconnect_content(view, error, false),
-    )
+pub fn disconnect_page(
+    chrome: &PageChrome,
+    view: &SiteView,
+    active: &IntegrationView,
+    error: Option<&str>,
+) -> Markup {
+    dialog_page(chrome, view, "Disconnect", disconnect_content(view, active, error))
 }
 
 #[cfg(test)]
@@ -494,6 +481,10 @@ mod tests {
             until: until.map(str::to_owned),
             webhook_url: Some("https://shop.example/?wc-api=monokulo".into()),
         }
+    }
+
+    fn disconnect_html(view: &SiteView) -> String {
+        disconnect_content(view, view.active.as_ref().unwrap(), None).in_dialog().into_string()
     }
 
     fn view(active: bool, plugin_open: Option<u64>) -> SiteView {
@@ -581,6 +572,7 @@ mod tests {
             None,
             true,
         )
+        .in_dialog()
         .into_string();
         assert!(
             html.contains("Change the website of \u{201c}Bakery\u{201d}?"),
@@ -601,9 +593,10 @@ mod tests {
             None,
             false,
         )
+        .in_dialog()
         .into_string();
         assert!(
-            html.starts_with(r#"<h1 id="website-title" class="dialog-title">"#),
+            html.starts_with(r#"<h2 id="website-title" class="dialog-title">"#),
             "{html}"
         );
         assert!(
@@ -634,7 +627,7 @@ mod tests {
             "{html}"
         );
         let remove =
-            website_content(&view(false, None), &WebsiteChange::Remove, None, true).into_string();
+            website_content(&view(false, None), &WebsiteChange::Remove, None, true).in_dialog().into_string();
         assert!(
             remove.contains("Remove the website of")
                 && remove.contains(r#"name="remove" value="1""#),
@@ -645,14 +638,14 @@ mod tests {
 
     #[test]
     fn disconnecting_is_blocked_while_an_order_from_the_shop_can_be_paid() {
-        let html = disconnect_content(&view(true, Some(3)), None, true).into_string();
+        let html = disconnect_html(&view(true, Some(3)));
         assert!(html.contains(r#"No order from shop.example can still be paid<span class="fix">3 can be paid until about 14:20</span>"#), "{html}");
         assert!(html.contains(r#"<button class="mk-btn" type="button" data-variant="danger" disabled aria-describedby="disconnect-why">Disconnect WooCommerce</button>"#), "{html}");
         assert!(
             !html.contains("webhook") && !html.contains("<form"),
             "{html}"
         );
-        let unknown = disconnect_content(&view(true, None), None, true).into_string();
+        let unknown = disconnect_html(&view(true, None));
         assert!(
             unknown.contains("Monokulo can't check its orders right now")
                 && unknown.contains("disabled"),
@@ -662,8 +655,8 @@ mod tests {
 
     #[test]
     fn disconnecting_says_the_webhook_goes_then_asks_for_the_name() {
-        let html = disconnect_content(&view(true, Some(0)), None, false).into_string();
-        assert!(html.contains("<h1 id=\"disconnect-title\" class=\"dialog-title\">Disconnect WooCommerce from \u{201c}Bakery\u{201d}?</h1>"), "{html}");
+        let html = disconnect_html(&view(true, Some(0)));
+        assert!(html.contains("<h2 id=\"disconnect-title\" class=\"dialog-title\">Disconnect WooCommerce from \u{201c}Bakery\u{201d}?<button"), "{html}");
         assert!(html.contains(r#"<li class="ok">"#), "{html}");
         assert!(html.contains(r#"The plugin's webhook is removed<span class="fix">https://shop.example/?wc-api=monokulo</span>"#), "{html}");
         assert!(

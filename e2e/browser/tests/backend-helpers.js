@@ -232,6 +232,9 @@ async function createStore(page, site) {
   await page.goto(base + '/setup');
   await page.locator('input[name="store_name"]').fill(site);
   await page.locator('input[name="store_site"]').fill(site);
+  // The tests charge in XMR: not the currency the browser's language
+  // would pick.
+  await page.locator('select[name="base_currency"]').selectOption('XMR');
   await page.getByRole('button', { name: 'Next', exact: true }).click();
   const existing = page.locator('#store-site-error a');
   if (await existing.count()) {

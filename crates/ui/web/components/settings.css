@@ -131,3 +131,10 @@ body:has(.save-bar):not(:has(.save-bar:not([data-placement="inline"]))) { paddin
 .toast-warning { background: var(--tint-warning); }
 .toast-error { background: var(--tint-error); }
 .toast-neutral { background: var(--tint-neutral); }
+
+/* On a phone the bar is its two buttons: what was edited is left out, until
+   a save fails and it says why. */
+@media (max-width: 640px) {
+  .save-bar:not(.is-failed) .save-bar-message { display: none; }
+  .save-bar-actions { flex: 1; justify-content: flex-end; }
+}

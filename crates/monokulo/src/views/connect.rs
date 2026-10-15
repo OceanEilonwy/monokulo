@@ -9,7 +9,7 @@
 
 use maud::{html, Markup};
 
-use super::{layout, PageChrome};
+use super::PageChrome;
 use ui::{Choice, Select};
 
 /// One key custody backend a new wallet's keys can go to (part 5).
@@ -59,46 +59,42 @@ pub fn existing_store_page(
     store_id: &str,
     store_name: &str,
 ) -> Markup {
+    let header = ui::PageHeader::new("Connect your WooCommerce shop");
     let body = html! {
-        div class="wrap" {
-            h1 { "Connect your WooCommerce shop" }
-            p {
-                "The WooCommerce plugin on " strong { (request.host) } " asked to connect. Your store "
-                a href=(format!("/dashboard/stores/{store_id}")) { (store_name) } " already uses that site, so it "
-                "connects to that store: the same orders, settings and wallet."
-            }
-            div class="step-foot" {
-                (ui::LinkButton::new("Cancel", crate::stores::site_link(&request.host)))
-                span class="spacer" {}
-                form method="post" action=(format!("/connect/{}", request.platform)) class="inline-form" {
-                    input type="hidden" name="connection_id" value=(store_id);
-                    input type="hidden" name="site_url" value=(request.site_url);
-                    input type="hidden" name="return_url" value=(request.return_url);
-                    input type="hidden" name="nonce" value=(request.nonce);
-                    (ui::Button::new(format!("Connect to {store_name}"))
-                        .variant(ui::ButtonVariant::Primary)
-                        .kind(ui::ButtonType::Submit))
-                }
+        p {
+            "The WooCommerce plugin on " strong { (request.host) } " asked to connect. Your store "
+            a href=(format!("/dashboard/stores/{store_id}")) { (store_name) } " already uses that site, so it "
+            "connects to that store: the same orders, settings and wallet."
+        }
+        div class="step-foot" {
+            (ui::LinkButton::new("Cancel", crate::stores::site_link(&request.host)))
+            span class="spacer" {}
+            form method="post" action=(format!("/connect/{}", request.platform)) class="inline-form" {
+                input type="hidden" name="connection_id" value=(store_id);
+                input type="hidden" name="site_url" value=(request.site_url);
+                input type="hidden" name="return_url" value=(request.return_url);
+                input type="hidden" name="nonce" value=(request.nonce);
+                (ui::Button::new(format!("Connect to {store_name}"))
+                    .variant(ui::ButtonVariant::Primary)
+                    .kind(ui::ButtonType::Submit))
             }
         }
     };
-    layout(chrome, "Connect Monero payments - Monokulo", body)
+    super::Page::new("Connect Monero payments - Monokulo", header).render(chrome, body)
 }
 
 /// `GET`/`POST /connect/{platform}` when the plugin can't connect: why, and
 /// no form.
 pub fn cannot_connect_page(chrome: &PageChrome, host: Option<&str>, why: &str) -> Markup {
+    let header = ui::PageHeader::new("Connect your WooCommerce shop");
     let body = html! {
-        div class="wrap" {
-            h1 { "Connect your WooCommerce shop" }
-            @if let Some(host) = host {
-                p { "The WooCommerce plugin on " strong { (host) } " asked to connect to your account." }
-            }
-            (ui::Alert::new(why, ui::Tone::Error))
-            p { a href="/" { "Go to your dashboard" } }
+        @if let Some(host) = host {
+            p { "The WooCommerce plugin on " strong { (host) } " asked to connect to your account." }
         }
+        (ui::Alert::new(why, ui::Tone::Error))
+        p { a href="/" { "Go to your dashboard" } }
     };
-    layout(chrome, "Connect Monero payments - Monokulo", body)
+    super::Page::new("Connect Monero payments - Monokulo", header).render(chrome, body)
 }
 
 #[cfg(test)]

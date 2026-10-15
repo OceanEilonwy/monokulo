@@ -118,3 +118,11 @@
 
 /* Current is descriptive metadata, not a second chip beside the network. */
 .mk-current { color: var(--success); font-size: var(--text-xs); font-weight: 700; white-space: nowrap; }
+
+/* On a phone an option is its name and its network's icon: the detail, the
+   note and the chips would push it past the screen's edge. */
+@media (max-width: 640px) {
+  .mk-select :is(.mk-detail, .mk-note, .mk-chip, .mk-current) { display: none; }
+  .mk-option { white-space: normal; }
+  .mk-option .mk-label, .mk-value .mk-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}

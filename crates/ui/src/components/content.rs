@@ -143,52 +143,31 @@ pub(super) fn hint_examples() -> Vec<(&'static str, Hint)> {
     ]
 }
 
-/// A heading's level.
+/// A heading's level. A page's own title, the `h1`, is its `PageHeader`'s.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]
 pub enum HeadingLevel {
-    H1,
     H2,
     H3,
     H4,
 }
 
 component! {
-    /// A page's or a section's heading. A page's (`H1`) can have actions at
-    /// its right: a Reload, a link to settings.
+    /// A section's or a part's heading, under the page's `PageHeader`.
     pub struct Heading {
         children: Slot,
         #[default(HeadingLevel::H2)]
         level: HeadingLevel,
-        /// Beside a page heading, at the right.
-        actions: Option<Slot>,
         id: Option<String>,
     }
     html {
-        @if let Some(actions) = actions {
-            div class="page-heading" {
-                @if level == HeadingLevel::H1 { h1 id=[id] { (children) } }
-                @else if level == HeadingLevel::H2 { h2 id=[id] { (children) } }
-                @else if level == HeadingLevel::H3 { h3 id=[id] { (children) } }
-                @else { h4 id=[id] { (children) } }
-                (actions)
-            }
-        } @else {
-            @if level == HeadingLevel::H1 { h1 id=[id] { (children) } }
-            @else if level == HeadingLevel::H2 { h2 id=[id] { (children) } }
-            @else if level == HeadingLevel::H3 { h3 id=[id] { (children) } }
-            @else { h4 id=[id] { (children) } }
-        }
+        @if level == HeadingLevel::H2 { h2 id=[id] { (children) } }
+        @else if level == HeadingLevel::H3 { h3 id=[id] { (children) } }
+        @else { h4 id=[id] { (children) } }
     }
 }
 
 pub(super) fn heading_examples() -> Vec<(&'static str, Heading)> {
     vec![
-        (
-            "A page's, with an action",
-            Heading::new("Orders")
-                .level(HeadingLevel::H1)
-                .actions(crate::LinkButton::new("Reload", "#component-heading").size(crate::ControlSize::Compact)),
-        ),
         ("A section's", Heading::new("Recent orders")),
         ("A part's", Heading::new("Webhook").level(HeadingLevel::H3)),
     ]

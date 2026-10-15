@@ -5,7 +5,7 @@ pub use shared::proof::{NodeVerdict, ProofState};
 use ui::{Alert, Button, ButtonType, Cell, CellPart, Disclosure, Fact, Facts, Hint, LinkButton, Panel, Row, Slot, Table, TableLook, Tag, TagTone, Tone};
 
 use super::scaling::{network_name, thousands};
-use super::{layout, PageChrome};
+use super::PageChrome;
 
 /// One Monero node's row - mirrors `engine_client::NodeStatus` but with
 /// presentation already done (`height_display`/`is_reachable`), and what
@@ -262,7 +262,7 @@ fn network_card(network: &StatusNetworkView, engine_page: bool) -> Markup {
                 span class="mk-status-text" data-tone=[tone(class)] { (label) }
             }
             @if engine_page {
-                (LinkButton::new(html! { (PreEscaped(ui::assets::icons::EYE)) "Watch it live" }, format!("/status/engine?network={}", network.network)))
+                (LinkButton::new(html! { (PreEscaped(ui::assets::icons::EYE)) "Watch it live" }, format!("/status/engine?network={}", network.network)).attr("data-watch-live", ""))
             }
         }
 
@@ -532,18 +532,16 @@ fn publishers_table(publishers: &[PublisherView]) -> Markup {
 }
 
 pub fn page(chrome: &PageChrome, data: &StatusPageViewModel) -> Markup {
+    let mut header = ui::PageHeader::new("Engine status").actions(super::reload_button("/status"));
+    if chrome.logged_in {
+        header = header.crumbs(super::crumbs(&[("/", "Home")]));
+    }
     let body = html! {
-        div class="wrap" {
-            @if chrome.logged_in {
-                (super::breadcrumbs(&[("/", "Home")]))
-            }
-            div class="page-heading" { h1 { "Engine status" } (super::reload_button("/status")) }
-            (live_fragment(data))
-            // Streams the part above while the page is open, with JavaScript.
-            span hidden fx-action="/status/events" fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect {}
-        }
+        (live_fragment(data))
+        // Streams the part above while the page is open, with JavaScript.
+        span hidden fx-action="/status/events" fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect {}
     };
-    layout(chrome, "Status - Monokulo", body)
+    super::Page::new("Status - Monokulo", header).render(chrome, body)
 }
 
 #[cfg(test)]
@@ -786,7 +784,7 @@ mod tests {
     fn watch_it_live_is_a_button_in_the_header_for_an_admin_only() {
         let html = render(&admin_with(following(0, 1), vec![]));
         assert!(
-            html.contains(r#"<a class="mk-btn" href="/status/engine?network=mainnet"><svg xmlns="http://www.w3.org/2000/svg" class="mk-icon""#)
+            html.contains(r#"<a class="mk-btn" href="/status/engine?network=mainnet" data-watch-live=""><svg xmlns="http://www.w3.org/2000/svg" class="mk-icon""#)
                 && html.contains("</svg>Watch it live</a></div>"),
             "an eye, then the words: {html}"
         );

@@ -611,12 +611,7 @@ function App() {
     <header class="pos-top">
       <span class="pos-brand-slot" ref={adoptSiteBrand}/>
       <span class="pos-crumb-sep" aria-hidden="true">/</span>
-      <Show when={screen() === 'list'} fallback={
-        <a class="pos-store" href={`/dashboard/stores/${encodeURIComponent(config.connectionId)}`}>{config.storeName}</a>
-      }>
-        <IconButton label="Back to POS" onClick={() => setScreen('keypad')}
-          icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg>}/>
-      </Show>
+      <a class="pos-store" href={`/dashboard/stores/${encodeURIComponent(config.connectionId)}`}>{config.storeName}</a>
       <span class="pos-mode">POS</span>
       <span class="pos-top-end">
         <span class="pos-site-controls" ref={adoptSiteControls}/>
@@ -679,7 +674,7 @@ function App() {
             <Show when={order().status === 'pending' && !order().error} fallback={<p class="pos-action-hint">Background keeps this payment open while you serve the next customer</p>}>
               <Button variant="danger" block data-pos="cancel" disabled={busy()} data-opens-dialog="pos-cancel-dialog">Cancel order…</Button>
               <Dialog id="pos-cancel-dialog" labelled_by="pos-cancel-title">
-                <DialogTitle id="pos-cancel-title" in_dialog>Cancel {label(order())}?</DialogTitle>
+                <DialogTitle id="pos-cancel-title">Cancel {label(order())}?</DialogTitle>
                 <p>The payment address has already been issued; any later payment will still need review.</p>
                 <DialogActions>
                   <Button data-closes-dialog>Keep it</Button>
@@ -696,6 +691,9 @@ function App() {
 
     <Show when={screen() === 'list'}>
       <main class="pos-list" ref={el => { listElement = el; }}>
+        {/* The way back sits over the heading; the bar above stays the
+            same on every screen. */}
+        <Button variant="quiet" size="compact" data-pos="back-to-till" onClick={() => setScreen('keypad')}>‹ Back to the till</Button>
         <h1>Orders</h1>
         <p class="pos-list-subtitle">Choose an order to open.</p>
         <div class="pos-search">

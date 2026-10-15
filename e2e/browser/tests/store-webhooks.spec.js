@@ -146,7 +146,7 @@ test("a delivery's details open as a dialog, with its attempts, request and last
   await expect(dialog).toBeVisible();
   // The status at the top right, on the title's line, beside the close
   // button; the facts under it.
-  const title = await dialog.locator('.dialog-title > span:not(.tag)').boundingBox();
+  const title = await dialog.locator('.dialog-title > span:not(.dialog-aside)').boundingBox();
   const status = await dialog.locator('.dialog-title .tag').boundingBox();
   const close = await dialog.locator('.dialog-title .dialog-x').boundingBox();
   expect(status.x).toBeGreaterThan(title.x + title.width);
@@ -230,7 +230,7 @@ test('without JavaScript, Details and Delete are pages and Send again is a form'
   await gaveUp.getByRole('link', { name: 'Details' }).first().click();
   await expect(page).toHaveURL(/\/settings\/webhooks\/wh_[0-9a-f]+\/deliveries\/\d+$/);
   await expect(page.getByRole('heading', { level: 1, name: 'Delivery of order.paid' })).toBeVisible();
-  await expect(page.locator('.wide-dialog-page .tag')).toHaveText('gave up');
+  await expect(page.locator('.mk-page-title .tag')).toHaveText('gave up');
   await captureCoverageStage(page, 'store-webhooks-detail-page', test.info(), { group: GROUP, shapes: ['desktop', 'mobile-portrait'] });
   await page.getByRole('button', { name: 'Send again now' }).click();
   await expect(page).toHaveURL(/\/settings\?saved=webhooks#card-webhooks$/);

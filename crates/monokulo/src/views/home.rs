@@ -2,7 +2,7 @@
 
 use maud::{html, Markup};
 
-use super::{layout, PageChrome};
+use super::PageChrome;
 
 /// One connected store as shown on the home page - a much smaller
 /// projection of [`crate::db::StoreConnectionRow`] than the full order/
@@ -56,65 +56,66 @@ pub struct HomeViewModel {
 }
 
 pub fn page(chrome: &PageChrome, data: &HomeViewModel) -> Markup {
+    let header = ui::PageHeader::new("Home");
     let body = html! {
-        div class="wrap" {
-            h1 { "Home" }
 
-            @if data.has_stores {
-                (ui::Panel::new(html! {
-                    strong { "Total received (detected):" }
-                    // The engine lists a store's latest orders, not all
-                    // of them: the figure says so rather than claim a total.
-                    " " (data.total_received_xmr) " XMR across each connected store's latest 50 orders"
-                }))
+        @if data.has_stores {
+            (ui::Panel::new(html! {
+                strong { "Total received (detected):" }
+                // The engine lists a store's latest orders, not all
+                // of them: the figure says so rather than claim a total.
+                " " (data.total_received_xmr) " XMR across each connected store's latest 50 orders"
+            }))
 
-                h2 { "Your stores" }
-                // On a phone only the name, health and link stay (optional cells go).
-                (ui::Table::new(ui::Slot::many(data.stores.iter().map(store_row)))
+            h2 { "Your stores" }
+            (ui::FormActions::new(ui::LinkButton::new("+ add another store", "/setup")))
+            // On a phone each store is a card: its name and health, its
+            // wallet and link, then its site.
+            (ui::Table::new(ui::Slot::many(data.stores.iter().map(store_row)))
+                .head(ui::Row::new(ui::Slot::many([
+                    ui::Cell::new("Store").header(true).into(),
+                    ui::Cell::new("Wallet").header(true).into(),
+                    ui::Cell::new("Site").header(true).optional(true).into(),
+                    ui::Cell::new("Public key").header(true).optional(true).into(),
+                    ui::Cell::new("Status").header(true).into(),
+                    ui::Slot::from(ui::Cell::new("").header(true)),
+                ])))
+                .look(ui::TableLook::Cards))
+
+            h2 { "Recent orders" }
+            @if data.recent_orders.is_empty() {
+                p class="muted" { "No orders yet." }
+            } @else {
+                // On a phone each order is a card: order and status, amount
+                // and date, then its store.
+                (ui::Table::new(ui::Slot::many(data.recent_orders.iter().map(|order| order_row(chrome, order))))
                     .head(ui::Row::new(ui::Slot::many([
-                        ui::Cell::new("Store").header(true).into(),
-                        ui::Cell::new("Wallet").header(true).into(),
-                        ui::Cell::new("Site").header(true).optional(true).into(),
-                        ui::Cell::new("Public key").header(true).optional(true).into(),
+                        ui::Cell::new("Store").header(true).optional(true).into(),
+                        ui::Cell::new("Order ID").header(true).into(),
                         ui::Cell::new("Status").header(true).into(),
-                        ui::Slot::from(ui::Cell::new("").header(true)),
-                    ]))))
-                (ui::FormActions::new(ui::LinkButton::new("+ add another store", "/setup")))
-
-                h2 { "Recent orders" }
-                @if data.recent_orders.is_empty() {
-                    p class="muted" { "No orders yet." }
-                } @else {
-                    // On a phone: order, status and amount; the order page has the rest.
-                    (ui::Table::new(ui::Slot::many(data.recent_orders.iter().map(|order| order_row(chrome, order))))
-                        .head(ui::Row::new(ui::Slot::many([
-                            ui::Cell::new("Store").header(true).optional(true).into(),
-                            ui::Cell::new("Order ID").header(true).into(),
-                            ui::Cell::new("Status").header(true).into(),
-                            ui::Cell::new("Amount").header(true).into(),
-                            ui::Slot::from(ui::Cell::new("Created").header(true).optional(true)),
-                        ]))))
-                }
-            }
-            @if !data.has_stores {
-                (ui::Panel::new(html! {
-                    h2 { "Connect your first store" }
-                    p {
-                        "You don't have any stores connected yet. Adding one takes a couple of minutes - pick the "
-                        "guided flow for WooCommerce, or the advanced form if you're integrating something custom."
-                    }
-                    (ui::FormActions::new(ui::LinkButton::new("+ add a store", "/setup").variant(ui::ButtonVariant::Primary)))
-                }))
+                        ui::Cell::new("Amount").header(true).into(),
+                        ui::Slot::from(ui::Cell::new("Created").header(true)),
+                    ])))
+                    .look(ui::TableLook::Cards))
             }
         }
+        @if !data.has_stores {
+            (ui::Panel::new(html! {
+                h2 { "Connect your first store" }
+                p {
+                    "You don't have any stores connected yet. Adding one takes a couple of minutes - pick the "
+                    "guided flow for WooCommerce, or the advanced form if you're integrating something custom."
+                }
+                (ui::FormActions::new(ui::LinkButton::new("+ add a store", "/setup").variant(ui::ButtonVariant::Primary)))
+            }))
+        }
     };
-
-    layout(chrome, "Home - Monokulo", body)
+    super::Page::new("Home - Monokulo", header).render(chrome, body)
 }
 
 fn store_row(store: &HomeStoreRow) -> ui::Slot {
     ui::Row::new(ui::Slot::many([
-        ui::Cell::new(store.display_name.as_str()).into(),
+        ui::Cell::new(store.display_name.as_str()).part(ui::CellPart::Title).into(),
         ui::Cell::new(html! {
             @if let Some((name, network)) = &store.wallet {
                 (name) " " (super::network_icon(network))
@@ -122,29 +123,33 @@ fn store_row(store: &HomeStoreRow) -> ui::Slot {
                 span class="muted" { "Not linked yet" }
             }
         })
+        .part(ui::CellPart::Detail)
         .into(),
-        ui::Cell::new(store.site.as_str()).optional(true).into(),
+        ui::Cell::new(store.site.as_str()).part(ui::CellPart::Meta).into(),
         ui::Cell::new(html! { code { (super::short_id(&store.public_key)) } }).optional(true).into(),
-        ui::Cell::new(super::store_detail::health_tag(&store.health, &store.health_label)).into(),
+        ui::Cell::new(super::store_detail::health_tag(&store.health, &store.health_label)).part(ui::CellPart::Status).into(),
         ui::Slot::from(ui::Cell::new(html! {
             a class="nowrap" href=(format!("/dashboard/stores/{}", store.connection_id)) { "view →" }
-        })),
+        }).part(ui::CellPart::When)),
     ]))
     .into()
 }
 
 fn order_row(chrome: &PageChrome, order: &HomeOrderRow) -> ui::Slot {
     ui::Row::new(ui::Slot::many([
-        ui::Cell::new(order.display_name.as_str()).optional(true).into(),
+        ui::Cell::new(order.display_name.as_str()).part(ui::CellPart::Meta).into(),
         ui::Cell::new(html! {
             a href=(format!("/dashboard/stores/{}/orders/{}", order.connection_id, order.order_id)) {
                 (super::short_id(order.order_id.as_str()))
             }
         })
+        .part(ui::CellPart::Title)
         .into(),
-        ui::Cell::new(super::state_badge(order.status)).into(),
-        ui::Cell::new(html! { span class="nowrap" { (super::display_amount(&order.amount, &order.currency)) } }).into(),
-        ui::Slot::from(ui::Cell::new(chrome.clock.time(order.created_at)).optional(true)),
+        ui::Cell::new(super::state_badge(order.status)).part(ui::CellPart::Status).into(),
+        ui::Cell::new(html! { span class="nowrap" { (super::display_amount(&order.amount, &order.currency)) } })
+            .part(ui::CellPart::Amount)
+            .into(),
+        ui::Slot::from(ui::Cell::new(chrome.clock.time(order.created_at)).part(ui::CellPart::When)),
     ]))
     .into()
 }
@@ -203,7 +208,7 @@ mod tests {
         let html = page(&chrome(), &data).into_string();
         assert!(html.contains("pk_abc123"));
         assert!(
-            html.contains(r#"<td>Feather test <span class="tag-network is-test" data-size="icon" title="Stagenet">"#),
+            html.contains(r#"<td class="card-detail">Feather test <span class="tag-network is-test" data-size="icon" title="Stagenet">"#),
             "the store's wallet, with its network: {html}"
         );
         assert!(html.contains("1.234567890123"));

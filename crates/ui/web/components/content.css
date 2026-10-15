@@ -1,6 +1,6 @@
 /* What pages are made of between the controls (crates/ui/src/components/content.rs):
-   Panel (.box), Alert (.error, .warning, .success, .notice), Hint, Heading
-   (.page-heading), Facts, ShortValue, Disclosure, Checks and Timeline.
+   Panel (.box), Alert (.error, .warning, .success, .notice), Hint, Heading,
+   Facts, ShortValue, Disclosure, Checks and Timeline.
    Tag and NetworkBadge are in select.css, which draws them in options too. */
 /* A message (Alert): its tone's edge and words on its tone's tint, a solid
    ground like a toast's. */
@@ -63,8 +63,6 @@
 .short-value { position: relative; display: inline-block; text-decoration: inherit; }
 .short-value-text { user-select: none; }
 .short-value-full { position: absolute; inset: 0; overflow: hidden; white-space: nowrap; color: transparent; user-select: text; }
-.page-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
-.page-heading h1 { flex: 1; }
 details:is(.keys-help, .more-options) { margin: var(--space-md) 0; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
 details:is(.keys-help, .more-options) > summary { display: block; padding: var(--space-md) var(--space-lg); font-weight: 700; border-radius: var(--radius-md); }
 details:is(.keys-help, .more-options) > summary:hover { background: var(--surface-sunken); }
@@ -137,6 +135,7 @@ tr:nth-child(even) td { background: color-mix(in srgb, var(--ink) 5%, transparen
   table.table-cards thead { display: none; }
   table.table-cards tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-xs) var(--space-md); align-items: center; padding: var(--space-sm) var(--space-md); margin-bottom: var(--space-sm); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
   table.table-cards td { display: block; min-width: 0; padding: 0; border: 0; background: none; }
+  table.table-cards td.col-optional { display: none; }
   table.table-cards .card-title { grid-column: 1; grid-row: 1; font-weight: 700; }
   table.table-cards .card-status { grid-column: 2; grid-row: 1; justify-self: end; }
   table.table-cards .card-amount { grid-column: 1; grid-row: 2; font-weight: 700; }

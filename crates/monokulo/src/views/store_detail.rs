@@ -4,7 +4,7 @@
 use maud::{html, Markup};
 
 use super::orders::{lookup_payment_card, orders_table, OrderRowViewModel};
-use super::{layout, PageChrome};
+use super::PageChrome;
 
 pub struct StoreDetailData {
     pub connection_id: crate::db::ConnectionId,
@@ -176,90 +176,88 @@ fn new_order_icon() -> Markup {
 }
 
 pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
+    let header = match &data.store {
+        Some(store) => ui::PageHeader::new(store.display_name.as_str()).crumbs(super::crumbs(&[("/", "Home")])),
+        None => ui::PageHeader::new("Store not found"),
+    };
     let body = html! {
-        div class="wrap" {
-            @if let Some(store) = &data.store {
-                (super::breadcrumbs(&[("/", "Home")]))
-                h1 { (store.display_name) }
-
-                div class="store-header-row" {
-                    // One line: the site shows as its host, cut with an ellipsis
-                    // rather than broken mid-word; the link keeps the full URL.
-                    span class="store-header-status" {
-                        (health_tag(&store.health, &store.health_label))
-                        // The site is a host (`crate::stores::normalize_site`),
-                        // so the link is built, never the merchant's text.
-                        @if !store.site.is_empty() {
-                            span class="muted" aria-hidden="true" { "·" }
-                            a class="store-site" href=(crate::stores::site_link(&store.site)) title=(store.site) { (store.site) }
-                        }
+        @if let Some(store) = &data.store {
+            div class="store-header-row" {
+                // One line: the site shows as its host, cut with an ellipsis
+                // rather than broken mid-word; the link keeps the full URL.
+                span class="store-header-status" {
+                    (health_tag(&store.health, &store.health_label))
+                    // The site is a host (`crate::stores::normalize_site`),
+                    // so the link is built, never the merchant's text.
+                    @if !store.site.is_empty() {
+                        span class="muted" aria-hidden="true" { "·" }
+                        a class="store-site" href=(crate::stores::site_link(&store.site)) title=(store.site) { (store.site) }
                     }
-                    (ui::LinkButton::new(html! { "Settings " span aria-hidden="true" { "→" } }, format!("/dashboard/stores/{}/settings", store.connection_id))
-                        .attr("data-store-link", "settings"))
-                    (ui::LinkButton::new(html! { "Help " (super::external_link_icon()) }, super::DOCS_URL)
-                        .attr("target", "_blank")
-                        .attr("rel", "noopener")
-                        .attr("data-store-link", "help"))
                 }
-
-                (embed_warnings(store.connection_id.as_str(), &store.embed_warnings))
-
-                (ui::Table::new(ui::Slot::many([
-                    fact_row("Wallet", html! {
-                        @match &store.wallet {
-                            Some((id, name)) => a href=(format!("/account/wallets/{id}")) { (name) },
-                            None => span class="muted" { "-" },
-                        }
-                    }),
-                    fact_row("Base currency", html! { (store.base_currency) }),
-                    fact_row("Public key", html! { code { (store.public_key) } }),
-                    fact_row("Connected", chrome.clock.time(store.created_at)),
-                ]))
-                .look(ui::TableLook::Facts)
-                .scroll(false))
-                @if chrome.is_admin {
-                    p { (super::logs_link(chrome, "store.id", store.connection_id.as_str(), "This store's logs")) }
-                }
-
-                // The POS needs JavaScript: without it, its tile says so.
-                div class="widget-links" {
-                    (ui::LaunchTile::new("POS Terminal", "Full-screen keypad for in-person sales", pos_icon())
-                        .href(format!("/dashboard/stores/{}/pos", store.connection_id))
-                        .attr("data-only", "script"))
-                    (ui::LaunchTile::new("POS Terminal", "Requires JavaScript", pos_icon())
-                        .attr("data-only", "no-script"))
-                    (ui::LaunchTile::new("Create an order", "For one-off custom payments", new_order_icon())
-                        .href(format!("/dashboard/stores/{}/orders/new", store.connection_id)))
-                }
-
-                h2 { "Recent orders" }
-                @if store.recent_orders.is_empty() {
-                    p class="muted" { "No orders yet." }
-                } @else {
-                    (orders_table(store.connection_id.as_str(), &store.recent_orders, &chrome.clock))
-                }
-                p {
-                    a href=(format!("/dashboard/stores/{}/orders", store.connection_id)) { "all orders →" }
-                }
-
-                (lookup_payment_card(
-                    &format!("/dashboard/stores/{}/orders/lookup", store.connection_id),
-                    &store.lookup_txid_value,
-                    &store.lookup_message,
-                    &store.lookup_found_order_id,
-                    |order_id| format!("/dashboard/stores/{}/orders/{}", store.connection_id, order_id),
-                ))
-            } @else {
-                h1 { "Store not found" }
-                p { "This store doesn't exist, or isn't connected to your account." }
+                (ui::LinkButton::new(html! { "Settings " span aria-hidden="true" { "→" } }, format!("/dashboard/stores/{}/settings", store.connection_id))
+                    .attr("data-store-link", "settings"))
+                (ui::LinkButton::new(html! { "Help " (super::external_link_icon()) }, super::DOCS_URL)
+                    .attr("target", "_blank")
+                    .attr("rel", "noopener")
+                    .attr("data-store-link", "help"))
             }
+
+            (embed_warnings(store.connection_id.as_str(), &store.embed_warnings))
+
+            (ui::Table::new(ui::Slot::many([
+                fact_row("Wallet", html! {
+                    @match &store.wallet {
+                        Some((id, name)) => a href=(format!("/account/wallets/{id}")) { (name) },
+                        None => span class="muted" { "-" },
+                    }
+                }),
+                fact_row("Base currency", html! { (store.base_currency) }),
+                fact_row("Public key", html! { code { (store.public_key) } }),
+                fact_row("Connected", chrome.clock.time(store.created_at)),
+            ]))
+            .look(ui::TableLook::Facts)
+            .scroll(false))
+            @if chrome.is_admin {
+                p { (super::logs_link(chrome, "store.id", store.connection_id.as_str(), "This store's logs")) }
+            }
+
+            // The POS needs JavaScript: without it, its tile says so.
+            div class="widget-links" {
+                (ui::LaunchTile::new("POS Terminal", "Full-screen keypad for in-person sales", pos_icon())
+                    .href(format!("/dashboard/stores/{}/pos", store.connection_id))
+                    .attr("data-only", "script"))
+                (ui::LaunchTile::new("POS Terminal", "Requires JavaScript", pos_icon())
+                    .attr("data-only", "no-script"))
+                (ui::LaunchTile::new("Create an order", "For one-off custom payments", new_order_icon())
+                    .href(format!("/dashboard/stores/{}/orders/new", store.connection_id)))
+            }
+
+            h2 { "Recent orders" }
+            @if store.recent_orders.is_empty() {
+                p class="muted" { "No orders yet." }
+            } @else {
+                (orders_table(store.connection_id.as_str(), &store.recent_orders, &chrome.clock))
+            }
+            p {
+                a href=(format!("/dashboard/stores/{}/orders", store.connection_id)) { "all orders →" }
+            }
+
+            (lookup_payment_card(
+                &format!("/dashboard/stores/{}/orders/lookup", store.connection_id),
+                &store.lookup_txid_value,
+                &store.lookup_message,
+                &store.lookup_found_order_id,
+                |order_id| format!("/dashboard/stores/{}/orders/{}", store.connection_id, order_id),
+            ))
+        } @else {
+            p { "This store doesn't exist, or isn't connected to your account." }
         }
     };
     let title = match &data.store {
         Some(store) => format!("{} - Monokulo", store.display_name),
         None => "Store not found - Monokulo".to_string(),
     };
-    layout(chrome, &title, body)
+    super::Page::new(title, header).render(chrome, body)
 }
 
 #[cfg(test)]

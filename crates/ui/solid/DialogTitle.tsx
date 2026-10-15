@@ -4,16 +4,12 @@
 import type { JSX } from '@solidjs/web';
 
 /**
- * A dialog's title, the same content's `h1` on its page. In the dialog
- * it is an `h2` with a ✕ that closes it.
+ * A dialog's title: an `h2`, with a ✕ that closes the dialog. On the
+ * content's own page, the title is the page's (`PageHeader`).
  */
 export interface DialogTitleProps {
   id: string;
   children: JSX.Element;
-  /**
-   * @default false
-   */
-  in_dialog?: boolean;
   /**
    * Beside the title, before the ✕: a status.
    */
@@ -21,38 +17,23 @@ export interface DialogTitleProps {
 }
 
 /**
- * A dialog's title, the same content's `h1` on its page. In the dialog
- * it is an `h2` with a ✕ that closes it.
+ * A dialog's title: an `h2`, with a ✕ that closes the dialog. On the
+ * content's own page, the title is the page's (`PageHeader`).
  */
 export function DialogTitle(props: DialogTitleProps): JSX.Element {
   return (
-    <>
-      {(props.in_dialog ?? false) ? (
-        <h2 id={props.id} class="dialog-title">
-          {props.children}
-          {props.aside != null ? (
-            <>
-              {props.aside}
-            </>
-          ) : (
-            null
-          )}
-          <button type="button" class="dialog-x" aria-label="Close" data-closes-dialog>
-            ×
-          </button>
-        </h2>
+    <h2 id={props.id} class="dialog-title">
+      {props.children}
+      {props.aside != null ? (
+        <span class="dialog-aside">
+          {props.aside}
+        </span>
       ) : (
-        <h1 id={props.id} class="dialog-title">
-          {props.children}
-          {props.aside != null ? (
-            <>
-              {props.aside}
-            </>
-          ) : (
-            null
-          )}
-        </h1>
+        null
       )}
-    </>
+      <button type="button" class="dialog-x" aria-label="Close" data-closes-dialog>
+        ×
+      </button>
+    </h2>
   );
 }

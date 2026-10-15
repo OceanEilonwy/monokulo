@@ -11,7 +11,7 @@
 use maud::{html, Markup, PreEscaped};
 use telemetry::query::Severity;
 
-use super::{layout_with_head, script, Load, PageChrome};
+use super::{script, Load, PageChrome};
 use crate::db::SavedLogSearch;
 
 /// One line, ready to show.
@@ -148,10 +148,7 @@ const PAGE_STYLE: &str = r#"
 .logs-search .quick label { display: inline-flex; gap: .3em; align-items: center; }
 [data-query-error] mark { background: var(--tint-error); color: inherit; border-bottom: 2px solid currentColor; }
 /* The title bar holds Refresh and Live, which act on the whole page. */
-.logs-head { display: flex; align-items: center; flex-wrap: wrap; gap: .5em; margin: var(--space-lg) 0 var(--space-sm); padding-bottom: .3em; border-bottom: 2px solid var(--line); }
-.mk-breadcrumbs + .logs-head { margin-top: var(--space-xs); }
-.logs-head h1 { flex: 1; margin: 0; padding: 0; border: 0; }
-.logs-head svg { width: 1.1em; height: 1.1em; flex: none; }
+.mk-page-actions svg { width: 1.1em; height: 1.1em; flex: none; }
 #log-live > span { display: inline-flex; }
 #log-live .i-pause, #log-live[aria-pressed="true"] .i-play { display: none; }
 #log-live[aria-pressed="true"] .i-pause { display: inline-flex; }
@@ -350,19 +347,16 @@ fn property_row(name: &str, value: Markup, act: Markup) -> ui::Row {
 /// opened, with a way back to the search it came from.
 pub fn row_page(chrome: &PageChrome, row_view: Option<&RowView>, back_url: &str) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
+    let header = ui::PageHeader::new("Log line").crumbs(super::crumbs(&[("/", "Home"), (&back_url, "Logs")]));
     let body = html! {
-        div class="wrap wrap-wide" {
-            (super::breadcrumbs(&[("/", "Home"), (&back_url, "Logs")]))
-            h1 { "Log line" }
-            @if let Some(r) = row_view {
-                div class="log-rows" { (row(r)) }
-            } @else {
-                p class="muted" { "This line is no longer kept: log retention has deleted it." }
-            }
-            p { a href=(back_url) { "Back to the search" } }
+        @if let Some(r) = row_view {
+            div class="log-rows" { (row(r)) }
+        } @else {
+            p class="muted" { "This line is no longer kept: log retention has deleted it." }
         }
+        p { a href=(back_url) { "Back to the search" } }
     };
-    layout_with_head(chrome, "Log line - Monokulo", extra_head, body)
+    super::Page::new("Log line - Monokulo", header).class("wrap-wide").head(extra_head).render(chrome, body)
 }
 
 /// The "Older" control: a plain link to the next page, which fixi turns
@@ -610,7 +604,7 @@ fn syntax(names: &[String], in_dialog: bool) -> Markup {
 fn syntax_dialog(names: &[String]) -> Markup {
     let content = html! {
         div class="qh-head" {
-            (ui::DialogTitle::new("query-help-title", "Search syntax").in_dialog(true))
+            (ui::DialogTitle::new("query-help-title", "Search syntax"))
         }
         div class="qh-body" { (syntax(names, true)) }
     };
@@ -624,14 +618,11 @@ fn syntax_dialog(names: &[String]) -> Markup {
 /// browser without script.
 pub fn syntax_page(chrome: &PageChrome, names: &[String]) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
+    let header = ui::PageHeader::new("Search syntax").crumbs(super::crumbs(&[("/dashboard/admin/logs", "Logs")]));
     let body = html! {
-        div class="wrap" {
-            (super::breadcrumbs(&[("/dashboard/admin/logs", "Logs")]))
-            h1 { "Search syntax" }
-            div class="qh-page" { (syntax(names, false)) }
-        }
+        div class="qh-page" { (syntax(names, false)) }
     };
-    layout_with_head(chrome, "Search syntax - Monokulo", extra_head, body)
+    super::Page::new("Search syntax - Monokulo", header).head(extra_head).render(chrome, body)
 }
 
 /// Live's stream when the page opens on an older page; the script takes
@@ -640,80 +631,76 @@ const LIVE_NONE: &str = "/dashboard/admin/logs/tail";
 
 pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
+    let header = ui::PageHeader::new("Logs").crumbs(super::crumbs(&[("/", "Home")])).actions(html! {
+        // Submits the search as it stands: its newest lines.
+        (ui::Button::new(html! { (icon(REFRESH_ICON)) span { "Refresh" } })
+            .size(ui::ControlSize::Compact)
+            .kind(ui::ButtonType::Submit)
+            .attr("form", "log-search"))
+        // Streams from `#log-rows`' tail URL (the page's script);
+        // without script, hidden.
+        (ui::Button::new(html! {
+            span class="i-play" { (icon(PLAY_ICON)) }
+            span class="i-pause" { (icon(PAUSE_ICON)) }
+            span class="log-live-label" { "Live" }
+        })
+        .size(ui::ControlSize::Compact)
+        .disabled(vm.tail_url.is_none())
+        .attr("id", "log-live")
+        .attr("aria-pressed", "false")
+        .attr("fx-action", vm.tail_url.as_deref().unwrap_or(LIVE_NONE))
+        .attr("fx-target", "#log-rows")
+        .attr("fx-swap", "afterbegin")
+        .attr("fx-sse-reconnect", "")
+        .attr("data-only", "script"))
+    });
     let body = html! {
-        div class="wrap wrap-wide" {
-            (super::breadcrumbs(&[("/", "Home")]))
-            div class="logs-head" {
-                h1 { "Logs" }
-                // Submits the search as it stands: its newest lines.
-                (ui::Button::new(html! { (icon(REFRESH_ICON)) span { "Refresh" } })
-                    .size(ui::ControlSize::Compact)
-                    .kind(ui::ButtonType::Submit)
-                    .attr("form", "log-search"))
-                // Streams from `#log-rows`' tail URL (the page's script);
-                // without script, hidden.
-                (ui::Button::new(html! {
-                    span class="i-play" { (icon(PLAY_ICON)) }
-                    span class="i-pause" { (icon(PAUSE_ICON)) }
-                    span class="log-live-label" { "Live" }
-                })
-                .size(ui::ControlSize::Compact)
-                .disabled(vm.tail_url.is_none())
-                .attr("id", "log-live")
-                .attr("aria-pressed", "false")
-                .attr("fx-action", vm.tail_url.as_deref().unwrap_or(LIVE_NONE))
-                .attr("fx-target", "#log-rows")
-                .attr("fx-swap", "afterbegin")
-                .attr("fx-sse-reconnect", "")
-                .attr("data-only", "script"))
-            }
-            div class="logs-body" {
-                form id="log-search" class="logs-search" method="get" action="/dashboard/admin/logs"
-                    fx-action="/dashboard/admin/logs" fx-target="#log-results" fx-swap="outerHTML" fx-push-url fx-replace fx-submit-on-change {
-                    div class="q-row" {
-                        label for="log-q" class="sr-only" { "Search" }
-                        (ui::Input::new("q")
-                            .id("log-q")
-                            .kind(ui::InputType::Search)
-                            .value(vm.form.q.clone())
-                            .autocomplete("off")
-                            .placeholder("level >= warn and order.id = 'o_1'")
-                            .attr("spellcheck", "false"))
-                        // A page of its own without script; a dialog with it.
-                        (ui::LinkButton::new(html! {
-                            svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false" {
-                                circle cx="12" cy="12" r="9.5" {}
-                                path d="M9.5 9.2a2.6 2.6 0 0 1 5 .8c0 1.8-2.5 2.2-2.5 3.8" {}
-                                circle cx="12" cy="17.3" r=".6" fill="currentColor" {}
-                            }
-                            span class="q-help-label" { "Syntax" }
-                        }, SYNTAX_PAGE)
-                        .attr("id", "query-help-link")
-                        .attr("aria-haspopup", "dialog")
-                        .attr("data-opens-dialog", "query-help"))
-                        (ui::Button::new("Search").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit))
-                    }
-                    div class="quick" {
-                        (select("level", "Level", LEVELS, &vm.form.level))
-                        (select("service", "Service", SERVICES, &vm.form.service))
-                        (select("range", "Time range", RANGES, &vm.form.range))
-                        label { "From " (ui::Input::new("from").kind(ui::InputType::DatetimeLocal).value(vm.form.from.as_str())) }
-                        label { "To " (ui::Input::new("to").kind(ui::InputType::DatetimeLocal).value(vm.form.to.as_str())) }
-                        (ui::Checkbox::new()
-                            .text("Show the Logs page's own requests")
-                            .name("logs_requests")
-                            .value("show")
-                            .checked(vm.form.logs_requests))
-                    }
+        div class="logs-body" {
+            form id="log-search" class="logs-search" method="get" action="/dashboard/admin/logs"
+                fx-action="/dashboard/admin/logs" fx-target="#log-results" fx-swap="outerHTML" fx-push-url fx-replace fx-submit-on-change {
+                div class="q-row" {
+                    label for="log-q" class="sr-only" { "Search" }
+                    (ui::Input::new("q")
+                        .id("log-q")
+                        .kind(ui::InputType::Search)
+                        .value(vm.form.q.clone())
+                        .autocomplete("off")
+                        .placeholder("level >= warn and order.id = 'o_1'")
+                        .attr("spellcheck", "false"))
+                    // A page of its own without script; a dialog with it.
+                    (ui::LinkButton::new(html! {
+                        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false" {
+                            circle cx="12" cy="12" r="9.5" {}
+                            path d="M9.5 9.2a2.6 2.6 0 0 1 5 .8c0 1.8-2.5 2.2-2.5 3.8" {}
+                            circle cx="12" cy="17.3" r=".6" fill="currentColor" {}
+                        }
+                        span class="q-help-label" { "Syntax" }
+                    }, SYNTAX_PAGE)
+                    .attr("id", "query-help-link")
+                    .attr("aria-haspopup", "dialog")
+                    .attr("data-opens-dialog", "query-help"))
+                    (ui::Button::new("Search").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit))
                 }
-                (results(vm))
+                div class="quick" {
+                    (select("level", "Level", LEVELS, &vm.form.level))
+                    (select("service", "Service", SERVICES, &vm.form.service))
+                    (select("range", "Time range", RANGES, &vm.form.range))
+                    label { "From " (ui::Input::new("from").kind(ui::InputType::DatetimeLocal).value(vm.form.from.as_str())) }
+                    label { "To " (ui::Input::new("to").kind(ui::InputType::DatetimeLocal).value(vm.form.to.as_str())) }
+                    (ui::Checkbox::new()
+                        .text("Show the Logs page's own requests")
+                        .name("logs_requests")
+                        .value("show")
+                        .checked(vm.form.logs_requests))
+                }
             }
-            (syntax_dialog(&vm.attribute_names))
-            (saved_searches(&vm.saved, &vm.query_string, vm.saved_error.as_deref()))
+            (results(vm))
         }
+        (syntax_dialog(&vm.attribute_names))
+        (saved_searches(&vm.saved, &vm.query_string, vm.saved_error.as_deref()))
         (script("logs.js", Load::Now))
     };
-    layout_with_head(chrome, "Logs - Monokulo", extra_head, body)
+    super::Page::new("Logs - Monokulo", header).class("wrap-wide").head(extra_head).render(chrome, body)
 }
 
 /// One event of a POS session timeline.
@@ -764,55 +751,52 @@ pub struct PosTimelineViewModel {
 /// offline or hidden called out.
 pub fn pos_timeline_page(chrome: &PageChrome, vm: &PosTimelineViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) (PreEscaped(TIMELINE_STYLE)) } };
+    let header = ui::PageHeader::new("POS session").crumbs(super::crumbs(&[("/", "Home"), ("/dashboard/admin/logs", "Logs")]));
     let body = html! {
-        div class="wrap wrap-wide" {
-            (super::breadcrumbs(&[("/", "Home"), ("/dashboard/admin/logs", "Logs")]))
-            h1 { "POS session" }
+        (ui::Hint::new(html! {
+            code { (vm.session) }
+            @if let Some((name, href)) = &vm.store { " · " a href=(href) { (name) } }
+            @if let Some(device) = &vm.device { br; span class="muted" { (device) } }
+        }))
+        @for problem in &vm.problems { (status_problem(problem)) }
+        @if vm.entries.is_empty() {
+            p class="muted" { "Nothing was recorded for this session, or its lines have been deleted by log retention." }
+        } @else {
+            dl class="timeline-summary" {
+                div { dt { "Events" } dd { (vm.summary.events) } }
+                div { dt { "Length" } dd { (vm.summary.span) } }
+                div { dt { "Offline" } dd { (vm.summary.offline) } }
+                div { dt { "Hidden" } dd { (vm.summary.hidden) } }
+                div { dt { "Live updates dropped" } dd { (vm.summary.stream_drops) } }
+                div { dt { "Orders created" } dd { (vm.summary.orders_created) } }
+                div { dt { "Warnings and errors" } dd { (vm.summary.problems) } }
+            }
+            @if vm.truncated {
+                (ui::Hint::new(html! { "Only the first events of a very long session are shown. " a href=(vm.logs_url) { "Search them all" } }))
+            }
             (ui::Hint::new(html! {
-                code { (vm.session) }
-                @if let Some((name, href)) = &vm.store { " · " a href=(href) { (name) } }
-                @if let Some(device) = &vm.device { br; span class="muted" { (device) } }
+                "Times are the tablet's clock, in " (vm.zone_label) ". "
+                a href=(vm.logs_url) { "Show these lines in Logs" }
             }))
-            @for problem in &vm.problems { (status_problem(problem)) }
-            @if vm.entries.is_empty() {
-                p class="muted" { "Nothing was recorded for this session, or its lines have been deleted by log retention." }
-            } @else {
-                dl class="timeline-summary" {
-                    div { dt { "Events" } dd { (vm.summary.events) } }
-                    div { dt { "Length" } dd { (vm.summary.span) } }
-                    div { dt { "Offline" } dd { (vm.summary.offline) } }
-                    div { dt { "Hidden" } dd { (vm.summary.hidden) } }
-                    div { dt { "Live updates dropped" } dd { (vm.summary.stream_drops) } }
-                    div { dt { "Orders created" } dd { (vm.summary.orders_created) } }
-                    div { dt { "Warnings and errors" } dd { (vm.summary.problems) } }
-                }
-                @if vm.truncated {
-                    (ui::Hint::new(html! { "Only the first events of a very long session are shown. " a href=(vm.logs_url) { "Search them all" } }))
-                }
-                (ui::Hint::new(html! {
-                    "Times are the tablet's clock, in " (vm.zone_label) ". "
-                    a href=(vm.logs_url) { "Show these lines in Logs" }
-                }))
-                ol class="pos-timeline" {
-                    @for entry in &vm.entries {
-                        @if let Some(gap) = &entry.gap_before { li class="timeline-gap" { (gap) } }
-                        li class=(match entry.severity { Severity::Error => "timeline-event is-error", Severity::Warn => "timeline-event is-warn", _ => "timeline-event" }) {
-                            time datetime=(entry.time_iso) { (entry.time_display) }
-                            span class="since muted" { (entry.since_previous) }
-                            span class="kind" { (entry.kind) }
-                            span class="about" {
-                                @if let Some((label, href)) = &entry.order { a href=(href) { (label) } " " }
-                                @if let Some(period) = &entry.period { strong class="period" { (period) } " " }
-                                @for (name, value) in &entry.detail { span class="kv" { span class="muted" { (name) "=" } (value) } " " }
-                                @if let Some(late) = &entry.late { span class="late muted" { "(" (late) ")" } }
-                            }
+            ol class="pos-timeline" {
+                @for entry in &vm.entries {
+                    @if let Some(gap) = &entry.gap_before { li class="timeline-gap" { (gap) } }
+                    li class=(match entry.severity { Severity::Error => "timeline-event is-error", Severity::Warn => "timeline-event is-warn", _ => "timeline-event" }) {
+                        time datetime=(entry.time_iso) { (entry.time_display) }
+                        span class="since muted" { (entry.since_previous) }
+                        span class="kind" { (entry.kind) }
+                        span class="about" {
+                            @if let Some((label, href)) = &entry.order { a href=(href) { (label) } " " }
+                            @if let Some(period) = &entry.period { strong class="period" { (period) } " " }
+                            @for (name, value) in &entry.detail { span class="kv" { span class="muted" { (name) "=" } (value) } " " }
+                            @if let Some(late) = &entry.late { span class="late muted" { "(" (late) ")" } }
                         }
                     }
                 }
             }
         }
     };
-    layout_with_head(chrome, "POS session - Monokulo", extra_head, body)
+    super::Page::new("POS session - Monokulo", header).class("wrap-wide").head(extra_head).render(chrome, body)
 }
 
 const TIMELINE_STYLE: &str = r#"
@@ -859,42 +843,40 @@ pub struct TraceViewModel {
 /// lines in order.
 pub fn trace_page(chrome: &PageChrome, vm: &TraceViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
+    let header = ui::PageHeader::new(html! { "Trace " code { (vm.trace_id) } })
+        .crumbs(super::crumbs(&[("/", "Home"), ("/dashboard/admin/logs", "Logs")]));
     let body = html! {
-        div class="wrap wrap-wide" {
-            (super::breadcrumbs(&[("/", "Home"), ("/dashboard/admin/logs", "Logs")]))
-            h1 { "Trace " code { (vm.trace_id) } }
-            @for problem in &vm.problems { (status_problem(problem)) }
-            @if vm.spans.is_empty() {
-                p class="muted" { "No spans kept for this trace." }
-            } @else {
-                div class="trace-waterfall" role="list" {
-                    @for span in &vm.spans {
-                        details class=(if span.error { "trace-span-details status-error" } else { "trace-span-details" }) role="listitem" {
-                            summary class=(if span.error { "trace-span status-error" } else { "trace-span" }) {
-                                span class="name" style=(format!("padding-left:{}em", span.depth)) {
-                                    (span.name) " " span class="muted" { (span.service) }
-                                }
-                                span class="bar-track" {
-                                    span class="bar" style=(format!("left:{:.2}%;width:{:.2}%", span.left_pct, span.width_pct)) {}
-                                }
-                                span { (span.duration) }
+        @for problem in &vm.problems { (status_problem(problem)) }
+        @if vm.spans.is_empty() {
+            p class="muted" { "No spans kept for this trace." }
+        } @else {
+            div class="trace-waterfall" role="list" {
+                @for span in &vm.spans {
+                    details class=(if span.error { "trace-span-details status-error" } else { "trace-span-details" }) role="listitem" {
+                        summary class=(if span.error { "trace-span status-error" } else { "trace-span" }) {
+                            span class="name" style=(format!("padding-left:{}em", span.depth)) {
+                                (span.name) " " span class="muted" { (span.service) }
                             }
-                            (ui::Table::new(ui::Slot::many(span.attributes.iter().map(|(name, value)| {
-                                ui::Slot::from(ui::Row::new(ui::Slot::many([
-                                    ui::Cell::new(name.as_str()).header(true).into(),
-                                    ui::Cell::new(html! { code { (value) } }).into(),
-                                ])))
-                            })))
-                            .look(ui::TableLook::Facts)
-                            .scroll(false))
+                            span class="bar-track" {
+                                span class="bar" style=(format!("left:{:.2}%;width:{:.2}%", span.left_pct, span.width_pct)) {}
+                            }
+                            span { (span.duration) }
                         }
+                        (ui::Table::new(ui::Slot::many(span.attributes.iter().map(|(name, value)| {
+                            ui::Slot::from(ui::Row::new(ui::Slot::many([
+                                ui::Cell::new(name.as_str()).header(true).into(),
+                                ui::Cell::new(html! { code { (value) } }).into(),
+                            ])))
+                        })))
+                        .look(ui::TableLook::Facts)
+                        .scroll(false))
                     }
                 }
             }
-            h2 { "Lines" }
-            (ui::Hint::new(html! { a href=(vm.logs_url) { "Search these lines" } }))
-            div class="log-rows" { @for r in &vm.rows { (row(r)) } }
         }
+        h2 { "Lines" }
+        (ui::Hint::new(html! { a href=(vm.logs_url) { "Search these lines" } }))
+        div class="log-rows" { @for r in &vm.rows { (row(r)) } }
     };
-    layout_with_head(chrome, "Trace - Monokulo", extra_head, body)
+    super::Page::new("Trace - Monokulo", header).class("wrap-wide").head(extra_head).render(chrome, body)
 }

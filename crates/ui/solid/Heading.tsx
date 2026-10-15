@@ -5,8 +5,7 @@ import type { JSX } from '@solidjs/web';
 import type { HeadingLevel } from './types';
 
 /**
- * A page's or a section's heading. A page's (`H1`) can have actions at
- * its right: a Reload, a link to settings.
+ * A section's or a part's heading, under the page's `PageHeader`.
  */
 export interface HeadingProps {
   children: JSX.Element;
@@ -14,75 +13,29 @@ export interface HeadingProps {
    * @default "h2"
    */
   level?: HeadingLevel;
-  /**
-   * Beside a page heading, at the right.
-   */
-  actions?: JSX.Element;
   id?: string;
 }
 
 /**
- * A page's or a section's heading. A page's (`H1`) can have actions at
- * its right: a Reload, a link to settings.
+ * A section's or a part's heading, under the page's `PageHeader`.
  */
 export function Heading(props: HeadingProps): JSX.Element {
   return (
     <>
-      {props.actions != null ? (
-        <div class="page-heading">
-          {(props.level ?? "h2") === "h1" ? (
-            <h1 id={props.id}>
-              {props.children}
-            </h1>
-          ) : (
-            <>
-              {(props.level ?? "h2") === "h2" ? (
-                <h2 id={props.id}>
-                  {props.children}
-                </h2>
-              ) : (
-                <>
-                  {(props.level ?? "h2") === "h3" ? (
-                    <h3 id={props.id}>
-                      {props.children}
-                    </h3>
-                  ) : (
-                    <h4 id={props.id}>
-                      {props.children}
-                    </h4>
-                  )}
-                </>
-              )}
-            </>
-          )}
-          {props.actions}
-        </div>
+      {(props.level ?? "h2") === "h2" ? (
+        <h2 id={props.id}>
+          {props.children}
+        </h2>
       ) : (
         <>
-          {(props.level ?? "h2") === "h1" ? (
-            <h1 id={props.id}>
+          {(props.level ?? "h2") === "h3" ? (
+            <h3 id={props.id}>
               {props.children}
-            </h1>
+            </h3>
           ) : (
-            <>
-              {(props.level ?? "h2") === "h2" ? (
-                <h2 id={props.id}>
-                  {props.children}
-                </h2>
-              ) : (
-                <>
-                  {(props.level ?? "h2") === "h3" ? (
-                    <h3 id={props.id}>
-                      {props.children}
-                    </h3>
-                  ) : (
-                    <h4 id={props.id}>
-                      {props.children}
-                    </h4>
-                  )}
-                </>
-              )}
-            </>
+            <h4 id={props.id}>
+              {props.children}
+            </h4>
           )}
         </>
       )}

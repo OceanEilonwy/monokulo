@@ -1075,10 +1075,28 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
     assert!(
         html.contains(r#"<li aria-current="step"><span>Store<small>In progress</small></span>"#)
     );
+    // XMR: no language names a region, and this instance has no exchange
+    // rates, so an Australian browser gets XMR too (`new_store_default`).
+    assert!(html.contains(r#"<option value="XMR" selected"#), "{html}");
+    let australian = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/setup")
+                .header("cookie", &cookie)
+                .header("accept-language", "en-AU,en;q=0.9")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let australian = body_text(australian).await;
+    assert!(australian.contains(r#"<option value="XMR" selected"#), "{australian}");
 
     let store_step = [
         ("store_name", "  Bakery "),
         ("store_site", "https://Bakery.example/checkout?x=1"),
+        ("base_currency", "AUD"),
     ];
     let response = router
         .clone()
@@ -1089,13 +1107,12 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
     let wallet_step = response.headers()["location"].to_str().unwrap().to_owned();
     assert_eq!(
         wallet_step,
-        "/setup/wallet?store_name=Bakery&store_site=bakery.example"
+        "/setup/wallet?store_name=Bakery&store_site=bakery.example&base_currency=AUD"
     );
 
     let html = body_text(cookie_get(&router, &wallet_step, &cookie).await).await;
     assert!(
-        html.contains("Where should Bakery&#39;s money go?")
-            || html.contains("Where should Bakery's money go?"),
+        html.contains("Where should the money for Bakery go?"),
         "{html}"
     );
     assert!(
@@ -1115,7 +1132,7 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
     let keys = body_text(
         cookie_get(
             &router,
-            "/setup/wallet/keys?store_name=Bakery&store_site=bakery.example&name=Bakery%20takings&network=mainnet",
+            "/setup/wallet/keys?store_name=Bakery&store_site=bakery.example&base_currency=AUD&name=Bakery%20takings&network=mainnet",
             &cookie,
         )
         .await,
@@ -1123,13 +1140,15 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
     .await;
     assert!(keys.contains("<h1>Bring your own wallet</h1>"), "{keys}");
     assert!(
-        keys.contains(r#"<input type="hidden" name="store_site" value="bakery.example">"#),
+        keys.contains(r#"<input type="hidden" name="store_site" value="bakery.example">"#)
+            && keys.contains(r#"<input type="hidden" name="base_currency" value="AUD">"#),
         "{keys}"
     );
 
     let mut fields = vec![
         ("store_name", "Bakery"),
         ("store_site", "bakery.example"),
+        ("base_currency", "AUD"),
         ("name", "Bakery takings"),
         ("network", "mainnet"),
         ("view_key_hex", TEST_VIEW_KEY_HEX),
@@ -1150,7 +1169,7 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
         .unwrap();
     assert_eq!(row.name, "Bakery");
     assert_eq!(row.site, "bakery.example");
-    assert_eq!(row.base_currency, "XMR", "the default base currency");
+    assert_eq!(row.base_currency, "AUD", "the currency chosen on the store step");
     let wallet = state
         .db
         .lock()
@@ -1463,11 +1482,11 @@ async fn a_store_with_no_site_has_a_name_only() {
     assert!(!done.contains("Not taking payments yet"), "{done}");
     let dashboard = body_text(cookie_get(&router, "/", &cookie).await).await;
     assert!(
-        dashboard.contains(r#"<td>Saturday market stall</td>"#),
+        dashboard.contains(r#"<td class="card-title">Saturday market stall</td>"#),
         "{dashboard}"
     );
     assert!(
-        dashboard.contains(r#"<td class="col-optional"></td>"#),
+        dashboard.contains(r#"<td class="card-meta"></td>"#),
         "an empty Site: {dashboard}"
     );
 }
@@ -2117,7 +2136,7 @@ async fn the_owner_of_a_store_on_a_network_without_a_node_is_alerted_on_every_pa
     );
 
     // Rendered under the nav on normal pages, never in the bare POS layout.
-    let page = crate::views::layout(&chrome, "t", maud::html! { p { "body" } }).into_string();
+    let page = crate::views::Page::new("t", ui::PageHeader::new("t")).render(&chrome, maud::html! { p { "body" } }).into_string();
     assert!(
         page.contains(r#"<p class="error" role="alert">shop.example.com"#),
         "{page}"
@@ -2223,7 +2242,7 @@ async fn browser_reports_are_accepted_up_to_a_small_size_and_only_the_sites_own_
     assert_eq!(script.status(), StatusCode::OK);
 
     let chrome = crate::views::PageChrome::from_user(None, "/");
-    let page = crate::views::layout(&chrome, "t", maud::html! {}).into_string();
+    let page = crate::views::Page::new("t", ui::PageHeader::new("t")).render(&chrome, maud::html! {}).into_string();
     assert!(
         page.contains(&format!(r#"src="{}""#, crate::assets::url("telemetry.js"))),
         "{page}"
@@ -2240,7 +2259,7 @@ async fn store_pages_load_browser_reports_only_once_the_store_opted_in_but_admin
     let (state, owner, _) = state_with_owner_and_store("pk_shop");
     let with_script = async |path: &str| {
         let chrome = super::page_chrome(&state, Some(&owner), path).await;
-        crate::views::layout(&chrome, "t", maud::html! {})
+        crate::views::Page::new("t", ui::PageHeader::new("t")).render(&chrome, maud::html! {})
             .into_string()
             .contains(&crate::assets::url("telemetry.js"))
     };

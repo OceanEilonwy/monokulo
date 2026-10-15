@@ -315,44 +315,87 @@ pub(super) fn status_dot_examples() -> Vec<(&'static str, StatusDot)> {
     ]
 }
 
-/// One link of [`Breadcrumbs`].
+/// One link of a [`PageHeader`]'s breadcrumbs.
 #[derive(Clone, Debug, crate::UiRecord)]
 pub struct Crumb {
     pub href: String,
     pub label: String,
 }
 
+impl Crumb {
+    pub fn new(href: impl Into<String>, label: impl Into<String>) -> Self {
+        Crumb { href: href.into(), label: label.into() }
+    }
+}
+
 component! {
-    /// Where a page sits, under the site's bar: links to the pages above
-    /// it, the nearest last ("Home › Logs"). One link is a back link,
-    /// with an arrow. Real links: no history needed.
-    pub struct Breadcrumbs {
-        links: Vec<Crumb>,
-        #[default(String::from("Breadcrumb"))]
-        label: String,
+    /// The top of every page under the site's bar, always in this order:
+    /// where the page sits (links to the pages above it, the nearest last,
+    /// "Home › Logs"; one link alone is a back link, with an arrow), its
+    /// title, then how far through a flow it is. The title is required, so
+    /// no page goes without one. Beside the title: a status or a badge
+    /// (`aside`), and at its right the page's own actions.
+    pub struct PageHeader {
+        /// The page's `h1`.
+        title: Slot,
+        #[default(Vec::new())]
+        crumbs: Vec<Crumb>,
+        /// Beside the title: a badge, a status, a help tip.
+        aside: Option<Slot>,
+        /// At the title's right: Reload, a network picker.
+        actions: Option<Slot>,
+        /// Under the title: a flow's progress (`WizardSteps`).
+        progress: Option<Slot>,
+        title_id: Option<String>,
     }
     html {
-        nav class="mk-breadcrumbs" aria-label=(label) {
-            @for link in links {
-                a href=(link.href) title=(link.label) { (link.label) }
+        header class="mk-page-header" {
+            @if crumbs {
+                nav class="mk-breadcrumbs" aria-label="Breadcrumb" {
+                    @for link in crumbs {
+                        a href=(link.href) title=(link.label) { (link.label) }
+                    }
+                }
             }
+            div class="mk-page-title" {
+                h1 id=[title_id] { (title) }
+                @if let Some(aside) = aside { (aside) }
+                @if let Some(actions) = actions { div class="mk-page-actions" { (actions) } }
+            }
+            @if let Some(progress) = progress { (progress) }
         }
     }
 }
 
-pub(super) fn breadcrumbs_examples() -> Vec<(&'static str, Breadcrumbs)> {
-    let crumb = |href: &str, label: &str| Crumb {
-        href: href.into(),
-        label: label.into(),
+pub(super) fn page_header_examples() -> Vec<(&'static str, PageHeader)> {
+    let here = |label: &str| Crumb::new("#component-page-header", label);
+    let progress = |state: crate::WizardState| {
+        let step = |label: &str, detail: &str, done, state| crate::WizardStep {
+            label: label.into(),
+            detail: detail.into(),
+            done,
+            tasks: 1,
+            state,
+        };
+        crate::WizardSteps::new(
+            "Setup progress",
+            vec![
+                step("Store", "In progress", 0, state),
+                step("Wallet", "Next", 0, crate::WizardState::Next),
+                step("Done", "Next", 0, crate::WizardState::Next),
+            ],
+        )
     };
     vec![
-        ("Back to a page", Breadcrumbs::new(vec![crumb("#component-breadcrumbs", "Home")])),
+        ("A title alone", PageHeader::new("Home")),
+        ("Back to a page", PageHeader::new("Admin settings").crumbs(vec![here("Home")])),
         (
-            "Two levels up",
-            Breadcrumbs::new(vec![
-                crumb("#component-breadcrumbs", "Corner store with a long name to see it shortened"),
-                crumb("#component-breadcrumbs", "Orders"),
-            ]),
+            "Two levels up, with an action",
+            PageHeader::new("Order 4f2a")
+                .crumbs(vec![here("Corner store with a long name to see it shortened"), here("Orders")])
+                .aside(crate::Tag::new("Paid").tone(crate::TagTone::Ok))
+                .actions(crate::LinkButton::new("Reload", "#component-page-header").size(crate::ControlSize::Compact)),
         ),
+        ("In a flow", PageHeader::new("Set up a store").progress(progress(crate::WizardState::Current))),
     ]
 }

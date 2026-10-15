@@ -700,7 +700,7 @@ test('merchant moves between the keypad, the stack and the order list', async ({
   await expect(page.locator('.pos-empty')).toHaveText('No finished orders yet.');
   await page.getByRole('button', { name: /Active/ }).click();
   await expect(page.locator('.mk-card').first()).toBeVisible();
-  await page.getByRole('button', { name: 'Back to POS' }).click();
+  await page.getByRole('button', { name: '‹ Back to the till' }).click();
   await expect(page.locator('.pos-keypad')).toBeVisible();
 });
 

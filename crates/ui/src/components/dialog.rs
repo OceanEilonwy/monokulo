@@ -65,7 +65,7 @@ component! {
 pub(super) fn dialog_examples() -> Vec<(&'static str, Dialog)> {
     let body = |id: &str| {
         Slot::many([
-            DialogTitle::new(format!("{id}-title"), "Retire this wallet?").in_dialog(true).into(),
+            DialogTitle::new(format!("{id}-title"), "Retire this wallet?").into(),
             Slot::from(crate::Hint::new("Takes it out of every list and deletes its keys from Monokulo.")),
             DialogActions::new(Slot::many([
                 crate::Button::new("Cancel").attr("data-closes-dialog", "").into(),
@@ -81,36 +81,31 @@ pub(super) fn dialog_examples() -> Vec<(&'static str, Dialog)> {
 }
 
 component! {
-    /// A dialog's title, the same content's `h1` on its page. In the dialog
-    /// it is an `h2` with a ✕ that closes it.
+    /// A dialog's title: an `h2`, with a ✕ that closes the dialog. On the
+    /// content's own page, the title is the page's (`PageHeader`).
     pub struct DialogTitle {
         id: String,
         children: Slot,
-        #[default(false)]
-        in_dialog: bool,
         /// Beside the title, before the ✕: a status.
         aside: Option<Slot>,
     }
     html {
-        @if in_dialog {
-            h2 id=(id) class="dialog-title" {
-                (children)
-                @if let Some(aside) = aside { (aside) }
-                button type="button" class="dialog-x" aria-label="Close" data-closes-dialog { "×" }
-            }
-        } @else {
-            h1 id=(id) class="dialog-title" {
-                (children)
-                @if let Some(aside) = aside { (aside) }
-            }
+        h2 id=(id) class="dialog-title" {
+            (children)
+            @if let Some(aside) = aside { span class="dialog-aside" { (aside) } }
+            button type="button" class="dialog-x" aria-label="Close" data-closes-dialog { "×" }
         }
     }
 }
 
 pub(super) fn dialog_title_examples() -> Vec<(&'static str, DialogTitle)> {
     vec![
-        ("In a dialog", DialogTitle::new("book-title-dialog", "Delete this webhook?").in_dialog(true)),
-        ("On its page", DialogTitle::new("book-title-page", "Delete this webhook?")),
+        ("A question", DialogTitle::new("book-title-dialog", "Delete this webhook?")),
+        (
+            "With a status",
+            DialogTitle::new("book-title-status", "Delivery of order.paid")
+                .aside(crate::Tag::new("retrying").tone(crate::TagTone::Slow)),
+        ),
     ]
 }
 
@@ -136,7 +131,7 @@ pub(super) fn dialog_actions_examples() -> Vec<(&'static str, DialogActions)> {
 
 component! {
     /// A dialog's content as a page of its own: where its opener goes
-    /// without JavaScript.
+    /// without JavaScript. The page's header holds its title.
     pub struct DialogPage {
         children: Slot,
         #[default(DialogSize::Confirm)]
@@ -153,7 +148,6 @@ pub(super) fn dialog_page_examples() -> Vec<(&'static str, DialogPage)> {
     vec![(
         "A question",
         DialogPage::new(Slot::many([
-            DialogTitle::new("book-page-title", "Retire this wallet?").into(),
             Slot::from(crate::Hint::new("Takes it out of every list and deletes its keys from Monokulo.")),
             DialogActions::new(Slot::many([
                 crate::LinkButton::new("Cancel", "#component-dialog-page").into(),

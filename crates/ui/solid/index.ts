@@ -53,7 +53,7 @@ export * from './Setting';
 export * from './SaveBar';
 export * from './Toast';
 export * from './SiteNav';
-export * from './Breadcrumbs';
+export * from './PageHeader';
 export * from './Menu';
 export * from './MenuItem';
 export * from './ThemeToggle';

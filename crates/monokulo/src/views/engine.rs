@@ -7,7 +7,7 @@
 
 use maud::{html, Markup, PreEscaped};
 
-use super::{layout_with_head, reload_button, script, Load, PageChrome};
+use super::{reload_button, script, Load, PageChrome};
 use crate::engine_view::present::{
     Bar, ChainView, Lane, MarkView, Panel, Presented, RibbonMark, RoundView, Shape,
 };
@@ -49,11 +49,8 @@ pub struct EnginePage {
 
 const ENGINE_STYLE: &str = r#"
 .engine-page [hidden] { display: none !important; }
-.wrap.engine-page { max-width: 1880px; display: grid; gap: var(--space-sm); padding-bottom: var(--space-xl); }
-.engine-page h1 { border: 0; margin: 0; padding: 0; font-size: 1.3rem; }
+.wrap.engine-page { max-width: 1880px; padding-bottom: var(--space-xl); }
 .engine-page h2 { border: 0; margin: 0; padding: 0; font-size: 0.85rem; font-weight: 800; }
-.engine-titlebar { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); }
-.titlebar-spacer { flex: 1; }
 .engine-tabs { display: inline-flex; height: 26px; border: 1px solid var(--btn-border); border-radius: var(--radius-sm); overflow: hidden; }
 .engine-tabs a, .engine-tabs span { display: flex; align-items: center; padding: 0 11px; font-weight: 700; font-size: 0.8rem; color: var(--btn-ink); background: var(--btn-bg); text-decoration: none; }
 .engine-tabs > * + * { border-left: 1px solid var(--btn-border); }
@@ -313,7 +310,7 @@ const ENGINE_STYLE: &str = r#"
 .token.payment { border-radius: 50%; background: var(--accent); }
 .token.token-stores { background: var(--viz-tier-blocks); border-radius: 99px; width: 18px; }
 .ghostcell { position: absolute; z-index: 15; pointer-events: none; }
-#engine-stage { position: relative; }
+#engine-stage { position: relative; display: grid; gap: var(--space-sm); }
 @media (max-width: 1150px) {
   .engine-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .engine-summary > div:nth-child(3n+1) { border-left: 0; }
@@ -370,37 +367,35 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
         style { (PreEscaped(ENGINE_STYLE)) }
         (script("engine-view.js", Load::Defer))
     };
-    let body = html! {
-        div id="engine-stage" {
-        main class="wrap engine-page" data-network=(page.network) {
-            (super::breadcrumbs(&[("/status", "Status")]))
-            div class="engine-titlebar" {
-                h1 { "Engine" }
-                (help())
-                span class="titlebar-spacer" {}
-                // With JavaScript, picking a network goes there; without,
-                // Go does.
-                form class="engine-network" method="get" action="/status/engine" {
-                    label for="engine-network" class="visually-hidden" { "Network" }
-                    (Select::new(
-                        "network",
-                        NETWORKS
-                            .iter()
-                            .map(|network| {
-                                let configured = page.networks.iter().any(|n| n == network);
-                                let choice = Choice::new(network, network_name(network))
-                                    .selected(*network == page.network)
-                                    .disabled(!configured);
-                                if configured { choice } else { choice.note("no node configured") }
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                    .id("engine-network")
-                    .compact(true))
-                    (Button::new("Go").kind(ButtonType::Submit).attr("data-only", "no-script"))
-                }
-                (reload_button(&format!("/status/engine?network={}", page.network)))
+    let header = ui::PageHeader::new("Engine")
+        .crumbs(super::crumbs(&[("/status", "Status")]))
+        .aside(help())
+        .actions(html! {
+            // With JavaScript, picking a network goes there; without, Go
+            // does.
+            form class="engine-network" method="get" action="/status/engine" {
+                label for="engine-network" class="visually-hidden" { "Network" }
+                (Select::new(
+                    "network",
+                    NETWORKS
+                        .iter()
+                        .map(|network| {
+                            let configured = page.networks.iter().any(|n| n == network);
+                            let choice = Choice::new(network, network_name(network))
+                                .selected(*network == page.network)
+                                .disabled(!configured);
+                            if configured { choice } else { choice.note("no node configured") }
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .id("engine-network")
+                .compact(true))
+                (Button::new("Go").kind(ButtonType::Submit).attr("data-only", "no-script"))
             }
+            (reload_button(&format!("/status/engine?network={}", page.network)))
+        });
+    let body = html! {
+        div id="engine-stage" data-network=(page.network) {
             @if let Some(error) = &page.error {
                 (Alert::new(format!("The engine's activity could not be read: {error}"), Tone::Error))
             }
@@ -419,9 +414,8 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
             }
             (events(&page.marks))
         }
-        }
     };
-    layout_with_head(chrome, "Engine - Monokulo", head, body)
+    super::Page::new("Engine - Monokulo", header).class("engine-page").head(head).render(chrome, body)
 }
 
 /// The "Machine and links" strip: small multiples of the machine's CPU and

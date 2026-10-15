@@ -8,7 +8,7 @@
 
 use maud::{html, Markup};
 
-use super::{layout, PageChrome};
+use super::PageChrome;
 use ui::{WizardSteps, WizardStep as Segment, WizardState};
 
 /// The three steps of setup.
@@ -157,6 +157,9 @@ pub struct StoreStepViewModel {
     /// here: its shop's host, which is the site and can't be changed, and
     /// its fields, carried through.
     pub plugin_host: Option<String>,
+    /// What the store prices in: the answer, or a guess from the browser.
+    pub currency: String,
+    pub currencies: Vec<crate::currencies::CurrencyOptionView>,
     pub carried: Vec<(&'static str, String)>,
     pub name_error: Option<String>,
     pub site_error: Option<SiteError>,
@@ -166,70 +169,78 @@ pub struct StoreStepViewModel {
 /// Any store takes payments at the till; a website lets it show the
 /// checkout on its pages and connect the WooCommerce plugin too.
 pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
+    let title = if data.plugin_host.is_some() { "Connect your WooCommerce shop" } else { "Set up a store" };
+    let header = ui::PageHeader::new(title).progress(steps(Step::Store, None));
     let body = html! {
-        div class="wrap setup-store" {
-            (steps(Step::Store, None))
-            @if let Some(host) = &data.plugin_host {
-                h1 { "Connect your WooCommerce shop" }
-                p { "The WooCommerce plugin on " strong { (host) } " asked to connect to your account. Name the store, then choose where its money goes." }
-            } @else {
-                h1 { "Set up a store" }
+        @if let Some(host) = &data.plugin_host {
+            p { "The WooCommerce plugin on " strong { (host) } " asked to connect to your account. Name the store, then choose where its money goes." }
+        }
+        form method="post" action="/setup" class="store-form" novalidate {
+            @for (name, value) in &data.carried {
+                input type="hidden" name=(name) value=(value);
             }
-            form method="post" action="/setup" class="store-form" novalidate {
-                @for (name, value) in &data.carried {
-                    input type="hidden" name=(name) value=(value);
-                }
-                div class="two-fields" {
-                    div class="setting-field" {
-                        div class="setting-label-row" { label class="setting-label" for="store-name" { "Store name" } }
-                        (field_help("Shown on your dashboard, the till and the checkout."))
-                        (ui::Input::new("store_name")
-                            .id("store-name")
-                            .value(data.name.clone())
-                            .autocomplete("organization")
-                            .required(true)
-                            .invalid(data.name_error.is_some())
-                            .maybe_described_by(data.name_error.as_ref().map(|_| "store-name-error".to_string()))
-                            .attr("maxlength", crate::stores::MAX_NAME_LEN.to_string()))
-                        @if let Some(error) = &data.name_error {
-                            (ui::FieldNote::new(html! { "✕ " (error) }).tone(ui::NoteTone::Problem).id("store-name-error"))
-                        }
-                    }
-                    div class="setting-field site-field" {
-                        div class="setting-label-row" {
-                            label class="setting-label" for="store-site" { "Your website" }
-                            @if data.plugin_host.is_none() { (ui::Hint::new("(optional)").inline(true)) }
-                        }
-                        (field_help("Needed for the checkout on your pages or for the WooCommerce plugin. Leave it empty to take payments at the till only."))
-                        (ui::Input::new("store_site")
-                            .id("store-site")
-                            .value(data.site.clone())
-                            .placeholder("shop.example")
-                            .autocomplete("url")
-                            .readonly(data.plugin_host.is_some())
-                            .invalid(data.site_error.is_some())
-                            .maybe_described_by(data.site_error.as_ref().map(|_| "store-site-error".to_string()))
-                            .attr("inputmode", "url"))
-                        @match &data.site_error {
-                            Some(SiteError::Invalid(why)) => (ui::FieldNote::new(html! { "✕ " (why) }).tone(ui::NoteTone::Problem).id("store-site-error")),
-                            Some(SiteError::Yours { id, name, site }) => (ui::FieldNote::new(html! { "✕ Your store " a href=(format!("/dashboard/stores/{id}")) { (name) } " already uses " (site) ". Open it, or use a different site." }).tone(ui::NoteTone::Problem).id("store-site-error")),
-                            Some(SiteError::Someone { site }) => (ui::FieldNote::new(html! { "✕ " (site) " is already connected to Monokulo here. If it's yours, ask the person who connected it." }).tone(ui::NoteTone::Problem).id("store-site-error")),
-                            None => {}
-                        }
+            div class="two-fields" {
+                div class="setting-field" {
+                    div class="setting-label-row" { label class="setting-label" for="store-name" { "Store name" } }
+                    (field_help("Shown on your dashboard, the till and the checkout."))
+                    (ui::Input::new("store_name")
+                        .id("store-name")
+                        .value(data.name.clone())
+                        .autocomplete("organization")
+                        .required(true)
+                        .invalid(data.name_error.is_some())
+                        .maybe_described_by(data.name_error.as_ref().map(|_| "store-name-error".to_string()))
+                        .attr("maxlength", crate::stores::MAX_NAME_LEN.to_string()))
+                    @if let Some(error) = &data.name_error {
+                        (ui::FieldNote::new(html! { "✕ " (error) }).tone(ui::NoteTone::Problem).id("store-name-error"))
                     }
                 }
-                (ui::Hint::new(
-                    "Checkouts on any page of the site work. Subdomains (pay.shop.example) work too, once you verify the domain in the store's settings."
-                ))
-                div class="step-foot" {
-                    (ui::LinkButton::new("Cancel", "/"))
-                    span class="spacer" {}
-                    (ui::Button::new("Next").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit))
+                div class="setting-field" {
+                    div class="setting-label-row" { label class="setting-label" for="store-currency" { "Prices in" } }
+                    (field_help("What the till and your orders charge in. You can change it later in the store's settings."))
+                    (ui::Select::new(
+                        "base_currency",
+                        data.currencies
+                            .iter()
+                            .map(|c| ui::Choice::new(&c.code, &c.description).detail(&c.code).selected(c.code == data.currency))
+                            .collect::<Vec<_>>(),
+                    )
+                    .id("store-currency"))
                 }
+            }
+            div class="setting-field site-field" {
+                div class="setting-label-row" {
+                    label class="setting-label" for="store-site" { "Your website" }
+                    @if data.plugin_host.is_none() { (ui::Hint::new("(optional)").inline(true)) }
+                }
+                (field_help("Needed for the checkout on your pages or for the WooCommerce plugin. Leave it empty to take payments at the till only."))
+                (ui::Input::new("store_site")
+                    .id("store-site")
+                    .value(data.site.clone())
+                    .placeholder("shop.example")
+                    .autocomplete("url")
+                    .readonly(data.plugin_host.is_some())
+                    .invalid(data.site_error.is_some())
+                    .maybe_described_by(data.site_error.as_ref().map(|_| "store-site-error".to_string()))
+                    .attr("inputmode", "url"))
+                @match &data.site_error {
+                    Some(SiteError::Invalid(why)) => (ui::FieldNote::new(html! { "✕ " (why) }).tone(ui::NoteTone::Problem).id("store-site-error")),
+                    Some(SiteError::Yours { id, name, site }) => (ui::FieldNote::new(html! { "✕ Your store " a href=(format!("/dashboard/stores/{id}")) { (name) } " already uses " (site) ". Open it, or use a different site." }).tone(ui::NoteTone::Problem).id("store-site-error")),
+                    Some(SiteError::Someone { site }) => (ui::FieldNote::new(html! { "✕ " (site) " is already connected to Monokulo here. If it's yours, ask the person who connected it." }).tone(ui::NoteTone::Problem).id("store-site-error")),
+                    None => {}
+                }
+            }
+            (ui::Hint::new(
+                "Checkouts on any page of the site work. Subdomains (pay.shop.example) work too, once you verify the domain in the store's settings."
+            ))
+            div class="step-foot" {
+                (ui::LinkButton::new("Cancel", "/"))
+                span class="spacer" {}
+                (ui::Button::new("Next").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit))
             }
         }
     };
-    layout(chrome, "Set up a store - Monokulo", body)
+    super::Page::new("Set up a store - Monokulo", header).class("setup-store").render(chrome, body)
 }
 
 /// What a field on the store step is for, between its label and its input.
@@ -305,84 +316,80 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
     let primary = |on: bool| on.then_some(ui::ButtonVariant::Primary);
     let till_primary = data.plugin.is_none() && !has_site;
     let guide_primary = data.plugin.is_none() && has_site;
+    let title = if data.plugin.is_some() { "is connected" } else { "is set up" };
+    let header = ui::PageHeader::new(html! { (data.name) " " (title) }).progress(steps(Step::Done, None));
     let body = html! {
-        div class="wrap setup-done" {
-            (steps(Step::Done, None))
-            @if data.plugin.is_some() {
-                h1 { (data.name) " is connected" }
-            } @else {
-                h1 { (data.name) " is set up" }
+        p class="store-summary" {
+            @if has_site && !data.has_orders {
+                (ui::Tag::new("Not taking payments yet").tone(ui::TagTone::Unknown).attr("data-not-yet", "")) " "
             }
-            p class="store-summary" {
-                @if has_site && !data.has_orders {
-                    (ui::Tag::new("Not taking payments yet").tone(ui::TagTone::Unknown).attr("data-not-yet", "")) " "
-                }
-                (summary(data))
-            }
-            @if data.skipped_backup { (skipped_warning()) }
-            ol class="todo" {
-                li {
-                    span class="num" { "1" }
-                    p {
-                        strong { "Add the checkout to your site" }
-                        @if has_site {
-                            (ui::Hint::new(format!("A script tag and a button on {}, or a call from your server. The guide shows both, and how to verify the domain.", data.site)).inline(true))
-                        } @else {
-                            (ui::Hint::new("It runs on your website: add your site in the store's settings first.").inline(true))
-                        }
-                    }
+            (summary(data))
+        }
+        @if data.skipped_backup { (skipped_warning()) }
+        ol class="todo" {
+            li {
+                span class="num" { "1" }
+                p {
+                    strong { "Add the checkout to your site" }
                     @if has_site {
-                        (ui::LinkButton::new(html! { "Open the guide " (super::external_link_icon()) }, super::DOCS_URL)
-                            .maybe_variant(primary(guide_primary))
-                            .attr("target", "_blank")
-                            .attr("rel", "noopener"))
+                        (ui::Hint::new(format!("A script tag and a button on {}, or a call from your server. The guide shows both, and how to verify the domain.", data.site)).inline(true))
                     } @else {
-                        (ui::LinkButton::new("Add your site", format!("{}#card-store", settings_link(id))))
+                        (ui::Hint::new("It runs on your website: add your site in the store's settings first.").inline(true))
                     }
                 }
-                li {
-                    span class="num" { "2" }
-                    p {
-                        strong { "Install the WooCommerce plugin" }
-                        @if data.plugin.is_some() {
-                            (ui::Hint::new(format!(
-                                "Go back to WooCommerce to give the plugin on {} its key. Monero then shows at checkout once you \
-                                 turn it on in WooCommerce → Settings → Payments.",
-                                data.site
-                            )).inline(true))
-                        } @else {
-                            (ui::Hint::new(
-                                "In WordPress: Plugins, Add New, search for Monokulo, then Connect it from WooCommerce → Settings → Payments. \
-                                 It finds this store by its site."
-                            ).inline(true))
-                        }
-                    }
-                    @if let Some(plugin) = &data.plugin {
-                        (plugin_return_form(id, plugin, "Back to WooCommerce"))
-                    } @else {
-                        (ui::LinkButton::new(html! { "Plugin guide " (super::external_link_icon()) }, super::docs_url("woocommerce/"))
-                            .attr("target", "_blank")
-                            .attr("rel", "noopener"))
-                    }
-                }
-                li {
-                    span class="num" { "3" }
-                    p {
-                        strong { "Open the till (POS)" }
-                        (ui::Hint::new("On the phone or tablet you take payments with. Customers scan a QR code.").inline(true))
-                    }
-                    (ui::LinkButton::new("Open the till", format!("/dashboard/stores/{id}/pos")).maybe_variant(primary(till_primary)))
+                @if has_site {
+                    (ui::LinkButton::new(html! { "Open the guide " (super::external_link_icon()) }, super::DOCS_URL)
+                        .maybe_variant(primary(guide_primary))
+                        .attr("target", "_blank")
+                        .attr("rel", "noopener"))
+                } @else {
+                    (ui::LinkButton::new("Add your site", format!("{}#card-store", settings_link(id))))
                 }
             }
-            @if has_site { (public_key_help(&data.public_key)) }
-            div class="step-foot" {
-                (ui::LinkButton::new("Store settings", settings_link(id)))
-                span class="spacer" {}
-                a href=(format!("/dashboard/stores/{id}")) { "Go to " (data.name) "'s page" }
+            li {
+                span class="num" { "2" }
+                p {
+                    strong { "Install the WooCommerce plugin" }
+                    @if data.plugin.is_some() {
+                        (ui::Hint::new(format!(
+                            "Go back to WooCommerce to give the plugin on {} its key. Monero then shows at checkout once you \
+                             turn it on in WooCommerce → Settings → Payments.",
+                            data.site
+                        )).inline(true))
+                    } @else {
+                        (ui::Hint::new(
+                            "In WordPress: Plugins, Add New, search for Monokulo, then Connect it from WooCommerce → Settings → Payments. \
+                             It finds this store by its site."
+                        ).inline(true))
+                    }
+                }
+                @if let Some(plugin) = &data.plugin {
+                    (plugin_return_form(id, plugin, "Back to WooCommerce"))
+                } @else {
+                    (ui::LinkButton::new(html! { "Plugin guide " (super::external_link_icon()) }, super::docs_url("woocommerce/"))
+                        .attr("target", "_blank")
+                        .attr("rel", "noopener"))
+                }
+            }
+            li {
+                span class="num" { "3" }
+                p {
+                    strong { "Open the till (POS)" }
+                    (ui::Hint::new("On the phone or tablet you take payments with. Customers scan a QR code.").inline(true))
+                }
+                (ui::LinkButton::new("Open the till", format!("/dashboard/stores/{id}/pos")).maybe_variant(primary(till_primary)))
             }
         }
+        @if has_site { (public_key_help(&data.public_key)) }
+        div class="step-foot" {
+            (ui::LinkButton::new("Store settings", settings_link(id)))
+            span class="spacer" {}
+            a href=(format!("/dashboard/stores/{id}")) { "Go to " (data.name) "'s page" }
+        }
     };
-    layout(chrome, &format!("{} is set up - Monokulo", data.name), body)
+    super::Page::new(format!("{} is set up - Monokulo", data.name), header)
+        .class("setup-done")
+        .render(chrome, body)
 }
 
 fn skipped_warning() -> Markup {
@@ -470,6 +477,8 @@ mod tests {
     fn store_data() -> StoreStepViewModel {
         StoreStepViewModel {
             name: "Bakery".into(),
+            currency: "XMR".into(),
+            currencies: Vec::new(),
             site: "shop.example".into(),
             plugin_host: None,
             carried: vec![],

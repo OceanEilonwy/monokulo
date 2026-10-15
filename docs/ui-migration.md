@@ -56,7 +56,9 @@ page looks the same.
 | `div.box` | `ui::Panel` |
 | `p.error/.warning/.success/.notice` | `ui::Alert` with a `Tone` (an error is `role="alert"`, the rest `role="status"`; `.quiet(true)` for neither; `.block(true)` for a `div`) |
 | `p.hint`, `span.hint` | `ui::Hint` (`.inline(true)` for the span) |
-| `h1` with actions beside it (`.page-heading`) | `ui::Heading` with `.actions(...)` |
+| a page's `h1`, its breadcrumbs, actions beside it, a wizard's steps | `ui::PageHeader`, required by `views::Page` (`Page::new(title, header).render(chrome, body)`) |
+| `h2`–`h4` | `ui::Heading` |
+| a dialog's content, also a page without JavaScript | `views::DialogContent`: `.in_dialog()` in the `ui::Dialog`, `.page(crumbs, size)` for the page's header and body |
 | `dl.facts` | `ui::Facts` |
 | `span.tag…` | `ui::Tag` (`.tone(TagTone::…)`, or `.state(OrderState::…)`; `.short(…)` for a phone) |
 | network badge | `views::network_badge` (`ui::NetworkBadge`) |
