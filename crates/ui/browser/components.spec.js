@@ -193,17 +193,19 @@ test('spinner honours reduced motion and arrows sit outside underline decoration
   expect(arrow).toEqual({ position: 'absolute', decoration: 'none' });
 });
 
-test('buttons align, breadcrumbs truncate on one line, and feedback has uniform opaque borders', async ({ page }) => {
+test('buttons align, breadcrumbs truncate on one line, and feedback has uniform borders, toasts opaque', async ({ page }) => {
   await page.goto('/');
   const heights = await page.locator('#icon-buttons .mk-btn').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
   expect(Math.max(...heights) - Math.min(...heights)).toBeLessThan(1);
-  const feedback = await page.locator('#component-toast .toast, #component-alert .mk-alert').evaluateAll(nodes => nodes.map(node => {
+  const feedback = await page.locator('#component-toast .toast, #component-alert :is(.error, .warning, .success, .notice)').evaluateAll(nodes => nodes.map(node => {
     const css = getComputedStyle(node);
-    return { borders: [css.borderTopWidth, css.borderRightWidth, css.borderBottomWidth, css.borderLeftWidth], background: css.backgroundColor };
+    return { toast: node.matches('.toast'), borders: [css.borderTopWidth, css.borderRightWidth, css.borderBottomWidth, css.borderLeftWidth], background: css.backgroundColor };
   }));
+  expect(feedback.length).toBeGreaterThan(4);
   for (const item of feedback) {
     expect(new Set(item.borders).size).toBe(1);
-    expect(item.background).not.toMatch(/rgba\([^)]*,\s*0\)|transparent/);
+    // A toast floats over the page; a message sits on it.
+    if (item.toast) expect(item.background).not.toMatch(/rgba\([^)]*,\s*0\)|transparent/);
   }
   await page.setViewportSize({ width: 320, height: 740 });
   const trail = page.getByRole('navigation', { name: 'Example breadcrumb' });

@@ -25,9 +25,19 @@ export type ButtonVariant = "primary" | "danger" | "quiet";
 export type CardSurface = "grouped";
 
 /**
+ * Where a check stands.
+ */
+export type CheckMark = "ok" | "no" | "then";
+
+/**
  * A control's size. Without one it is the normal size.
  */
 export type ControlSize = "compact" | "touch";
+
+/**
+ * A disclosure's look.
+ */
+export type DisclosureLook = "plain" | "boxed" | "more-options";
 
 /**
  * Where a status dot sits.
@@ -40,6 +50,11 @@ export type DotPlace = "nav" | "pos";
 export type FormMethod = "post" | "get";
 
 /**
+ * A heading's level.
+ */
+export type HeadingLevel = "h1" | "h2" | "h3" | "h4";
+
+/**
  * How the instance is, as the status dot shows it.
  */
 export type HealthState = "ok" | "slow" | "error" | "unknown";
@@ -48,6 +63,12 @@ export type HealthState = "ok" | "slow" | "error" | "unknown";
  * The kind of text an input takes: phones show the matching keyboard.
  */
 export type InputType = "text" | "email" | "password" | "number" | "url" | "search" | "tel";
+
+/**
+ * An order's state: each its own colours, the same wherever an order's
+ * state is shown (the checkout, the POS, the dashboard).
+ */
+export type OrderState = "pending" | "unconfirmed" | "confirming" | "partial" | "paid" | "overpaid" | "expired" | "cancelled" | "double-spend" | "offline" | "unknown";
 
 /**
  * A popover that only script opens and closes.
@@ -65,6 +86,11 @@ export type SearchMode = "auto" | "show" | "hide";
 export type StepState = "done" | "current" | "next";
 
 /**
+ * How a tag reads, beside its words.
+ */
+export type TagTone = "ok" | "error" | "unknown" | "syncing" | "stalled" | "slow";
+
+/**
  * A colour theme.
  */
 export type ThemeChoice = "system" | "light" | "dark";
@@ -78,7 +104,7 @@ export type ToastKind = "success" | "warning" | "error" | "neutral";
  * What a message says about how something went. The words say it; the
  * colour only backs them up.
  */
-export type Tone = "success" | "warning" | "error";
+export type Tone = "error" | "warning" | "success" | "notice";
 
 /**
  * How a long value is shortened on screen. The whole value is always what
@@ -96,6 +122,18 @@ export interface ChangedCard {
    * What comes before it: nothing, ", " or " and ".
    */
   readonly before: string;
+}
+
+/**
+ * One row of [`Checks`].
+ */
+export interface Check {
+  readonly mark: CheckMark;
+  readonly what: JSX.Element;
+  /**
+   * How to fix it, or more about it, under it.
+   */
+  readonly fix?: JSX.Element;
 }
 
 /**
@@ -126,6 +164,28 @@ export interface Choice {
    * The option's text: every part, in words.
    */
   readonly text: string;
+}
+
+/**
+ * One event of a [`Timeline`].
+ */
+export interface Event {
+  /**
+   * When ("12 Oct, 14:02").
+   */
+  readonly when: string;
+  readonly what: JSX.Element;
+}
+
+/**
+ * One fact of [`Facts`].
+ */
+export interface Fact {
+  /**
+   * What it is ("Network").
+   */
+  readonly term: string;
+  readonly value: JSX.Element;
 }
 
 /**

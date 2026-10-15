@@ -271,7 +271,7 @@ fn component(info: &'static ComponentInfo, types: &mut Types) -> String {
         uses_render_effect: false,
         attaching: false,
     };
-    let body = out.children(&info.template, 2);
+    let body = out.expression(&info.template, 2);
     let attach = behaviour.map(|_| out.attach(&info.template));
 
     let mut s = String::from(HEADER);
@@ -319,23 +319,32 @@ fn component(info: &'static ComponentInfo, types: &mut Types) -> String {
     let props_name = format!("{}Props", info.name);
     match rest {
         Some(_) => {
-            let target = spread_target(&info.template).expect("a rest prop is spread somewhere");
+            let mut targets = Vec::new();
+            spread_targets(&info.template, &mut targets);
+            assert!(!targets.is_empty(), "a rest prop is spread somewhere");
             let mut owned: Vec<String> = info
                 .props
                 .iter()
                 .filter(|p| !matches!(p.ty, Ty::Attrs))
                 .map(|p| format!("{:?}", p.name))
                 .collect();
-            for attr in &target.attrs {
+            for attr in targets.iter().flat_map(|t| &t.attrs) {
                 owned.push(format!("{:?}", attr.name()));
             }
             owned.extend(["\"class\"", "\"classList\"", "\"style\""].map(String::from));
+            // Spread on different elements (a `p` or a `div`): what they
+            // share, less `ref`, which can't know which it gets.
+            let base = if targets.iter().all(|t| t.tag == targets[0].tag) {
+                format!("JSX.IntrinsicElements[{:?}]", targets[0].tag)
+            } else {
+                owned.push("\"ref\"".into());
+                "JSX.HTMLAttributes<HTMLElement>".to_string()
+            };
             owned.sort();
             owned.dedup();
             let _ = writeln!(
                 s,
-                "export interface {props_name} extends Omit<JSX.IntrinsicElements[{:?}], {}> {{\n{fields}}}\n",
-                target.tag,
+                "export interface {props_name} extends Omit<{base}, {}> {{\n{fields}}}\n",
                 owned.join(" | ")
             );
         }
@@ -377,25 +386,31 @@ fn component(info: &'static ComponentInfo, types: &mut Types) -> String {
     s
 }
 
-fn spread_target(nodes: &'static [Node]) -> Option<&'static Element> {
+/// The elements a rest prop is spread on: one, or one per branch of an `@if`.
+fn spread_targets(nodes: &'static [Node], out: &mut Vec<&'static Element>) {
     for node in nodes {
-        let found = match node {
-            Node::Element(e) if e.spread.is_some() => return Some(e),
-            Node::Element(e) => e.children.as_deref().and_then(spread_target),
+        match node {
+            Node::Element(e) => {
+                if e.spread.is_some() {
+                    out.push(e);
+                }
+                if let Some(children) = e.children.as_deref() {
+                    spread_targets(children, out);
+                }
+            }
             Node::If {
                 then, otherwise, ..
             }
             | Node::IfLet {
                 then, otherwise, ..
-            } => spread_target(then).or_else(|| spread_target(otherwise)),
-            Node::For { body, .. } | Node::Enhanced { body, .. } => spread_target(body),
-            Node::Text(_) | Node::Value(_) => None,
-        };
-        if found.is_some() {
-            return found;
+            } => {
+                spread_targets(then, out);
+                spread_targets(otherwise, out);
+            }
+            Node::For { body, .. } | Node::Enhanced { body, .. } => spread_targets(body, out),
+            Node::Text(_) | Node::Value(_) => {}
         }
     }
-    None
 }
 
 struct Out {

@@ -7,22 +7,74 @@ import type { Tone } from './types';
 
 /**
  * A message about the page or what just happened: a refused save, a
- * node that's down. Without a tone it's neutral information.
+ * node that's down, a save that went through. An error is announced
+ * (`role="alert"`), the rest are statuses, unless `quiet`.
  */
-export interface AlertProps extends Omit<JSX.IntrinsicElements["div"], "children" | "class" | "classList" | "data-tone" | "style" | "tone"> {
+export interface AlertProps extends Omit<JSX.HTMLAttributes<HTMLElement>, "block" | "children" | "class" | "classList" | "quiet" | "ref" | "role" | "style" | "tone"> {
   children: JSX.Element;
-  tone?: Tone;
+  tone: Tone;
+  /**
+   * Not announced: a message that is part of the page as it loads.
+   * @default false
+   */
+  quiet?: boolean;
+  /**
+   * A `div`, for a message holding lists or paragraphs; a `p` otherwise.
+   * @default false
+   */
+  block?: boolean;
 }
 
 /**
  * A message about the page or what just happened: a refused save, a
- * node that's down. Without a tone it's neutral information.
+ * node that's down, a save that went through. An error is announced
+ * (`role="alert"`), the rest are statuses, unless `quiet`.
  */
 export function Alert(props: AlertProps): JSX.Element {
-  const rest = omit(props, "children", "tone");
+  const rest = omit(props, "children", "tone", "quiet", "block");
   return (
-    <div class="mk-alert" data-tone={props.tone} {...rest}>
-      {props.children}
-    </div>
+    <>
+      {(props.quiet ?? false) ? (
+        <>
+          {(props.block ?? false) ? (
+            <div class={props.tone} {...rest}>
+              {props.children}
+            </div>
+          ) : (
+            <p class={props.tone} {...rest}>
+              {props.children}
+            </p>
+          )}
+        </>
+      ) : (
+        <>
+          {props.tone === "error" ? (
+            <>
+              {(props.block ?? false) ? (
+                <div class={props.tone} role="alert" {...rest}>
+                  {props.children}
+                </div>
+              ) : (
+                <p class={props.tone} role="alert" {...rest}>
+                  {props.children}
+                </p>
+              )}
+            </>
+          ) : (
+            <>
+              {(props.block ?? false) ? (
+                <div class={props.tone} role="status" {...rest}>
+                  {props.children}
+                </div>
+              ) : (
+                <p class={props.tone} role="status" {...rest}>
+                  {props.children}
+                </p>
+              )}
+            </>
+          )}
+        </>
+      )}
+    </>
   );
 }

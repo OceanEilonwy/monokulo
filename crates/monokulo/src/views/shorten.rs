@@ -18,22 +18,9 @@ pub fn short_address(address: &str) -> Markup {
     shortened(address, &short_address_text(address))
 }
 
-/// `short` on screen, `full` everywhere else (`.short-value`, site.css):
-///
-/// - The short text shows, `aria-hidden` and not selectable.
-/// - The full value lies over it, transparent and clipped to its box: a
-///   double-click selects it (an id is one word) and a copy takes exactly
-///   the full value; a screen reader reads it; find-in-page matches it.
-/// - It's in `title` too, on hover.
+/// `short` on screen, `full` everywhere else: [`ui::ShortValue`].
 fn shortened(full: &str, short: &str) -> Markup {
-    html! {
-        @if short == full { (full) } @else {
-            span class="short-value" title=(full) {
-                span class="short-value-text" aria-hidden="true" { (short) }
-                span class="short-value-full" { (full) }
-            }
-        }
-    }
+    html! { (ui::ShortValue::new(full, short)) }
 }
 
 #[cfg(test)]
