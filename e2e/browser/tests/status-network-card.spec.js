@@ -60,7 +60,7 @@ test('an admin sees the card titled Mainnet, its nodes and proof of work 3 behin
   await page.goto(fixture.base_url + '/status');
   const head = card(page).locator('.net-head');
   await expect(head.getByRole('heading', { level: 2 })).toHaveText('Mainnet');
-  await expect(head.locator('.tag')).toHaveText(['scanning', 'proof checked']);
+  await expect(head.locator('.mk-status-text')).toHaveText(['scanning', 'proof checked']);
   // The title is clearly larger than the section heads under it.
   const sizes = await card(page).evaluate((box) => [
     parseFloat(getComputedStyle(box.querySelector('h2')).fontSize),
@@ -112,7 +112,7 @@ test('held, one box gives the reason and a neutral button to take a new anchor',
   await story('held');
   await login(context);
   await page.goto(fixture.base_url + '/status');
-  await expect(card(page).locator('.net-head .tag')).toHaveText(['scanning', 'settlement held']);
+  await expect(card(page).locator('.net-head .mk-status-text')).toHaveText(['scanning', 'settlement held']);
   const held = card(page).locator('.proof-held');
   await expect(held).toContainText('Every node\'s chain left the proven one more than 720 blocks back');
   const button = held.getByRole('button', { name: 'Take a new anchor' });
@@ -163,7 +163,7 @@ test('someone not an admin sees no proof of work and no engine page', async ({ p
   await story('following');
   await login(context, false);
   await page.goto(fixture.base_url + '/status');
-  await expect(card(page).locator('.net-head .tag')).toHaveText(['scanning']);
+  await expect(card(page).locator('.net-head .mk-status-text')).toHaveText(['scanning']);
   await expect(card(page).locator('thead th')).toHaveText(['Node', 'Use', 'Height', 'Reachable']);
   await expect(card(page).locator('tbody td.card-title')).toHaveText(['node 1', 'node 2', 'node 3', 'node 4']);
   for (const hidden of ['Watch it live', 'Proof of work', 'How it\'s checked', '10.0.0.5']) {
