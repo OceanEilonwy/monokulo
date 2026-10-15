@@ -11,6 +11,7 @@
 use maud::{html, Markup};
 
 use super::{layout, PageChrome};
+use ui::{Button, ButtonType, ButtonVariant, Field, InputType};
 
 /// `error`, when present, means the same thing on both pages: the previous
 /// submission was rejected (a duplicate email, an invalid invite, wrong
@@ -85,10 +86,15 @@ pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
                     @if let Some(next) = &data.next {
                         input type="hidden" name="next" value=(next);
                     }
-                    label class="mk-field" { "Email " input class="mk-input" type="email" name="email" required; }
-                    label class="mk-field" { "Password " input class="mk-input" type="password" name="password" required minlength=(crate::http::MIN_PASSWORD_LEN) autocomplete="new-password"; }
+                    (Field::new("Email", "signup-email", "email").kind(InputType::Email).required(true).autocomplete("email"))
+                    (Field::new("Password", "signup-password", "password")
+                        .kind(InputType::Password)
+                        .required(true)
+                        .autocomplete("new-password")
+                        .attr("minlength", crate::http::MIN_PASSWORD_LEN.to_string())
+                        .hint(format!("At least {} characters.", crate::http::MIN_PASSWORD_LEN)))
                     (super::account::theme_choice(data.theme, None, "You can change it any time from the account menu."))
-                    button type="submit" class="mk-btn" data-variant="primary" { "Sign up" }
+                    (Button::new("Sign up").variant(ButtonVariant::Primary).kind(ButtonType::Submit))
                 }
             }
             p { "Already have an account? " a href=(with_next("/dashboard/login", data.next.as_deref())) { "Log in" } }
@@ -117,9 +123,12 @@ pub fn login_page(chrome: &PageChrome, data: &LoginViewModel) -> Markup {
                 @if let Some(next) = &data.next {
                     input type="hidden" name="next" value=(next);
                 }
-                label class="mk-field" { "Email " input class="mk-input" type="email" name="email" required; }
-                label class="mk-field" { "Password " input class="mk-input" type="password" name="password" required; }
-                button type="submit" class="mk-btn" data-variant="primary" { "Log in" }
+                (Field::new("Email", "login-email", "email").kind(InputType::Email).required(true).autocomplete("email"))
+                (Field::new("Password", "login-password", "password")
+                    .kind(InputType::Password)
+                    .required(true)
+                    .autocomplete("current-password"))
+                (Button::new("Log in").variant(ButtonVariant::Primary).kind(ButtonType::Submit))
             }
             p { "Need an account? " a href=(with_next("/dashboard/signup", data.next.as_deref())) { "Sign up" } }
         }
@@ -150,6 +159,31 @@ mod tests {
         .into_string();
         assert!(html.contains("<form"));
         assert!(html.to_lowercase().contains("sign up"));
+    }
+
+    /// The fields are the shared `Field`: each input named by its label and
+    /// described by its hint, the password's rule stated where it's typed.
+    #[test]
+    fn signup_fields_are_labelled_and_say_the_password_rule() {
+        let html = signup_page(
+            &chrome(),
+            &SignupViewModel {
+                next: None,
+                error: None,
+                invite_required: false,
+                invite_token: String::new(),
+                theme: crate::db::Theme::System,
+            },
+        )
+        .into_string();
+        assert!(html.contains(r#"<label for="signup-email">Email</label><input class="mk-input" id="signup-email" name="email" type="email" autocomplete="email" required>"#), "{html}");
+        assert!(html.contains(r#"<input class="mk-input" id="signup-password" name="password" type="password" autocomplete="new-password" required aria-describedby="signup-password-help" minlength="8">"#), "{html}");
+        assert!(html.contains(
+            r#"<p class="mk-hint" id="signup-password-help">At least 8 characters.</p>"#
+        ));
+        assert!(html.contains(
+            r#"<button class="mk-btn" type="submit" data-variant="primary">Sign up</button>"#
+        ));
     }
 
     #[test]

@@ -1072,7 +1072,9 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
 
     let html = body_text(cookie_get(&router, "/setup", &cookie).await).await;
     assert!(html.contains("<h1>Set up a store</h1>"), "{html}");
-    assert!(html.contains(r#"<li aria-current="step"><span>Store<small>In progress</small></span>"#));
+    assert!(
+        html.contains(r#"<li aria-current="step"><span>Store<small>In progress</small></span>"#)
+    );
 
     let store_step = [
         ("store_name", "  Bakery "),

@@ -1032,7 +1032,8 @@ mod tests {
         proof.state = ProofState::Held;
         proof.summary = "Every node's chain left the proven one more than 720 blocks back.".into();
         let html = render(&admin_with(proof, vec![]));
-        assert!(html.contains(r#"<span class="mk-status-text" data-tone="error">settlement held</span>"#));
+        assert!(html
+            .contains(r#"<span class="mk-status-text" data-tone="error">settlement held</span>"#));
         assert!(
             html.contains(concat!(
                 r#"<div class="proof-held"><p>Every node's chain left the proven one more than 720 blocks back.</p>"#,

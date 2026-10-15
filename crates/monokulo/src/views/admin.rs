@@ -1582,7 +1582,9 @@ fn card<'a>(
             span class="owner-chip" { (owner) }
             @if let Some(meta) = meta { span class="card-meta" { (meta) } }
         })
-        .badge(restart.then(|| html! { span class="mk-status-text" data-tone="warning" { "Restart needed" } }))
+        .badge(restart.then(
+            || html! { span class="mk-status-text" data-tone="warning" { "Restart needed" } },
+        ))
         .failed(data.failure(group).is_some(), None)
         .saved(data.saved_at(group), data.focus_saved(group))
 }
@@ -3282,7 +3284,9 @@ mod tests {
         };
         let success = toast(ToastKind::Success, None);
         assert!(success.contains(r#"class="toast toast-success" role="status""#));
-        assert!(success.contains(include_str!("../../../../packages/ui/src/icons/check.svg").trim()));
+        assert!(
+            success.contains(include_str!("../../../../packages/ui/src/icons/check.svg").trim())
+        );
         assert!(success.contains("<strong>Webhooks saved and applied</strong>"));
         assert!(success.contains(r#"<span class="toast-line">One more thing.</span>"#));
         assert!(!success.contains("Show"), "{success}");

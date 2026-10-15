@@ -1610,7 +1610,9 @@ mod tests {
             super::super::seed_status_for_tests(&state.engine, held);
             let admin = super::super::status_view(&state, true).await;
             let html = crate::views::status::live_fragment(&admin).into_string();
-            assert!(html.contains(r#"<span class="mk-status-text" data-tone="error">settlement held</span>"#));
+            assert!(html.contains(
+                r#"<span class="mk-status-text" data-tone="error">settlement held</span>"#
+            ));
             assert!(admin.networks[0].proof.as_ref().unwrap().window.is_none());
             assert!(
                 html.contains(

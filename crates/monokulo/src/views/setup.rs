@@ -9,6 +9,7 @@
 use maud::{html, Markup};
 
 use super::{layout, PageChrome};
+use ui::{ProgressSteps, Step as Segment, StepState};
 
 /// The three steps of setup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,53 +53,57 @@ pub fn steps(at: Step, wallet: Option<WalletAt>) -> Markup {
         (Step::Done, "Done"),
     ];
     let current = all.iter().position(|(s, _)| *s == at).unwrap_or(0);
-    html! {
-        ol class="setup-steps mk-progress-steps" data-design="strip" aria-label="Setup progress" {
-            @for (i, (step, label)) in all.iter().enumerate() {
-                @let complete = i < current || at == Step::Done;
-                @let (value, max) = if complete { (1, 1) } else if *step == Step::Wallet && i == current {
-                    wallet.map(|w| (w.at.min(w.path.labels().len()), w.path.labels().len())).unwrap_or((0, 1))
-                } else { (0, 1) };
-                li class=[(complete && i != current).then_some("done")] aria-current=[(i == current).then_some("step")] {
-                    span {
-                        (label)
-                        small {
-                            @if complete { "Complete" }
-                            @else if i == current {
-                                @if let (Step::Wallet, Some(w)) = (step, wallet) {
-                                    (w.path.labels().get(w.at).copied().unwrap_or_default())
-                                    " · step " (w.at + 1) " of " (max)
-                                } @else { "In progress" }
-                            } @else { "Next" }
-                        }
-                    }
-                    progress class="mk-step-progress" value=(value) max=(max)
-                        aria-label=(format!("{label}: {value} of {max} tasks complete")) {}
-                }
+    let segments = all
+        .iter()
+        .enumerate()
+        .map(|(i, (step, label))| {
+            let complete = i < current || at == Step::Done;
+            let state = if i == current {
+                StepState::Current
+            } else if complete {
+                StepState::Done
+            } else {
+                StepState::Next
+            };
+            match (complete, i == current, step, wallet) {
+                (true, ..) => segment(label, "Complete".into(), 1, 1, state),
+                (false, true, Step::Wallet, Some(w)) => wallet_segment(w),
+                (false, true, ..) => segment(label, "In progress".into(), 0, 1, state),
+                _ => segment(label, "Next".into(), 0, 1, state),
             }
-        }
-    }
+        })
+        .collect::<Vec<_>>();
+    html! { (ProgressSteps::new("Setup progress", segments)) }
 }
 
 /// The wallet's small steps on their own, for adding a wallet outside
 /// setup (`/account/wallets/...`).
 pub fn wallet_steps(wallet: WalletAt) -> Markup {
-    let labels = wallet.path.labels();
-    html! {
-        ol class="mk-progress-steps" data-design="strip" aria-label="Wallet progress" {
-            li aria-current="step" {
-                span {
-                    "Wallet"
-                    small {
-                        (labels.get(wallet.at).copied().unwrap_or_default())
-                        " · step " (wallet.at + 1) " of " (labels.len())
-                    }
-                }
-                progress class="mk-step-progress" value=(wallet.at.min(labels.len())) max=(labels.len())
-                    aria-label=(format!("Wallet: {} of {} tasks complete", wallet.at.min(labels.len()), labels.len())) {}
-            }
-        }
+    html! { (ProgressSteps::new("Wallet progress", vec![wallet_segment(wallet)])) }
+}
+
+fn segment(label: &str, detail: String, done: usize, tasks: usize, state: StepState) -> Segment {
+    Segment {
+        label: label.into(),
+        detail,
+        done,
+        tasks,
+        state,
     }
+}
+
+/// The Wallet segment while on it: the task in hand and its position, the
+/// bar counting the tasks before it.
+fn wallet_segment(wallet: WalletAt) -> Segment {
+    let labels = wallet.path.labels();
+    let task = labels.get(wallet.at).copied().unwrap_or_default();
+    segment(
+        "Wallet",
+        format!("{task} · step {} of {}", wallet.at + 1, labels.len()),
+        wallet.at.min(labels.len()),
+        labels.len(),
+        StepState::Current,
+    )
 }
 
 /// The store step's answers, carried through the wallet step's screens
