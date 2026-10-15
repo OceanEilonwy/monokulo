@@ -1,5 +1,45 @@
 # Shared UI and stylebook
 
+## Components are written once, in Rust
+
+A shared component is declared once in `crates/ui` with `component!`: its
+props as a struct and its markup as a template in a small maud-like
+language that only reads props. From that one declaration:
+
+- Monokulo's views (and, as it migrates, the pages site) build it with a
+  typed builder and render it through maud: `(Button::new("Save").variant(ButtonVariant::Primary))`.
+  Required props are `new`'s arguments and choices are enums, so a missing
+  label or a misspelt variant doesn't compile; the macro also type-checks
+  every prop, field and enum variant a template names.
+- `cargo xtask ui` writes the Solid component the POS imports
+  (`@monokulo/ui/solid`, in `packages/ui/src/solid`), the stylebook's
+  section for it (`apps/stylebook/examples/generated`) and fixtures of its
+  examples (`packages/ui/tests/solid/generated`). Each specimen shows how to
+  write the example in Rust and in Solid, and the HTML both render.
+- `npm run test:ui` renders every example through the generated Solid
+  component and compares its DOM with the Rust component's HTML
+  (`solid-equivalence.spec.js`). CI runs `cargo xtask ui --check`, so the
+  committed files are always what the Rust components write.
+
+Never edit the generated files. To add or change a component: edit or add
+it in `crates/ui/src/components`, give it examples (they are what the
+stylebook shows and what Solid is checked against), add it to
+`catalogue()`, run `cargo xtask ui`, and keep its CSS in
+`packages/ui/src/components`. Behaviour stays in packages/ui's custom
+elements (`mk-select`, `mk-copy`, the settings form): a component only
+decides the markup they upgrade. A caller adds attributes (`fx-*`,
+`data-*`, Solid's `onClick`) through the component's spread; `class` and
+`style` belong to the component, so a new look is a new variant, and a
+consumer positions a component with a data attribute or its container.
+
+Truly custom visualisations (the engine page's block chart, the logs
+waterfall, wallet backup) stay in the application.
+
+Generated so far: Button, LinkButton, Alert, Field and ProgressSteps.
+Monokulo's setup steps and sign-up/log-in forms and the POS's Charge,
+order and Reference controls use them. The hand-written examples below
+cover what hasn't moved yet.
+
 The root npm workspace contains `packages/ui` (`@monokulo/ui`),
 `apps/stylebook` and the existing `crates/monokulo/pos-ui`. One root lockfile
 pins their tools. The browser integration suite in `e2e/browser` retains its

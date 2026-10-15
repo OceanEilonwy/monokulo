@@ -1,0 +1,485 @@
+[
+  {
+    "component": "Button",
+    "html": "<button class=\"mk-btn\" type=\"button\" data-variant=\"primary\">Save changes</button>",
+    "props": {
+      "block": false,
+      "busy": false,
+      "children": {
+        "$slot": [
+          "Save changes"
+        ]
+      },
+      "disabled": false,
+      "kind": "button",
+      "variant": "primary"
+    },
+    "title": "Primary"
+  },
+  {
+    "component": "Button",
+    "html": "<button class=\"mk-btn\" type=\"button\">Cancel</button>",
+    "props": {
+      "block": false,
+      "busy": false,
+      "children": {
+        "$slot": [
+          "Cancel"
+        ]
+      },
+      "disabled": false,
+      "kind": "button"
+    },
+    "title": "Secondary"
+  },
+  {
+    "component": "Button",
+    "html": "<button class=\"mk-btn\" type=\"button\" data-variant=\"danger\">Delete store</button>",
+    "props": {
+      "block": false,
+      "busy": false,
+      "children": {
+        "$slot": [
+          "Delete store"
+        ]
+      },
+      "disabled": false,
+      "kind": "button",
+      "variant": "danger"
+    },
+    "title": "Danger"
+  },
+  {
+    "component": "Button",
+    "html": "<button class=\"mk-btn\" type=\"button\" data-variant=\"quiet\">Discard</button>",
+    "props": {
+      "block": false,
+      "busy": false,
+      "children": {
+        "$slot": [
+          "Discard"
+        ]
+      },
+      "disabled": false,
+      "kind": "button",
+      "variant": "quiet"
+    },
+    "title": "Quiet"
+  },
+  {
+    "component": "Button",
+    "html": "<button class=\"mk-btn\" type=\"submit\" data-variant=\"primary\">Log in</button>",
+    "props": {
+      "block": false,
+      "busy": false,
+      "children": {
+        "$slot": [
+          "Log in"
+        ]
+      },
+      "disabled": false,
+      "kind": "submit",
+      "variant": "primary"
+    },
+    "title": "Submits its form"
+  },
+  {
+    "component": "Button",
+    "html": "<button class=\"mk-btn\" type=\"button\" data-size=\"compact\">Discard</button>",
+    "props": {
+      "block": false,
+      "busy": false,
+      "children": {
+        "$slot": [
+          "Discard"
+        ]
+      },
+      "disabled": false,
+      "kind": "button",
+      "size": "compact"
+    },
+    "title": "Compact"
+  },
+  {
+    "component": "Button",
+    "html": "<button class=\"mk-btn\" type=\"button\" data-variant=\"primary\" data-size=\"touch\" data-block>Charge</button>",
+    "props": {
+      "block": true,
+      "busy": false,
+      "children": {
+        "$slot": [
+          "Charge"
+        ]
+      },
+      "disabled": false,
+      "kind": "button",
+      "size": "touch",
+      "variant": "primary"
+    },
+    "title": "Touch"
+  },
+  {
+    "component": "Button",
+    "html": "<button class=\"mk-btn\" type=\"button\" disabled>Export orders</button>",
+    "props": {
+      "block": false,
+      "busy": false,
+      "children": {
+        "$slot": [
+          "Export orders"
+        ]
+      },
+      "disabled": true,
+      "kind": "button"
+    },
+    "title": "Disabled"
+  },
+  {
+    "component": "Button",
+    "html": "<button class=\"mk-btn\" type=\"button\" data-variant=\"primary\" disabled aria-busy=\"true\">Saving…</button>",
+    "props": {
+      "block": false,
+      "busy": true,
+      "children": {
+        "$slot": [
+          "Saving…"
+        ]
+      },
+      "disabled": true,
+      "kind": "button",
+      "variant": "primary"
+    },
+    "title": "Busy"
+  },
+  {
+    "component": "LinkButton",
+    "html": "<a class=\"mk-btn\" href=\"#link-button\" data-variant=\"primary\">Add a store</a>",
+    "props": {
+      "block": false,
+      "children": {
+        "$slot": [
+          "Add a store"
+        ]
+      },
+      "href": "#link-button",
+      "variant": "primary"
+    },
+    "title": "Primary"
+  },
+  {
+    "component": "LinkButton",
+    "html": "<a class=\"mk-btn\" href=\"#link-button\">Watch it live</a>",
+    "props": {
+      "block": false,
+      "children": {
+        "$slot": [
+          "Watch it live"
+        ]
+      },
+      "href": "#link-button"
+    },
+    "title": "Secondary"
+  },
+  {
+    "component": "LinkButton",
+    "html": "<a class=\"mk-btn\" href=\"#link-button\" data-size=\"compact\">Discard changes</a>",
+    "props": {
+      "block": false,
+      "children": {
+        "$slot": [
+          "Discard changes"
+        ]
+      },
+      "href": "#link-button",
+      "size": "compact"
+    },
+    "title": "Compact"
+  },
+  {
+    "component": "Alert",
+    "html": "<div class=\"mk-alert\" data-tone=\"success\">Saved. Your preferences are up to date.</div>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Saved. Your preferences are up to date."
+        ]
+      },
+      "tone": "success"
+    },
+    "title": "Success"
+  },
+  {
+    "component": "Alert",
+    "html": "<div class=\"mk-alert\" data-tone=\"warning\">Connection interrupted. Payment status may be delayed.</div>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Connection interrupted. Payment status may be delayed."
+        ]
+      },
+      "tone": "warning"
+    },
+    "title": "Warning"
+  },
+  {
+    "component": "Alert",
+    "html": "<div class=\"mk-alert\" data-tone=\"error\" role=\"alert\">Could not save. Check the highlighted fields and try again.</div>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Could not save. Check the highlighted fields and try again."
+        ]
+      },
+      "role": "alert",
+      "tone": "error"
+    },
+    "title": "Error"
+  },
+  {
+    "component": "Alert",
+    "html": "<div class=\"mk-alert\">Your account uses the system theme.</div>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Your account uses the system theme."
+        ]
+      }
+    },
+    "title": "Neutral"
+  },
+  {
+    "component": "Field",
+    "html": "<div class=\"mk-field\"><label for=\"book-store-name\">Store name</label><input class=\"mk-input\" id=\"book-store-name\" name=\"name\" type=\"text\" placeholder=\"Your store\" aria-describedby=\"book-store-name-help\"><p class=\"mk-hint\" id=\"book-store-name-help\">Shown to customers on the payment page.</p></div>",
+    "props": {
+      "disabled": false,
+      "hint": "Shown to customers on the payment page.",
+      "id": "book-store-name",
+      "kind": "text",
+      "label": "Store name",
+      "name": "name",
+      "placeholder": "Your store",
+      "readonly": false,
+      "required": false
+    },
+    "title": "With a hint"
+  },
+  {
+    "component": "Field",
+    "html": "<div class=\"mk-field\"><label for=\"book-email\">Email</label><input class=\"mk-input\" id=\"book-email\" name=\"email\" type=\"email\" value=\"incomplete\" aria-invalid=\"true\" aria-describedby=\"book-email-error\"><p class=\"mk-error\" id=\"book-email-error\">Enter a complete email address.</p></div>",
+    "props": {
+      "disabled": false,
+      "error": "Enter a complete email address.",
+      "id": "book-email",
+      "kind": "email",
+      "label": "Email",
+      "name": "email",
+      "readonly": false,
+      "required": false,
+      "value": "incomplete"
+    },
+    "title": "Refused"
+  },
+  {
+    "component": "Field",
+    "html": "<div class=\"mk-field\"><label for=\"book-password\">Password</label><input class=\"mk-input\" id=\"book-password\" name=\"password\" type=\"password\" autocomplete=\"new-password\" required aria-describedby=\"book-password-help\" minlength=\"8\"><p class=\"mk-hint\" id=\"book-password-help\">At least 8 characters.</p></div>",
+    "props": {
+      "autocomplete": "new-password",
+      "disabled": false,
+      "hint": "At least 8 characters.",
+      "id": "book-password",
+      "kind": "password",
+      "label": "Password",
+      "minlength": "8",
+      "name": "password",
+      "readonly": false,
+      "required": true
+    },
+    "title": "Required, with input rules"
+  },
+  {
+    "component": "Field",
+    "html": "<div class=\"mk-field\"><label for=\"book-readonly\">Store id</label><input class=\"mk-input\" id=\"book-readonly\" name=\"store\" type=\"text\" value=\"Store 123\" readonly></div>",
+    "props": {
+      "disabled": false,
+      "id": "book-readonly",
+      "kind": "text",
+      "label": "Store id",
+      "name": "store",
+      "readonly": true,
+      "required": false,
+      "value": "Store 123"
+    },
+    "title": "Read only"
+  },
+  {
+    "component": "Field",
+    "html": "<div class=\"mk-field\"><label for=\"book-disabled\">Instance URL</label><input class=\"mk-input\" id=\"book-disabled\" name=\"url\" type=\"url\" value=\"https://pay.example.com\" disabled></div>",
+    "props": {
+      "disabled": true,
+      "id": "book-disabled",
+      "kind": "url",
+      "label": "Instance URL",
+      "name": "url",
+      "readonly": false,
+      "required": false,
+      "value": "https://pay.example.com"
+    },
+    "title": "Disabled"
+  },
+  {
+    "component": "Field",
+    "html": "<div class=\"mk-field\"><label for=\"book-compact\">Refund address</label><input class=\"mk-input\" id=\"book-compact\" name=\"refund\" type=\"text\" data-size=\"compact\"></div>",
+    "props": {
+      "disabled": false,
+      "id": "book-compact",
+      "kind": "text",
+      "label": "Refund address",
+      "name": "refund",
+      "readonly": false,
+      "required": false,
+      "size": "compact"
+    },
+    "title": "Compact"
+  },
+  {
+    "component": "ProgressSteps",
+    "html": "<ol class=\"mk-progress-steps\" data-design=\"strip\" aria-label=\"Setup progress\"><li class=\"done\"><span>Store<small>Complete</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"1\" aria-label=\"Store: 1 of 1 tasks complete\"></progress></li><li aria-current=\"step\"><span>Wallet<small>Back up · step 2 of 3</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"3\" aria-label=\"Wallet: 1 of 3 tasks complete\"></progress></li><li><span>Done<small>Next</small></span><progress class=\"mk-step-progress\" value=\"0\" max=\"1\" aria-label=\"Done: 0 of 1 tasks complete\"></progress></li></ol>",
+    "props": {
+      "label": "Setup progress",
+      "steps": [
+        {
+          "detail": "Complete",
+          "done": 1,
+          "label": "Store",
+          "state": "done",
+          "tasks": 1
+        },
+        {
+          "detail": "Back up · step 2 of 3",
+          "done": 1,
+          "label": "Wallet",
+          "state": "current",
+          "tasks": 3
+        },
+        {
+          "detail": "Next",
+          "done": 0,
+          "label": "Done",
+          "state": "next",
+          "tasks": 1
+        }
+      ]
+    },
+    "title": "Setup, backing up a new wallet"
+  },
+  {
+    "component": "ProgressSteps",
+    "html": "<ol class=\"mk-progress-steps\" data-design=\"strip\" aria-label=\"Setup progress\"><li class=\"done\"><span>Store<small>Complete</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"1\" aria-label=\"Store: 1 of 1 tasks complete\"></progress></li><li aria-current=\"step\"><span>Wallet<small>Keys · step 2 of 2</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"2\" aria-label=\"Wallet: 1 of 2 tasks complete\"></progress></li><li><span>Done<small>Next</small></span><progress class=\"mk-step-progress\" value=\"0\" max=\"1\" aria-label=\"Done: 0 of 1 tasks complete\"></progress></li></ol>",
+    "props": {
+      "label": "Setup progress",
+      "steps": [
+        {
+          "detail": "Complete",
+          "done": 1,
+          "label": "Store",
+          "state": "done",
+          "tasks": 1
+        },
+        {
+          "detail": "Keys · step 2 of 2",
+          "done": 1,
+          "label": "Wallet",
+          "state": "current",
+          "tasks": 2
+        },
+        {
+          "detail": "Next",
+          "done": 0,
+          "label": "Done",
+          "state": "next",
+          "tasks": 1
+        }
+      ]
+    },
+    "title": "Setup, bringing your own wallet"
+  },
+  {
+    "component": "ProgressSteps",
+    "html": "<ol class=\"mk-progress-steps\" data-design=\"strip\" aria-label=\"Setup progress\"><li class=\"done\"><span>Store<small>Complete</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"1\" aria-label=\"Store: 1 of 1 tasks complete\"></progress></li><li aria-current=\"step\"><span>Wallet<small>Check · step 3 of 3</small></span><progress class=\"mk-step-progress\" value=\"2\" max=\"3\" aria-label=\"Wallet: 2 of 3 tasks complete\"></progress></li><li><span>Done<small>Next</small></span><progress class=\"mk-step-progress\" value=\"0\" max=\"1\" aria-label=\"Done: 0 of 1 tasks complete\"></progress></li></ol>",
+    "props": {
+      "label": "Setup progress",
+      "steps": [
+        {
+          "detail": "Complete",
+          "done": 1,
+          "label": "Store",
+          "state": "done",
+          "tasks": 1
+        },
+        {
+          "detail": "Check · step 3 of 3",
+          "done": 2,
+          "label": "Wallet",
+          "state": "current",
+          "tasks": 3
+        },
+        {
+          "detail": "Next",
+          "done": 0,
+          "label": "Done",
+          "state": "next",
+          "tasks": 1
+        }
+      ]
+    },
+    "title": "Setup, checking the backup"
+  },
+  {
+    "component": "ProgressSteps",
+    "html": "<ol class=\"mk-progress-steps\" data-design=\"strip\" aria-label=\"Setup progress\"><li class=\"done\"><span>Store<small>Complete</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"1\" aria-label=\"Store: 1 of 1 tasks complete\"></progress></li><li class=\"done\"><span>Wallet<small>Complete</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"1\" aria-label=\"Wallet: 1 of 1 tasks complete\"></progress></li><li aria-current=\"step\"><span>Done<small>Complete</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"1\" aria-label=\"Done: 1 of 1 tasks complete\"></progress></li></ol>",
+    "props": {
+      "label": "Setup progress",
+      "steps": [
+        {
+          "detail": "Complete",
+          "done": 1,
+          "label": "Store",
+          "state": "done",
+          "tasks": 1
+        },
+        {
+          "detail": "Complete",
+          "done": 1,
+          "label": "Wallet",
+          "state": "done",
+          "tasks": 1
+        },
+        {
+          "detail": "Complete",
+          "done": 1,
+          "label": "Done",
+          "state": "current",
+          "tasks": 1
+        }
+      ]
+    },
+    "title": "Setup, finished"
+  },
+  {
+    "component": "ProgressSteps",
+    "html": "<ol class=\"mk-progress-steps\" data-design=\"strip\" aria-label=\"Wallet progress\"><li aria-current=\"step\"><span>Wallet<small>Keys · step 2 of 2</small></span><progress class=\"mk-step-progress\" value=\"1\" max=\"2\" aria-label=\"Wallet: 1 of 2 tasks complete\"></progress></li></ol>",
+    "props": {
+      "label": "Wallet progress",
+      "steps": [
+        {
+          "detail": "Keys · step 2 of 2",
+          "done": 1,
+          "label": "Wallet",
+          "state": "current",
+          "tasks": 2
+        }
+      ]
+    },
+    "title": "Adding a wallet on its own"
+  }
+]

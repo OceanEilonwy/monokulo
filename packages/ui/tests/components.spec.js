@@ -45,8 +45,8 @@ for (const theme of ['light', 'dark']) {
     await page.locator('#book-theme').selectOption(theme, { force: true });
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    await expect(page.getByRole('button', { name: 'Disabled', exact: true })).toBeDisabled();
-    const input = page.locator('#invalid');
+    await expect(page.locator('#button-8 button')).toBeDisabled();
+    const input = page.locator('#book-email');
     await expect(input).toHaveAccessibleDescription('Enter a complete email address.');
     await input.focus();
     expect(await input.evaluate(el => getComputedStyle(el).outlineStyle)).toBe('solid');
@@ -86,9 +86,9 @@ test('breadcrumbs, back links and action cards retain native behaviour without J
 test('wizard details stay in the top-level segment at desktop and mobile widths', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto('/');
-  const wallet = page.getByRole('list', { name: 'Example setup progress', exact: true }).locator('[aria-current="step"]');
+  const wallet = page.locator('#progress-steps-1 [aria-current="step"]');
   await expect(wallet).toHaveText('WalletBack up · step 2 of 3');
-  await expect(page.locator('#steps .mk-substeps, #steps .mk-step-summary')).toHaveCount(0);
+  await expect(page.locator('#progress-steps .mk-substeps, #progress-steps .mk-step-summary')).toHaveCount(0);
   await page.setViewportSize({ width: 320, height: 740 });
   await expect(wallet.locator('small')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -197,7 +197,7 @@ test('buttons align, breadcrumbs truncate on one line, and feedback has uniform 
   await page.goto('/');
   const heights = await page.locator('#icon-buttons .mk-btn').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
   expect(Math.max(...heights) - Math.min(...heights)).toBeLessThan(1);
-  const feedback = await page.locator('#toasts .toast, #feedback .mk-alert').evaluateAll(nodes => nodes.map(node => {
+  const feedback = await page.locator('#toasts .toast, #alert .mk-alert').evaluateAll(nodes => nodes.map(node => {
     const css = getComputedStyle(node);
     return { borders: [css.borderTopWidth, css.borderRightWidth, css.borderBottomWidth, css.borderLeftWidth], background: css.backgroundColor };
   }));
@@ -298,13 +298,10 @@ test('selected progress strip uses completed tasks without JavaScript', async ({
   const context = await browser.newContext({ javaScriptEnabled: false });
   const page = await context.newPage();
   await page.goto('/');
-  for (const [name, value, max] of [
-    ['Example setup progress', 1, 3],
-    ['Example import progress', 1, 2],
-    ['Example check progress', 2, 3],
-    ['Example final step', 1, 1],
-  ]) {
-    const strip = page.getByRole('list', { name, exact: true });
+  // The progress strip's first four specimens: setup at each stage.
+  for (const [n, value, max] of [[1, 1, 3], [2, 1, 2], [3, 2, 3], [4, 1, 1]]) {
+    const strip = page.locator(`#progress-steps-${n} ol`);
+    await expect(strip).toHaveAccessibleName('Setup progress');
     const progress = strip.locator('progress').nth(1);
     await expect(progress).toHaveAttribute('value', String(value));
     await expect(progress).toHaveAttribute('max', String(max));

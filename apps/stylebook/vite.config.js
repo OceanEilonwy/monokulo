@@ -8,7 +8,7 @@ export default defineConfig({
     name: 'static-component-examples',
     transformIndexHtml(html) {
       let assetIndex = 0;
-      return html.replace(/<!-- (example|source):([a-z-]+) -->/g, (_, mode, name) => {
+      return html.replace(/<!-- (example|source):([a-z/-]+) -->/g, (_, mode, name) => {
         const markup = readFileSync(new URL(`./examples/${name}.html`, import.meta.url), 'utf8').trim().replace(/<!-- icon:([a-z-]+) -->/g, (_, icon) => readFileSync(new URL(`../../packages/ui/src/icons/${icon}.svg`, import.meta.url), 'utf8').trim()).replace(/<!-- asset:([a-z-]+)\/([a-z-]+) -->/g, (_, folder, name) => {
           let asset = readFileSync(new URL(`../../packages/ui/src/${folder}/${name}.svg`, import.meta.url), 'utf8').trim();
           // Each inline brand instance gets local clip IDs. Status sprites keep

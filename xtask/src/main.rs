@@ -11,6 +11,7 @@ mod stress;
 mod summary;
 mod support;
 mod timings;
+mod ui;
 mod validate;
 
 use std::{env, io, process::ExitCode};
@@ -48,6 +49,7 @@ fn help() {
         pages::HELP,
         live::HELP,
         recording::HELP,
+        ui::HELP,
     ] {
         println!("{text}");
     }
@@ -90,6 +92,7 @@ fn main() -> ExitCode {
         }
         ["engine", "mutations", rest @ ..] => mutations::mutations(&root(), rest),
         ["logo"] => logo::write(&root()),
+        ["ui", rest @ ..] => ui::ui(&root(), rest),
         ["test-summary", title, suites @ ..] if !suites.is_empty() => {
             print!("{}", summary::test_summary(title, suites));
             Ok(Exit::SUCCESS)

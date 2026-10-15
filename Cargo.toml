@@ -16,6 +16,8 @@ members = [
     "crates/wallet-setup",
     "crates/short-id",
     "crates/static-assets",
+    "crates/ui",
+    "crates/ui-macros",
     "xtask",
 ]
 
