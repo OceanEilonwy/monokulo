@@ -1,0 +1,11 @@
+/* A list in the user's order (SortableList, SortableItem, SortHandle):
+   a dragged item follows the pointer, lifted with the popups' shadow; the
+   items it passes slide out of its way. */
+.mk-sortable { list-style: none; margin: var(--space-sm) 0; padding: 0; display: grid; gap: var(--space-sm); }
+.mk-sortable-item { min-width: 0; transition: transform .15s ease; }
+.mk-sortable-item.is-dragging { position: relative; z-index: 2; transition: none; box-shadow: 0 8px 24px var(--popup-shadow); border-radius: var(--radius-md); }
+.mk-sortable-item[data-sortable-fixed] > details.disclosure-row { border-style: dashed; background: transparent; }
+.mk-sort-handle { cursor: grab; color: var(--muted); font-size: var(--text-lg); line-height: 1; padding: 0 var(--space-xs); user-select: none; touch-action: none; }
+.mk-sortable-item.is-dragging .mk-sort-handle { cursor: grabbing; }
+.mk-sort-handle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-sm); }
+@media (prefers-reduced-motion: reduce) { .mk-sortable-item { transition: none; } }

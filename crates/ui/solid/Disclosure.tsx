@@ -30,7 +30,7 @@ export interface DisclosureProps extends Omit<JSX.IntrinsicElements["details"], 
 export function Disclosure(props: DisclosureProps): JSX.Element {
   const rest = omit(props, "summary", "children", "look", "open");
   return (
-    <details class={tokens((props.look ?? "plain") === "plain" && `disclosure`, (props.look ?? "plain") === "boxed" && `keys-help`, (props.look ?? "plain") === "more-options" && `more-options`)} open={(props.open ?? false)} {...rest}>
+    <details class={tokens((props.look ?? "plain") === "plain" && `disclosure`, (props.look ?? "plain") === "boxed" && `keys-help`, (props.look ?? "plain") === "more-options" && `more-options`, (props.look ?? "plain") === "compact" && `disclosure-compact`, (props.look ?? "plain") === "row" && `disclosure-row`)} open={(props.open ?? false)} {...rest}>
       <summary>
         {props.summary}
       </summary>
@@ -40,7 +40,23 @@ export function Disclosure(props: DisclosureProps): JSX.Element {
         </div>
       ) : (
         <>
-          {props.children}
+          {(props.look ?? "plain") === "compact" ? (
+            <div class="disclosure-body">
+              {props.children}
+            </div>
+          ) : (
+            <>
+              {(props.look ?? "plain") === "row" ? (
+                <div class="disclosure-body">
+                  {props.children}
+                </div>
+              ) : (
+                <>
+                  {props.children}
+                </>
+              )}
+            </>
+          )}
         </>
       )}
     </details>

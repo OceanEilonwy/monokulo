@@ -9,7 +9,7 @@
 use maud::{html, Markup};
 
 use super::{layout, PageChrome};
-use ui::{ProgressSteps, Step as Segment, StepState};
+use ui::{WizardSteps, WizardStep as Segment, WizardState};
 
 /// The three steps of setup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,11 +59,11 @@ pub fn steps(at: Step, wallet: Option<WalletAt>) -> Markup {
         .map(|(i, (step, label))| {
             let complete = i < current || at == Step::Done;
             let state = if i == current {
-                StepState::Current
+                WizardState::Current
             } else if complete {
-                StepState::Done
+                WizardState::Done
             } else {
-                StepState::Next
+                WizardState::Next
             };
             match (complete, i == current, step, wallet) {
                 (true, ..) => segment(label, "Complete".into(), 1, 1, state),
@@ -73,16 +73,16 @@ pub fn steps(at: Step, wallet: Option<WalletAt>) -> Markup {
             }
         })
         .collect::<Vec<_>>();
-    html! { (ProgressSteps::new("Setup progress", segments)) }
+    html! { (WizardSteps::new("Setup progress", segments)) }
 }
 
 /// The wallet's small steps on their own, for adding a wallet outside
 /// setup (`/account/wallets/...`).
 pub fn wallet_steps(wallet: WalletAt) -> Markup {
-    html! { (ProgressSteps::new("Wallet progress", vec![wallet_segment(wallet)])) }
+    html! { (WizardSteps::new("Wallet progress", vec![wallet_segment(wallet)])) }
 }
 
-fn segment(label: &str, detail: String, done: usize, tasks: usize, state: StepState) -> Segment {
+fn segment(label: &str, detail: String, done: usize, tasks: usize, state: WizardState) -> Segment {
     Segment {
         label: label.into(),
         detail,
@@ -102,7 +102,7 @@ fn wallet_segment(wallet: WalletAt) -> Segment {
         format!("{task} · step {} of {}", wallet.at + 1, labels.len()),
         wallet.at.min(labels.len()),
         labels.len(),
-        StepState::Current,
+        WizardState::Current,
     )
 }
 

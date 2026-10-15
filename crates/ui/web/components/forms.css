@@ -31,3 +31,19 @@
 .locked-input { position: relative; display: block; }
 .locked-input > .mk-input { padding-right: 2.4em; background: var(--surface-sunken); color: var(--muted); cursor: not-allowed; opacity: 1; }
 .locked-input .lock-icon { position: absolute; right: 0.8em; top: 50%; width: 1em; height: 1em; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+/* A tile that opens a tool (LaunchTile): an icon, a title, a line. */
+.mk-launch-tile { box-sizing: border-box; display: flex; align-items: center; gap: var(--space-md); min-width: 11em; padding: var(--space-md) var(--space-lg); border: 1px solid var(--btn-border); border-radius: var(--radius-sm); background: var(--btn-bg); color: var(--btn-ink); text-decoration: none; }
+a.mk-launch-tile[href]:hover { background: var(--btn-hover-bg); border-color: var(--btn-hover-border); color: var(--btn-ink); }
+.mk-launch-tile:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.mk-launch-tile[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
+.mk-launch-tile-icon { flex: none; display: flex; }
+.mk-launch-tile-icon svg { width: 1.7em; height: 1.7em; }
+.mk-launch-tile-text { display: flex; flex-direction: column; gap: var(--space-xs); }
+.mk-launch-tile-title { font-weight: 700; }
+.mk-launch-tile-hint { font-size: var(--text-sm); opacity: .85; }
+/* An input with buttons inside its right edge (Input actions). */
+.mk-input-with-actions { position: relative; display: block; min-width: 0; }
+.mk-input-with-actions > .mk-input { padding-right: calc(var(--space-sm) + 2 * 2.1rem + var(--space-xs)); }
+.mk-input-actions { position: absolute; top: 50%; right: var(--space-xs); transform: translateY(-50%); display: flex; gap: var(--space-xs); }
+.mk-input-actions > .mk-btn.icon-only { border-color: transparent; background: transparent; }
+.mk-input-actions > .mk-btn.icon-only:hover { background: var(--btn-hover-bg); }

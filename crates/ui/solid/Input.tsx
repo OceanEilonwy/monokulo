@@ -10,7 +10,7 @@ import type { ControlSize, InputType } from './types';
  * `Setting`'s, a table column's (`label`, read by screen readers). A
  * labelled input with its hint and error is a `Field`.
  */
-export interface InputProps extends Omit<JSX.IntrinsicElements["input"], "aria-describedby" | "aria-invalid" | "aria-label" | "autocomplete" | "class" | "classList" | "data-size" | "described_by" | "disabled" | "id" | "invalid" | "kind" | "label" | "name" | "placeholder" | "readonly" | "required" | "size" | "style" | "type" | "value"> {
+export interface InputProps extends Omit<JSX.IntrinsicElements["input"], "actions" | "aria-describedby" | "aria-invalid" | "aria-label" | "autocomplete" | "class" | "classList" | "data-size" | "described_by" | "disabled" | "id" | "invalid" | "kind" | "label" | "name" | "placeholder" | "readonly" | "required" | "size" | "style" | "type" | "value"> {
   name: string;
   id?: string;
   /**
@@ -46,6 +46,11 @@ export interface InputProps extends Omit<JSX.IntrinsicElements["input"], "aria-d
    */
   disabled?: boolean;
   size?: ControlSize;
+  /**
+   * Inside its right edge: `IconButton`s (scan a code, choose a
+   * file). Their own names say what they do.
+   */
+  actions?: JSX.Element;
 }
 
 /**
@@ -54,8 +59,19 @@ export interface InputProps extends Omit<JSX.IntrinsicElements["input"], "aria-d
  * labelled input with its hint and error is a `Field`.
  */
 export function Input(props: InputProps): JSX.Element {
-  const rest = omit(props, "name", "id", "kind", "value", "placeholder", "autocomplete", "label", "described_by", "invalid", "required", "readonly", "disabled", "size");
+  const rest = omit(props, "name", "id", "kind", "value", "placeholder", "autocomplete", "label", "described_by", "invalid", "required", "readonly", "disabled", "size", "actions");
   return (
-    <input class="mk-input" type={(props.kind ?? "text")} name={props.name} id={props.id} value={props.value} placeholder={props.placeholder} autocomplete={props.autocomplete} aria-label={props.label} aria-describedby={props.described_by} aria-invalid={(props.invalid ?? false) ? `true` : undefined} data-size={props.size} required={(props.required ?? false)} readonly={(props.readonly ?? false)} disabled={(props.disabled ?? false)} {...rest} />
+    <>
+      {props.actions != null ? (
+        <span class="mk-input-with-actions">
+          <input class="mk-input" type={(props.kind ?? "text")} name={props.name} id={props.id} value={props.value} placeholder={props.placeholder} autocomplete={props.autocomplete} aria-label={props.label} aria-describedby={props.described_by} aria-invalid={(props.invalid ?? false) ? `true` : undefined} data-size={props.size} required={(props.required ?? false)} readonly={(props.readonly ?? false)} disabled={(props.disabled ?? false)} {...rest} />
+          <span class="mk-input-actions">
+            {props.actions}
+          </span>
+        </span>
+      ) : (
+        <input class="mk-input" type={(props.kind ?? "text")} name={props.name} id={props.id} value={props.value} placeholder={props.placeholder} autocomplete={props.autocomplete} aria-label={props.label} aria-describedby={props.described_by} aria-invalid={(props.invalid ?? false) ? `true` : undefined} data-size={props.size} required={(props.required ?? false)} readonly={(props.readonly ?? false)} disabled={(props.disabled ?? false)} {...rest} />
+      )}
+    </>
   );
 }

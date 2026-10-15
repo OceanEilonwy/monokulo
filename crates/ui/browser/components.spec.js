@@ -90,9 +90,9 @@ for (const theme of ['light', 'dark']) {
   });
 }
 
-test('the progress strip counts completed tasks and keeps its detail on a phone', async ({ page }) => {
+test('the wizard strip counts completed tasks and keeps its detail on a phone', async ({ page }) => {
   await page.goto('/');
-  const wallet = page.locator('#component-progress-steps-1 [aria-current="step"]');
+  const wallet = page.locator('#component-wizard-steps-1 [aria-current="step"]');
   await expect(wallet).toHaveText('WalletBack up · step 2 of 3');
   await expect(wallet.locator('progress')).toHaveAttribute('value', '1');
   await page.setViewportSize({ width: 320, height: 740 });
@@ -226,4 +226,57 @@ test('a table becomes cards on a phone, and facts stack', async ({ page }) => {
   await expect(page.locator('#component-table-1 thead')).toBeHidden();
   expect(await page.locator('#component-table-1 tr').first().evaluate(el => getComputedStyle(el).display)).toBe('grid');
   expect(await page.locator('#component-table-2 th').first().evaluate(el => getComputedStyle(el).display)).toBe('block');
+});
+
+test('a sortable list reorders by drag and by the arrow keys, and says so', async ({ page }) => {
+  // Without the slide, so where each row is doesn't depend on timing.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/#component-sortable-list');
+  const list = page.locator('#component-sortable-list-1 .mk-sortable');
+  const places = () => list.locator(':scope > li summary').allTextContents();
+  await list.evaluate(el => { el.events = []; el.addEventListener('mk-reordered', () => el.events.push('reordered')); });
+  const first = list.locator('[data-sortable-handle]').first();
+  await first.focus();
+  await page.keyboard.press('ArrowDown');
+  expect((await places())[1]).toContain('Primary');
+  await expect(list.locator('[data-sortable-handle]').nth(1)).toBeFocused();
+  // The fixed row stays last, whatever moves.
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowDown');
+  expect((await places())[3]).toContain('Add a node');
+  await list.scrollIntoViewIfNeeded();
+  const box = await list.locator('[data-sortable-handle]').nth(2).boundingBox();
+  const target = await list.locator(':scope > li').first().boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2, target.y + 2, { steps: 8 });
+  await page.mouse.up();
+  expect((await places())[0]).toContain('Primary');
+  expect(await list.evaluate(el => el.events.length)).toBeGreaterThan(2);
+});
+
+test('a help tip opens over the page and closes on Escape', async ({ page }) => {
+  await page.goto('/#component-help-tip');
+  const tip = page.locator('#component-help-tip-1 details.help-tip');
+  await tip.locator('summary').click();
+  await expect(tip.locator('.help-tip-body')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(tip).not.toHaveAttribute('open', '');
+  await expect(tip.locator('summary')).toBeFocused();
+});
+
+test('a copy block copies its lines without their notes', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto('/#component-copy-block');
+  await page.getByRole('button', { name: 'Copy the key commands' }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('umask 077\nopenssl rand -hex 32 > monokulo.key');
+  await expect(page.getByRole('button', { name: 'Copy the key commands' })).toHaveText('Copied');
+});
+
+test('tabs with logos in their labels keep working, and tell the page', async ({ page }) => {
+  await page.goto('/');
+  const tabs = page.getByRole('tablist', { name: 'Example POS views' });
+  const told = page.evaluate(() => new Promise(resolve => document.addEventListener('mk-tab', e => resolve(e.detail.id), { once: true })));
+  await tabs.getByRole('tab', { name: 'History' }).click();
+  expect(await told).toBe('example-history');
 });

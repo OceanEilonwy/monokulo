@@ -1,13 +1,31 @@
 /* Flat progress segments; task details stay inside their parent label. */
-.mk-progress-steps { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--space-lg); list-style: none; padding: 0; margin: var(--space-xl) 0; }
-.mk-progress-steps > li { display: flex; align-items: start; gap: var(--space-sm); min-width: 0; color: var(--muted); }
-.mk-progress-steps small { display: block; font-size: var(--text-sm); font-weight: 500; }
-.mk-progress-steps [aria-current="step"] { color: var(--ink); font-weight: 800; }
-.mk-progress-steps[data-design="strip"] > li { padding-block: var(--space-md); flex-direction: column; justify-content: space-between; }
+.mk-wizard-steps { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--space-lg); list-style: none; padding: 0; margin: var(--space-xl) 0; }
+.mk-wizard-steps > li { display: flex; align-items: start; gap: var(--space-sm); min-width: 0; color: var(--muted); }
+.mk-wizard-steps small { display: block; font-size: var(--text-sm); font-weight: 500; }
+.mk-wizard-steps [aria-current="step"] { color: var(--ink); font-weight: 800; }
+.mk-wizard-steps[data-design="strip"] > li { padding-block: var(--space-md); flex-direction: column; justify-content: space-between; }
 /* Native values drive the fill in both server-rendered and JS-driven screens. */
-.mk-step-progress { appearance: none; display: block; width: 100%; height: 3px; border: 0; border-radius: 0; background: var(--line-strong); color: var(--accent-text); }
-.mk-step-progress::-webkit-progress-bar { background: var(--line-strong); }
-.mk-step-progress::-webkit-progress-value { background: var(--accent-text); }
-.mk-step-progress::-moz-progress-bar { background: var(--accent-text); }
-.mk-progress-steps > li > span { overflow-wrap: anywhere; }
-@media (max-width: 480px) { .mk-progress-steps { gap: var(--space-sm); } }
+.mk-wizard-progress { appearance: none; display: block; width: 100%; height: 3px; border: 0; border-radius: 0; background: var(--line-strong); color: var(--accent-text); }
+.mk-wizard-progress::-webkit-progress-bar { background: var(--line-strong); }
+.mk-wizard-progress::-webkit-progress-value { background: var(--accent-text); }
+.mk-wizard-progress::-moz-progress-bar { background: var(--accent-text); }
+.mk-wizard-steps > li > span { overflow-wrap: anywhere; }
+@media (max-width: 480px) { .mk-wizard-steps { gap: var(--space-sm); } }
+/* A short fixed sequence (ProgressSteps): a track of dots, then a line.
+   Its colours are an order state's (--state-*, select.css). */
+.mk-stage { text-align: left; padding: var(--space-sm) var(--space-md); border: 1px solid var(--state-border, var(--line)); border-radius: var(--radius-md); background: var(--state-bg, var(--paper-raised)); color: var(--state-ink, var(--ink)); }
+.mk-track { list-style: none; margin: 0 0 var(--space-sm); padding: 0; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); position: relative; }
+.mk-track::before { content: ""; position: absolute; top: .8em; left: 16.67%; right: 16.67%; height: 2px; background: color-mix(in srgb, currentColor 30%, transparent); }
+.mk-track:has(> li:nth-child(2):last-child)::before { left: 25%; right: 25%; }
+.mk-track > li { position: relative; display: grid; justify-items: center; gap: var(--space-xs); font-size: var(--text-xs); font-weight: 700; }
+.mk-track-dot { display: grid; place-items: center; width: 2.13em; height: 2.13em; border: 2px solid color-mix(in srgb, currentColor 40%, transparent); border-radius: 50%; background: var(--paper-raised); }
+.mk-track-dot svg { width: 1.2em; height: 1.2em; }
+.mk-track > .step-done .mk-track-dot { background: var(--state-paid-border); border-color: var(--state-paid-border); color: var(--paper-raised); }
+.mk-track > .step-now .mk-track-dot { border-color: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
+.mk-track > .step-part .mk-track-dot { border-color: currentColor; background: conic-gradient(currentColor 0 50%, var(--paper-raised) 50% 100%); }
+.mk-track > .step-fail .mk-track-dot { background: var(--state-border); border-color: var(--state-border); color: var(--paper-raised); }
+.mk-track > .step-todo { opacity: .6; }
+.mk-stage-msg { margin: 0; font-size: var(--text-sm); line-height: 1.4; }
+.mk-stage[data-size="compact"] { padding: var(--space-sm); }
+.mk-stage[data-size="compact"] .mk-track > li { font-size: var(--text-2xs); }
+.mk-stage[data-size="compact"] .mk-stage-msg { font-size: var(--text-xs); }

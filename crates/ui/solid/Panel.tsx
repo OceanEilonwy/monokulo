@@ -3,21 +3,28 @@
 
 import { omit } from 'solid-js';
 import type { JSX } from '@solidjs/web';
+import type { PanelLook } from './types';
 
 /**
- * A raised panel holding one part of a page: a form, a set of facts.
+ * A panel holding one part of a page: a form, a set of facts; or, as
+ * a tile, one of a grid of them.
  */
-export interface PanelProps extends Omit<JSX.IntrinsicElements["div"], "children" | "class" | "classList" | "style"> {
+export interface PanelProps extends Omit<JSX.IntrinsicElements["div"], "children" | "class" | "classList" | "data-look" | "look" | "style"> {
   children: JSX.Element;
+  /**
+   * @default "raised"
+   */
+  look?: PanelLook;
 }
 
 /**
- * A raised panel holding one part of a page: a form, a set of facts.
+ * A panel holding one part of a page: a form, a set of facts; or, as
+ * a tile, one of a grid of them.
  */
 export function Panel(props: PanelProps): JSX.Element {
-  const rest = omit(props, "children");
+  const rest = omit(props, "children", "look");
   return (
-    <div class="box" {...rest}>
+    <div class="box" data-look={(props.look ?? "raised") === "tile" ? `tile` : undefined} {...rest}>
       {props.children}
     </div>
   );

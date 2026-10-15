@@ -10,6 +10,7 @@ mod dialog;
 mod forms;
 mod select;
 mod settings;
+mod sortable;
 mod steps;
 mod tabs;
 
@@ -21,6 +22,7 @@ pub use dialog::*;
 pub use forms::*;
 pub use select::*;
 pub use settings::*;
+pub use sortable::*;
 pub use steps::*;
 pub use tabs::*;
 
@@ -58,6 +60,8 @@ pub fn catalogue() -> Vec<Specimens> {
     vec![
         specimens(actions::button_examples()),
         specimens(actions::link_button_examples()),
+        specimens(actions::launch_tile_examples()),
+        specimens(actions::segmented_control_examples()),
         specimens(content::alert_examples()),
         specimens(content::panel_examples()),
         specimens(content::heading_examples()),
@@ -67,9 +71,15 @@ pub fn catalogue() -> Vec<Specimens> {
         specimens(content::network_badge_examples()),
         specimens(content::short_value_examples()),
         specimens(content::disclosure_examples()),
+        specimens(content::help_tip_examples()),
+        specimens(sortable::sortable_list_examples()),
+        specimens(Vec::<(&str, sortable::SortableItem)>::new()),
+        specimens(Vec::<(&str, sortable::SortHandle)>::new()),
         specimens(content::checks_examples()),
         specimens(content::timeline_examples()),
         specimens(content::table_examples()),
+        specimens(content::pagination_examples()),
+        specimens(content::card_examples()),
         // Shown in Table's examples: a row or a cell alone isn't a table.
         specimens(Vec::<(&str, content::Row)>::new()),
         specimens(Vec::<(&str, content::Cell)>::new()),
@@ -89,10 +99,12 @@ pub fn catalogue() -> Vec<Specimens> {
         specimens(forms::icon_link_examples()),
         specimens(forms::form_actions_examples()),
         specimens(select::select_examples()).partial("book-theme", select::book_theme()),
+        specimens(steps::wizard_steps_examples()),
         specimens(steps::progress_steps_examples()),
         specimens(tabs::tabs_examples()),
         specimens(tabs::tab_links_examples()),
         specimens(copy::copy_value_examples()),
+        specimens(copy::copy_block_examples()),
         specimens(settings::settings_form_examples()),
         specimens(settings::settings_card_examples()),
         specimens(settings::setting_examples()),
@@ -100,6 +112,7 @@ pub fn catalogue() -> Vec<Specimens> {
         specimens(settings::toast_examples()),
         specimens(chrome::site_nav_examples()),
         specimens(chrome::menu_examples()),
+        specimens(chrome::menu_item_examples()),
         specimens(chrome::theme_toggle_examples()),
         specimens(chrome::status_dot_examples()),
     ]

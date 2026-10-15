@@ -38,3 +38,10 @@ textarea.mk-input { resize: vertical; }
 .mk-status-text[data-tone="error"] { color: var(--error); }
 .mk-status-text[data-tone="success"] { color: var(--success); }
 .mk-status-text[data-tone="changed"] { color: var(--card-changed); }
+
+/* `data-only` on any component (through its rest attributes) or element:
+   shown only with scripts running, only without, only on screen, only on
+   paper. The islands script marks the page `js`. */
+html:not(.js) [data-only="script"], html.js [data-only="no-script"] { display: none !important; }
+@media print { [data-only="screen"] { display: none !important; } }
+@media screen { [data-only="print"] { display: none !important; } }

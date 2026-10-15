@@ -419,7 +419,7 @@ input[aria-invalid="true"] { border-color: var(--error); }
 
 /* A paper backup, printed: the words and their facts, nothing else. */
 @media print {
-  .site-nav, .context-nav, .mk-progress-steps, .app-tabs, .step-foot, .check-line,
+  .site-nav, .context-nav, .mk-wizard-steps, .app-tabs, .step-foot, .check-line,
   .phrase-head button, .phrase-box .steps, .qr-col, .no-print, [data-wallet-setup] > section > p,
   [data-wallet-setup] [hidden] { display: none !important; }
   .phrase-box { border: 0; padding: 0; }

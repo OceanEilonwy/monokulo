@@ -91,7 +91,7 @@ Write behaviour signals that are set while attaching (in a `ref`) with
 select's value) says so with an `input` or `change` event; changes to its
 options or attributes are followed by themselves.
 
-Generated so far: Button, LinkButton, Alert, Field, ProgressSteps,
+Generated so far: Button, LinkButton, Alert, Field, WizardSteps,
 TabLinks, and the interactive Select, Tabs, CopyValue and the settings
 pages' SettingsForm, SettingsCard, Setting, SaveBar and Toast. Every
 dropdown and every settings page on monokulo is these. The settings

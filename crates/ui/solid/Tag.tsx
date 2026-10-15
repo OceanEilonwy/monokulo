@@ -11,11 +11,15 @@ import type { OrderState, TagTone } from './types';
  * order's status. `short` is what a phone shows instead, the long
  * words kept for screen readers.
  */
-export interface TagProps extends Omit<JSX.IntrinsicElements["span"], "children" | "class" | "classList" | "short" | "state" | "style" | "tone"> {
+export interface TagProps extends Omit<JSX.IntrinsicElements["span"], "children" | "class" | "classList" | "icon" | "short" | "state" | "style" | "tone"> {
   children: JSX.Element;
   tone?: TagTone;
   state?: OrderState;
   short?: string;
+  /**
+   * Before the words: an inline SVG, `aria-hidden`.
+   */
+  icon?: JSX.Element;
 }
 
 /**
@@ -24,9 +28,16 @@ export interface TagProps extends Omit<JSX.IntrinsicElements["span"], "children"
  * words kept for screen readers.
  */
 export function Tag(props: TagProps): JSX.Element {
-  const rest = omit(props, "children", "tone", "state", "short");
+  const rest = omit(props, "children", "tone", "state", "short", "icon");
   return (
     <span class={tokens(`tag`, props.tone != null && `tag-${props.tone}`, props.state != null && `state-${props.state}`)} {...rest}>
+      {props.icon != null ? (
+        <>
+          {props.icon}
+        </>
+      ) : (
+        null
+      )}
       {props.short != null ? (
         <>
           <span class="label-long">

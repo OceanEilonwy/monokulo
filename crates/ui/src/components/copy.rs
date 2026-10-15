@@ -93,3 +93,47 @@ pub(super) fn copy_value_examples() -> Vec<(&'static str, CopyValue)> {
         ),
     ]
 }
+
+component! {
+    /// Lines to copy whole: a command, a config file, a key. Without
+    /// JavaScript it is a `pre` to select. Once its island attaches, a Copy
+    /// button over its top right copies it; with `comment` ("#"), what
+    /// follows that marker on a line is left out (a note after a command).
+    pub struct CopyBlock {
+        code: String,
+        /// The Copy button's accessible name: what it copies.
+        #[default(String::from("Copy to clipboard"))]
+        copy_label: String,
+        /// A line comment's marker: what follows it isn't copied.
+        comment: Option<String>,
+    }
+    behaviour "copy-block.behaviour.ts" {
+        uses(comment),
+        /// What the button says: Copy, or Copied for a moment after.
+        label: String,
+        /// What the last copy did, for screen readers.
+        status: String,
+        fn copy,
+        ref code,
+    }
+    html {
+        div class="mk-copy-block" {
+            pre ref=code { code { (code) } }
+            @if enhanced {
+                button class="mk-btn" data-size="compact" type="button" aria-label=(copy_label) on:click=copy {
+                    (b.label)
+                }
+                span class="visually-hidden" role="status" { (b.status) }
+            }
+        }
+    }
+}
+
+pub(super) fn copy_block_examples() -> Vec<(&'static str, CopyBlock)> {
+    vec![(
+        "A command with a note",
+        CopyBlock::new("umask 077\nopenssl rand -hex 32 > monokulo.key   # keep this file safe")
+            .copy_label("Copy the key commands")
+            .comment("#"),
+    )]
+}

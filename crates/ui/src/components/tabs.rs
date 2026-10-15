@@ -5,7 +5,8 @@ use crate::{component, Slot, UiRecord};
 pub struct Tab {
     /// The panel's id: the tab links to it.
     pub id: String,
-    pub label: String,
+    /// What the tab says: words, or a logo and words.
+    pub label: Slot,
     pub panel: Slot,
 }
 
@@ -13,7 +14,8 @@ component! {
     /// Panels of one page, one shown at a time. Without JavaScript every
     /// panel shows, and the tabs are links to them. Once its island
     /// attaches, the tabs are a tablist: one panel at a time, picked with
-    /// a click or the arrow keys, Home and End.
+    /// a click or the arrow keys, Home and End. Each pick sends `mk-tab`
+    /// (`{id}`, the panel shown) from the tabs, for a page script to follow.
     pub struct Tabs {
         /// What the tabs are of.
         label: String,
@@ -25,9 +27,10 @@ component! {
         selected: String,
         fn pick(String),
         fn key,
+        ref root,
     }
     html {
-        div class="mk-tabset" {
+        div class="mk-tabset" ref=root {
             div class="mk-tabs" aria-label=(label) role="tablist" if enhanced {
                 @for tab in tabs {
                     a href={ "#" (tab.id) } id={ (tab.id) "-tab" } role="tab" if enhanced
