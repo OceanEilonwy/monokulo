@@ -87,20 +87,6 @@ export function Select(props: SelectProps): JSX.Element {
                   ) : (
                     null
                   )}
-                  {b.current()!.label != null ? (
-                    <span class="mk-label">
-                      {b.current()!.label}
-                    </span>
-                  ) : (
-                    null
-                  )}
-                  {b.current()!.detail != null ? (
-                    <span class="mk-detail">
-                      {b.current()!.detail}
-                    </span>
-                  ) : (
-                    null
-                  )}
                   {b.current()!.network != null ? (
                     <span class={tokens(`tag-network`, b.current()!.mainnet && `is-main`, !(b.current()!.mainnet) && `is-test`)} data-size={b.current()!.label != null ? `icon` : undefined} title={b.current()!.label != null ? `${b.current()!.network}` : undefined}>
                       {b.current()!.mainnet ? (
@@ -117,6 +103,20 @@ export function Select(props: SelectProps): JSX.Element {
                       <span class="tag-network-name">
                         {b.current()!.network}
                       </span>
+                    </span>
+                  ) : (
+                    null
+                  )}
+                  {b.current()!.label != null ? (
+                    <span class="mk-label">
+                      {b.current()!.label}
+                    </span>
+                  ) : (
+                    null
+                  )}
+                  {b.current()!.detail != null ? (
+                    <span class="mk-detail">
+                      {b.current()!.detail}
                     </span>
                   ) : (
                     null
@@ -152,20 +152,6 @@ export function Select(props: SelectProps): JSX.Element {
                     ) : (
                       null
                     )}
-                    {item.label != null ? (
-                      <span class="mk-label">
-                        {item.label}
-                      </span>
-                    ) : (
-                      null
-                    )}
-                    {item.detail != null ? (
-                      <span class="mk-detail">
-                        {item.detail}
-                      </span>
-                    ) : (
-                      null
-                    )}
                     {item.network != null ? (
                       <span class={tokens(`tag-network`, item.mainnet && `is-main`, !(item.mainnet) && `is-test`)} data-size={item.label != null ? `icon` : undefined} title={item.label != null ? `${item.network}` : undefined}>
                         {item.mainnet ? (
@@ -182,6 +168,20 @@ export function Select(props: SelectProps): JSX.Element {
                         <span class="tag-network-name">
                           {item.network}
                         </span>
+                      </span>
+                    ) : (
+                      null
+                    )}
+                    {item.label != null ? (
+                      <span class="mk-label">
+                        {item.label}
+                      </span>
+                    ) : (
+                      null
+                    )}
+                    {item.detail != null ? (
+                      <span class="mk-detail">
+                        {item.detail}
                       </span>
                     ) : (
                       null
@@ -307,20 +307,6 @@ export function attachSelect(root: Element, props: SelectProps): () => void {
                   ) : (
                     null
                   )}
-                  {b.current()!.label != null ? (
-                    <span class="mk-label">
-                      {b.current()!.label}
-                    </span>
-                  ) : (
-                    null
-                  )}
-                  {b.current()!.detail != null ? (
-                    <span class="mk-detail">
-                      {b.current()!.detail}
-                    </span>
-                  ) : (
-                    null
-                  )}
                   {b.current()!.network != null ? (
                     <span class={tokens(`tag-network`, b.current()!.mainnet && `is-main`, !(b.current()!.mainnet) && `is-test`)} data-size={b.current()!.label != null ? `icon` : undefined} title={b.current()!.label != null ? `${b.current()!.network}` : undefined}>
                       {b.current()!.mainnet ? (
@@ -337,6 +323,20 @@ export function attachSelect(root: Element, props: SelectProps): () => void {
                       <span class="tag-network-name">
                         {b.current()!.network}
                       </span>
+                    </span>
+                  ) : (
+                    null
+                  )}
+                  {b.current()!.label != null ? (
+                    <span class="mk-label">
+                      {b.current()!.label}
+                    </span>
+                  ) : (
+                    null
+                  )}
+                  {b.current()!.detail != null ? (
+                    <span class="mk-detail">
+                      {b.current()!.detail}
                     </span>
                   ) : (
                     null
@@ -372,20 +372,6 @@ export function attachSelect(root: Element, props: SelectProps): () => void {
                     ) : (
                       null
                     )}
-                    {item.label != null ? (
-                      <span class="mk-label">
-                        {item.label}
-                      </span>
-                    ) : (
-                      null
-                    )}
-                    {item.detail != null ? (
-                      <span class="mk-detail">
-                        {item.detail}
-                      </span>
-                    ) : (
-                      null
-                    )}
                     {item.network != null ? (
                       <span class={tokens(`tag-network`, item.mainnet && `is-main`, !(item.mainnet) && `is-test`)} data-size={item.label != null ? `icon` : undefined} title={item.label != null ? `${item.network}` : undefined}>
                         {item.mainnet ? (
@@ -402,6 +388,20 @@ export function attachSelect(root: Element, props: SelectProps): () => void {
                         <span class="tag-network-name">
                           {item.network}
                         </span>
+                      </span>
+                    ) : (
+                      null
+                    )}
+                    {item.label != null ? (
+                      <span class="mk-label">
+                        {item.label}
+                      </span>
+                    ) : (
+                      null
+                    )}
+                    {item.detail != null ? (
+                      <span class="mk-detail">
+                        {item.detail}
                       </span>
                     ) : (
                       null

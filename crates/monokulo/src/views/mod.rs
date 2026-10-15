@@ -627,14 +627,14 @@ impl Health {
 /// rendered with the engine's last known health so it is right without
 /// JavaScript (every page load renders it afresh); its island polls for
 /// live updates. `place`: the nav bar or the POS top bar.
-pub fn status_indicator(health: Option<Health>, place: ui::DotPlace) -> Markup {
+pub fn status_indicator(health: Option<Health>) -> Markup {
     let health = match health {
         Some(Health::Ok) => ui::HealthState::Ok,
         Some(Health::Slow) => ui::HealthState::Slow,
         Some(Health::Problem) => ui::HealthState::Error,
         None => ui::HealthState::Unknown,
     };
-    ui::StatusDot::new(health, place).render()
+    ui::StatusDot::new(health).render()
 }
 
 /// The site nav (`ui::SiteNav`): the brand and, once signed in, Home
@@ -667,7 +667,7 @@ fn nav(chrome: &PageChrome) -> Markup {
     };
     let brand = html! { (logo_mark(24, "site-nav-logo")) "Monokulo" };
     ui::SiteNav::new(brand, links)
-        .status(status_indicator(chrome.health, ui::DotPlace::Nav))
+        .status(status_indicator(chrome.health))
         .render()
 }
 
@@ -687,7 +687,7 @@ fn account_icon() -> Markup {
 /// needed) with who they are, Account, their wallets, the theme switch, the
 /// zone times are shown in, and Log out. On a phone its items sit in the
 /// hamburger list instead.
-fn account_menu(chrome: &PageChrome) -> Markup {
+pub fn account_menu(chrome: &PageChrome) -> Markup {
     let role = if chrome.is_admin { "Admin" } else { "Merchant" };
     let zone = chrome.clock.name();
     let zone_title = if chrome.clock.is_automatic() {
@@ -751,7 +751,7 @@ mod tests {
 
     #[test]
     fn status_indicator_is_rendered_with_the_known_health_and_polls_only_as_an_enhancement() {
-        let healthy = status_indicator(Some(Health::Ok), ui::DotPlace::Nav).into_string();
+        let healthy = status_indicator(Some(Health::Ok)).into_string();
         assert!(healthy.contains(r#"<a href="/status" class="nav-status-link" id="status-indicator" title="all systems healthy" aria-label="Status: all systems healthy" data-mk="1" data-island="StatusDot""#), "got: {healthy}");
         assert!(
             healthy.contains(r#"<span class="status-dot status-dot-ok" data-mk="2"></span></a>"#),
@@ -759,8 +759,8 @@ mod tests {
         );
         assert!(healthy.contains("/status/summary"));
 
-        let problem = status_indicator(Some(Health::Problem), ui::DotPlace::Pos).into_string();
-        let slow = status_indicator(Some(Health::Slow), ui::DotPlace::Nav).into_string();
+        let problem = status_indicator(Some(Health::Problem)).into_string();
+        let slow = status_indicator(Some(Health::Slow)).into_string();
         assert!(
             slow.contains(r#"class="status-dot status-dot-slow""#),
             "{slow}"
@@ -771,7 +771,7 @@ mod tests {
             "got: {problem}"
         );
 
-        let unknown = status_indicator(None, ui::DotPlace::Nav).into_string();
+        let unknown = status_indicator(None).into_string();
         assert!(
             unknown.contains(r#"class="status-dot status-dot-unknown""#),
             "got: {unknown}"

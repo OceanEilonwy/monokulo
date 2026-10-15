@@ -253,25 +253,9 @@ const PAGE_STYLE: &str = r#"
 .kv-table td, [data-table="payments"] td { overflow-wrap: anywhere; }
 .kv-table td code, [data-table="payments"] td code { word-break: break-all; }
 [data-table="payments"] th { min-width: 8em; }
-.order-title { display: flex; align-items: baseline; gap: .3em; min-width: 0; white-space: nowrap; }
-.order-title-id { font-size: 0.9em; min-width: 0; }
-/* A small phone: the breadcrumb already says it's an order; the id gets
-   the room. */
-@media (max-width: 400px) { .order-title-label { display: none; } }
-.share-btn {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.5em;
-  height: 1.5em;
-  border: 2px solid var(--line);
-  border-radius: var(--radius-sm);
-  color: var(--ink);
-  text-decoration: none;
-}
-.share-btn:hover { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
-.share-btn svg { width: 60%; height: 60%; }
+/* The order's id in the title: its type, at the title's size, no box. */
+.order-title-id { font-family: var(--font-mono); font-weight: 600; letter-spacing: 0; }
+.mk-btn .share-icon { width: 1.1em; height: 1.1em; flex: none; }
 .progress-bar { border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; height: 0.5em; background: var(--paper); margin: 0.6em 0 1em; }
 .progress-fill { height: 100%; background: var(--accent); }
 "#;
@@ -376,13 +360,14 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
     let crumbs = super::store_crumbs(data.connection_id.as_str(), &data.display_name, true);
     let header = match &data.order {
         Some(order) => ui::PageHeader::new(html! {
-            span class="order-title" { span class="order-title-label" { "Order · " } code class="order-title-id" { (super::short_id(order.order_id.as_str())) } }
+            "Order " span class="order-title-id" { (super::short_id(order.order_id.as_str())) }
         })
         .crumbs(crumbs)
         .actions(html! {
-            a class="share-btn" id="share-payment-link" href=(order.payment_link) target="_blank" rel="noopener"
-               aria-label="Share payment link" title="Share payment link" {
-                svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            // With JavaScript, the device's share sheet; without, the
+            // payment page in a new tab.
+            (ui::LinkButton::new(html! {
+                svg class="share-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
                     stroke-linejoin="round" aria-hidden="true" focusable="false" {
                     circle cx="18" cy="5" r="3" {}
                     circle cx="6" cy="12" r="3" {}
@@ -390,7 +375,12 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
                     line x1="8.59" y1="13.51" x2="15.42" y2="17.49" {}
                     line x1="15.41" y1="6.51" x2="8.59" y2="10.49" {}
                 }
-            }
+                "Share"
+            }, order.payment_link.as_str())
+            .attr("id", "share-payment-link")
+            .attr("target", "_blank")
+            .attr("rel", "noopener")
+            .attr("title", "Share the payment link"))
             (super::reload_button(&chrome.current_path))
         }),
         None => ui::PageHeader::new("Order not found").crumbs(crumbs),
@@ -398,7 +388,7 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
     let body = html! {
         @if let Some(order) = &data.order {
             (ui::Hint::new(html! {
-                "Share the payment link (icon above) with whoever needs to pay this order. "
+                "Share the payment link with whoever needs to pay this order. "
                 " "
                 (super::logs_link(chrome, "order.id", order.order_id.as_str(), "Logs for this order"))
                 @if order.from_pos && chrome.is_admin {
@@ -573,7 +563,7 @@ mod tests {
         };
         let html = detail_page(&chrome(), &data).into_string();
         assert!(html.contains(r#"<nav class="mk-breadcrumbs" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a><a href="/dashboard/stores/conn_1/orders" title="Orders">Orders</a></nav>"#));
-        assert!(html.contains(r#"<span class="order-title-label">Order · </span><code class="order-title-id">pay_abc123</code>"#), "{html}");
+        assert!(html.contains(r#"<h1>Order <span class="order-title-id">pay_abc123</span></h1>"#), "{html}");
     }
 
     #[test]

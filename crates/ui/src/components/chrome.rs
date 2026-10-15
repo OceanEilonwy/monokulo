@@ -185,23 +185,14 @@ pub enum HealthState {
     Unknown,
 }
 
-/// Where a status dot sits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]
-pub enum DotPlace {
-    /// The site's bar.
-    Nav,
-    /// The POS's top bar.
-    Pos,
-}
-
 component! {
-    /// A glowing dot linking to the status page, as the instance was when
+    /// A glowing dot linking to the status page (in the site's bar and the
+    /// POS's alike), as the instance was when
     /// the page was rendered, so it is right without JavaScript. Once its
     /// island attaches it polls `poll` every 30 seconds while the tab is in
     /// sight. Its title and accessible name carry the words.
     pub struct StatusDot {
         health: HealthState,
-        place: DotPlace,
         #[default(String::from("/status"))]
         href: String,
         /// Answers `{"state": "ok" | "slow" | ...}`.
@@ -219,7 +210,7 @@ component! {
         words: String,
     }
     html {
-        a href=(href) class=join["nav-status-link" if place == DotPlace::Nav, "pos-status-link" if place == DotPlace::Pos]
+        a href=(href) class="nav-status-link"
             id=(id)
             title=join["all systems healthy" if health == HealthState::Ok,
                 "scanning is slow - see the status page" if health == HealthState::Slow,
@@ -254,7 +245,7 @@ pub(super) fn site_nav_examples() -> Vec<(&'static str, SiteNav)> {
         )
         .home("#component-site-nav")
         .status(
-            StatusDot::new(HealthState::Ok, DotPlace::Nav)
+            StatusDot::new(HealthState::Ok)
                 .href("#component-status-dot")
                 .id("book-nav-status"),
         ),
@@ -293,21 +284,21 @@ pub(super) fn status_dot_examples() -> Vec<(&'static str, StatusDot)> {
     vec![
         (
             "Healthy",
-            StatusDot::new(HealthState::Ok, DotPlace::Nav)
+            StatusDot::new(HealthState::Ok)
                 .href("#component-status-dot")
                 .poll("")
                 .id("book-status-ok"),
         ),
         (
             "Slow",
-            StatusDot::new(HealthState::Slow, DotPlace::Nav)
+            StatusDot::new(HealthState::Slow)
                 .href("#component-status-dot")
                 .poll("")
                 .id("book-status-slow"),
         ),
         (
             "A problem",
-            StatusDot::new(HealthState::Error, DotPlace::Nav)
+            StatusDot::new(HealthState::Error)
                 .href("#component-status-dot")
                 .poll("")
                 .id("book-status-error"),

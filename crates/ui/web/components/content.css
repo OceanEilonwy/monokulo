@@ -26,6 +26,10 @@
 /* A message's title and its actions (Alert). */
 .alert-title { font-weight: 800; }
 :is(.error, .warning, .success, .notice):has(> .alert-title) { font-weight: 500; }
+/* An icon at the message's left, the words beside it. */
+:is(.error, .warning, .success, .notice):has(> .alert-icon) { position: relative; padding-inline-start: calc(var(--space-md) + 1.6em); font-weight: 500; }
+.alert-icon { position: absolute; inset-inline-start: var(--space-md); top: calc(var(--space-sm) + .1em); display: flex; }
+.alert-icon svg { width: 1.2em; height: 1.2em; }
 .alert-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-top: var(--space-sm); }
 /* Muted words in a line, at its size. */
 .muted { color: var(--muted); }

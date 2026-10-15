@@ -3287,7 +3287,6 @@
               "health": "ok",
               "href": "#component-status-dot",
               "id": "book-nav-status",
-              "place": "nav",
               "poll": "/status/summary"
             }
           }
@@ -3520,7 +3519,6 @@
       "health": "ok",
       "href": "#component-status-dot",
       "id": "book-status-ok",
-      "place": "nav",
       "poll": ""
     },
     "title": "Healthy"
@@ -3532,7 +3530,6 @@
       "health": "slow",
       "href": "#component-status-dot",
       "id": "book-status-slow",
-      "place": "nav",
       "poll": ""
     },
     "title": "Slow"
@@ -3544,7 +3541,6 @@
       "health": "error",
       "href": "#component-status-dot",
       "id": "book-status-error",
-      "place": "nav",
       "poll": ""
     },
     "title": "A problem"

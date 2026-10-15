@@ -6,7 +6,7 @@
 //! (`/setup/wallet/...`) and on the Account page (`/account/wallets/...`):
 //! a [`Flow`] says which. Handlers: `http::setup`, `http::wallets`.
 
-use maud::{html, Markup};
+use maud::{html, Markup, PreEscaped};
 
 use super::settings::{self, Card, Field, Save, Toast, ToastKind};
 use super::setup::{SetupContext, WalletAt, WalletPath};
@@ -207,10 +207,13 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
     }
     .progress(flow.steps(WalletPath::New, 0));
     let body = html! {
-        p {
-            "Payments go straight to your own Monero wallet. Monokulo only gets watch-only keys: it sees "
-            "payments arrive and can never spend them."
-        }
+        (ui::Alert::new(
+            "Payments go straight to your own Monero wallet. Monokulo only gets watch-only keys: it sees \
+             payments arrive and can never spend them.",
+            ui::Tone::Success,
+        )
+        .icon(html! { (PreEscaped(ui::assets::icons::INFO)) })
+        .quiet(true))
         @if let Some(error) = &data.error {
             (ui::Alert::new(error.as_str(), ui::Tone::Error))
         }

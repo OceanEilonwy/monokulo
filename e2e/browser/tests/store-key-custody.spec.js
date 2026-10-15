@@ -14,7 +14,7 @@ async function createOrder(page, base, storeId, amount) {
   await page.goto(`${base}/dashboard/stores/${storeId}/orders/new`);
   await page.locator('input[name="amount"]').fill(amount);
   await page.getByRole('button', { name: 'Create order' }).click();
-  await expect(page.locator('h1 .order-title')).toBeVisible();
+  await expect(page.locator('h1 .order-title-id')).toBeVisible();
 }
 
 test('a store keeps its keys in the engine; snp turned on without SEV-SNP hardware is reported, and plain stores carry on', async ({ page }) => {

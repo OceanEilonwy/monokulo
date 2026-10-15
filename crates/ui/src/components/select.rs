@@ -269,8 +269,6 @@ component! {
                     span class="mk-value" {
                         @if let Some(item) = b.current {
                             @if let Some(logo) = item.logo { img class="mk-logo" src=(logo) alt=""; }
-                            @if let Some(label) = item.label { span class="mk-label" { (label) } }
-                            @if let Some(detail) = item.detail { span class="mk-detail" { (detail) } }
                             @if let Some(network) = item.network {
                                 span class=join["tag-network", "is-main" if item.mainnet, "is-test" if !item.mainnet]
                                     data-size="icon" if item.label title=(network) if item.label {
@@ -282,6 +280,8 @@ component! {
                                     span class="tag-network-name" { (network) }
                                 }
                             }
+                            @if let Some(label) = item.label { span class="mk-label" { (label) } }
+                            @if let Some(detail) = item.detail { span class="mk-detail" { (detail) } }
                             @if let Some(chip) = item.chip {
                                 span class=join["mk-current" if item.current, "tag tag-unknown mk-chip" if !item.current] { (chip) }
                             }
@@ -302,8 +302,6 @@ component! {
                             li class=join["mk-option", "mk-active" if item.active] id=(item.id) data-index=(item.index) role="option"
                                 aria-selected=(item.chosen) aria-disabled="true" if item.disabled on:click=choose(item.index) {
                                 @if let Some(logo) = item.logo { img class="mk-logo" src=(logo) alt=""; }
-                                @if let Some(label) = item.label { span class="mk-label" { (label) } }
-                                @if let Some(detail) = item.detail { span class="mk-detail" { (detail) } }
                                 @if let Some(network) = item.network {
                                     span class=join["tag-network", "is-main" if item.mainnet, "is-test" if !item.mainnet]
                                         data-size="icon" if item.label title=(network) if item.label {
@@ -315,6 +313,8 @@ component! {
                                         span class="tag-network-name" { (network) }
                                     }
                                 }
+                                @if let Some(label) = item.label { span class="mk-label" { (label) } }
+                                @if let Some(detail) = item.detail { span class="mk-detail" { (detail) } }
                                 @if let Some(chip) = item.chip {
                                     span class=join["mk-current" if item.current, "tag tag-unknown mk-chip" if !item.current] { (chip) }
                                 }

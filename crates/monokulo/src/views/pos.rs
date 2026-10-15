@@ -5,7 +5,7 @@
 use maud::{html, Markup};
 
 use super::{
-    layout_bare_with_head, logo_mark, script, status_indicator, stylesheet, theme_toggle, Load,
+    account_menu, layout_bare_with_head, logo_mark, script, status_indicator, stylesheet, Load,
     PageChrome,
 };
 
@@ -34,9 +34,9 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
             // The QR decoder the app loads for refund addresses, from
             // where the page says (its URL carries the file's version).
             data-qr-decoder=(crate::assets::url("jsQR.js")) {}
-        // The site's logo, status indicator and theme toggle, rendered here
-        // so the POS's top bar carries exactly what the site nav does; the
-        // POS app moves them into its top bar.
+        // The site's logo, status indicator and account menu (the theme
+        // switch is in it), rendered here so the POS's top bar carries what
+        // the site's bar does; the POS app moves them into its top bar.
         div id="pos-site-brand" hidden {
             a class="pos-brand" href="/" aria-label="Monokulo dashboard" {
                 (logo_mark(22, "pos-brand-logo"))
@@ -44,8 +44,8 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
             }
         }
         div id="pos-site-controls" hidden {
-            (theme_toggle(chrome))
-            (status_indicator(chrome.health, ui::DotPlace::Pos))
+            (status_indicator(chrome.health))
+            @if chrome.logged_in { (account_menu(chrome)) }
         }
         noscript { (ui::Alert::new("POS requires JavaScript. Use Create an order on the store page instead.", ui::Tone::Error).quiet(true)) }
         // The status indicator's island polls for the instance's health.

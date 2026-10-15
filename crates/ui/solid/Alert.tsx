@@ -12,9 +12,13 @@ import type { Tone } from './types';
  * that asks for something takes a `title` and `actions` (Dismiss, a
  * link to fix it).
  */
-export interface AlertProps extends Omit<JSX.IntrinsicElements["p"], "actions" | "block" | "children" | "class" | "classList" | "quiet" | "role" | "style" | "title" | "tone"> {
+export interface AlertProps extends Omit<JSX.IntrinsicElements["p"], "actions" | "block" | "children" | "class" | "classList" | "icon" | "quiet" | "role" | "style" | "title" | "tone"> {
   children: JSX.Element;
   tone: Tone;
+  /**
+   * Before everything, at the left: an icon (`assets::icons::INFO`).
+   */
+  icon?: JSX.Element;
   /**
    * Bold, before the words.
    */
@@ -43,13 +47,20 @@ export interface AlertProps extends Omit<JSX.IntrinsicElements["p"], "actions" |
  * link to fix it).
  */
 export function Alert(props: AlertProps): JSX.Element {
-  const rest = omit(props, "children", "tone", "title", "actions", "quiet", "block");
+  const rest = omit(props, "children", "tone", "icon", "title", "actions", "quiet", "block");
   return (
     <>
       {(props.quiet ?? false) ? (
         <>
           {(props.block ?? false) ? (
             <div class={props.tone} {...(rest as object)}>
+              {props.icon != null ? (
+                <span class="alert-icon" aria-hidden="true">
+                  {props.icon}
+                </span>
+              ) : (
+                null
+              )}
               {props.title != null ? (
                 <>
                   <strong class="alert-title">
@@ -71,6 +82,13 @@ export function Alert(props: AlertProps): JSX.Element {
             </div>
           ) : (
             <p class={props.tone} {...rest}>
+              {props.icon != null ? (
+                <span class="alert-icon" aria-hidden="true">
+                  {props.icon}
+                </span>
+              ) : (
+                null
+              )}
               {props.title != null ? (
                 <>
                   <strong class="alert-title">
@@ -98,6 +116,13 @@ export function Alert(props: AlertProps): JSX.Element {
             <>
               {(props.block ?? false) ? (
                 <div class={props.tone} role="alert" {...(rest as object)}>
+                  {props.icon != null ? (
+                    <span class="alert-icon" aria-hidden="true">
+                      {props.icon}
+                    </span>
+                  ) : (
+                    null
+                  )}
                   {props.title != null ? (
                     <>
                       <strong class="alert-title">
@@ -119,6 +144,13 @@ export function Alert(props: AlertProps): JSX.Element {
                 </div>
               ) : (
                 <p class={props.tone} role="alert" {...rest}>
+                  {props.icon != null ? (
+                    <span class="alert-icon" aria-hidden="true">
+                      {props.icon}
+                    </span>
+                  ) : (
+                    null
+                  )}
                   {props.title != null ? (
                     <>
                       <strong class="alert-title">
@@ -144,6 +176,13 @@ export function Alert(props: AlertProps): JSX.Element {
             <>
               {(props.block ?? false) ? (
                 <div class={props.tone} role="status" {...(rest as object)}>
+                  {props.icon != null ? (
+                    <span class="alert-icon" aria-hidden="true">
+                      {props.icon}
+                    </span>
+                  ) : (
+                    null
+                  )}
                   {props.title != null ? (
                     <>
                       <strong class="alert-title">
@@ -165,6 +204,13 @@ export function Alert(props: AlertProps): JSX.Element {
                 </div>
               ) : (
                 <p class={props.tone} role="status" {...rest}>
+                  {props.icon != null ? (
+                    <span class="alert-icon" aria-hidden="true">
+                      {props.icon}
+                    </span>
+                  ) : (
+                    null
+                  )}
                   {props.title != null ? (
                     <>
                       <strong class="alert-title">
