@@ -30,9 +30,19 @@ export type CardSurface = "grouped";
 export type ControlSize = "compact" | "touch";
 
 /**
+ * Where a status dot sits.
+ */
+export type DotPlace = "nav" | "pos";
+
+/**
  * How a form is sent.
  */
 export type FormMethod = "post" | "get";
+
+/**
+ * How the instance is, as the status dot shows it.
+ */
+export type HealthState = "ok" | "slow" | "error" | "unknown";
 
 /**
  * The kind of text an input takes: phones show the matching keyboard.
@@ -53,6 +63,11 @@ export type SearchMode = "auto" | "show" | "hide";
  * Where a step stands.
  */
 export type StepState = "done" | "current" | "next";
+
+/**
+ * A colour theme.
+ */
+export type ThemeChoice = "system" | "light" | "dark";
 
 /**
  * How a save went.

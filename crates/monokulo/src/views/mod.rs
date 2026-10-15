@@ -584,91 +584,48 @@ impl Health {
     }
 }
 
-/// Polls `GET /status/summary` and updates the indicator in place. Starts
-/// straight away only when the page was rendered without a known health;
-/// skips polls while the tab is hidden.
-const STATUS_INDICATOR_SCRIPT: &str = r#"(function () {
-  var link = document.getElementById("status-indicator");
-  if (!link) return;
-  var dot = link.querySelector(".status-dot");
-  var POLL_MS = 30000;
-  function show(state, title) { dot.className = "status-dot status-dot-" + state; link.title = title; link.setAttribute("aria-label", "Status: " + title); }
-  function poll() {
-    if (document.hidden) { setTimeout(poll, POLL_MS); return; }
-    fetch("/status/summary", { cache: "no-store" }).then(function (r) {
-      if (!r.ok) throw new Error("status unavailable");
-      return r.json();
-    }).then(function (data) {
-      if (data && data.state === "ok") show("ok", "all systems healthy");
-      else if (data && data.state === "slow") show("slow", "scanning is slow - see the status page");
-      else show("error", "an issue was detected - see the status page");
-    }).catch(function () {
-      show("unknown", "could not check status");
-    }).finally(function () {
-      setTimeout(poll, POLL_MS);
-    });
-  }
-  setTimeout(poll, dot.classList.contains("status-dot-unknown") ? 0 : POLL_MS);
-})();"#;
-
-/// The status indicator: a dot linking to `/status`, rendered with the
-/// engine's last known health so it is right without JavaScript (every
-/// page load renders it afresh). Its script only adds live updates by
-/// polling. It is only the glowing dot - the title and aria-label carry the
-/// words. `class` is the link's own class, for where it sits (nav bar, POS
-/// top bar).
-pub fn status_indicator(health: Option<Health>, class: &str) -> Markup {
-    let (state, title) = match health {
-        Some(Health::Ok) => ("ok", "all systems healthy"),
-        Some(Health::Slow) => ("slow", "scanning is slow - see the status page"),
-        Some(Health::Problem) => ("error", "an issue was detected - see the status page"),
-        None => ("unknown", "status not checked yet"),
+/// The status indicator: `ui::StatusDot`, a dot linking to `/status`,
+/// rendered with the engine's last known health so it is right without
+/// JavaScript (every page load renders it afresh); its island polls for
+/// live updates. `place`: the nav bar or the POS top bar.
+pub fn status_indicator(health: Option<Health>, place: ui::DotPlace) -> Markup {
+    let health = match health {
+        Some(Health::Ok) => ui::HealthState::Ok,
+        Some(Health::Slow) => ui::HealthState::Slow,
+        Some(Health::Problem) => ui::HealthState::Error,
+        None => ui::HealthState::Unknown,
     };
-    html! {
-        a href="/status" class=(class) id="status-indicator" title=(title) aria-label=(format!("Status: {title}")) {
-            span class=(format!("status-dot status-dot-{state}")) {}
-        }
-        script { (PreEscaped(STATUS_INDICATOR_SCRIPT)) }
-    }
+    ui::StatusDot::new(health, place).render()
 }
 
-/// The site nav: the brand (linking to `/`, the dashboard), the admin
-/// links, the status dot, then the account menu once signed in (the theme
-/// switch is in it: an anonymous visitor has no account to keep a choice
-/// against, and gets `prefers-color-scheme`), or Log in and Sign up. The
-/// row is one height either way (`site.css`, `.site-nav-row`).
+/// The site nav (`ui::SiteNav`): the brand (linking to `/`, the
+/// dashboard), the admin links, the status dot, then the account menu once
+/// signed in (the theme switch is in it: an anonymous visitor has no
+/// account to keep a choice against, and gets `prefers-color-scheme`), or
+/// Log in and Sign up. The row is one height either way.
 ///
 /// The status dot sits in the bar itself, not in the link list, so on a
 /// phone it stays in sight beside the hamburger; on a wider screen CSS
 /// orders it between the links and the account menu.
 fn nav(chrome: &PageChrome) -> Markup {
-    html! {
-        nav class="site-nav" {
-            div class="wrap site-nav-row" {
-                a href="/" class="site-nav-brand" {
-                    (logo_mark(24, "site-nav-logo"))
-                    "Monokulo"
-                }
-                (status_indicator(chrome.health, "nav-status-link"))
-                input type="checkbox" id="nav-toggle" class="nav-toggle-checkbox";
-                label for="nav-toggle" class="nav-toggle-label" aria-label="Menu" { "☰" }
-                div class="site-nav-links" {
-                    @if chrome.is_admin {
-                        a href="/dashboard/admin/settings" { "Admin" }
-                        a href="/dashboard/admin/invites" { "Invites" }
-                        a href="/dashboard/admin/logs" { "Logs" }
-                    }
-                    @if !chrome.logged_in {
-                        a href="/dashboard/login" { "Log in" }
-                        a href="/dashboard/signup" { "Sign up" }
-                    }
-                    @if chrome.logged_in {
-                        (account_menu(chrome))
-                    }
-                }
-            }
+    let links = html! {
+        @if chrome.is_admin {
+            a href="/dashboard/admin/settings" { "Admin" }
+            a href="/dashboard/admin/invites" { "Invites" }
+            a href="/dashboard/admin/logs" { "Logs" }
         }
-    }
+        @if !chrome.logged_in {
+            a href="/dashboard/login" { "Log in" }
+            a href="/dashboard/signup" { "Sign up" }
+        }
+        @if chrome.logged_in {
+            (account_menu(chrome))
+        }
+    };
+    let brand = html! { (logo_mark(24, "site-nav-logo")) "Monokulo" };
+    ui::SiteNav::new(brand, links)
+        .status(status_indicator(chrome.health, ui::DotPlace::Nav))
+        .render()
 }
 
 /// A generic person, for the account button: its lines are `currentColor`.
@@ -682,24 +639,11 @@ fn account_icon() -> Markup {
     }
 }
 
-/// Closes an open account menu on a click outside it, or on Escape. Only
-/// an enhancement: without it the menu closes from its own button, as any
-/// `<details>` does.
-const ACCOUNT_MENU_SCRIPT: &str = r#"(function () {
-  function each(fn) { Array.prototype.forEach.call(document.querySelectorAll("details.acct[open]"), fn); }
-  document.addEventListener("click", function (event) {
-    each(function (menu) { if (!menu.contains(event.target)) menu.open = false; });
-  });
-  document.addEventListener("keydown", function (event) {
-    if (event.key === "Escape") each(function (menu) { menu.open = false; menu.querySelector("summary").focus(); });
-  });
-})();"#;
-
-/// The account menu: a person icon button (named "Account menu", its title
-/// the user's email) opening a `<details>` (no JavaScript needed) with who
-/// they are, Account, their wallets, the theme switch, the zone times are
-/// shown in, and Log out. On a phone its items sit in the hamburger list
-/// instead (`site.css`).
+/// The account menu (`ui::Menu`): a person icon button (named "Account
+/// menu", its title the user's email) opening a `<details>` (no JavaScript
+/// needed) with who they are, Account, their wallets, the theme switch, the
+/// zone times are shown in, and Log out. On a phone its items sit in the
+/// hamburger list instead.
 fn account_menu(chrome: &PageChrome) -> Markup {
     let role = if chrome.is_admin { "Admin" } else { "Merchant" };
     let zone = chrome.clock.name();
@@ -708,71 +652,34 @@ fn account_menu(chrome: &PageChrome) -> Markup {
     } else {
         format!("Every time on the site is shown in {zone}.")
     };
-    html! {
-        details class="acct" {
-            summary class="acct-button" aria-label="Account menu" title=(chrome.email) {
-                (account_icon())
-            }
-            div class="acct-menu" {
-                div class="acct-who" { strong { (chrome.email) } small { (role) } }
-                a href="/account" { "Account" }
-                a href="/account?tab=wallets" { "Wallets" span class="menu-note" { (chrome.wallet_count) } }
-                hr;
-                div class="menu-item" { span { "Theme" } (theme_toggle(chrome)) }
-                a href="/account#card-time" title=(zone_title) {
-                    span { "Times in " (zone) } span class="menu-note" { "change" }
-                }
-                hr;
-                form method="post" action="/dashboard/logout" class="nav-logout-form" {
-                    button type="submit" class="nav-link-button" { "Log out" }
-                }
-            }
+    let items = html! {
+        div class="acct-who" { strong { (chrome.email) } small { (role) } }
+        a href="/account" { "Account" }
+        a href="/account?tab=wallets" { "Wallets" span class="menu-note" { (chrome.wallet_count) } }
+        hr;
+        div class="menu-item" { span { "Theme" } (theme_toggle(chrome)) }
+        a href="/account#card-time" title=(zone_title) {
+            span { "Times in " (zone) } span class="menu-note" { "change" }
         }
-        script { (PreEscaped(ACCOUNT_MENU_SCRIPT)) }
-    }
+        hr;
+        form method="post" action="/dashboard/logout" class="nav-logout-form" {
+            button type="submit" class="nav-link-button" { "Log out" }
+        }
+    };
+    ui::Menu::new("Account menu", account_icon(), items)
+        .title(chrome.email.clone())
+        .render()
 }
 
-/// Three submit buttons select Light, System, or Dark directly without JS.
-/// CSS previews each option on hover/focus and animates the indicator across
-/// the form navigation in browsers that support view transitions.
+/// The theme switch (`ui::ThemeToggle`): Light, System and Dark, each a
+/// submit button, so it works without JavaScript.
 pub fn theme_toggle(chrome: &PageChrome) -> Markup {
-    html! {
-        form method="post" action="/dashboard/theme" class="nav-theme-form" {
-            input type="hidden" name="next" value=(chrome.current_path);
-            div class=(format!("theme-toggle theme-toggle-{}", chrome.theme.as_str())) role="group" aria-label="Theme" {
-                span class="theme-toggle-track" {
-                    button type="submit" name="theme" value="system" class="theme-toggle-option theme-toggle-option-system" aria-label="System theme" aria-pressed=(chrome.theme == Theme::System) title="System theme" {
-                        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                            stroke-linejoin="round" aria-hidden="true" focusable="false" {
-                            rect x="3" y="3" width="18" height="13" rx="2" {}
-                            line x1="12" y1="16" x2="12" y2="21" {}
-                            line x1="8" y1="21" x2="16" y2="21" {}
-                        }
-                    }
-                    button type="submit" name="theme" value="light" class="theme-toggle-option theme-toggle-option-light" aria-label="Light theme" aria-pressed=(chrome.theme == Theme::Light) title="Light theme" {
-                        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                            stroke-linejoin="round" aria-hidden="true" focusable="false" {
-                            circle cx="12" cy="12" r="4" {}
-                            line x1="12" y1="2" x2="12" y2="4" {}
-                            line x1="12" y1="20" x2="12" y2="22" {}
-                            line x1="4.2" y1="4.2" x2="5.6" y2="5.6" {}
-                            line x1="18.4" y1="18.4" x2="19.8" y2="19.8" {}
-                            line x1="2" y1="12" x2="4" y2="12" {}
-                            line x1="20" y1="12" x2="22" y2="12" {}
-                            line x1="4.2" y1="19.8" x2="5.6" y2="18.4" {}
-                            line x1="18.4" y1="5.6" x2="19.8" y2="4.2" {}
-                        }
-                    }
-                    button type="submit" name="theme" value="dark" class="theme-toggle-option theme-toggle-option-dark" aria-label="Dark theme" aria-pressed=(chrome.theme == Theme::Dark) title="Dark theme" {
-                        svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true" focusable="false" {
-                            path d="M21 12.5A9 9 0 1 1 11.5 3 7 7 0 0 0 21 12.5Z" {}
-                        }
-                    }
-                    span class="theme-toggle-thumb" {}
-                }
-            }
-        }
-    }
+    let theme = match chrome.theme {
+        Theme::System => ui::ThemeChoice::System,
+        Theme::Light => ui::ThemeChoice::Light,
+        Theme::Dark => ui::ThemeChoice::Dark,
+    };
+    ui::ThemeToggle::new(theme, "/dashboard/theme", chrome.current_path.clone()).render()
 }
 
 #[cfg(test)]
@@ -805,12 +712,16 @@ mod tests {
 
     #[test]
     fn status_indicator_is_rendered_with_the_known_health_and_polls_only_as_an_enhancement() {
-        let healthy = status_indicator(Some(Health::Ok), "nav-status-link").into_string();
-        assert!(healthy.contains(r#"<a href="/status" class="nav-status-link" id="status-indicator" title="all systems healthy" aria-label="Status: all systems healthy"><span class="status-dot status-dot-ok"></span></a>"#), "got: {healthy}");
+        let healthy = status_indicator(Some(Health::Ok), ui::DotPlace::Nav).into_string();
+        assert!(healthy.contains(r#"<a href="/status" class="nav-status-link" id="status-indicator" title="all systems healthy" aria-label="Status: all systems healthy" data-mk="1" data-island="StatusDot""#), "got: {healthy}");
+        assert!(
+            healthy.contains(r#"<span class="status-dot status-dot-ok" data-mk="2"></span></a>"#),
+            "got: {healthy}"
+        );
         assert!(healthy.contains("/status/summary"));
 
-        let problem = status_indicator(Some(Health::Problem), "pos-status-link").into_string();
-        let slow = status_indicator(Some(Health::Slow), "nav-status-link").into_string();
+        let problem = status_indicator(Some(Health::Problem), ui::DotPlace::Pos).into_string();
+        let slow = status_indicator(Some(Health::Slow), ui::DotPlace::Nav).into_string();
         assert!(
             slow.contains(r#"class="status-dot status-dot-slow""#),
             "{slow}"
@@ -821,7 +732,7 @@ mod tests {
             "got: {problem}"
         );
 
-        let unknown = status_indicator(None, "nav-status-link").into_string();
+        let unknown = status_indicator(None, ui::DotPlace::Nav).into_string();
         assert!(
             unknown.contains(r#"class="status-dot status-dot-unknown""#),
             "got: {unknown}"
@@ -865,7 +776,7 @@ mod tests {
         let admin = at(r#"href="/dashboard/admin/settings">Admin<"#);
         let invites = at(r#"href="/dashboard/admin/invites">Invites<"#);
         let logs = at(r#"href="/dashboard/admin/logs">Logs<"#);
-        let menu = at(r#"<details class="acct">"#);
+        let menu = at(r#"<details class="acct""#);
         assert!(
             status < hamburger
                 && hamburger < links
@@ -953,7 +864,8 @@ mod tests {
     /// `::before` makes a 44px target. The account button is 2em too.
     #[test]
     fn the_nav_row_keeps_one_height_and_the_status_dot_is_a_44px_target() {
-        let css = SITE_CSS;
+        // The chrome's styles are the ui package's.
+        let css = ui::assets::COMPONENTS_CSS;
         let rule = |selector: &str| {
             let at = &css[css.find(selector).unwrap_or_else(|| panic!("{selector}"))..];
             at[..at.find('}').unwrap()].to_string()
@@ -1007,7 +919,8 @@ mod tests {
 
     #[test]
     fn theme_hover_moves_the_thumb_and_recolors_only_the_hovered_icon() {
-        let css = SITE_CSS;
+        // The chrome's styles are the ui package's.
+        let css = ui::assets::COMPONENTS_CSS;
         for option in ["light", "system", "dark"] {
             assert!(css.contains(&format!(
                 ".theme-toggle-option-{option}:is(:hover, :focus-visible) ~ .theme-toggle-thumb"

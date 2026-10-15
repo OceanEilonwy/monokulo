@@ -9,6 +9,8 @@ import { attachSettingsCard } from './SettingsCard';
 import { attachSetting } from './Setting';
 import { attachSaveBar } from './SaveBar';
 import { attachToast } from './Toast';
+import { attachMenu } from './Menu';
+import { attachStatusDot } from './StatusDot';
 
 /** Each interactive component's attach, by the name its island gives. */
 export const islands: Record<string, (root: Element, props: never) => () => void> = {
@@ -20,4 +22,6 @@ export const islands: Record<string, (root: Element, props: never) => () => void
   Setting: attachSetting,
   SaveBar: attachSaveBar,
   Toast: attachToast,
+  Menu: attachMenu,
+  StatusDot: attachStatusDot,
 };

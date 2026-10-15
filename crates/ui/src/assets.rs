@@ -29,6 +29,8 @@ pub const COMPONENTS_CSS: &str = concat!(
     include_str!("../web/components/patterns.css"),
     "\n",
     include_str!("../web/components/monitoring.css"),
+    "\n",
+    include_str!("../web/components/chrome.css"),
 );
 
 /// The UI typeface, Manrope, Latin subset, by weight.

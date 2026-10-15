@@ -6,7 +6,6 @@ import { addressFromQr, decodeImageFile, looksLikeAddress, scanCamera } from './
 import { LOADING_MARK } from './logo';
 import { applyTheme, type Theme } from './theme';
 import { createTimeline, routeOf, watchPage } from './timeline';
-import '@monokulo/ui';
 import '@monokulo/ui/components.css';
 import { Button, Field } from '@monokulo/ui/solid';
 import './pos.css';

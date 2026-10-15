@@ -3,6 +3,7 @@
 //! translation is checked against.
 
 mod actions;
+mod chrome;
 mod copy;
 mod feedback;
 mod forms;
@@ -12,6 +13,7 @@ mod steps;
 mod tabs;
 
 pub use actions::*;
+pub use chrome::*;
 pub use copy::*;
 pub use feedback::*;
 pub use forms::*;
@@ -88,5 +90,9 @@ pub fn catalogue() -> Vec<Specimens> {
         specimens(settings::setting_examples()),
         specimens(settings::save_bar_examples()),
         specimens(settings::toast_examples()),
+        specimens(chrome::site_nav_examples()),
+        specimens(chrome::menu_examples()),
+        specimens(chrome::theme_toggle_examples()),
+        specimens(chrome::status_dot_examples()),
     ]
 }
