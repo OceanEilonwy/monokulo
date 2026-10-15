@@ -4,8 +4,8 @@
 
 mod actions;
 mod chrome;
+mod content;
 mod copy;
-mod feedback;
 mod forms;
 mod select;
 mod settings;
@@ -14,8 +14,8 @@ mod tabs;
 
 pub use actions::*;
 pub use chrome::*;
+pub use content::*;
 pub use copy::*;
-pub use feedback::*;
 pub use forms::*;
 pub use select::*;
 pub use settings::*;
@@ -56,7 +56,17 @@ pub fn catalogue() -> Vec<Specimens> {
     vec![
         specimens(actions::button_examples()),
         specimens(actions::link_button_examples()),
-        specimens(feedback::alert_examples()),
+        specimens(content::alert_examples()),
+        specimens(content::panel_examples()),
+        specimens(content::heading_examples()),
+        specimens(content::hint_examples()),
+        specimens(content::facts_examples()),
+        specimens(content::tag_examples()),
+        specimens(content::network_badge_examples()),
+        specimens(content::short_value_examples()),
+        specimens(content::disclosure_examples()),
+        specimens(content::checks_examples()),
+        specimens(content::timeline_examples()),
         specimens(forms::field_examples()),
         specimens(select::select_examples())
             .partial("select-demo", select::select_demo())

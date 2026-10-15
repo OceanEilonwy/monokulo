@@ -422,7 +422,7 @@ async fn build_checkout_view(
         _ => ("—".to_string(), "".to_string()),
     };
 
-    let (status_text, status_class, is_terminal) = crate::views::order_state(detail.order.status);
+    let (status_text, _, is_terminal) = crate::views::order_state(detail.order.status);
     // A subtle, progressive color shift as expiry nears (research on real
     // crypto-checkout UIs: a big alarming red countdown creates anxiety: a
     // quiet color change at 5 minutes, then 2, communicates urgency without
@@ -460,7 +460,6 @@ async fn build_checkout_view(
         order_id: detail.order.order_id.clone(),
         status_label: status_text.to_string(),
         status: detail.order.status.into(),
-        status_class: status_class.to_string(),
         address: detail.order.address.clone(),
         qr_code_svg: payment_qr_svg(&detail.order).unwrap_or_default(),
         amount_due_xmr: shared::exchange_rate::format_piconero_as_xmr(

@@ -427,19 +427,19 @@ impl serde::Serialize for DisplayStatus {
 /// An order status's words and its `.state-*` colour class, and whether the
 /// order can still change. The checkout, the POS and the dashboard show a
 /// status with the same words and colours.
-pub fn order_state(status: impl Into<DisplayStatus>) -> (&'static str, &'static str, bool) {
+pub fn order_state(status: impl Into<DisplayStatus>) -> (&'static str, ui::OrderState, bool) {
     use OrderStatus::*;
     match status.into() {
-        DisplayStatus::Order(Pending) => ("Waiting for payment", "state-pending", false),
+        DisplayStatus::Order(Pending) => ("Waiting for payment", ui::OrderState::Pending, false),
         DisplayStatus::Order(Unconfirmed) => {
-            ("Payment seen, unconfirmed", "state-unconfirmed", false)
+            ("Payment seen, unconfirmed", ui::OrderState::Unconfirmed, false)
         }
-        DisplayStatus::Order(Confirming) => ("Confirming", "state-confirming", false),
-        DisplayStatus::Order(Partial) => ("Partial payment received", "state-partial", false),
-        DisplayStatus::Order(Paid) => ("Paid", "state-paid", true),
-        DisplayStatus::Order(Overpaid) => ("Overpaid", "state-overpaid", true),
-        DisplayStatus::Order(Expired) => ("Expired", "state-expired", true),
-        DisplayStatus::Cancelled => ("Cancelled", "state-cancelled", true),
+        DisplayStatus::Order(Confirming) => ("Confirming", ui::OrderState::Confirming, false),
+        DisplayStatus::Order(Partial) => ("Partial payment received", ui::OrderState::Partial, false),
+        DisplayStatus::Order(Paid) => ("Paid", ui::OrderState::Paid, true),
+        DisplayStatus::Order(Overpaid) => ("Overpaid", ui::OrderState::Overpaid, true),
+        DisplayStatus::Order(Expired) => ("Expired", ui::OrderState::Expired, true),
+        DisplayStatus::Cancelled => ("Cancelled", ui::OrderState::Cancelled, true),
     }
 }
 
@@ -457,16 +457,10 @@ pub fn order_state_short(status: impl Into<DisplayStatus>) -> &'static str {
 /// An order's status as a badge ([`order_state`]): the full words, and the
 /// short ones that replace them on a narrow screen (`.label-short`).
 pub fn state_badge(status: impl Into<DisplayStatus> + Copy) -> Markup {
-    let (label, class, _) = order_state(status);
+    let (label, state, _) = order_state(status);
     let short = order_state_short(status);
-    html! {
-        span class=(format!("tag {class}")) {
-            @if short == label { (label) } @else {
-                span class="label-long" { (label) }
-                span class="label-short" aria-hidden="true" { (short) }
-            }
-        }
-    }
+    let tag = ui::Tag::new(label).state(state);
+    html! { (if short == label { tag } else { tag.short(short) }) }
 }
 
 /// A Monero network as a badge (`.tag-network`), the same wherever a
@@ -486,23 +480,8 @@ pub fn test_networks_badge() -> Markup {
     network_tag(false, "Test networks")
 }
 
-/// The icons of [`network_badge`]: a coin marked M for mainnet, a flask
-/// for a test network. The Select component (crates/ui) draws the same two.
 fn network_tag(main: bool, word: &str) -> Markup {
-    html! {
-        span class=(if main { "tag-network is-main" } else { "tag-network is-test" }) {
-            svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" {
-                @if main {
-                    circle cx="12" cy="12" r="9" {}
-                    path d="M7 15V9l5 5 5-5v6" {}
-                } @else {
-                    path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3" {}
-                    path d="M7.5 15h9" {}
-                }
-            }
-            (word)
-        }
-    }
+    html! { (ui::NetworkBadge::new(word).main(main)) }
 }
 
 /// An amount for people to read: XMR without its trailing zeros
@@ -693,7 +672,7 @@ mod tests {
     fn a_network_badge_always_says_the_network_and_marks_mainnet_apart() {
         let main = network_badge("mainnet").into_string();
         assert!(
-            main.starts_with(r#"<span class="tag-network is-main"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">"#),
+            main.starts_with(r#"<span class="tag-network is-main"><svg viewBox="0 0 24 24" aria-hidden="true">"#),
             "{main}"
         );
         assert!(main.ends_with("</svg>Mainnet</span>"), "{main}");

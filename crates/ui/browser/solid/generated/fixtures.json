@@ -197,55 +197,538 @@
   },
   {
     "component": "Alert",
-    "html": "<div class=\"mk-alert\" data-tone=\"success\">Saved. Your preferences are up to date.</div>",
+    "html": "<p class=\"error\" role=\"alert\">Could not save. Check the highlighted fields and try again.</p>",
     "props": {
-      "children": {
-        "$slot": [
-          "Saved. Your preferences are up to date."
-        ]
-      },
-      "tone": "success"
-    },
-    "title": "Success"
-  },
-  {
-    "component": "Alert",
-    "html": "<div class=\"mk-alert\" data-tone=\"warning\">Connection interrupted. Payment status may be delayed.</div>",
-    "props": {
-      "children": {
-        "$slot": [
-          "Connection interrupted. Payment status may be delayed."
-        ]
-      },
-      "tone": "warning"
-    },
-    "title": "Warning"
-  },
-  {
-    "component": "Alert",
-    "html": "<div class=\"mk-alert\" data-tone=\"error\" role=\"alert\">Could not save. Check the highlighted fields and try again.</div>",
-    "props": {
+      "block": false,
       "children": {
         "$slot": [
           "Could not save. Check the highlighted fields and try again."
         ]
       },
-      "role": "alert",
+      "quiet": false,
       "tone": "error"
     },
     "title": "Error"
   },
   {
     "component": "Alert",
-    "html": "<div class=\"mk-alert\">Your account uses the system theme.</div>",
+    "html": "<p class=\"warning\" role=\"status\">Connection interrupted. Payment status may be delayed.</p>",
+    "props": {
+      "block": false,
+      "children": {
+        "$slot": [
+          "Connection interrupted. Payment status may be delayed."
+        ]
+      },
+      "quiet": false,
+      "tone": "warning"
+    },
+    "title": "Warning"
+  },
+  {
+    "component": "Alert",
+    "html": "<p class=\"success\" role=\"status\">Saved.</p>",
+    "props": {
+      "block": false,
+      "children": {
+        "$slot": [
+          "Saved."
+        ]
+      },
+      "quiet": false,
+      "tone": "success"
+    },
+    "title": "Success"
+  },
+  {
+    "component": "Alert",
+    "html": "<p class=\"notice\">No wallets yet.</p>",
+    "props": {
+      "block": false,
+      "children": {
+        "$slot": [
+          "No wallets yet."
+        ]
+      },
+      "quiet": true,
+      "tone": "notice"
+    },
+    "title": "Notice"
+  },
+  {
+    "component": "Panel",
+    "html": "<div class=\"box\"><h3>Webhook</h3><p class=\"hint\">Monokulo posts each order's changes here.</p></div>",
     "props": {
       "children": {
         "$slot": [
-          "Your account uses the system theme."
+          {
+            "$component": "Heading",
+            "props": {
+              "children": {
+                "$slot": [
+                  "Webhook"
+                ]
+              },
+              "level": "h3"
+            }
+          },
+          {
+            "$component": "Hint",
+            "props": {
+              "children": {
+                "$slot": [
+                  "Monokulo posts each order's changes here."
+                ]
+              },
+              "inline": false
+            }
+          }
         ]
       }
     },
-    "title": "Neutral"
+    "title": "A part of a page"
+  },
+  {
+    "component": "Heading",
+    "html": "<div class=\"page-heading\"><h1>Orders</h1><a class=\"mk-btn\" href=\"#component-heading\" data-size=\"compact\">Reload</a></div>",
+    "props": {
+      "actions": {
+        "$slot": [
+          {
+            "$component": "LinkButton",
+            "props": {
+              "block": false,
+              "children": {
+                "$slot": [
+                  "Reload"
+                ]
+              },
+              "href": "#component-heading",
+              "size": "compact"
+            }
+          }
+        ]
+      },
+      "children": {
+        "$slot": [
+          "Orders"
+        ]
+      },
+      "level": "h1"
+    },
+    "title": "A page's, with an action"
+  },
+  {
+    "component": "Heading",
+    "html": "<h2>Recent orders</h2>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Recent orders"
+        ]
+      },
+      "level": "h2"
+    },
+    "title": "A section's"
+  },
+  {
+    "component": "Heading",
+    "html": "<h3>Webhook</h3>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Webhook"
+        ]
+      },
+      "level": "h3"
+    },
+    "title": "A part's"
+  },
+  {
+    "component": "Hint",
+    "html": "<p class=\"hint\">Shown to customers on the payment page.</p>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Shown to customers on the payment page."
+        ]
+      },
+      "inline": false
+    },
+    "title": "Under a field"
+  },
+  {
+    "component": "Hint",
+    "html": "<span class=\"hint\">(optional)</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "(optional)"
+        ]
+      },
+      "inline": true
+    },
+    "title": "In a line"
+  },
+  {
+    "component": "Facts",
+    "html": "<dl class=\"facts\"><dt>Network</dt><dd><span class=\"tag-network is-main\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\"></circle><path d=\"M7 15V9l5 5 5-5v6\"></path></svg>Mainnet</span></dd><dt>Watching since</dt><dd>block 3,412,001</dd><dt>Balance</dt><dd>1.25 XMR</dd></dl>",
+    "props": {
+      "facts": [
+        {
+          "term": "Network",
+          "value": {
+            "$slot": [
+              {
+                "$component": "NetworkBadge",
+                "props": {
+                  "main": true,
+                  "name": "Mainnet"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "term": "Watching since",
+          "value": {
+            "$slot": [
+              "block 3,412,001"
+            ]
+          }
+        },
+        {
+          "term": "Balance",
+          "value": {
+            "$slot": [
+              "1.25 XMR"
+            ]
+          }
+        }
+      ]
+    },
+    "title": "A wallet"
+  },
+  {
+    "component": "Tag",
+    "html": "<span class=\"tag\">Default</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Default"
+        ]
+      }
+    },
+    "title": "Plain"
+  },
+  {
+    "component": "Tag",
+    "html": "<span class=\"tag tag-ok\">Healthy</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Healthy"
+        ]
+      },
+      "tone": "ok"
+    },
+    "title": "Healthy"
+  },
+  {
+    "component": "Tag",
+    "html": "<span class=\"tag tag-error\">Down</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Down"
+        ]
+      },
+      "tone": "error"
+    },
+    "title": "Down"
+  },
+  {
+    "component": "Tag",
+    "html": "<span class=\"tag tag-unknown\">Not checked</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Not checked"
+        ]
+      },
+      "tone": "unknown"
+    },
+    "title": "Not checked"
+  },
+  {
+    "component": "Tag",
+    "html": "<span class=\"tag tag-syncing\">Syncing</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Syncing"
+        ]
+      },
+      "tone": "syncing"
+    },
+    "title": "Syncing"
+  },
+  {
+    "component": "Tag",
+    "html": "<span class=\"tag tag-slow\">Slow</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Slow"
+        ]
+      },
+      "tone": "slow"
+    },
+    "title": "Slow"
+  },
+  {
+    "component": "Tag",
+    "html": "<span class=\"tag state-pending\"><span class=\"label-long\">Waiting for payment</span><span class=\"label-short\" aria-hidden=\"true\">Waiting</span></span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Waiting for payment"
+        ]
+      },
+      "short": "Waiting",
+      "state": "pending"
+    },
+    "title": "An order waiting, shorter on a phone"
+  },
+  {
+    "component": "Tag",
+    "html": "<span class=\"tag state-unconfirmed\"><span class=\"label-long\">Payment seen, unconfirmed</span><span class=\"label-short\" aria-hidden=\"true\">Seen</span></span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Payment seen, unconfirmed"
+        ]
+      },
+      "short": "Seen",
+      "state": "unconfirmed"
+    },
+    "title": "An order seen"
+  },
+  {
+    "component": "Tag",
+    "html": "<span class=\"tag state-confirming\">Confirming</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Confirming"
+        ]
+      },
+      "state": "confirming"
+    },
+    "title": "An order confirming"
+  },
+  {
+    "component": "Tag",
+    "html": "<span class=\"tag state-paid\">Paid</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Paid"
+        ]
+      },
+      "state": "paid"
+    },
+    "title": "An order paid"
+  },
+  {
+    "component": "Tag",
+    "html": "<span class=\"tag state-expired\">Expired</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Expired"
+        ]
+      },
+      "state": "expired"
+    },
+    "title": "An order expired"
+  },
+  {
+    "component": "Tag",
+    "html": "<span class=\"tag state-cancelled\">Cancelled</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Cancelled"
+        ]
+      },
+      "state": "cancelled"
+    },
+    "title": "An order cancelled"
+  },
+  {
+    "component": "NetworkBadge",
+    "html": "<span class=\"tag-network is-main\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\"></circle><path d=\"M7 15V9l5 5 5-5v6\"></path></svg>Mainnet</span>",
+    "props": {
+      "main": true,
+      "name": "Mainnet"
+    },
+    "title": "Mainnet"
+  },
+  {
+    "component": "NetworkBadge",
+    "html": "<span class=\"tag-network is-test\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3\"></path><path d=\"M7.5 15h9\"></path></svg>Stagenet</span>",
+    "props": {
+      "main": false,
+      "name": "Stagenet"
+    },
+    "title": "A test network"
+  },
+  {
+    "component": "ShortValue",
+    "html": "<span class=\"short-value\" title=\"order_a8723b2e45b0d44ea8723b2e45b0d44e\"><span class=\"short-value-text\" aria-hidden=\"true\">a8723b…b0d44e</span><span class=\"short-value-full\">order_a8723b2e45b0d44ea8723b2e45b0d44e</span></span>",
+    "props": {
+      "short": "a8723b…b0d44e",
+      "value": "order_a8723b2e45b0d44ea8723b2e45b0d44e"
+    },
+    "title": "An order id"
+  },
+  {
+    "component": "ShortValue",
+    "html": "a8723b",
+    "props": {
+      "short": "a8723b",
+      "value": "a8723b"
+    },
+    "title": "Short enough"
+  },
+  {
+    "component": "Disclosure",
+    "html": "<details class=\"disclosure\"><summary>How it's checked</summary>Every block is checked against two nodes.</details>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Every block is checked against two nodes."
+        ]
+      },
+      "look": "plain",
+      "open": false,
+      "summary": {
+        "$slot": [
+          "How it's checked"
+        ]
+      }
+    },
+    "title": "Plain"
+  },
+  {
+    "component": "Disclosure",
+    "html": "<details class=\"keys-help\"><summary>Where do I find these keys?</summary><div class=\"keys-help-body\">Settings, then Keys.</div></details>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Settings, then Keys."
+        ]
+      },
+      "look": "boxed",
+      "open": false,
+      "summary": {
+        "$slot": [
+          "Where do I find these keys?"
+        ]
+      }
+    },
+    "title": "Boxed help"
+  },
+  {
+    "component": "Disclosure",
+    "html": "<details class=\"more-options\"><summary>More options</summary>Leave on mainnet unless this is a test wallet.</details>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Leave on mainnet unless this is a test wallet."
+        ]
+      },
+      "look": "more-options",
+      "open": false,
+      "summary": {
+        "$slot": [
+          "More options"
+        ]
+      }
+    },
+    "title": "More options"
+  },
+  {
+    "component": "Checks",
+    "html": "<ul class=\"checks\"><li class=\"ok\"><span class=\"mark\" aria-hidden=\"true\">✓</span><span><span class=\"visually-hidden\">Done: </span>No plugin is connected to it</span></li><li class=\"no\"><span class=\"mark\" aria-hidden=\"true\">✕</span><span><span class=\"visually-hidden\">Not yet: </span>No order from shop.example.com can still be paid<span class=\"fix\">2 can be paid until about 14:20</span></span></li><li class=\"then\"><span class=\"mark\" aria-hidden=\"true\">→</span><span>Checkouts embedded on shop.example.com stop loading</span></li></ul>",
+    "props": {
+      "checks": [
+        {
+          "mark": "ok",
+          "what": {
+            "$slot": [
+              "No plugin is connected to it"
+            ]
+          }
+        },
+        {
+          "fix": {
+            "$slot": [
+              "2 can be paid until about 14:20"
+            ]
+          },
+          "mark": "no",
+          "what": {
+            "$slot": [
+              "No order from shop.example.com can still be paid"
+            ]
+          }
+        },
+        {
+          "mark": "then",
+          "what": {
+            "$slot": [
+              "Checkouts embedded on shop.example.com stop loading"
+            ]
+          }
+        }
+      ]
+    },
+    "title": "Before removing a website"
+  },
+  {
+    "component": "Timeline",
+    "html": "<ol class=\"timeline\"><li><time>12 Oct, 14:02</time><span>Added</span></li><li><time>12 Oct, 14:09</time><span>Backup checked</span></li><li><time>13 Oct, 09:41</time><span>First payment</span></li></ol>",
+    "props": {
+      "events": [
+        {
+          "what": {
+            "$slot": [
+              "Added"
+            ]
+          },
+          "when": "12 Oct, 14:02"
+        },
+        {
+          "what": {
+            "$slot": [
+              "Backup checked"
+            ]
+          },
+          "when": "12 Oct, 14:09"
+        },
+        {
+          "what": {
+            "$slot": [
+              "First payment"
+            ]
+          },
+          "when": "13 Oct, 09:41"
+        }
+      ]
+    },
+    "title": "A wallet's history"
   },
   {
     "component": "Field",

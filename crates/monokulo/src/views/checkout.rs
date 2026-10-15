@@ -36,7 +36,6 @@ pub struct CheckoutViewModel {
     pub order_id: crate::db::OrderId,
     pub status_label: String,
     pub status: super::DisplayStatus,
-    pub status_class: String,
     pub address: String,
     /// The QR code (`http::checkout::payment_qr_svg`); asks for
     /// `amount_due_xmr` while one is due.
@@ -543,15 +542,16 @@ fn stage_message(data: &CheckoutViewModel) -> (String, Markup) {
 fn live_status(data: &CheckoutViewModel) -> Markup {
     let steps = stage_steps(data);
     let (title, message) = stage_message(data);
-    let state_class = if data.double_spend_detected_at.is_some() {
-        "state-double-spend"
+    let shown = super::order_state(data.status).1;
+    let state = if data.double_spend_detected_at.is_some() {
+        ui::OrderState::DoubleSpend
     } else {
-        data.status_class.as_str()
+        shown
     };
     html! {
         div id="live-status" class="stage-slot" data-live {
-            span id="status-badge" class=(format!("tag {} sr-only", data.status_class)) { (data.status_label) }
-            div class=(format!("stage-track {state_class}")) {
+            span id="status-badge" class=(format!("sr-only state-{shown}")) { (data.status_label) }
+            div class=(format!("stage-track state-{state}")) {
                 ol class=(if steps.len() == 2 { "track track-2" } else { "track" }) aria-label="Payment progress" {
                     @for (name, step) in &steps {
                         li class=(step.class()) {
@@ -819,7 +819,6 @@ mod tests {
             order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
             status_label: if is_terminal { "Paid".to_string() } else { "Waiting for payment".to_string() },
             status: if is_terminal { shared::order_status::OrderStatus::Paid.into() } else { shared::order_status::OrderStatus::Pending.into() },
-            status_class: if is_terminal { "state-paid".to_string() } else { "state-pending".to_string() },
             address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
             qr_code_svg: crate::qr::QrSvg::for_test("<svg></svg>"),
             xmr_amount: "0.500000000000".to_string(),
@@ -989,7 +988,6 @@ mod tests {
         let mut data = test_checkout_view_model(false);
         data.status = shared::order_status::OrderStatus::Partial.into();
         data.status_label = "Partial payment received".to_string();
-        data.status_class = "state-partial".to_string();
         data.amount_received_xmr = "0.200000000000".to_string();
         data.payment_error = Some(
             "0.2 XMR received of 0.5 XMR. Send the remaining 0.3 XMR to the address below."
@@ -999,7 +997,7 @@ mod tests {
         let html = checkout_page(&chrome(), &data).into_string();
         // The stage says what arrived and what's left, with the time left;
         // the badge stays for screen readers only.
-        assert!(html.contains(r#"class="tag state-partial sr-only""#));
+        assert!(html.contains(r#"class="sr-only state-partial""#));
         assert!(
             html.contains(r#"<div class="stage-track state-partial">"#),
             "{html}"
@@ -1115,7 +1113,6 @@ mod tests {
 
         data.status = shared::order_status::OrderStatus::Overpaid.into();
         data.status_label = "Overpaid".to_string();
-        data.status_class = "state-overpaid".to_string();
         data.is_terminal = true;
         data.amount_received_xmr = "0.600000000000".to_string();
         data.payment_error = Some("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more. Contact the merchant about the extra amount.".to_string());

@@ -328,11 +328,20 @@ fn rust_value(ty: &Ty, value: &Value, depth: usize) -> String {
                 .iter()
                 .map(|(name, v)| {
                     let field = info.fields.iter().find(|f| f.name == *name).expect("field");
-                    let v = rust_value(&field.ty, v, depth);
-                    let v = if matches!(field.ty, Ty::Text) {
-                        format!("{v}.into()")
+                    let (ty, optional) = match &field.ty {
+                        Ty::Option(inner) => (*inner, true),
+                        ty => (ty, false),
+                    };
+                    let v = if optional && matches!(v, Value::Null) {
+                        "None".to_string()
                     } else {
-                        v
+                        let v = rust_value(ty, v, depth);
+                        let v = if matches!(ty, Ty::Text | Ty::Slot) {
+                            format!("{v}.into()")
+                        } else {
+                            v
+                        };
+                        if optional { format!("Some({v})") } else { v }
                     };
                     format!("{name}: {v}")
                 })

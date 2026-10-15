@@ -45,6 +45,8 @@ details:not(.mk-disclosure, .node-row, .acct, .test-wallets, .log-row, .trace-sp
 details:not(.mk-disclosure, .node-row, .acct, .test-wallets, .log-row, .trace-span-details, .mini, .engine-help)[open] > summary:not(.btn)::after { content: " \25B4"; }
 details:not(.mk-disclosure, .node-row, .acct, .test-wallets, .log-row, .trace-span-details, .mini, .engine-help) > summary:not(.btn):hover { color: var(--accent-text); }
 h1, h2, h3 { font-weight: 700; letter-spacing: -0.01em; margin: 1.4em 0 0.6em; }
+/* A block taking us over two minutes: slow, not broken (docs/engine_scaling.md section 5). */
+.notice.slow-block { background: var(--tint-warning); border-color: var(--warning); }
 h1 { font-size: 1.6rem; border-bottom: 2px solid var(--line); padding-bottom: 0.3em; margin: var(--space-lg) 0 var(--space-sm); }
 .context-nav + h1 { margin-top: var(--space-xs); }
 h2 { font-size: 1.15rem; border-bottom: 1px solid var(--line); padding-bottom: 0.2em; }
@@ -61,41 +63,6 @@ code, pre {
 }
 pre { padding: var(--space-md); overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
 .wrap { max-width: 880px; margin: 0 auto; padding: 0 1.2rem; }
-.error {
-  border: 2px solid var(--error);
-  border-radius: var(--radius-md);
-  color: var(--error);
-  padding: var(--space-sm) var(--space-md);
-  font-weight: 700;
-  margin: 1em 0;
-}
-.success {
-  border: 2px solid var(--success);
-  border-radius: var(--radius-md);
-  color: var(--success);
-  padding: var(--space-sm) var(--space-md);
-  font-weight: 700;
-  margin: 1em 0;
-}
-.hint { color: var(--muted); font-size: 0.9em; }
-/* Admin settings banners after a save (admin_settings_v2.md task 4.5). */
-.warning {
-  border: 2px solid var(--warning);
-  border-radius: var(--radius-md);
-  color: var(--warning);
-  background: var(--tint-warning);
-  padding: var(--space-sm) var(--space-md);
-  font-weight: 700;
-  margin: 1em 0;
-}
-.notice {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  padding: var(--space-sm) var(--space-md);
-  margin: 1em 0;
-}
-/* A block taking us over two minutes: slow, not broken (docs/engine_scaling.md section 5). */
-.notice.slow-block { background: var(--tint-warning); border-color: var(--warning); }
 /* The status page's network card (`views::status`): the network's name as
    its title with its states beside it and "Watch it live" at the right,
    then small-caps section heads, well under the title's size. */
@@ -179,7 +146,6 @@ html:not(.js) .js-only { display: none; }
 /* Controls only needed without it (a script does their job). */
 html.js .no-js-only { display: none; }
 /* Read out, not shown: words that go with something only visible. */
-.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .setting-problem { display: block; color: var(--error); }
 /* Store page embed warnings (`views::store_detail::embed_warnings`). */
 .embed-warning {
@@ -206,15 +172,6 @@ html.js .no-js-only { display: none; }
    delete (`admin_invites.html.hbs`) - struck through and faded so it reads
    as gone-but-still-visible-for-confirmation, not a live row. */
 .row-deleted td { opacity: 0.45; text-decoration: line-through; }
-.box {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--paper-raised);
-  padding: var(--space-xl);
-  margin: 1.2rem 0;
-  box-shadow: 0 var(--shadow-ambient-y) var(--shadow-ambient-blur) var(--shadow-ambient);
-}
-.box + .box { margin-top: 1.2rem; }
 table { border-collapse: collapse; width: 100%; margin: 0.8em 0; }
 th, td { border: 1px solid var(--line); padding: var(--space-xs) var(--space-sm); text-align: left; vertical-align: top; }
 /* A code/pre value inside a table cell (an address, a txid) shouldn't carry
@@ -443,16 +400,11 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
    `aria-hidden`); find-in-page matches it. `user-select: text`, not `all`:
    Firefox's double-click on a `user-select: all` element selects nothing. Inside a link it keeps the link's underline
    (`text-decoration: inherit`: an inline-block doesn't get it otherwise). */
-.short-value { position: relative; display: inline-block; text-decoration: inherit; }
-.short-value-text { user-select: none; }
-.short-value-full { position: absolute; inset: 0; overflow: hidden; white-space: nowrap; color: transparent; user-select: text; }
 
 /* A small manual refresh alongside page actions, also usable without JS. */
 .reload { display: inline-flex; align-items: center; justify-content: center; width: 2.25rem; height: 2.25rem; padding: .4rem; margin: 0; flex: none; }
 .reload svg { width: 1.1rem; height: 1.1rem; }
 .reload[hidden] { display: none; }
-.page-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
-.page-heading h1 { flex: 1; }
 
 /* The Account page's email question. */
 .settings-dialog { width: min(46rem, calc(100vw - 2rem)); max-height: calc(100dvh - 3rem); box-sizing: border-box; padding: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--paper-raised); color: var(--ink); }
@@ -532,21 +484,6 @@ input[aria-invalid="true"] { border-color: var(--error); }
    summary rule matches the site-wide one's specificity (it comes later) so
    its display wins over that rule's inline, which would let the padding
    spill over the box's border. */
-details:is(.keys-help, .more-options) { margin: var(--space-md) 0; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
-details:is(.keys-help, .more-options) > summary:not(.btn) { display: block; padding: var(--space-md) var(--space-lg); font-weight: 700; border-radius: var(--radius-md); }
-details:is(.keys-help, .more-options) > summary:hover { background: var(--surface-sunken); }
-details:is(.keys-help, .more-options)[open] > summary { border-bottom: 1px solid var(--line); border-radius: var(--radius-md) var(--radius-md) 0 0; }
-.keys-help-body, details.more-options > .setting-field { padding: var(--space-md) var(--space-lg); margin: 0; }
-/* "More options" is a group of its own between the wallet's name and the
-   ways to add it: a wide step (xl) from each, like settings are apart. */
-details.more-options { margin: var(--space-xl) 0; }
-.keys-help-body h4 { margin: var(--space-md) 0 var(--space-xs); font-size: .95rem; }
-.keys-help-body h4:first-child { margin-top: 0; }
-.keys-help-body p { margin: 0; }
-.keys-help-body ol { margin: 0; padding-left: 1.3em; }
-.keys-help-body li { margin: .25em 0; }
-.keys-help-body pre { margin: var(--space-xs) 0 var(--space-sm); font-size: .85em; }
-.keys-help-body .copy-this { background: var(--tint-highlight); border-radius: 2px; padding: 0 .2em; }
 
 /* Back up: each tab shows its words and QR code straight away. The phrase
    gets the main column (4 columns for 16 words, 5 for 25, 2 on a phone);
@@ -572,9 +509,6 @@ button.icon-only svg { width: 1.1rem; height: 1.1rem; }
 .seed-words.legacy { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .seed-words li { display: flex; gap: var(--space-sm); align-items: baseline; padding: var(--space-sm) var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--paper-raised); font-family: var(--font-mono); font-weight: 600; overflow-wrap: anywhere; }
 .seed-words li::before { content: attr(data-n); min-width: 1.3rem; text-align: right; color: var(--muted); font-size: .8rem; }
-.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-xs) var(--space-lg); margin: .6em 0; }
-.facts dt { color: var(--muted); }
-.facts dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
 .check-line { display: flex; gap: var(--space-sm); align-items: flex-start; font-weight: 600; }
 .check-line input { width: auto; margin: .25rem 0 0; accent-color: var(--accent-text); }
 
@@ -655,13 +589,8 @@ button.icon-only svg { width: 1.1rem; height: 1.1rem; }
 
 .btn-danger, .btn-danger:hover { color: var(--btn-danger-ink); background: var(--btn-danger-bg); border-color: var(--btn-danger-bg); }
 .btn-danger:hover { border-color: var(--ink); }
-.timeline { list-style: none; padding: 0; margin: 0; }
-.timeline li { display: grid; grid-template-columns: 9rem 1fr; gap: var(--space-md); padding: var(--space-sm) 0; border-top: 1px solid var(--line); }
-.timeline li:first-child { border-top: 0; }
-.timeline time { color: var(--muted); }
 @media (max-width: 640px) {
   .seed-words, .seed-words.legacy { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .timeline li { grid-template-columns: 1fr; gap: 0; }
 }
 
 /* The store's Wallet section (`views::store_settings::wallet_section`):
@@ -736,16 +665,6 @@ button.icon-only svg { width: 1.1rem; height: 1.1rem; }
 .dialog-actions button[disabled] { opacity: .45; cursor: not-allowed; }
 .confirm-dialog .setting-field, .confirm-dialog-page .setting-field { margin: var(--space-md) 0 0; }
 .confirm-dialog .setting-field .setting-label-row, .confirm-dialog-page .setting-field .setting-label-row { margin: 0 0 var(--space-sm); }
-.checks { list-style: none; padding: 0; margin: var(--space-md) 0 var(--space-sm); border: 1px solid var(--line); border-radius: var(--radius-md); }
-.checks li { display: flex; gap: var(--space-sm); align-items: baseline; padding: var(--space-sm) var(--space-md); border-top: 1px solid var(--line); }
-.checks li:first-child { border-top: 0; }
-.checks .mark { width: 1em; flex: none; font-weight: 800; text-align: center; }
-.checks .ok .mark { color: var(--success); }
-.checks .no .mark { color: var(--error); }
-.checks .fix { display: block; font-size: .9em; color: var(--muted); }
-.checks .fix-line { display: block; }
-.checks .then .mark { color: var(--muted); }
-.checks .fix { overflow-wrap: anywhere; }
 .confirm-dialog .setting-field.first, .confirm-dialog-page .setting-field.first { margin-top: 0; }
 /* A store's website and its plugins (`views::store_site`): the website
    locked while a plugin is connected; the Connections card, one row each. */

@@ -1,0 +1,93 @@
+/* What pages are made of between the controls (crates/ui/src/components/content.rs):
+   Panel (.box), Alert (.error, .warning, .success, .notice), Hint, Heading
+   (.page-heading), Facts, ShortValue, Disclosure, Checks and Timeline.
+   Tag and NetworkBadge are in select.css, which draws them in options too. */
+.error {
+  border: 2px solid var(--error);
+  border-radius: var(--radius-md);
+  color: var(--error);
+  padding: var(--space-sm) var(--space-md);
+  font-weight: 700;
+  margin: 1em 0;
+}
+.success {
+  border: 2px solid var(--success);
+  border-radius: var(--radius-md);
+  color: var(--success);
+  padding: var(--space-sm) var(--space-md);
+  font-weight: 700;
+  margin: 1em 0;
+}
+.hint { color: var(--muted); font-size: var(--text-sm); }
+/* Admin settings banners after a save (admin_settings_v2.md task 4.5). */
+.warning {
+  border: 2px solid var(--warning);
+  border-radius: var(--radius-md);
+  color: var(--warning);
+  background: var(--tint-warning);
+  padding: var(--space-sm) var(--space-md);
+  font-weight: 700;
+  margin: 1em 0;
+}
+.notice {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  margin: 1em 0;
+}
+/* Read out, not shown: words that go with something only visible. */
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.box {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--paper-raised);
+  padding: var(--space-xl);
+  margin: 1.2rem 0;
+  box-shadow: 0 var(--shadow-ambient-y) var(--shadow-ambient-blur) var(--shadow-ambient);
+}
+.box + .box { margin-top: 1.2rem; }
+.short-value { position: relative; display: inline-block; text-decoration: inherit; }
+.short-value-text { user-select: none; }
+.short-value-full { position: absolute; inset: 0; overflow: hidden; white-space: nowrap; color: transparent; user-select: text; }
+.page-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.page-heading h1 { flex: 1; }
+details:is(.keys-help, .more-options) { margin: var(--space-md) 0; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
+details:is(.keys-help, .more-options) > summary:not(.btn) { display: block; padding: var(--space-md) var(--space-lg); font-weight: 700; border-radius: var(--radius-md); }
+details:is(.keys-help, .more-options) > summary:hover { background: var(--surface-sunken); }
+details:is(.keys-help, .more-options)[open] > summary { border-bottom: 1px solid var(--line); border-radius: var(--radius-md) var(--radius-md) 0 0; }
+.keys-help-body, details.more-options > .setting-field { padding: var(--space-md) var(--space-lg); margin: 0; }
+/* "More options" is a group of its own between the wallet's name and the
+   ways to add it: a wide step (xl) from each, like settings are apart. */
+details.more-options { margin: var(--space-xl) 0; }
+.keys-help-body h4 { margin: var(--space-md) 0 var(--space-xs); font-size: var(--text-base); }
+.keys-help-body h4:first-child { margin-top: 0; }
+.keys-help-body p { margin: 0; }
+.keys-help-body ol { margin: 0; padding-left: 1.3em; }
+.keys-help-body li { margin: .25em 0; }
+.keys-help-body pre { margin: var(--space-xs) 0 var(--space-sm); font-size: var(--text-sm); }
+.keys-help-body .copy-this { background: var(--tint-highlight); border-radius: 2px; padding: 0 .2em; }
+.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-xs) var(--space-lg); margin: .6em 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.timeline { list-style: none; padding: 0; margin: 0; }
+.timeline li { display: grid; grid-template-columns: 9rem 1fr; gap: var(--space-md); padding: var(--space-sm) 0; border-top: 1px solid var(--line); }
+.timeline li:first-child { border-top: 0; }
+.timeline time { color: var(--muted); }
+@media (max-width: 640px) {
+  .timeline li { grid-template-columns: 1fr; gap: 0; }
+}
+.checks { list-style: none; padding: 0; margin: var(--space-md) 0 var(--space-sm); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.checks li { display: flex; gap: var(--space-sm); align-items: baseline; padding: var(--space-sm) var(--space-md); border-top: 1px solid var(--line); }
+.checks li:first-child { border-top: 0; }
+.checks .mark { width: 1em; flex: none; font-weight: 800; text-align: center; }
+.checks .ok .mark { color: var(--success); }
+.checks .no .mark { color: var(--error); }
+.checks .fix { display: block; font-size: var(--text-sm); color: var(--muted); }
+.checks .fix-line { display: block; }
+.checks .then .mark { color: var(--muted); }
+.checks .fix { overflow-wrap: anywhere; }
+/* A plain disclosure: its summary an underlined line with an arrow. */
+details.disclosure > summary { display: inline; color: var(--ink); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+details.disclosure > summary::after { content: " \25BE"; color: var(--muted); }
+details.disclosure[open] > summary::after { content: " \25B4"; }
+details.disclosure > summary:hover { color: var(--accent-text); }
