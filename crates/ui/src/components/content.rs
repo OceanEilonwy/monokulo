@@ -69,6 +69,8 @@ component! {
     pub struct Alert {
         children: Slot,
         tone: Tone,
+        /// Before everything, at the left: an icon (`assets::icons::INFO`).
+        icon: Option<Slot>,
         /// Bold, before the words.
         title: Option<String>,
         /// Under the words: buttons or links.
@@ -83,11 +85,11 @@ component! {
     }
     html {
         @if quiet {
-            @if block { div class=(tone) ..rest { @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } } @else { p class=(tone) ..rest { @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } }
+            @if block { div class=(tone) ..rest { @if let Some(icon) = icon { span class="alert-icon" aria-hidden="true" { (icon) } } @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } } @else { p class=(tone) ..rest { @if let Some(icon) = icon { span class="alert-icon" aria-hidden="true" { (icon) } } @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } }
         } @else if tone == Tone::Error {
-            @if block { div class=(tone) role="alert" ..rest { @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } } @else { p class=(tone) role="alert" ..rest { @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } }
+            @if block { div class=(tone) role="alert" ..rest { @if let Some(icon) = icon { span class="alert-icon" aria-hidden="true" { (icon) } } @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } } @else { p class=(tone) role="alert" ..rest { @if let Some(icon) = icon { span class="alert-icon" aria-hidden="true" { (icon) } } @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } }
         } @else {
-            @if block { div class=(tone) role="status" ..rest { @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } } @else { p class=(tone) role="status" ..rest { @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } }
+            @if block { div class=(tone) role="status" ..rest { @if let Some(icon) = icon { span class="alert-icon" aria-hidden="true" { (icon) } } @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } } @else { p class=(tone) role="status" ..rest { @if let Some(icon) = icon { span class="alert-icon" aria-hidden="true" { (icon) } } @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } }
         }
     }
 }

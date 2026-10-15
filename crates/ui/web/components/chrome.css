@@ -169,19 +169,21 @@
      browser that can't show a closed <details>'s content keeps the
      account button, which opens them in place. */
   .site-nav-links { align-items: stretch; gap: 0; border-top: 1px solid var(--line); }
-  .site-nav-links > a, .acct-menu .menu-item { display: flex; align-items: center; min-height: 44px; }
+  .site-nav-links > a, .site-nav-links .acct-menu .menu-item { display: flex; align-items: center; min-height: 44px; }
   .site-nav-links > a { border-bottom: 1px solid var(--line); }
   /* The status dot stays in the bar, left of the hamburger. */
   .site-nav-row > .nav-status-link { margin-right: var(--space-sm); }
-  .acct { margin-left: 0; }
-  .acct > summary { margin: var(--space-sm) 0; }
-  .acct-menu { position: static; width: auto; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: none; color: inherit; }
-  .acct-who { padding-left: 0; padding-right: 0; }
-  .acct-menu .menu-item { padding: 0; border-radius: 0; border-bottom: 1px solid var(--line); color: var(--chrome-ink); font-weight: 600; }
-  .acct-menu hr { display: none; }
+  /* Only in the site's list: elsewhere (the POS's bar) the menu stays a
+     menu. */
+  .site-nav-links .acct { margin-left: 0; }
+  .site-nav-links .acct > summary { margin: var(--space-sm) 0; }
+  .site-nav-links .acct-menu { position: static; width: auto; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: none; color: inherit; }
+  .site-nav-links .acct-who { padding-left: 0; padding-right: 0; }
+  .site-nav-links .acct-menu .menu-item { padding: 0; border-radius: 0; border-bottom: 1px solid var(--line); color: var(--chrome-ink); font-weight: 600; }
+  .site-nav-links .acct-menu hr { display: none; }
   @supports selector(::details-content) {
-    .acct > summary { display: none; }
-    .acct::details-content { content-visibility: visible; display: contents; }
+    .site-nav-links .acct > summary { display: none; }
+    .site-nav-links .acct::details-content { content-visibility: visible; display: contents; }
   }
 }
 .status-dot {

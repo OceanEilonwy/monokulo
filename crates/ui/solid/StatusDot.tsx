@@ -7,17 +7,17 @@ import { insert, registerDelegatedRoot, unregisterDelegatedRoot } from '@solidjs
 import type { JSX } from '@solidjs/web';
 import { mark, setAttr, tokens } from './runtime';
 import { setup } from '../web/components/status-dot.behaviour';
-import type { DotPlace, HealthState } from './types';
+import type { HealthState } from './types';
 
 /**
- * A glowing dot linking to the status page, as the instance was when
+ * A glowing dot linking to the status page (in the site's bar and the
+ * POS's alike), as the instance was when
  * the page was rendered, so it is right without JavaScript. Once its
  * island attaches it polls `poll` every 30 seconds while the tab is in
  * sight. Its title and accessible name carry the words.
  */
 export interface StatusDotProps {
   health: HealthState;
-  place: DotPlace;
   /**
    * @default "/status"
    */
@@ -40,7 +40,8 @@ export interface StatusDotProps {
 }
 
 /**
- * A glowing dot linking to the status page, as the instance was when
+ * A glowing dot linking to the status page (in the site's bar and the
+ * POS's alike), as the instance was when
  * the page was rendered, so it is right without JavaScript. Once its
  * island attaches it polls `poll` every 30 seconds while the tab is in
  * sight. Its title and accessible name carry the words.
@@ -49,7 +50,7 @@ export function StatusDot(props: StatusDotProps): JSX.Element {
   const enhanced = props.enhanced ?? true;
   const b = setup(props);
   return (
-    <a href={(props.href ?? "/status")} class={tokens(props.place === "nav" && `nav-status-link`, props.place === "pos" && `pos-status-link`)} id={(props.id ?? "status-indicator")} title={enhanced ? b.words() : tokens(props.health === "ok" && `all systems healthy`, props.health === "slow" && `scanning is slow - see the status page`, props.health === "error" && `an issue was detected - see the status page`, props.health === "unknown" && `status not checked yet`)} aria-label={enhanced ? `Status: ${b.words()}` : tokens(props.health === "ok" && `Status: all systems healthy`, props.health === "slow" && `Status: scanning is slow - see the status page`, props.health === "error" && `Status: an issue was detected - see the status page`, props.health === "unknown" && `Status: status not checked yet`)}>
+    <a href={(props.href ?? "/status")} class="nav-status-link" id={(props.id ?? "status-indicator")} title={enhanced ? b.words() : tokens(props.health === "ok" && `all systems healthy`, props.health === "slow" && `scanning is slow - see the status page`, props.health === "error" && `an issue was detected - see the status page`, props.health === "unknown" && `status not checked yet`)} aria-label={enhanced ? `Status: ${b.words()}` : tokens(props.health === "ok" && `Status: all systems healthy`, props.health === "slow" && `Status: scanning is slow - see the status page`, props.health === "error" && `Status: an issue was detected - see the status page`, props.health === "unknown" && `Status: status not checked yet`)}>
       <span class={enhanced ? tokens(`status-dot`, `status-dot-${b.now()}`) : tokens(`status-dot`, `status-dot-${props.health}`)}></span>
     </a>
   );

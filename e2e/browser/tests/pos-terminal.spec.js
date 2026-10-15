@@ -169,7 +169,10 @@ test('real POS copies the address from a selection where the clipboard API is mi
 
 test('real POS uses the site theme toggle, applies it in place and remembers it', async ({ page }) => {
   await page.goto(posUrl());
-  const toggle = page.locator('.pos-top .theme-toggle');
+  // In the account menu, as on every page.
+  const menu = page.locator('.pos-top .acct');
+  await menu.locator('summary').click();
+  const toggle = menu.locator('.theme-toggle');
   await expect(toggle).toHaveClass(/theme-toggle-system/);
   await page.getByRole('button', { name: 'Light theme' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
@@ -190,12 +193,13 @@ test('real POS uses the site theme toggle, applies it in place and remembers it'
     .toMatch(/<html[^>]* data-theme="dark"/);
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await menu.locator('summary').click();
   await expect(toggle).toHaveClass(/theme-toggle-dark/);
   await page.getByRole('button', { name: 'System theme' }).click();
   await expect(page.locator('html')).not.toHaveAttribute('data-theme', /./);
 });
 
-test('real POS header is the site app bar: the mark, the store, a POS label and the status indicator', async ({ page }) => {
+test('real POS header is the site app bar: the mark, the store, a POS label, the status indicator and the account menu', async ({ page }) => {
   await page.route('**/status/summary', route => route.fulfill({ json: { healthy: true, state: 'ok' } }));
   await page.goto(posUrl());
   const top = page.locator('.pos-top');
@@ -208,11 +212,13 @@ test('real POS header is the site app bar: the mark, the store, a POS label and 
   await expect(page.locator('#pos-site-brand')).toHaveCount(0);
   const status = top.locator('#status-indicator');
   await expect(status).toHaveAttribute('href', '/status');
-  // Rightmost in the bar, after the theme toggle, as on every page.
+  // The same dot as the site's bar, then the account menu, rightmost, as on
+  // every page.
+  await expect(status).toHaveClass('nav-status-link');
   expect(await page.evaluate(() => {
-    const items = [...document.querySelectorAll('.pos-top a, .pos-top button, .pos-top .theme-toggle')].filter(el => el.getBoundingClientRect().width);
-    return items.sort((a, b) => a.getBoundingClientRect().right - b.getBoundingClientRect().right).pop().id;
-  })).toBe('status-indicator');
+    const items = [...document.querySelectorAll('.pos-top a:not(.acct-menu *), .pos-top summary')].filter(el => el.getBoundingClientRect().width);
+    return items.sort((a, b) => a.getBoundingClientRect().right - b.getBoundingClientRect().right).slice(-2).map(el => el.id || el.className);
+  })).toEqual(['status-indicator', 'acct-button']);
   await expect(status.locator('.status-dot')).toHaveClass(/status-dot-ok/);
   await status.click();
   await expect(page).toHaveURL(/\/status$/);

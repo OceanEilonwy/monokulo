@@ -2203,19 +2203,19 @@ mod tests {
         );
         // The share icon and order id live in the order title.
         assert!(
-            html.contains(r#"<h1><span class="order-title">"#) && html.contains(r#"<div class="mk-page-actions"><a class="share-btn""#),
+            html.contains(r#"<h1>Order <span class="order-title-id">"#) && html.contains(r#"<div class="mk-page-actions"><a class="mk-btn" href="http://test.example/pay/"#),
             "expected the title banner to carry the share button, got: {html}"
         );
         assert!(
             html.contains(&format!(
-                r#"<code class="order-title-id"><span class="short-value" title="{order_id}"><span class="short-value-text" aria-hidden="true">{}</span>"#,
+                r#"<span class="order-title-id"><span class="short-value" title="{order_id}"><span class="short-value-text" aria-hidden="true">{}</span>"#,
                 views::short_id_text(order_id.as_str())
             )),
             "expected the order id inside the title banner, got: {html}"
         );
         assert!(
             html.contains(r#"id="share-payment-link""#)
-                && html.contains("aria-label=\"Share payment link\""),
+                && html.contains("</svg>Share</a>"),
             "expected a real, labeled share button, got: {html}"
         );
         assert!(

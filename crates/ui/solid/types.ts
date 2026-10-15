@@ -50,11 +50,6 @@ export type DialogSize = "confirm" | "wide";
 export type DisclosureLook = "plain" | "boxed" | "more-options" | "compact" | "row";
 
 /**
- * Where a status dot sits.
- */
-export type DotPlace = "nav" | "pos";
-
-/**
  * How a form is sent.
  */
 export type FormMethod = "post" | "get";

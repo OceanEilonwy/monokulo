@@ -118,7 +118,7 @@ fn store_row(store: &HomeStoreRow) -> ui::Slot {
         ui::Cell::new(store.display_name.as_str()).part(ui::CellPart::Title).into(),
         ui::Cell::new(html! {
             @if let Some((name, network)) = &store.wallet {
-                (name) " " (super::network_icon(network))
+                (super::network_icon(network)) " " (name)
             } @else {
                 span class="muted" { "Not linked yet" }
             }
@@ -208,7 +208,8 @@ mod tests {
         let html = page(&chrome(), &data).into_string();
         assert!(html.contains("pk_abc123"));
         assert!(
-            html.contains(r#"<td class="card-detail">Feather test <span class="tag-network is-test" data-size="icon" title="Stagenet">"#),
+            html.contains(r#"<td class="card-detail"><span class="tag-network is-test" data-size="icon" title="Stagenet">"#)
+                && html.contains("</span></span> Feather test</td>"),
             "the store's wallet, with its network: {html}"
         );
         assert!(html.contains("1.234567890123"));
