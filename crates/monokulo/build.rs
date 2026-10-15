@@ -40,7 +40,13 @@ fn main() {
     };
 
     let workspace = manifest.join("../..");
-    for input in ["packages/ui/src", "package.json", "package-lock.json"] {
+    for input in [
+        "crates/ui/web",
+        "crates/ui/solid",
+        "crates/ui/package.json",
+        "package.json",
+        "package-lock.json",
+    ] {
         println!("cargo:rerun-if-changed={}", workspace.join(input).display());
     }
     let vite = workspace.join("node_modules/vite/bin/vite.js");

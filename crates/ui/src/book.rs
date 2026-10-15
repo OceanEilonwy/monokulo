@@ -1,7 +1,7 @@
 //! The stylebook's specimens, and the fixtures the Solid translation is
 //! checked against: each example, rendered here and described as props.
 //! `cargo xtask ui` writes them into apps/stylebook/examples/generated and
-//! packages/ui/tests/solid/generated.
+//! crates/ui/browser/solid/generated.
 
 use std::fmt::Write;
 

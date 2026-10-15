@@ -17,7 +17,7 @@ test.beforeEach(async ({ context }) => {
   if (process.env.COVERAGE_INSTRUMENT === '1') await serveInstrumentedAssets(context);
 });
 
-// views/theme.css, as the browser reports them.
+// crates/ui/web/tokens.css, as the browser reports them.
 const EXPECTED = {
   light: { bar: 'rgb(255, 255, 255)', tableHead: 'rgb(239, 234, 224)', button: 'rgb(255, 255, 255)' },
   dark: { bar: 'rgb(24, 24, 24)', tableHead: 'rgb(51, 51, 51)', button: 'rgb(42, 42, 42)' },

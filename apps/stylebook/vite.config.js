@@ -9,8 +9,8 @@ export default defineConfig({
     transformIndexHtml(html) {
       let assetIndex = 0;
       return html.replace(/<!-- (example|source):([a-z/-]+) -->/g, (_, mode, name) => {
-        const markup = readFileSync(new URL(`./examples/${name}.html`, import.meta.url), 'utf8').trim().replace(/<!-- icon:([a-z-]+) -->/g, (_, icon) => readFileSync(new URL(`../../packages/ui/src/icons/${icon}.svg`, import.meta.url), 'utf8').trim()).replace(/<!-- asset:([a-z-]+)\/([a-z-]+) -->/g, (_, folder, name) => {
-          let asset = readFileSync(new URL(`../../packages/ui/src/${folder}/${name}.svg`, import.meta.url), 'utf8').trim();
+        const markup = readFileSync(new URL(`./examples/${name}.html`, import.meta.url), 'utf8').trim().replace(/<!-- icon:([a-z-]+) -->/g, (_, icon) => readFileSync(new URL(`../../crates/ui/web/icons/${icon}.svg`, import.meta.url), 'utf8').trim()).replace(/<!-- asset:([a-z-]+)\/([a-z-]+) -->/g, (_, folder, name) => {
+          let asset = readFileSync(new URL(`../../crates/ui/web/${folder}/${name}.svg`, import.meta.url), 'utf8').trim();
           // Each inline brand instance gets local clip IDs. Status sprites keep
           // their public IDs and appear once per document.
           if (folder === 'brand') {
@@ -24,7 +24,7 @@ export default defineConfig({
       });
     },
     handleHotUpdate({ file, server }) {
-      if (file.includes('/examples/') || file.includes('/packages/ui/src/')) server.ws.send({ type: 'full-reload' });
+      if (file.includes('/examples/') || file.includes('/crates/ui/web/')) server.ws.send({ type: 'full-reload' });
     },
   }],
 });

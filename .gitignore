@@ -26,8 +26,8 @@ moneropay.db-wal
 
 # JavaScript workspace outputs
 node_modules/
-packages/*/dist/
+crates/ui/dist/
 apps/*/dist/
 /test-results/
 /playwright-report/
-packages/*/test-results/
+crates/ui/test-results/

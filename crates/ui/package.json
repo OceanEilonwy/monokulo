@@ -4,23 +4,23 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.js",
-    "./styles.css": "./src/styles.css",
-    "./tokens.css": "./src/tokens.css",
-    "./components.css": "./src/components/primitives.css",
-    "./fonts.css": "./src/fonts.css",
-    "./navigation.css": "./src/components/navigation.css",
-    "./steps.css": "./src/components/steps.css",
-    "./action-card.css": "./src/components/action-card.css",
-    "./settings": "./src/components/settings.js",
-    "./settings.css": "./src/components/settings.css",
-    "./patterns.css": "./src/components/patterns.css",
-    "./icons/*": "./src/icons/*",
-    "./brand/*": "./src/brand/*",
-    "./status.css": "./src/components/status.css",
-    "./monitoring.css": "./src/components/monitoring.css",
-    "./status/*": "./src/status/*",
-    "./solid": "./src/solid/index.ts"
+    ".": "./web/index.js",
+    "./styles.css": "./web/styles.css",
+    "./tokens.css": "./web/tokens.css",
+    "./components.css": "./web/components/primitives.css",
+    "./fonts.css": "./web/fonts.css",
+    "./navigation.css": "./web/components/navigation.css",
+    "./steps.css": "./web/components/steps.css",
+    "./action-card.css": "./web/components/action-card.css",
+    "./settings": "./web/components/settings.js",
+    "./settings.css": "./web/components/settings.css",
+    "./patterns.css": "./web/components/patterns.css",
+    "./icons/*": "./web/icons/*",
+    "./brand/*": "./web/brand/*",
+    "./status.css": "./web/components/status.css",
+    "./monitoring.css": "./web/components/monitoring.css",
+    "./status/*": "./web/status/*",
+    "./solid": "./solid/index.ts"
   },
   "scripts": {
     "build": "vite build"
@@ -42,5 +42,9 @@
     "@solidjs/web": {
       "optional": true
     }
-  }
+  },
+  "files": [
+    "web",
+    "solid"
+  ]
 }

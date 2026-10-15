@@ -59,6 +59,10 @@ fn stylesheets() -> Vec<(String, String)> {
     let mut sheets = vec![
         ("views/site.css".to_string(), SITE_CSS.to_string()),
         (
+            "ui/web/components".to_string(),
+            ui::assets::COMPONENTS_CSS.to_string(),
+        ),
+        (
             "pos-ui/src/pos.css".to_string(),
             read(&crate_dir().join("pos-ui/src/pos.css")),
         ),
@@ -227,7 +231,7 @@ fn no_colour_is_defined_outside_theme_css() {
     }
     assert!(
         problems.is_empty(),
-        "colours belong in views/theme.css (add a role there and use it):\n{}",
+        "colours belong in the ui package's web/tokens.css (add a role there and use it):\n{}",
         problems.join("\n")
     );
 }
@@ -325,7 +329,7 @@ fn every_pill_and_chip_is_padded_with_the_pill_tokens() {
 
 #[test]
 fn every_token_a_page_uses_is_declared() {
-    let mut texts = vec![("views/theme.css".to_string(), strip_comments(THEME_CSS))];
+    let mut texts = vec![("ui/web/tokens.css".to_string(), strip_comments(THEME_CSS))];
     texts.extend(
         stylesheets()
             .into_iter()

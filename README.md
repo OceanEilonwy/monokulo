@@ -63,7 +63,9 @@ scripts/dev-run.sh start    # then open http://127.0.0.1:8081
 
 ### Shared UI and stylebook
 
-The framework-independent component library lives in [`packages/ui`](packages/ui),
-with a standalone, HTML-first stylebook in [`apps/stylebook`](apps/stylebook).
+The shared components live in [`crates/ui`](crates/ui): one package, the Rust
+crate the server renders them with and the npm package `@monokulo/ui` the POS
+imports, with their CSS and behaviour. The stylebook, generated from them in
+part, is in [`apps/stylebook`](apps/stylebook).
 Run `npm ci` at the repository root, then `npm run stylebook`.
 See [the UI architecture and adoption guide](docs/ui-components.md).

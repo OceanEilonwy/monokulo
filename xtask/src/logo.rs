@@ -426,11 +426,11 @@ fn render(path: &str) -> String {
         }
         "crates/monokulo/src/views/logo_art.rs" => rust_module(),
         "crates/monokulo/pos-ui/src/logo.ts" => ts_module(),
-        "packages/ui/src/brand/full.svg" => package_svg(Kind::Full),
-        "packages/ui/src/brand/small.svg" => package_svg(Kind::Small),
-        "packages/ui/src/brand/icon.svg" => package_svg(Kind::Icon),
-        "packages/ui/src/brand/loading.svg" => package_svg(Kind::Loading),
-        "packages/ui/src/brand/hero.svg" => package_svg(Kind::Hero),
+        "crates/ui/web/brand/full.svg" => package_svg(Kind::Full),
+        "crates/ui/web/brand/small.svg" => package_svg(Kind::Small),
+        "crates/ui/web/brand/icon.svg" => package_svg(Kind::Icon),
+        "crates/ui/web/brand/loading.svg" => package_svg(Kind::Loading),
+        "crates/ui/web/brand/hero.svg" => package_svg(Kind::Hero),
         _ => unreachable!("{path} is not a logo output"),
     }
 }
@@ -443,11 +443,11 @@ const OUTPUTS: [&str; 12] = [
     "plugins/woocommerce/assets/monokulo-icon.svg",
     "crates/monokulo/src/views/logo_art.rs",
     "crates/monokulo/pos-ui/src/logo.ts",
-    "packages/ui/src/brand/full.svg",
-    "packages/ui/src/brand/small.svg",
-    "packages/ui/src/brand/icon.svg",
-    "packages/ui/src/brand/loading.svg",
-    "packages/ui/src/brand/hero.svg",
+    "crates/ui/web/brand/full.svg",
+    "crates/ui/web/brand/small.svg",
+    "crates/ui/web/brand/icon.svg",
+    "crates/ui/web/brand/loading.svg",
+    "crates/ui/web/brand/hero.svg",
 ];
 
 /// Writes every output under `root` that differs from what the mark draws.

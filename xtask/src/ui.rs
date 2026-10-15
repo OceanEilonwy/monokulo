@@ -2,10 +2,10 @@
 //!
 //! The components are written once, in crates/ui. From them this writes:
 //!
-//! - packages/ui/src/solid: the Solid components the POS imports;
+//! - crates/ui/solid: the Solid components the POS imports;
 //! - apps/stylebook/examples/generated: the stylebook's section for each
 //!   component, with its examples rendered by the Rust components;
-//! - packages/ui/tests/solid/generated/fixtures.json: the same examples as props and
+//! - crates/ui/browser/solid/generated/fixtures.json: the same examples as props and
 //!   HTML, which the browser suite renders through the Solid components and
 //!   compares.
 //!
@@ -19,9 +19,9 @@ use std::{collections::BTreeMap, fs, io, path::Path};
 pub(crate) const HELP: &str =
     "        ui [--check]  Write the Solid components, stylebook sections and fixtures from crates/ui";
 
-const SOLID: &str = "packages/ui/src/solid";
+const SOLID: &str = "crates/ui/solid";
 const BOOK: &str = "apps/stylebook/examples/generated";
-const FIXTURES: &str = "packages/ui/tests/solid/generated";
+const FIXTURES: &str = "crates/ui/browser/solid/generated";
 
 /// Every generated file, by directory and name.
 fn outputs() -> BTreeMap<&'static str, BTreeMap<String, String>> {

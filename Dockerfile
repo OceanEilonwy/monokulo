@@ -29,7 +29,7 @@ WORKDIR /src
 # The POS app's dependencies first, so they stay cached until its lockfile changes.
 COPY package.json package-lock.json ./
 COPY crates/monokulo/pos-ui/package.json crates/monokulo/pos-ui/
-COPY packages/ui/package.json packages/ui/
+COPY crates/ui/package.json crates/ui/
 COPY apps/stylebook/package.json apps/stylebook/
 RUN npm ci --no-audit --no-fund
 COPY rust-toolchain.toml ./

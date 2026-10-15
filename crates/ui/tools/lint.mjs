@@ -27,7 +27,7 @@ export function inspect(file, source) {
     ast.walkDecls(decl => {
       if (literalColor.test(decl.value)) report('color-token', `${decl.prop}: ${decl.value}`, decl.source.start.line);
       const selector = decl.parent.selector || '';
-      if (!file.startsWith('packages/ui/') && /\.mk-[\w-]+/.test(selector) && visual.test(decl.prop)) {
+      if (!file.startsWith('crates/ui/') && /\.mk-[\w-]+/.test(selector) && visual.test(decl.prop)) {
         report('component-override', `${selector} { ${decl.prop}: ${decl.value} }`, decl.source.start.line);
       }
       if (decl.prop === 'font-size' && /[\d.]+(?:px|rem|em)\b/.test(decl.value)) {
@@ -54,7 +54,7 @@ export function inspect(file, source) {
       if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
         checkControl(node.tagName.getText(ast), node.attributes.getText(ast), node.getText(ast), ast.getLineAndCharacterOfPosition(node.getStart(ast)).line + 1);
       }
-      if (!file.startsWith('packages/ui/') && ts.isCallExpression(node)
+      if (!file.startsWith('crates/ui/') && ts.isCallExpression(node)
         && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'createElement'
         && node.arguments[0] && ts.isStringLiteral(node.arguments[0]) && controls.has(node.arguments[0].text)) {
         report('js-native-control', node.getText(ast), ast.getLineAndCharacterOfPosition(node.getStart(ast)).line + 1);
@@ -91,7 +91,7 @@ function files(dir) {
   });
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const roots = ['packages/ui/src', 'apps/stylebook', 'crates/monokulo/pos-ui/src', 'crates/monokulo/src/views', 'crates/monokulo/static'];
+  const roots = ['crates/ui/web', 'crates/ui/src', 'crates/ui/solid', 'apps/stylebook', 'crates/monokulo/pos-ui/src', 'crates/monokulo/src/views', 'crates/monokulo/static'];
   const findings = roots.flatMap(dir => files(resolve(root, dir))).flatMap(path => inspect(relative(root, path), readFileSync(path, 'utf8')));
   if (process.argv.includes('--write-baseline')) {
     const baseline = {};

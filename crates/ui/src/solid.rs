@@ -1,6 +1,6 @@
 //! The Solid translation: each component's template as a Solid component,
 //! for the POS. `cargo xtask ui` writes these files into
-//! packages/ui/src/solid; nothing there is edited by hand.
+//! crates/ui/solid; nothing there is edited by hand.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -8,7 +8,7 @@ use std::fmt::Write;
 use crate::ir::{Attr, Cond, Element, Node, Part, Path};
 use crate::{ComponentInfo, Ty, Value};
 
-/// Every generated file, by its name under packages/ui/src/solid.
+/// Every generated file, by its name under crates/ui/solid.
 pub fn files(components: &[&'static ComponentInfo]) -> BTreeMap<String, String> {
     let mut files = BTreeMap::new();
     let mut types = Types::default();
