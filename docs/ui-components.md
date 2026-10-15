@@ -224,12 +224,6 @@ keyboard interactions, reduced motion, footer visibility and no-JS workflows.
 Responsive screenshots support visual review. Real POS and settings browser
 tests verify that extracted assets and styles work in their consumers.
 
-The stylebook now also includes original generated logos and animated loading
-marks, POS status art, monitoring charts/status summaries, wallet selection,
-pagination, footer-based settings pages, and the selected grouped page form and its many-edits preview.
-`/form-page.html` is a full-page footer specimen. `#page-hierarchy` demonstrates
-using sections and separators instead of nested cards. The flat progress strip is the only step design; native progress values count completed tasks.
-
 ## fixi and islands
 
 Islands (Solid behaviours) are for what happens inside a component: a

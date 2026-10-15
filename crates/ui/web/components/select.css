@@ -60,7 +60,6 @@
 .switch .switch-on, .switch input:checked ~ .switch-off { display: none; }
 @media (prefers-reduced-motion: reduce) { .switch .switch-track, .switch .switch-track::after { transition: none; } }
 
-
 /* Metadata used by enhanced options and their native text equivalents. */
 .tag {
   display: inline-block;
@@ -86,7 +85,6 @@
 .tag-network svg { width: 1.05em; height: 1.05em; flex: none; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .tag-network.is-main { background: var(--network-main-bg); border-color: var(--network-main-edge); }
 .tag-network.is-test { background: var(--network-test-bg); border-style: dashed; }
-
 
 /* `views::state_badge`: the short words replace the long ones on a phone;
    the long ones stay for screen readers. */

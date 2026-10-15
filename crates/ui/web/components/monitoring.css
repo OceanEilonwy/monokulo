@@ -19,15 +19,3 @@
 [data-net-card] > .net-head + h3.caps { margin-top: 0; }
 [data-net-card] .line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm); margin: var(--space-xs) 0; }
 
-.mk-status-card { min-width: 0; padding: var(--space-lg); border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--paper-raised); }
-.mk-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr)); gap: var(--space-lg); margin: 0; padding-block: var(--space-lg); }
-.mk-metrics > div { min-width: 0; }
-.mk-metrics dt { color: var(--muted); font-size: var(--text-sm); }
-.mk-metrics dd { margin: 0; font-size: var(--text-xl); font-weight: 700; font-variant-numeric: tabular-nums; }
-.mk-chart { margin: 0; display: grid; gap: var(--space-sm); }
-.mk-chart figcaption { font-weight: 700; }
-.mk-chart-axis { display: flex; justify-content: space-between; color: var(--muted); font-size: var(--text-xs); }
-
-.mk-status-heading { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin-bottom: var(--space-sm); }
-.mk-status-heading > :is(h2, h3) { margin: 0; }
-/* Monitoring labels describe the heading or sentence they accompany. */

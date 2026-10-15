@@ -20,11 +20,6 @@ export type ButtonType = "button" | "submit" | "reset";
 export type ButtonVariant = "primary" | "danger" | "quiet";
 
 /**
- * A settings card's look.
- */
-export type CardSurface = "grouped";
-
-/**
  * Where a cell goes when its row is a card on a phone.
  */
 export type CellPart = "title" | "status" | "amount" | "when" | "meta";

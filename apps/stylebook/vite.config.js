@@ -4,7 +4,6 @@ import { readFileSync } from 'node:fs';
 const escape = text => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 export default defineConfig({
   base: './',
-  build: { rollupOptions: { input: { index: new URL('./index.html', import.meta.url).pathname, form: new URL('./form-page.html', import.meta.url).pathname, grouped: new URL('./form-grouped.html', import.meta.url).pathname } } },
   // The islands' behaviours are Solid (crates/ui/web/islands.ts). As in
   // the POS's config, the plugin's own dev flag stays off.
   plugins: [solid({ dev: false }), {

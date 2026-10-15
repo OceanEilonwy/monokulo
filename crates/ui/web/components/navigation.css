@@ -4,15 +4,14 @@
 .mk-breadcrumbs a { min-width: 0; max-width: min(60vw, 24rem); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; text-decoration: underline; text-underline-offset: .2em; }
 .mk-breadcrumbs [aria-current="page"] { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mk-breadcrumb-separator { flex: none; color: var(--muted); }
-.mk-back-link { display: inline-flex; align-items: center; gap: var(--space-xs); max-width: 100%; color: var(--muted); text-decoration: underline; text-underline-offset: .2em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mk-back-link::before { content: "←"; flex: none; }
-.mk-breadcrumbs a:hover, .mk-back-link:hover { color: var(--accent-text); }
-.mk-breadcrumbs a:focus-visible, .mk-back-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-sm); }
+
+.mk-breadcrumbs a:hover{ color: var(--accent-text); }
+.mk-breadcrumbs a:focus-visible{ outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-sm); }
 /* Legacy application trails contain direct links; a single ancestor is a back link. */
 .mk-breadcrumbs > a:only-child::before { content: "←"; display: inline-block; margin-right: var(--space-xs); }
 
-.mk-back-link, .mk-breadcrumbs > a:only-child { position: relative; padding-inline-start: 1.4em; }
-.mk-back-link::before, .mk-breadcrumbs > a:only-child::before { position: absolute; inset-inline-start: 0; margin: 0; text-decoration: none; }
+ .mk-breadcrumbs > a:only-child { position: relative; padding-inline-start: 1.4em; }
+ .mk-breadcrumbs > a:only-child::before { position: absolute; inset-inline-start: 0; margin: 0; text-decoration: none; }
 
 .mk-breadcrumbs { width: 100%; }
 .mk-breadcrumbs > ol { flex: 1; overflow: hidden; }

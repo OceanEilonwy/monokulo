@@ -2108,7 +2108,7 @@
   },
   {
     "component": "SettingsForm",
-    "html": "<div class=\"mk-settings-form\" data-label=\"Store settings\" data-mk=\"1\" data-island=\"SettingsForm\" data-props=\"{&quot;label&quot;:&quot;Store settings&quot;}\"><form method=\"get\" action=\"#component-settings-form\" id=\"book-settings-form\" data-mk=\"2\"><section id=\"card-book-details\" class=\"settings-card\" data-name=\"book-details\" role=\"region\" aria-labelledby=\"card-book-details-title\" data-mk=\"1\" data-island=\"SettingsCard\" data-props=\"{&quot;failed&quot;:false,&quot;hidden&quot;:false,&quot;name&quot;:&quot;book-details&quot;,&quot;title&quot;:&quot;Store details&quot;}\"><header class=\"card-head\"><h3 id=\"card-book-details-title\">Store details</h3><span class=\"card-state\" data-card-state><!--mk:2--></span><span class=\"card-spacer\"></span><!--mk:5--></header><div class=\"card-body\"><div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{&quot;row&quot;:false}\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-settings-name-input\">Store name</label><span class=\"changed-mark\">changed</span></div><div class=\"mk-field\"><label for=\"book-settings-name-input\">Name</label><input class=\"mk-input\" id=\"book-settings-name-input\" name=\"name\" type=\"text\"></div></div></div></section><div id=\"book-form-save-bar\" class=\"save-bar\" data-placement=\"inline\" role=\"region\" aria-label=\"Example form's save changes\" data-mk=\"1\" data-island=\"SaveBar\" data-props=\"{&quot;failed&quot;:false,&quot;save_label&quot;:&quot;Save&quot;}\"><div class=\"save-bar-inner\"><p class=\"save-bar-message\" data-save-bar-message tabindex=\"-1\"><span data-mk=\"2\">Saving changes the store straight away.</span><!--mk:3--></p><div class=\"save-bar-actions\" data-mk=\"4\"><a class=\"mk-btn\" href=\"#component-settings-form\" data-discard-all data-mk=\"5\">Discard changes</a><button type=\"submit\" class=\"mk-btn\" data-variant=\"primary\" data-save data-mk=\"6\"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div></form></div>",
+    "html": "<div class=\"mk-settings-form\" data-label=\"Store settings\" data-mk=\"1\" data-island=\"SettingsForm\" data-props=\"{&quot;label&quot;:&quot;Store settings&quot;}\"><form method=\"get\" action=\"#component-settings-form\" id=\"book-settings-form\" data-mk=\"2\"><section id=\"card-book-details\" class=\"settings-card\" data-name=\"book-details\" role=\"region\" aria-labelledby=\"card-book-details-title\" data-mk=\"1\" data-island=\"SettingsCard\" data-props=\"{&quot;failed&quot;:false,&quot;hidden&quot;:false,&quot;name&quot;:&quot;book-details&quot;,&quot;title&quot;:&quot;Store details&quot;}\"><header class=\"card-head\"><h3 id=\"card-book-details-title\">Store details</h3><span class=\"card-state\" data-card-state><!--mk:2--></span><span class=\"card-spacer\"></span><!--mk:5--></header><div class=\"card-body\"><div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{}\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-settings-name-input\">Store name</label><span class=\"changed-mark\">changed</span></div><input class=\"mk-input\" type=\"text\" name=\"name\" id=\"book-settings-name-input\" value=\"Corner store\"></div></div></section><div id=\"book-form-save-bar\" class=\"save-bar\" data-placement=\"inline\" role=\"region\" aria-label=\"Example form's save changes\" data-mk=\"1\" data-island=\"SaveBar\" data-props=\"{&quot;failed&quot;:false,&quot;save_label&quot;:&quot;Save&quot;}\"><div class=\"save-bar-inner\"><p class=\"save-bar-message\" data-save-bar-message tabindex=\"-1\"><span data-mk=\"2\">Saving changes the store straight away.</span><!--mk:3--></p><div class=\"save-bar-actions\" data-mk=\"4\"><a class=\"mk-btn\" href=\"#component-settings-form\" data-discard-all data-mk=\"5\">Discard changes</a><button type=\"submit\" class=\"mk-btn\" data-variant=\"primary\" data-save data-mk=\"6\"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div></form></div>",
     "props": {
       "action": "#component-settings-form",
       "children": {
@@ -2124,23 +2124,23 @@
                       "children": {
                         "$slot": [
                           {
-                            "$component": "Field",
+                            "$component": "Input",
                             "props": {
                               "disabled": false,
                               "id": "book-settings-name-input",
+                              "invalid": false,
                               "kind": "text",
-                              "label": "Name",
                               "name": "name",
                               "readonly": false,
-                              "required": false
+                              "required": false,
+                              "value": "Corner store"
                             }
                           }
                         ]
                       },
                       "group": false,
                       "id": "book-settings-name-input",
-                      "label": "Store name",
-                      "row": false
+                      "label": "Store name"
                     }
                   }
                 ]
@@ -2173,7 +2173,6 @@
         ]
       },
       "form_id": "book-settings-form",
-      "framed": false,
       "label": "Store settings",
       "method": "get"
     },
@@ -2237,20 +2236,22 @@
   },
   {
     "component": "Setting",
-    "html": "<div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{&quot;row&quot;:false}\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-setting-confirmations\">Confirmations</label><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-confirmations-help\">Blocks a payment waits for before it counts as paid.</p><div class=\"mk-field\"><label for=\"book-setting-confirmations\">Blocks</label><input class=\"mk-input\" id=\"book-setting-confirmations\" name=\"confirmations\" type=\"text\"></div></div>",
+    "html": "<div class=\"setting-field\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{}\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-setting-confirmations\">Confirmations</label><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-confirmations-help\">Blocks a payment waits for before it counts as paid.</p><input class=\"mk-input\" type=\"number\" name=\"confirmations\" id=\"book-setting-confirmations\" value=\"10\" aria-describedby=\"book-setting-confirmations-help\"></div>",
     "props": {
       "children": {
         "$slot": [
           {
-            "$component": "Field",
+            "$component": "Input",
             "props": {
+              "described_by": "book-setting-confirmations-help",
               "disabled": false,
               "id": "book-setting-confirmations",
-              "kind": "text",
-              "label": "Blocks",
+              "invalid": false,
+              "kind": "number",
               "name": "confirmations",
               "readonly": false,
-              "required": false
+              "required": false,
+              "value": "10"
             }
           }
         ]
@@ -2263,14 +2264,13 @@
       },
       "help_id": "book-setting-confirmations-help",
       "id": "book-setting-confirmations",
-      "label": "Confirmations",
-      "row": false
+      "label": "Confirmations"
     },
     "title": "With help"
   },
   {
     "component": "Setting",
-    "html": "<div class=\"setting-field\" role=\"group\" aria-labelledby=\"book-setting-accept\" aria-describedby=\"book-setting-accept-help\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{&quot;row&quot;:false}\"><div class=\"setting-label-row\"><span class=\"setting-label\" id=\"book-setting-accept\">Accept</span><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-accept-help\">What a payment may arrive as.</p>Its checkboxes.</div>",
+    "html": "<div class=\"setting-field\" role=\"group\" aria-labelledby=\"book-setting-accept\" aria-describedby=\"book-setting-accept-help\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{}\"><div class=\"setting-label-row\"><span class=\"setting-label\" id=\"book-setting-accept\">Accept</span><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-accept-help\">What a payment may arrive as.</p>Its checkboxes.</div>",
     "props": {
       "children": {
         "$slot": [
@@ -2286,8 +2286,7 @@
       },
       "help_id": "book-setting-accept-help",
       "id": "book-setting-accept",
-      "label": "Accept",
-      "row": false
+      "label": "Accept"
     },
     "title": "A group"
   },

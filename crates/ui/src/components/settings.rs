@@ -27,13 +27,6 @@ pub enum FormMethod {
     Get,
 }
 
-/// A settings card's look.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]
-pub enum CardSurface {
-    /// Its settings in bordered groups of rows, the title outside them.
-    Grouped,
-}
-
 component! {
     /// The page's settings form: one per page. `label` names what has
     /// unsaved changes when leaving is asked about ("Abuse protection has
@@ -48,12 +41,6 @@ component! {
         children: Slot,
         #[default(FormMethod::Post)]
         method: FormMethod,
-        /// The form as a whole page: `header` above, `children` scrolling
-        /// in the middle, `footer` (the save bar) always in sight.
-        #[default(false)]
-        framed: bool,
-        header: Option<Slot>,
-        footer: Option<Slot>,
         /// The form's id: a page has one settings form, `settings-form`.
         #[default(String::from("settings-form"))]
         form_id: String,
@@ -65,17 +52,9 @@ component! {
     }
     html {
         div class="mk-settings-form" data-label=(label) ref=host {
-            form class="mk-page-frame mk-form-layout" if framed data-layout="grouped" if framed method=(method)
-                action=(action) id=(form_id) fx-action=(action) if fixi_target
+            form method=(method) action=(action) id=(form_id) fx-action=(action) if fixi_target
                 fx-method="POST" if fixi_target fx-target=[fixi_target] ref=form {
-                @if let Some(header) = header { header { (header) } }
-                @if framed {
-                    div class="mk-page-body" { (children) }
-                    @if let Some(footer) = footer { footer class="mk-page-footer" { (footer) } }
-                } @else {
-                    (children)
-                    @if let Some(footer) = footer { (footer) }
-                }
+                (children)
             }
         }
     }
@@ -118,7 +97,6 @@ component! {
         /// `name=value`: shown only while that checkbox is ticked, its
         /// controls off (not sent) while hidden.
         shown_by: Option<String>,
-        surface: Option<CardSurface>,
         /// `data-*` attributes of the page's own.
         rest: Attrs,
     }
@@ -143,7 +121,7 @@ component! {
         section id={ "card-" (name) }
             class=join["settings-card", { (extra_class) } if extra_class, "is-failed" if failed]
             class=join["settings-card", { (extra_class) } if extra_class, "is-dirty" if b.dirty, "is-failed" if b.refused]
-            data-name=(name) data-surface=[surface] data-shown-by=[shown_by] hidden[hidden] hidden[b.off] role="region"
+            data-name=(name) data-shown-by=[shown_by] hidden[hidden] hidden[b.off] role="region"
             aria-labelledby={ "card-" (name) "-title" } ..rest ref=root {
             header class="card-head" {
                 h3 id={ "card-" (name) "-title" } { (title) }
@@ -216,10 +194,6 @@ component! {
         described_by: Option<String>,
         /// The label's own id, for a control that names itself by it.
         label_id: Option<String>,
-        /// A row of a grouped card: what it is on one side, its control on
-        /// the other.
-        #[default(false)]
-        row: bool,
     }
     behaviour "setting.behaviour.ts" {
         uses(),
@@ -227,33 +201,22 @@ component! {
         ref root,
     }
     html {
-        div class=join["setting-field", "mk-setting-row" if row]
-            class=join["setting-field", "mk-setting-row" if row, "is-changed" if b.changed]
+        div class="setting-field"
+            class=join["setting-field", "is-changed" if b.changed]
             role="group" if group aria-labelledby=(id) if group aria-describedby=[described_by] ref=root {
-            @if row {
-                div {
-                    div class="setting-label-row" {
-                        label class="setting-label" id=[label_id] for=(id) { (label) }
-                        span class="changed-mark" { "changed" }
-                    }
-                    @if let Some(help) = help { p class="mk-hint" id=[help_id] { (help) } }
+            div class="setting-label-row" {
+                @if group {
+                    span class="setting-label" id=(id) { (label) }
+                } @else {
+                    label class="setting-label" id=[label_id] for=(id) { (label) }
                 }
-                div class="mk-setting-control" { (children) }
-            } @else {
-                div class="setting-label-row" {
-                    @if group {
-                        span class="setting-label" id=(id) { (label) }
-                    } @else {
-                        label class="setting-label" id=[label_id] for=(id) { (label) }
-                    }
-                    @if let Some(chip) = chip { (chip) }
-                    span class="changed-mark" { "changed" }
-                }
-                @if let Some(help) = help {
-                    p class="field-help" id=[help_id] { (help) }
-                }
-                (children)
+                @if let Some(chip) = chip { (chip) }
+                span class="changed-mark" { "changed" }
             }
+            @if let Some(help) = help {
+                p class="field-help" id=[help_id] { (help) }
+            }
+            (children)
         }
     }
 }
@@ -444,7 +407,7 @@ pub(super) fn settings_form_examples() -> Vec<(&'static str, SettingsForm)> {
     let store_name = Setting::new(
         "Store name",
         "book-settings-name-input",
-        crate::Field::new("Name", "book-settings-name-input", "name"),
+        crate::Input::new("name").id("book-settings-name-input").value("Corner store"),
     );
     vec![(
         "A card, its settings and the save bar",
@@ -476,7 +439,11 @@ pub(super) fn setting_examples() -> Vec<(&'static str, Setting)> {
             Setting::new(
                 "Confirmations",
                 "book-setting-confirmations",
-                crate::Field::new("Blocks", "book-setting-confirmations", "confirmations"),
+                crate::Input::new("confirmations")
+                    .id("book-setting-confirmations")
+                    .kind(crate::InputType::Number)
+                    .value("10")
+                    .described_by("book-setting-confirmations-help"),
             )
             .help("Blocks a payment waits for before it counts as paid.")
             .help_id("book-setting-confirmations-help"),
@@ -575,131 +542,3 @@ pub(super) fn toast_examples() -> Vec<(&'static str, Toast)> {
     ]
 }
 
-/// The stylebook's page-form specimen: titled sections of grouped settings
-/// rows in a page whose footer holds the save bar. `first` names the first
-/// card and `name_id` its first field, so the catalogue's copy and the
-/// full-page one differ.
-pub(super) fn page_form(
-    action: &str,
-    first: &str,
-    name_id: &str,
-    save_label: &str,
-    region: &str,
-) -> SettingsForm {
-    use maud::html;
-    let row = |label: &str, id: &str, help: &str, control: maud::Markup| {
-        Setting::new(label, id, control)
-            .row(true)
-            .label_id(format!("{id}-label"))
-            .help(help)
-            .help_id(format!("{id}-help"))
-    };
-    let text = |id: &str, name: &str, value: &str| {
-        html! { input class="mk-input" id=(id) name=(name) value=(value) aria-describedby=(format!("{id}-help")); }
-    };
-    let switch = |id: &str, name: &str, on: bool| {
-        html! {
-            label class="switch" {
-                input type="checkbox" id=(id) name=(name) aria-labelledby=(format!("{id}-label"))
-                    aria-describedby=(format!("{id}-help")) checked[on];
-                span class="switch-track" aria-hidden="true" {}
-            }
-        }
-    };
-    let card = |name: &str, title: &str, hint: &str, groups: Vec<Vec<Setting>>| {
-        let body = html! {
-            @for group in groups {
-                div class="mk-setting-group" {
-                    @for setting in group { (setting) }
-                }
-            }
-        };
-        SettingsCard::new(name, title, body)
-            .surface(CardSurface::Grouped)
-            .head(html! { p class="mk-hint" { (hint) } })
-    };
-    let cards = Slot::many([
-        Slot::from(card(
-            first,
-            "Store details",
-            "Your business identity on checkout and customer receipts.",
-            vec![vec![
-                row(
-                    "Store name",
-                    name_id,
-                    "The name customers see when making a payment.",
-                    text(name_id, "store-name", "Corner store"),
-                ),
-                row(
-                    "Website",
-                    "grouped-site",
-                    "Your public storefront address.",
-                    text("grouped-site", "site", "https://store.example"),
-                ),
-            ]],
-        )),
-        Slot::from(card(
-            "grouped-payments",
-            "Payments",
-            "Choose how your store accepts payments.",
-            vec![
-                vec![row(
-                    "Online checkout",
-                    "grouped-checkout",
-                    "Allow customers to pay through your hosted payment page.",
-                    switch("grouped-checkout", "checkout", true),
-                )],
-                vec![
-                    row(
-                        "Point of sale",
-                        "grouped-terminal",
-                        "Accept in-person payments from your browser.",
-                        switch("grouped-terminal", "terminal", true),
-                    ),
-                    row(
-                        "Customer tips",
-                        "grouped-tips",
-                        "Let customers add a tip before paying.",
-                        switch("grouped-tips", "tips", false),
-                    ),
-                ],
-            ],
-        )),
-        Slot::from(card(
-            "grouped-receipts",
-            "Receipts",
-            "Help customers recognize their payment and contact you.",
-            vec![vec![
-                row(
-                    "Support email",
-                    "grouped-email",
-                    "Shown on receipts when a customer needs help.",
-                    text("grouped-email", "email", "hello@store.example"),
-                ),
-                row(
-                    "Receipt message",
-                    "grouped-message",
-                    "A short note included with each receipt.",
-                    text(
-                        "grouped-message",
-                        "message",
-                        "Thank you for shopping with us.",
-                    ),
-                ),
-            ]],
-        )),
-    ]);
-    SettingsForm::new(action, "Store settings", cards)
-        .method(FormMethod::Get)
-        .framed(true)
-        .header(html! {
-            h1 class="mk-type-heading" { "Store settings" }
-            p class="mk-hint" { "Titled sections and setting cards · Edit a field to see change indicators." }
-        })
-        .footer(
-            SaveBar::new("Save your changes.", action)
-                .inline(true)
-                .save_label(save_label)
-                .region_label(region),
-        )
-}
