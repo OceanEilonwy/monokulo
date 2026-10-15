@@ -236,7 +236,9 @@ mod tests {
             assert!(page.contains(&format!("data-target=\"{id}\"")), "{id}");
         }
         assert!(page.contains("OpenWrt 26.06 / 25.12 with LuCI"));
-        assert!(page.contains("<pre>KEY</pre>"));
+        // The key to paste, whole, with a Copy button named for it.
+        assert!(page.contains("<code>KEY</code></pre>"));
+        assert!(page.contains("&quot;copy_label&quot;:&quot;Copy the signing key&quot;}"));
         for path in [
             "openwrt/25.12/aarch64_cortex-a53/monokulo-0.1.0-r42.apk",
             "openwrt/26.06/aarch64_cortex-a53/packages.adb",

@@ -2,7 +2,7 @@
 // a Copy button for the whole value, and a shortened form on screen. The
 // value's own text stays the source of truth: copied as it is at the click,
 // shown whole when focused.
-import { createMemo, createSignal, onCleanup } from 'solid-js';
+import { createMemo, createSignal, onCleanup, untrack } from 'solid-js';
 import type { CopyValueBehaviour, CopyValueProps } from '../../solid/CopyValue';
 import { truncateValue } from './truncate';
 
@@ -12,7 +12,8 @@ export function setup(props: CopyValueProps): CopyValueBehaviour {
   const [busy, setBusy] = createSignal(false);
   // The value's text as it is on the page, which a script or a renderer
   // may change in place: set as the behaviour attaches, so `ownedWrite`.
-  const [text, setText] = createSignal(props.value, { ownedWrite: true });
+  // Its first value as given: the element's own text takes over once attached.
+  const [text, setText] = createSignal(untrack(() => props.value), { ownedWrite: true });
 
   const preview = createMemo(() => {
     const full = text();
@@ -46,9 +47,17 @@ export function setup(props: CopyValueProps): CopyValueBehaviour {
         await navigator.clipboard.writeText(text);
         setStatus('Copied');
       } catch {
-        // The value left selected for a copy by hand; never a claim it copied.
+        // No Clipboard API (a plain-http .onion): the selection, copied the
+        // old way where the browser still allows it; else left selected for
+        // a copy by hand, never a claim it copied.
         selectAll();
-        setStatus('Select and copy the full value using your device’s copy command.');
+        let copied = false;
+        try {
+          copied = document.execCommand('copy');
+        } catch {
+          copied = false;
+        }
+        setStatus(copied ? 'Copied' : 'Select and copy the full value using your device’s copy command.');
       } finally {
         setBusy(false);
       }

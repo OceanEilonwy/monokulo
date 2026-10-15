@@ -115,22 +115,6 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
   .pay-col-primary { text-align: center; }
   .qr-wrap svg { width: min(208px, 46vh); height: auto; }
 }
-/* The stage: where the order is (Send, Confirm, Paid; no Confirm when one
-   payment is enough) and one line on what to do now, in the state's colours.
-   Always present, so the code under it never moves as the order changes. */
-.stage-track { text-align: left; padding: .65em .8em; border: 1px solid var(--state-border); border-radius: var(--radius-md); background: var(--state-bg); color: var(--state-ink); }
-.track { list-style: none; margin: 0 0 .5em; padding: 0; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); position: relative; }
-.track::before { content: ""; position: absolute; top: .8em; left: 16.67%; right: 16.67%; height: 2px; background: color-mix(in srgb, currentColor 30%, transparent); }
-.track-2::before { left: 25%; right: 25%; }
-.track li { position: relative; display: grid; justify-items: center; gap: .2em; font-size: .75em; font-weight: 700; }
-.track-dot { display: grid; place-items: center; width: 2.13em; height: 2.13em; border: 2px solid color-mix(in srgb, currentColor 40%, transparent); border-radius: 50%; background: var(--paper-raised); }
-.track-dot svg { width: 1.2em; height: 1.2em; }
-.step-done .track-dot { background: var(--state-paid-border); border-color: var(--state-paid-border); color: var(--paper-raised); }
-.step-now .track-dot { border-color: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
-.step-part .track-dot { border-color: currentColor; background: conic-gradient(currentColor 0 50%, var(--paper-raised) 50% 100%); }
-.step-fail .track-dot { background: var(--state-border); border-color: var(--state-border); color: var(--paper-raised); }
-.step-todo { opacity: .6; }
-.track-msg { margin: 0; font-size: .85em; line-height: 1.4; }
 .stage-expiry { white-space: nowrap; }
 .stage-expiry.expiry-soon { color: var(--warning); font-weight: 800; }
 .stage-expiry.expiry-urgent { color: var(--error); font-weight: 800; }
@@ -143,29 +127,8 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .qr-wrap { margin: 0 auto 1.2em; display: flex; justify-content: center; }
 .qr-wrap svg { width: 208px; height: 208px; }
 .address-block { text-align: left; margin: 0 0 1.4em; }
-.address-row { display: flex; align-items: flex-start; gap: 0.5em; }
-.address-copy-btn { flex: none; display: inline-flex; align-items: flex-start; justify-content: center; width: 2em; height: 2em; padding: 0.2em 0 0; margin: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
-.address-copy-btn[hidden] { display: none; }
-.address-copy-btn:hover { color: var(--ink); background: transparent; }
-.address-copy-btn svg { width: 1.1em; height: 1.1em; }
 .address-label { display: block; color: var(--muted); font-size: 0.8em; margin: 0 0 0.35em; }
-.address-text {
-  flex: 1;
-  width: 100%;
-  min-width: 0;
-  font-size: 0.85em;
-  resize: none;
-  border: none;
-  background: none;
-  padding: 0;
-  min-height: 1.5em;
-  height: auto;
-  field-sizing: content;
-  overflow: hidden;
-  cursor: text;
-  outline: none;
-}
-.address-text:focus { outline: none; }
+[data-address] { font-size: 0.85em; }
 .section {
   text-align: left;
   margin-top: 1.6em;
@@ -186,7 +149,7 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
    fades with it and loses its copy button. */
 .qr-wrap.is-spent svg { opacity: .14; filter: grayscale(1); }
 #checkout-root:has(.qr-wrap.is-spent) .address-block { opacity: .55; }
-#checkout-root:has(.qr-wrap.is-spent) .address-copy-btn { display: none; }
+#checkout-root:has(.qr-wrap.is-spent) [data-address] button { display: none; }
 /* Partial: a new code for the rest. */
 .qr-new svg { outline: 2px solid var(--state-partial-border); outline-offset: 6px; border-radius: 2px; animation: qr-new 1.4s ease-out 2; }
 @keyframes qr-new { from { box-shadow: 0 0 0 6px color-mix(in srgb, var(--state-partial-border) 55%, transparent); } to { box-shadow: 0 0 0 22px transparent; } }
@@ -195,13 +158,12 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 [data-table="payments"] { font-size: 0.8em; margin-top: 1.2em; }
 .meta { margin-top: 1.4em; font-size: 0.8em; color: var(--muted); text-align: left; }
 .refresh-toggle { margin: 0 0 .5em; text-align: right; font-size: .85em; }
-.refund-field { display: grid; align-items: center; margin: .5em 0; }
-.refund-field input[type=text] { grid-area: 1 / 1; display: block; width: 100%; padding-right: 7.8em; margin: 0; }
-.refund-tools { grid-area: 1 / 1; justify-self: end; z-index: 1; display: flex; align-items: center; gap: .15em; margin-right: .35em; }
-.refund-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 2.2em; height: 2.2em; margin: 0; padding: .3em; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
-.refund-icon-btn[hidden] { display: none; }
-.refund-icon-btn:hover, .refund-icon-btn:focus-visible { color: var(--ink); background: var(--paper); }
-.refund-icon-btn svg, .refund-save-state svg { width: 1.25em; height: 1.25em; }
+/* The scan and image buttons wait, hidden, for the script that works them;
+   the saved tick sits beside them, so the text stops short of all three. */
+.refund-field { margin: .5em 0; }
+#refund_address { padding-right: 7.8em; }
+.refund-field button[hidden] { display: none; }
+.refund-save-state svg { width: 1.25em; height: 1.25em; }
 .refund-save-state { display: none; align-items: center; justify-content: center; width: 2em; color: var(--success); }
 .refund-field.is-saving .refund-save-state, .refund-field.is-saved .refund-save-state { display: inline-flex; }
 .refund-field.is-saving .refund-save-state svg { display: none; }
@@ -228,15 +190,7 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .checkout-compact .qr-wrap { margin-bottom: .3em; }
 .checkout-compact .qr-wrap svg { width: min(29vh, 158px); height: auto; }
 .checkout-compact .address-block { margin-bottom: .5em; }
-.checkout-compact .address-row { border: 1px solid var(--control-border); border-radius: var(--radius-sm); padding: .3em; }
-.checkout-compact .address-text { font-size: .7em; }
-.checkout-compact .refund-field { display: flex; flex-wrap: wrap; gap: .3em; }
-.checkout-compact .refund-field input[type=text] { padding-right: .6em; flex: 1 1 100%; }
-.checkout-compact .refund-tools { justify-self: auto; margin: 0; gap: .4em; }
-.checkout-compact .refund-icon-btn { width: auto; height: 2.3em; gap: .3em; padding: .25em .5em; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); color: var(--ink); font-size: .75em; font-weight: 700; }
-.checkout-compact .refund-icon-btn[hidden] { display: none; }
-.refund-icon-btn span { display: none; }
-.checkout-compact .refund-icon-btn span { display: inline; }
+.checkout-compact [data-address] { font-size: .75em; }
 .checkout-compact .field-help { font-size: .7em; }
 "#;
 
@@ -269,6 +223,8 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
         (script("fx-glue.js", Load::Defer))
         (script("fixi.js", Load::Defer))
         (script("ssexi.js", Load::Defer))
+        // The shared components' islands: the address's Copy button.
+        (script("ui-islands.js", Load::Module))
         // Problem reports, only from a store that opted in to client logs
         // (off by default: a payment page, D8).
         @if chrome.browser_reports {
@@ -303,14 +259,13 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                     // Faded with the code once it shouldn't be paid.
                     div class="address-block" {
                         (address_label(data))
-                        div class="address-row" {
-                            button type="button" id="copy-address" class="address-copy-btn" aria-label="Copy payment address" title="Copy payment address" hidden {
-                                svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" {
-                                    rect x="9" y="9" width="12" height="12" rx="1" {}
-                                    path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" {}
-                                }
-                            }
-                            textarea class="address-text" id="address" readonly aria-labelledby="address-label" { (data.address) }
+                        div data-address {
+                            (ui::CopyValue::new(data.address.as_str())
+                                .copy_label("Copy payment address")
+                                .labelled_by("address-label")
+                                .truncate(ui::Truncate::Middle)
+                                .head(12usize)
+                                .tail(12usize))
                         }
                     }
                 }
@@ -331,20 +286,8 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                                         .value(data.refund_address.as_deref().unwrap_or(""))
                                         .placeholder("Your Monero refund address")
                                         .autocomplete("off")
-                                        .attr("spellcheck", "false"))
-                                    span class="refund-tools" {
-                                    span id="refund-save-state" class="refund-save-state" role="status" aria-label=(if data.refund_address.is_some() { "Refund address saved" } else { "" }) {
-                                        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" { path d="m4 12 5 5L20 6" {} }
-                                    }
-                                    button type="button" id="scan-refund" class="refund-icon-btn" aria-label="Scan refund QR" title="Scan refund QR" hidden {
-                                        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" { path d="M3 9V3h6M15 3h6v6M21 15v6h-6M9 21H3v-6M6 6h2v2H6zM16 6h2v2h-2zM6 16h2v2H6zM12 11h2v2h-2zM16 16h2v2h-2z" {} }
-                                        span { "Scan refund QR" }
-                                    }
-                                    button type="button" id="upload-refund" class="refund-icon-btn" aria-label="Choose QR image" title="Choose QR image" hidden {
-                                        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" { rect x="2" y="3" width="20" height="18" rx="2" {} circle cx="8.5" cy="8.5" r="1.5" {} path d="m2 17 6-6 4 4 3-3 7 7" {} }
-                                        span { "Choose QR image" }
-                                    }
-                                    }
+                                        .attr("spellcheck", "false")
+                                        .actions(refund_actions(data)))
                                     input type="file" id="refund-image" accept="image/*" hidden;
                                 }
                                 video id="refund-camera" class="refund-camera" autoplay playsinline hidden {}
@@ -410,41 +353,10 @@ fn awaiting_payment(data: &CheckoutViewModel) -> bool {
     )
 }
 
-/// One step on the stage's track.
-#[derive(Clone, Copy, PartialEq)]
-enum Step {
-    Done,
-    Now,
-    Part,
-    Fail,
-    Todo,
-}
-
-impl Step {
-    fn class(self) -> &'static str {
-        match self {
-            Step::Done => "step-done",
-            Step::Now => "step-now",
-            Step::Part => "step-part",
-            Step::Fail => "step-fail",
-            Step::Todo => "step-todo",
-        }
-    }
-    /// For screen readers, after the step's name.
-    fn words(self) -> &'static str {
-        match self {
-            Step::Done => "done",
-            Step::Now => "now",
-            Step::Part => "partly done",
-            Step::Fail => "stopped",
-            Step::Todo => "to come",
-        }
-    }
-}
-
 /// The track: Send, Confirm, Paid - without Confirm when the store counts a
 /// payment as soon as it's seen (`confirmations_required == 0`).
-fn stage_steps(data: &CheckoutViewModel) -> Vec<(&'static str, Step)> {
+fn stage_steps(data: &CheckoutViewModel) -> Vec<ui::ProgressStep> {
+    use ui::StepProgress as Step;
     let [send, confirm, paid] = if data.double_spend_detected_at.is_some()
         && !awaiting_payment(data)
     {
@@ -462,7 +374,7 @@ fn stage_steps(data: &CheckoutViewModel) -> Vec<(&'static str, Step)> {
             }
         }
     };
-    if data.confirmations_required == 0 {
+    let steps = if data.confirmations_required == 0 {
         vec![
             ("Send", send),
             (
@@ -476,7 +388,14 @@ fn stage_steps(data: &CheckoutViewModel) -> Vec<(&'static str, Step)> {
         ]
     } else {
         vec![("Send", send), ("Confirm", confirm), ("Paid", paid)]
-    }
+    };
+    steps
+        .into_iter()
+        .map(|(label, progress)| ui::ProgressStep {
+            label: label.to_string(),
+            progress,
+        })
+        .collect()
 }
 
 /// The stage's words: a short title, then what to do now.
@@ -554,21 +473,30 @@ fn live_status(data: &CheckoutViewModel) -> Markup {
     html! {
         div id="live-status" class="stage-slot" data-live {
             span id="status-badge" class=(format!("sr-only state-{shown}")) { (data.status_label) }
-            div class=(format!("stage-track state-{state}")) {
-                ol class=(if steps.len() == 2 { "track track-2" } else { "track" }) aria-label="Payment progress" {
-                    @for (name, step) in &steps {
-                        li class=(step.class()) {
-                            span class="track-dot" aria-hidden="true" {
-                                @if *step == Step::Done { (check_icon()) } @else if *step == Step::Fail { (cross_icon()) }
-                            }
-                            span class="track-name" { (name) span class="sr-only" { ", " (step.words()) } }
-                        }
-                    }
-                }
-                p class="track-msg" role="status" { strong { (title) "." } " " (message) }
-            }
+            (ui::ProgressSteps::new("Payment progress", steps, title, message).state(state))
         }
     }
+}
+
+/// Inside the refund field: the saved tick, then scanning a code and choosing
+/// its picture, both hidden until `checkout.js` can decode one.
+fn refund_actions(data: &CheckoutViewModel) -> ui::Slot {
+    let saved = html! {
+        span id="refund-save-state" class="refund-save-state" role="status" aria-label=(if data.refund_address.is_some() { "Refund address saved" } else { "" }) {
+            svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" { path d="m4 12 5 5L20 6" {} }
+        }
+    };
+    let scan = html! {
+        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" { path d="M3 9V3h6M15 3h6v6M21 15v6h-6M9 21H3v-6M6 6h2v2H6zM16 6h2v2h-2zM6 16h2v2H6zM12 11h2v2h-2zM16 16h2v2h-2z" {} }
+    };
+    let image = html! {
+        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" { rect x="2" y="3" width="20" height="18" rx="2" {} circle cx="8.5" cy="8.5" r="1.5" {} path d="m2 17 6-6 4 4 3-3 7 7" {} }
+    };
+    ui::Slot::many([
+        saved.into(),
+        ui::IconButton::new("Scan refund QR", scan).attr("id", "scan-refund").flag("hidden").into(),
+        ui::IconButton::new("Choose QR image", image).attr("id", "upload-refund").flag("hidden").into(),
+    ])
 }
 
 /// The part of the payment column that follows the order: the amount and
@@ -611,25 +539,9 @@ fn live_pay(data: &CheckoutViewModel) -> Markup {
     }
 }
 
-fn check_icon() -> Markup {
-    html! {
-        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" {
-            path d="m4.5 12.5 5 5 10-11" {}
-        }
-    }
-}
-
-fn cross_icon() -> Markup {
-    html! {
-        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true" focusable="false" {
-            path d="M7 7l10 10M17 7 7 17" {}
-        }
-    }
-}
-
 fn address_label(data: &CheckoutViewModel) -> Markup {
     html! {
-        label class="address-label" id="address-label" for="address" data-live {
+        span class="address-label" id="address-label" data-live {
             @if data.status == DisplayStatus::Order(OrderStatus::Partial) { "Send the remaining amount to" }
             @else if data.status == DisplayStatus::Order(OrderStatus::Pending) { "Send exactly this amount to" }
             @else { "Payment address" }
@@ -861,8 +773,13 @@ mod tests {
     fn checkout_page_preserves_no_js_refund_entry_and_adds_local_qr_capture() {
         let html = checkout_page(&chrome(), &test_checkout_view_model(false)).into_string();
         assert!(html.contains(&crate::assets::url("checkout.js")));
-        assert!(html.contains("id=\"scan-refund\""));
+        assert!(html.contains(r#"id="scan-refund" hidden="""#), "{html}");
+        assert!(html.contains(r#"id="upload-refund" hidden="""#), "{html}");
         assert!(html.contains(&crate::assets::url("jsQR.js")));
+        // The address whole, to select without JavaScript; its Copy button
+        // comes with the islands.
+        assert!(html.contains(r#"data-copy-value tabindex="0" aria-labelledby="address-label" data-mk="1">86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC</span>"#), "{html}");
+        assert!(html.contains(&crate::assets::url("ui-islands.js")));
         assert!(html.contains(
             r#"<noscript><meta http-equiv="refresh" content="60" id="checkout-refresh"></noscript>"#
         ));
@@ -986,7 +903,7 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains(r#"id="payment-state""#) && !html.contains(r#"class="receipt"#));
-        assert!(html.contains("id=\"copy-address\""));
+        assert!(html.contains(r#"data-island="CopyValue""#), "{html}");
         assert!(html.contains("class=\"address-block\""));
         assert!(html.contains("id=\"refund_address\""));
         assert!(html.contains("refund-address?view=compact"));
@@ -1008,7 +925,7 @@ mod tests {
         // the badge stays for screen readers only.
         assert!(html.contains(r#"class="sr-only state-partial""#));
         assert!(
-            html.contains(r#"<div class="stage-track state-partial">"#),
+            html.contains(r#"<div class="mk-stage state-partial">"#),
             "{html}"
         );
         assert!(html.contains(r#"<li class="step-part">"#));
@@ -1086,7 +1003,7 @@ mod tests {
         let mut data = test_checkout_view_model(false);
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(
-            html.contains(r#"<ol class="track" aria-label="Payment progress">"#),
+            html.contains(r#"<ol class="mk-track" aria-label="Payment progress">"#),
             "{html}"
         );
         assert!(html.contains("Confirm<span"));
@@ -1094,13 +1011,10 @@ mod tests {
         data.confirmations_required = 0;
         data.status = shared::order_status::OrderStatus::Unconfirmed.into();
         let html = checkout_page(&chrome(), &data).into_string();
-        assert!(
-            html.contains(r#"<ol class="track track-2" aria-label="Payment progress">"#),
-            "{html}"
-        );
+        assert_eq!(html.matches("<li class=\"step-").count(), 2, "{html}");
         assert!(!html.contains("Confirm<span"), "{html}");
         // Seen is the last step before Paid, so Paid is where the order is.
-        assert!(html.contains(r#"<li class="step-now"><span class="track-dot" aria-hidden="true"></span><span class="track-name">Paid<span class="sr-only">, now</span>"#), "{html}");
+        assert!(html.contains(r#"<li class="step-now"><span class="mk-track-dot" aria-hidden="true"></span><span class="mk-track-name">Paid<span class="visually-hidden">, now</span>"#), "{html}");
 
         data.status = shared::order_status::OrderStatus::Paid.into();
         let html = checkout_page(&chrome(), &data).into_string();
@@ -1168,12 +1082,12 @@ mod tests {
         let mut data = test_checkout_view_model(false);
         assert!(!checkout_page(&chrome(), &data)
             .into_string()
-            .contains(r#"<div class="stage-track state-double-spend">"#));
+            .contains(r#"<div class="mk-stage state-double-spend">"#));
         data.double_spend_detected_at = Some(1_700_000_000);
         let html = checkout_page(&chrome(), &data).into_string();
         // Still owed: the stage says so, and the code stays live.
         assert!(
-            html.contains(r#"<div class="stage-track state-double-spend">"#)
+            html.contains(r#"<div class="mk-stage state-double-spend">"#)
                 && html.contains("A payment was reversed"),
             "{html}"
         );

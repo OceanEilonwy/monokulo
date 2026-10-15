@@ -5,26 +5,6 @@
   'use strict';
   var root = document.getElementById('checkout-root');
   if (!root) return;
-  var paymentAddress = document.getElementById('address');
-  var copyAddress = document.getElementById('copy-address');
-  if (paymentAddress) paymentAddress.addEventListener('dblclick', function () { paymentAddress.select(); });
-  if (paymentAddress && copyAddress) {
-    copyAddress.hidden = false;
-    copyAddress.addEventListener('click', async function () {
-      try {
-        if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('Clipboard unavailable');
-        await navigator.clipboard.writeText(paymentAddress.value);
-      } catch (_) {
-        paymentAddress.select();
-        if (typeof document.execCommand !== 'function' || !document.execCommand('copy')) {
-          copyAddress.setAttribute('aria-label', 'Could not copy; address selected');
-          return;
-        }
-      }
-      copyAddress.setAttribute('aria-label', 'Payment address copied');
-      setTimeout(function () { copyAddress.setAttribute('aria-label', 'Copy payment address'); }, 2000);
-    });
-  }
   // Times come in UTC unless the page was given ?timezone=; those marked
   // data-local are shown in the customer's own zone instead, in the same
   // shape the server uses ("14 Nov, 22:13", with the year when it isn't

@@ -11,8 +11,9 @@ import { setup } from '../web/components/copy-block.behaviour';
 /**
  * Lines to copy whole: a command, a config file, a key. Without
  * JavaScript it is a `pre` to select. Once its island attaches, a Copy
- * button over its top right copies it; with `comment` ("#"), what
- * follows that marker on a line is left out (a note after a command).
+ * button over its top right copies it; with `comment` ("#"), a note
+ * after that marker is left out (the marker starting a line or after a
+ * space: `#` inside a word stays).
  */
 export interface CopyBlockProps {
   code: string;
@@ -35,8 +36,9 @@ export interface CopyBlockProps {
 /**
  * Lines to copy whole: a command, a config file, a key. Without
  * JavaScript it is a `pre` to select. Once its island attaches, a Copy
- * button over its top right copies it; with `comment` ("#"), what
- * follows that marker on a line is left out (a note after a command).
+ * button over its top right copies it; with `comment` ("#"), a note
+ * after that marker is left out (the marker starting a line or after a
+ * space: `#` inside a word stays).
  */
 export function CopyBlock(props: CopyBlockProps): JSX.Element {
   const enhanced = props.enhanced ?? true;

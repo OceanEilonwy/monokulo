@@ -55,42 +55,42 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                             }
                         }
                         div class="grid" {
-                            div class="card pad" {
+                            (tile(html! {
                                 h3 { "Watch-only" }
                                 p {
                                     "Each store gives Monokulo its view key, never its spend key. Payments go straight to the store’s own wallet; Monokulo just sees them arrive."
                                 }
-                            }
-                            div class="card pad" {
+                            }))
+                            (tile(html! {
                                 h3 { "Checkout that works anywhere" }
                                 p {
                                     "A hosted checkout page and embed for static sites, a point-of-sale screen, and webhooks when an order is paid. The checkout works without JavaScript."
                                 }
-                            }
-                            div class="card pad" {
+                            }))
+                            (tile(html! {
                                 h3 { "Fast detection" }
                                 p {
                                     "Payments show up within about a second of reaching the network, and are confirmed as blocks arrive."
                                 }
-                            }
-                            div class="card pad" {
+                            }))
+                            (tile(html! {
                                 h3 { "Easy on the router" }
                                 p {
                                     "One static program and SQLite. The engine runs inside Monokulo on threads of its own, kept to two of the Flint 2’s four cores at low priority, so routing comes first. Checking each block’s proof of work (on by default for mainnet) takes about 256 MB of memory; turn it off on the admin page if you run your own node."
                                 }
-                            }
-                            div class="card pad" {
+                            }))
+                            (tile(html! {
                                 h3 { "Settings in your browser" }
                                 p {
                                     "Manage stores, nodes and payment settings on Monokulo’s admin page. On OpenWrt, LuCI also controls start, stop, port, listen address and the engine’s CPUs under Services → Monokulo."
                                 }
-                            }
-                            div class="card pad" {
+                            }))
+                            (tile(html! {
                                 h3 { "Survives upgrades" }
                                 p {
                                     "Its settings, keys and databases are kept across OpenWrt firmware upgrades."
                                 }
-                            }
+                            }))
                         }
                     }
                     section id="install" {
@@ -112,7 +112,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 "Download one executable, start it in a terminal, then finish setup in your browser."
                             }
                         }
-                        div class="card pad" {
+                        (tile(html! {
                             h3 { "Download and extract" }
                             p {
                                 "Open the "
@@ -134,11 +134,11 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 code { ".sha256" }
                                 " checksum on the release page. You don’t need Rust, Node.js or a separate engine download."
                             }
-                        }
-                        div class="card pad" {
+                        }))
+                        (tile(html! {
                             (ui::Tabs::new("Desktop operating system", vec![
                                 ui::Tab { id: "linux".into(), label: "Linux".into(), panel: html! {
-                                h3 class="nojs" { "Linux" }
+                                h3 data-only="no-script" { "Linux" }
                                 ol {
                                     li {
                                         span class="num" { "1" }
@@ -160,11 +160,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                             p {
                                                 "In the extracted folder, generate a private key file with OpenSSL. Keep this file for every restart and update."
                                             }
-                                            div class="cmd" {
-                                                pre {
-                                                    "umask 077\nopenssl rand -hex 32 > monokulo.key\nchmod +x monokulo"
-                                                }
-                                            }
+                                            (command("umask 077\nopenssl rand -hex 32 > monokulo.key\nchmod +x monokulo", "Copy the key commands"))
                                         }
                                     }
                                     li {
@@ -174,17 +170,13 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                             p {
                                                 "Run this each time you start it, from the folder containing your executable and key file."
                                             }
-                                            div class="cmd" {
-                                                pre {
-                                                    "MONOKULO_ENCRYPTION_KEY=\"$(cat monokulo.key)\" ./monokulo"
-                                                }
-                                            }
+                                            (command("MONOKULO_ENCRYPTION_KEY=\"$(cat monokulo.key)\" ./monokulo", "Copy the start command"))
                                         }
                                     }
                                 }
                             }.into() },
                                 ui::Tab { id: "macos".into(), label: "macOS".into(), panel: html! {
-                                h3 class="nojs" { "macOS" }
+                                h3 data-only="no-script" { "macOS" }
                                 ol {
                                     li {
                                         span class="num" { "1" }
@@ -200,9 +192,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                             p class="muted small" {
                                                 "The executable is unsigned. If macOS blocks it after download, clear its quarantine attribute once for the binary you downloaded from the release page:"
                                             }
-                                            div class="cmd" {
-                                                pre { "xattr -d com.apple.quarantine monokulo" }
-                                            }
+                                            (command("xattr -d com.apple.quarantine monokulo", "Copy the quarantine command"))
                                         }
                                     }
                                     li {
@@ -212,11 +202,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                             p {
                                                 "Generate a private key file. Keep this file for every restart and update."
                                             }
-                                            div class="cmd" {
-                                                pre {
-                                                    "umask 077\nopenssl rand -hex 32 > monokulo.key\nchmod +x monokulo"
-                                                }
-                                            }
+                                            (command("umask 077\nopenssl rand -hex 32 > monokulo.key\nchmod +x monokulo", "Copy the key commands"))
                                         }
                                     }
                                     li {
@@ -226,17 +212,13 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                             p {
                                                 "Run this each time you start it, from the folder containing your executable and key file."
                                             }
-                                            div class="cmd" {
-                                                pre {
-                                                    "MONOKULO_ENCRYPTION_KEY=\"$(cat monokulo.key)\" ./monokulo"
-                                                }
-                                            }
+                                            (command("MONOKULO_ENCRYPTION_KEY=\"$(cat monokulo.key)\" ./monokulo", "Copy the start command"))
                                         }
                                     }
                                 }
                             }.into() },
                                 ui::Tab { id: "windows".into(), label: "Windows".into(), panel: html! {
-                                h3 class="nojs" { "Windows" }
+                                h3 data-only="no-script" { "Windows" }
                                 ol {
                                     li {
                                         span class="num" { "1" }
@@ -267,11 +249,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                             p {
                                                 "Run this in PowerShell to save a random 32-byte key as 64 hex characters. Keep the file private and reuse it for every restart and update."
                                             }
-                                            div class="cmd" {
-                                                pre {
-                                                    "$keyBytes = New-Object byte[] 32\n$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()\n$rng.GetBytes($keyBytes)\n$rng.Dispose()\n([BitConverter]::ToString($keyBytes) -replace '-', '').ToLowerInvariant() | Set-Content -Encoding ascii monokulo.key"
-                                                }
-                                            }
+                                            (command("$keyBytes = New-Object byte[] 32\n$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()\n$rng.GetBytes($keyBytes)\n$rng.Dispose()\n([BitConverter]::ToString($keyBytes) -replace '-', '').ToLowerInvariant() | Set-Content -Encoding ascii monokulo.key", "Copy the key commands"))
                                         }
                                     }
                                     li {
@@ -281,18 +259,14 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                             p {
                                                 "Run this each time you start it, from the folder containing your executable and key file."
                                             }
-                                            div class="cmd" {
-                                                pre {
-                                                    "$env:MONOKULO_ENCRYPTION_KEY = (Get-Content -Raw .\\monokulo.key).Trim()\n.\\monokulo.exe"
-                                                }
-                                            }
+                                            (command("$env:MONOKULO_ENCRYPTION_KEY = (Get-Content -Raw .\\monokulo.key).Trim()\n.\\monokulo.exe", "Copy the start commands"))
                                         }
                                     }
                                 }
                             }.into() },
                             ]))
-                        }
-                        div class="card pad" {
+                        }))
+                        (tile(html! {
                             h3 { "Finish setup in your browser" }
                             p {
                                 "Leave the terminal running and open "
@@ -309,35 +283,32 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 strong { "Ctrl+C" }
                                 " to stop it. For automatic startup, run it under your system’s service manager with the same encryption key. "
                             }
-                        }
-                        div class="card pad" {
+                        }))
+                        (tile(html! {
                             h3 { "Where your config and data live" }
                             p {
                                 "Monokulo’s admin page saves settings in "
                                 code { "monokulo.toml" }
                                 ". The default locations are:"
                             }
-                            table class="config-paths" {
-                                thead {
-                                    tr {
-                                        th scope="col" { "System" }
-                                        th scope="col" { "Config file" }
-                                        th scope="col" { "Data folder" }
-                                    }
+                            (ui::Table::new(html! {
+                                tr {
+                                    th scope="row" { "Linux / macOS" }
+                                    td { code { "~/.config/monokulo/monokulo.toml" } }
+                                    td { code { "~/.local/share/monokulo/" } }
                                 }
-                                tbody {
-                                    tr {
-                                        th scope="row" { "Linux / macOS" }
-                                        td { code { "~/.config/monokulo/monokulo.toml" } }
-                                        td { code { "~/.local/share/monokulo/" } }
-                                    }
-                                    tr {
-                                        th scope="row" { "Windows" }
-                                        td { code { "%APPDATA%\\monokulo\\monokulo.toml" } }
-                                        td { code { "%LOCALAPPDATA%\\monokulo\\" } }
-                                    }
+                                tr {
+                                    th scope="row" { "Windows" }
+                                    td { code { "%APPDATA%\\monokulo\\monokulo.toml" } }
+                                    td { code { "%LOCALAPPDATA%\\monokulo\\" } }
                                 }
-                            }
+                            }).head(html! {
+                                tr {
+                                    th scope="col" { "System" }
+                                    th scope="col" { "Config file" }
+                                    th scope="col" { "Data folder" }
+                                }
+                            }))
                             p class="muted small" style="margin-top:var(--space-sm)" {
                                 "On Linux and macOS, "
                                 code { "~" }
@@ -375,8 +346,8 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 code { "monokulo.key" }
                                 " file you created, rather than in the config."
                             }
-                        }
-                        div class="card pad" {
+                        }))
+                        (tile(html! {
                             h3 { "Backups and updates" }
                             p {
                                 "Back up "
@@ -388,14 +359,14 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 "). Stop Monokulo before copying the databases. To update, stop it, extract the new ZIP, then start the new executable with your existing key and data."
                             }
                             (ui::Alert::new("Never generate a new key for an existing installation. Losing the key makes encrypted data unreadable. Keep it private: anyone with the key and database can read your stores’ details.", ui::Tone::Warning).quiet(true))
-                        }
+                        }))
                     }
                     section id="openwrt" class="install" {
                         div class="section-title" {
                             h2 { "Install on an OpenWrt router" }
                             p { "About ten minutes. You can do it all from the router’s web interface." }
                         }
-                        div class="card pad" {
+                        (tile(html! {
                             h3 { "You’ll need" }
                             div class="req" {
                                 span { "OpenWrt " (releases) " with LuCI" }
@@ -425,11 +396,11 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 code { "monerod" }
                                 "), or at a remote node over HTTPS."
                             }
-                        }
-                        div class="card pad" {
+                        }))
+                        (tile(html! {
                             (ui::Tabs::new("How to install", vec![
                                 ui::Tab { id: "web".into(), label: "Web (LuCI)".into(), panel: html! {
-                                h3 class="nojs" { "In the web interface (LuCI)" }
+                                h3 data-only="no-script" { "In the web interface (LuCI)" }
                                 ol {
                                     li {
                                         span class="num" { "1" }
@@ -465,7 +436,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                                 strong { "Add key" }
                                                 "."
                                             }
-                                            div class="cmd" { pre { (key) } }
+                                            (ui::CopyBlock::new(key).copy_label("Copy the signing key"))
                                             p class="muted small" {
                                                 "Or paste this address instead of the key: "
                                                 code { (format!("{pages_url}/openwrt/monokulo.pem")) }
@@ -495,9 +466,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                             @for r in repos {
                                                 div class="target" data-target=(r.id()) {
                                                     p class="target-label muted small" { "OpenWrt " (r.release) " · " (r.arch) }
-                                                    div class="cmd" {
-                                                        pre { (format!("{pages_url}/{}/packages.adb", r.path)) }
-                                                    }
+                                                    (command(format!("{pages_url}/{}/packages.adb", r.path), "Copy the repository line"))
                                                 }
                                             }
                                         }
@@ -562,7 +531,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 }
                             }.into() },
                                 ui::Tab { id: "ssh".into(), label: "Terminal (SSH)".into(), panel: html! {
-                                h3 class="nojs" { "In a terminal (SSH)" }
+                                h3 data-only="no-script" { "In a terminal (SSH)" }
                                 ol {
                                     li {
                                         span class="num" { "1" }
@@ -573,7 +542,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                                 code { "192.168.1.1" }
                                                 " unless you changed it."
                                             }
-                                            div class="cmd" { pre { "ssh root@192.168.1.1" } }
+                                            (command("ssh root@192.168.1.1", "Copy the ssh command"))
                                         }
                                     }
                                     li {
@@ -584,11 +553,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                             @for r in repos {
                                                 div class="target" data-target=(r.id()) {
                                                     p class="target-label muted small" { "OpenWrt " (r.release) " · " (r.arch) }
-                                                    div class="cmd" {
-                                                        pre {
-                                                            (format!("wget -O /etc/apk/keys/monokulo.pem {pages_url}/openwrt/monokulo.pem\necho \"{pages_url}/{}/packages.adb\" >> /etc/apk/repositories.d/customfeeds.list", r.path))
-                                                        }
-                                                    }
+                                                    (command(format!("wget -O /etc/apk/keys/monokulo.pem {pages_url}/openwrt/monokulo.pem\necho \"{pages_url}/{}/packages.adb\" >> /etc/apk/repositories.d/customfeeds.list", r.path), "Copy the key and repository commands"))
                                                 }
                                             }
                                         }
@@ -600,7 +565,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                             p {
                                                 "One package: the program and the LuCI page. It starts straight away."
                                             }
-                                            div class="cmd" { pre { "apk update\napk add monokulo" } }
+                                            (command("apk update\napk add monokulo", "Copy the install commands"))
                                         }
                                     }
                                     li {
@@ -618,18 +583,14 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                                 }
                                                 ". If it isn’t running:"
                                             }
-                                            div class="cmd" {
-                                                pre {
-                                                    "service monokulo enable\nservice monokulo start\nlogread -e monokulo   # what it said"
-                                                }
-                                            }
+                                            (command("service monokulo enable\nservice monokulo start\nlogread -e monokulo   # what it said", "Copy the service commands"))
                                         }
                                     }
                                 }
                             }.into() },
                             ]))
-                        }
-                        div class="card pad" {
+                        }))
+                        (tile(html! {
                             h3 { "Config, data and secrets on OpenWrt" }
                             p style="margin-bottom:var(--space-md)" {
                                 "LuCI’s service settings live in "
@@ -647,12 +608,10 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 code { "/etc/monokulo/secrets" }
                                 ". Firmware upgrades keep the file, but if it’s ever lost, Monokulo’s data can’t be read. Copy it somewhere safe from your computer:"
                             }
-                            div class="cmd" style="margin-top:var(--space-sm)" {
-                                pre { "scp root@192.168.1.1:/etc/monokulo/secrets monokulo-secrets" }
-                            }
+                            (command("scp root@192.168.1.1:/etc/monokulo/secrets monokulo-secrets", "Copy the backup command"))
                             (ui::Alert::new("Keep that file private: with it and a copy of the data folder, anyone can read your stores’ details.", ui::Tone::Warning).quiet(true))
-                        }
-                        div class="card pad" {
+                        }))
+                        (tile(html! {
                             h3 { "Optional: let customers outside your home pay" }
                             p {
                                 "By default Monokulo listens on your LAN only. For checkouts on the internet, it needs to listen on every interface, and the firewall needs to let its port in."
@@ -720,14 +679,10 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                             p style="margin-top:var(--space-md)" {
                                 "Prefer a terminal? This does the same:"
                             }
-                            div class="cmd" style="margin-top:var(--space-sm)" {
-                                pre {
-                                    "uci set monokulo.main.listen=all\nuci commit monokulo\nuci add firewall rule\nuci set firewall.@rule[-1].name=Monokulo\nuci set firewall.@rule[-1].src=wan\nuci set firewall.@rule[-1].proto=tcp\nuci set firewall.@rule[-1].dest_port=8081\nuci set firewall.@rule[-1].target=ACCEPT\nuci commit firewall\nservice firewall reload\nservice monokulo restart"
-                                }
-                            }
-                        }
+                            (command("uci set monokulo.main.listen=all\nuci commit monokulo\nuci add firewall rule\nuci set firewall.@rule[-1].name=Monokulo\nuci set firewall.@rule[-1].src=wan\nuci set firewall.@rule[-1].proto=tcp\nuci set firewall.@rule[-1].dest_port=8081\nuci set firewall.@rule[-1].target=ACCEPT\nuci commit firewall\nservice firewall reload\nservice monokulo restart", "Copy the firewall commands"))
+                        }))
                         div class="grid two" {
-                            div class="card pad" {
+                            (tile(html! {
                                 h3 { "Updating" }
                                 p {
                                     span class="path inline" {
@@ -741,14 +696,12 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                     em { "Updates" }
                                     " tab. Or in a terminal:"
                                 }
-                                div class="cmd" style="margin-top:var(--space-sm)" {
-                                    pre { "apk update && apk upgrade monokulo" }
-                                }
+                                (command("apk update && apk upgrade monokulo", "Copy the update command"))
                                 p class="muted small" style="margin-top:var(--space-sm)" {
                                     "Settings, secrets and databases are kept. After a firmware upgrade, repeat the install steps to put the package back; your data is still there."
                                 }
-                            }
-                            div class="card pad" {
+                            }))
+                            (tile(html! {
                                 h3 { "Removing" }
                                 p {
                                     span class="path inline" {
@@ -762,14 +715,10 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                     strong { "Remove…" }
                                     " on monokulo. Or in a terminal:"
                                 }
-                                div class="cmd" style="margin-top:var(--space-sm)" {
-                                    pre {
-                                        "apk del monokulo\nrm -rf /srv/monokulo /etc/monokulo   # also delete all data and secrets"
-                                    }
-                                }
-                            }
+                                (command("apk del monokulo\nrm -rf /srv/monokulo /etc/monokulo   # also delete all data and secrets", "Copy the remove commands"))
+                            }))
                         }
-                        div class="card pad" {
+                        (tile(html! {
                             h3 { "Package files" }
                             p class="muted" {
                                 "You don’t need these if you use the repository above. The package is signed with the Monokulo key, so once it’s trusted (step 2) you can also install it directly: upload it in "
@@ -805,7 +754,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                     ": the signing key, the same for every version"
                                 }
                             }
-                        }
+                        }))
                     }
                 }
                 footer {
@@ -817,4 +766,15 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
             }
         }
     }
+}
+
+/// A tile of the page: one of a grid, or a part of an install guide.
+fn tile(children: Markup) -> ui::Panel {
+    ui::Panel::new(children).look(ui::PanelLook::Tile)
+}
+
+/// Lines to run (or to put in a file), with a Copy button named for what
+/// it copies; what follows a `#` on a line is a note, left out.
+fn command(code: impl Into<String>, copy_label: &str) -> ui::CopyBlock {
+    ui::CopyBlock::new(code).copy_label(copy_label).comment("#")
 }

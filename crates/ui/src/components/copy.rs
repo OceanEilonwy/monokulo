@@ -97,8 +97,9 @@ pub(super) fn copy_value_examples() -> Vec<(&'static str, CopyValue)> {
 component! {
     /// Lines to copy whole: a command, a config file, a key. Without
     /// JavaScript it is a `pre` to select. Once its island attaches, a Copy
-    /// button over its top right copies it; with `comment` ("#"), what
-    /// follows that marker on a line is left out (a note after a command).
+    /// button over its top right copies it; with `comment` ("#"), a note
+    /// after that marker is left out (the marker starting a line or after a
+    /// space: `#` inside a word stays).
     pub struct CopyBlock {
         code: String,
         /// The Copy button's accessible name: what it copies.

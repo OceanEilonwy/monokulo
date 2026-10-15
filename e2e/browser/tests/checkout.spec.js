@@ -125,12 +125,19 @@ test('real checkout copies and selects payment address at narrow and wide widths
   const url = await checkoutUrl(request);
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: fixture.base_url });
   await page.goto(url);
-  const input = page.locator('#address');
-  await input.dblclick();
-  expect(await input.evaluate(el => [el.selectionStart, el.selectionEnd])).toEqual([0, (await input.inputValue()).length]);
+  // Shortened on screen once the Copy button is there; the whole stays to
+  // select and to copy.
+  const value = page.locator('[data-address] [data-copy-value]');
+  const full = await value.textContent();
+  expect(full.length).toBeGreaterThan(24);
+  await expect(page.locator('[data-address]')).toContainText('…');
   await page.getByRole('button', { name: 'Copy payment address' }).click();
-  await expect(page.locator('#copy-address')).toHaveAttribute('aria-label', 'Payment address copied');
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(await input.inputValue());
+  await expect(page.locator('[data-address] [role=status]')).toHaveText('Copied');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(full);
+  // Clicking the shortened form shows and selects the whole.
+  await page.locator('[data-address]').getByText('…').click();
+  await expect(value).toBeFocused();
+  expect(await page.evaluate(() => getSelection().toString())).toBe(full);
   for (const width of [320, 700, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     const geometry = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, viewport: innerWidth,
@@ -140,15 +147,19 @@ test('real checkout copies and selects payment address at narrow and wide widths
   }
 });
 
-test('real compact checkout positions refund controls below a full width field', async ({ page, request }) => {
+test('real compact checkout keeps the refund controls inside a full width field', async ({ page, request }) => {
   const url = await checkoutUrl(request);
   await page.setViewportSize({ width: 375, height: 800 });
   await page.goto(`${url}?view=compact`);
   const input = await page.locator('#refund_address').boundingBox();
-  const controls = await page.locator('.refund-tools').boundingBox();
   const form = await page.locator('#refund-form').boundingBox();
   expect(input.width).toBeGreaterThan(form.width * .8);
-  expect(controls.y).toBeGreaterThanOrEqual(input.y + input.height - 1);
+  for (const id of ['#scan-refund', '#upload-refund']) {
+    const button = await page.locator(id).boundingBox();
+    expect(button.y, id).toBeGreaterThanOrEqual(input.y - 1);
+    expect(button.y + button.height, id).toBeLessThanOrEqual(input.y + input.height + 1);
+    expect(button.x + button.width, id).toBeLessThanOrEqual(input.x + input.width + 1);
+  }
   await captureCoverageStage(page, 'checkout-compact', test.info());
 });
 
@@ -176,7 +187,7 @@ test('real checkout renders a paid order without opening a live stream', async (
   await page.goto(url);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
   // The stage says it's paid over a faded code: nothing invites a second payment.
-  await expect(page.locator('.stage-track')).toContainText('Paid.');
+  await expect(page.locator('#live-status .mk-stage')).toContainText('Paid.');
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   await captureCoverageStage(page, 'checkout-paid', test.info());
 });
@@ -313,7 +324,7 @@ test('real checkout open while the customer pays shows paid and stops following 
   // The live stream carries the new state in; no reload.
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
   // The stage says it's paid over a faded code: nothing invites a second payment.
-  await expect(page.locator('.stage-track')).toContainText('Paid.');
+  await expect(page.locator('#live-status .mk-stage')).toContainText('Paid.');
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   // A final order closes its stream for good rather than reconnecting:
   // once the page has seen the stream end, no amount of time opens another
@@ -382,31 +393,18 @@ test('real checkout keeps retrying a refused live stream with backoff and then f
   expect((await stream()).refusedAt, 'no refusal after the stream opened').toHaveLength(2);
 });
 
-test('real checkout copies the payment address without the Clipboard API, as over plain-HTTP onion', async ({ page, request }) => {
+test('real checkout leaves the payment address selected to copy by hand without the Clipboard API, as over plain-HTTP onion', async ({ page, request }) => {
   const url = await checkoutUrl(request);
   // A plain-HTTP origin (a Tor .onion service) is not a secure context, so
-  // navigator.clipboard is absent; the legacy copy command still works.
+  // navigator.clipboard is absent.
   await page.addInitScript(() => {
     Object.defineProperty(Navigator.prototype, 'clipboard', { get: () => undefined });
-    window.__copied = [];
-    document.execCommand = command => {
-      if (command !== 'copy' || window.__copyBlocked) return false;
-      window.__copied.push(document.getSelection().toString() || document.activeElement.value.slice(document.activeElement.selectionStart, document.activeElement.selectionEnd));
-      return true;
-    };
   });
   await page.goto(url);
-  const address = await page.locator('#address').inputValue();
-  const copy = page.locator('#copy-address');
-  await copy.click();
-  await expect(copy).toHaveAttribute('aria-label', 'Payment address copied');
-  expect(await page.evaluate(() => window.__copied)).toEqual([address]);
-
-  // Where even that is refused, the address is left selected to copy by hand.
-  await page.evaluate(() => { window.__copyBlocked = true; });
-  await copy.click();
-  await expect(copy).toHaveAttribute('aria-label', 'Could not copy; address selected');
-  expect(await page.locator('#address').evaluate(el => el.value.slice(el.selectionStart, el.selectionEnd))).toBe(address);
+  const address = await page.locator('[data-address] [data-copy-value]').textContent();
+  await page.getByRole('button', { name: 'Copy payment address' }).click();
+  await expect(page.locator('[data-address] [role=status]')).toContainText('copy the full value');
+  expect(await page.evaluate(() => getSelection().toString())).toBe(address);
 });
 
 test('real checkout saves the address the customer ends with when they change it mid-save', async ({ page, request }) => {
@@ -512,7 +510,7 @@ test('real checkout follows the customer payment from the mempool to confirmed a
   await customerSends(request, orderId, 1);
   await expect(page.locator('#status-badge')).toHaveText('Payment seen, unconfirmed');
   // Seen in full: the track is at Confirm, and the code fades so it isn't paid twice.
-  await expect(page.locator('.track .step-now')).toContainText('Confirm');
+  await expect(page.locator('#live-status .step-now')).toContainText('Confirm');
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   // The payment is listed by a shortened txid, not yet confirmed.
   await expect(page.locator('[data-table="payments"]')).toContainText(`test-p…`);
@@ -532,8 +530,8 @@ test('real checkout guides a customer who underpays and then sends too much', as
   await customerSends(request, orderId, 0.25, 20);
   await expect(page.locator('#status-badge')).toHaveText('Partial payment received');
   // The stage: what arrived, then the rest, with a new code that asks for it.
-  await expect(page.locator('.stage-track')).toContainText('Send the remaining 0.00075 XMR.');
-  await expect(page.locator('.stage-track')).toContainText('0.00025 of 0.001 XMR received.');
+  await expect(page.locator('#live-status .mk-stage')).toContainText('Send the remaining 0.00075 XMR.');
+  await expect(page.locator('#live-status .mk-stage')).toContainText('0.00025 of 0.001 XMR received.');
   await expect(page.locator('#xmr-amount')).toHaveText('0.00075 XMR');
   await expect(page.locator('.qr-wrap.qr-new svg')).toBeVisible();
   expect(await code()).not.toBe(first);
@@ -541,7 +539,7 @@ test('real checkout guides a customer who underpays and then sends too much', as
   await customerSends(request, orderId, 1, 20);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'overpaid');
   await expect(page.locator('#status-badge')).toHaveText('Overpaid');
-  await expect(page.locator('.stage-track')).toContainText('(0.00025 XMR extra). Do not send more. Contact the merchant about the extra amount.');
+  await expect(page.locator('#live-status .mk-stage')).toContainText('(0.00025 XMR extra). Do not send more. Contact the merchant about the extra amount.');
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   await expect(page.locator('[data-table="payments"] tbody tr')).toHaveCount(2);
 });
@@ -648,8 +646,8 @@ test('real checkout payment problems as the customer sees them (UI stages)', asy
     await page.goto(url);
     await happen(url.split('/').pop());
     await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', status);
-    if (stage === 'checkout-double-spend') await expect(page.locator('.stage-track.state-double-spend')).toBeVisible();
-    else await expect(page.locator(`.stage-track.state-${status}`)).toBeVisible();
+    if (stage === 'checkout-double-spend') await expect(page.locator('#live-status .mk-stage.state-double-spend')).toBeVisible();
+    else await expect(page.locator(`#live-status .mk-stage.state-${status}`)).toBeVisible();
     await captureCoverageStage(page, stage, test.info());
   }
 });
@@ -661,7 +659,7 @@ test('real checkout leads with the stage in one column and fades the code once p
     await page.setViewportSize({ width, height });
     await page.goto(url);
     const layout = await page.evaluate(() => {
-      const stage = document.querySelector('.stage-track').getBoundingClientRect();
+      const stage = document.querySelector('#live-status .mk-stage').getBoundingClientRect();
       const code = document.querySelector('.qr-wrap').getBoundingClientRect();
       const refund = document.querySelector('.pay-col-secondary').getBoundingClientRect();
       return { stageAbove: stage.bottom <= code.top, beside: refund.left >= code.right, stageTop: stage.top < code.bottom };
@@ -681,7 +679,7 @@ test('real checkout leads with the stage in one column and fades the code once p
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   await expect.poll(() => page.evaluate(() => Number(getComputedStyle(document.querySelector('.qr-wrap svg')).opacity))).toBeLessThan(0.2);
   await expect(page.locator('.address-block')).toBeVisible();
-  await expect(page.locator('#copy-address')).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Copy payment address' })).toBeHidden();
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.getElementById('progress-fill')).backgroundColor)).toBe('rgb(26, 127, 55)');
   await captureCoverageStage(page, 'checkout-paid-faded', test.info());
 });
