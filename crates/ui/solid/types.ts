@@ -30,9 +30,19 @@ export type CardSurface = "grouped";
 export type CheckMark = "ok" | "no" | "then";
 
 /**
+ * When a form's save opens a dialog instead (`Dialog::confirms`).
+ */
+export type ConfirmWhen = "changed" | "emptied";
+
+/**
  * A control's size. Without one it is the normal size.
  */
 export type ControlSize = "compact" | "touch";
+
+/**
+ * How wide a dialog is.
+ */
+export type DialogSize = "confirm" | "wide";
 
 /**
  * A disclosure's look.

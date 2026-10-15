@@ -291,8 +291,8 @@ fn profile_panel(data: &AccountViewModel) -> Markup {
 /// empty unless the dialog filled it in.
 fn email_confirm_dialog(saved: &Profile) -> Markup {
     html! {
-        dialog id="email-confirm" class="settings-dialog email-confirm" aria-labelledby="email-confirm-title" {
-            h2 id="email-confirm-title" { "Log in with a new email?" }
+        (ui::Dialog::new("email-confirm", "email-confirm-title", html! {
+            (ui::DialogTitle::new("email-confirm-title", "Log in with a new email?").in_dialog(true))
             p { "From now on you log in with " strong data-email-new {} " instead of " (saved.email) "." }
             p class="hint" { "Monokulo doesn't send a confirmation email, so check it's typed right: a mistake here could lock you out." }
             div class="setting-field" {
@@ -305,7 +305,7 @@ fn email_confirm_dialog(saved: &Profile) -> Markup {
                 button type="button" data-email-cancel { "Cancel" }
                 button type="button" class="btn-primary" data-email-go { "Change email" }
             }
-        }
+        }))
     }
 }
 

@@ -731,6 +731,221 @@
     "title": "A wallet's history"
   },
   {
+    "component": "Dialog",
+    "html": "<dialog id=\"book-dialog\" class=\"settings-dialog confirm-dialog\" aria-labelledby=\"book-dialog-title\" data-mk=\"1\" data-island=\"Dialog\" data-props=\"{&quot;confirms_when&quot;:&quot;changed&quot;,&quot;id&quot;:&quot;book-dialog&quot;}\"><h2 id=\"book-dialog-title\" class=\"dialog-title\">Retire this wallet?<button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></h2><p class=\"hint\">Takes it out of every list and deletes its keys from Monokulo.</p><div class=\"dialog-actions\"><button class=\"mk-btn\" type=\"button\" data-closes-dialog=\"\">Cancel</button><button class=\"mk-btn\" type=\"button\" data-variant=\"danger\">Retire wallet</button></div></dialog>",
+    "props": {
+      "children": {
+        "$slot": [
+          {
+            "$component": "DialogTitle",
+            "props": {
+              "children": {
+                "$slot": [
+                  "Retire this wallet?"
+                ]
+              },
+              "id": "book-dialog-title",
+              "in_dialog": true
+            }
+          },
+          {
+            "$component": "Hint",
+            "props": {
+              "children": {
+                "$slot": [
+                  "Takes it out of every list and deletes its keys from Monokulo."
+                ]
+              },
+              "inline": false
+            }
+          },
+          {
+            "$component": "DialogActions",
+            "props": {
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "Button",
+                    "props": {
+                      "block": false,
+                      "busy": false,
+                      "children": {
+                        "$slot": [
+                          "Cancel"
+                        ]
+                      },
+                      "data-closes-dialog": "",
+                      "disabled": false,
+                      "kind": "button"
+                    }
+                  },
+                  {
+                    "$component": "Button",
+                    "props": {
+                      "block": false,
+                      "busy": false,
+                      "children": {
+                        "$slot": [
+                          "Retire wallet"
+                        ]
+                      },
+                      "disabled": false,
+                      "kind": "button",
+                      "variant": "danger"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "confirms_when": "changed",
+      "id": "book-dialog",
+      "labelled_by": "book-dialog-title",
+      "light_dismiss": false,
+      "size": "confirm"
+    },
+    "title": "A question (the button opens it)"
+  },
+  {
+    "component": "DialogTitle",
+    "html": "<h2 id=\"book-title-dialog\" class=\"dialog-title\">Delete this webhook?<button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></h2>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Delete this webhook?"
+        ]
+      },
+      "id": "book-title-dialog",
+      "in_dialog": true
+    },
+    "title": "In a dialog"
+  },
+  {
+    "component": "DialogTitle",
+    "html": "<h1 id=\"book-title-page\" class=\"dialog-title\">Delete this webhook?</h1>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Delete this webhook?"
+        ]
+      },
+      "id": "book-title-page",
+      "in_dialog": false
+    },
+    "title": "On its page"
+  },
+  {
+    "component": "DialogActions",
+    "html": "<div class=\"dialog-actions\"><a class=\"mk-btn\" href=\"#component-dialog-actions\">Cancel</a><button class=\"mk-btn\" type=\"button\" data-variant=\"danger\">Delete webhook</button></div>",
+    "props": {
+      "children": {
+        "$slot": [
+          {
+            "$component": "LinkButton",
+            "props": {
+              "block": false,
+              "children": {
+                "$slot": [
+                  "Cancel"
+                ]
+              },
+              "href": "#component-dialog-actions"
+            }
+          },
+          {
+            "$component": "Button",
+            "props": {
+              "block": false,
+              "busy": false,
+              "children": {
+                "$slot": [
+                  "Delete webhook"
+                ]
+              },
+              "disabled": false,
+              "kind": "button",
+              "variant": "danger"
+            }
+          }
+        ]
+      }
+    },
+    "title": "Cancel and an action"
+  },
+  {
+    "component": "DialogPage",
+    "html": "<div class=\"confirm-dialog-page\"><h1 id=\"book-page-title\" class=\"dialog-title\">Retire this wallet?</h1><p class=\"hint\">Takes it out of every list and deletes its keys from Monokulo.</p><div class=\"dialog-actions\"><a class=\"mk-btn\" href=\"#component-dialog-page\">Cancel</a><button class=\"mk-btn\" type=\"button\" data-variant=\"danger\">Retire wallet</button></div></div>",
+    "props": {
+      "children": {
+        "$slot": [
+          {
+            "$component": "DialogTitle",
+            "props": {
+              "children": {
+                "$slot": [
+                  "Retire this wallet?"
+                ]
+              },
+              "id": "book-page-title",
+              "in_dialog": false
+            }
+          },
+          {
+            "$component": "Hint",
+            "props": {
+              "children": {
+                "$slot": [
+                  "Takes it out of every list and deletes its keys from Monokulo."
+                ]
+              },
+              "inline": false
+            }
+          },
+          {
+            "$component": "DialogActions",
+            "props": {
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "LinkButton",
+                    "props": {
+                      "block": false,
+                      "children": {
+                        "$slot": [
+                          "Cancel"
+                        ]
+                      },
+                      "href": "#component-dialog-page"
+                    }
+                  },
+                  {
+                    "$component": "Button",
+                    "props": {
+                      "block": false,
+                      "busy": false,
+                      "children": {
+                        "$slot": [
+                          "Retire wallet"
+                        ]
+                      },
+                      "disabled": false,
+                      "kind": "button",
+                      "variant": "danger"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "size": "confirm"
+    },
+    "title": "A question"
+  },
+  {
     "component": "Field",
     "html": "<div class=\"mk-field\"><label for=\"book-store-name\">Store name</label><input class=\"mk-input\" id=\"book-store-name\" name=\"name\" type=\"text\" placeholder=\"Your store\" aria-describedby=\"book-store-name-help\"><p class=\"mk-hint\" id=\"book-store-name-help\">Shown to customers on the payment page.</p></div>",
     "props": {

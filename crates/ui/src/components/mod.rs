@@ -6,6 +6,7 @@ mod actions;
 mod chrome;
 mod content;
 mod copy;
+mod dialog;
 mod forms;
 mod select;
 mod settings;
@@ -16,6 +17,7 @@ pub use actions::*;
 pub use chrome::*;
 pub use content::*;
 pub use copy::*;
+pub use dialog::*;
 pub use forms::*;
 pub use select::*;
 pub use settings::*;
@@ -67,6 +69,10 @@ pub fn catalogue() -> Vec<Specimens> {
         specimens(content::disclosure_examples()),
         specimens(content::checks_examples()),
         specimens(content::timeline_examples()),
+        specimens(dialog::dialog_examples()),
+        specimens(dialog::dialog_title_examples()),
+        specimens(dialog::dialog_actions_examples()),
+        specimens(dialog::dialog_page_examples()),
         specimens(forms::field_examples()),
         specimens(select::select_examples())
             .partial("select-demo", select::select_demo())

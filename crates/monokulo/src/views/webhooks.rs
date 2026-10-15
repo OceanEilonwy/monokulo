@@ -6,7 +6,7 @@
 //! Every action is a plain POST form: "Send again" on a delivery, "Retry
 //! failed (N)" on a webhook whose deliveries gave up, adding and deleting a
 //! webhook. "Details" and "Delete" are links to pages holding the same
-//! content as their dialogs (`confirm-dialogs.js` opens the dialog
+//! content as their dialogs (`ui::Dialog`'s island opens the dialog
 //! instead).
 
 use maud::{html, Markup};
@@ -410,31 +410,19 @@ pub fn card(card: &WebhooksCard, error: Markup) -> Markup {
 pub fn dialogs(card: &WebhooksCard) -> Markup {
     html! {
         @for entry in &card.webhooks {
-            dialog id=(delete_dialog_id(entry.webhook.id.as_str())) class="settings-dialog confirm-dialog"
-                aria-labelledby=(format!("{}-delete-title", entry.webhook.id)) {
-                (delete_content(&card.store_id, entry, true))
-            }
+            (ui::Dialog::new(delete_dialog_id(entry.webhook.id.as_str()), format!("{}-delete-title", entry.webhook.id),
+                delete_content(&card.store_id, entry, true)))
             @for delivery in &entry.recent {
-                dialog id=(dialog_id(delivery.id)) class="settings-dialog delivery-dialog"
-                    aria-labelledby=(format!("delivery-{}-title", delivery.id)) {
-                    (detail_content(&card.store_id, &card.clock, card.max_attempts, &entry.webhook, delivery, true))
-                }
+                (ui::Dialog::new(dialog_id(delivery.id), format!("delivery-{}-title", delivery.id),
+                    detail_content(&card.store_id, &card.clock, card.max_attempts, &entry.webhook, delivery, true))
+                    .size(ui::DialogSize::Wide))
             }
         }
     }
 }
 
 fn heading(id: &str, title: Markup, in_dialog: bool) -> Markup {
-    html! {
-        @if in_dialog {
-            h2 id=(id) class="dialog-title" {
-                (title)
-                button type="button" class="dialog-x" aria-label="Close" data-closes-dialog { "×" }
-            }
-        } @else {
-            h1 id=(id) class="dialog-title" { (title) }
-        }
-    }
+    html! { (ui::DialogTitle::new(id, title).in_dialog(in_dialog)) }
 }
 
 /// "Delete this webhook?": what stops, and the button.
@@ -653,8 +641,8 @@ fn indented_json(json: &str) -> String {
 }
 
 /// A page of the store's settings around `content`, in a box of `class`
-/// (`delivery-page`, as wide as a dialog; `deliveries-page`, the page's
-/// whole width, for the table).
+/// when it has one (`deliveries-page`, the page's whole width, for the
+/// table).
 fn page(
     chrome: &PageChrome,
     store_id: &str,
@@ -666,7 +654,7 @@ fn page(
     let body = html! {
         div class="wrap settings-page" {
             (super::store_breadcrumb(store_id, store_name, false))
-            div class=(class) { (content) }
+            @if class.is_empty() { (content) } @else { div class=(class) { (content) } }
         }
     };
     layout(chrome, &format!("{title} - {store_name} - Monokulo"), body)
@@ -687,15 +675,17 @@ pub fn detail_page(
         store_id,
         store_name,
         "Webhook delivery",
-        "delivery-page",
-        detail_content(
+        "",
+        ui::DialogPage::new(detail_content(
             store_id,
             &chrome.clock,
             max_attempts,
             webhook,
             delivery,
             false,
-        ),
+        ))
+        .size(ui::DialogSize::Wide)
+        .render(),
     )
 }
 
@@ -707,8 +697,8 @@ pub fn delete_page(chrome: &PageChrome, store_name: &str, entry: &WebhookEntry) 
         store_id,
         store_name,
         "Delete webhook",
-        "delivery-page",
-        html! { div class="confirm-dialog-page" { (delete_content(store_id, entry, false)) } },
+        "",
+        ui::DialogPage::new(delete_content(store_id, entry, false)).render(),
     )
 }
 

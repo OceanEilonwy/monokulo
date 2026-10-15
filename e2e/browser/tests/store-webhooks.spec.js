@@ -229,7 +229,7 @@ test('without JavaScript, Details and Delete are pages and Send again is a form'
   await gaveUp.getByRole('link', { name: 'Details' }).first().click();
   await expect(page).toHaveURL(/\/settings\/webhooks\/wh_[0-9a-f]+\/deliveries\/\d+$/);
   await expect(page.getByRole('heading', { level: 1, name: 'Delivery of order.paid' })).toBeVisible();
-  await expect(page.locator('.delivery-page .tag')).toHaveText('gave up');
+  await expect(page.locator('.wide-dialog-page .tag')).toHaveText('gave up');
   await captureCoverageStage(page, 'store-webhooks-detail-page', test.info(), { group: GROUP, shapes: ['desktop', 'mobile-portrait'] });
   await page.getByRole('button', { name: 'Send again now' }).click();
   await expect(page).toHaveURL(/\/settings\?saved=webhooks#card-webhooks$/);
