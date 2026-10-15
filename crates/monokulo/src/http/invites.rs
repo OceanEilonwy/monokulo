@@ -985,6 +985,12 @@ mod tests {
             html.contains("Page 2 of 2"),
             "expected a real second page, got: {html}"
         );
+        // Back a page is a real link, which fixi swaps into the section.
+        assert!(
+            html.contains(r##"<a href="/dashboard/admin/invites?page=1" rel="prev" fx-action="/dashboard/admin/invites?page=1" fx-target="#invites" fx-push-url="">"##),
+            "{html}"
+        );
+        assert!(!html.contains(r#"rel="next""#), "{html}");
 
         let last_row_id = extract_first_row_delete_id(&html);
 

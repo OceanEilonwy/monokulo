@@ -25,20 +25,20 @@ test('real POS backgrounds, reloads, reopens, cancels, and searches an order', a
   await expect(page.locator('.pos-pay-card .pos-qr svg')).toBeVisible();
   await page.getByRole('button', { name: 'Cancel order…' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Cancel order' }).click();
-  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Cancelled');
+  await expect(page.locator('.pos-order-heading .tag')).toContainText('Cancelled');
   await captureCoverageStage(page, 'pos-cancelled', test.info());
   // The card stays, its code faded, and the stage says what happened.
   await expect(page.locator('.pos-pay-card.is-spent')).toBeVisible();
-  await expect(page.locator('.pos-stage')).toContainText('Cancelled.');
+  await expect(page.locator('.mk-stage')).toContainText('Cancelled.');
   await page.getByRole('button', { name: 'New order' }).click();
   // Nothing is backgrounded any more, so the stack is gone; the top bar
   // still reaches the list.
   await expect(page.locator('.pos-stack')).toHaveCount(0);
   await page.getByRole('button', { name: 'All orders' }).click();
-  await page.getByRole('tab', { name: /Finished/ }).click();
-  await expect(page.locator('.pos-order-card .pos-badge')).toContainText('Cancelled');
+  await page.getByRole('button', { name: /Finished/ }).click();
+  await expect(page.locator('.mk-card .tag')).toContainText('Cancelled');
   await page.getByRole('searchbox', { name: 'Search reference or order ID' }).fill('fixture');
-  await expect(page.locator('.pos-order-card')).toContainText('Fixture order');
+  await expect(page.locator('.mk-card')).toContainText('Fixture order');
 });
 
 test('real POS header stays above its payment card and its actions stay reachable', async ({ page }) => {
@@ -114,10 +114,10 @@ test('real POS shows pending, partial, confirming, and terminal badge symbols', 
   await expect(page.locator('.state-partial .pos-icon use')).toHaveAttribute('href', '#pos-coin-partial');
   await expect(page.locator('.state-confirming .pos-disc')).toHaveAttribute('style', /--progress: 30%/);
   await page.getByRole('button', { name: 'View all →' }).click();
-  await expect(page.locator('.pos-order-card .pos-badge.state-partial use')).toHaveAttribute('href', '#pos-coin-partial');
-  await page.getByRole('tab', { name: /Finished/ }).click();
+  await expect(page.locator('.mk-card .tag.state-partial use')).toHaveAttribute('href', '#pos-coin-partial');
+  await page.getByRole('button', { name: /Finished/ }).click();
   for (const name of ['paid', 'overpaid', 'expired', 'cancelled']) {
-    await expect(page.locator(`.pos-order-card .pos-badge.state-${name}`)).toHaveCount(1);
+    await expect(page.locator(`.mk-card .tag.state-${name}`)).toHaveCount(1);
   }
 });
 
@@ -131,10 +131,10 @@ test('real POS payment card copies the address and saves a refund address', asyn
   await context.grantPermissions(CLIPBOARD_PERMISSIONS[browserName]);
   await page.goto(posUrl());
   const card = page.locator('.pos-pay-card');
-  await expect(card.locator('.pos-stage-msg')).toContainText(/(59m|1h) left/);
-  const address = await card.locator('.pos-address .short-value').getAttribute('title');
+  await expect(card.locator('.mk-stage-msg')).toContainText(/(59m|1h) left/);
+  const address = await card.locator('.pos-address [data-copy-value]').textContent();
   await card.getByRole('button', { name: 'Copy payment address' }).click();
-  await expect(card.getByRole('button', { name: 'Copy payment address' })).toHaveText('Copied');
+  await expect(card.locator('.pos-address [role="status"]')).toHaveText('Copied');
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(address);
   // The order's own address is a valid address on the store's network.
   await card.locator('#pos-refund').fill(address);
@@ -154,16 +154,17 @@ test('real POS copies the address from a selection where the clipboard API is mi
   await page.goto(posUrl());
   const card = page.locator('.pos-pay-card');
   const copy = card.getByRole('button', { name: 'Copy payment address' });
-  const address = await card.locator('.pos-address .short-value').getAttribute('title');
+  const status = card.locator('.pos-address [role="status"]');
+  const address = await card.locator('.pos-address [data-copy-value]').textContent();
   await copy.click();
-  await expect(copy).toHaveText('Copied');
+  await expect(status).toHaveText('Copied');
   expect(await page.evaluate(() => window.__copied)).toBe(address);
-  await expect(copy).toHaveText('Copy');
-  // A browser that copies nothing even then: the button says so.
+  // A browser that copies nothing even then: never a claim it copied, the
+  // whole address left selected to copy by hand.
   await page.evaluate(() => { document.execCommand = () => false; });
   await copy.click();
-  await expect(copy).toHaveText('Not copied');
-  await expect(copy).toHaveText('Copy');
+  await expect(status).toHaveText('Select and copy the full value using your device’s copy command.');
+  expect(await page.evaluate(() => String(document.getSelection()))).toBe(address);
 });
 
 test('real POS uses the site theme toggle, applies it in place and remembers it', async ({ page }) => {
@@ -286,7 +287,7 @@ test('customer pays while the order is on screen and the merchant starts the nex
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   // Seen in the mempool first: the card says so and cancelling is no longer offered.
   await payment(request, fixture.order_id, 1);
-  await expect(page.locator('.pos-stage-msg')).toHaveText('Waiting for confirmation. Payment seen. Waiting for its first confirmation.');
+  await expect(page.locator('.mk-stage-msg')).toHaveText('Waiting for confirmation. Payment seen. Waiting for its first confirmation.');
   await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
   // Seen in full: the code fades so it isn't paid twice.
   await expect(page.locator('.pos-pay-card.is-spent')).toBeVisible();
@@ -294,10 +295,10 @@ test('customer pays while the order is on screen and the merchant starts the nex
   await captureCoverageStage(page, 'pos-unconfirmed', test.info());
   // Then mined into a block: the stage says it's paid, on the same card.
   expect((await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/confirm`)).status()).toBe(204);
-  await expect(page.locator('.pos-stage')).toContainText('received and confirmed.');
-  await expect(page.locator('.pos-track .step-done')).toHaveCount(3);
+  await expect(page.locator('.mk-stage')).toContainText('received and confirmed.');
+  await expect(page.locator('.mk-track .step-done')).toHaveCount(3);
   await captureCoverageStage(page, 'pos-paid', test.info());
-  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Paid');
+  await expect(page.locator('.pos-order-heading .tag')).toContainText('Paid');
   await page.getByRole('button', { name: 'New order' }).click();
   await expect(page.locator('.pos-keypad')).toBeVisible();
 });
@@ -328,17 +329,17 @@ test('a delayed order read cannot undo a live payment, but a later reorg can', a
   // Equal timestamps reproduce a read and a payment within the same second.
   await page.evaluate(({ qr_svg, ...order }) => window.__status({ ...order, status: 'unconfirmed',
     received_xmr: order.xmr_amount, remaining_xmr: '0.000000000000', is_terminal: false }), initial);
-  await expect(page.locator('.pos-stage-msg')).toHaveText('Waiting for confirmation. Payment seen. Waiting for its first confirmation.');
+  await expect(page.locator('.mk-stage-msg')).toHaveText('Waiting for confirmation. Payment seen. Waiting for its first confirmation.');
   const response = page.waitForResponse(`**/pos/orders/${fixture.order_id}`);
   release();
   await (await response).finished();
   // Wait for the application's fetch/JSON continuation, not just the response headers.
   await page.waitForFunction(() => document.querySelector('.pos-qr svg'));
-  await expect(page.locator('.pos-stage-msg')).toHaveText('Waiting for confirmation. Payment seen. Waiting for its first confirmation.');
+  await expect(page.locator('.mk-stage-msg')).toHaveText('Waiting for confirmation. Payment seen. Waiting for its first confirmation.');
   await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
   // No monotonic-status assumption: a subsequent stream snapshot may regress.
   await page.evaluate(order => window.__status({ ...order, is_terminal: false }), initial);
-  await expect(page.locator('.pos-stage-msg')).toContainText('Send 0.001 XMR.');
+  await expect(page.locator('.mk-stage-msg')).toContainText('Send 0.001 XMR.');
   await expect(page.getByRole('button', { name: 'Cancel order' })).toBeVisible();
 });
 
@@ -348,7 +349,7 @@ test('customer underpays: the card asks for the rest and the order cannot be can
   const code = () => page.locator('.pos-qr').innerHTML();
   const first = await code();
   await payment(request, fixture.order_id, 0.4, 20);
-  await expect(page.locator('.pos-stage')).toContainText('0.0004 of 0.001 XMR received');
+  await expect(page.locator('.mk-stage')).toContainText('0.0004 of 0.001 XMR received');
   await expect(page.locator('.pos-pay-card')).toContainText('0.0006');
   // The live update brings a new code, for the rest, and says so.
   await expect(page.locator('.pos-qr-new-tab')).toHaveText('New code · 0.0006 XMR');
@@ -358,17 +359,17 @@ test('customer underpays: the card asks for the rest and the order cannot be can
   await captureCoverageStage(page, 'pos-underpaid', test.info());
   // The customer sends the rest.
   await payment(request, fixture.order_id, 0.6, 20);
-  await expect(page.locator('.pos-stage')).toContainText('received and confirmed.');
+  await expect(page.locator('.mk-stage')).toContainText('received and confirmed.');
 });
 
 test('customer walks away: the order on screen expires', async ({ page, request }) => {
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/expired`);
-  await expect(page.locator('.pos-stage')).toContainText('This payment expired before it was completed.');
+  await expect(page.locator('.mk-stage')).toContainText('This payment expired before it was completed.');
   await expect(page.locator('.pos-pay-card.is-spent')).toBeVisible();
   await captureCoverageStage(page, 'pos-expired', test.info());
-  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Expired');
+  await expect(page.locator('.pos-order-heading .tag')).toContainText('Expired');
 });
 
 // Who reconnects a stream that failed to connect: Chromium and WebKit retry
@@ -391,7 +392,7 @@ test('counter loses its connection: the order shows connection lost, then recove
   const start = new Date('2026-01-01T00:00:00Z');
   await pauseClockAt(page, start);
   await page.goto(posUrl());
-  const badge = page.locator('.pos-order-heading .pos-badge');
+  const badge = page.locator('.pos-order-heading .tag');
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   await expect.poll(async () => (await eventSources(page)).some(stream => stream.errors > 0), 'the POS handles the stream failing').toBe(true);
   // Retries fail every few seconds; once 6s have passed without a
@@ -409,7 +410,7 @@ test('counter loses its connection: the order shows connection lost, then recove
   await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/payment?fraction=1`);
   online = true;
   await expect.poll(async () => { await page.clock.runFor(1000); return badge.textContent(); }, { timeout: 15000 }).toContain('Unconfirmed');
-  await expect(page.locator('.pos-stage-msg')).toContainText('Payment seen. Waiting for its first confirmation.');
+  await expect(page.locator('.mk-stage-msg')).toContainText('Payment seen. Waiting for its first confirmation.');
   const streams = await eventSources(page);
   if (RECONNECTS_FAILED_STREAM[browserName] === 'browser') {
     expect(streams, 'one stream, retried by the browser').toHaveLength(1);
@@ -428,7 +429,7 @@ test('the server refuses the counter\'s update stream: the POS opens another its
   await recordEventSources(page);
   await pauseClockAt(page, new Date('2026-01-01T00:00:00Z'));
   await page.goto(posUrl());
-  const badge = page.locator('.pos-order-heading .pos-badge');
+  const badge = page.locator('.pos-order-heading .tag');
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   await expect.poll(async () => (await eventSources(page)).map(stream => stream.refused), 'the browser gives up on the stream').toEqual([1]);
   // Refused again after the POS's first wait (5s), so it waits twice as long.
@@ -455,14 +456,14 @@ test('merchant opens Cancel order then keeps the order: nothing happens until th
   await page.getByRole('dialog').getByRole('button', { name: 'Keep it' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.locator('.pos-error')).toHaveCount(0);
-  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Awaiting payment');
+  await expect(page.locator('.pos-order-heading .tag')).toContainText('Awaiting payment');
   await expect(page.getByRole('button', { name: 'Cancel order' })).toBeEnabled();
   // Confirmed the second time: the one write the server gets is that one.
   // A write the dismissed question had sent would have gone out first, so
   // this proves it sent none without waiting for nothing to happen.
   await page.getByRole('button', { name: 'Cancel order…' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Cancel order' }).click();
-  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Cancelled');
+  await expect(page.locator('.pos-order-heading .tag')).toContainText('Cancelled');
   expect(writes).toEqual([`${posUrl()}/orders/${fixture.order_id}/cancel`]);
 });
 
@@ -476,7 +477,7 @@ test('payment lands just before the merchant confirms a cancel: the server refus
   await page.getByRole('dialog').getByRole('button', { name: 'Cancel order' }).click();
   await expect(page.locator('.pos-error')).toHaveText('This order has payment activity and cannot be cancelled. Background it for review instead.');
   // The screen catches up with the payment that caused the refusal.
-  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Partially paid');
+  await expect(page.locator('.pos-order-heading .tag')).toContainText('Partially paid');
   await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
   // Backgrounding it instead works, and it waits in the stack for review.
   await page.getByRole('button', { name: 'Background order', exact: true }).click();
@@ -496,10 +497,10 @@ test('busy store sees every open order at once and narrows them by search', asyn
   await ringUp(request, 44, 'Table');
   await page.goto(posUrl());
   await page.getByRole('button', { name: 'All orders' }).click();
-  const cards = page.locator('.pos-order-card');
+  const cards = page.locator('.mk-card');
   // All 45 open orders (the fixture order and 44 tables): no paging.
   await expect(cards).toHaveCount(45);
-  await expect(page.getByRole('tab', { name: /Active · 45/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Active · 45/ })).toBeVisible();
   await expect(page.getByRole('button', { name: /Load more/ })).toHaveCount(0);
   await page.getByRole('searchbox', { name: 'Search reference or order ID' }).fill('Table 17');
   await expect(cards).toHaveCount(1);
@@ -612,10 +613,10 @@ test('payment waiting on the store\'s confirmations shows its progress', async (
   expect(heading).toContain(order.order_id.slice(-4));
   expect(order.confirmations_required).toBe(3);
   await payment(request, order.order_id, 1, 1);
-  await expect(page.locator('.pos-stage-msg')).toHaveText('Confirming. 1 of 3 confirmations.');
-  await expect(page.locator('.pos-track .step-now')).toContainText('Confirm');
+  await expect(page.locator('.mk-stage-msg')).toHaveText('Confirming. 1 of 3 confirmations.');
+  await expect(page.locator('.mk-track .step-now')).toContainText('Confirm');
   await captureCoverageStage(page, 'pos-confirming', test.info());
-  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Confirming');
+  await expect(page.locator('.pos-order-heading .tag')).toContainText('Confirming');
   await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
 });
 
@@ -623,11 +624,11 @@ test('double spend on the order on screen warns the merchant not to hand over go
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   await payment(request, fixture.order_id, 1);
-  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Unconfirmed');
+  await expect(page.locator('.pos-order-heading .tag')).toContainText('Unconfirmed');
   const flagged = await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/double-spend`);
   expect(flagged.status()).toBe(204);
-  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Double spend');
-  await expect(page.locator('.pos-stage')).toContainText('Do not treat it as paid');
+  await expect(page.locator('.pos-order-heading .tag')).toContainText('Double spend');
+  await expect(page.locator('.mk-stage')).toContainText('Do not treat it as paid');
   await captureCoverageStage(page, 'pos-double-spend', test.info());
   await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
 });
@@ -657,7 +658,7 @@ test('store priced in AUD: the merchant keys in dollars and cents and sees both 
   await expect(card.locator('.pos-pay-caption')).toHaveText('Order total');
   await expect(card.locator('.pos-pay-fiat')).toHaveText('≈ 12.50 AUD');
   await request.post(`${fixture.base_url}/__coverage/orders/${order.order_id}/confirm`);
-  await expect(page.locator('.pos-stage')).toContainText('0.03125 XMR received and confirmed.');
+  await expect(page.locator('.mk-stage')).toContainText('0.03125 XMR received and confirmed.');
   await expect(card.locator('.pos-pay-xmr')).toContainText('0.03125');
 });
 
@@ -669,7 +670,7 @@ test('payment countdown keeps ticking down while the customer finds their wallet
   await pauseClockAt(page, start);
   await page.goto(posUrl());
   // In the stage's message.
-  const expiry = page.locator('.pos-stage-msg');
+  const expiry = page.locator('.mk-stage-msg');
   await expect(expiry).toContainText(/(59m|1h) left/);
   await page.clock.runFor(20 * 60 * 1000);
   await expect(expiry).toContainText(/(39|40)m left/);
@@ -695,10 +696,10 @@ test('merchant moves between the keypad, the stack and the order list', async ({
   await expect.poll(() => stack.evaluate(el => el.scrollLeft)).toBeGreaterThan(before);
   await page.getByRole('button', { name: 'View all →' }).click();
   await expect(page.locator('.pos-list h1')).toHaveText('Orders');
-  await page.getByRole('tab', { name: /Finished/ }).click();
+  await page.getByRole('button', { name: /Finished/ }).click();
   await expect(page.locator('.pos-empty')).toHaveText('No finished orders yet.');
-  await page.getByRole('tab', { name: /Active/ }).click();
-  await expect(page.locator('.pos-order-card').first()).toBeVisible();
+  await page.getByRole('button', { name: /Active/ }).click();
+  await expect(page.locator('.mk-card').first()).toBeVisible();
   await page.getByRole('button', { name: 'Back to POS' }).click();
   await expect(page.locator('.pos-keypad')).toBeVisible();
 });
@@ -722,7 +723,7 @@ test('clearing a search brings the whole order list back', async ({ page, reques
   await ringUp(request, 3, 'Table');
   await page.goto(posUrl());
   await page.getByRole('button', { name: 'All orders' }).click();
-  const cards = page.locator('.pos-order-card');
+  const cards = page.locator('.mk-card');
   await expect(cards).toHaveCount(4);
   const search = page.getByRole('searchbox', { name: 'Search reference or order ID' });
   await search.fill('Table 2');
@@ -735,28 +736,28 @@ test('clearing a search brings the whole order list back', async ({ page, reques
 
 async function openFinishedTab(page) {
   await page.getByRole('button', { name: 'All orders' }).click();
-  await page.getByRole('tab', { name: /Finished/ }).click();
+  await page.getByRole('button', { name: /Finished/ }).click();
 }
 
 test('an order finished at the counter moves to Finished for this session only', async ({ page, request }) => {
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/paid`);
-  await expect(page.locator('.pos-stage')).toContainText('Paid.');
+  await expect(page.locator('.mk-stage')).toContainText('Paid.');
   await page.getByRole('button', { name: 'New order' }).click();
   await openFinishedTab(page);
-  await expect(page.getByRole('tab', { name: 'Finished · 1' })).toBeVisible();
-  await expect(page.locator('.pos-order-card')).toContainText('Fixture order');
+  await expect(page.getByRole('button', { name: 'Finished · 1' })).toBeVisible();
+  await expect(page.locator('.mk-card')).toContainText('Fixture order');
   const note = page.locator('.pos-list-note');
   await expect(note).toContainText('Completed on this device since the POS was opened. They clear after 24 hours or when the page reloads.');
   await expect(note.getByRole('link', { name: 'See all orders →' })).toHaveAttribute('href', `/dashboard/stores/${fixture.connection_id}/orders`);
   await captureCoverageStage(page, 'pos-finished-tab', test.info());
-  await page.getByRole('tab', { name: /Active/ }).click();
-  await expect(page.locator('.pos-order-card')).toHaveCount(0);
+  await page.getByRole('button', { name: /Active/ }).click();
+  await expect(page.locator('.mk-card')).toHaveCount(0);
   // Nothing is loaded into Finished: after a reload it starts empty.
   await page.reload();
   await openFinishedTab(page);
-  await expect(page.getByRole('tab', { name: 'Finished · 0' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Finished · 0' })).toBeVisible();
   await expect(page.locator('.pos-empty')).toHaveText('No finished orders yet.');
   await expect(page.locator('.pos-list-note')).toBeVisible();
 });
@@ -768,7 +769,7 @@ test('a backgrounded order that is paid while the merchant serves someone else m
   await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/paid`);
   await expect(page.locator('.pos-stack-card')).toHaveCount(0);
   await openFinishedTab(page);
-  await expect(page.locator('.pos-order-card .pos-badge')).toContainText('Paid');
+  await expect(page.locator('.mk-card .tag')).toContainText('Paid');
 });
 
 test('finished orders drop off the tab 24 hours after they finished', async ({ page, request }) => {
@@ -778,15 +779,15 @@ test('finished orders drop off the tab 24 hours after they finished', async ({ p
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/paid`);
-  await expect(page.locator('.pos-stage')).toContainText('Paid.');
+  await expect(page.locator('.mk-stage')).toContainText('Paid.');
   await page.getByRole('button', { name: 'New order' }).click();
   await openFinishedTab(page);
-  await expect(page.locator('.pos-order-card')).toHaveCount(1);
+  await expect(page.locator('.mk-card')).toHaveCount(1);
   await page.clock.fastForward((23 * 60 + 58) * 60 * 1000);
-  await expect(page.locator('.pos-order-card')).toHaveCount(1);
+  await expect(page.locator('.mk-card')).toHaveCount(1);
   await page.clock.fastForward(3 * 60 * 1000);
-  await expect(page.locator('.pos-order-card')).toHaveCount(0);
-  await expect(page.getByRole('tab', { name: 'Finished · 0' })).toBeVisible();
+  await expect(page.locator('.mk-card')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Finished · 0' })).toBeVisible();
 });
 
 test('a search with no match in this session links to searching all orders', async ({ page }) => {
@@ -836,11 +837,11 @@ test('on a tablet or desktop the POS uses the whole screen, with the open orders
     await expect(page.locator('.pos-keypad')).toBeVisible();
   }
   await page.getByRole('button', { name: 'All orders' }).click();
-  const cards = await page.locator('.pos-order-card').evaluateAll(els => els.map(el => el.getBoundingClientRect().y));
+  const cards = await page.locator('.mk-card').evaluateAll(els => els.map(el => el.getBoundingClientRect().y));
   expect(new Set(cards.map(Math.round)).size, 'several cards to a row').toBeLessThan(cards.length);
   // On a phone the payment view has no room for the sidebar.
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.locator('.pos-order-card').first().getByRole('button', { name: 'Open →' }).click();
+  await page.locator('.mk-card').first().getByRole('button', { name: 'Open →' }).click();
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   await expect(page.locator('.pos-stack')).toBeHidden();
 });

@@ -17,7 +17,7 @@ export interface TagProps extends Omit<JSX.IntrinsicElements["span"], "children"
   state?: OrderState;
   short?: string;
   /**
-   * Before the words: an inline SVG, `aria-hidden`.
+   * Before the words: an inline SVG or a status symbol.
    */
   icon?: JSX.Element;
 }
@@ -32,9 +32,9 @@ export function Tag(props: TagProps): JSX.Element {
   return (
     <span class={tokens(`tag`, props.tone != null && `tag-${props.tone}`, props.state != null && `state-${props.state}`)} {...rest}>
       {props.icon != null ? (
-        <>
+        <span class="tag-icon" aria-hidden="true">
           {props.icon}
-        </>
+        </span>
       ) : (
         null
       )}

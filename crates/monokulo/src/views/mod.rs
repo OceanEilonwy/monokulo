@@ -632,17 +632,13 @@ fn account_menu(chrome: &PageChrome) -> Markup {
     };
     let items = html! {
         div class="acct-who" { strong { (chrome.email) } small { (role) } }
-        a href="/account" { "Account" }
-        a href="/account?tab=wallets" { "Wallets" span class="menu-note" { (chrome.wallet_count) } }
+        (ui::MenuItem::new("Account").href("/account"))
+        (ui::MenuItem::new("Wallets").href("/account?tab=wallets").note(chrome.wallet_count.to_string()))
         hr;
-        div class="menu-item" { span { "Theme" } (theme_toggle(chrome)) }
-        a href="/account#card-time" title=(zone_title) {
-            span { "Times in " (zone) } span class="menu-note" { "change" }
-        }
+        (ui::MenuItem::new("Theme").note(theme_toggle(chrome)))
+        (ui::MenuItem::new(html! { "Times in " (zone) }).href("/account#card-time").note("change").title(zone_title))
         hr;
-        form method="post" action="/dashboard/logout" class="nav-logout-form" {
-            button type="submit" class="nav-link-button" { "Log out" }
-        }
+        (ui::MenuItem::new("Log out").post_to("/dashboard/logout"))
     };
     ui::Menu::new("Account menu", account_icon(), items)
         .title(chrome.email.clone())
@@ -791,11 +787,11 @@ mod tests {
                 .unwrap_or_else(|| panic!("{needle} in {menu}"))
         };
         let who = at("<strong>rachel.dz@example.org</strong><small>Admin</small>");
-        let account = at(r#"<a href="/account">Account</a>"#);
+        let account = at(r#"<a class="menu-item" href="/account"><span>Account</span></a>"#);
         let wallets =
-            at(r#"<a href="/account?tab=wallets">Wallets<span class="menu-note">3</span></a>"#);
+            at(r#"<a class="menu-item" href="/account?tab=wallets"><span>Wallets</span><span class="menu-note">3</span></a>"#);
         let theme = at(r#"<form method="post" action="/dashboard/theme" class="nav-theme-form">"#);
-        let times = at(r##"<a href="/account#card-time""##);
+        let times = at(r##"<a class="menu-item" href="/account#card-time""##);
         let logout = at(r#"action="/dashboard/logout""#);
         assert!(
             who < account
@@ -811,7 +807,7 @@ mod tests {
             ),
             "{menu}"
         );
-        assert!(menu.contains(">Log out</button>"), "{menu}");
+        assert!(menu.contains(r#"<button type="submit" class="menu-item"><span>Log out</span></button>"#), "{menu}");
 
         let merchant = nav(&signed_in("ann@example.org", false, Theme::System)).into_string();
         assert!(merchant.contains("<small>Merchant</small>"), "{merchant}");

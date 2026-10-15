@@ -1,4 +1,5 @@
 import { Show } from 'solid-js';
+import { Tag, type OrderState } from '@monokulo/ui/solid';
 import STATUS_SYMBOLS from '@monokulo/ui/status/symbols.svg?raw';
 
 /** What the POS needs to know about an order to show its status. */
@@ -8,12 +9,12 @@ export type StatusSource = {
 };
 
 /** The visual state: the engine's status, refined by what the POS knows. */
-export function stateOf(order: StatusSource, offline = false): string {
+export function stateOf(order: StatusSource, offline = false): OrderState {
   if (offline) return 'offline';
   if (order.cancelled_at) return 'cancelled';
   if (order.error?.includes('Double-spend')) return 'double-spend';
   if (order.status === 'confirming' && order.confirmations === 0) return 'unconfirmed';
-  return order.status;
+  return order.status as OrderState;
 }
 
 export const statusName: Record<string, string> = {
@@ -60,11 +61,10 @@ export const statusShortName: Record<string, string> = {
   pending: 'Waiting', unconfirmed: 'Seen', partial: 'Part paid', offline: 'Offline',
 };
 
-/** A status pill: symbol plus word (payment page and list). */
-export function StatusBadge(props: { order: StatusSource; offline?: boolean }) {
+/** An order's status as a `Tag`: symbol plus word (payment page and list),
+ * the short word on a phone. */
+export function StatusTag(props: { order: StatusSource; offline?: boolean }) {
   const state = () => stateOf(props.order, props.offline);
-  const name = () => statusName[state()] || props.order.status;
-  return <span class={['pos-badge', `state-${state()}`]}><StatusIcon order={props.order} offline={props.offline}/>
-    <Show when={statusShortName[state()]} fallback={name()}>{short => <><span class="label-long">{name()}</span><span class="label-short" aria-hidden="true">{short()}</span></>}</Show>
-  </span>;
+  return <Tag state={state()} short={statusShortName[state()]} data-pos="status"
+    icon={<StatusIcon order={props.order} offline={props.offline}/>}>{statusName[state()] || props.order.status}</Tag>;
 }

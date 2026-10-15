@@ -10,9 +10,8 @@
    more specific `button` rule) give buttons/inputs/etc. their own
    default margin/font, which silently leaks into any context that isn't
    "a standalone block-level control with space below it" - e.g. a
-   <button> reused as an inline nav link (`.nav-link-button` in
-   `_nav.html.hbs`) inheriting a form button's `margin-top` and sitting
-   visibly out of line with its sibling <a> tags. Reset the baseline here;
+   <button> in a row of links inheriting a form button's `margin-top` and
+   sitting visibly out of line with its sibling <a> tags. Reset the baseline here;
    components that genuinely want spacing (the real `button` rule
    below) declare it themselves, deliberately, rather than relying on a
    default nothing else was meant to inherit. */
@@ -91,30 +90,17 @@ table[data-table="nodes"] td.card-meta { font-size: inherit; color: inherit; }
 [data-proof-facts] > .facts { margin-top: var(--space-sm); }
 /* The Monero nodes tab: a card per network, a row per node, closed to a
    line until opened. */
-.node-rows { display: grid; gap: var(--space-sm); margin: var(--space-sm) 0 var(--space-lg); }
+[data-node-rows] { margin-bottom: var(--space-lg); }
 .node-add-another { margin: calc(-1 * var(--space-xs)) 0 var(--space-xl); }
-.node-row { background: var(--paper); border: 1px solid var(--card-border); border-radius: var(--radius-md); min-width: 0; }
-.node-row.is-changed { border-color: var(--card-changed); }
-.node-row:has(.setting-problem) { border-color: var(--card-failed); }
-.node-row[data-node-add] { border-style: dashed; background: transparent; }
-.node-row-summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-md); padding: var(--space-sm) var(--space-md); border-radius: var(--radius-md); }
-.node-row[open] > .node-row-summary { border-bottom: 1px solid var(--card-border); border-radius: var(--radius-md) var(--radius-md) 0 0; }
-.node-row-summary:hover { background: var(--surface-sunken); }
-.node-handle { cursor: grab; color: var(--muted); font-size: var(--text-lg); line-height: 1; padding: 0 var(--space-xs); user-select: none; touch-action: none; }
+[data-node-row].is-changed > .disclosure-row { border-color: var(--card-changed); }
+[data-node-row]:has(.setting-problem) > .disclosure-row { border-color: var(--card-failed); }
 .node-add-mark { font-weight: 800; color: var(--accent-text); width: 1em; text-align: center; }
 .node-row-name { font-weight: 700; min-width: 5.5em; }
 .node-row-address { min-width: 0; overflow-wrap: anywhere; }
 .node-row-status { margin-left: auto; font-size: var(--text-sm); color: var(--muted); }
 .node-row-status.is-problem { color: var(--error); font-weight: 700; }
 .node-row-mark:empty { display: none; }
-.node-row-body { padding: var(--space-xs) var(--space-md) var(--space-sm); }
-.node-row .setting-field input[type="text"] { width: 100%; }
-/* A dragged row follows the pointer, lifted with the popups' shadow; the
-   rows it passes slide out of its way (static/admin-settings.js). */
-.node-row { transition: transform 0.15s ease; }
-.node-row.is-dragging { position: relative; z-index: 2; transition: none; box-shadow: 0 8px 24px var(--popup-shadow); }
-.node-row.is-dragging .node-handle { cursor: grabbing; }
-@media (prefers-reduced-motion: reduce) { .node-row { transition: none; } }
+[data-node-rows] .setting-field input[type="text"] { width: 100%; }
 .node-status { margin: var(--space-xs) 0; color: var(--muted); }
 .node-status.is-problem { color: var(--error); }
 /* How the engine is performing (`views::scaling`), on the engine page: the
@@ -128,25 +114,6 @@ table[data-table="nodes"] td.card-meta { font-size: inherit; color: inherit; }
   .scan-figures { grid-template-columns: 1fr; }
   .scan-figures dd { margin-bottom: var(--space-xs); }
 }
-/* Controls that only work with JavaScript. */
-html:not(.js) .js-only { display: none; }
-/* Controls only needed without it (a script does their job). */
-html.js .no-js-only { display: none; }
-/* Read out, not shown: words that go with something only visible. */
-/* Store page embed warnings (`views::store_detail::embed_warnings`). */
-.embed-warning {
-  display: grid;
-  gap: var(--space-xs);
-  justify-items: start;
-  border: 2px solid var(--warning);
-  border-radius: var(--radius-md);
-  background: var(--tint-warning);
-  padding: var(--space-sm) var(--space-md);
-  margin: 1em 0;
-}
-.embed-warning.is-error { border-color: var(--error); background: var(--tint-error); }
-.embed-warning.is-compact { display: block; padding-block: var(--space-xs); }
-.embed-warning form { margin: 0; }
 .dns-record { display: grid; grid-template-columns: max-content 1fr; gap: 2px var(--space-sm); margin: var(--space-sm) 0 0; }
 .dns-record dt { color: var(--muted); font-size: var(--text-sm); }
 .dns-record dd { margin: 0; overflow-wrap: anywhere; }
@@ -182,17 +149,14 @@ form label { display: block; margin: 0.9em 0 0.6em; font-weight: 700; }
    icon of its source (options file, runtime, command line, environment);
    dashed for the default, which nothing has chosen. */
 .setting-label-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5em; }
-.source-chip { display: inline-flex; align-items: center; gap: var(--pill-gap); font-size: var(--text-xs); font-weight: 400; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: var(--pill-pad-y-roomy) var(--pill-pad-x-roomy); background: var(--paper); }
-.source-chip.default { border-style: dashed; background: transparent; }
 .src-icon { width: 1.15em; height: 1.15em; flex: none; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
 .src-icon .filled { fill: currentColor; stroke: none; }
 /* Each process's options file, above the tabs, with its Reload button. */
 .options-files { display: grid; gap: 0.5em; margin-bottom: 1em; }
-.options-file { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75em; background: var(--paper-raised); border: 1px solid var(--line); border-radius: 9px; padding: 0.75em 1em; }
+.options-file { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75em; }
 .options-file-where { display: grid; gap: 0.15em; min-width: 0; }
 .options-file-path { display: flex; align-items: center; gap: 0.45em; overflow-wrap: anywhere; }
-.options-file-state { font-size: var(--text-sm); color: var(--muted); }
-.options-file button { display: inline-flex; align-items: center; gap: 0.4em; }
+.options-file-where > .hint { margin: 0; }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--focus-ring); }
 /* A hand-written button (ui::Button is .mk-btn, with no margins).
    `margin-right`: two buttons written as separate Maud
@@ -218,26 +182,9 @@ button {
 }
 button:hover { background: var(--btn-hover-bg); color: var(--btn-ink); border-color: var(--btn-hover-border); }
 button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-/* Store-detail "widget" launchers (POS terminal, create-order) - a row of
-   tappable tiles above the Recent orders table, each opening its own
-   full-screen tool page rather than an inline form on this page. */
+/* The store page's launch tiles (`ui::LaunchTile`) in a row above the
+   Recent orders table, each opening its own full-screen tool. */
 .widget-links { display: flex; flex-wrap: wrap; gap: var(--space-md); margin: 1em 0 1.4em; }
-.widget-links .widget-link {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 0.7em;
-  min-width: 11em;
-  margin: 0;
-  padding: var(--space-md) var(--space-lg);
-  text-align: left;
-}
-.widget-links .widget-link-icon { flex: none; display: flex; }
-.widget-links .widget-link-icon svg { width: 1.7em; height: 1.7em; }
-.widget-links .widget-link-text { display: flex; flex-direction: column; gap: 0.2em; }
-.widget-links .widget-link-title { font-weight: 700; }
-.widget-links .widget-link-hint { font-weight: 400; font-size: var(--text-sm); opacity: 0.85; }
-.widget-links .pos-launch-disabled, .widget-links .pos-launch-disabled:hover { opacity: 0.45; cursor: not-allowed; background: var(--btn-bg); color: var(--btn-ink); border-color: var(--btn-border); }
 /* The confirmations-required count never needs more than 720's own 3
    digits (`scanner::http::admin::MAX_CONFIRMATIONS_REQUIRED`) - overrides
    the site-wide `input[type=text] { width: 100% }` default, which would
@@ -370,9 +317,7 @@ input[aria-invalid="true"] { border-color: var(--error); }
 /* Back up: each tab shows its words and QR code straight away. The phrase
    gets the main column (4 columns for 16 words, 5 for 25, 2 on a phone);
    the QR sits beside it. */
-.app-tabs { display: flex; flex-wrap: wrap; gap: var(--space-xs); border-bottom: 1px solid var(--line); margin: var(--space-lg) 0; }
-.app-tabs button, .app-tabs button:hover { display: inline-flex; align-items: center; gap: var(--space-sm); margin: 0; padding: var(--space-sm) var(--space-md); background: none; border: 0; border-bottom: 3px solid transparent; border-radius: 0; color: var(--muted); }
-.app-tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--tab-current); }
+.app-tab { display: inline-flex; align-items: center; gap: var(--space-sm); }
 .phrase-split { display: grid; grid-template-columns: minmax(0, 1fr) 16rem; gap: var(--space-xl); align-items: start; }
 .phrase-box { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-lg); margin: var(--space-md) 0; }
 .phrase-box .seed-words { margin: var(--space-md) 0; }
@@ -419,8 +364,8 @@ input[aria-invalid="true"] { border-color: var(--error); }
 
 /* A paper backup, printed: the words and their facts, nothing else. */
 @media print {
-  .site-nav, .context-nav, .mk-wizard-steps, .app-tabs, .step-foot, .check-line,
-  .phrase-head button, .phrase-box .steps, .qr-col, .no-print, [data-wallet-setup] > section > p,
+  .site-nav, .context-nav, .mk-wizard-steps, [data-wallet-setup] .mk-tabs, .step-foot, .check-line,
+  .phrase-head button, .phrase-box .steps, .qr-col, [data-wallet-setup] > section > p,
   [data-wallet-setup] [hidden] { display: none !important; }
   .phrase-box { border: 0; padding: 0; }
   .phrase-split { display: block; }

@@ -767,7 +767,7 @@ async fn a_signed_out_browser_is_sent_to_log_in_and_back_while_the_api_gets_401(
             .unwrap(),
     )
     .await;
-    assert!(html.contains(">Log out</button>"), "{html}");
+    assert!(html.contains("<span>Log out</span></button>"), "{html}");
     assert!(
         html.contains("<strong>nav-auth-state@example.com</strong>"),
         "{html}"

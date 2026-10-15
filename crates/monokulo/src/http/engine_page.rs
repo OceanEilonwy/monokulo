@@ -709,15 +709,15 @@ mod tests {
                 .unwrap_or_else(|| panic!("no {needle:?} in the page"))
         };
         let order = [
-            r#"<nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb"><a href="/status">Status</a></nav><div class="engine-titlebar"><h1>Engine</h1><details class="engine-help""#,
+            r#"<nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb"><a href="/status">Status</a></nav><div class="engine-titlebar"><h1>Engine</h1><details class="help-tip" id="engine-help" data-size="wide""#,
             r#"<span class="titlebar-spacer"></span><form class="engine-network" method="get" action="/status/engine">"#,
-            r#"<span class="network-go no-js-only"><button class="mk-btn" type="submit">Go</button></span></form><a class="mk-btn icon-only" href="/status/engine?network=stagenet" aria-label="Refresh page" title="Refresh page" data-reload"#,
+            r#"<button class="mk-btn" type="submit" data-only="no-script">Go</button></form><a class="mk-btn icon-only" href="/status/engine?network=stagenet" aria-label="Refresh page" title="Refresh page" data-reload"#,
             r#"id="engine-summary""#,
             r#"id="engine-machine""#,
             r#"id="engine-chain""#,
             r#"id="engine-round""#,
             r#"<section class="engine-panels" id="engine-panels""#,
-            r#"<details class="mini t-blocks" id="d-scanning" open><summary><span class="tierchip t-blocks">Scanning</span>"#,
+            r#"<details class="disclosure-compact" open id="d-scanning"><summary><span class="tierchip t-blocks">Scanning</span>"#,
             r#"id="d-reorg""#,
             r#"id="d-restart""#,
             r#"id="h-events""#,

@@ -533,19 +533,17 @@
 
   function drawSide(side) {
     panel("d-reorg", side.reorg, (d) => {
-      d.classList.toggle("alert", side.reorg.alert);
+      d.toggleAttribute("data-alert", side.reorg.alert);
       if (side.reorg.alert && !d.dataset.auto) { d.open = true; d.dataset.auto = "1"; }
       if (!side.reorg.alert && d.dataset.auto) { d.open = false; delete d.dataset.auto; }
     });
     panel("d-mempool", side.mempool, () => {
       $("pool-dots").innerHTML = side.pool_txs.map(([txid, matched]) => `<span class="dot${matched ? " match" : ""}" title="Transaction ${esc(txid)}"></span>`).join("");
     });
-    panel("d-orders", side.orders, (d) => {
+    panel("d-orders", side.orders, () => {
       const last = side.transitions[0];
       $("orders-sum").innerHTML = `<span>${esc(side.orders.summary)}</span>` + (last ? `<span class="engine-hint">last</span><span class="engine-state state-${last[1]}">${esc(last[1])}</span>` : "");
-      const body = d.querySelector(".body");
-      body.querySelectorAll(".transition").forEach((el) => el.remove());
-      body.insertAdjacentHTML("beforeend", side.transitions.map(([from, to]) => `<div class="transition"><span class="engine-state state-${from}">${esc(from)}</span> to <span class="engine-state state-${to}">${esc(to)}</span></div>`).join(""));
+      $("orders-transitions").innerHTML = side.transitions.map(([from, to]) => `<div><span class="engine-state state-${from}">${esc(from)}</span> to <span class="engine-state state-${to}">${esc(to)}</span></div>`).join("");
     });
     panel("d-upkeep", side.upkeep);
     panel("d-database", side.database, (d) => {
@@ -1064,9 +1062,6 @@
   // Keep manual refresh available until the first successful history arrives;
   wireTimeline();
   wireRounds();
-  const help = $("engine-help");
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && help.open) { help.open = false; help.querySelector("summary").focus(); } });
-  document.addEventListener("pointerdown", (e) => { if (help.open && !help.contains(e.target)) help.open = false; });
   addEventListener("resize", () => { tlDirty = true; });
   // The strip's width sets how many blocks it shows: asked again whenever
   // it changes.

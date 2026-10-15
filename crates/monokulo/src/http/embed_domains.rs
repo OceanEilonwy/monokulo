@@ -1619,7 +1619,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            fragment.starts_with(r#"<div class="embed-warning is-compact" id="embed-warning">"#),
+            fragment.starts_with(r#"<p class="warning" id="embed-warning">"#),
             "{fragment}"
         );
         let (status, _) = send(
@@ -1632,7 +1632,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::FOUND);
         let (_, html) = send(&router, "GET", &store_page, &session, None).await;
-        assert!(html.contains(r#"class="embed-warning is-compact""#));
+        assert!(html.contains(r#"<p class="warning" id="embed-warning">"#));
         assert!(html.contains("shop.example failed its DNS check"));
 
         // Another merchant can't touch this store's domains.

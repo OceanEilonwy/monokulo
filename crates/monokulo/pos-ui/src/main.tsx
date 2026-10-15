@@ -1,13 +1,13 @@
 import '@monokulo/ui/status.css';
 import { createEffect, createMemo, createSignal, flush, For, onSettled, Show, untrack } from 'solid-js';
 import { render } from '@solidjs/web';
-import { StatusBadge, StatusIcon, StatusSymbols, stateOf, statusName } from './status';
+import { StatusIcon, StatusSymbols, StatusTag, stateOf, statusName } from './status';
 import { addressFromQr, decodeImageFile, looksLikeAddress, scanCamera } from './refund';
 import { LOADING_MARK } from './logo';
 import { applyTheme, type Theme } from './theme';
 import { createTimeline, routeOf, watchPage } from './timeline';
 import '@monokulo/ui/components.css';
-import { Button, Dialog, DialogActions, DialogTitle, Field, Input, ShortValue } from '@monokulo/ui/solid';
+import { Button, Card, CopyValue, Dialog, DialogActions, DialogTitle, Field, IconButton, Input, ProgressSteps, SegmentedControl, ShortValue, type ProgressStep, type StepProgress } from '@monokulo/ui/solid';
 import './pos.css';
 
 type Order = {
@@ -49,17 +49,20 @@ const fullLabel = (o: Order) => o.merchant_order_id || o.order_id;
 function Shortened(props: { short: string; full: string }) {
   return <ShortValue value={props.full} short={props.short}/>;
 }
-/** Copies `text` from a selection of it, off screen; whether the browser did. */
-function copyBySelection(text: string): boolean {
-  const area = document.createElement('textarea');
-  area.value = text;
-  area.readOnly = true;
-  area.style.cssText = 'position: fixed; top: 0; left: 0; opacity: 0';
-  document.body.append(area);
-  area.select();
-  try { return document.execCommand('copy'); }
-  catch { return false; }
-  finally { area.remove(); }
+/** `CopyValue`'s segments for the server's shortened form of `full`: each
+ * part of `short` between its ellipses, found in turn in `full`, so the
+ * value on screen is cut where the server cut it. None (the whole value)
+ * when a part isn't there. */
+function segmentsOf(full: string, short: string): string {
+  let from = 0;
+  const ranges: string[] = [];
+  for (const part of short.split('…')) {
+    const at = full.indexOf(part, from);
+    if (!part || at < 0) return '';
+    ranges.push(`${at}:${part.length}`);
+    from = at + part.length;
+  }
+  return ranges.join(',');
 }
 /** An order's ID shortened, `#` first. */
 const OrderId = (props: { order: Order }) => <Shortened short={shortId(props.order)} full={props.order.order_id}/>;
@@ -150,16 +153,14 @@ function adoptSiteBrand(slot: HTMLElement) {
   brand.remove();
 }
 
-type Step = 'done' | 'now' | 'part' | 'fail' | 'todo';
-const stepWords: Record<Step, string> = { done: 'done', now: 'now', part: 'partly done', fail: 'stopped', todo: 'to come' };
 /** Whether the customer still owes something: only then is the code live. */
 const awaitingPayment = (o: Order) => ['pending', 'partial'].includes(o.status) && !o.cancelled_at;
 
 /** The stage's track: Send, Confirm, Paid - without Confirm when the store
  * counts a payment as soon as it's seen (`confirmations_required` 0). */
-function stageSteps(o: Order): [string, Step][] {
+function stageSteps(o: Order): ProgressStep[] {
   const state = stateOf(o);
-  const [send, confirm, paid]: Step[] =
+  const [send, confirm, paid]: StepProgress[] =
     o.cancelled_at || (state === 'double-spend' && !awaitingPayment(o)) ? ['fail', 'todo', 'todo']
     : o.status === 'pending' ? ['now', 'todo', 'todo']
     : o.status === 'partial' ? ['part', 'todo', 'todo']
@@ -167,8 +168,8 @@ function stageSteps(o: Order): [string, Step][] {
     : ['paid', 'overpaid'].includes(o.status) ? ['done', 'done', 'done']
     : ['fail', 'todo', 'todo'];
   return o.confirmations_required === 0
-    ? [['Send', send], ['Paid', confirm === 'now' ? 'now' : paid]]
-    : [['Send', send], ['Confirm', confirm], ['Paid', paid]];
+    ? [{ label: 'Send', progress: send }, { label: 'Paid', progress: confirm === 'now' ? 'now' : paid }]
+    : [{ label: 'Send', progress: send }, { label: 'Confirm', progress: confirm }, { label: 'Paid', progress: paid }];
 }
 
 /** The stage's words: a short title, then what to do now. */
@@ -189,24 +190,12 @@ function stageMessage(o: Order, at: number): [string, string] {
   }
 }
 
-const trackIcon = (step: Step) => step === 'done'
-  ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 12.5 5 5 10-11"/></svg>
-  : step === 'fail' ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M7 7l10 10M17 7 7 17"/></svg> : null;
-
 /** The stage at the top of the payment card, in every state (the checkout
  * shows the same): where the order is, and what to do now. */
 function Stage(props: { order: Order }) {
-  const steps = () => stageSteps(props.order);
   const message = () => stageMessage(props.order, now());
-  return <div class={['pos-stage', `state-${stateOf(props.order)}`]}>
-    <ol class={['pos-track', { 'pos-track-2': steps().length === 2 }]} aria-label="Payment progress">
-      {steps().map(([name, step]) => <li class={`step-${step}`}>
-        <span class="pos-track-dot" aria-hidden="true">{trackIcon(step)}</span>
-        <span class="pos-track-name">{name}<span class="sr-only">, {stepWords[step]}</span></span>
-      </li>)}
-    </ol>
-    <p class="pos-stage-msg" role="status"><strong>{message()[0]}.</strong> {message()[1]}</p>
-  </div>;
+  return <ProgressSteps compact label="Payment progress" steps={stageSteps(props.order)} state={stateOf(props.order)}
+    title={message()[0]} message={message()[1]}/>;
 }
 
 /** Sketch 2's payment card: what the customer pays, where, and where a
@@ -215,7 +204,9 @@ function Stage(props: { order: Order }) {
 function PaymentCard(props: { order: Order }) {
   // A memo, so an order refresh carrying the same QR doesn't rebuild it.
   const qr = createMemo(() => props.order.qr_svg);
-  const [copied, setCopied] = createSignal<'copied' | 'failed' | null>(null);
+  // An order's address never changes, and CopyValue takes its value once.
+  const address = untrack(() => props.order.address);
+  const addressSegments = untrack(() => segmentsOf(props.order.address, props.order.address_short));
   // Seeded once from the order: later edits are the merchant's, not the order's.
   const initialRefund = untrack(() => props.order.refund_address || '');
   const [refund, setRefund] = createSignal(initialRefund);
@@ -234,17 +225,6 @@ function PaymentCard(props: { order: Order }) {
   const awaiting = () => awaitingPayment(props.order);
   const partial = () => props.order.status === 'partial' && !props.order.cancelled_at;
 
-  async function copy() {
-    let done: boolean;
-    try { await navigator.clipboard.writeText(props.order.address); done = true; }
-    // No clipboard API (a page reached over plain http, as a tablet on the
-    // shop's network may reach it) or no permission for it: copied the way
-    // pages did before it, from a selection. Failing that too, the button
-    // says so; the address stays selectable.
-    catch { done = copyBySelection(props.order.address); }
-    setCopied(done ? 'copied' : 'failed');
-    window.setTimeout(() => setCopied(null), 2000);
-  }
   async function save(value: string) {
     if (!looksLikeAddress(value) || value === saved()) return;
     setRefundState('saving'); setRefundMessage('');
@@ -310,33 +290,35 @@ function PaymentCard(props: { order: Order }) {
         <div class="pos-qr-new"><span class="pos-qr-new-tab">New code · {trimXmr(props.order.remaining_xmr || props.order.xmr_amount)} XMR</span><div class="pos-qr" innerHTML={qr()}/></div>
       </Show>
     </Show>
-    <p class="pos-quiet-label">Payment address</p>
+    <p class="pos-quiet-label" id="pos-address-label">Payment address</p>
+    {/* Copied only while it should be paid; then just shown. */}
     <div class="pos-address">
-      <code><Shortened short={props.order.address_short} full={props.order.address}/></code>
-      <Show when={awaiting()}><button type="button" onClick={() => void copy()} aria-label="Copy payment address">{copied() === 'copied' ? 'Copied' : copied() === 'failed' ? 'Not copied' : 'Copy'}</button></Show>
+      <Show when={awaiting()} fallback={<code><Shortened short={props.order.address_short} full={props.order.address}/></code>}>
+        <CopyValue value={address} copy_label="Copy payment address" labelled_by="pos-address-label"
+          truncate="segments" segments={addressSegments}/>
+      </Show>
     </div>
     <hr/>
-    <label class="mk-label" for="pos-refund">Refund address <span>(optional)</span></label>
-    <div class={['pos-refund', `state-${refundState()}`]}>
-      <Input name="refund_address" id="pos-refund" size="compact" autocomplete="off" spellcheck={false} placeholder="Your Monero refund address"
-        value={refund()} onInput={event => onRefundInput(event.currentTarget.value)} onBlur={() => void save(refund().trim())}
-        invalid={refundState() === 'invalid'} described_by="pos-refund-note"/>
+    {/* The label, then whether the address is saved (the field's own right
+        edge holds the scan and image buttons). */}
+    <div class="pos-refund-label">
+      <label class="mk-label" for="pos-refund">Refund address <span>(optional)</span></label>
       <span class="pos-refund-state" role="status" aria-label={refundState() === 'saving' ? 'Saving refund address' : refundState() === 'saved' ? 'Refund address saved' : ''}>
         <Show when={refundState() === 'saved'}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L19 7"/></svg></Show>
         <Show when={refundState() === 'saving'}><span class="pos-loading-mark" innerHTML={LOADING_MARK}/></Show>
       </span>
     </div>
-    <div class="pos-refund-tools">
-      <Show when={navigator.mediaDevices?.getUserMedia}>
-        <button type="button" onClick={() => void scan()}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5M7 7h3v3H7zM14 7h3v3h-3zM7 14h3v3H7zM14 14h3v3h-3z"/></svg>
-          {scanning() ? 'Stop camera' : 'Scan refund QR'}
-        </button>
-      </Show>
-      <button type="button" onClick={() => fileInput?.click()}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1.5"/><circle cx="9" cy="10" r="1.6"/><path d="m3 17 5-5 4 4 3-3 6 6"/></svg>
-        Choose QR image
-      </button>
+    <div class="pos-refund">
+      <Input name="refund_address" id="pos-refund" size="compact" autocomplete="off" spellcheck={false} placeholder="Your Monero refund address"
+        value={refund()} onInput={event => onRefundInput(event.currentTarget.value)} onBlur={() => void save(refund().trim())}
+        invalid={refundState() === 'invalid'} described_by="pos-refund-note" actions={<>
+          <Show when={navigator.mediaDevices?.getUserMedia}>
+            <IconButton label={scanning() ? 'Stop camera' : 'Scan refund QR'} onClick={() => void scan()}
+              icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5M7 7h3v3H7zM14 7h3v3h-3zM7 14h3v3H7zM14 14h3v3h-3z"/></svg>}/>
+          </Show>
+          <IconButton label="Choose QR image" onClick={() => fileInput?.click()}
+            icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="1.5"/><circle cx="9" cy="10" r="1.6"/><path d="m3 17 5-5 4 4 3-3 6 6"/></svg>}/>
+        </>}/>
       <input ref={el => { fileInput = el; }} type="file" accept="image/*" hidden onChange={event => void chooseImage(event.currentTarget.files?.[0])}/>
     </div>
     <video ref={el => { video = el; }} class="pos-camera" autoplay playsinline muted hidden={!scanning()}/>
@@ -628,16 +610,14 @@ function App() {
       <Show when={screen() === 'list'} fallback={
         <a class="pos-store" href={`/dashboard/stores/${encodeURIComponent(config.connectionId)}`}>{config.storeName}</a>
       }>
-        <button class="pos-back" type="button" onClick={() => setScreen('keypad')} aria-label="Back to POS">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg>
-        </button>
+        <IconButton label="Back to POS" onClick={() => setScreen('keypad')}
+          icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg>}/>
       </Show>
       <span class="pos-mode">POS</span>
       <span class="pos-top-end">
         <Show when={screen() !== 'list'}>
-          <button class="pos-orders-link" type="button" onClick={showList} aria-label="All orders" title="All orders">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="18" r="1" fill="currentColor"/></svg>
-          </button>
+          <IconButton label="All orders" onClick={showList}
+            icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="18" r="1" fill="currentColor"/></svg>}/>
         </Show>
         <span class="pos-site-controls" ref={adoptSiteControls}/>
       </span>
@@ -648,7 +628,7 @@ function App() {
         payment view, which has no room for it). */}
     <Show when={screen() !== 'list' && background().length > 0}>
       <section class={['pos-stack', { 'beside-payment': screen() === 'payment' }]} aria-label="Background orders">
-        <div class="pos-stack-heading"><strong>Background orders · {background().length}</strong><button type="button" onClick={showList}>View all →</button></div>
+        <div class="pos-stack-heading"><strong>Background orders · {background().length}</strong><Button variant="quiet" size="compact" onClick={showList}>View all →</Button></div>
         <div class="pos-stack-scroll" tabindex="0" aria-label="Background orders, scroll sideways" onWheel={event => { const el = event.currentTarget; if (el.scrollWidth > el.clientWidth && Math.abs(event.deltaY) > Math.abs(event.deltaX)) { el.scrollLeft += event.deltaY; event.preventDefault(); } }}>
           <For each={background()} keyed={o => o.order_id}>{order => <button type="button" class={['pos-stack-card', `state-${stateOf(order(), offline())}`]}
             title={`${fullLabel(order())} · ${statusName[stateOf(order(), offline())]} · ${shownAmount(order())} ${order().currency}`}
@@ -665,11 +645,11 @@ function App() {
           {amountText()}<span>{config.currency}</span>
         </p>
         <div class="pos-keys">
-          <For each={['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '⌫']}>{key => <button type="button"
-            class={{ clear: key === 'C', delete: key === '⌫' }} aria-label={key === 'C' ? 'Clear' : key === '⌫' ? 'Backspace' : key}
+          <For each={['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '⌫']}>{key => <Button data-pos="key"
+            aria-label={key === 'C' ? 'Clear' : key === '⌫' ? 'Backspace' : key}
             onClick={() => key === 'C' ? setDigits('0') : key === '⌫' ? backspace() : pushDigit(key)}>
             {key === '⌫' ? <svg viewBox="0 0 28 20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round" aria-hidden="true"><path d="M9 2h16a1.5 1.5 0 0 1 1.5 1.5v13A1.5 1.5 0 0 1 25 18H9l-7.5-8Z"/><path d="m13 6.5 8 7m0-7-8 7" stroke-linecap="round"/></svg> : key}
-          </button>}</For>
+          </Button>}</For>
         </div>
         <Field label="Reference (optional)" id="pos-reference" name="reference" placeholder="E.g. customer name or note" autocomplete="off"
           value={reference()} maxlength="120" onInput={event => setReference(event.currentTarget.value)}/>
@@ -687,7 +667,7 @@ function App() {
           {/* The status at a glance; the stage in the card says the rest,
               the time left included. */}
           <div class="pos-status-row">
-            <StatusBadge order={order()} offline={offline() && !terminal(order())}/>
+            <StatusTag order={order()} offline={offline() && !terminal(order())}/>
           </div>
         </div>
         <PaymentCard order={order()}/>
@@ -720,27 +700,27 @@ function App() {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></svg>
           <Input name="q" kind="search" data-pos="search" label="Search reference or order ID" placeholder="Search reference or order ID" value={search()} onInput={event => setSearch(event.currentTarget.value)}/>
         </div>
-        <div class="pos-tabs" role="tablist" aria-label="Order status">
-          <button type="button" role="tab" aria-selected={tab() === 'active' ? 'true' : 'false'} class={{ selected: tab() === 'active' }} onClick={() => setTab('active')}>Active · {activeOrders().length}</button>
-          <button type="button" role="tab" aria-selected={tab() === 'finished' ? 'true' : 'false'} class={{ selected: tab() === 'finished' }} onClick={() => setTab('finished')}>Finished · {finishedOrders().length}</button>
+        <div class="pos-filter">
+          <SegmentedControl label="Order status">
+            <Button aria-pressed={tab() === 'active' ? 'true' : 'false'} onClick={() => setTab('active')}>Active · {activeOrders().length}</Button>
+            <Button aria-pressed={tab() === 'finished' ? 'true' : 'false'} onClick={() => setTab('finished')}>Finished · {finishedOrders().length}</Button>
+          </SegmentedControl>
         </div>
         <Show when={tab() === 'finished'}>
           <p class="pos-list-note">Completed on this device since the POS was opened. They clear after 24 hours or when the page reloads. <a href={allOrdersUrl()}>See all orders →</a></p>
         </Show>
-        <Show when={error()}><p class="pos-error" role="alert">{error()} <button type="button" class="pos-link" onClick={() => void refresh()}>Retry</button></p></Show>
+        <Show when={error()}><p class="pos-error" role="alert">{error()} <Button size="compact" onClick={() => void refresh()}>Retry</Button></p></Show>
         <Show when={!error() && visible().length === 0}>
           <Show when={search().trim()} fallback={<p class="pos-empty">{`No ${tab()} orders yet.`}</p>}>
             <p class="pos-empty">No matches from this session. <a href={allOrdersUrl(search().trim())}>Search all orders →</a></p>
           </Show>
         </Show>
-        <div class="pos-list-items"><For each={visible()} keyed={o => o.order_id}>{order => <article class="pos-order-card">
-          <div class="pos-order-card-head">
-            <div><h2><Label order={order()}/></h2><p>{orderLine(order())}</p></div>
-            <StatusBadge order={order()} offline={offline() && !terminal(order())}/>
-          </div>
-          <p class="pos-order-sum">{shownAmount(order())} <span>{order().currency}</span></p>
-          <div class="pos-order-foot"><small>{cardDetail(order())}</small><button type="button" class="pos-link" onClick={() => void openOrder(order())}>Open →</button></div>
-        </article>}</For></div>
+        <div class="pos-list-items"><For each={visible()} keyed={o => o.order_id}>{order => <Card
+          title={<Label order={order()}/>} subtitle={orderLine(order())}
+          status={<StatusTag order={order()} offline={offline() && !terminal(order())}/>}
+          amount={<>{shownAmount(order())} <span class="pos-currency">{order().currency}</span></>}
+          detail={cardDetail(order())}
+          action={<Button variant="quiet" size="compact" onClick={() => void openOrder(order())}>Open →</Button>}/>}</For></div>
       </main>
     </Show>
   </>;

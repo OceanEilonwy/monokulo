@@ -12,7 +12,7 @@ use crate::engine_view::present::{
     Bar, ChainView, Lane, MarkView, Panel, Presented, RibbonMark, RoundView, Shape,
 };
 use crate::views::scaling::{network_name, thousands, MachineView, ScanningView, Tile, TileChart};
-use ui::{Alert, Button, ButtonType, Cell, Checkbox, Choice, Disclosure, Row, Select, Slot, Table, Tone};
+use ui::{Alert, Button, ButtonType, Cell, Checkbox, Choice, Disclosure, DisclosureLook, HelpTip, Row, Select, Slot, Table, Tone};
 
 /// Blocks drawn without JavaScript: enough for the widest strip. Those
 /// that don't fit whole wrap out of sight; the script draws as many as fit.
@@ -61,17 +61,16 @@ const ENGINE_STYLE: &str = r#"
 .engine-tabs a:hover { background: var(--btn-hover-bg); }
 .engine-tabs a[aria-current] { background: var(--ink); color: var(--paper-raised); }
 .engine-tabs span.off { opacity: 0.45; cursor: not-allowed; }
-.engine-help > summary { width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid var(--btn-border); display: grid; place-items: center; font-weight: 800; font-size: 0.8rem; color: var(--btn-ink); background: var(--btn-bg); }
-.engine-help > summary:hover { border-color: var(--btn-hover-border); }
-.engine-help[open] > summary { background: var(--ink); color: var(--paper-raised); border-color: var(--ink); }
-.help-body { position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; width: min(920px, calc(100vw - 32px)); max-height: min(78vh, 760px); overflow-y: auto; background: var(--paper-raised); border: 1px solid var(--line-strong); border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md) var(--space-md); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-xs) var(--space-lg); font-size: 0.75rem; }
-.help-body h3 { grid-column: 1 / -1; margin: var(--space-sm) 0 0; padding: 0; border: 0; font-size: 0.8rem; font-weight: 800; }
-.help-body dl { margin: 0; display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 5px 8px; align-items: start; }
-.help-body dt { display: flex; justify-content: center; padding-top: 2px; }
-.help-body dd { margin: 0; }
-.help-body dd b { font-weight: 800; }
-.help-body .hatch { display: block; width: 22px; height: 12px; border: 1px solid var(--line-strong); border-radius: 3px; background: repeating-linear-gradient(135deg, var(--muted) 0 1px, transparent 1px 5px); }
-.help-body .wide { grid-column: 1 / -1; margin: 0; color: var(--muted); }
+/* The legend opens under the whole title bar, from its left edge. */
+.engine-titlebar > .help-tip { position: static; }
+.engine-legend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-xs) var(--space-lg); }
+.engine-legend h3 { grid-column: 1 / -1; margin: var(--space-sm) 0 0; padding: 0; border: 0; font-size: 0.8rem; font-weight: 800; }
+.engine-legend dl { margin: 0; display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 5px 8px; align-items: start; }
+.engine-legend dt { display: flex; justify-content: center; padding-top: 2px; }
+.engine-legend dd { margin: 0; }
+.engine-legend dd b { font-weight: 800; }
+.engine-legend .hatch { display: block; width: 22px; height: 12px; border: 1px solid var(--line-strong); border-radius: 3px; background: repeating-linear-gradient(135deg, var(--muted) 0 1px, transparent 1px 5px); }
+.engine-legend .wide { grid-column: 1 / -1; margin: 0; color: var(--muted); }
 .engine-card { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md); min-width: 0; }
 .engine-card > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-xs) var(--space-md); margin-bottom: var(--space-xs); }
 .engine-hint { font-size: 0.72rem; color: var(--muted); }
@@ -279,19 +278,13 @@ const ENGINE_STYLE: &str = r#"
 /* The panels under the round: as many across as fit at 18rem, one a row
    on a phone; an open one takes the whole row. */
 .engine-panels { display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: var(--space-sm); align-items: start; }
-.engine-panels details.mini[open] { grid-column: 1 / -1; }
-details.mini { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-md); min-width: 0; }
-details.mini > summary { display: grid; grid-template-columns: 96px minmax(0, 1fr) 12px; gap: var(--space-sm); align-items: center; padding: 5px 10px; min-height: 32px; border-radius: var(--radius-md); cursor: pointer; }
-details.mini > summary:hover { background: var(--tint-hover); }
-details.mini > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-details.mini .body .scan-figures { padding-top: 6px; }
-details.mini .body [data-slow-block] { margin: 6px 0 0; }
-details.mini > summary::after { content: ""; width: 6px; height: 6px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); transition: transform 0.2s; }
-details.mini[open] > summary::after { transform: rotate(45deg); }
-details.mini .sum { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 0.75rem; overflow: hidden; white-space: nowrap; }
-details.mini .sum > span { overflow: hidden; text-overflow: ellipsis; }
-details.mini .body { padding: 2px 10px 8px; font-size: 0.75rem; border-top: 1px solid var(--line); }
-details.mini.alert { border-color: var(--error); }
+.engine-panels > [open] { grid-column: 1 / -1; }
+.engine-panels > [data-alert] { border-color: var(--error); }
+.engine-panels .tierchip { flex: none; width: 96px; }
+.engine-panels .sum { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.engine-panels .sum > span { overflow: hidden; text-overflow: ellipsis; }
+#scan-body .scan-figures { padding-top: 6px; }
+#scan-body [data-slow-block] { margin: 6px 0 0; }
 .kv { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding-top: 6px; }
 .kv b { font-variant-numeric: tabular-nums; font-weight: 700; }
 .explain { color: var(--muted); font-size: 0.7rem; margin: 6px 0 0; white-space: normal; }
@@ -357,7 +350,7 @@ details.mini.alert { border-color: var(--error); }
   /* The bar the row's width, less room at its end for the window's right
      handle, which sits 16px outside the window. */
   .engine-timeline .tl-track { flex-basis: 100%; margin-right: var(--space-lg); }
-  .help-body { grid-template-columns: minmax(0, 1fr); }
+  .engine-legend { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) {
   .engine-page *, .engine-page *::before, .engine-page *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.15s !important; }
@@ -407,7 +400,7 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
                     )
                     .id("engine-network")
                     .compact(true))
-                    span class="network-go no-js-only" { (Button::new("Go").kind(ButtonType::Submit)) }
+                    (Button::new("Go").kind(ButtonType::Submit).attr("data-only", "no-script"))
                 }
                 (reload_button(&format!("/status/engine?network={}", page.network)))
             }
@@ -785,14 +778,12 @@ fn cell(chain: &ChainView, height: u64) -> Markup {
 }
 
 /// The legend behind the (?) button: what every label, symbol and
-/// movement on the page means. A `details`, so it opens without
-/// JavaScript too.
+/// movement on the page means.
 fn help() -> Markup {
     let tier = |tier: &str| html! { i class=(format!("tierchip t-{tier}")) aria-hidden="true" {} };
     html! {
-        details class="engine-help" id="engine-help" {
-            summary aria-label="What the page shows" title="What the page shows" { "?" }
-            div class="help-body" {
+        (HelpTip::new("What the page shows", html! {
+            div class="engine-legend" {
                 p class="wide" { "The engine scans the Monero chain for the stores' payments in rounds. This page follows one network's scanner about 1.5s behind, and the timeline replays the last 30 minutes." }
 
                 h3 { "Timeline" }
@@ -896,7 +887,7 @@ fn help() -> Markup {
                 }
                 p class="wide" { "The panels under the round sum up the scan's pace, the reorg check, the pool, orders, upkeep, the database worker and what a restart would lose. Click one for its figures." }
             }
-        }
+        }).id("engine-help").wide(true))
     }
 }
 
@@ -1070,77 +1061,67 @@ fn span_style(start: u64, ms: u64, scale_ms: u64) -> String {
 }
 
 /// The panels under the round, each a line until opened. Scanning comes
-/// first, open.
+/// first, open; Reorg opens by itself while one is open (`data-alert`).
 fn panels(view: &Presented, scanning: Option<&ScanningView>) -> Markup {
     let side = &view.side;
+    let panel = |id: &str, summary: Markup, body: Markup| Disclosure::new(summary, body).look(DisclosureLook::Compact).attr("id", id);
     html! {
         section class="engine-panels" id="engine-panels" aria-label="More about this network" {
-            details class="mini t-blocks" id="d-scanning" open {
-                summary {
-                    span class="tierchip t-blocks" { "Scanning" }
-                    span class="sum" id="scan-sum" { span { (scanning.map_or("not reported", |s| s.preview.as_str())) } }
-                }
-                div class="body" id="scan-body" { (scanning_body(scanning)) }
-            }
-            details class=(if side.reorg.alert { "mini t-chain alert" } else { "mini t-chain" }) id="d-reorg" open[side.reorg.alert] {
-                summary { span class="tierchip t-chain" { "Reorg" } span class="sum" { span { (side.reorg.summary) } } }
-                (panel_body(&side.reorg, "Opens by itself while the node's chain differs from the recorded one. Blocks wait, and no order is settled as paid, until the rewind."))
-            }
-            details class="mini t-mempool" id="d-mempool" {
-                summary {
-                    span class="tierchip t-mempool" { "Mempool" }
-                    span class="sum" {
-                        span class="beat" id="beat" title="the fast path's last pass" {}
-                        span class="dots" id="pool-dots" {
-                            @for (txid, matched) in &side.pool_txs {
-                                span class=(if *matched { "dot match" } else { "dot" }) title=(format!("Transaction {txid}")) {}
-                            }
-                        }
-                        span { (side.mempool.summary) }
-                    }
-                }
-                (panel_body(&side.mempool, "The node's pool is what the next block is mined from; the page asks the node about it every 5s while it is open. The engine itself looks at the pool only while an order could be paid from it: the fast path every 250ms for transactions it hasn't seen, the round's rotation rescanning the rest as a safety net."))
-            }
-            details class="mini t-settlement" id="d-orders" {
-                summary {
-                    span class="tierchip t-settlement" { "Order status" }
-                    span class="sum" id="orders-sum" {
-                        span { (side.orders.summary) }
-                        @if let Some((_, to)) = side.transitions.first() {
-                            span class="engine-hint" { "last" } span class=(format!("engine-state state-{to}")) { (to) }
+            (panel("d-scanning", html! {
+                span class="tierchip t-blocks" { "Scanning" }
+                span class="sum" id="scan-sum" { span { (scanning.map_or("not reported", |s| s.preview.as_str())) } }
+            }, html! { div id="scan-body" { (scanning_body(scanning)) } }).open(true))
+            (panel("d-reorg", html! {
+                span class="tierchip t-chain" { "Reorg" } span class="sum" { span { (side.reorg.summary) } }
+            }, panel_body(&side.reorg, "Opens by itself while the node's chain differs from the recorded one. Blocks wait, and no order is settled as paid, until the rewind."))
+            .open(side.reorg.alert)
+            .maybe_attr("data-alert", side.reorg.alert.then_some("")))
+            (panel("d-mempool", html! {
+                span class="tierchip t-mempool" { "Mempool" }
+                span class="sum" {
+                    span class="beat" id="beat" title="the fast path's last pass" {}
+                    span class="dots" id="pool-dots" {
+                        @for (txid, matched) in &side.pool_txs {
+                            span class=(if *matched { "dot match" } else { "dot" }) title=(format!("Transaction {txid}")) {}
                         }
                     }
+                    span { (side.mempool.summary) }
                 }
-                div class="body" {
-                    p class="explain" { "The settlement tier: it turns what the chain and the pool say into each order's status, and writes the order event Monokulo sends the shop's webhooks from. An order is recomputed when one of its payments changed, when it expires, and on each new block while it is confirming." }
-                    (rows(&side.orders))
+            }, panel_body(&side.mempool, "The node's pool is what the next block is mined from; the page asks the node about it every 5s while it is open. The engine itself looks at the pool only while an order could be paid from it: the fast path every 250ms for transactions it hasn't seen, the round's rotation rescanning the rest as a safety net.")))
+            (panel("d-orders", html! {
+                span class="tierchip t-settlement" { "Order status" }
+                span class="sum" id="orders-sum" {
+                    span { (side.orders.summary) }
+                    @if let Some((_, to)) = side.transitions.first() {
+                        span class="engine-hint" { "last" } span class=(format!("engine-state state-{to}")) { (to) }
+                    }
+                }
+            }, html! {
+                p class="explain" { "The settlement tier: it turns what the chain and the pool say into each order's status, and writes the order event Monokulo sends the shop's webhooks from. An order is recomputed when one of its payments changed, when it expires, and on each new block while it is confirming." }
+                (rows(&side.orders))
+                div id="orders-transitions" {
                     @for (from, to) in &side.transitions {
                         div { span class=(format!("engine-state state-{from}")) { (from) } " to " span class=(format!("engine-state state-{to}")) { (to) } }
                     }
                 }
-            }
-            details class="mini t-upkeep" id="d-upkeep" {
-                summary { span class="tierchip t-upkeep" { "Upkeep" } span class="sum" { span class="upd" id="upd" { i {} i {} i {} i {} } span { (side.upkeep.summary) } } }
-                (panel_body(&side.upkeep, "Pruning old block hashes, the database checkpoint, rechecking voided payments and orders' scanned ranges: a little every round."))
-            }
-            details class="mini" id="d-database" {
-                summary {
-                    span class="tierchip t-other" { "Database" }
-                    span class="sum" id="db-sum" {
-                        span class="minibars" title="Scanner and Admin queues" {
-                            @for queued in side.queues {
-                                i style=(format!("height:{}px", (2 + queued.min(2) * 6))) {}
-                            }
+            }))
+            (panel("d-upkeep", html! {
+                span class="tierchip t-upkeep" { "Upkeep" } span class="sum" { span class="upd" id="upd" { i {} i {} i {} i {} } span { (side.upkeep.summary) } }
+            }, panel_body(&side.upkeep, "Pruning old block hashes, the database checkpoint, rechecking voided payments and orders' scanned ranges: a little every round.")))
+            (panel("d-database", html! {
+                span class="tierchip t-other" { "Database" }
+                span class="sum" id="db-sum" {
+                    span class="minibars" title="Scanner and Admin queues" {
+                        @for queued in side.queues {
+                            i style=(format!("height:{}px", (2 + queued.min(2) * 6))) {}
                         }
-                        span { (side.database.summary) }
                     }
+                    span { (side.database.summary) }
                 }
-                (panel_body(&side.database, "One thread runs every database job; each queue gets a turn in rotation, so no kind of work waits behind another for more than one job."))
-            }
-            details class="mini" id="d-restart" {
-                summary { span class="tierchip t-other" { "Restart safety" } span class="sum" { span class="saved-glyph" aria-hidden="true" {} span { (side.restart.summary) } } }
-                (panel_body(&side.restart, "A dark square marks each save on the thing saved. A restart loses only what is in memory, at the cost of some repeated work."))
-            }
+            }, panel_body(&side.database, "One thread runs every database job; each queue gets a turn in rotation, so no kind of work waits behind another for more than one job.")))
+            (panel("d-restart", html! {
+                span class="tierchip t-other" { "Restart safety" } span class="sum" { span class="saved-glyph" aria-hidden="true" {} span { (side.restart.summary) } }
+            }, panel_body(&side.restart, "A dark square marks each save on the thing saved. A restart loses only what is in memory, at the cost of some repeated work.")))
         }
     }
 }
@@ -1165,10 +1146,8 @@ fn scanning_body(scanning: Option<&ScanningView>) -> Markup {
 
 fn panel_body(panel: &Panel, explain: &str) -> Markup {
     html! {
-        div class="body" {
-            @if !explain.is_empty() { p class="explain" { (explain) } }
-            (rows(panel))
-        }
+        p class="explain" { (explain) }
+        (rows(panel))
     }
 }
 

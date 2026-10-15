@@ -92,10 +92,10 @@ test('POS uses the approved symbols in the compact stack and list badges', async
   await expect(page.locator('.state-partial .pos-icon use')).toHaveAttribute('href', '#pos-coin-partial');
   await expect(page.locator('.state-confirming .pos-disc')).toHaveAttribute('style', /--progress: 30%/);
   await page.getByRole('button', { name: 'View all →' }).click();
-  await expect(page.locator('.pos-order-card .pos-badge.state-partial use')).toHaveAttribute('href', '#pos-coin-partial');
-  await page.getByRole('tab', { name: /Finished/ }).click();
+  await expect(page.locator('.mk-card .tag.state-partial use')).toHaveAttribute('href', '#pos-coin-partial');
+  await page.getByRole('button', { name: /Finished/ }).click();
   for (const name of ['paid', 'overpaid', 'expired', 'cancelled']) {
-    await expect(page.locator(`.pos-order-card .pos-badge.state-${name}`)).toHaveCount(1);
+    await expect(page.locator(`.mk-card .tag.state-${name}`)).toHaveCount(1);
   }
 });
 

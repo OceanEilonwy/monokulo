@@ -196,17 +196,11 @@ pub fn invites_section(data: &AdminInvitesViewModel) -> Markup {
                         .chain(&data.rows)
                         .map(|row| invite_row(row, data.page)),
                 ))
-                nav class="pagination" {
-                    @if data.has_previous {
-                        @let href = format!("/dashboard/admin/invites?page={}", data.previous_page);
-                        a href=(href) fx-action=(href) fx-target=(target) fx-push-url { "Previous" }
-                    }
-                    span { "Page " (data.page) " of " (data.total_pages) }
-                    @if data.has_next {
-                        @let href = format!("/dashboard/admin/invites?page={}", data.next_page);
-                        a href=(href) fx-action=(href) fx-target=(target) fx-push-url { "Next" }
-                    }
-                }
+                (ui::Pagination::new("Invite request pages")
+                    .maybe_previous(data.has_previous.then(|| format!("/dashboard/admin/invites?page={}", data.previous_page)))
+                    .maybe_next(data.has_next.then(|| format!("/dashboard/admin/invites?page={}", data.next_page)))
+                    .status(format!("Page {} of {}", data.page, data.total_pages))
+                    .fixi_target(target))
                 form method="post" action="/dashboard/admin/invites/delete-all"
                     fx-action="/dashboard/admin/invites/delete-all" fx-method="POST" fx-target=(target) {
                     (ui::FormActions::new(ui::Button::new("Delete all").kind(ui::ButtonType::Submit)))
@@ -431,14 +425,18 @@ fn file_icon_paths() -> Markup {
 /// The chip beside a setting's name saying where its value comes from; the
 /// whole sentence is its tooltip and what a screen reader reads.
 fn source_chip(source: SettingSourceView) -> Markup {
-    html! {
-        span class={ "source-chip" @if source == SettingSourceView::Default { " default" } }
-            title=(source.sentence()) {
-            (source_icon(source))
-            span aria-hidden="true" { (source.label()) }
-            span class="visually-hidden" { (source.sentence()) }
-        }
-    }
+    ui::Tag::new(html! {
+        span aria-hidden="true" { (source.label()) }
+        span class="visually-hidden" { (source.sentence()) }
+    })
+    .icon(source_icon(source))
+    .tone(if source == SettingSourceView::Default {
+        ui::TagTone::Dashed
+    } else {
+        ui::TagTone::Muted
+    })
+    .attr("title", source.sentence())
+    .render()
 }
 
 /// One process's options file, as the bar above the tabs shows it.
@@ -1296,35 +1294,38 @@ fn options_file_bars(data: &AdminSettingsViewModel) -> Markup {
                         SettingOwner::Monokulo => "monokulo",
                         SettingOwner::Engine => "the engine",
                     };
-                    form class="options-file" method="post" action="/dashboard/admin/settings/reload" {
-                        input type="hidden" name="tab" value=(data.tab.id());
-                        input type="hidden" name="owner" value=(match file.owner {
-                            SettingOwner::Monokulo => "monokulo",
-                            SettingOwner::Engine => "engine",
-                        });
-                        div class="options-file-where" {
-                            span class="options-file-path" { (icon(file_icon_paths())) code { (file.path) } }
-                            span class="options-file-state" {
-                                @if !file.writable {
-                                    "The options file of " (process) ". It can't be written by " (process)
-                                    ", so its settings are locked here: edit the file, then reload it."
-                                } @else if !file.exists {
-                                    "The options file of " (process) ". Not created yet: saving a setting here creates it."
-                                } @else {
-                                    "The options file of " (process) ". Saving here writes it; after editing it by hand, reload it."
-                                }
+                    (ui::Panel::new(html! {
+                        form class="options-file" method="post" action="/dashboard/admin/settings/reload" {
+                            input type="hidden" name="tab" value=(data.tab.id());
+                            input type="hidden" name="owner" value=(match file.owner {
+                                SettingOwner::Monokulo => "monokulo",
+                                SettingOwner::Engine => "engine",
+                            });
+                            div class="options-file-where" {
+                                span class="options-file-path" { (icon(file_icon_paths())) code { (file.path) } }
+                                (ui::Hint::new(html! {
+                                    @if !file.writable {
+                                        "The options file of " (process) ". It can't be written by " (process)
+                                        ", so its settings are locked here: edit the file, then reload it."
+                                    } @else if !file.exists {
+                                        "The options file of " (process) ". Not created yet: saving a setting here creates it."
+                                    } @else {
+                                        "The options file of " (process) ". Saving here writes it; after editing it by hand, reload it."
+                                    }
+                                }))
                             }
+                            (ui::Button::new(ui::Slot::many([
+                                icon(html! {
+                                    path d="M20 11a8 8 0 1 0-2.3 5.7" {}
+                                    path d="M20 4v7h-7" {}
+                                })
+                                .into(),
+                                "Reload options file".into(),
+                            ]))
+                            .kind(ui::ButtonType::Submit))
                         }
-                        (ui::Button::new(ui::Slot::many([
-                            icon(html! {
-                                path d="M20 11a8 8 0 1 0-2.3 5.7" {}
-                                path d="M20 4v7h-7" {}
-                            })
-                            .into(),
-                            "Reload options file".into(),
-                        ]))
-                        .kind(ui::ButtonType::Submit))
-                    }
+                    })
+                    .look(ui::PanelLook::Tile))
                 }
             }
         }
@@ -1497,8 +1498,8 @@ fn node_status(status: &NodeStatusView) -> Markup {
     }
 }
 
-/// One node row, closed to a line until it's opened: a handle to drag it
-/// by (with JavaScript), its place (Primary, Fallback N), its address and
+/// One node row, an item of its network's sortable list, closed to a line
+/// until it's opened: a handle to drag it by (with JavaScript), its place (Primary, Fallback N), its address and
 /// its status. Open, its address, TLS and self-signed boxes, its status
 /// and its buttons. `position` is its place in the list (`None` for the
 /// blank "Add a node" row, which has no status or buttons); `index`
@@ -1511,7 +1512,7 @@ fn node_row(
     index: usize,
     row: &NodeRowView,
     position: Option<(usize, usize)>,
-) -> Markup {
+) -> ui::SortableItem {
     let n = &network.network;
     let name = |field: &str| format!("node_{n}_{index}_{field}");
     let id = |field: &str| format!("node-{n}-{index}-{field}");
@@ -1535,97 +1536,105 @@ fn node_row(
     let saved_box = |f: fn(&crate::admin_nodes::NodeRow) -> bool| {
         saved.map(|s| if f(s) { "on" } else { "off" })
     };
-    html! {
-        details class="node-row" data-node-row=(index) data-node-add[position.is_none()]
-            data-node-saved=[row.saved_index] open[row.row.error.is_some()] {
-            summary class="node-row-summary" {
-                @if position.is_some() {
-                    span class="node-handle js-only" role="button" tabindex="0" title="Drag to reorder"
-                        aria-label=(format!("Reorder {place}: press the up or down arrow")) data-node-handle { "\u{283F}" }
-                } @else {
-                    span class="node-add-mark" aria-hidden="true" { "+" }
-                }
-                span class="node-row-name" data-node-place { (place) }
-                @if position.is_some() {
-                    code class="node-row-address" { (row.row.address) }
-                }
-                span class="node-row-mark" data-node-mark {}
-                @if let Some((words, problem)) = &summary_status {
-                    span class=(if *problem { "node-row-status is-problem" } else { "node-row-status" }) { (words) }
-                }
-            }
-            div class="node-row-body" {
-                div class="setting-field" {
-                    div class="setting-label-row" { label class="setting-label" for=(id("address")) { "Address" } }
-                    (ui::FieldNote::new(html! { "The node's host and port, like " code { (example) } ". "
-                        code { "http://" } " or " code { "https://" } " in front is fine (" code { "https://" } " also ticks Use TLS); "
-                        "an IPv6 address goes in brackets, like " code { "[::1]:18081" } "." }).id(id("address-help")))
-                    (ui::Input::new(name("address"))
-                        .id(id("address"))
-                        .value(row.row.address.as_str())
-                        .described_by(described)
-                        .maybe_attr("data-saved", saved_text(|s| &s.address))
-                        .invalid(row.row.error.is_some())
-                        .autocomplete("off")
-                        .attr("spellcheck", "false")
-                        .attr("inputmode", "url"))
-                    @if let (Some(error), Some(error_id)) = (&row.row.error, &error_id) {
-                        (ui::FieldNote::new(error).tone(ui::NoteTone::Problem).id(error_id))
-                    }
-                }
-                div class="setting-field node-tls" {
-                    div class="setting-label-row" { label class="setting-label" for=(id("ssl")) { "Use TLS" } }
-                    (ui::FieldNote::new("Connect with TLS (https). Off by default; most nodes on port 18081 or 18089 don't use it.").id(id("ssl-help")))
-                    (ui::Checkbox::new()
-                        .name(name("ssl"))
-                        .id(id("ssl"))
-                        .checked(row.row.ssl)
-                        .described_by(id("ssl-help"))
-                        .flag("data-node-tls")
-                        .maybe_attr("data-saved", saved_box(|s| s.ssl)))
-                }
-                div class="setting-field node-self-signed" data-node-self-signed {
-                    div class="setting-label-row" { label class="setting-label" for=(id("self_signed")) { "Accept a self-signed certificate" } }
-                    (ui::FieldNote::new("Many community nodes use a self-signed TLS certificate; tick this to accept one. Only used with TLS.").id(id("self_signed-help")))
-                    (ui::Checkbox::new()
-                        .name(name("self_signed"))
-                        .id(id("self_signed"))
-                        .checked(row.row.self_signed)
-                        .described_by(id("self_signed-help"))
-                        .maybe_attr("data-saved", saved_box(|s| s.self_signed)))
-                }
-                div class="setting-field node-zmq" {
-                    div class="setting-label-row" { label class="setting-label" for=(id("zmq_pub")) { "Announcements (ZMQ)" } }
-                    (ui::FieldNote::new(html! { "Optional, for your own node: the address it was started with as " code { "--zmq-pub" } ", like "
-                        code { "tcp://127.0.0.1:18083" } ". Payments are then seen the moment the node sees them, instead of at the next check. "
-                        "Needs an engine built with ZMQ support; leave empty otherwise." }).id(id("zmq_pub-help")))
-                    (ui::Input::new(name("zmq_pub"))
-                        .id(id("zmq_pub"))
-                        .value(row.row.zmq_pub.as_str())
-                        .described_by(id("zmq_pub-help"))
-                        .maybe_attr("data-saved", saved_text(|s| &s.zmq_pub))
-                        .autocomplete("off")
-                        .attr("spellcheck", "false")
-                        .attr("inputmode", "url"))
-                }
-                @if let Some(status) = &row.status { (node_status(status)) }
-                @if let Some((at, count)) = position {
-                    @let action = |label: &str, value: String| {
-                        ui::Button::new(label).kind(ui::ButtonType::Submit).attr("name", "node_action").attr("value", value)
-                    };
-                    (ui::FormActions::new(html! {
-                        @if at > 0 {
-                            span class="no-js-only" { (action("Move up", format!("up:{n}:{index}"))) }
-                        }
-                        @if at + 1 < count {
-                            span class="no-js-only" { (action("Move down", format!("down:{n}:{index}"))) }
-                        }
-                        (action("Remove", format!("remove:{n}:{index}")).flag("data-node-remove"))
-                    }))
-                }
-            }
+    let summary = html! {
+        @if position.is_some() {
+            (ui::SortHandle::new(format!("Reorder {place}: press the up or down arrow")).flag("data-node-handle"))
+        } @else {
+            span class="node-add-mark" aria-hidden="true" { "+" }
         }
-    }
+        span class="node-row-name" data-node-place { (place) }
+        @if position.is_some() {
+            code class="node-row-address" { (row.row.address) }
+        }
+        span class="node-row-mark" data-node-mark {}
+        @if let Some((words, problem)) = &summary_status {
+            span class=(if *problem { "node-row-status is-problem" } else { "node-row-status" }) { (words) }
+        }
+    };
+    let address_help = id("address-help");
+    let ssl_help = id("ssl-help");
+    let self_signed_help = id("self_signed-help");
+    let zmq_help = id("zmq_pub-help");
+    let body = html! {
+        (ui::Setting::new("Address", id("address"), html! {
+            (ui::Input::new(name("address"))
+                .id(id("address"))
+                .value(row.row.address.as_str())
+                .described_by(described)
+                .maybe_attr("data-saved", saved_text(|s| &s.address))
+                .invalid(row.row.error.is_some())
+                .autocomplete("off")
+                .attr("spellcheck", "false")
+                .attr("inputmode", "url"))
+            @if let (Some(error), Some(error_id)) = (&row.row.error, &error_id) {
+                (ui::FieldNote::new(error).tone(ui::NoteTone::Problem).id(error_id))
+            }
+        })
+        .help(html! { "The node's host and port, like " code { (example) } ". "
+            code { "http://" } " or " code { "https://" } " in front is fine (" code { "https://" } " also ticks Use TLS); "
+            "an IPv6 address goes in brackets, like " code { "[::1]:18081" } "." })
+        .help_id(address_help)
+        .row(true))
+        (ui::Setting::new("Use TLS", id("ssl"), ui::Checkbox::new()
+            .name(name("ssl"))
+            .id(id("ssl"))
+            .checked(row.row.ssl)
+            .described_by(ssl_help.as_str())
+            .flag("data-node-tls")
+            .maybe_attr("data-saved", saved_box(|s| s.ssl)))
+        .help("Connect with TLS (https). Off by default; most nodes on port 18081 or 18089 don't use it.")
+        .help_id(ssl_help)
+        .row(true))
+        // Shown only while Use TLS is ticked, with JavaScript.
+        div data-node-self-signed {
+            (ui::Setting::new("Accept a self-signed certificate", id("self_signed"), ui::Checkbox::new()
+                .name(name("self_signed"))
+                .id(id("self_signed"))
+                .checked(row.row.self_signed)
+                .described_by(self_signed_help.as_str())
+                .maybe_attr("data-saved", saved_box(|s| s.self_signed)))
+            .help("Many community nodes use a self-signed TLS certificate; tick this to accept one. Only used with TLS.")
+            .help_id(self_signed_help)
+            .row(true))
+        }
+        (ui::Setting::new("Announcements (ZMQ)", id("zmq_pub"), ui::Input::new(name("zmq_pub"))
+            .id(id("zmq_pub"))
+            .value(row.row.zmq_pub.as_str())
+            .described_by(zmq_help.as_str())
+            .maybe_attr("data-saved", saved_text(|s| &s.zmq_pub))
+            .autocomplete("off")
+            .attr("spellcheck", "false")
+            .attr("inputmode", "url"))
+        .help(html! { "Optional, for your own node: the address it was started with as " code { "--zmq-pub" } ", like "
+            code { "tcp://127.0.0.1:18083" } ". Payments are then seen the moment the node sees them, instead of at the next check. "
+            "Needs an engine built with ZMQ support; leave empty otherwise." })
+        .help_id(zmq_help)
+        .row(true))
+        @if let Some(status) = &row.status { (node_status(status)) }
+        @if let Some((at, count)) = position {
+            @let action = |label: &str, value: String| {
+                ui::Button::new(label).kind(ui::ButtonType::Submit).attr("name", "node_action").attr("value", value)
+            };
+            (ui::FormActions::new(html! {
+                @if at > 0 {
+                    (action("Move up", format!("up:{n}:{index}")).attr("data-only", "no-script"))
+                }
+                @if at + 1 < count {
+                    (action("Move down", format!("down:{n}:{index}")).attr("data-only", "no-script"))
+                }
+                (action("Remove", format!("remove:{n}:{index}")).flag("data-node-remove"))
+            }))
+        }
+    };
+    ui::SortableItem::new(
+        ui::Disclosure::new(summary, body)
+            .look(ui::DisclosureLook::Row)
+            .open(row.row.error.is_some()),
+    )
+    .fixed(position.is_none())
+    .attr("data-node-row", index.to_string())
+    .maybe_attr("data-node-add", position.is_none().then_some(""))
+    .maybe_attr("data-node-saved", row.saved_index.map(|at| at.to_string()))
 }
 
 /// `stagenet` as `Stagenet`, for a heading.
@@ -1764,6 +1773,10 @@ fn network_card(
     } else {
         format!("Used by {} stores", network.tenant_count)
     };
+    let blank = NodeRowView {
+        row: crate::admin_nodes::NodeRow { self_signed: true, ..Default::default() },
+        ..Default::default()
+    };
     let rows = html! {
         @if let Some(error) = &network.error {
             (ui::Alert::new(error.as_str(), ui::Tone::Error))
@@ -1772,15 +1785,22 @@ fn network_card(
         }
         (ui::Hint::new(html! {
             "Fallbacks are tried in order when the one before fails. Open a node to change it"
-            span class="js-only" { ", or drag it by its handle to reorder it" } "."
+            span data-only="script" { ", or drag it by its handle to reorder it" } "."
         }))
-        div class="node-rows" data-node-rows=(n) {
-            @for (at, row) in network.rows.iter().enumerate() {
-                (node_row(network, at, row, Some((at, count))))
-            }
-            (node_row(network, count, &NodeRowView { row: crate::admin_nodes::NodeRow { self_signed: true, ..Default::default() }, ..Default::default() }, None))
-        }
-        div class="js-only node-add-another" { (ui::Button::new("Add another").attr("data-node-add-another", n.as_str())) }
+        (ui::SortableList::new(
+            format!("{} nodes", capitalized(n)),
+            ui::Slot::many(
+                network
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .map(|(at, row)| node_row(network, at, row, Some((at, count))))
+                    .chain([node_row(network, count, &blank, None)])
+                    .map(ui::Slot::from),
+            ),
+        )
+        .attr("data-node-rows", n.as_str()))
+        div class="node-add-another" data-only="script" { (ui::Button::new("Add another").attr("data-node-add-another", n.as_str())) }
         // Whether this network's blocks' proof of work is checked
         // (`proof_of_work.<network>`).
         @for field in &fields { (scalar_field(field)) }
@@ -2725,7 +2745,7 @@ mod tests {
         assert!(
             html.contains(concat!(
                 r#"<div class="setting-label-row"><label class="setting-label" for="setting-engine.url">engine url</label>"#,
-                r#"<span class="source-chip" title="From the options file, which saving here writes.">"#,
+                r#"<span class="tag tag-muted" title="From the options file, which saving here writes."><span class="tag-icon" aria-hidden="true"><svg class="src-icon""#,
             )),
             "the name, with where its value comes from beside it: {html}"
         );
@@ -2835,8 +2855,10 @@ mod tests {
                 "remove:stagenet:2"
             ]
         );
-        // Each field: its name, then what it's for, then the control.
-        assert!(block.contains(r#"<div class="setting-label-row"><label class="setting-label" for="node-stagenet-0-address">Address</label></div><span class="field-help" id="node-stagenet-0-address-help">The node's host and port, like <code>node.example.com:18089</code>."#), "{block}");
+        // Each field: its name and what it's for on the left, the control
+        // on the right.
+        assert!(block.contains(r#"<div class="setting-field is-row" data-mk="1" data-island="Setting" data-props="{&quot;row&quot;:true}"><div class="setting-about"><div class="setting-label-row"><label class="setting-label" for="node-stagenet-0-address">Address</label><span class="changed-mark">changed</span></div><p class="field-help" id="node-stagenet-0-address-help">The node's host and port, like <code>node.example.com:18089</code>."#), "{block}");
+        assert!(block.contains(r#"<div class="setting-control"><input class="mk-input" type="text" name="node_stagenet_0_address""#), "{block}");
         // Enter in an address box saves, rather than pressing a row's button.
         let form = &html[html.find("<form ").unwrap()..];
         assert!(form.find(r#"<span class="visually-hidden"><button class="mk-btn" type="submit" tabindex="-1" aria-hidden="true">Save</button></span>"#).unwrap() < form.find(r#"name="node_action""#).unwrap());
@@ -3443,19 +3465,19 @@ mod tests {
         let block = card(&html, "network-stagenet");
         assert!(block.contains(r#"data-saved-count="2""#), "{block}");
         assert!(
-            block.contains(r#"<details class="node-row" data-node-row="1" data-node-saved="1"><summary class="node-row-summary"><span class="node-handle js-only" role="button" tabindex="0" title="Drag to reorder" aria-label="Reorder Fallback 1: press the up or down arrow" data-node-handle>⠿</span><span class="node-row-name" data-node-place>Fallback 1</span><code class="node-row-address">b.example:2</code><span class="node-row-mark" data-node-mark></span><span class="node-row-status">Reachable, height 5. In use</span></summary>"#),
+            block.contains(r#"<li class="mk-sortable-item" data-node-row="1" data-node-saved="1"><details class="disclosure-row"><summary><span class="mk-sort-handle" role="button" tabindex="0" title="Drag to reorder" aria-label="Reorder Fallback 1: press the up or down arrow" data-sortable-handle="" data-only="script" data-node-handle="">⠿</span><span class="node-row-name" data-node-place>Fallback 1</span><code class="node-row-address">b.example:2</code><span class="node-row-mark" data-node-mark></span><span class="node-row-status">Reachable, height 5. In use</span></summary>"#),
             "{block}"
         );
-        assert!(block.contains(r#"<span class="no-js-only"><button class="mk-btn" type="submit" name="node_action" value="up:stagenet:1">Move up</button></span>"#), "{block}");
+        assert!(block.contains(r#"<button class="mk-btn" type="submit" name="node_action" value="up:stagenet:1" data-only="no-script">Move up</button>"#), "{block}");
         assert!(block.contains(r#"<button class="mk-btn" type="submit" name="node_action" value="remove:stagenet:1" data-node-remove="">Remove</button>"#), "{block}");
         // The blank row to add one: no handle, no buttons.
-        assert!(block.contains(r#"<details class="node-row" data-node-row="2" data-node-add><summary class="node-row-summary"><span class="node-add-mark" aria-hidden="true">+</span><span class="node-row-name" data-node-place>Add a node</span>"#), "{block}");
+        assert!(block.contains(r#"<li class="mk-sortable-item" data-sortable-fixed="" data-node-row="2" data-node-add=""><details class="disclosure-row"><summary><span class="node-add-mark" aria-hidden="true">+</span><span class="node-row-name" data-node-place>Add a node</span>"#), "{block}");
         // A row with something to fix opens by itself.
         data.engine_networks[1].rows[0].row.error = Some("Add the port.".into());
         let html = page(&data);
         assert!(
             html.contains(
-                r#"<details class="node-row" data-node-row="0" data-node-saved="0" open>"#
+                r#"<li class="mk-sortable-item" data-node-row="0" data-node-saved="0"><details class="disclosure-row" open>"#
             ),
             "{html}"
         );

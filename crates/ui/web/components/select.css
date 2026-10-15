@@ -80,8 +80,9 @@
 .tag-slow { background: var(--tint-warning); }
 .tag-muted, .tag-dashed { font-weight: 500; text-transform: none; color: var(--muted); border-color: var(--line); background: var(--paper); }
 .tag-dashed { border-style: dashed; background: transparent; }
-.tag:has(> svg) { display: inline-flex; align-items: center; gap: var(--pill-gap); }
-.tag > svg { width: 1.1em; height: 1.1em; flex: none; }
+.tag:has(> .tag-icon) { display: inline-flex; align-items: center; gap: var(--pill-gap); }
+.tag-icon { display: inline-flex; flex: none; }
+.tag-icon > * { width: 1.1em; height: 1.1em; }
 /* A Monero network (`views::network_badge`): the word always, an icon,
    and an edge that differs as well as the tint, so colour is never the
    only sign. Solid for mainnet (real money), dashed for a test network. */

@@ -393,7 +393,7 @@ test('real checkout keeps retrying a refused live stream with backoff and then f
   expect((await stream()).refusedAt, 'no refusal after the stream opened').toHaveLength(2);
 });
 
-test('real checkout leaves the payment address selected to copy by hand without the Clipboard API, as over plain-HTTP onion', async ({ page, request }) => {
+test('real checkout copies the payment address without the Clipboard API, as over plain-HTTP onion, or leaves it selected to copy by hand', async ({ page, request }) => {
   const url = await checkoutUrl(request);
   // A plain-HTTP origin (a Tor .onion service) is not a secure context, so
   // navigator.clipboard is absent.
@@ -402,6 +402,12 @@ test('real checkout leaves the payment address selected to copy by hand without 
   });
   await page.goto(url);
   const address = await page.locator('[data-address] [data-copy-value]').textContent();
+  // The selection, copied the old way.
+  await page.getByRole('button', { name: 'Copy payment address' }).click();
+  await expect(page.locator('[data-address] [role=status]')).toHaveText('Copied');
+  expect(await page.evaluate(() => getSelection().toString())).toBe(address);
+  // Where the browser refuses that too: left selected, and said so.
+  await page.evaluate(() => { document.execCommand = () => false; });
   await page.getByRole('button', { name: 'Copy payment address' }).click();
   await expect(page.locator('[data-address] [role=status]')).toContainText('copy the full value');
   expect(await page.evaluate(() => getSelection().toString())).toBe(address);

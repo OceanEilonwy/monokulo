@@ -192,7 +192,6 @@ const PAGE_STYLE: &str = r#"
 .log-paging { display: flex; gap: .5em; margin: .8em 0; flex-wrap: wrap; align-items: center; }
 /* Pressed, not a second primary: the page's one orange button is Search. */
 #log-live[aria-pressed="true"] { background: var(--surface-sunken); border-color: var(--accent); }
-html:not(.js) #log-live { display: none; }
 .trace-waterfall { font-size: .85em; }
 .trace-span { display: grid; grid-template-columns: minmax(12em, 30%) 1fr 6em; gap: .5em; align-items: center; padding: .15em 0; border-bottom: 1px solid var(--line); }
 .trace-span .bar-track { position: relative; height: .9em; }
@@ -650,7 +649,8 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
                 .attr("fx-action", vm.tail_url.as_deref().unwrap_or(LIVE_NONE))
                 .attr("fx-target", "#log-rows")
                 .attr("fx-swap", "afterbegin")
-                .attr("fx-sse-reconnect", ""))
+                .attr("fx-sse-reconnect", "")
+                .attr("data-only", "script"))
             }
             div class="logs-body" {
                 form id="log-search" class="logs-search" method="get" action="/dashboard/admin/logs"
