@@ -20,6 +20,7 @@ report's charts). This file tracks what has moved.
 | Tables | `Table`, `Row`, `Cell` | monokulo done |
 | Dialogs | `Dialog`, `DialogTitle`, `DialogActions`, `DialogPage` | done; `confirm-dialogs.js` gone |
 | Copy a value | `CopyValue` | component; app adoption to do |
+| The POS | `Button`, `Field`, `Input`, `ShortValue`, `Dialog` (cancel asks in a dialog, not `window.confirm`) | its own order cards, keypad, status art and stage tracker stay the POS's |
 | In-page tabs, page tabs | `Tabs`, `TabLinks` | pages site (install tabs, docs, testing report) |
 | Site bar, account menu, theme switch, status dot | `SiteNav`, `Menu`, `ThemeToggle`, `StatusDot` | done (pages site and POS too) |
 

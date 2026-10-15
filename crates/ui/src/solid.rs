@@ -279,6 +279,11 @@ fn component(info: &'static ComponentInfo, types: &mut Types) -> String {
     if behaviour.is_some() {
         solid.extend(["createRoot", "onCleanup"]);
     }
+    let owns_refs = body.contains("runWithOwner(owner")
+        || attach.as_ref().is_some_and(|a| a.contains("runWithOwner(owner"));
+    if owns_refs {
+        solid.extend(["getOwner", "runWithOwner"]);
+    }
     if out.uses_render_effect {
         solid.push("createRenderEffect");
     }
@@ -372,14 +377,22 @@ fn component(info: &'static ComponentInfo, types: &mut Types) -> String {
     }
     if behaviour.is_some() {
         s.push_str("  const enhanced = props.enhanced ?? true;\n  const b = setup(props);\n");
+        if owns_refs {
+            s.push_str("  const owner = getOwner();\n");
+        }
     }
     let _ = write!(s, "  return (\n{body}  );\n}}\n");
     if let Some(attach) = attach {
+        let owner = if attach.contains("runWithOwner(owner") {
+            "    const owner = getOwner();\n"
+        } else {
+            ""
+        };
         let _ = write!(
             s,
             "\n/** What the behaviour gives the template (`behaviour` in crates/ui). */\nexport interface {0}Behaviour {{\n{behaviour_fields}}}\n\n\
              /** Attaches the behaviour to the server's markup in its island, adding\n * only what `@if enhanced` renders. Returns what disposes it. */\n\
-             export function attach{0}(root: Element, props: {0}Props): () => void {{\n  return createRoot((dispose) => {{\n    const enhanced = true;\n    // Solid's delegated events (onClick and the like) listen on a\n    // registered root: the island.\n    registerDelegatedRoot(root);\n    onCleanup(() => unregisterDelegatedRoot(root));\n    const b = setup(props);\n{attach}    return dispose;\n  }});\n}}\n",
+             export function attach{0}(root: Element, props: {0}Props): () => void {{\n  return createRoot((dispose) => {{\n    const enhanced = true;\n    // Solid's delegated events (onClick and the like) listen on a\n    // registered root: the island.\n    registerDelegatedRoot(root);\n    onCleanup(() => unregisterDelegatedRoot(root));\n    const b = setup(props);\n{owner}{attach}    return dispose;\n  }});\n}}\n",
             info.name
         );
     }
@@ -738,7 +751,9 @@ impl Out {
             Attr::On(event, handler, arg) => {
                 format!("{}={{{}}}", event_prop(event), self.handler(handler, *arg))
             }
-            Attr::Ref(name) => format!("ref={{b.{name}}}"),
+            // Solid runs a ref outside the component's owner: run it in it,
+            // so what the behaviour does there (onCleanup) is the component's.
+            Attr::Ref(name) => format!("ref={{(el) => runWithOwner(owner, () => b.{name}(el))}}"),
         }
     }
 

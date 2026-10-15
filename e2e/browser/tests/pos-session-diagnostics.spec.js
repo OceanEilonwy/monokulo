@@ -98,8 +98,8 @@ test('a POS session reads as one timeline, from opting in to the last event', as
   // Back to the first order from the stack, and cancel it.
   await page.locator('.pos-stack-card').first().click();
   await expect(page.locator('.pos-order-heading h1')).toHaveText('Table 4');
-  page.once('dialog', (dialog) => dialog.accept());
-  await page.getByRole('button', { name: 'Cancel order' }).click();
+  await page.getByRole('button', { name: 'Cancel order…' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel order' }).click();
   await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Cancelled');
   await page.reload();
   await expect(page.locator('#pos-root')).toHaveAttribute('data-client-logging', 'true');
