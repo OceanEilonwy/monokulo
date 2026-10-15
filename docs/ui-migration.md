@@ -10,7 +10,7 @@ figures, trees and charts). This file tracks what has moved.
 | Pattern | Component | Status |
 |---|---|---|
 | Buttons, button links, icon buttons and links, launchers | `Button`, `LinkButton`, `IconButton`, `IconLink`, `FormActions`, `LaunchTile` | done |
-| Text inputs (with actions inside), text areas, checkboxes, switches, radio cards | `Field`, `Input`, `TextArea`, `Checkbox`, `Switch`, `RadioCards` | done |
+| Text inputs (with actions inside), text areas, checkboxes, switches, radio cards | `Field` (one line or `multiline`), `Input`, `TextArea`, `Checkbox`, `Switch`, `RadioCards` | done |
 | Notes under a field, values set elsewhere | `FieldNote`, `LockedValue` | done |
 | Dropdowns | `Select` | done |
 | Settings pages | `SettingsForm`, `SettingsCard`, `Setting` (name and help left, control right; a wide control and a phone stack), `SaveBar`, `Toast` | done |
@@ -32,10 +32,6 @@ figures, trees and charts). This file tracks what has moved.
 - The POS's background-order stack (small horizontal chips) and its hidden
   file input.
 - The wallets' test-networks fold; `span.tag-active`; `dl.dns-record`.
-
-### Gaps worth a component or variant
-
-A `Field` for a text area; `CellPart::Detail`.
 
 ## Converting a page
 

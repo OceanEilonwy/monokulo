@@ -688,6 +688,9 @@ pub enum CellPart {
     When,
     /// Across the bottom, muted.
     Meta,
+    /// Under the title, at its size and weight: a detail that isn't a
+    /// figure (an address, a reference).
+    Detail,
 }
 
 component! {

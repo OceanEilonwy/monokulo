@@ -8,7 +8,7 @@ import type { JSX } from '@solidjs/web';
  * Muted help beside or under what it explains. A `span` inside a line
  * of text when `inline`; a paragraph otherwise.
  */
-export interface HintProps extends Omit<JSX.HTMLAttributes<HTMLElement>, "children" | "class" | "classList" | "inline" | "ref" | "style"> {
+export interface HintProps extends Omit<JSX.IntrinsicElements["p"], "children" | "class" | "classList" | "inline" | "style"> {
   children: JSX.Element;
   /**
    * @default false
@@ -25,7 +25,7 @@ export function Hint(props: HintProps): JSX.Element {
   return (
     <>
       {(props.inline ?? false) ? (
-        <span class="hint" {...rest}>
+        <span class="hint" {...(rest as object)}>
           {props.children}
         </span>
       ) : (

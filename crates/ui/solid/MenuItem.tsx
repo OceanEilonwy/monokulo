@@ -9,7 +9,7 @@ import type { JSX } from '@solidjs/web';
  * a row holding a control (the theme switch). A `note` sits at its
  * right: a count, "change".
  */
-export interface MenuItemProps extends Omit<JSX.HTMLAttributes<HTMLElement>, "action" | "children" | "class" | "classList" | "href" | "method" | "note" | "post_to" | "ref" | "style" | "title"> {
+export interface MenuItemProps extends Omit<JSX.IntrinsicElements["div"], "action" | "children" | "class" | "classList" | "href" | "method" | "note" | "post_to" | "style" | "title"> {
   children: JSX.Element;
   href?: string;
   /**
@@ -30,7 +30,7 @@ export function MenuItem(props: MenuItemProps): JSX.Element {
   return (
     <>
       {props.href != null ? (
-        <a class="menu-item" href={props.href} title={props.title} {...rest}>
+        <a class="menu-item" href={props.href} title={props.title} {...(rest as object)}>
           <span>
             {props.children}
           </span>
@@ -45,7 +45,7 @@ export function MenuItem(props: MenuItemProps): JSX.Element {
       ) : (
         <>
           {props.post_to != null ? (
-            <form method="post" action={props.post_to} class="menu-form" {...rest}>
+            <form method="post" action={props.post_to} class="menu-form" {...(rest as object)}>
               <button type="submit" class="menu-item" title={props.title}>
                 <span>
                   {props.children}

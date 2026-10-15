@@ -1695,6 +1695,23 @@
   },
   {
     "component": "Field",
+    "html": "<div class=\"mk-field\"><label for=\"book-message\">Message</label><textarea class=\"mk-input\" id=\"book-message\" name=\"message\" rows=\"4\" required aria-describedby=\"book-message-help\"></textarea><p class=\"mk-hint\" id=\"book-message-help\">Who you are, and what you'll use Monokulo for.</p></div>",
+    "props": {
+      "disabled": false,
+      "hint": "Who you are, and what you'll use Monokulo for.",
+      "id": "book-message",
+      "kind": "text",
+      "label": "Message",
+      "multiline": true,
+      "name": "message",
+      "readonly": false,
+      "required": true,
+      "rows": 4
+    },
+    "title": "Several lines"
+  },
+  {
+    "component": "Field",
     "html": "<div class=\"mk-field\"><label for=\"book-store-name\">Store name</label><input class=\"mk-input\" id=\"book-store-name\" name=\"name\" type=\"text\" placeholder=\"Your store\" aria-describedby=\"book-store-name-help\"><p class=\"mk-hint\" id=\"book-store-name-help\">Shown to customers on the payment page.</p></div>",
     "props": {
       "disabled": false,
@@ -1702,10 +1719,12 @@
       "id": "book-store-name",
       "kind": "text",
       "label": "Store name",
+      "multiline": false,
       "name": "name",
       "placeholder": "Your store",
       "readonly": false,
-      "required": false
+      "required": false,
+      "rows": 4
     },
     "title": "With a hint"
   },
@@ -1718,9 +1737,11 @@
       "id": "book-email",
       "kind": "email",
       "label": "Email",
+      "multiline": false,
       "name": "email",
       "readonly": false,
       "required": false,
+      "rows": 4,
       "value": "incomplete"
     },
     "title": "Refused"
@@ -1736,9 +1757,11 @@
       "kind": "password",
       "label": "Password",
       "minlength": "8",
+      "multiline": false,
       "name": "password",
       "readonly": false,
-      "required": true
+      "required": true,
+      "rows": 4
     },
     "title": "Required, with input rules"
   },
@@ -1750,9 +1773,11 @@
       "id": "book-readonly",
       "kind": "text",
       "label": "Store id",
+      "multiline": false,
       "name": "store",
       "readonly": true,
       "required": false,
+      "rows": 4,
       "value": "Store 123"
     },
     "title": "Read only"
@@ -1765,9 +1790,11 @@
       "id": "book-disabled",
       "kind": "url",
       "label": "Instance URL",
+      "multiline": false,
       "name": "url",
       "readonly": false,
       "required": false,
+      "rows": 4,
       "value": "https://pay.example.com"
     },
     "title": "Disabled"
@@ -1780,9 +1807,11 @@
       "id": "book-compact",
       "kind": "text",
       "label": "Refund address",
+      "multiline": false,
       "name": "refund",
       "readonly": false,
       "required": false,
+      "rows": 4,
       "size": "compact"
     },
     "title": "Compact"

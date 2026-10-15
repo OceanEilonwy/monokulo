@@ -138,6 +138,7 @@ tr:nth-child(even) td { background: color-mix(in srgb, var(--ink) 5%, transparen
   table.table-cards .card-when { grid-column: 2; grid-row: 2; justify-self: end; color: var(--muted); font-size: var(--text-sm); }
   table.table-cards .card-meta { grid-column: 1 / -1; color: var(--muted); font-size: var(--text-sm); }
   table.table-cards .card-meta:empty { display: none; }
+  table.table-cards .card-detail { grid-column: 1; grid-row: 2; min-width: 0; overflow-wrap: anywhere; }
 }
 /* A phone: a table of facts (`.kv-table`) puts each label over its value,
    and a `.table-stack` table (settings rows with inputs and buttons) turns

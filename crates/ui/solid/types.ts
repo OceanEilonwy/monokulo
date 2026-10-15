@@ -22,7 +22,7 @@ export type ButtonVariant = "primary" | "danger" | "quiet";
 /**
  * Where a cell goes when its row is a card on a phone.
  */
-export type CellPart = "title" | "status" | "amount" | "when" | "meta";
+export type CellPart = "title" | "status" | "amount" | "when" | "meta" | "detail";
 
 /**
  * Where a check stands.

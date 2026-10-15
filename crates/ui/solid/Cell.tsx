@@ -9,7 +9,7 @@ import type { CellPart } from './types';
 /**
  * A table's cell; a header cell with `header`.
  */
-export interface CellProps extends Omit<JSX.HTMLAttributes<HTMLElement>, "children" | "class" | "classList" | "data-label" | "header" | "label" | "optional" | "part" | "ref" | "style"> {
+export interface CellProps extends Omit<JSX.IntrinsicElements["td"], "children" | "class" | "classList" | "data-label" | "header" | "label" | "optional" | "part" | "style"> {
   children: JSX.Element;
   /**
    * @default false
@@ -35,7 +35,7 @@ export function Cell(props: CellProps): JSX.Element {
   return (
     <>
       {(props.header ?? false) ? (
-        <th class={tokens(props.part != null && `card-${props.part}`, (props.optional ?? false) && `col-optional`)} data-label={props.label} {...rest}>
+        <th class={tokens(props.part != null && `card-${props.part}`, (props.optional ?? false) && `col-optional`)} data-label={props.label} {...(rest as object)}>
           {props.children}
         </th>
       ) : (
