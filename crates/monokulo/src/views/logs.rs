@@ -347,8 +347,8 @@ fn property_row(name: &str, value: Markup, act: Markup) -> ui::Row {
 /// opened, with a way back to the search it came from.
 pub fn row_page(chrome: &PageChrome, row_view: Option<&RowView>, back_url: &str) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
-    let header = ui::PageHeader::new("Log line")
-        .crumbs(super::crumbs(&[("/", "Home"), (back_url, "Logs")]));
+    let header =
+        ui::PageHeader::new("Log line").crumbs(super::crumbs(&[("/", "Home"), (back_url, "Logs")]));
     let body = html! {
         @if let Some(r) = row_view {
             div class="log-rows" { (row(r)) }
