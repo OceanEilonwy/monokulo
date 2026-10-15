@@ -637,6 +637,20 @@ test('real checkout takes its theme from ?theme=, the embed option, and the sign
   await expect(page.locator('#checkout-frame')).toHaveAttribute('src', `/pay/${fixture.public_key}/orders/${orderId}`);
 });
 
+test('real share page grows its frame to the whole checkout, so nothing scrolls inside it', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  for (const { width, height } of [{ width: 1347, height: 902 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize({ width, height });
+    await page.goto(`${url}/share`);
+    const frame = page.frameLocator('#checkout-frame');
+    await expect(frame.locator('#checkout-root')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => {
+      const doc = document.getElementById('checkout-frame').contentDocument;
+      return doc.documentElement.scrollHeight - doc.documentElement.clientHeight;
+    }), `${width}x${height}: the checkout fits its frame`).toBeLessThanOrEqual(0);
+  }
+});
+
 test('real checkout payment problems as the customer sees them (UI stages)', async ({ page, request }) => {
   const problems = [
     ['checkout-underpaid', async id => customerSends(request, id, 0.4, 20), 'partial'],

@@ -692,8 +692,16 @@ const SHARE_SCRIPT: &str = r#"
     try {
       var el = content(frame.contentDocument);
       if (!el) return;
-      var style = frame.contentWindow.getComputedStyle(el);
-      var height = Math.ceil(el.getBoundingClientRect().bottom + frame.contentWindow.scrollY + (parseFloat(style.marginBottom) || 0));
+      var win = frame.contentWindow;
+      var below = parseFloat(win.getComputedStyle(el).marginBottom) || 0;
+      // The body's own padding and border under the checkout are part of
+      // the page too; without them the frame stays that much short and
+      // scrolls inside.
+      if (el !== el.ownerDocument.body) {
+        var body = win.getComputedStyle(el.ownerDocument.body);
+        below += (parseFloat(body.paddingBottom) || 0) + (parseFloat(body.borderBottomWidth) || 0);
+      }
+      var height = Math.ceil(el.getBoundingClientRect().bottom + win.scrollY + below);
       if (height) frame.style.height = height + "px";
     } catch (e) { /* not ready yet, or something unexpected - keep the CSS fallback */ }
   }
