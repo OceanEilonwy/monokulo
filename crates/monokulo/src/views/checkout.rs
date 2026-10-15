@@ -321,7 +321,7 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                         form method="post" id="refund-form" action=(format!("/pay/{}/orders/{}/refund-address{}", data.pk, data.order_id, data.query_suffix))
                             fx-action=(format!("/pay/{}/orders/{}/refund-address{}", data.pk, data.order_id, data.query_suffix))
                             fx-method="POST" fx-trigger="refund:save" fx-swap="none" fx-own-errors {
-                                label for="refund_address" { "Refund address " span class="field-help" style="display:inline" { "(optional)" } }
+                                label for="refund_address" { "Refund address " (ui::Hint::new("(optional)").inline(true)) }
                                 @if let Some(error) = &data.refund_address_error {
                                     (ui::Alert::new(error.as_str(), ui::Tone::Error))
                                 }
@@ -349,10 +349,8 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                                 }
                                 video id="refund-camera" class="refund-camera" autoplay playsinline hidden {}
                                 p id="scan-error" class="scan-error" role="alert" hidden {}
-                                span class="field-help" {
-                                    "If this order needs a refund, this address is recorded for the merchant to use. "
-                                    "Refunds are not sent automatically."
-                                }
+                                (ui::FieldNote::new(html! { "If this order needs a refund, this address is recorded for the merchant to use. "
+                                    "Refunds are not sent automatically." }))
                                 noscript { (ui::FormActions::new(ui::Button::new("Save").kind(ui::ButtonType::Submit))) }
                         }
                     } }

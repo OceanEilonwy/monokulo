@@ -1343,6 +1343,82 @@
     "title": "Compact"
   },
   {
+    "component": "FieldNote",
+    "html": "<span class=\"field-help\">The node's host and port, like node.example.com:18089.</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "The node's host and port, like node.example.com:18089."
+        ]
+      },
+      "live": false,
+      "tone": "help"
+    },
+    "title": "Help"
+  },
+  {
+    "component": "FieldNote",
+    "html": "<span class=\"setting-problem\">Add the port, like node.example.com:18081.</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Add the port, like node.example.com:18081."
+        ]
+      },
+      "live": false,
+      "tone": "problem"
+    },
+    "title": "A problem"
+  },
+  {
+    "component": "FieldNote",
+    "html": "<span class=\"setting-pending\">Saved - restart needed for it to take effect.</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "Saved - restart needed for it to take effect."
+        ]
+      },
+      "live": false,
+      "tone": "pending"
+    },
+    "title": "Pending"
+  },
+  {
+    "component": "FieldNote",
+    "html": "<span class=\"field-check\" role=\"status\">✓ Free to use.</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "✓ Free to use."
+        ]
+      },
+      "live": true,
+      "tone": "fine"
+    },
+    "title": "Fine, said as it changes"
+  },
+  {
+    "component": "LockedValue",
+    "html": "<span class=\"locked-input\"><input class=\"mk-input\" type=\"text\" value=\"https://pay.example.com\" id=\"book-locked\" disabled><svg class=\"lock-icon\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"M5 7V5a3 3 0 0 1 6 0v2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\"></path><rect x=\"3\" y=\"7\" width=\"10\" height=\"7\" rx=\"1.5\" fill=\"currentColor\"></rect></svg></span>",
+    "props": {
+      "id": "book-locked",
+      "secret": false,
+      "value": "https://pay.example.com"
+    },
+    "title": "Set elsewhere"
+  },
+  {
+    "component": "LockedValue",
+    "html": "<span class=\"locked-input\"><input class=\"mk-input\" type=\"password\" value=\"locked\" id=\"book-locked-secret\" disabled><svg class=\"lock-icon\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"M5 7V5a3 3 0 0 1 6 0v2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\"></path><rect x=\"3\" y=\"7\" width=\"10\" height=\"7\" rx=\"1.5\" fill=\"currentColor\"></rect></svg></span>",
+    "props": {
+      "id": "book-locked-secret",
+      "secret": true,
+      "value": ""
+    },
+    "title": "A secret"
+  },
+  {
     "component": "TextArea",
     "html": "<textarea class=\"mk-input\" name=\"note\" rows=\"3\" placeholder=\"For the customer's receipt\" aria-label=\"Note\"></textarea>",
     "props": {

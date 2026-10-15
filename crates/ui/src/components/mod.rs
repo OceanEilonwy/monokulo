@@ -79,6 +79,8 @@ pub fn catalogue() -> Vec<Specimens> {
         specimens(dialog::dialog_page_examples()),
         specimens(forms::field_examples()),
         specimens(forms::input_examples()),
+        specimens(forms::field_note_examples()),
+        specimens(forms::locked_value_examples()),
         specimens(forms::text_area_examples()),
         specimens(forms::checkbox_examples()),
         specimens(forms::switch_examples()),

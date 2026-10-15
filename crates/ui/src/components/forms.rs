@@ -10,6 +10,91 @@ pub enum InputType {
     Url,
     Search,
     Tel,
+    /// A date and a time of day, in the reader's own format.
+    DatetimeLocal,
+}
+
+/// What a note under a field says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]
+pub enum NoteTone {
+    /// What the field is for, an example: muted.
+    Help,
+    /// What's wrong with what was entered, or with what's saved.
+    Problem,
+    /// Saved, but waiting for something (a restart).
+    Pending,
+    /// A check on what was entered passed ("Free to use").
+    Fine,
+}
+
+component! {
+    /// A note under a field: what it's for, or how what's in it stands.
+    /// The control points at it with `aria-describedby` and its `id`.
+    pub struct FieldNote {
+        children: Slot,
+        #[default(NoteTone::Help)]
+        tone: NoteTone,
+        id: Option<String>,
+        /// Said as it changes (a check as you type): `role="status"`.
+        #[default(false)]
+        live: bool,
+        rest: Attrs,
+    }
+    html {
+        span class=join["field-help" if tone == NoteTone::Help, "setting-problem" if tone == NoteTone::Problem,
+                "setting-pending" if tone == NoteTone::Pending, "field-check" if tone == NoteTone::Fine]
+            id=[id] role="status" if live ..rest {
+            (children)
+        }
+    }
+}
+
+pub(super) fn field_note_examples() -> Vec<(&'static str, FieldNote)> {
+    vec![
+        ("Help", FieldNote::new("The node's host and port, like node.example.com:18089.")),
+        ("A problem", FieldNote::new("Add the port, like node.example.com:18081.").tone(NoteTone::Problem)),
+        ("Pending", FieldNote::new("Saved - restart needed for it to take effect.").tone(NoteTone::Pending)),
+        ("Fine, said as it changes", FieldNote::new("✓ Free to use.").tone(NoteTone::Fine).live(true)),
+    ]
+}
+
+component! {
+    /// A value the page shows but can't change (set on the command line,
+    /// by a connected plugin): a disabled box with a padlock, and no
+    /// `name`, so it is never sent with a form. A secret shows as dots,
+    /// never its value.
+    pub struct LockedValue {
+        value: String,
+        /// For a `label for` to name it.
+        id: Option<String>,
+        /// What names it, without a `label for`.
+        labelled_by: Option<String>,
+        described_by: Option<String>,
+        #[default(false)]
+        secret: bool,
+    }
+    html {
+        span class="locked-input" {
+            @if secret {
+                input class="mk-input" type="password" value="locked" id=[id] aria-labelledby=[labelled_by]
+                    aria-describedby=[described_by] disabled;
+            } @else {
+                input class="mk-input" type="text" value=(value) id=[id] aria-labelledby=[labelled_by]
+                    aria-describedby=[described_by] disabled;
+            }
+            svg class="lock-icon" viewBox="0 0 16 16" aria-hidden="true" {
+                path d="M5 7V5a3 3 0 0 1 6 0v2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" {}
+                rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor" {}
+            }
+        }
+    }
+}
+
+pub(super) fn locked_value_examples() -> Vec<(&'static str, LockedValue)> {
+    vec![
+        ("Set elsewhere", LockedValue::new("https://pay.example.com").id("book-locked")),
+        ("A secret", LockedValue::new("").id("book-locked-secret").secret(true)),
+    ]
 }
 
 component! {

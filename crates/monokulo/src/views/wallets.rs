@@ -185,11 +185,11 @@ pub struct ChoiceViewModel {
 pub fn name_check(name: &str, problem: Option<&str>) -> Markup {
     html! {
         @if let Some(problem) = problem {
-            span class="field-check bad" id="wallet-name-check" role="status" { "✕ " (problem) }
+            (ui::FieldNote::new(html! { "✕ " (problem) }).tone(ui::NoteTone::Problem).id("wallet-name-check").live(true))
         } @else if name.trim().is_empty() {
-            span class="field-check" id="wallet-name-check" role="status" { "Leave it blank and a name is picked for you." }
+            (ui::FieldNote::new("Leave it blank and a name is picked for you.").id("wallet-name-check").live(true))
         } @else {
-            span class="field-check ok" id="wallet-name-check" role="status" { "✓ Free to use. Checked now, before anything is made." }
+            (ui::FieldNote::new("✓ Free to use. Checked now, before anything is made.").tone(ui::NoteTone::Fine).id("wallet-name-check").live(true))
         }
     }
 }
@@ -250,7 +250,7 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
                 (flow.hidden())
                 div class="setting-field wallet-name-field" {
                     div class="setting-label-row" { label class="setting-label" for="wallet-name" { "Wallet name" } }
-                    p class="field-help" { "Shown when you pick a wallet for a store. You can rename it any time." }
+                    (ui::FieldNote::new("Shown when you pick a wallet for a store. You can rename it any time."))
                     (ui::Input::new("name").id("wallet-name").value(data.name.as_str())
                         .attr("maxlength", crate::wallets::MAX_NAME_LEN.to_string())
                         .autocomplete("off").described_by("wallet-name-check")
@@ -262,7 +262,7 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
                 (ui::Disclosure::new("More options", html! {
                     div class="setting-field" {
                         div class="setting-label-row" { label class="setting-label" for="wallet-network" { "Network" } }
-                        p class="field-help" { "Leave on mainnet unless this is a test wallet." }
+                        (ui::FieldNote::new("Leave on mainnet unless this is a test wallet."))
                         (network_select(&data.network))
                     }
                 }).look(ui::DisclosureLook::MoreOptions))
@@ -419,7 +419,7 @@ pub fn app_field(selected: &str) -> Markup {
                     .chain([Choice::new("other", "Other").selected(selected == "other")])
                     .collect::<Vec<_>>(),
             ))
-            span class="field-help" { "The wallet's page then says where its keys and recovery phrase live." }
+            (ui::FieldNote::new("The wallet's page then says where its keys and recovery phrase live."))
         }
     }
 }
@@ -542,7 +542,7 @@ pub fn create_page(chrome: &PageChrome, flow: Flow<'_>, data: &CreateViewModel) 
                             (ui::Input::new("skip").autocomplete("off").attr("spellcheck", "false").attr("data-skip-typed", ""))
                         }
                         (ui::FormActions::new(ui::Button::new("Skip backup and add the wallet").disabled(true).attr("data-skip-confirm", "")))
-                        span class="field-help" { "Turns on when the box is ticked and you've typed skip." }
+                        (ui::FieldNote::new("Turns on when the box is ticked and you've typed skip."))
                     }
                 }
                 section data-screen="failed" hidden {

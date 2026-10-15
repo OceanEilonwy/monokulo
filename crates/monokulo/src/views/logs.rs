@@ -682,8 +682,8 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
                         (select("level", "Level", LEVELS, &vm.form.level))
                         (select("service", "Service", SERVICES, &vm.form.service))
                         (select("range", "Time range", RANGES, &vm.form.range))
-                        label { "From " input type="datetime-local" name="from" value=(vm.form.from); }
-                        label { "To " input type="datetime-local" name="to" value=(vm.form.to); }
+                        label { "From " (ui::Input::new("from").kind(ui::InputType::DatetimeLocal).value(vm.form.from.as_str())) }
+                        label { "To " (ui::Input::new("to").kind(ui::InputType::DatetimeLocal).value(vm.form.to.as_str())) }
                         (ui::Checkbox::new()
                             .text("Show the Logs page's own requests")
                             .name("logs_requests")

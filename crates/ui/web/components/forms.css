@@ -20,3 +20,14 @@
 .radio-cards.is-compact .radio-card { padding: var(--space-sm) var(--space-md); gap: var(--space-sm); }
 .mk-btn.icon-only { width: 2.1rem; height: 2.1rem; min-height: 0; padding: 0; }
 .mk-btn.icon-only svg { width: 1.1rem; height: 1.1rem; }
+/* A note under a field (FieldNote): help, a problem, a pending save, a
+   check that passed. */
+:is(.field-help, .setting-problem, .setting-pending, .field-check) { display: block; margin-top: var(--space-xs); font-size: var(--text-sm); font-weight: 400; color: var(--muted); overflow-wrap: anywhere; }
+.setting-problem { color: var(--error); }
+.setting-pending { color: var(--warning); font-weight: 700; }
+.field-check { color: var(--success); font-weight: 700; }
+:is(.field-help, .setting-problem, .field-check) a { color: inherit; }
+/* A value set elsewhere (LockedValue): a disabled box, a padlock inside. */
+.locked-input { position: relative; display: block; }
+.locked-input > .mk-input { padding-right: 2.4em; background: var(--surface-sunken); color: var(--muted); cursor: not-allowed; opacity: 1; }
+.locked-input .lock-icon { position: absolute; right: 0.8em; top: 50%; width: 1em; height: 1em; transform: translateY(-50%); color: var(--muted); pointer-events: none; }

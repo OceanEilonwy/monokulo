@@ -497,10 +497,8 @@ fn wallet_card(store: &StoreSettingsData) -> Markup {
                             .collect::<Vec<_>>(),
                     )
                     .required(true))
-                    span class="field-help" {
-                        "The store takes new payments into the wallet picked here."
-                        @if wallet.current.is_some() { " A store can only change to a wallet on its own network." }
-                    }
+                    (ui::FieldNote::new(html! { "The store takes new payments into the wallet picked here."
+                        @if wallet.current.is_some() { " A store can only change to a wallet on its own network." } }))
                 }
                 @if let (Some(pending), Some(current)) = (&wallet.pending, &wallet.current) {
                     div class="change-confirm" role="status" {
@@ -977,7 +975,7 @@ fn verified_domains_card(store: &StoreSettingsData) -> Markup {
                         .kind(ui::ButtonType::Submit)
                         .disabled(!store.embed_can_restrict))
                     @if !store.embed_can_restrict {
-                        span class="field-help" { "Verify a domain first." }
+                        (ui::FieldNote::new("Verify a domain first."))
                     }
                 }
             }

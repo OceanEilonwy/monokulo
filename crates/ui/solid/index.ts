@@ -23,6 +23,8 @@ export * from './DialogActions';
 export * from './DialogPage';
 export * from './Field';
 export * from './Input';
+export * from './FieldNote';
+export * from './LockedValue';
 export * from './TextArea';
 export * from './Checkbox';
 export * from './Switch';

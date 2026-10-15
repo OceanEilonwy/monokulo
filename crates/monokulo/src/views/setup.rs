@@ -192,7 +192,7 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
                             .maybe_described_by(data.name_error.as_ref().map(|_| "store-name-error".to_string()))
                             .attr("maxlength", crate::stores::MAX_NAME_LEN.to_string()))
                         @if let Some(error) = &data.name_error {
-                            span class="field-check bad" id="store-name-error" { "✕ " (error) }
+                            (ui::FieldNote::new(html! { "✕ " (error) }).tone(ui::NoteTone::Problem).id("store-name-error"))
                         }
                     }
                     div class="setting-field site-field" {
@@ -211,13 +211,9 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
                             .maybe_described_by(data.site_error.as_ref().map(|_| "store-site-error".to_string()))
                             .attr("inputmode", "url"))
                         @match &data.site_error {
-                            Some(SiteError::Invalid(why)) => span class="field-check bad" id="store-site-error" { "✕ " (why) },
-                            Some(SiteError::Yours { id, name, site }) => span class="field-check bad" id="store-site-error" {
-                                "✕ Your store " a href=(format!("/dashboard/stores/{id}")) { (name) } " already uses " (site) ". Open it, or use a different site."
-                            },
-                            Some(SiteError::Someone { site }) => span class="field-check bad" id="store-site-error" {
-                                "✕ " (site) " is already connected to Monokulo here. If it's yours, ask the person who connected it."
-                            },
+                            Some(SiteError::Invalid(why)) => (ui::FieldNote::new(html! { "✕ " (why) }).tone(ui::NoteTone::Problem).id("store-site-error")),
+                            Some(SiteError::Yours { id, name, site }) => (ui::FieldNote::new(html! { "✕ Your store " a href=(format!("/dashboard/stores/{id}")) { (name) } " already uses " (site) ". Open it, or use a different site." }).tone(ui::NoteTone::Problem).id("store-site-error")),
+                            Some(SiteError::Someone { site }) => (ui::FieldNote::new(html! { "✕ " (site) " is already connected to Monokulo here. If it's yours, ask the person who connected it." }).tone(ui::NoteTone::Problem).id("store-site-error")),
                             None => {}
                         }
                     }
@@ -237,8 +233,8 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
 }
 
 /// What a field on the store step is for, between its label and its input.
-fn field_help(text: &str) -> ui::Hint {
-    ui::Hint::new(text).attr("data-field-help", "")
+fn field_help(text: &str) -> ui::FieldNote {
+    ui::FieldNote::new(text)
 }
 
 // -- Done ----------------------------------------------------------------------

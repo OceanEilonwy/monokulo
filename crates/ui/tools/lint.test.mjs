@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { inspect, key, unaccepted } from './lint.mjs';
+import { inspect, key, obsolete, unaccepted } from './lint.mjs';
 import { truncateValue } from '../web/components/truncate.ts';
 
 test('shared controls are required in HTML, JSX and Maud', () => {
@@ -27,4 +27,11 @@ test('middle and range truncation preserve Unicode and reject invalid ranges', (
   assert.equal(truncateValue('abcdefghijklmnop', 'segments', '0:3,7:2,-3:3'), 'abc…hi…nop');
   for (const ranges of ['3:5,1:2', 'bad', '-50:3', '0:100', '0:4,2:5']) assert.equal(truncateValue('abcdef', 'segments', ranges), 'abcdef');
   assert.equal(truncateValue('short', 'middle', '', 8, 8), 'short');
+});
+
+test('a fixed finding left in the baseline is reported as obsolete', () => {
+  const [finding] = inspect('app.html', '<button>Save</button>');
+  const baseline = { [key(finding)]: { count: 2 }, 'gone.css:type-token:0000000000000000': { count: 1 } };
+  assert.equal(obsolete([finding], baseline), 2);
+  assert.equal(obsolete([finding, finding], { [key(finding)]: { count: 2 } }), 0);
 });

@@ -336,6 +336,12 @@ impl From<&str> for Slot {
     }
 }
 
+impl From<&String> for Slot {
+    fn from(text: &String) -> Self {
+        Self::from(text.as_str())
+    }
+}
+
 impl From<String> for Slot {
     fn from(text: String) -> Self {
         Self {

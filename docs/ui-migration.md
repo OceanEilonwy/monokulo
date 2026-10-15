@@ -11,6 +11,7 @@ report's charts). This file tracks what has moved.
 |---|---|---|
 | Buttons, button links, icon buttons and links | `Button`, `LinkButton`, `IconButton`, `IconLink`, `FormActions` | monokulo done; pages site's landing |
 | Text inputs, text areas, checkboxes, switches, radio cards | `Field`, `Input`, `TextArea`, `Checkbox`, `Switch`, `RadioCards` | monokulo done |
+| Notes under a field, values set elsewhere | `FieldNote`, `LockedValue` | done |
 | Dropdowns | `Select` | done (pages site's OpenWrt version too) |
 | Settings pages | `SettingsForm`, `SettingsCard`, `Setting`, `SaveBar`, `Toast` | done |
 | Setup progress | `ProgressSteps` | done |
@@ -35,15 +36,12 @@ report's charts). This file tracks what has moved.
   `href` until its script gives it one) and embed warnings.
 - The backup screen's wallet-app tabs: logos in their labels, driven by
   `wallet-setup.js`.
-- Settings' inline field notes (`.field-help`, `.field-check`,
-  `.setting-problem`) and locked inputs (no `name`: never sent).
 - The account menu's Log out (a menu item), pagination links,
   `span.tag-active`, `dl.dns-record`.
 
 ### Gaps worth a component or variant
 
-`InputType::DatetimeLocal` (the logs page's From and To); a `Field` for a
-text area; an inline field note; `CellPart::Detail`; a dashed, flex-summary
+A `Field` for a text area; `CellPart::Detail`; a dashed, flex-summary
 disclosure look; a pill-shaped toggle button (the query help's chips);
 utility visibility (`no-js-only`, `js-only`, `no-print`) on a component,
 for now a wrapping `span`.
