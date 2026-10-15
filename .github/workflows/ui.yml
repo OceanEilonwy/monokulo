@@ -3,6 +3,9 @@ on:
   pull_request:
     paths:
       - 'packages/ui/**'
+      - 'crates/ui/**'
+      - 'crates/ui-macros/**'
+      - 'xtask/src/ui.rs'
       - 'apps/stylebook/**'
       - 'package*.json'
       - 'crates/monokulo/src/views/**'
@@ -14,6 +17,9 @@ on:
     branches: [main]
     paths:
       - 'packages/ui/**'
+      - 'crates/ui/**'
+      - 'crates/ui-macros/**'
+      - 'xtask/src/ui.rs'
       - 'apps/stylebook/**'
       - 'package*.json'
       - 'crates/monokulo/src/views/**'
@@ -43,3 +49,11 @@ jobs:
         with:
           name: ui-review
           path: test-results/
+  # The Solid components, stylebook sections and equivalence fixtures are
+  # generated from crates/ui: what is committed must be what it writes.
+  generated:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+      - run: cargo xtask ui --check

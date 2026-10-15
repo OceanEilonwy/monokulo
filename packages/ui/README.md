@@ -22,6 +22,9 @@ Install the test browser once with `npx playwright install chromium`.
 - `@monokulo/ui/tokens.css`: palette, spacing, typography and role tokens.
 - `@monokulo/ui/components.css`: native layout and control primitives.
 - `@monokulo/ui`: registers select, copy, tabs and menu enhancements.
+- `@monokulo/ui/solid`: Solid components generated from `crates/ui` by
+  `cargo xtask ui` (needs `solid-js` and `@solidjs/web`). Don't edit them:
+  see [component adoption and validation](../../docs/ui-components.md).
 
 ```js
 import '@monokulo/ui/styles.css';

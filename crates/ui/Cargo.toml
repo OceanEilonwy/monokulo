@@ -1,0 +1,19 @@
+[package]
+name = "ui"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+publish = false
+
+# The shared UI components, written once. Monokulo's views and the pages
+# site render them through maud; `cargo xtask ui` translates the same
+# definitions into the Solid components the POS imports and the stylebook's
+# examples. CSS and custom-element behaviour live in packages/ui.
+
+[dependencies]
+maud = "0.27.0"
+serde_json = "1"
+ui-macros = { path = "../ui-macros" }
+
+[lints]
+workspace = true

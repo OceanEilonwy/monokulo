@@ -4,7 +4,11 @@ Run `npm ci` then `npm run stylebook` from the repository root. Vite prints the
 local address. `npm run build:stylebook` emits an independently deployable static
 site in `apps/stylebook/dist` with relative asset URLs; no backend is required.
 
-Examples live in `examples/*.html`. A Vite HTML transform includes each example
+The sections for components written in Rust (`crates/ui`) are generated:
+`cargo xtask ui` writes them to `examples/generated`, each example rendered
+by the Rust component with its Rust, Solid and HTML source. Don't edit
+them; change the component and run it again. Hand-written examples live in
+`examples/*.html`. A Vite HTML transform includes each example
 and its escaped source in the delivered HTML, so the whole catalogue works with
 JavaScript disabled. Edit examples directly: they are the single source for
 both the live specimen and its displayed markup.

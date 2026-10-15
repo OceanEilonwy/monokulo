@@ -12,5 +12,9 @@ export default defineConfig({
     cwd: fileURLToPath(new URL('../../', import.meta.url)),
     command: 'npm run dev -w @monokulo/stylebook -- --port 4180 --strictPort',
     url: 'http://127.0.0.1:4180', reuseExistingServer: !process.env.CI,
+  }, {
+    cwd: fileURLToPath(new URL('../../', import.meta.url)),
+    command: 'npx vite --config packages/ui/tests/solid/vite.config.js --host 127.0.0.1 --port 4181 --strictPort',
+    url: 'http://127.0.0.1:4181', reuseExistingServer: !process.env.CI,
   }],
 });

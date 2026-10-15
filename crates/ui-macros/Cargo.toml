@@ -1,0 +1,21 @@
+[package]
+name = "ui-macros"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+publish = false
+
+# `component!`, `#[derive(UiEnum)]` and `#[derive(UiRecord)]` for the `ui`
+# crate: each component's template is parsed once, here, into the typed
+# Rust builder and the description `ui` renders and translates from.
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+
+[lints]
+workspace = true
