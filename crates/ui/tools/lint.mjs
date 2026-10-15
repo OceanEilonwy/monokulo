@@ -87,6 +87,12 @@ export function unaccepted(findings, baseline) {
     return count > (baseline[id]?.count || 0);
   });
 }
+/** How many findings the baseline accepts that are no longer there. */
+export function obsolete(findings, baseline) {
+  const counts = new Map();
+  for (const finding of findings) counts.set(key(finding), (counts.get(key(finding)) || 0) + 1);
+  return Object.entries(baseline).reduce((sum, [id, { count }]) => sum + Math.max(0, count - (counts.get(id) || 0)), 0);
+}
 function files(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
     // `generated`: what `cargo xtask ui` renders from crates/ui.
@@ -98,20 +104,32 @@ function files(dir) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const roots = ['crates/ui/web', 'crates/ui/src', 'apps/stylebook', 'crates/monokulo/pos-ui/src', 'crates/monokulo/src/views', 'crates/monokulo/static'];
   const findings = roots.flatMap(dir => files(resolve(root, dir))).flatMap(path => inspect(relative(root, path), readFileSync(path, 'utf8')));
-  if (process.argv.includes('--write-baseline')) {
+  const record = list => {
     const baseline = {};
-    for (const finding of findings) {
+    for (const finding of list) {
       const id = key(finding);
       baseline[id] ??= { count: 0, snippet: finding.snippet };
       baseline[id].count++;
     }
     writeFileSync(baselinePath, JSON.stringify(baseline, null, 2) + '\n');
+  };
+  if (process.argv.includes('--write-baseline')) {
+    record(findings);
     console.log(`Recorded ${findings.length} existing findings. Review baseline changes; never refresh automatically in CI.`);
   } else {
     const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
     const added = unaccepted(findings, baseline);
-    for (const finding of added) console.error(`${finding.file}:${finding.line} [${finding.rule}] ${finding.snippet}`);
-    console.log(`${added.length} new violations; ${findings.length - added.length} known legacy findings. Runtime contracts are checked by test:ui.`);
-    process.exitCode = added.length ? 1 : 0;
+    const accepted = findings.filter(finding => !added.includes(finding));
+    const stale = obsolete(findings, baseline);
+    if (process.argv.includes('--prune-baseline')) {
+      // Only ever removes: what's fixed leaves the baseline, nothing joins it.
+      record(accepted);
+      console.log(`Pruned ${stale} fixed findings; ${accepted.length} remain.`);
+    } else {
+      for (const finding of added) console.error(`${finding.file}:${finding.line} [${finding.rule}] ${finding.snippet}`);
+      if (stale) console.error(`${stale} baseline findings are fixed: run \`node crates/ui/tools/lint.mjs --prune-baseline\` to drop them.`);
+      console.log(`${added.length} new violations; ${accepted.length} known legacy findings. Runtime contracts are checked by test:ui.`);
+      process.exitCode = added.length || stale ? 1 : 0;
+    }
   }
 }

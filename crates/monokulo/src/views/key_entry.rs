@@ -67,12 +67,12 @@ pub fn key_fields(
         label {
             "View key (hex)"
             (key_input("view_key_hex", view_key_hex, required).kind(ui::InputType::Password).attr("data-key-custody", "view"))
-            span class="field-help" { (view_help) }
+            (ui::FieldNote::new(view_help))
         }
         label {
             "Spend public key (hex)"
             (key_input("spend_pubkey_hex", spend_pubkey_hex, required).attr("data-key-custody", "spend"))
-            span class="field-help" { (spend_help) }
+            (ui::FieldNote::new(spend_help))
         }
     }
 }
@@ -185,10 +185,8 @@ fn ready_section(ready: &SnpReady, backend_field: Option<&str>) -> Markup {
                     label {
                         "Paste what it prints here"
                         (ui::TextArea::new("encrypted_keys").rows(4usize).attr("autocomplete", "off").attr("spellcheck", "false"))
-                        span class="field-help" {
-                            "Leave the key fields above empty when you use this. The bundle is for this form "
-                            "only: if the page is reloaded, run the command again."
-                        }
+                        (ui::FieldNote::new(html! { "Leave the key fields above empty when you use this. The bundle is for this form "
+                            "only: if the page is reloaded, run the command again." }))
                     }
                 }
             }

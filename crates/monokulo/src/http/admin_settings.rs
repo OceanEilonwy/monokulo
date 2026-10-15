@@ -2563,7 +2563,7 @@ mod tests {
 
         let page = body_text(get_settings_page(&router, &cookie).await).await;
         assert!(
-            page.contains(r#"<input type="password" value="locked" id="setting-engine.token" aria-describedby="setting-help-engine.token" disabled>"#),
+            page.contains(r#"<input class="mk-input" type="password" value="locked" id="setting-engine.token" aria-describedby="setting-help-engine.token" disabled>"#),
             "{page}"
         );
         assert!(
@@ -2771,7 +2771,7 @@ mod tests {
         .await;
         assert!(
             page.contains(&format!(
-                r#"<input type="password" value="locked" id="setting-{key}""#
+                r#"<input class="mk-input" type="password" value="locked" id="setting-{key}""#
             )),
             "{page}"
         );

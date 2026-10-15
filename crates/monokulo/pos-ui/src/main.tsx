@@ -718,7 +718,7 @@ function App() {
         <p class="pos-list-subtitle">Choose an order to open.</p>
         <div class="pos-search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></svg>
-          <Input name="q" kind="search" label="Search reference or order ID" placeholder="Search reference or order ID" value={search()} onInput={event => setSearch(event.currentTarget.value)}/>
+          <Input name="q" kind="search" data-pos="search" label="Search reference or order ID" placeholder="Search reference or order ID" value={search()} onInput={event => setSearch(event.currentTarget.value)}/>
         </div>
         <div class="pos-tabs" role="tablist" aria-label="Order status">
           <button type="button" role="tab" aria-selected={tab() === 'active' ? 'true' : 'false'} class={{ selected: tab() === 'active' }} onClick={() => setTab('active')}>Active · {activeOrders().length}</button>

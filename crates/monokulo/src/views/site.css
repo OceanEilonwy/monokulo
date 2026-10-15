@@ -37,9 +37,9 @@ summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2p
 h1, h2, h3 { font-weight: 700; letter-spacing: -0.01em; margin: 1.4em 0 0.6em; }
 /* A block taking us over two minutes: slow, not broken (docs/engine_scaling.md section 5). */
 .notice[data-slow-block] { background: var(--tint-warning); border-color: var(--warning); }
-h1 { font-size: 1.6rem; border-bottom: 2px solid var(--line); padding-bottom: 0.3em; margin: var(--space-lg) 0 var(--space-sm); }
+h1 { font-size: var(--text-xl); border-bottom: 2px solid var(--line); padding-bottom: 0.3em; margin: var(--space-lg) 0 var(--space-sm); }
 .context-nav + h1 { margin-top: var(--space-xs); }
-h2 { font-size: 1.15rem; border-bottom: 1px solid var(--line); padding-bottom: 0.2em; }
+h2 { font-size: var(--text-lg); border-bottom: 1px solid var(--line); padding-bottom: 0.2em; }
 p { margin: 0.6em 0; }
 /* Code/addresses/txids stay monospace regardless of the UI font choice -
    a legibility need (character-width alignment, telling 0/O and 1/l/I
@@ -76,11 +76,11 @@ table[data-table="nodes"] td.card-meta { font-size: inherit; color: inherit; }
    neighbours. Every block keeps the same width. */
 .pip[data-settles] { outline: 2px solid var(--pow-mark); outline-offset: 1px; margin: 0 3px; }
 .pip-tip { display: inline-block; flex: none; width: 2px; height: 18px; margin-left: 3px; border-radius: 1px; background: var(--pow-mark); }
-.pip-legend { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-md); margin: var(--space-sm) 0 0; font-size: 0.8em; color: var(--muted); }
+.pip-legend { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-md); margin: var(--space-sm) 0 0; font-size: var(--text-xs); color: var(--muted); }
 .pip-legend > span { display: inline-flex; align-items: center; gap: var(--space-xs); }
 .pip-legend .pip { flex: none; width: 10px; height: 10px; }
 .pip-legend .pip-tip { height: 12px; margin: 0; }
-.pip-figures { margin: var(--space-xs) 0 0; font-size: 0.8em; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pip-figures { margin: var(--space-xs) 0 0; font-size: var(--text-xs); color: var(--muted); font-variant-numeric: tabular-nums; }
 [data-pip-anchor] { margin: var(--space-xs) 0 0; }
 /* Settlement held: the reason and the way out, in one calm box; the
    header's tag says it in red. */
@@ -100,11 +100,11 @@ table[data-table="nodes"] td.card-meta { font-size: inherit; color: inherit; }
 .node-row-summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-md); padding: var(--space-sm) var(--space-md); border-radius: var(--radius-md); }
 .node-row[open] > .node-row-summary { border-bottom: 1px solid var(--card-border); border-radius: var(--radius-md) var(--radius-md) 0 0; }
 .node-row-summary:hover { background: var(--surface-sunken); }
-.node-handle { cursor: grab; color: var(--muted); font-size: 1.1em; line-height: 1; padding: 0 var(--space-xs); user-select: none; touch-action: none; }
+.node-handle { cursor: grab; color: var(--muted); font-size: var(--text-lg); line-height: 1; padding: 0 var(--space-xs); user-select: none; touch-action: none; }
 .node-add-mark { font-weight: 800; color: var(--accent-text); width: 1em; text-align: center; }
 .node-row-name { font-weight: 700; min-width: 5.5em; }
 .node-row-address { min-width: 0; overflow-wrap: anywhere; }
-.node-row-status { margin-left: auto; font-size: 0.85em; color: var(--muted); }
+.node-row-status { margin-left: auto; font-size: var(--text-sm); color: var(--muted); }
 .node-row-status.is-problem { color: var(--error); font-weight: 700; }
 .node-row-mark:empty { display: none; }
 .node-row-body { padding: var(--space-xs) var(--space-md) var(--space-sm); }
@@ -120,7 +120,7 @@ table[data-table="nodes"] td.card-meta { font-size: inherit; color: inherit; }
 /* How the engine is performing (`views::scaling`), on the engine page: the
    "Machine and links" strip's stacked charts and sparklines, the Scanning
    panel's figures. The Monero nodes tab links there from each network. */
-.card-head .engine-link { font-size: 0.85em; }
+.card-head .engine-link { font-size: var(--text-sm); }
 .scan-figures { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-xs) var(--space-md); margin: 0; }
 .scan-figures dt { color: var(--muted); }
 .scan-figures dd { margin: 0; min-width: 0; }
@@ -133,7 +133,6 @@ html:not(.js) .js-only { display: none; }
 /* Controls only needed without it (a script does their job). */
 html.js .no-js-only { display: none; }
 /* Read out, not shown: words that go with something only visible. */
-.setting-problem { display: block; color: var(--error); }
 /* Store page embed warnings (`views::store_detail::embed_warnings`). */
 .embed-warning {
   display: grid;
@@ -149,7 +148,7 @@ html.js .no-js-only { display: none; }
 .embed-warning.is-compact { display: block; padding-block: var(--space-xs); }
 .embed-warning form { margin: 0; }
 .dns-record { display: grid; grid-template-columns: max-content 1fr; gap: 2px var(--space-sm); margin: var(--space-sm) 0 0; }
-.dns-record dt { color: var(--muted); font-size: 0.85em; }
+.dns-record dt { color: var(--muted); font-size: var(--text-sm); }
 .dns-record dd { margin: 0; overflow-wrap: anywhere; }
 .domain-actions { white-space: nowrap; }
 .embed-restriction { display: grid; gap: var(--space-sm); justify-items: start; margin: 1em 0; }
@@ -179,20 +178,11 @@ tr[data-deleted] td { opacity: 0.45; text-decoration: line-through; }
   tr:has(::target-text) { background: var(--tint-highlight); }
 }
 form label { display: block; margin: 0.9em 0 0.6em; font-weight: 700; }
-/* Long unbroken words (an address, a file name) wrap rather than widen the page. */
-form :is(.field-help, [data-field-help]) { display: block; font-weight: 400; color: var(--muted); margin-top: 0.15em; font-size: var(--text-sm); overflow-wrap: anywhere; }
-/* `.setting-source` (admin settings page): a caption naming where a field's
-   current value came from. Left inline, it lets a submit `button` that
-   immediately follows the last field in a form (e.g. "Save scanner
-   settings") ride up onto the same line as this caption instead of
-   starting its own line below the form - block, like `.field-help` above,
-   fixes that regardless of how much room is left on the line. */
-.setting-source { display: block; margin-top: 0.15em; }
 /* Where a setting's value comes from: a chip beside its name, with the
    icon of its source (options file, runtime, command line, environment);
    dashed for the default, which nothing has chosen. */
 .setting-label-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5em; }
-.source-chip { display: inline-flex; align-items: center; gap: var(--pill-gap); font-size: 0.8em; font-weight: 400; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: var(--pill-pad-y-roomy) var(--pill-pad-x-roomy); background: var(--paper); }
+.source-chip { display: inline-flex; align-items: center; gap: var(--pill-gap); font-size: var(--text-xs); font-weight: 400; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: var(--pill-pad-y-roomy) var(--pill-pad-x-roomy); background: var(--paper); }
 .source-chip.default { border-style: dashed; background: transparent; }
 .src-icon { width: 1.15em; height: 1.15em; flex: none; stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
 .src-icon .filled { fill: currentColor; stroke: none; }
@@ -201,28 +191,8 @@ form :is(.field-help, [data-field-help]) { display: block; font-weight: 400; col
 .options-file { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75em; background: var(--paper-raised); border: 1px solid var(--line); border-radius: 9px; padding: 0.75em 1em; }
 .options-file-where { display: grid; gap: 0.15em; min-width: 0; }
 .options-file-path { display: flex; align-items: center; gap: 0.45em; overflow-wrap: anywhere; }
-.options-file-state { font-size: 0.85em; color: var(--muted); }
+.options-file-state { font-size: var(--text-sm); color: var(--muted); }
 .options-file button { display: inline-flex; align-items: center; gap: 0.4em; }
-/* A setting the page can't change (given on the command line or in the
-   environment): shown in a disabled box with a padlock inside it. */
-.locked-input { position: relative; display: block; }
-.locked-input input[disabled] { padding-right: 2.4em; background: var(--surface-sunken); color: var(--muted); cursor: not-allowed; }
-.locked-input .lock-icon { position: absolute; right: 0.8em; top: 50%; width: 1em; height: 1em; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
-/* Every text-like input: a type left out here keeps the browser's own
-   border and padding (the Logs page's search box once did). */
-input[type=text]:where(:not(.mk-input)), input[type=email]:where(:not(.mk-input)), input[type=password]:where(:not(.mk-input)), input[type=url]:where(:not(.mk-input)), input[type=search]:where(:not(.mk-input)), input[type=number]:where(:not(.mk-input)), input[type=date]:where(:not(.mk-input)), input[type=datetime-local]:where(:not(.mk-input)), input[type=time]:where(:not(.mk-input)), select:where(:not(.mk-input)), textarea:where(:not(.mk-input)) {
-  width: 100%;
-  font-family: inherit;
-  font-size: 1em;
-  /* One pixel more padding than the 1px border needs keeps the old 2px
-     border's outer size. */
-  padding: calc(var(--space-sm) + 1px) calc(var(--space-md) + 1px);
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-sm);
-  background: var(--control-bg);
-  color: var(--ink);
-}
-textarea { resize: vertical; }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--focus-ring); }
 /* A hand-written button (ui::Button is .mk-btn, with no margins).
    `margin-right`: two buttons written as separate Maud
@@ -354,10 +324,6 @@ button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px
 }
 
 /* A field's check, under it: right, wrong, or just a hint. */
-.field-check { display: block; font-size: .88em; font-weight: 700; margin-top: var(--space-xs); color: var(--muted); }
-.field-check.ok { color: var(--success); }
-.field-check.bad { color: var(--error); }
-.field-check a { color: inherit; }
 input[aria-invalid="true"] { border-color: var(--error); }
 /* Two fields side by side read as one form: the labels, the help, the
    boxes and any error each share a row across both columns (subgrid), so a
@@ -385,7 +351,7 @@ input[aria-invalid="true"] { border-color: var(--error); }
 .already label { margin: 0 auto 0 0; }
 .already .mk-select, .already select { width: auto; min-width: 16rem; margin: 0; }
 .already button { margin: 0; }
-.or-divider { display: flex; align-items: center; gap: var(--space-md); margin: var(--space-lg) 0; color: var(--muted); font-size: .8rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.or-divider { display: flex; align-items: center; gap: var(--space-md); margin: var(--space-lg) 0; color: var(--muted); font-size: var(--text-xs); font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .or-divider::before, .or-divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
 .logo-row { display: flex; gap: var(--space-md); align-items: center; }
 .app-logo { display: block; flex: none; border-radius: 22%; object-fit: contain; }
@@ -412,7 +378,7 @@ input[aria-invalid="true"] { border-color: var(--error); }
 .phrase-box .seed-words { margin: var(--space-md) 0; }
 .phrase-box .steps { margin: var(--space-sm) 0 0; }
 .phrase-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); }
-.phrase-head h3 { margin: 0; font-size: 1.05rem; }
+.phrase-head h3 { margin: 0; font-size: var(--text-lg); }
 .phrase-head .card-spacer { flex: 1; }
 .phrase-head button { margin: 0; }
 .qr-col { display: grid; justify-items: center; gap: var(--space-xs); margin: var(--space-md) 0; }
@@ -422,22 +388,22 @@ input[aria-invalid="true"] { border-color: var(--error); }
 .seed-words { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-sm); list-style: none; padding: 0; margin: 0 0 var(--space-md); }
 .seed-words.legacy { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .seed-words li { display: flex; gap: var(--space-sm); align-items: baseline; padding: var(--space-sm) var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--paper-raised); font-family: var(--font-mono); font-weight: 600; overflow-wrap: anywhere; }
-.seed-words li::before { content: attr(data-n); min-width: 1.3rem; text-align: right; color: var(--muted); font-size: .8rem; }
+.seed-words li::before { content: attr(data-n); min-width: 1.3rem; text-align: right; color: var(--muted); font-size: var(--text-xs); }
 
 /* Check: each word picked from four. */
 .word-quiz { display: grid; gap: var(--space-lg); margin: var(--space-md) 0; }
-.word-q h3 { margin: 0 0 var(--space-sm); font-size: 1rem; }
+.word-q h3 { margin: 0 0 var(--space-sm); font-size: var(--text-base); }
 .word-q .picks { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
 .word-q .picks button { margin: 0; min-width: 6.5rem; font-family: var(--font-mono); }
 .word-q .picks button.is-right { border-color: var(--success); background: var(--tint-success); }
 .word-q .picks button.is-wrong { border-color: var(--error); background: var(--tint-error); text-decoration: line-through; }
 .word-q .picks button[disabled]:not(.is-right) { opacity: .45; }
-.word-q .q-note { margin: var(--space-xs) 0 0; font-size: .88em; font-weight: 700; min-height: 1.2em; }
+.word-q .q-note { margin: var(--space-xs) 0 0; font-size: var(--text-sm); font-weight: 700; min-height: 1.2em; }
 .word-q .q-note.bad { color: var(--error); }
 .word-q .q-note.ok { color: var(--success); }
 .countdown { font-variant-numeric: tabular-nums; }
-.field-error { display: block; color: var(--error); font-weight: 700; font-size: .88em; margin-top: .15em; }
-.field-ok { display: block; color: var(--success); font-weight: 700; font-size: .88em; margin-top: .15em; }
+.field-error { display: block; color: var(--error); font-weight: 700; font-size: var(--text-sm); margin-top: .15em; }
+.field-ok { display: block; color: var(--success); font-weight: 700; font-size: var(--text-sm); margin-top: .15em; }
 .skip-warning { border: 2px solid var(--error); border-radius: var(--radius-md); background: var(--paper-raised); padding: var(--space-xl); margin: 1.2rem 0; }
 .skip-warning h2 { border-bottom: 0; margin-top: var(--space-sm); }
 
@@ -446,7 +412,7 @@ input[aria-invalid="true"] { border-color: var(--error); }
 [data-not-yet] { margin-right: var(--space-xs); }
 .todo { list-style: none; padding: 0; margin: var(--space-md) 0; display: grid; gap: var(--space-sm); }
 .todo li { display: grid; grid-template-columns: 2rem minmax(0, 1fr) auto; gap: var(--space-md); align-items: center; padding: var(--space-md) var(--space-lg); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
-.todo .num { display: inline-flex; align-items: center; justify-content: center; width: 1.8rem; height: 1.8rem; border-radius: 50%; border: 1px solid var(--line-strong); font-weight: 800; font-size: .85em; }
+.todo .num { display: inline-flex; align-items: center; justify-content: center; width: 1.8rem; height: 1.8rem; border-radius: 50%; border: 1px solid var(--line-strong); font-weight: 800; font-size: var(--text-sm); }
 .todo li p { margin: 0; }
 .todo li .hint { display: block; }
 .external-icon { flex: none; }
@@ -507,7 +473,7 @@ input[aria-invalid="true"] { border-color: var(--error); }
    under a head of their own, the test networks' folded in a dashed box,
    and on a phone each row a card (`.table-cards`). */
 .net-section-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin-top: var(--space-xl); padding-bottom: var(--space-xs); border-bottom: 1px solid var(--line); }
-.net-section-head h2 { margin: 0; border: 0; padding: 0; font-size: 1.05rem; }
+.net-section-head h2 { margin: 0; border: 0; padding: 0; font-size: var(--text-lg); }
 .net-section-head .hint { margin: 0; }
 .test-wallets { margin: var(--space-lg) 0; border: 1px dashed var(--line-strong); border-radius: var(--radius-md); background: var(--paper-raised); }
 .test-wallets > summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); padding: var(--space-sm) var(--space-md); border-radius: var(--radius-md); }
@@ -537,8 +503,8 @@ table[data-table="wallets"] .card-unit { display: none; }
 .store-rows li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-xs) var(--space-md); padding: var(--space-sm) 0; border-top: 1px solid var(--line); }
 .store-rows li:first-child { border-top: 0; padding-top: 0; }
 .sr-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-sm); min-width: 0; font-weight: 700; overflow-wrap: anywhere; }
-.sr-host { font-weight: 400; font-size: .9em; color: var(--muted); }
-.sr-act { font-size: .9em; }
+.sr-host { font-weight: 400; font-size: var(--text-sm); color: var(--muted); }
+.sr-act { font-size: var(--text-sm); }
 .store-rows.past li, .store-rows.past a { color: var(--muted); }
 .store-rows.past .sr-name { font-weight: 400; }
 .wallet-page .facts { margin: var(--space-lg) 0 0; }
@@ -550,24 +516,19 @@ table[data-table="wallets"] .card-unit { display: none; }
 .confirm-dialog .setting-field, .confirm-dialog-page .setting-field { margin: var(--space-md) 0 0; }
 .confirm-dialog .setting-field .setting-label-row, .confirm-dialog-page .setting-field .setting-label-row { margin: 0 0 var(--space-sm); }
 .confirm-dialog .setting-field.first, .confirm-dialog-page .setting-field.first { margin-top: 0; }
-/* A store's website and its plugins (`views::store_site`): the website
-   locked while a plugin is connected; the Connections card, one row each. */
-.locked-input { display: flex; align-items: center; gap: var(--space-sm); padding: .55rem .75rem; border: 1px dashed var(--line-strong); border-radius: var(--radius-sm); background: var(--surface-sunken); color: var(--ink); font-weight: 600; overflow-wrap: anywhere; }
-.locked-input .ico { color: var(--muted); }
-.ico { width: 1.1em; height: 1.1em; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.lock-note { margin: var(--space-sm) 0 0; color: var(--muted); font-size: .88em; }
+/* A store's plugins (`views::store_site`): the Connections card, one row each. */
 .int-rows { list-style: none; margin: 0; padding: 0; }
 .int-rows li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-xs) var(--space-md); align-items: center; padding: var(--space-sm) 0; border-top: 1px solid var(--line); }
 .int-rows li:first-child { border-top: 0; padding-top: 0; }
 .int-rows .int-name { font-weight: 700; }
-.int-rows .int-meta { display: block; color: var(--muted); font-size: .85em; overflow-wrap: anywhere; }
+.int-rows .int-meta { display: block; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
 .int-rows.past .int-name { font-weight: 400; color: var(--muted); }
 .int-rows.past .int-mark { opacity: .6; }
 .int-mark { display: inline-flex; align-items: center; justify-content: center; width: 2.2rem; height: 2.2rem; flex: none; border-radius: var(--radius-md); background: var(--surface-sunken); color: var(--ink); }
 .int-mark svg { width: 1.7rem; height: 1.3rem; }
 .woo-bubble { fill: currentColor; }
 .woo-text { fill: var(--paper-raised); font: 800 10.5px var(--font-ui); letter-spacing: -.03em; }
-.tag-active { font-size: .75em; font-weight: 700; border: 1px solid var(--line-strong); border-radius: 999px; padding: var(--pill-pad-y) var(--pill-pad-x); color: var(--ink); }
+.tag-active { font-size: var(--text-xs); font-weight: 700; border: 1px solid var(--line-strong); border-radius: 999px; padding: var(--pill-pad-y) var(--pill-pad-x); color: var(--ink); }
 @media (max-width: 640px) {
   .wallet-foot .mk-btn { flex-basis: 100%; text-align: center; }
   .int-rows li { grid-template-columns: auto minmax(0, 1fr); }
@@ -592,7 +553,7 @@ table[data-table="wallets"] .card-unit { display: none; }
 .row-acts .icon-only { width: 1.75rem; height: 1.75rem; min-height: 0; }
 [data-disclosure="deliveries"] { margin-top: var(--space-xs); }
 [data-disclosure="deliveries"] > .table-scroll { margin-top: var(--space-sm); }
-.mini-h { margin: var(--space-md) 0 var(--space-xs); font-size: 0.75rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.mini-h { margin: var(--space-md) 0 var(--space-xs); font-size: var(--text-xs); font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
 [data-disclosure="request"] { margin-top: var(--space-sm); }
 [data-disclosure="request"] pre { margin: var(--space-xs) 0; font-size: var(--text-sm); white-space: pre-wrap; overflow-wrap: anywhere; }
 /* A delivery's head: its title, then its status at the top right (beside
@@ -601,7 +562,7 @@ table[data-table="wallets"] .card-unit { display: none; }
 .delivery-head .dialog-title { margin: 0; }
 .delivery-head .dialog-title .tag { margin-left: auto; white-space: nowrap; }
 .delivery-head .dialog-title .tag + .dialog-x { margin-left: 0; }
-.delivery-head .event-name { font-family: var(--font-mono); font-weight: 600; font-size: 0.95em; overflow-wrap: anywhere; }
+.delivery-head .event-name { font-family: var(--font-mono); font-weight: 600; font-size: var(--text-sm); overflow-wrap: anywhere; }
 [data-facts="delivery"] { margin: 0 0 var(--space-lg); }
 [data-facts="delivery"] dd { font-weight: 400; }
 [data-facts="delivery"] .endpoint { font-family: var(--font-mono); font-size: var(--text-sm); }

@@ -212,10 +212,11 @@ source hash and count in `crates/ui/tools/lint-baseline.json`. Copying an old
 violation or changing its declaration does not grant an exemption. All new
 shared library and stylebook sources pass without baseline exceptions.
 
-Treat baseline changes as a reviewed migration decision. The explicit command
-`node crates/ui/tools/lint.mjs --write-baseline` records the current debt; CI
-never runs it. Remove obsolete exceptions during adoption. Do not refresh the
-baseline merely to make a failed check pass.
+Treat baseline changes as a reviewed migration decision. A fixed finding
+left in the baseline fails the check too, so the baseline only shrinks:
+`node crates/ui/tools/lint.mjs --prune-baseline` drops what's fixed and
+never adds. `--write-baseline` records the current debt whole; CI never runs
+either. Do not refresh the baseline merely to make a failed check pass.
 
 This is a guardrail, not proof of correct design or accessibility: dynamic
 markup, business state and application compositions still need review. Browser

@@ -1193,7 +1193,7 @@ fn scalar_field(field: &AdminScalarFieldView) -> Markup {
             (scalar_input(field))
         }
         @if let Some(reason) = &field.locked {
-            span class="field-help locked-reason" { (reason) }
+            (ui::FieldNote::new(reason))
         }
         (field_status(field))
     })
@@ -1204,21 +1204,14 @@ fn scalar_field(field: &AdminScalarFieldView) -> Markup {
 /// box with a padlock inside, and no `name`, so it is never sent with the
 /// form. A secret shows as dots, never its value.
 fn locked_input(field: &AdminScalarFieldView) -> Markup {
-    let secret = matches!(field.kind, SettingKindView::Secret);
+    let locked = ui::LockedValue::new(field.value.as_str())
+        .id(field_id(field.form_name()))
+        .secret(matches!(field.kind, SettingKindView::Secret));
     html! {
-        span class="locked-input" {
-            @if secret {
-                input type="password" value="locked" id=(field_id(field.form_name()))
-                    aria-describedby=[help_id(field)] disabled;
-            } @else {
-                input type="text" value=(field.value) id=(field_id(field.form_name()))
-                    aria-describedby=[help_id(field)] disabled;
-            }
-            svg class="lock-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" {
-                path d="M5 7V5a3 3 0 0 1 6 0v2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" {}
-                rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor" {}
-            }
-        }
+        (match help_id(field) {
+            Some(help) => locked.described_by(help),
+            None => locked,
+        })
     }
 }
 
@@ -1227,16 +1220,16 @@ fn locked_input(field: &AdminScalarFieldView) -> Markup {
 fn field_status(field: &AdminScalarFieldView) -> Markup {
     html! {
         @if let Some(example) = &field.example {
-            span class="field-help" { "Example: " code { (example) } }
+            (ui::FieldNote::new(html! { "Example: " code { (example) } }))
         }
         @if field.restart_only {
-            span class="field-help setting-source" { "Applies after a restart." }
+            (ui::FieldNote::new("Applies after a restart."))
         }
         @if field.pending_restart {
-            span class="setting-pending" { "Saved - restart needed for it to take effect." }
+            (ui::FieldNote::new("Saved - restart needed for it to take effect.").tone(ui::NoteTone::Pending))
         }
         @if let Some(problem) = &field.problem {
-            span class="setting-problem" { (problem) }
+            (ui::FieldNote::new(problem).tone(ui::NoteTone::Problem))
         }
     }
 }
@@ -1564,11 +1557,9 @@ fn node_row(
             div class="node-row-body" {
                 div class="setting-field" {
                     div class="setting-label-row" { label class="setting-label" for=(id("address")) { "Address" } }
-                    span class="field-help" id=(id("address-help")) {
-                        "The node's host and port, like " code { (example) } ". "
+                    (ui::FieldNote::new(html! { "The node's host and port, like " code { (example) } ". "
                         code { "http://" } " or " code { "https://" } " in front is fine (" code { "https://" } " also ticks Use TLS); "
-                        "an IPv6 address goes in brackets, like " code { "[::1]:18081" } "."
-                    }
+                        "an IPv6 address goes in brackets, like " code { "[::1]:18081" } "." }).id(id("address-help")))
                     (ui::Input::new(name("address"))
                         .id(id("address"))
                         .value(row.row.address.as_str())
@@ -1579,12 +1570,12 @@ fn node_row(
                         .attr("spellcheck", "false")
                         .attr("inputmode", "url"))
                     @if let (Some(error), Some(error_id)) = (&row.row.error, &error_id) {
-                        span class="setting-problem" id=(error_id) { (error) }
+                        (ui::FieldNote::new(error).tone(ui::NoteTone::Problem).id(error_id))
                     }
                 }
                 div class="setting-field node-tls" {
                     div class="setting-label-row" { label class="setting-label" for=(id("ssl")) { "Use TLS" } }
-                    span class="field-help" id=(id("ssl-help")) { "Connect with TLS (https). Off by default; most nodes on port 18081 or 18089 don't use it." }
+                    (ui::FieldNote::new("Connect with TLS (https). Off by default; most nodes on port 18081 or 18089 don't use it.").id(id("ssl-help")))
                     (ui::Checkbox::new()
                         .name(name("ssl"))
                         .id(id("ssl"))
@@ -1595,9 +1586,7 @@ fn node_row(
                 }
                 div class="setting-field node-self-signed" data-node-self-signed {
                     div class="setting-label-row" { label class="setting-label" for=(id("self_signed")) { "Accept a self-signed certificate" } }
-                    span class="field-help" id=(id("self_signed-help")) {
-                        "Many community nodes use a self-signed TLS certificate; tick this to accept one. Only used with TLS."
-                    }
+                    (ui::FieldNote::new("Many community nodes use a self-signed TLS certificate; tick this to accept one. Only used with TLS.").id(id("self_signed-help")))
                     (ui::Checkbox::new()
                         .name(name("self_signed"))
                         .id(id("self_signed"))
@@ -1607,11 +1596,9 @@ fn node_row(
                 }
                 div class="setting-field node-zmq" {
                     div class="setting-label-row" { label class="setting-label" for=(id("zmq_pub")) { "Announcements (ZMQ)" } }
-                    span class="field-help" id=(id("zmq_pub-help")) {
-                        "Optional, for your own node: the address it was started with as " code { "--zmq-pub" } ", like "
+                    (ui::FieldNote::new(html! { "Optional, for your own node: the address it was started with as " code { "--zmq-pub" } ", like "
                         code { "tcp://127.0.0.1:18083" } ". Payments are then seen the moment the node sees them, instead of at the next check. "
-                        "Needs an engine built with ZMQ support; leave empty otherwise."
-                    }
+                        "Needs an engine built with ZMQ support; leave empty otherwise." }).id(id("zmq_pub-help")))
                     (ui::Input::new(name("zmq_pub"))
                         .id(id("zmq_pub"))
                         .value(row.row.zmq_pub.as_str())

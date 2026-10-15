@@ -49,10 +49,8 @@ pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
                 label for="currency" { "Currency" }
                 @if data.order_currency_is_locked_to_xmr {
                     (ui::Input::new("currency").id("currency").value("XMR").readonly(true))
-                    span class="field-help" {
-                        "\"XMR\" - the only currency this instance can price an order in right now. Enable an "
-                        "exchange rate provider (in this store's settings) to offer others."
-                    }
+                    (ui::FieldNote::new(html! { "\"XMR\" - the only currency this instance can price an order in right now. Enable an "
+                        "exchange rate provider (in this store's settings) to offer others." }))
                 } @else {
                     (ui::Select::new(
                         "currency",
@@ -62,17 +60,13 @@ pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
                             .collect::<Vec<_>>(),
                     )
                     .id("currency"))
-                    span class="field-help" {
-                        "\"XMR\" always works, with no provider needed. Any other currency here comes from this "
-                        "store's own exchange rate provider (in this store's settings)."
-                    }
+                    (ui::FieldNote::new(html! { "\"XMR\" always works, with no provider needed. Any other currency here comes from this "
+                        "store's own exchange rate provider (in this store's settings)." }))
                 }
-                label for="merchant_order_id" { "Merchant Reference " span class="field-help" style="display:inline" { "(optional)" } }
+                label for="merchant_order_id" { "Merchant Reference " (ui::Hint::new("(optional)").inline(true)) }
                 (ui::Input::new("merchant_order_id").id("merchant_order_id").value(data.merchant_order_id.as_str()))
-                span class="field-help" {
-                    "Your own order/cart id, if you have one - shown on this order's detail page so you can "
-                    "match it back to your own records."
-                }
+                (ui::FieldNote::new(html! { "Your own order/cart id, if you have one - shown on this order's detail page so you can "
+                    "match it back to your own records." }))
                 (ui::FormActions::new(ui::Button::new("Create order").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)))
             }
         }

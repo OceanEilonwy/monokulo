@@ -33,8 +33,8 @@ test('a connected plugin locks the website; disconnecting it removes its webhook
   await connectPlugin();
   await page.goto(settings());
   const store = page.locator('#card-store');
-  await expect(store.locator('.locked-input')).toHaveText('shop.localhost');
-  await expect(store.locator('.lock-note')).toHaveText('Set by WooCommerce · see Connections');
+  await expect(store.locator('.locked-input input')).toHaveValue('shop.localhost');
+  await expect(store.locator('#store-site-lock')).toHaveText('Set by WooCommerce · see Connections');
   await expect(store.locator('input[name="store_site"]')).toHaveCount(0);
   const connections = page.locator('#card-connections');
   await expect(connections.locator('.int-meta')).toContainText('shop.localhost · plugin 0.4.0 · connected ');

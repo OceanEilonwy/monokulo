@@ -72,7 +72,12 @@ export type HealthState = "ok" | "slow" | "error" | "unknown";
 /**
  * The kind of text an input takes: phones show the matching keyboard.
  */
-export type InputType = "text" | "email" | "password" | "number" | "url" | "search" | "tel";
+export type InputType = "text" | "email" | "password" | "number" | "url" | "search" | "tel" | "datetime-local";
+
+/**
+ * What a note under a field says.
+ */
+export type NoteTone = "help" | "problem" | "pending" | "fine";
 
 /**
  * An order's state: each its own colours, the same wherever an order's

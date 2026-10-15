@@ -1335,7 +1335,7 @@ mod tests {
 
         let check =
             body_text(get(&router, "/account/wallets/name-check?name=till", &cookie).await).await;
-        assert!(check.contains(r#"class="field-check bad""#), "{check}");
+        assert!(check.contains(r#"class="setting-problem""#), "{check}");
         assert!(
             check.contains("You already have a wallet called till"),
             "{check}"

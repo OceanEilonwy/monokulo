@@ -33,10 +33,8 @@ pub(crate) fn custody_select(choices: &[CustodyChoice]) -> Markup {
                         .map(|choice| Choice::new(&choice.backend, &choice.label).selected(choice.selected))
                         .collect::<Vec<_>>(),
                 ))
-                span class="field-help" {
-                    "Where this wallet's view key is kept. You can move it later from a store's settings, "
-                    "by entering the keys again."
-                }
+                (ui::FieldNote::new(html! { "Where this wallet's view key is kept. You can move it later from a store's settings, "
+                    "by entering the keys again." }))
             }
         }
     }

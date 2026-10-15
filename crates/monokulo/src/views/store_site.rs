@@ -88,15 +88,6 @@ pub enum WebsiteChange {
     Remove,
 }
 
-fn lock_icon() -> Markup {
-    html! {
-        svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false" {
-            rect x="4" y="11" width="16" height="10" rx="2" {}
-            path d="M8 11V7a4 4 0 0 1 8 0v4" {}
-        }
-    }
-}
-
 /// WooCommerce's mark: its speech bubble with "Woo" in it.
 fn woo_mark() -> Markup {
     html! {
@@ -117,10 +108,10 @@ pub fn website_field(view: &SiteView, shown: &str) -> Markup {
         Some(active) => html! {
             div class="setting-field" {
                 div class="setting-label-row" { span class="setting-label" id="store-site-label" { "Your website" } }
-                div class="locked-input" aria-labelledby="store-site-label" { (lock_icon()) (view.site) }
-                p class="lock-note" {
+                (ui::LockedValue::new(view.site.as_str()).labelled_by("store-site-label").described_by("store-site-lock"))
+                (ui::FieldNote::new(html! {
                     "Set by " (active.name) " · " a href="#card-connections" { "see Connections" }
-                }
+                }).id("store-site-lock"))
             }
         },
         None => html! {
@@ -530,7 +521,7 @@ mod tests {
         let v = view(true, Some(0));
         let field = website_field(&v, "shop.example").into_string();
         assert!(
-            field.contains(r#"<div class="locked-input" aria-labelledby="store-site-label">"#),
+            field.contains(r#"<span class="locked-input"><input class="mk-input" type="text" value="shop.example" aria-labelledby="store-site-label" aria-describedby="store-site-lock" disabled>"#),
             "{field}"
         );
         assert!(
@@ -539,7 +530,7 @@ mod tests {
             ),
             "{field}"
         );
-        assert!(!field.contains("<input"), "nothing to type: {field}");
+        assert!(!field.contains("name=") && field.contains(" disabled>"), "nothing to type or send: {field}");
         let card = connections_card(&v).into_string();
         assert!(
             card.contains("shop.example · plugin 0.4.0 · connected 3 Oct · last order today"),

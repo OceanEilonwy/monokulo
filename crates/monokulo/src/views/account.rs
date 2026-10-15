@@ -313,7 +313,7 @@ fn email_confirm_dialog(saved: &Profile) -> Markup {
                     .kind(ui::InputType::Email)
                     .autocomplete("off")
                     .attr("data-email-again", ""))
-                p class="field-help setting-problem" data-email-mismatch hidden { "That isn't the same email." }
+                (ui::FieldNote::new("That isn't the same email.").tone(ui::NoteTone::Problem).flag("data-email-mismatch").flag("hidden"))
             }
             (ui::DialogActions::new(ui::Slot::many([
                 ui::Button::new("Cancel").attr("data-email-cancel", "").into(),
