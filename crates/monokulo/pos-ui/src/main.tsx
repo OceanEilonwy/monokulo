@@ -7,7 +7,7 @@ import { LOADING_MARK } from './logo';
 import { applyTheme, type Theme } from './theme';
 import { createTimeline, routeOf, watchPage } from './timeline';
 import '@monokulo/ui/components.css';
-import { Button, Field } from '@monokulo/ui/solid';
+import { Button, Dialog, DialogActions, DialogTitle, Field, Input, ShortValue } from '@monokulo/ui/solid';
 import './pos.css';
 
 type Order = {
@@ -43,13 +43,11 @@ const shortId = (o: Order) => `#${o.order_id_short}`;
 const label = (o: Order) => o.merchant_order_id || shortId(o);
 /** An order's name in full: its reference, or else its whole ID (for a title or a screen reader). */
 const fullLabel = (o: Order) => o.merchant_order_id || o.order_id;
-/** A value as the server shortened it, in the site's own markup
- * (`views::short_id`, site.css `.short-value`): the short text on screen,
- * the whole over it to double-click and copy, and for a screen reader. */
+/** A value as the server shortened it (`views::short_id`): the short text
+ * on screen, the whole over it to double-click and copy, and for a screen
+ * reader. */
 function Shortened(props: { short: string; full: string }) {
-  return <Show when={props.short !== props.full} fallback={props.full}>
-    <span class="short-value" title={props.full}><span class="short-value-text" aria-hidden="true">{props.short}</span><span class="short-value-full">{props.full}</span></span>
-  </Show>;
+  return <ShortValue value={props.full} short={props.short}/>;
 }
 /** Copies `text` from a selection of it, off screen; whether the browser did. */
 function copyBySelection(text: string): boolean {
@@ -320,9 +318,9 @@ function PaymentCard(props: { order: Order }) {
     <hr/>
     <label class="mk-label" for="pos-refund">Refund address <span>(optional)</span></label>
     <div class={['pos-refund', `state-${refundState()}`]}>
-      <input class="mk-input" data-size="compact" id="pos-refund" type="text" autocomplete="off" spellcheck={false} placeholder="Your Monero refund address"
+      <Input name="refund_address" id="pos-refund" size="compact" autocomplete="off" spellcheck={false} placeholder="Your Monero refund address"
         value={refund()} onInput={event => onRefundInput(event.currentTarget.value)} onBlur={() => void save(refund().trim())}
-        aria-invalid={refundState() === 'invalid' ? 'true' : 'false'} aria-describedby="pos-refund-note"/>
+        invalid={refundState() === 'invalid'} described_by="pos-refund-note"/>
       <span class="pos-refund-state" role="status" aria-label={refundState() === 'saving' ? 'Saving refund address' : refundState() === 'saved' ? 'Refund address saved' : ''}>
         <Show when={refundState() === 'saved'}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L19 7"/></svg></Show>
         <Show when={refundState() === 'saving'}><span class="pos-loading-mark" innerHTML={LOADING_MARK}/></Show>
@@ -562,7 +560,7 @@ function App() {
   }
   async function cancelOrder() {
     const order = active();
-    if (!order || busy() || !window.confirm(`Cancel ${label(order)}? The payment address has already been issued; any later payment will still need review.`)) return;
+    if (!order || busy()) return;
     setBusy(true); setError('');
     try {
       await post(`${api}/orders/${encodeURIComponent(order.order_id)}/cancel`);
@@ -698,7 +696,15 @@ function App() {
           <Show when={!terminal(order())} fallback={<Button variant="primary" size="touch" block data-pos="primary" onClick={resetKeypad}>New order</Button>}>
             <Button variant="primary" size="touch" block data-pos="primary" disabled={busy()} onClick={() => void backgroundOrder()}>Background order</Button>
             <Show when={order().status === 'pending' && !order().error} fallback={<p class="pos-action-hint">Background keeps this payment open while you serve the next customer</p>}>
-              <Button variant="danger" block data-pos="cancel" disabled={busy()} onClick={() => void cancelOrder()}>Cancel order</Button>
+              <Button variant="danger" block data-pos="cancel" disabled={busy()} data-opens-dialog="pos-cancel-dialog">Cancel order…</Button>
+              <Dialog id="pos-cancel-dialog" labelled_by="pos-cancel-title">
+                <DialogTitle id="pos-cancel-title" in_dialog>Cancel {label(order())}?</DialogTitle>
+                <p>The payment address has already been issued; any later payment will still need review.</p>
+                <DialogActions>
+                  <Button data-closes-dialog>Keep it</Button>
+                  <Button variant="danger" data-closes-dialog onClick={() => void cancelOrder()}>Cancel order</Button>
+                </DialogActions>
+              </Dialog>
               <p class="pos-action-hint">Background keeps this payment open · Cancel asks for confirmation</p>
             </Show>
           </Show>
@@ -712,7 +718,7 @@ function App() {
         <p class="pos-list-subtitle">Choose an order to open.</p>
         <div class="pos-search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></svg>
-          <input class="mk-input pos-input" type="search" aria-label="Search reference or order ID" placeholder="Search reference or order ID" value={search()} onInput={event => setSearch(event.currentTarget.value)}/>
+          <Input name="q" kind="search" label="Search reference or order ID" placeholder="Search reference or order ID" value={search()} onInput={event => setSearch(event.currentTarget.value)}/>
         </div>
         <div class="pos-tabs" role="tablist" aria-label="Order status">
           <button type="button" role="tab" aria-selected={tab() === 'active' ? 'true' : 'false'} class={{ selected: tab() === 'active' }} onClick={() => setTab('active')}>Active · {activeOrders().length}</button>

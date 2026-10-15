@@ -217,7 +217,7 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .pos-list-subtitle { margin: 3px 0 14px; font-size: 11px; color: var(--muted); }
   .pos-search { position: relative; }
   .pos-search svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; color: var(--muted); pointer-events: none; }
-  .pos-search .pos-input { height: 42px; padding-left: 32px; }
+  .pos-search .mk-input { height: 42px; padding-left: 32px; }
   .pos-tabs { display: flex; gap: 20px; margin-top: 16px; border-bottom: 2px solid var(--pos-border); }
   .pos-tabs button { padding: 0 0 7px; margin-bottom: -2px; border-bottom: 4px solid transparent; font-size: 12px; font-weight: 800; color: var(--ink); }
   .pos-tabs button.selected { color: var(--ink); border-bottom-color: var(--accent); }

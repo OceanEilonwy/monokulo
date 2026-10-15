@@ -23,8 +23,8 @@ test('real POS backgrounds, reloads, reopens, cancels, and searches an order', a
   await page.locator('.pos-stack-card').click();
   await expect(page.locator('.pos-order-heading h1')).toHaveText('Fixture order');
   await expect(page.locator('.pos-pay-card .pos-qr svg')).toBeVisible();
-  page.once('dialog', dialog => dialog.accept());
-  await page.getByRole('button', { name: 'Cancel order' }).click();
+  await page.getByRole('button', { name: 'Cancel order…' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel order' }).click();
   await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Cancelled');
   await captureCoverageStage(page, 'pos-cancelled', test.info());
   // The card stays, its code faded, and the stage says what happened.
@@ -446,21 +446,22 @@ test('the server refuses the counter\'s update stream: the POS opens another its
   expect((await eventSources(page)).map(stream => stream.readyState)).toEqual([EVENT_SOURCE_CLOSED, EVENT_SOURCE_CLOSED, 1]);
 });
 
-test('merchant opens Cancel order then changes their mind: nothing happens until they confirm', async ({ page }) => {
+test('merchant opens Cancel order then keeps the order: nothing happens until they confirm', async ({ page }) => {
   const writes = [];
   page.on('request', sent => { if (sent.method() !== 'GET') writes.push(sent.url()); });
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
-  page.once('dialog', dialog => dialog.dismiss());
-  await page.getByRole('button', { name: 'Cancel order' }).click();
+  await page.getByRole('button', { name: 'Cancel order…' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Keep it' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.locator('.pos-error')).toHaveCount(0);
   await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Awaiting payment');
   await expect(page.getByRole('button', { name: 'Cancel order' })).toBeEnabled();
   // Confirmed the second time: the one write the server gets is that one.
   // A write the dismissed question had sent would have gone out first, so
   // this proves it sent none without waiting for nothing to happen.
-  page.once('dialog', dialog => dialog.accept());
-  await page.getByRole('button', { name: 'Cancel order' }).click();
+  await page.getByRole('button', { name: 'Cancel order…' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel order' }).click();
   await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Cancelled');
   expect(writes).toEqual([`${posUrl()}/orders/${fixture.order_id}/cancel`]);
 });
@@ -471,8 +472,8 @@ test('payment lands just before the merchant confirms a cancel: the server refus
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/payment?fraction=0.5`);
-  page.once('dialog', dialog => dialog.accept());
-  await page.getByRole('button', { name: 'Cancel order' }).click();
+  await page.getByRole('button', { name: 'Cancel order…' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel order' }).click();
   await expect(page.locator('.pos-error')).toHaveText('This order has payment activity and cannot be cancelled. Background it for review instead.');
   // The screen catches up with the payment that caused the refusal.
   await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Partially paid');
