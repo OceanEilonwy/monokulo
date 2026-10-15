@@ -307,6 +307,3 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
 @media (max-width: 520px) {
   #pos-root .pos-brand-name { display: none; }
 }
-
-/* "All orders": quiet, centred under the main action. */
-#pos-root [data-pos="all-orders"] { justify-self: center; align-self: center; margin-top: var(--space-xs); }

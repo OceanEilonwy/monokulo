@@ -329,6 +329,9 @@ function PaymentCard(props: { order: Order }) {
 
 function App() {
   const [orders, setOrders] = createSignal<Order[]>([]);
+  // The open orders failed to load: the keypad offers Retry, as nothing
+  // else on screen can reach the list.
+  const [loadFailed, setLoadFailed] = createSignal(false);
   const [screen, setScreen] = createSignal<'keypad' | 'payment' | 'list'>('keypad');
   const [activeId, setActiveId] = createSignal<string | null>(null);
   const [digits, setDigits] = createSignal('0');
@@ -436,7 +439,8 @@ function App() {
       }
       timeline.record('orders.loaded', { open: data.orders.length, backgrounded: data.orders.filter(o => o.backgrounded).length, order_id: resumed });
       setError('');
-    } catch (e) { setError((e as Error).message); }
+      setLoadFailed(false);
+    } catch (e) { setError((e as Error).message); setLoadFailed(true); }
   }
   async function loadOrder(id: string) {
     const revision = statusRevision(id);
@@ -603,10 +607,6 @@ function App() {
     }
   };
 
-  /** The way to every order this session has seen, under the keypad and
-   * the payment's actions. */
-  const AllOrders = () => <Button variant="quiet" size="compact" data-pos="all-orders" onClick={showList}>All orders</Button>;
-
   return <><StatusSymbols/>
     <header class="pos-top">
       <span class="pos-brand-slot" ref={adoptSiteBrand}/>
@@ -648,9 +648,8 @@ function App() {
         </div>
         <Field label="Reference (optional)" id="pos-reference" name="reference" placeholder="E.g. customer name or note" autocomplete="off"
           value={reference()} maxlength="120" onInput={event => setReference(event.currentTarget.value)}/>
-        <Show when={error()}><p class="pos-error" role="alert">{error()}</p></Show>
+        <Show when={error()}><p class="pos-error" role="alert">{error()} <Show when={loadFailed()}><Button size="compact" onClick={() => void refresh()}>Retry</Button></Show></p></Show>
         <Button variant="primary" size="touch" block data-pos="primary" disabled={/^0+$/.test(digits()) || busy()} onClick={() => void charge()}>{busy() ? 'Creating order…' : 'Charge'}</Button>
-        <AllOrders/>
       </main>
     </Show>
 
@@ -684,7 +683,6 @@ function App() {
               <p class="pos-action-hint">Background keeps this payment open · Cancel asks for confirmation</p>
             </Show>
           </Show>
-          <AllOrders/>
         </div>
       </main>
     )}</Show>}</Show>
@@ -709,7 +707,7 @@ function App() {
         <Show when={tab() === 'finished'}>
           <p class="pos-list-note">Completed on this device since the POS was opened. They clear after 24 hours or when the page reloads. <a href={allOrdersUrl()}>See all orders →</a></p>
         </Show>
-        <Show when={error()}><p class="pos-error" role="alert">{error()} <Button size="compact" onClick={() => void refresh()}>Retry</Button></p></Show>
+        <Show when={error()}><p class="pos-error" role="alert">{error()}</p></Show>
         <Show when={!error() && visible().length === 0}>
           <Show when={search().trim()} fallback={<p class="pos-empty">{`No ${tab()} orders yet.`}</p>}>
             <p class="pos-empty">No matches from this session. <a href={allOrdersUrl(search().trim())}>Search all orders →</a></p>

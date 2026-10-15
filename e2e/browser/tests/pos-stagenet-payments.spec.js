@@ -167,9 +167,6 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     // land roughly every ~2 minutes.
     await expect(bgItem).toBeHidden({ timeout: 5 * 60 * 1000 });
     // The stack is gone once nothing is left in the background.
-    await page.getByRole('button', { name: 'All orders' }).click();
-    await page.getByRole('button', { name: /Finished/ }).click();
-    const core = order.order_id.replace(/^order_/, '');
-    await expect(page.locator('.mk-card').filter({ hasText: `#${core.slice(0, 6)}…${core.slice(-6)}` })).toContainText('Paid');
+    await expect(page.locator('.pos-stack')).toHaveCount(0);
   });
 });
