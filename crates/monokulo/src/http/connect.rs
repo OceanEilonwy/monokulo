@@ -1135,7 +1135,7 @@ mod tests {
         // The site unlocks.
         let page = body_text(get(&router, &settings, &cookie).await).await;
         assert!(
-            page.contains(r#"name="store_site" value="shop.example.com""#),
+            page.contains(r#"name="store_site" id="store-site" value="shop.example.com""#),
             "{page}"
         );
         assert!(page.contains("<h4>Before</h4>"), "{page}");

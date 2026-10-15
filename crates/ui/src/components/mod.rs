@@ -69,11 +69,22 @@ pub fn catalogue() -> Vec<Specimens> {
         specimens(content::disclosure_examples()),
         specimens(content::checks_examples()),
         specimens(content::timeline_examples()),
+        specimens(content::table_examples()),
+        // Shown in Table's examples: a row or a cell alone isn't a table.
+        specimens(Vec::<(&str, content::Row)>::new()),
+        specimens(Vec::<(&str, content::Cell)>::new()),
         specimens(dialog::dialog_examples()),
         specimens(dialog::dialog_title_examples()),
         specimens(dialog::dialog_actions_examples()),
         specimens(dialog::dialog_page_examples()),
         specimens(forms::field_examples()),
+        specimens(forms::input_examples()),
+        specimens(forms::text_area_examples()),
+        specimens(forms::checkbox_examples()),
+        specimens(forms::switch_examples()),
+        specimens(forms::radio_cards_examples()),
+        specimens(forms::icon_button_examples()),
+        specimens(forms::form_actions_examples()),
         specimens(select::select_examples())
             .partial("select-demo", select::select_demo())
             .partial("book-theme", select::book_theme()),

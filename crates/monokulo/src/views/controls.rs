@@ -15,16 +15,14 @@ pub fn switch(
     described_by: Option<&str>,
     saved: Option<bool>,
 ) -> Markup {
-    let saved = saved.map(|on| if on { "on" } else { "off" });
-    html! {
-        input type="hidden" name="switches" value=(name);
-        label class="switch" {
-            input type="checkbox" role="switch" name=(name) value="true" id=(id) checked[on] aria-describedby=[described_by] data-saved=[saved];
-            span class="switch-track" aria-hidden="true" {}
-            span class="switch-on" aria-hidden="true" { "On" }
-            span class="switch-off" aria-hidden="true" { "Off" }
-        }
+    let mut switch = ui::Switch::new(name, id).on(on).listed_in("switches");
+    if let Some(described_by) = described_by {
+        switch = switch.described_by(described_by);
     }
+    if let Some(saved) = saved {
+        switch = switch.saved(ui::Saved::from(saved));
+    }
+    html! { (switch) }
 }
 
 #[cfg(test)]

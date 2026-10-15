@@ -199,16 +199,17 @@ pub fn theme_choice(selected: Theme, saved: Option<Theme>, help: &str) -> Markup
     Field::group("Theme", "theme-label")
         .help(None, html! { (help) })
         .render(html! {
-            div class="themes" {
-                @for (theme, label) in [(Theme::System, "System"), (Theme::Light, "Light"), (Theme::Dark, "Dark")] {
-                    label class="radio-card" {
-                        input type="radio" name="theme" value=(theme.as_str()) checked[theme == selected]
-                            data-saved=[saved.map(|saved| if saved == theme { "on" } else { "off" })];
-                        span class=(format!("mini-page {}", theme.as_str())) aria-hidden="true" { span class="bar" {} }
-                        (label)
-                    }
-                }
-            }
+            (ui::RadioCards::new("theme", [(Theme::System, "System"), (Theme::Light, "Light"), (Theme::Dark, "Dark")]
+                .into_iter()
+                .map(|(theme, label)| ui::RadioCard {
+                    value: theme.as_str().into(),
+                    label: label.into(),
+                    picture: Some(html! { span class=(format!("mini-page {}", theme.as_str())) aria-hidden="true" { span class="bar" {} } }.into()),
+                    checked: theme == selected,
+                    saved: saved.map(|saved| ui::Saved::from(saved == theme)),
+                })
+                .collect::<Vec<_>>())
+                .compact(true))
         })
 }
 

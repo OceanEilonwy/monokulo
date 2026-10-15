@@ -1243,7 +1243,7 @@ async fn a_stores_name_and_site_are_changed_in_its_settings() {
         "{page}"
     );
     assert!(
-        page.contains(r#"id="store-site" name="store_site" value="" inputmode"#),
+        page.contains(r#"name="store_site" id="store-site" value="" placeholder"#),
         "{page}"
     );
     assert!(page.contains("Your website (optional)"), "{page}");

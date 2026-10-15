@@ -497,3 +497,138 @@ pub(super) fn timeline_examples() -> Vec<(&'static str, Timeline)> {
         ]),
     )]
 }
+
+/// How a table changes on a phone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]
+pub enum TableLook {
+    /// A table on a phone too, scrolling sideways.
+    Plain,
+    /// Each row a card: cells take their places by `CellPart`.
+    Cards,
+    /// Each row a box of its cells, each named by its `label`: rows of
+    /// settings with inputs and buttons.
+    Stack,
+    /// Facts, a header cell then a cell per row: each label over its value.
+    Facts,
+}
+
+component! {
+    /// A table, in a box of its own that scrolls sideways when it's wider
+    /// than the page. On a phone a column whose cells are `optional` goes,
+    /// and `look` reshapes the rest. A page styling its columns names the
+    /// table with `data-table`.
+    pub struct Table {
+        /// The rows: `Row`s (or a page's `tr`s).
+        children: Slot,
+        /// The header row.
+        head: Option<Slot>,
+        #[default(TableLook::Plain)]
+        look: TableLook,
+        /// For screen readers: what the table is.
+        caption: Option<String>,
+        /// Without its scroll box: a table already narrow enough.
+        #[default(true)]
+        scroll: bool,
+        rest: Attrs,
+    }
+    html {
+        @if scroll {
+            div class="table-scroll" {
+                table class=join["table-cards" if look == TableLook::Cards, "table-stack" if look == TableLook::Stack, "kv-table" if look == TableLook::Facts] ..rest {
+                    @if let Some(caption) = caption { caption class="sr-only" { (caption) } }
+                    @if let Some(head) = head { thead { (head) } }
+                    tbody { (children) }
+                }
+            }
+        } @else {
+            table class=join["table-cards" if look == TableLook::Cards, "table-stack" if look == TableLook::Stack, "kv-table" if look == TableLook::Facts] ..rest {
+                @if let Some(caption) = caption { caption class="sr-only" { (caption) } }
+                @if let Some(head) = head { thead { (head) } }
+                tbody { (children) }
+            }
+        }
+    }
+}
+
+pub(super) fn table_examples() -> Vec<(&'static str, Table)> {
+    let row = |order: &str, status: Tag, amount: &str| {
+        Slot::from(Row::new(Slot::many([
+            Cell::new(order).part(CellPart::Title).into(),
+            Slot::from(Cell::new(status).part(CellPart::Status)),
+            Slot::from(Cell::new(amount).part(CellPart::Amount)),
+        ])))
+    };
+    let head = Row::new(Slot::many([
+        Cell::new("Order").header(true).into(),
+        Slot::from(Cell::new("Status").header(true)),
+        Slot::from(Cell::new("Amount").header(true)),
+    ]));
+    vec![
+        (
+            "Orders, cards on a phone",
+            Table::new(Slot::many([
+                row("Coffee", Tag::new("Paid").state(OrderState::Paid), "0.02 XMR"),
+                row("Tea", Tag::new("Waiting for payment").state(OrderState::Pending).short("Waiting"), "0.01 XMR"),
+            ]))
+            .head(head)
+            .look(TableLook::Cards),
+        ),
+        (
+            "Facts",
+            Table::new(Slot::many([
+                Row::new(Slot::many([Cell::new("Network").header(true).into(), Slot::from(Cell::new("Mainnet"))])).into(),
+                Slot::from(Row::new(Slot::many([Cell::new("Height").header(true).into(), Slot::from(Cell::new("3,412,001"))]))),
+            ]))
+            .look(TableLook::Facts),
+        ),
+    ]
+}
+
+component! {
+    /// A table's row.
+    pub struct Row {
+        children: Slot,
+        rest: Attrs,
+    }
+    html {
+        tr ..rest { (children) }
+    }
+}
+
+/// Where a cell goes when its row is a card on a phone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]
+pub enum CellPart {
+    /// Top left, bold.
+    Title,
+    /// Top right.
+    Status,
+    /// Under the title, bold.
+    Amount,
+    /// Under the status, muted.
+    When,
+    /// Across the bottom, muted.
+    Meta,
+}
+
+component! {
+    /// A table's cell; a header cell with `header`.
+    pub struct Cell {
+        children: Slot,
+        #[default(false)]
+        header: bool,
+        part: Option<CellPart>,
+        /// Its column's name, shown above it in a `Stack` table on a phone.
+        label: Option<String>,
+        /// Left out on a phone.
+        #[default(false)]
+        optional: bool,
+        rest: Attrs,
+    }
+    html {
+        @if header {
+            th class=join[{ "card-" (part) } if part, "col-optional" if optional] data-label=[label] ..rest { (children) }
+        } @else {
+            td class=join[{ "card-" (part) } if part, "col-optional" if optional] data-label=[label] ..rest { (children) }
+        }
+    }
+}

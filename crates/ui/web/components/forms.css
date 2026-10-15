@@ -1,0 +1,22 @@
+/* Form controls (crates/ui/src/components/forms.rs) beyond Field: a
+   checkbox with what it means (Checkbox), radio cards (RadioCards), an
+   icon-only button (IconButton) and a form's row of buttons (FormActions).
+   Inputs and text areas are .mk-input (primitives.css); the switch is in
+   select.css. */
+.check-line { display: flex; gap: var(--space-sm); align-items: flex-start; font-weight: 600; }
+.check-line input { width: auto; margin: var(--space-xs) 0 0; accent-color: var(--accent-text); }
+.mk-checkbox { margin: 0; accent-color: var(--accent-text); }
+.form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin-top: var(--space-md); }
+.form-actions .spacer { flex-grow: 1; }
+.form-actions :is(button, .btn) { margin: 0; }
+.radio-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: var(--space-md); margin: var(--space-sm) 0; border: 0; padding: 0; }
+.radio-card { display: flex; align-items: center; gap: var(--space-md); margin: 0; padding: var(--space-md) var(--space-lg); border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--paper-raised); font-weight: 400; cursor: pointer; }
+.radio-card:has(input:checked) { border-color: var(--ink); background: var(--tint-highlight); }
+.radio-card input { width: auto; margin: 0; accent-color: var(--accent-text); }
+.radio-card[aria-disabled="true"] { cursor: not-allowed; background: var(--surface-sunken); border-style: dashed; }
+.radio-card[aria-disabled="true"] > *:not(.tag) { opacity: .45; }
+/* Small cards side by side: the theme's three. */
+.radio-cards.is-compact { grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: var(--space-sm); margin: 0; }
+.radio-cards.is-compact .radio-card { padding: var(--space-sm) var(--space-md); gap: var(--space-sm); }
+.mk-btn.icon-only { width: 2.1rem; height: 2.1rem; min-height: 0; padding: 0; }
+.mk-btn.icon-only svg { width: 1.1rem; height: 1.1rem; }
