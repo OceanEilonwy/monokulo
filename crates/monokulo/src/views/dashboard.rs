@@ -61,81 +61,92 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
             h1 { "Dashboard" }
 
             @if data.has_stores {
-                div class="box" {
+                (ui::Panel::new(html! {
                     strong { "Total received (detected):" }
                     // The engine lists a store's latest orders, not all
                     // of them: the figure says so rather than claim a total.
                     " " (data.total_received_xmr) " XMR across each connected store's latest 50 orders"
-                }
+                }))
 
                 h2 { "Your stores" }
-                // On a phone only the name, health and link stay (`.col-optional`).
-                div class="table-scroll" { table {
-                    thead {
-                        tr { th { "Store" } th { "Wallet" } th class="col-optional" { "Site" } th class="col-optional" { "Public key" } th { "Status" } th {} }
-                    }
-                    tbody {
-                        @for store in &data.stores {
-                            tr {
-                                td { (store.display_name) }
-                                td {
-                                    @if let Some((name, network)) = &store.wallet {
-                                        (name) " " (super::network_badge(network))
-                                    } @else {
-                                        span class="muted" { "Not linked yet" }
-                                    }
-                                }
-                                td class="col-optional" { (store.site) }
-                                td class="col-optional" { code { (super::short_id(&store.public_key)) } }
-                                td { span class=(format!("tag tag-{}", store.health)) { (store.health_label) } }
-                                td class="nowrap" { a href=(format!("/dashboard/stores/{}", store.connection_id)) { "view →" } }
-                            }
-                        }
-                    }
-                } }
-                a class="btn btn-secondary" href="/setup" { "+ add another store" }
+                // On a phone only the name, health and link stay (optional cells go).
+                (ui::Table::new(ui::Slot::many(data.stores.iter().map(store_row)))
+                    .head(ui::Row::new(ui::Slot::many([
+                        ui::Cell::new("Store").header(true).into(),
+                        ui::Cell::new("Wallet").header(true).into(),
+                        ui::Cell::new("Site").header(true).optional(true).into(),
+                        ui::Cell::new("Public key").header(true).optional(true).into(),
+                        ui::Cell::new("Status").header(true).into(),
+                        ui::Slot::from(ui::Cell::new("").header(true)),
+                    ]))))
+                (ui::FormActions::new(ui::LinkButton::new("+ add another store", "/setup")))
 
                 h2 { "Recent orders" }
                 @if data.recent_orders.is_empty() {
                     p class="muted" { "No orders yet." }
                 } @else {
                     // On a phone: order, status and amount; the order page has the rest.
-                    div class="table-scroll" { table {
-                        thead {
-                            tr { th class="col-optional" { "Store" } th { "Order ID" } th { "Status" } th { "Amount" } th class="col-optional" { "Created" } }
-                        }
-                        tbody {
-                            @for order in &data.recent_orders {
-                                tr {
-                                    td class="col-optional" { (order.display_name) }
-                                    td {
-                                        a href=(format!("/dashboard/stores/{}/orders/{}", order.connection_id, order.order_id)) {
-                                            (super::short_id(order.order_id.as_str()))
-                                        }
-                                    }
-                                    td { (super::state_badge(order.status)) }
-                                    td class="nowrap" { (super::display_amount(&order.amount, &order.currency)) }
-                                    td class="col-optional" { (chrome.clock.time(order.created_at)) }
-                                }
-                            }
-                        }
-                    } }
+                    (ui::Table::new(ui::Slot::many(data.recent_orders.iter().map(|order| order_row(chrome, order))))
+                        .head(ui::Row::new(ui::Slot::many([
+                            ui::Cell::new("Store").header(true).optional(true).into(),
+                            ui::Cell::new("Order ID").header(true).into(),
+                            ui::Cell::new("Status").header(true).into(),
+                            ui::Cell::new("Amount").header(true).into(),
+                            ui::Slot::from(ui::Cell::new("Created").header(true).optional(true)),
+                        ]))))
                 }
             }
             @if !data.has_stores {
-                div class="box" {
+                (ui::Panel::new(html! {
                     h2 { "Connect your first store" }
                     p {
                         "You don't have any stores connected yet. Adding one takes a couple of minutes - pick the "
                         "guided flow for WooCommerce, or the advanced form if you're integrating something custom."
                     }
-                    a class="btn btn-primary" href="/setup" { "+ add a store" }
-                }
+                    (ui::FormActions::new(ui::LinkButton::new("+ add a store", "/setup").variant(ui::ButtonVariant::Primary)))
+                }))
             }
         }
     };
 
     layout(chrome, "Dashboard - Monokulo", body)
+}
+
+fn store_row(store: &DashboardStoreRow) -> ui::Slot {
+    ui::Row::new(ui::Slot::many([
+        ui::Cell::new(store.display_name.as_str()).into(),
+        ui::Cell::new(html! {
+            @if let Some((name, network)) = &store.wallet {
+                (name) " " (super::network_badge(network))
+            } @else {
+                span class="muted" { "Not linked yet" }
+            }
+        })
+        .into(),
+        ui::Cell::new(store.site.as_str()).optional(true).into(),
+        ui::Cell::new(html! { code { (super::short_id(&store.public_key)) } }).optional(true).into(),
+        ui::Cell::new(super::store_detail::health_tag(&store.health, &store.health_label)).into(),
+        ui::Slot::from(ui::Cell::new(html! {
+            a class="nowrap" href=(format!("/dashboard/stores/{}", store.connection_id)) { "view →" }
+        })),
+    ]))
+    .into()
+}
+
+fn order_row(chrome: &PageChrome, order: &DashboardOrderRow) -> ui::Slot {
+    ui::Row::new(ui::Slot::many([
+        ui::Cell::new(order.display_name.as_str()).optional(true).into(),
+        ui::Cell::new(html! {
+            a href=(format!("/dashboard/stores/{}/orders/{}", order.connection_id, order.order_id)) {
+                (super::short_id(order.order_id.as_str()))
+            }
+        })
+        .into(),
+        ui::Cell::new(super::state_badge(order.status)).into(),
+        ui::Cell::new(html! { span class="nowrap" { (super::display_amount(&order.amount, &order.currency)) } }).into(),
+        ui::Slot::from(ui::Cell::new(chrome.clock.time(order.created_at)).optional(true)),
+    ]))
+    .into()
 }
 
 #[cfg(test)]

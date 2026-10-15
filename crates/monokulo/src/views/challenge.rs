@@ -67,7 +67,7 @@ pub fn challenge_page(chrome: &PageChrome, view: &ChallengePageView) -> Markup {
                 }
             }
             @if let Some(error) = &view.error {
-                p class="error" role="alert" { (error) }
+                (ui::Alert::new(error.as_str(), ui::Tone::Error))
             }
             p class="challenge-why" {
                 "This page has had a lot of requests from your connection, so we're making sure it's a real visitor "

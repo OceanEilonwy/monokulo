@@ -253,8 +253,14 @@ fn profile_panel(data: &AccountViewModel) -> Markup {
             (card(data, Card::Email, Field::new("Email", "email")
                 .help(None, html! { "What you log in with." })
                 .render(html! {
-                    input type="email" id="email" name="email" value=(shown.email) required autocomplete="email"
-                        data-email-input data-saved=[refused.then_some(&saved.email)];
+                    (ui::Input::new("email")
+                        .id("email")
+                        .kind(ui::InputType::Email)
+                        .value(shown.email.clone())
+                        .required(true)
+                        .autocomplete("email")
+                        .attr("data-email-input", "")
+                        .maybe_attr("data-saved", refused.then(|| saved.email.clone())))
                 })))
             (card(data, Card::Appearance, theme_choice(shown.theme, refused.then_some(saved.theme), "The account menu changes it too.")))
             (card(data, Card::Time, html! {
@@ -287,6 +293,10 @@ fn profile_panel(data: &AccountViewModel) -> Markup {
     )
 }
 
+/// Why to check a new email, on the question and its page.
+const CHECK_THE_EMAIL: &str =
+    "Monokulo doesn't send a confirmation email, so check it's typed right: a mistake here could lock you out.";
+
 /// The question an email change asks before it's saved, with JavaScript
 /// (`static/account.js` opens it on Save). Its box is sent with the form:
 /// empty unless the dialog filled it in.
@@ -295,17 +305,23 @@ fn email_confirm_dialog(saved: &Profile) -> Markup {
         (ui::Dialog::new("email-confirm", "email-confirm-title", html! {
             (ui::DialogTitle::new("email-confirm-title", "Log in with a new email?").in_dialog(true))
             p { "From now on you log in with " strong data-email-new {} " instead of " (saved.email) "." }
-            p class="hint" { "Monokulo doesn't send a confirmation email, so check it's typed right: a mistake here could lock you out." }
+            (ui::Hint::new(CHECK_THE_EMAIL))
             div class="setting-field" {
                 div class="setting-label-row" { label class="setting-label" for="email-again" { "Type the new email again" } }
-                input type="email" id="email-again" name="confirm_email" autocomplete="off" data-email-again;
+                (ui::Input::new("confirm_email")
+                    .id("email-again")
+                    .kind(ui::InputType::Email)
+                    .autocomplete("off")
+                    .attr("data-email-again", ""))
                 p class="field-help setting-problem" data-email-mismatch hidden { "That isn't the same email." }
             }
-            div class="form-actions dialog-actions" {
-                span class="spacer" {}
-                button type="button" data-email-cancel { "Cancel" }
-                button type="button" class="btn-primary" data-email-go { "Change email" }
-            }
+            (ui::DialogActions::new(ui::Slot::many([
+                ui::Button::new("Cancel").attr("data-email-cancel", "").into(),
+                ui::Button::new("Change email")
+                    .variant(ui::ButtonVariant::Primary)
+                    .attr("data-email-go", "")
+                    .into(),
+            ])))
         }))
     }
 }
@@ -320,12 +336,19 @@ fn security_panel(data: &AccountViewModel) -> Markup {
             input type="hidden" name="tab" value="security";
             (card(data, Card::Password, html! {
                 (Field::new("Current password", "current-password").render(html! {
-                    input type="password" id="current-password" name="current_password" autocomplete="current-password";
+                    (ui::Input::new("current_password")
+                        .id("current-password")
+                        .kind(ui::InputType::Password)
+                        .autocomplete("current-password"))
                 }))
                 (Field::new("New password", "new-password")
                     .help(None, html! { "At least " (min) " characters. Changing it logs you out everywhere else." })
                     .render(html! {
-                        input type="password" id="new-password" name="new_password" minlength=(min) autocomplete="new-password";
+                        (ui::Input::new("new_password")
+                            .id("new-password")
+                            .kind(ui::InputType::Password)
+                            .autocomplete("new-password")
+                            .attr("minlength", min.to_string()))
                     }))
             }))
             (save_bar(data, "Saving changes your password."))
@@ -379,10 +402,10 @@ pub fn email_confirm_page(
             nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/account" { "Account" } }
             h1 { "Log in with a new email?" }
             @if let Some(error) = error {
-                p class="error" role="alert" { (error) }
+                (ui::Alert::new(error, ui::Tone::Error))
             }
             p { "From now on you log in with " strong { (submitted.email) } " instead of " (old_email) "." }
-            p class="hint" { "Monokulo doesn't send a confirmation email, so check it's typed right: a mistake here could lock you out." }
+            (ui::Hint::new(CHECK_THE_EMAIL))
             form method="post" action="/account/profile" {
                 input type="hidden" name="tab" value="profile";
                 input type="hidden" name="email" value=(submitted.email);
@@ -390,12 +413,20 @@ pub fn email_confirm_page(
                 input type="hidden" name="timezone" value=(submitted.timezone.as_deref().unwrap_or(""));
                 div class="setting-field" {
                     div class="setting-label-row" { label class="setting-label" for="email-again" { "Type the new email again" } }
-                    input type="email" id="email-again" name="confirm_email" required autocomplete="off" autofocus;
+                    (ui::Input::new("confirm_email")
+                        .id("email-again")
+                        .kind(ui::InputType::Email)
+                        .required(true)
+                        .autocomplete("off")
+                        .attr("autofocus", ""))
                 }
-                div class="form-actions" {
-                    button type="submit" class="btn-primary" { "Change email" }
-                    a class="btn" href="/account" { "Cancel" }
-                }
+                (ui::FormActions::new(ui::Slot::many([
+                    ui::Button::new("Change email")
+                        .variant(ui::ButtonVariant::Primary)
+                        .kind(ui::ButtonType::Submit)
+                        .into(),
+                    ui::LinkButton::new("Cancel", "/account").into(),
+                ])))
             }
         }
     };
@@ -476,11 +507,11 @@ mod tests {
             "{html}"
         );
         assert_eq!(
-            html.matches("btn-primary").count(),
+            html.matches("btn-primary").count() + html.matches(r#"data-variant="primary""#).count(),
             2,
             "Save, and the dialog's Change email: {html}"
         );
-        assert!(html.contains(r#"<input type="email" id="email" name="email" value="ann@example.org" required autocomplete="email" data-email-input>"#), "{html}");
+        assert!(html.contains(r#"<input class="mk-input" type="email" name="email" id="email" value="ann@example.org" autocomplete="email" required data-email-input="">"#), "{html}");
         assert!(
             html.contains(r#"<input type="radio" name="theme" value="dark" checked>"#),
             "{html}"
@@ -534,7 +565,7 @@ mod tests {
             ),
             "{html}"
         );
-        assert!(html.contains(r#"value="taken@example.org" required autocomplete="email" data-email-input data-saved="ann@example.org">"#), "{html}");
+        assert!(html.contains(r#"value="taken@example.org" autocomplete="email" required data-email-input="" data-saved="ann@example.org">"#), "{html}");
         assert!(
             html.contains(
                 r#"<input type="radio" name="theme" value="dark" checked data-saved="on">"#
@@ -602,12 +633,12 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"name="current_password" autocomplete="current-password">"#),
+            html.contains(r#"name="current_password" id="current-password" autocomplete="current-password">"#),
             "{html}"
         );
         assert!(
             html.contains(&format!(
-                r#"name="new_password" minlength="{}" autocomplete="new-password">"#,
+                r#"name="new_password" id="new-password" autocomplete="new-password" minlength="{}">"#,
                 crate::http::MIN_PASSWORD_LEN
             )),
             "{html}"
@@ -642,7 +673,7 @@ mod tests {
         ] {
             assert!(html.contains(hidden), "{hidden} in {html}");
         }
-        assert!(html.contains(r#"name="confirm_email" required"#), "{html}");
+        assert!(html.contains(r#"name="confirm_email" id="email-again" autocomplete="off" required"#), "{html}");
         assert!(
             html.contains(r#"<p class="error" role="alert">That isn't the same email.</p>"#),
             "{html}"

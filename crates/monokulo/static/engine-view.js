@@ -83,7 +83,7 @@
     timers.clear();
     clearTokens();
   }
-  function showRefresh(show) { page.querySelectorAll(".reload").forEach(el => { el.hidden = !show; }); }
+  function showRefresh(show) { page.querySelectorAll("[data-reload]").forEach(el => { el.hidden = !show; }); }
   const htmlCache = new WeakMap();
   function setHTML(element, html) {
     if (element && htmlCache.get(element) !== html) { element.innerHTML = html; htmlCache.set(element, html); }
@@ -472,7 +472,7 @@
   function drawRound(v) {
     const box = $("engine-round");
     if (!box) return;
-    const detailsOpen = box.querySelector(".round-breakdown")?.open || false;
+    const detailsOpen = box.querySelector("[data-round-breakdown]")?.open || false;
     let html = "";
     // Drawn to the server's scale: whether a gap is joined or crossed by a
     // thread is decided at that scale.
@@ -499,7 +499,7 @@
       const lastBar = round.lanes.flatMap((lane) => lane.bars).find((b) => b.last);
       const at = lastBar ? barEnd(lastBar, round.scale_ms) : pct(round.elapsed_ms, round.scale_ms);
       html += `<div></div><div class="ruler"><div class="ruler-in"><span class="ruler-label" style="left:${Math.min(99.5, at).toFixed(2)}%">${esc(round.elapsed)}</span></div></div><div></div></div>`;
-      html += `<details class="round-breakdown"${detailsOpen ? " open" : ""}><summary>Timing details</summary>${round.lanes.flatMap(lane => lane.bars.map(bar => `<p><strong>${esc(bar.title)}</strong></p><ul>${(bar.details || []).map(detail => `<li>${esc(detail)}</li>`).join("")}</ul>`)).join("")}</details>`;
+      html += `<details class="disclosure" data-round-breakdown=""${detailsOpen ? " open" : ""}><summary>Timing details</summary>${round.lanes.flatMap(lane => lane.bars.map(bar => `<p><strong>${esc(bar.title)}</strong></p><ul>${(bar.details || []).map(detail => `<li>${esc(detail)}</li>`).join("")}</ul>`)).join("")}</details>`;
     } else {
       html += '<header><h2 id="h-round" title="Scanner round for this network since the engine started; resets on engine restart">Round</h2><span class="engine-hint">No round recorded yet.</span></header>';
     }
@@ -512,11 +512,11 @@
       }
     }
     html += '</div><div class="legend"><span><i class="rgap" aria-hidden="true"></i>slept</span><span><i class="rgap woken" aria-hidden="true"></i>woken by a new block</span><span><i class="rpair" aria-hidden="true"><i></i><i></i></i>back to back: work was left</span></div></div>';
-    const oldDetails = box.querySelector(".round-breakdown[open]");
+    const oldDetails = box.querySelector("[data-round-breakdown][open]");
     const focusInDetails = oldDetails?.contains(document.activeElement);
     setHTML(box, html);
     if (oldDetails && !oldDetails.isConnected) {
-      box.querySelector(".round-breakdown")?.replaceWith(oldDetails);
+      box.querySelector("[data-round-breakdown]")?.replaceWith(oldDetails);
       if (focusInDetails) oldDetails.querySelector("summary")?.focus({ preventScroll: true });
     }
   }
@@ -588,7 +588,7 @@
     const scanning = machine.scanning;
     if (scanning) {
       $("scan-sum").firstElementChild.textContent = scanning.preview;
-      setHTML($("scan-body"), (scanning.slow ? `<p class="notice slow-block" role="status">${esc(scanning.slow)}</p>` : "") +
+      setHTML($("scan-body"), (scanning.slow ? `<p class="notice" role="status" data-slow-block="">${esc(scanning.slow)}</p>` : "") +
         `<dl class="scan-figures">${scanning.rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>`);
     }
   }
@@ -603,7 +603,7 @@
   // ---- events table ----
   const filters = new Set(TIERS);
   function drawEvents() {
-    const body = $("engine-events");
+    const body = $("engine-events")?.tBodies[0];
     if (!body) return;
     const rows = [];
     for (let i = marks.length - 1; i >= 0 && rows.length < 60; i--) {
@@ -612,8 +612,8 @@
       if (mark.tier && !filters.has(mark.tier)) continue;
       rows.push(mark);
     }
-    setHTML(body, rows.map((m, i) => `<tr class="${m.key ? "key" : ""}${i === 0 && mode !== "live" ? " now" : ""}" data-at="${m.at_ms}"><td class="num">${fmt(m.round)}</td><td>${m.tier ? `<span class="tierchip t-${m.tier}">${TIER_NAMES[m.tier]}</span>` : ""}</td><td>${esc(m.text)}</td></tr>`).join("") ||
-      '<tr><td colspan="3" class="engine-hint">Nothing recorded yet.</td></tr>');
+    setHTML(body, rows.map((m, i) => `<tr${m.key ? ' data-key=""' : ""}${i === 0 && mode !== "live" ? ' data-now=""' : ""} data-at="${m.at_ms}"><td>${fmt(m.round)}</td><td>${m.tier ? `<span class="tierchip t-${m.tier}">${TIER_NAMES[m.tier]}</span>` : ""}</td><td>${esc(m.text)}</td></tr>`).join("") ||
+      '<tr><td colspan="3"><span class="engine-hint">Nothing recorded yet.</span></td></tr>');
   }
 
   // ---- animations: effects, never state ----

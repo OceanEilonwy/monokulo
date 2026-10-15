@@ -11,7 +11,7 @@
 use maud::{html, Markup};
 
 use super::{layout, PageChrome};
-use ui::{Button, ButtonType, ButtonVariant, Field, InputType};
+use ui::{Alert, Button, ButtonType, ButtonVariant, Field, InputType, Tone};
 
 /// `error`, when present, means the same thing on both pages: the previous
 /// submission was rejected (a duplicate email, an invalid invite, wrong
@@ -72,7 +72,7 @@ pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
         div class="wrap" {
             h1 { "Sign up" }
             @if let Some(error) = &data.error {
-                p class="error" { (error) }
+                (Alert::new(error.as_str(), Tone::Error))
             }
             @if data.invite_required {
                 p {
@@ -108,16 +108,16 @@ pub fn login_page(chrome: &PageChrome, data: &LoginViewModel) -> Markup {
         div class="wrap" {
             h1 { "Log in" }
             @if let Some(site) = &data.connecting_site {
-                div class="notice" {
+                (Alert::new(html! {
                     p { strong { (site) " wants to connect to Monokulo." } }
                     p {
                         "Its WooCommerce plugin sent you here. Log in to choose which wallet its payments go to. "
                         "New to Monokulo? Sign up instead: you'll set up a wallet, then come straight back to this."
                     }
-                }
+                }, Tone::Notice).block(true).quiet(true))
             }
             @if let Some(error) = &data.error {
-                p class="error" { (error) }
+                (Alert::new(error.as_str(), Tone::Error))
             }
             form method="post" action="/dashboard/login" class="mk-stack" {
                 @if let Some(next) = &data.next {

@@ -711,7 +711,7 @@ mod tests {
         let order = [
             r#"<nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb"><a href="/status">Status</a></nav><div class="engine-titlebar"><h1>Engine</h1><details class="engine-help""#,
             r#"<span class="titlebar-spacer"></span><form class="engine-network" method="get" action="/status/engine">"#,
-            r#"<button type="submit" class="network-go no-js-only">Go</button></form><a class="btn btn-secondary reload" href="/status/engine?network=stagenet""#,
+            r#"<span class="network-go no-js-only"><button class="mk-btn" type="submit">Go</button></span></form><a class="mk-btn icon-only" href="/status/engine?network=stagenet" aria-label="Refresh page" title="Refresh page" data-reload"#,
             r#"id="engine-summary""#,
             r#"id="engine-machine""#,
             r#"id="engine-chain""#,
@@ -732,7 +732,7 @@ mod tests {
         // The breakdown's summary says what it is; the round is the card's
         // heading.
         assert!(
-            html.contains(r#"<details class="round-breakdown"><summary>Timing details</summary>"#)
+            html.contains(r#"<details class="disclosure" data-round-breakdown=""><summary>Timing details</summary>"#)
         );
         for gone in [
             "engine-side",

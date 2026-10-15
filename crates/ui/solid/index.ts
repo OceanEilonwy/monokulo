@@ -28,6 +28,7 @@ export * from './Checkbox';
 export * from './Switch';
 export * from './RadioCards';
 export * from './IconButton';
+export * from './IconLink';
 export * from './FormActions';
 export * from './Select';
 export * from './ProgressSteps';

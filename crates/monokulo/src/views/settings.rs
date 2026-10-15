@@ -466,7 +466,7 @@ mod tests {
         ));
         assert_eq!(
             bar,
-            r#"<div id="save-bar" class="save-bar is-failed" role="region" aria-label="Save changes" data-mk="1" data-island="SaveBar"><div class="wrap save-bar-inner"><p class="save-bar-message" data-save-bar-message tabindex="-1"><span data-mk="2">Nothing saved.</span><!--mk:3--></p><div class="save-bar-actions" data-mk="4"><a class="btn" href="/account" data-discard-all data-mk="5">Discard changes</a><button type="submit" class="btn-primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div>"#
+            r#"<div id="save-bar" class="save-bar is-failed" role="region" aria-label="Save changes" data-mk="1" data-island="SaveBar"><div class="wrap save-bar-inner"><p class="save-bar-message" data-save-bar-message tabindex="-1"><span data-mk="2">Nothing saved.</span><!--mk:3--></p><div class="save-bar-actions" data-mk="4"><a class="mk-btn" href="/account" data-discard-all data-mk="5">Discard changes</a><button type="submit" class="mk-btn" data-variant="primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div>"#
         );
     }
 

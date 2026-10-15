@@ -47,7 +47,7 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
             (theme_toggle(chrome))
             (status_indicator(chrome.health, ui::DotPlace::Pos))
         }
-        noscript { p class="error" { "POS requires JavaScript. Use Create an order on the store page instead." } }
+        noscript { (ui::Alert::new("POS requires JavaScript. Use Create an order on the store page instead.", ui::Tone::Error).quiet(true)) }
         // The status indicator's island polls for the instance's health.
         (script("ui-islands.js", Load::Module))
         (script("pos-app.js", Load::Module))

@@ -344,8 +344,8 @@ component! {
                     }
                 }
                 div class="save-bar-actions" hidden[b.leaving] {
-                    a class="btn" href=(discard_href) data-discard-all on:click=discard_all { "Discard changes" }
-                    button type="submit" class="btn-primary" data-save disabled[b.saving] aria-busy="true" if b.saving ref=save {
+                    a class="mk-btn" href=(discard_href) data-discard-all on:click=discard_all { "Discard changes" }
+                    button type="submit" class="mk-btn" data-variant="primary" data-save disabled[b.saving] aria-busy="true" if b.saving ref=save {
                         @if enhanced {
                             @if b.saving { "Saving…" } @else { (save_label) }
                         } @else {
@@ -356,9 +356,9 @@ component! {
                 @if enhanced {
                     @if b.leaving {
                         div class="save-bar-actions" data-leave-actions {
-                            button type="button" data-leave="stay" on:click=stay { "Stay here" }
-                            button type="button" data-leave="discard" on:click=discard_and_go { "Discard and go" }
-                            button type="button" class="btn-primary" data-leave="save" on:click=save_and_go ref=go_save { "Save and go" }
+                            button type="button" class="mk-btn" data-leave="stay" on:click=stay { "Stay here" }
+                            button type="button" class="mk-btn" data-leave="discard" on:click=discard_and_go { "Discard and go" }
+                            button type="button" class="mk-btn" data-variant="primary" data-leave="save" on:click=save_and_go ref=go_save { "Save and go" }
                         }
                     }
                 }

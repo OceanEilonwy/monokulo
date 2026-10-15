@@ -2,6 +2,7 @@
 
 use maud::{html, Markup};
 pub use shared::proof::{NodeVerdict, ProofState};
+use ui::{Alert, Button, ButtonType, Cell, CellPart, Disclosure, Fact, Facts, Hint, LinkButton, Panel, Row, Slot, Table, TableLook, Tag, TagTone, Tone};
 
 use super::scaling::{network_name, thousands};
 use super::{layout, PageChrome};
@@ -187,47 +188,60 @@ pub struct StatusPageViewModel {
 pub fn live_fragment(data: &StatusPageViewModel) -> Markup {
     html! {
         div id="status-live" {
-            p class="hint" {
-                "Generated " (data.generated_at_display) ", with node heights as of that moment. The scan loop polls every "
-                (data.poll_interval_secs) "s."
-            }
+            (Hint::new(format!(
+                "Generated {}, with node heights as of that moment. The scan loop polls every {}s.",
+                data.generated_at_display, data.poll_interval_secs
+            )))
 
             @if let Some(alert) = &data.snp_alert {
-                div class="error" role="alert" id="snp-policy-alert" { (alert) }
+                (Alert::new(alert.as_str(), Tone::Error).block(true).attr("id", "snp-policy-alert"))
             }
             @for message in &data.slow_blocks {
-                p class="notice slow-block" role="status" { (message) }
+                (Alert::new(message.as_str(), Tone::Notice).flag("data-slow-block"))
             }
             @if let Some(abuse) = &data.abuse {
-                div class="box" id="abuse-protection" {
-                    h2 { "Abuse protection" }
-                    p class="hint" { "Only operators see this." }
-                    p {
-                        "Under-attack mode: "
-                        @if abuse.under_attack { span class="tag tag-error" { "on" } " - every visitor who isn't signed in is challenged." }
-                        @else { span class="tag tag-ok" { "off" } }
-                    }
-                    table {
-                        thead { tr { th { "Last hour" } th { "Challenges" } } }
-                        tbody {
-                            tr { td { "Issued" } td { (abuse.issued) } }
-                            tr { td { "Solved" } td { (abuse.solved) } }
-                            tr { td { "Refused" } td { (abuse.refused) } }
-                        }
-                    }
-                    p class="hint" { "Refused counts wrong or replayed answers and requests turned away past the hard limit." }
-                }
+                (Panel::new(abuse_protection(abuse)).attr("id", "abuse-protection"))
             }
             @if let Some(error) = &data.engine_error {
-                div class="error" { "The engine could not be reached: " (error) }
+                (Alert::new(format!("The engine could not be reached: {error}"), Tone::Error).quiet(true).block(true))
             } @else if data.networks.is_empty() {
-                div class="box" { p { "No Monero nodes are configured on this engine." } }
+                (Panel::new(html! { p { "No Monero nodes are configured on this engine." } }))
             } @else {
                 @for network in &data.networks {
                     (network_card(network, data.engine_page))
                 }
             }
         }
+    }
+}
+
+/// Abuse-protection activity over the last hour, for operators.
+fn abuse_protection(abuse: &AbuseStatusView) -> Markup {
+    let row = |what: &str, count: u64| {
+        Slot::from(Row::new(Slot::many([
+            Cell::new(what).into(),
+            Cell::new(count.to_string()).into(),
+        ])))
+    };
+    html! {
+        h2 { "Abuse protection" }
+        (Hint::new("Only operators see this."))
+        p {
+            "Under-attack mode: "
+            @if abuse.under_attack { (Tag::new("on").tone(TagTone::Error)) " - every visitor who isn't signed in is challenged." }
+            @else { (Tag::new("off").tone(TagTone::Ok)) }
+        }
+        (Table::new(Slot::many([
+            row("Issued", abuse.issued),
+            row("Solved", abuse.solved),
+            row("Refused", abuse.refused),
+        ]))
+        .head(Row::new(Slot::many([
+            Cell::new("Last hour").header(true).into(),
+            Cell::new("Challenges").header(true).into(),
+        ])))
+        .scroll(false))
+        (Hint::new("Refused counts wrong or replayed answers and requests turned away past the hard limit."))
     }
 }
 
@@ -239,46 +253,47 @@ fn network_card(network: &StatusNetworkView, engine_page: bool) -> Markup {
     let scanner_tag = html! {
         span class="mk-status-text" data-tone=[tone(&scanner.status_tag_class)] { (scanner.status_label) }
     };
-    html! {
-        div class="box net-card" id=(format!("network-{}", network.network)) {
-            div class="net-head" {
-                h2 { (name) }
-                (scanner_tag)
-                @if let Some(proof) = &network.proof {
-                    @let (label, class) = proof_tag(proof.state);
-                    span class="mk-status-text" data-tone=[tone(class)] { (label) }
-                }
-                @if engine_page {
-                    a class="btn net-head-action" href=(format!("/status/engine?network={}", network.network)) { "Watch it live" }
-                }
-            }
-
-            h3 class="caps" { "Nodes" }
-            (node_table(network))
-
-            h3 class="caps" { "Chain scanner" }
-            p class="line scanner-line" {
-                (scanner_tag)
-                @if scanner.ever_ticked {
-                    " last tick " (scanner.last_tick_display)
-                    " · " (thousands(scanner.tick_count)) (if scanner.tick_count == 1 { " tick" } else { " ticks" })
-                    " · " (scanner.tenants_scanned) (if scanner.tenants_scanned == 1 { " store" } else { " stores" })
-                    " scanned last tick"
-                }
-            }
-            @if let Some(last_error) = &scanner.last_error {
-                div class="error" { (last_error) }
-            }
-            @if let Some(headers_first) = &network.headers_first {
-                p class="hint headers-first" { (headers_first) }
-            }
+    let body = html! {
+        div class="net-head" {
+            h2 { (name) }
+            (scanner_tag)
             @if let Some(proof) = &network.proof {
-                (proof_section(&network.network, &name, proof))
+                @let (label, class) = proof_tag(proof.state);
+                span class="mk-status-text" data-tone=[tone(class)] { (label) }
             }
-            @if let Some(announcements) = &network.announcements {
-                (announcements_section(announcements))
+            @if engine_page {
+                (LinkButton::new("Watch it live", format!("/status/engine?network={}", network.network)))
             }
         }
+
+        h3 class="caps" { "Nodes" }
+        (node_table(network))
+
+        h3 class="caps" { "Chain scanner" }
+        p class="line scanner-line" {
+            (scanner_tag)
+            @if scanner.ever_ticked {
+                " last tick " (scanner.last_tick_display)
+                " · " (thousands(scanner.tick_count)) (if scanner.tick_count == 1 { " tick" } else { " ticks" })
+                " · " (scanner.tenants_scanned) (if scanner.tenants_scanned == 1 { " store" } else { " stores" })
+                " scanned last tick"
+            }
+        }
+        @if let Some(last_error) = &scanner.last_error {
+            (Alert::new(last_error.as_str(), Tone::Error).quiet(true).block(true))
+        }
+        @if let Some(headers_first) = &network.headers_first {
+            (Hint::new(headers_first.as_str()))
+        }
+        @if let Some(proof) = &network.proof {
+            (proof_section(&network.network, &name, proof))
+        }
+        @if let Some(announcements) = &network.announcements {
+            (announcements_section(announcements))
+        }
+    };
+    html! {
+        (Panel::new(body).attr("id", format!("network-{}", network.network)).flag("data-net-card"))
     }
 }
 
@@ -316,64 +331,67 @@ fn verdict_words(verdict: NodeVerdict) -> (&'static str, &'static str) {
     }
 }
 
-/// The nodes, one row each: a card each on a phone (`.table-cards`), its
-/// name and use first, then its proof-of-work verdict and height, then
+/// The nodes, one row each: a card each on a phone (`TableLook::Cards`),
+/// its name and use first, then its proof-of-work verdict and height, then
 /// what went wrong. Reachability shows on a phone's card only when it's a
-/// problem. The Proof of work column only while checking is shown.
+/// problem (`data-quiet` otherwise). The Proof of work column only while
+/// checking is shown.
 fn node_table(network: &StatusNetworkView) -> Markup {
     let proof = network.proof.is_some();
-    html! {
-        div class="table-scroll" {
-            table class="table-cards node-table" {
-                thead {
-                    tr {
-                        th { "Node" }
-                        th { "Use" }
-                        @if proof { th { "Proof of work" } }
-                        th { "Height" }
-                        th { "Reachable" }
-                    }
-                }
-                tbody {
-                    @for node in &network.nodes {
-                        tr {
-                            td class="card-title" { code { (node.label) } }
-                            td class="card-status" {
-                                @match node.node_use {
-                                    NodeUse::InUse => { "in use" }
-                                    NodeUse::Standby => { span class="muted" { "standby" } }
-                                    NodeUse::LeftOut => { span class="tag tag-error" { "left out" } }
-                                }
-                            }
-                            @if proof {
-                                td class="card-amount" {
-                                    @if let Some(verdict) = node.verdict {
-                                        @let (words, class) = verdict_words(verdict);
-                                        span class=(class) { (words) }
-                                    }
-                                    @if let Some(detail) = &node.detail {
-                                        span class="sub" { (detail) }
-                                    }
-                                }
-                            }
-                            td class="card-when" { (node.height_display) }
-                            td class=(if node.is_reachable { "card-meta is-quiet" } else { "card-meta" }) {
-                                @if node.is_reachable {
-                                    span class="tag tag-ok" { "reachable" }
-                                } @else {
-                                    span class="tag tag-error" { "unreachable" }
-                                }
-                                @if !proof {
-                                    @if let Some(detail) = &node.detail {
-                                        span class="sub" { (detail) }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    let head = |name: &str| Slot::from(Cell::new(name).header(true));
+    let mut heads = vec![head("Node"), head("Use")];
+    if proof {
+        heads.push(head("Proof of work"));
+    }
+    heads.extend([head("Height"), head("Reachable")]);
+    let rows = network.nodes.iter().map(|node| {
+        let detail = node
+            .detail
+            .as_ref()
+            .map(|detail| html! { span class="sub" { (detail) } });
+        let mut cells = vec![
+            Slot::from(Cell::new(html! { code { (node.label) } }).part(CellPart::Title)),
+            Slot::from(
+                Cell::new(match node.node_use {
+                    NodeUse::InUse => Slot::from("in use"),
+                    NodeUse::Standby => Slot::from(html! { span class="muted" { "standby" } }),
+                    NodeUse::LeftOut => Slot::from(Tag::new("left out").tone(TagTone::Error)),
+                })
+                .part(CellPart::Status),
+            ),
+        ];
+        if proof {
+            let verdict = node.verdict.map(verdict_words);
+            cells.push(Slot::from(
+                Cell::new(html! {
+                    @if let Some((words, class)) = verdict { span class=(class) { (words) } }
+                    (detail.clone().unwrap_or_default())
+                })
+                .part(CellPart::Amount),
+            ));
         }
+        cells.push(Slot::from(Cell::new(node.height_display.as_str()).part(CellPart::When)));
+        let reachable = if node.is_reachable {
+            Tag::new("reachable").tone(TagTone::Ok)
+        } else {
+            Tag::new("unreachable").tone(TagTone::Error)
+        };
+        let mut meta = Cell::new(html! {
+            (reachable)
+            @if !proof { (detail.unwrap_or_default()) }
+        })
+        .part(CellPart::Meta);
+        if node.is_reachable {
+            meta = meta.flag("data-quiet");
+        }
+        cells.push(Slot::from(meta));
+        Slot::from(Row::new(Slot::many(cells)))
+    });
+    html! {
+        (Table::new(Slot::many(rows))
+            .head(Row::new(Slot::many(heads)))
+            .look(TableLook::Cards)
+            .attr("data-table", "nodes"))
     }
 }
 
@@ -387,11 +405,11 @@ fn proof_section(network: &str, name: &str, proof: &ProofView) -> Markup {
                 div class="proof-held" {
                     p { (proof.summary) }
                     form method="post" action=(format!("/dashboard/admin/proof/{network}/reanchor")) {
-                        p class="hint" {
-                            "A new anchor is taken on the nodes' word, 720 blocks below their tips. "
+                        (Hint::new(concat!(
+                            "A new anchor is taken on the nodes' word, 720 blocks below their tips. ",
                             "Check that the nodes are your own or ones you trust before taking one."
-                        }
-                        button type="submit" { "Take a new anchor" }
+                        )))
+                        (Button::new("Take a new anchor").kind(ButtonType::Submit))
                     }
                 }
             } @else if let Some(window) = &proof.window {
@@ -400,16 +418,15 @@ fn proof_section(network: &str, name: &str, proof: &ProofView) -> Markup {
                 p { (proof.summary) }
             }
             @if !proof.facts.is_empty() {
-                details class="proof-facts" {
-                    summary { "How it's checked" }
-                    dl class="facts" {
-                        @for (fact, value) in &proof.facts {
-                            dt { (fact) }
-                            dd { (value) }
-                        }
-                    }
-                    p class="hint" { "Only operators see this section. Orders on " (name) " settle only on blocks whose proof of work the engine checked itself." }
-                }
+                (Disclosure::new("How it's checked", Slot::many([
+                    Slot::from(Facts::new(proof.facts.iter().map(|(term, value)| Fact {
+                        term: (*term).to_owned(),
+                        value: value.as_str().into(),
+                    }).collect::<Vec<_>>())),
+                    Slot::from(Hint::new(format!(
+                        "Only operators see this section. Orders on {name} settle only on blocks whose proof of work the engine checked itself."
+                    ))),
+                ])).flag("data-proof-facts"))
             }
         }
     }
@@ -431,7 +448,7 @@ fn proof_window(window: &ProofWindow) -> Markup {
     html! {
         p class="pline" {
             "Orders settle on blocks up to " strong { (thousands(window.ceiling)) } ", proven by the engine itself."
-            " " span class="tag tag-unknown" { (chip) }
+            " " (Tag::new(chip).tone(TagTone::Unknown))
         }
         div class="pips" aria-hidden="true" {
             @for (height, pip) in &pips {
@@ -457,9 +474,8 @@ fn proof_window(window: &ProofWindow) -> Markup {
             "Last " (WINDOW_BLOCKS) " blocks · settles to " (thousands(window.ceiling)) " · tip " (thousands(window.top()))
         }
         @if let Some((anchor, age)) = &window.anchor {
-            p class="hint pip-anchor" {
-                "Anchored at block " (thousands(*anchor)) ", " (age) ": every block since then is checked."
-            }
+            (Hint::new(format!("Anchored at block {}, {age}: every block since then is checked.", thousands(*anchor)))
+                .flag("data-pip-anchor"))
         }
     }
 }
@@ -469,43 +485,50 @@ fn announcements_section(announcements: &AnnouncementsView) -> Markup {
     html! {
         section class="announcements" {
             h3 class="caps" { "Announcements (ZMQ)" }
-            p class="hint" {
-                "Only operators see this. A node's announcements start a check at once instead of at the next poll; "
+            (Hint::new(concat!(
+                "Only operators see this. A node's announcements start a check at once instead of at the next poll; ",
                 "the regular checks carry on and find anything they miss."
-            }
-            table {
-                thead { tr { th { "Node" } th { "Publisher" } th { "State" } th { "Transactions" } th { "Blocks" } th { "Last" } th { "Connections" } } }
-                tbody {
-                    @for publisher in &announcements.publishers {
-                        tr {
-                            td { code { (publisher.node) } }
-                            td { code { (publisher.endpoint) } }
-                            td {
-                                @if publisher.connected { span class="tag tag-ok" { "connected" } }
-                                @else { span class="tag tag-error" { "not connected" } }
-                                " " span class="muted" { (publisher.state_display) }
-                            }
-                            td { (publisher.pool_announcements) }
-                            td { (publisher.block_announcements) }
-                            td { (publisher.last_announcement_display) }
-                            td { (publisher.connections) }
-                        }
-                        @if let Some(error) = &publisher.last_error {
-                            tr { td colspan="7" class="hint" { (error) } }
-                        }
-                    }
-                }
-            }
+            )))
+            (publishers_table(&announcements.publishers))
             p {
                 "Started early: " (announcements.pool_passes_woken) " mempool checks, "
                 (announcements.rounds_woken) " scan rounds."
             }
-            p class="hint" {
-                "A transaction the node relays privately (Dandelion++ stem, or one sent over Tor or I2P) is never announced; "
+            (Hint::new(concat!(
+                "A transaction the node relays privately (Dandelion++ stem, or one sent over Tor or I2P) is never announced; ",
                 "the regular check finds it once it is public."
-            }
+            )))
         }
     }
+}
+
+/// The ZMQ publishers, a row each, and its last failure on a row under it.
+fn publishers_table(publishers: &[PublisherView]) -> Markup {
+    let head = Row::new(Slot::many(
+        ["Node", "Publisher", "State", "Transactions", "Blocks", "Last", "Connections"]
+            .map(|name| Slot::from(Cell::new(name).header(true))),
+    ));
+    let rows = publishers.iter().flat_map(|publisher| {
+        let state = if publisher.connected {
+            Tag::new("connected").tone(TagTone::Ok)
+        } else {
+            Tag::new("not connected").tone(TagTone::Error)
+        };
+        let row = Slot::from(Row::new(Slot::many([
+            Slot::from(Cell::new(html! { code { (publisher.node) } })),
+            Slot::from(Cell::new(html! { code { (publisher.endpoint) } })),
+            Slot::from(Cell::new(html! { (state) " " span class="muted" { (publisher.state_display) } })),
+            Slot::from(Cell::new(publisher.pool_announcements.to_string())),
+            Slot::from(Cell::new(publisher.block_announcements.to_string())),
+            Slot::from(Cell::new(publisher.last_announcement_display.as_str())),
+            Slot::from(Cell::new(publisher.connections.to_string())),
+        ])));
+        let error = publisher.last_error.as_ref().map(|error| {
+            Slot::from(Row::new(Cell::new(Hint::new(error.as_str()).inline(true)).attr("colspan", "7")))
+        });
+        std::iter::once(row).chain(error)
+    });
+    html! { (Table::new(Slot::many(rows)).head(head)) }
 }
 
 pub fn page(chrome: &PageChrome, data: &StatusPageViewModel) -> Markup {
@@ -657,7 +680,7 @@ mod tests {
         };
         let html = page(&chrome(), &data).into_string();
         assert!(
-            html.contains(r#"<p class="notice slow-block" role="status">Mainnet: block 3,412,001 (412 MB) has taken 2 m 10 s so far.</p>"#),
+            html.contains(r#"<p class="notice" role="status" data-slow-block="">Mainnet: block 3,412,001 (412 MB) has taken 2 m 10 s so far.</p>"#),
             "{html}"
         );
     }
@@ -708,8 +731,8 @@ mod tests {
         for expected in [
             "<code>node.example.com</code>",
             r#"<td class="card-meta"><span class="tag tag-error">unreachable</span><span class="sub">connection refused</span></td>"#,
-            "scanner blew up",
-            r#"<p class="hint headers-first">Reading block headers first for about 50 minutes more.</p>"#,
+            r#"<div class="error">scanner blew up</div>"#,
+            r#"<p class="hint">Reading block headers first for about 50 minutes more.</p>"#,
         ] {
             assert!(html.contains(expected), "{expected} in {html}");
         }
@@ -763,7 +786,7 @@ mod tests {
     fn watch_it_live_is_a_button_in_the_header_for_an_admin_only() {
         let html = render(&admin_with(following(0, 1), vec![]));
         assert!(
-            html.contains(r#"<a class="btn net-head-action" href="/status/engine?network=mainnet">Watch it live</a></div>"#),
+            html.contains(r#"<a class="mk-btn" href="/status/engine?network=mainnet">Watch it live</a></div>"#),
             "{html}"
         );
         assert_eq!(html.matches("/status/engine").count(), 1);
@@ -886,7 +909,7 @@ mod tests {
             ],
         ));
         assert!(
-            html.contains(r#"<table class="table-cards node-table">"#),
+            html.contains(r#"<div class="table-scroll"><table class="table-cards" data-table="nodes">"#),
             "{html}"
         );
         assert!(
@@ -895,7 +918,7 @@ mod tests {
                 r#"<td class="card-status">in use</td>"#,
                 r#"<td class="card-amount"><span class="verdict is-ok">on the proven chain</span></td>"#,
                 r#"<td class="card-when">3,412,880</td>"#,
-                r#"<td class="card-meta is-quiet"><span class="tag tag-ok">reachable</span></td></tr>"#,
+                r#"<td class="card-meta" data-quiet=""><span class="tag tag-ok">reachable</span></td></tr>"#,
             )),
             "{html}"
         );
@@ -907,8 +930,8 @@ mod tests {
         );
         let css = include_str!("site.css");
         for rule in [
-            "table.node-table td.card-amount { display: contents; font-weight: 400; }",
-            "table.node-table .card-meta.is-quiet { display: none; }",
+            r#"table[data-table="nodes"] td.card-amount { display: contents; font-weight: 400; }"#,
+            r#"table[data-table="nodes"] .card-meta[data-quiet] { display: none; }"#,
         ] {
             assert!(css.contains(rule), "{rule}");
         }
@@ -963,7 +986,7 @@ mod tests {
             r#"<p class="pip-figures">Last 30 blocks · settles to 3,412,881 · tip 3,412,881</p>"#
         ));
         assert!(html.contains(
-            r#"<p class="hint pip-anchor">Anchored at block 3,412,160, 2d ago: every block since then is checked.</p>"#
+            r#"<p class="hint" data-pip-anchor="">Anchored at block 3,412,160, 2d ago: every block since then is checked.</p>"#
         ));
         assert!(
             !html.contains("before the anchor"),
@@ -1039,7 +1062,7 @@ mod tests {
                 r#"<div class="proof-held"><p>Every node's chain left the proven one more than 720 blocks back.</p>"#,
                 r#"<form method="post" action="/dashboard/admin/proof/mainnet/reanchor">"#,
                 r#"<p class="hint">A new anchor is taken on the nodes' word, 720 blocks below their tips. Check that the nodes are your own or ones you trust before taking one.</p>"#,
-                r#"<button type="submit">Take a new anchor</button></form></div>"#,
+                r#"<button class="mk-btn" type="submit">Take a new anchor</button></form></div>"#,
             )),
             "{html}"
         );
@@ -1057,7 +1080,7 @@ mod tests {
         let html = render(&admin_with(following(3, 1), vec![]));
         assert!(
             html.contains(concat!(
-                r#"<details class="proof-facts"><summary>How it's checked</summary><dl class="facts">"#,
+                r#"<details class="disclosure" data-proof-facts=""><summary>How it's checked</summary><dl class="facts">"#,
                 "<dt>Anchor</dt><dd>Block 3,412,160, 2 of 3 nodes agreed, 2d ago</dd>",
                 "<dt>Last checked</dt><dd>3s ago</dd></dl>",
             )),

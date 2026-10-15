@@ -141,23 +141,20 @@ const PAGE_STYLE: &str = r#"
 .logs-search .q-row { display: flex; gap: .5em; align-items: stretch; }
 .logs-search .q-row input { flex: 1; min-width: 0; font-family: var(--font-mono); }
 /* The box, Syntax and Search: one height, one top edge. */
-.logs-search .q-row > .btn, .logs-search .q-row > button { flex: none; margin: 0; }
-.q-help { display: inline-flex; align-items: center; gap: .4em; }
-.q-help svg { width: 1.15em; height: 1.15em; }
+.logs-search .q-row > :is(a, button) { flex: none; }
+#query-help-link svg { width: 1.15em; height: 1.15em; }
 .logs-search .quick input[type=datetime-local] { width: auto; }
 .logs-search .quick { display: flex; flex-wrap: wrap; gap: .5em; align-items: center; }
 .logs-search .quick label { display: inline-flex; gap: .3em; align-items: center; }
-.query-error mark { background: var(--tint-error); color: inherit; border-bottom: 2px solid currentColor; }
+[data-query-error] mark { background: var(--tint-error); color: inherit; border-bottom: 2px solid currentColor; }
 /* The title bar holds Refresh and Live, which act on the whole page. */
 .logs-head { display: flex; align-items: center; flex-wrap: wrap; gap: .5em; margin: var(--space-lg) 0 var(--space-sm); padding-bottom: .3em; border-bottom: 2px solid var(--line); }
 .context-nav + .logs-head { margin-top: var(--space-xs); }
 .logs-head h1 { flex: 1; margin: 0; padding: 0; border: 0; }
-.logs-head .btn, .logs-head button { display: inline-flex; align-items: center; gap: .4em; margin: 0; padding: .35em .8em; }
 .logs-head svg { width: 1.1em; height: 1.1em; flex: none; }
-.log-live > span { display: inline-flex; }
-.log-live .i-pause, .log-live[aria-pressed="true"] .i-play { display: none; }
-.log-live[aria-pressed="true"] .i-pause { display: inline-flex; }
-.log-live:disabled { opacity: .5; cursor: not-allowed; }
+#log-live > span { display: inline-flex; }
+#log-live .i-pause, #log-live[aria-pressed="true"] .i-play { display: none; }
+#log-live[aria-pressed="true"] .i-pause { display: inline-flex; }
 /* The histogram sits above the search it narrows, but comes with the
    results (a search swaps both), so the results box lets its parts lay
    out in the page's column and the histogram moves up. */
@@ -186,17 +183,16 @@ const PAGE_STYLE: &str = r#"
 .log-row .props td { overflow-wrap: anywhere; }
 /* Find and Exclude: a column just wide enough for both, never wrapping;
    a long value wraps in its own column instead. */
-.log-row .props td.act { width: 1%; white-space: nowrap; overflow-wrap: normal; }
-.log-row .props .act a + a { margin-left: .5em; }
+.log-row .props td[data-act] { width: 1%; white-space: nowrap; overflow-wrap: normal; }
+.log-row .props [data-act] a + a { margin-left: .5em; }
 .lvl { font-weight: 700; }
 .lvl-error { color: var(--error); }
 .lvl-warn { color: var(--warning); }
 .lvl-debug, .lvl-trace { color: var(--muted); }
 .log-paging { display: flex; gap: .5em; margin: .8em 0; flex-wrap: wrap; align-items: center; }
-.log-paging .btn { margin: 0; }
 /* Pressed, not a second primary: the page's one orange button is Search. */
-.log-live[aria-pressed="true"] { background: var(--surface-sunken); border-color: var(--accent); }
-html:not(.js) .js-only { display: none; }
+#log-live[aria-pressed="true"] { background: var(--surface-sunken); border-color: var(--accent); }
+html:not(.js) #log-live { display: none; }
 .trace-waterfall { font-size: .85em; }
 .trace-span { display: grid; grid-template-columns: minmax(12em, 30%) 1fr 6em; gap: .5em; align-items: center; padding: .15em 0; border-bottom: 1px solid var(--line); }
 .trace-span .bar-track { position: relative; height: .9em; }
@@ -205,30 +201,28 @@ html:not(.js) .js-only { display: none; }
 .trace-span .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The syntax help: a dialog on the Logs page (a bottom sheet on a phone),
    and the same content as its own page (`syntax_page`). */
-.qh { width: min(640px, calc(100% - 32px)); max-height: min(80dvh, 720px); padding: 0; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--paper-raised); color: var(--ink); }
-.qh::backdrop { background: color-mix(in srgb, var(--paper) 40%, transparent); backdrop-filter: blur(2px); }
-.qh-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 1em; padding: var(--space-md) var(--space-lg); border-bottom: 1px solid var(--line); background: var(--paper-raised); }
+#query-help { width: min(640px, calc(100% - 32px)); max-height: min(80dvh, 720px); padding: 0; }
+#query-help::backdrop { background: color-mix(in srgb, var(--paper) 40%, transparent); backdrop-filter: blur(2px); }
+.qh-head { position: sticky; top: 0; z-index: 1; padding: var(--space-md) var(--space-lg); border-bottom: 1px solid var(--line); background: var(--paper-raised); }
 .qh-head h2 { margin: 0; padding: 0; border: 0; font-size: 1.1rem; }
-.qh-head form { margin: 0; }
-.qh-close { margin: 0; padding: .3em .6em; line-height: 1; }
 .qh-body { padding: var(--space-sm) var(--space-lg) var(--space-lg); }
 .qh-body h3 { margin: 1em 0 .4em; font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .qh-ex { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .qh-ex li { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "code use" "what use"; gap: 0 .6em; align-items: center; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--paper-raised); }
 .qh-ex code { grid-area: code; padding: 0; border: 0; background: none; overflow-wrap: anywhere; }
 .qh-ex .qh-what { grid-area: what; font-size: .85em; color: var(--muted); }
-.qh-ex .qh-use { grid-area: use; margin: 0; padding: .25em .7em; font-size: .85em; }
+.qh-ex [data-q] { grid-area: use; }
 .qh-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: .3em 0; }
-.qh-chip { margin: 0; padding: var(--pill-pad-y) var(--pill-pad-x); border: 1px solid var(--line); border-radius: 999px; background: var(--surface-sunken); color: var(--ink); font: .85em var(--font-mono); font-weight: 400; }
+.qh-chip, .qh-chips [data-chip] { min-height: 0; margin: 0; padding: var(--pill-pad-y) var(--pill-pad-x); border: 1px solid var(--line); border-radius: 999px; background: var(--surface-sunken); color: var(--ink); font: .85em var(--font-mono); font-weight: 400; }
 @media (max-width: 40em) {
-  .qh { width: 100%; max-width: none; margin: auto 0 0; border-radius: var(--radius-lg) var(--radius-lg) 0 0; max-height: 85dvh; }
+  #query-help { width: 100%; max-width: none; margin: auto 0 0; border-radius: var(--radius-lg) var(--radius-lg) 0 0; max-height: 85dvh; }
   .logs-search .quick { display: grid; grid-template-columns: 1fr 1fr; }
   .logs-search .quick select { width: 100%; min-width: 0; }
-  .logs-search .quick label:has(select[name=range]), .logs-search .quick .own-requests { grid-column: 1 / -1; }
+  .logs-search .quick label:has(select[name=range]), .logs-search .quick .check-line { grid-column: 1 / -1; }
   .logs-search .quick label { display: grid; gap: .2em; font-size: .85em; }
   .logs-search .quick input[type=datetime-local] { width: 100%; min-width: 0; }
-  .logs-search .quick .own-requests { display: flex; gap: .4em; }
-  .q-help { padding-inline: .7em; }
+  .logs-search .quick .check-line { display: flex; gap: .4em; }
+  #query-help-link { padding-inline: .7em; }
   .q-help-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 }
 @media (max-width: 40em) {
@@ -236,7 +230,7 @@ html:not(.js) .js-only { display: none; }
   .log-row > summary .svc { display: none; }
   .log-row > summary .row-acts { grid-row: 1; grid-column: 3; }
   .log-row > summary .msg { grid-column: 1 / -1; }
-  .log-row .props td.act { width: auto; }
+  .log-row .props td[data-act] { width: auto; }
 }
 "#;
 
@@ -312,28 +306,24 @@ const PAUSE_ICON: &str = r#"<path d="M9 5.5v13M15 5.5v13" stroke-width="3"/>"#;
 pub fn properties(row: &RowView) -> Markup {
     html! {
         div class="props" id=(format!("{}-props", row.dom_id)) {
-            table class="kv-table" {
-                tbody {
-                    tr { th { "target" } td { code { (row.target) } } td class="act" {} }
-                    @for property in &row.properties {
-                        tr {
-                            th { (property.name) }
-                            td {
-                                code { (property.value) }
-                                @if let Some(note) = &property.note { " " span class="muted" { (note) } }
-                            }
-                            td class="act" {
-                                @if let Some(find) = &property.find_url {
-                                    a href=(find) title=(format!("Only lines where {} is this", property.name)) { "Find" }
-                                }
-                                @if let Some(exclude) = &property.exclude_url {
-                                    a href=(exclude) title=(format!("Hide lines where {} is this", property.name)) { "Exclude" }
-                                }
-                            }
+            (ui::Table::new(html! {
+                (property_row("target", html! { code { (row.target) } }, html! {}))
+                @for property in &row.properties {
+                    (property_row(&property.name, html! {
+                        code { (property.value) }
+                        @if let Some(note) = &property.note { " " span class="muted" { (note) } }
+                    }, html! {
+                        @if let Some(find) = &property.find_url {
+                            a href=(find) title=(format!("Only lines where {} is this", property.name)) { "Find" }
                         }
-                    }
+                        @if let Some(exclude) = &property.exclude_url {
+                            a href=(exclude) title=(format!("Hide lines where {} is this", property.name)) { "Exclude" }
+                        }
+                    }))
                 }
-            }
+            })
+            .look(ui::TableLook::Facts)
+            .scroll(false))
             @if let Some(trace) = &row.trace_url {
                 p { a href=(trace) { "Show the whole trace" } }
             }
@@ -345,6 +335,16 @@ pub fn properties(row: &RowView) -> Markup {
             }
         }
     }
+}
+
+/// One property's row: its name, its value, and the links that search by
+/// it (`data-act`, a column just wide enough for them).
+fn property_row(name: &str, value: Markup, act: Markup) -> ui::Row {
+    ui::Row::new(ui::Slot::many([
+        ui::Cell::new(name).header(true).into(),
+        ui::Cell::new(value).into(),
+        ui::Cell::new(act).attr("data-act", "").into(),
+    ]))
 }
 
 /// `/dashboard/admin/logs/row/{cursor}` without JavaScript: one line,
@@ -375,7 +375,10 @@ fn more(more_url: Option<&str>, older_url: Option<&str>) -> Markup {
         div id="log-more" {
             @if let (Some(older), Some(more)) = (older_url, more_url) {
                 p class="log-paging" {
-                    a class="btn btn-secondary" href=(older) fx-action=(more) fx-target="#log-more" fx-swap="outerHTML" { "Older" }
+                    (ui::LinkButton::new("Older", older)
+                        .attr("fx-action", more)
+                        .attr("fx-target", "#log-more")
+                        .attr("fx-swap", "outerHTML"))
                 }
             }
         }
@@ -398,7 +401,15 @@ pub fn live_rows(rows: &[RowView]) -> Markup {
 
 /// Why Live isn't showing the engine's lines, or nothing once it is again.
 pub fn tail_problem(problem: Option<&str>) -> Markup {
-    html! { @if let Some(problem) = problem { p class="error" role="status" { (problem) } } }
+    html! { @if let Some(problem) = problem { (status_problem(problem)) } }
+}
+
+/// A problem with what the page shows (a source that didn't answer), said
+/// as a status: the page still works.
+fn status_problem(problem: &str) -> ui::Alert {
+    ui::Alert::new(problem, ui::Tone::Error)
+        .quiet(true)
+        .attr("role", "status")
 }
 
 fn histogram(histogram: &HistogramView) -> Markup {
@@ -420,20 +431,21 @@ pub fn results(vm: &LogsViewModel) -> Markup {
     html! {
         div id="log-results" {
             @if let Some(error) = &vm.query_error {
-                div class="error query-error" role="alert" data-fx-focus {
+                (ui::Alert::new(html! {
                     p { "That search doesn't read as a query: " (error.message) "." }
                     p { code { (error.before) mark { (error.marked) } (error.after) } }
-                }
+                }, ui::Tone::Error)
+                .block(true)
+                .attr("data-query-error", "")
+                .attr("data-fx-focus", ""))
             }
-            @for problem in &vm.problems {
-                p class="error" role="status" { (problem) }
-            }
+            @for problem in &vm.problems { (status_problem(problem)) }
             // Live says here when the engine's lines stop arriving.
             div id="log-tail-problem" {}
             // Shown above the search form (`.log-histogram-box`).
             @if let Some(h) = &vm.histogram { (histogram(h)) }
             @if let Some(newer) = &vm.newer_url {
-                p class="log-paging" { a class="btn btn-secondary" href=(newer) { "Newer" } }
+                p class="log-paging" { (ui::LinkButton::new("Newer", newer.as_str())) }
             }
             @if vm.rows.is_empty() && vm.query_error.is_none() {
                 p class="muted log-empty" { "No lines match." }
@@ -455,10 +467,10 @@ pub fn results(vm: &LogsViewModel) -> Markup {
 /// The saved searches box: swapped by itself when one is saved or removed.
 pub fn saved_searches(saved: &[SavedLogSearch], query_string: &str, error: Option<&str>) -> Markup {
     html! {
-        section id="saved-searches" class="box" {
+        (ui::Panel::new(html! {
             h2 { "Saved searches" }
             @if let Some(error) = error {
-                p class="error" role="alert" data-fx-focus { (error) }
+                (ui::Alert::new(error, ui::Tone::Error).attr("data-fx-focus", ""))
             }
             @if saved.is_empty() {
                 p class="muted" { "None yet." }
@@ -471,7 +483,9 @@ pub fn saved_searches(saved: &[SavedLogSearch], query_string: &str, error: Optio
                             form method="post" action=(format!("/dashboard/admin/logs/saved/{}/delete", s.id)) style="display:inline"
                                 fx-action=(format!("/dashboard/admin/logs/saved/{}/delete", s.id)) fx-method="POST" fx-target="#saved-searches" {
                                 input type="hidden" name="query_string" value=(query_string);
-                                button type="submit" class="btn-secondary" aria-label=(format!("Remove {}", s.name)) { "Remove" }
+                                (ui::Button::new("Remove")
+                                    .kind(ui::ButtonType::Submit)
+                                    .attr("aria-label", format!("Remove {}", s.name)))
                             }
                         }
                     }
@@ -479,11 +493,15 @@ pub fn saved_searches(saved: &[SavedLogSearch], query_string: &str, error: Optio
             }
             form method="post" action="/dashboard/admin/logs/saved" fx-action="/dashboard/admin/logs/saved" fx-method="POST" fx-target="#saved-searches" {
                 input type="hidden" name="query_string" value=(query_string);
-                label { "Save this search as " input type="text" name="name" required maxlength="80"; }
-                " "
-                button type="submit" { "Save" }
+                (ui::FormActions::new(ui::Slot::many([
+                    ui::Slot::from(html! {
+                        label { "Save this search as " (ui::Input::new("name").required(true).attr("maxlength", "80")) }
+                    }),
+                    ui::Button::new("Save").kind(ui::ButtonType::Submit).into(),
+                ])))
             }
-        }
+        })
+        .attr("id", "saved-searches"))
     }
 }
 
@@ -551,7 +569,9 @@ fn syntax(names: &[String], in_dialog: bool) -> Markup {
                     li {
                         code { (query) }
                         span class="qh-what" { (what) }
-                        a class="btn qh-use" data-q=(query) href=(format!("/dashboard/admin/logs?q={}", url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>())) { "Use" }
+                        (ui::LinkButton::new("Use", format!("/dashboard/admin/logs?q={}", url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>()))
+                            .size(ui::ControlSize::Compact)
+                            .attr("data-q", *query))
                     }
                 }
             }
@@ -563,26 +583,27 @@ fn syntax(names: &[String], in_dialog: bool) -> Markup {
             code { "network = Stagenet" } "). Keywords ignore case."
         }
         h3 { "Names" }
-        p class="hint" { "Built in, and seen on recent lines. Every other name is a property of the line." }
+        (ui::Hint::new("Built in, and seen on recent lines. Every other name is a property of the line."))
         p class="qh-chips" {
             @for name in names {
-                @if in_dialog { button type="button" class="qh-chip" { (name) } } @else { code class="qh-chip" { (name) } }
+                @if in_dialog { (ui::Button::new(name.as_str()).attr("data-chip", "")) } @else { code class="qh-chip" { (name) } }
             }
         }
     }
 }
 
-/// The syntax help as a dialog, opened by the Syntax link's script.
+/// The syntax help as a dialog, opened by the Syntax link.
 fn syntax_dialog(names: &[String]) -> Markup {
-    html! {
-        dialog id="query-help" class="qh" aria-labelledby="query-help-title" closedby="any" {
-            div class="qh-head" {
-                h2 id="query-help-title" { "Search syntax" }
-                form method="dialog" { button class="qh-close" aria-label="Close" { "✕" } }
-            }
-            div class="qh-body" { (syntax(names, true)) }
+    let content = html! {
+        div class="qh-head" {
+            (ui::DialogTitle::new("query-help-title", "Search syntax").in_dialog(true))
         }
-    }
+        div class="qh-body" { (syntax(names, true)) }
+    };
+    ui::Dialog::new("query-help", "query-help-title", content)
+        .size(ui::DialogSize::Wide)
+        .light_dismiss(true)
+        .render()
 }
 
 /// `GET /dashboard/admin/logs/syntax`: the same help as the dialog, for a
@@ -611,32 +632,51 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
             div class="logs-head" {
                 h1 { "Logs" }
                 // Submits the search as it stands: its newest lines.
-                button type="submit" form="log-search" class="btn-secondary" { (icon(REFRESH_ICON)) span { "Refresh" } }
-                // Streams from `#log-rows`' tail URL (the page's script).
-                button type="button" id="log-live" class="btn-secondary log-live js-only" aria-pressed="false" disabled[vm.tail_url.is_none()]
-                    fx-action=(vm.tail_url.as_deref().unwrap_or(LIVE_NONE)) fx-target="#log-rows" fx-swap="afterbegin" fx-sse-reconnect {
+                (ui::Button::new(html! { (icon(REFRESH_ICON)) span { "Refresh" } })
+                    .size(ui::ControlSize::Compact)
+                    .kind(ui::ButtonType::Submit)
+                    .attr("form", "log-search"))
+                // Streams from `#log-rows`' tail URL (the page's script);
+                // without script, hidden.
+                (ui::Button::new(html! {
                     span class="i-play" { (icon(PLAY_ICON)) }
                     span class="i-pause" { (icon(PAUSE_ICON)) }
                     span class="log-live-label" { "Live" }
-                }
+                })
+                .size(ui::ControlSize::Compact)
+                .disabled(vm.tail_url.is_none())
+                .attr("id", "log-live")
+                .attr("aria-pressed", "false")
+                .attr("fx-action", vm.tail_url.as_deref().unwrap_or(LIVE_NONE))
+                .attr("fx-target", "#log-rows")
+                .attr("fx-swap", "afterbegin")
+                .attr("fx-sse-reconnect", ""))
             }
             div class="logs-body" {
                 form id="log-search" class="logs-search" method="get" action="/dashboard/admin/logs"
                     fx-action="/dashboard/admin/logs" fx-target="#log-results" fx-swap="outerHTML" fx-push-url fx-replace fx-submit-on-change {
                     div class="q-row" {
                         label for="log-q" class="sr-only" { "Search" }
-                        input type="search" id="log-q" name="q" value=(vm.form.q) autocomplete="off" spellcheck="false"
-                            placeholder="level >= warn and order.id = 'o_1'";
+                        (ui::Input::new("q")
+                            .id("log-q")
+                            .kind(ui::InputType::Search)
+                            .value(vm.form.q.clone())
+                            .autocomplete("off")
+                            .placeholder("level >= warn and order.id = 'o_1'")
+                            .attr("spellcheck", "false"))
                         // A page of its own without script; a dialog with it.
-                        a class="btn q-help" id="query-help-link" href=(SYNTAX_PAGE) aria-haspopup="dialog" {
+                        (ui::LinkButton::new(html! {
                             svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false" {
                                 circle cx="12" cy="12" r="9.5" {}
                                 path d="M9.5 9.2a2.6 2.6 0 0 1 5 .8c0 1.8-2.5 2.2-2.5 3.8" {}
                                 circle cx="12" cy="17.3" r=".6" fill="currentColor" {}
                             }
                             span class="q-help-label" { "Syntax" }
-                        }
-                        button type="submit" class="btn-primary" { "Search" }
+                        }, SYNTAX_PAGE)
+                        .attr("id", "query-help-link")
+                        .attr("aria-haspopup", "dialog")
+                        .attr("data-opens-dialog", "query-help"))
+                        (ui::Button::new("Search").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit))
                     }
                     div class="quick" {
                         (select("level", "Level", LEVELS, &vm.form.level))
@@ -644,10 +684,11 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
                         (select("range", "Time range", RANGES, &vm.form.range))
                         label { "From " input type="datetime-local" name="from" value=(vm.form.from); }
                         label { "To " input type="datetime-local" name="to" value=(vm.form.to); }
-                        label class="own-requests" {
-                            input type="checkbox" name="logs_requests" value="show" checked[vm.form.logs_requests];
-                            "Show the Logs page's own requests"
-                        }
+                        (ui::Checkbox::new()
+                            .text("Show the Logs page's own requests")
+                            .name("logs_requests")
+                            .value("show")
+                            .checked(vm.form.logs_requests))
                     }
                 }
                 (results(vm))
@@ -714,12 +755,12 @@ pub fn pos_timeline_page(chrome: &PageChrome, vm: &PosTimelineViewModel) -> Mark
                 a href="/" { "Dashboard" } " / " a href="/dashboard/admin/logs" { "Logs" }
             }
             h1 { "POS session" }
-            p class="hint" {
+            (ui::Hint::new(html! {
                 code { (vm.session) }
                 @if let Some((name, href)) = &vm.store { " · " a href=(href) { (name) } }
                 @if let Some(device) = &vm.device { br; span class="muted" { (device) } }
-            }
-            @for problem in &vm.problems { p class="error" role="status" { (problem) } }
+            }))
+            @for problem in &vm.problems { (status_problem(problem)) }
             @if vm.entries.is_empty() {
                 p class="muted" { "Nothing was recorded for this session, or its lines have been deleted by log retention." }
             } @else {
@@ -733,12 +774,12 @@ pub fn pos_timeline_page(chrome: &PageChrome, vm: &PosTimelineViewModel) -> Mark
                     div { dt { "Warnings and errors" } dd { (vm.summary.problems) } }
                 }
                 @if vm.truncated {
-                    p class="hint" { "Only the first events of a very long session are shown. " a href=(vm.logs_url) { "Search them all" } }
+                    (ui::Hint::new(html! { "Only the first events of a very long session are shown. " a href=(vm.logs_url) { "Search them all" } }))
                 }
-                p class="hint" {
+                (ui::Hint::new(html! {
                     "Times are the tablet's clock, in " (vm.zone_label) ". "
                     a href=(vm.logs_url) { "Show these lines in Logs" }
-                }
+                }))
                 ol class="pos-timeline" {
                     @for entry in &vm.entries {
                         @if let Some(gap) = &entry.gap_before { li class="timeline-gap" { (gap) } }
@@ -811,7 +852,7 @@ pub fn trace_page(chrome: &PageChrome, vm: &TraceViewModel) -> Markup {
                 a href="/" { "Dashboard" } " / " a href="/dashboard/admin/logs" { "Logs" }
             }
             h1 { "Trace " code { (vm.trace_id) } }
-            @for problem in &vm.problems { p class="error" role="status" { (problem) } }
+            @for problem in &vm.problems { (status_problem(problem)) }
             @if vm.spans.is_empty() {
                 p class="muted" { "No spans kept for this trace." }
             } @else {
@@ -827,15 +868,20 @@ pub fn trace_page(chrome: &PageChrome, vm: &TraceViewModel) -> Markup {
                                 }
                                 span { (span.duration) }
                             }
-                            table class="kv-table props" {
-                                @for (name, value) in &span.attributes { tr { th { (name) } td { code { (value) } } } }
-                            }
+                            (ui::Table::new(ui::Slot::many(span.attributes.iter().map(|(name, value)| {
+                                ui::Slot::from(ui::Row::new(ui::Slot::many([
+                                    ui::Cell::new(name.as_str()).header(true).into(),
+                                    ui::Cell::new(html! { code { (value) } }).into(),
+                                ])))
+                            })))
+                            .look(ui::TableLook::Facts)
+                            .scroll(false))
                         }
                     }
                 }
             }
             h2 { "Lines" }
-            p class="hint" { a href=(vm.logs_url) { "Search these lines" } }
+            (ui::Hint::new(html! { a href=(vm.logs_url) { "Search these lines" } }))
             div class="log-rows" { @for r in &vm.rows { (row(r)) } }
         }
     };

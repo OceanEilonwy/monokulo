@@ -515,7 +515,7 @@ test('real checkout follows the customer payment from the mempool to confirmed a
   await expect(page.locator('.track .step-now')).toContainText('Confirm');
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   // The payment is listed by a shortened txid, not yet confirmed.
-  await expect(page.locator('.payments-table')).toContainText(`test-p…`);
+  await expect(page.locator('[data-table="payments"]')).toContainText(`test-p…`);
   await expect(page.locator('.progress-fill')).toHaveAttribute('style', /width: 0%/);
   await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/confirm`);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
@@ -543,7 +543,7 @@ test('real checkout guides a customer who underpays and then sends too much', as
   await expect(page.locator('#status-badge')).toHaveText('Overpaid');
   await expect(page.locator('.stage-track')).toContainText('(0.00025 XMR extra). Do not send more. Contact the merchant about the extra amount.');
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
-  await expect(page.locator('.payments-table tbody tr')).toHaveCount(2);
+  await expect(page.locator('[data-table="payments"] tbody tr')).toHaveCount(2);
 });
 
 test('real checkout says so when the chosen refund QR photo cannot be read', async ({ page, request }) => {

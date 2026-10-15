@@ -130,8 +130,8 @@ test('a search that does not parse says where', async ({ page }) => {
   await page.goto(logsUrl());
   await page.locator('#log-q').fill("level >= and service = ");
   await page.locator('#log-q').press('Enter');
-  await expect(page.locator('.query-error')).toBeVisible();
-  await expect(page.locator('.query-error mark')).toBeVisible();
+  await expect(page.locator('[data-query-error]')).toBeVisible();
+  await expect(page.locator('[data-query-error] mark')).toBeVisible();
   await stage(page, 'logs-query-error');
 });
 

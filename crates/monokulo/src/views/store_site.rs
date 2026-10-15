@@ -160,19 +160,20 @@ pub fn connections_card(view: &SiteView) -> Markup {
                                     span class="int-name" { (active.name) } " " span class="tag-active" { "active" }
                                     span class="int-meta" { (integration_meta(active)) }
                                 }
-                                a class="btn" href=(view.disconnect_path(active)) data-opens-dialog="disconnect-dialog" { "Disconnect…" }
+                                (ui::LinkButton::new("Disconnect…", view.disconnect_path(active))
+                                    .attr("data-opens-dialog", "disconnect-dialog"))
                             }
                         }
                     }
                     None if view.site.is_empty() => {
-                        p class="hint card-note" { "The WooCommerce plugin needs your website: add it above first." }
+                        (ui::Hint::new("The WooCommerce plugin needs your website: add it above first."))
                     }
                     None => {
-                        p class="hint card-note" {
+                        (ui::Hint::new(html! {
                             "No plugin is connected. "
                             a href=(super::docs_url("woocommerce/")) target="_blank" rel="noopener" { "Install the WooCommerce plugin" }
                             "; it finds this store by " (view.site) "."
-                        }
+                        }))
                     }
                 }
                 @if !view.past.is_empty() {
@@ -235,29 +236,22 @@ fn heading(id: &str, title: Markup, in_dialog: bool) -> Markup {
 
 /// One row of a checklist: ✓ done, ✕ not yet with its fix beside it, or →
 /// something that follows.
-fn row(mark: Mark, what: Markup, fix: Option<Markup>) -> Markup {
-    let (class, sign, hidden) = match mark {
-        Mark::Ok => ("ok", "✓", "Done: "),
-        Mark::No => ("no", "✕", "Not yet: "),
-        Mark::Then => ("then", "→", ""),
-    };
-    html! {
-        li class=(class) {
-            span class="mark" aria-hidden="true" { (sign) }
-            span {
-                @if !hidden.is_empty() { span class="visually-hidden" { (hidden) } }
-                (what)
-                @if let Some(fix) = fix { span class="fix" { (fix) } }
-            }
-        }
+fn check(mark: ui::CheckMark, what: Markup, fix: Option<Markup>) -> ui::Check {
+    ui::Check {
+        mark,
+        what: what.into(),
+        fix: fix.map(ui::Slot::from),
     }
 }
 
-#[derive(Clone, Copy)]
-enum Mark {
-    Ok,
-    No,
-    Then,
+/// A dialog's Cancel (or Close) back to the settings, then its action.
+fn actions(back: &str, cancel: &str, action: ui::Button) -> ui::DialogActions {
+    ui::DialogActions::new(ui::Slot::many([
+        ui::LinkButton::new(cancel, back)
+            .flag("data-closes-dialog")
+            .into(),
+        action.into(),
+    ]))
 }
 
 fn orders_word(n: u64) -> String {
@@ -274,7 +268,7 @@ fn confirm_field(id: &str, store_name: &str) -> Markup {
             div class="setting-label-row" {
                 label class="setting-label" for=(id) { "Type " strong { "\u{201c}" (store_name) "\u{201d}" } " to confirm" }
             }
-            input type="text" id=(id) name="confirm" autocomplete="off" spellcheck="false" required;
+            (ui::Input::new("confirm").id(id).autocomplete("off").attr("spellcheck", "false").required(true))
         }
     }
 }
@@ -301,6 +295,28 @@ pub fn website_content(
     } else {
         "website-confirm"
     };
+    let mut follows = vec![check(
+        ui::CheckMark::Then,
+        html! { "Checkouts embedded on " (view.site) " stop loading" },
+        None,
+    )];
+    if view.site_domain {
+        follows.push(check(
+            ui::CheckMark::Then,
+            html! { "Its verified domain " (view.site) " is dropped" },
+            (!remove).then(|| html! { "the new one waits to be verified" }),
+        ));
+    }
+    if let Some(open) = view.open_orders.as_ref().filter(|o| o.count > 0) {
+        follows.push(check(
+            ui::CheckMark::Then,
+            html! { (orders_word(open.count)) " started there can still be paid" },
+            Some(html! {
+                @if let Some(until) = &open.until { "until about " (until) "; " }
+                "Monokulo keeps watching them"
+            }),
+        ));
+    }
     html! {
         (heading(id, title, in_dialog))
         @if remove {
@@ -308,20 +324,19 @@ pub fn website_content(
         } @else {
             p { "Its checkout runs on its website, so changing it moves where the checkout works." }
         }
-        @if let Some(error) = error { p class="error" role="alert" { (error) } }
+        @if let Some(error) = error { (ui::Alert::new(error, ui::Tone::Error)) }
         @match &view.active {
             Some(active) => {
-                ul class="checks" {
-                    (row(Mark::No, html! { "No plugin is connected to it" }, Some(html! {
-                        (active.name) " on " (active.site) " is · "
-                        a href=(view.disconnect_path(active)) data-opens-dialog=[in_dialog.then_some("disconnect-dialog")] { "disconnect it first" }
-                    })))
-                }
-                p class="hint" id=(format!("{confirm_id}-why")) { (verb) "ing becomes available once the plugin is disconnected." }
-                div class="dialog-actions" {
-                    a class="btn" href=(back) data-closes-dialog { "Close" }
-                    button type="button" class="btn-danger" disabled aria-describedby=(format!("{confirm_id}-why")) { (verb) " website" }
-                }
+                (ui::Checks::new(vec![check(ui::CheckMark::No, html! { "No plugin is connected to it" }, Some(html! {
+                    (active.name) " on " (active.site) " is · "
+                    a href=(view.disconnect_path(active)) data-opens-dialog=[in_dialog.then_some("disconnect-dialog")] { "disconnect it first" }
+                }))]))
+                (ui::Hint::new(format!("{verb}ing becomes available once the plugin is disconnected."))
+                    .attr("id", format!("{confirm_id}-why")))
+                (actions(&back, "Close", ui::Button::new(format!("{verb} website"))
+                    .variant(ui::ButtonVariant::Danger)
+                    .disabled(true)
+                    .attr("aria-describedby", format!("{confirm_id}-why"))))
             }
             None => {
                 form method="post" action=(view.website_path()) {
@@ -329,29 +344,22 @@ pub fn website_content(
                         WebsiteChange::To(new) => {
                             div class="setting-field first" {
                                 div class="setting-label-row" { label class="setting-label" for=(format!("{confirm_id}-site")) { "New website" } }
-                                input type="text" id=(format!("{confirm_id}-site")) name="site" value=(new) inputmode="url" placeholder="shop.example" required data-confirmed;
+                                (ui::Input::new("site")
+                                    .id(format!("{confirm_id}-site"))
+                                    .value(new.as_str())
+                                    .placeholder("shop.example")
+                                    .required(true)
+                                    .attr("inputmode", "url")
+                                    .flag("data-confirmed"))
                             }
                         }
                         WebsiteChange::Remove => { input type="hidden" name="remove" value="1"; }
                     }
-                    ul class="checks" {
-                        (row(Mark::Then, html! { "Checkouts embedded on " (view.site) " stop loading" }, None))
-                        @if view.site_domain {
-                            (row(Mark::Then, html! { "Its verified domain " (view.site) " is dropped" },
-                                (!remove).then(|| html! { "the new one waits to be verified" })))
-                        }
-                        @if let Some(open) = view.open_orders.as_ref().filter(|o| o.count > 0) {
-                            (row(Mark::Then, html! { (orders_word(open.count)) " started there can still be paid" }, Some(html! {
-                                @if let Some(until) = &open.until { "until about " (until) "; " }
-                                "Monokulo keeps watching them"
-                            })))
-                        }
-                    }
+                    (ui::Checks::new(follows))
                     (confirm_field(confirm_id, &view.store_name))
-                    div class="dialog-actions" {
-                        a class="btn" href=(back) data-closes-dialog { "Cancel" }
-                        button type="submit" class="btn-danger" { (verb) " website" }
-                    }
+                    (actions(&back, "Cancel", ui::Button::new(format!("{verb} website"))
+                        .variant(ui::ButtonVariant::Danger)
+                        .kind(ui::ButtonType::Submit)))
                 }
             }
         }
@@ -372,50 +380,67 @@ pub fn disconnect_content(view: &SiteView, error: Option<&str>, in_dialog: bool)
         .plugin_open_orders
         .as_ref()
         .is_some_and(|o| o.count == 0);
+    let checks = match &view.plugin_open_orders {
+        None => vec![check(
+            ui::CheckMark::No,
+            html! { "Monokulo can't check its orders right now" },
+            Some(html! { a href=(view.disconnect_path(active)) { "try again" } }),
+        )],
+        Some(open) if open.count > 0 => vec![check(
+            ui::CheckMark::No,
+            html! { "No order from " (active.site) " can still be paid" },
+            Some(html! {
+                (open.count) " can be paid"
+                @if let Some(until) = &open.until { " until about " (until) }
+            }),
+        )],
+        Some(_) => {
+            let mut checks = vec![
+                check(
+                    ui::CheckMark::Ok,
+                    html! { "No order from " (active.site) " can still be paid" },
+                    None,
+                ),
+                check(
+                    ui::CheckMark::Then,
+                    html! { "New Monero orders on " (active.site) " stop" },
+                    None,
+                ),
+            ];
+            if let Some(url) = &active.webhook_url {
+                checks.push(check(
+                    ui::CheckMark::Then,
+                    html! { "The plugin's webhook is removed" },
+                    Some(html! { (url) }),
+                ));
+            }
+            checks.push(check(
+                ui::CheckMark::Then,
+                html! { "The website unlocks" },
+                Some(html! { "change or remove it in the Store card" }),
+            ));
+            checks
+        }
+    };
+    let disconnect =
+        ui::Button::new(format!("Disconnect {}", active.name)).variant(ui::ButtonVariant::Danger);
     html! {
         (heading("disconnect-title", title, in_dialog))
         p {
             "The store's secret key changes, so the plugin on " (active.site) " can't make orders: the shop stops taking "
             "Monero until you connect it again from the plugin."
         }
-        @if let Some(error) = error { p class="error" role="alert" { (error) } }
-        ul class="checks" {
-            @match &view.plugin_open_orders {
-                None => {
-                    (row(Mark::No, html! { "Monokulo can't check its orders right now" }, Some(html! {
-                        a href=(view.disconnect_path(active)) { "try again" }
-                    })))
-                }
-                Some(open) if open.count > 0 => {
-                    (row(Mark::No, html! { "No order from " (active.site) " can still be paid" }, Some(html! {
-                        (open.count) " can be paid"
-                        @if let Some(until) = &open.until { " until about " (until) }
-                    })))
-                }
-                Some(_) => {
-                    (row(Mark::Ok, html! { "No order from " (active.site) " can still be paid" }, None))
-                    (row(Mark::Then, html! { "New Monero orders on " (active.site) " stop" }, None))
-                    @if let Some(url) = &active.webhook_url {
-                        (row(Mark::Then, html! { "The plugin's webhook is removed" }, Some(html! { (url) })))
-                    }
-                    (row(Mark::Then, html! { "The website unlocks" }, Some(html! { "change or remove it in the Store card" })))
-                }
-            }
-        }
+        @if let Some(error) = error { (ui::Alert::new(error, ui::Tone::Error)) }
+        (ui::Checks::new(checks))
         @if ready {
             form method="post" action=(view.disconnect_path(active)) {
                 (confirm_field("disconnect-confirm", &view.store_name))
-                div class="dialog-actions" {
-                    a class="btn" href=(back) data-closes-dialog { "Cancel" }
-                    button type="submit" class="btn-danger" { "Disconnect " (active.name) }
-                }
+                (actions(&back, "Cancel", disconnect.kind(ui::ButtonType::Submit)))
             }
         } @else {
-            p class="hint" id="disconnect-why" { "Disconnecting becomes available once no order from the shop can be paid." }
-            div class="dialog-actions" {
-                a class="btn" href=(back) data-closes-dialog { "Close" }
-                button type="button" class="btn-danger" disabled aria-describedby="disconnect-why" { "Disconnect " (active.name) }
-            }
+            (ui::Hint::new("Disconnecting becomes available once no order from the shop can be paid.")
+                .attr("id", "disconnect-why"))
+            (actions(&back, "Close", disconnect.disabled(true).attr("aria-describedby", "disconnect-why")))
         }
     }
 }
@@ -520,7 +545,7 @@ mod tests {
             card.contains("shop.example · plugin 0.4.0 · connected 3 Oct · last order today"),
             "{card}"
         );
-        assert!(card.contains(r#"<a class="btn" href="/dashboard/stores/c_1/settings/connections/int_1/disconnect" data-opens-dialog="disconnect-dialog">Disconnect…</a>"#), "{card}");
+        assert!(card.contains(r#"<a class="mk-btn" href="/dashboard/stores/c_1/settings/connections/int_1/disconnect" data-opens-dialog="disconnect-dialog">Disconnect…</a>"#), "{card}");
         assert!(
             card.contains("<h4>Before</h4>") && card.contains("3 Oct to 12 Sep"),
             "{card}"
@@ -573,7 +598,7 @@ mod tests {
         );
         assert!(html.contains(r#"No plugin is connected to it<span class="fix">WooCommerce on shop.example is · <a href="/dashboard/stores/c_1/settings/connections/int_1/disconnect" data-opens-dialog="disconnect-dialog">disconnect it first</a>"#), "{html}");
         assert!(
-            html.contains(r#"class="btn-danger" disabled"#) && !html.contains("<form"),
+            html.contains(r#"data-variant="danger" disabled"#) && !html.contains("<form"),
             "{html}"
         );
     }
@@ -598,7 +623,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"name="site" value="new.example""#),
+            html.contains(r#"name="site" id="website-confirm-site" value="new.example""#),
             "{html}"
         );
         assert!(
@@ -615,7 +640,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"<button type="submit" class="btn-danger">Change website</button>"#),
+            html.contains(r#"<button class="mk-btn" type="submit" data-variant="danger">Change website</button>"#),
             "{html}"
         );
         let remove =
@@ -632,7 +657,7 @@ mod tests {
     fn disconnecting_is_blocked_while_an_order_from_the_shop_can_be_paid() {
         let html = disconnect_content(&view(true, Some(3)), None, true).into_string();
         assert!(html.contains(r#"No order from shop.example can still be paid<span class="fix">3 can be paid until about 14:20</span>"#), "{html}");
-        assert!(html.contains(r#"<button type="button" class="btn-danger" disabled aria-describedby="disconnect-why">Disconnect WooCommerce</button>"#), "{html}");
+        assert!(html.contains(r#"<button class="mk-btn" type="button" data-variant="danger" disabled aria-describedby="disconnect-why">Disconnect WooCommerce</button>"#), "{html}");
         assert!(
             !html.contains("webhook") && !html.contains("<form"),
             "{html}"
@@ -659,7 +684,7 @@ mod tests {
         assert!(html.contains(r#"<form method="post" action="/dashboard/stores/c_1/settings/connections/int_1/disconnect">"#), "{html}");
         assert!(
             html.contains(
-                r#"<button type="submit" class="btn-danger">Disconnect WooCommerce</button>"#
+                r#"<button class="mk-btn" type="submit" data-variant="danger">Disconnect WooCommerce</button>"#
             ),
             "{html}"
         );

@@ -37,7 +37,7 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await openAsAdmin(page, context);
   await expect(page.locator('#engine-timeline')).toBeVisible();
   await expect(mode()).toHaveValue('live');
-  await expect(page.locator('.engine-page a.reload')).toBeHidden();
+  await expect(page.locator('.engine-page a[data-reload]')).toBeHidden();
   await expect(page.locator('#engine-summary')).toContainText('3,412,880');
   await expect(page.locator('#pills .pill.frontier')).toHaveText('Frontier, 41 stores');
   await expect(page.locator('#pills .pill.catchup')).toHaveText('Catching up, 3 stores');
@@ -53,7 +53,7 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await page.keyboard.press('Escape');
   await expect(page.locator('.help-body')).toBeHidden();
 
-  const timingDetails = page.locator('#engine-round .round-breakdown');
+  const timingDetails = page.locator('#engine-round [data-round-breakdown]');
   await timingDetails.locator('summary').click();
   // Just "Timing details": the round it is for is the card's heading.
   await expect(timingDetails.locator('summary')).toHaveText('Timing details');
@@ -84,7 +84,7 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await expect(mode()).toHaveValue('paused');
   await expect(page.locator('#engine-summary')).toContainText('3,412,881');
   await expect(page.locator('#pills .pill.catchup')).toHaveCount(1);
-  await expect(events.locator('tr.now')).toContainText('1 payment found in it');
+  await expect(events.locator('tr[data-now]')).toContainText('1 payment found in it');
 
   // Off live, the playback position's tooltip gives its moment.
   const marker = page.locator('#tl-head');
@@ -454,7 +454,7 @@ test('the round card has room: inset bars, its end marker, chips apart', async (
       lastTime: box(lastBar.nextElementSibling),
       ruleLine: getComputedStyle(label, '::before').content,
       lanesBox: box(round.querySelector('.lanes')),
-      details: box(round.querySelector('.round-breakdown')),
+      details: box(round.querySelector('[data-round-breakdown]')),
     };
   });
   for (const [i, lane] of card.lanes.entries()) {
@@ -646,9 +646,9 @@ test('without JavaScript the engine page is the network as of now', async ({ bro
   const page = await context.newPage();
   await page.goto(`${fixture.base_url}/status/engine?network=mainnet`);
   await expect(page.locator('#engine-timeline')).toBeHidden();
-  await expect(page.locator('.engine-page a.reload')).toBeVisible();
+  await expect(page.locator('.engine-page a[data-reload]')).toBeVisible();
   await expect(page.locator('#engine-summary')).toContainText('Node tip');
-  await expect(page.locator('#engine-events tr').first()).toBeVisible();
+  await expect(page.locator('#engine-events tbody tr').first()).toBeVisible();
   // The server stacks the labels by the same rule: only the frontier,
   // on the node tip's block, goes up a level.
   await expect(page.locator('#strip')).toHaveAttribute('style', '--levels:2');

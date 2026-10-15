@@ -143,9 +143,7 @@ fn network_select(selected: &str) -> Markup {
 /// view key and public spend key, on the forms that ask for them.
 pub fn keys_help() -> Markup {
     html! {
-        details class="keys-help" {
-            summary { "Where do I find these keys?" }
-            div class="keys-help-body" {
+        (ui::Disclosure::new("Where do I find these keys?", html! {
                 h4 { span class="logo-row" { (app_logo("cake", 20, None)) "Cake Wallet" } }
                 p { "Settings (the gear icon), Recovery & Keys, Show my Recovery Phrase & Keys, then the Keys tab." }
                 h4 { span class="logo-row" { (app_logo("feather", 20, None)) "Feather" } }
@@ -165,8 +163,7 @@ pub fn keys_help() -> Markup {
                     li { code { "address" } " shows the wallet's main address, to check against the one Monokulo shows once it's added." }
                     li { code { "restore_height" } " shows where the wallet's history starts. Monokulo doesn't need it: it watches for payments from now on." }
                 }
-            }
-        }
+        }).look(ui::DisclosureLook::Boxed))
     }
 }
 
@@ -225,7 +222,7 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
                 "payments arrive and can never spend them."
             }
             @if let Some(error) = &data.error {
-                p class="error" role="alert" { (error) }
+                (ui::Alert::new(error.as_str(), ui::Tone::Error))
             }
             @if let (Flow::Setup(_), false) = (flow, data.wallets.is_empty()) {
                 form method="post" action="/setup/wallet/existing" class="already" {
@@ -245,7 +242,7 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
                     )
                     .id("existing-wallet")
                     .required(true))
-                    button type="submit" { "Use this wallet" }
+                    (ui::Button::new("Use this wallet").kind(ui::ButtonType::Submit))
                 }
                 p class="or-divider" role="separator" { "or" }
             }
@@ -253,21 +250,22 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
                 (flow.hidden())
                 div class="setting-field wallet-name-field" {
                     div class="setting-label-row" { label class="setting-label" for="wallet-name" { "Wallet name" } }
-                    p class="field-help hint" { "Shown when you pick a wallet for a store. You can rename it any time." }
-                    input id="wallet-name" type="text" name="name" value=(data.name) maxlength=(crate::wallets::MAX_NAME_LEN)
-                        autocomplete="off" aria-describedby="wallet-name-check"
-                        aria-invalid=[data.name_problem.as_ref().map(|_| "true")]
-                        fx-action="/account/wallets/name-check" fx-target="#wallet-name-check" fx-swap="outerHTML";
+                    p class="field-help" { "Shown when you pick a wallet for a store. You can rename it any time." }
+                    (ui::Input::new("name").id("wallet-name").value(data.name.as_str())
+                        .attr("maxlength", crate::wallets::MAX_NAME_LEN.to_string())
+                        .autocomplete("off").described_by("wallet-name-check")
+                        .invalid(data.name_problem.is_some())
+                        .attr("fx-action", "/account/wallets/name-check").attr("fx-target", "#wallet-name-check")
+                        .attr("fx-swap", "outerHTML"))
                     (name_check(&data.name, data.name_problem.as_deref()))
                 }
-                details class="more-options" {
-                    summary { "More options" }
+                (ui::Disclosure::new("More options", html! {
                     div class="setting-field" {
                         div class="setting-label-row" { label class="setting-label" for="wallet-network" { "Network" } }
-                        p class="field-help hint" { "Leave on mainnet unless this is a test wallet." }
+                        p class="field-help" { "Leave on mainnet unless this is a test wallet." }
                         (network_select(&data.network))
                     }
-                }
+                }).look(ui::DisclosureLook::MoreOptions))
                 div class="mk-card-grid" {
                     section class="mk-action-card" data-recommended data-unavailable data-needs-js {
                         div class="mk-action-card-body" {
@@ -275,15 +273,16 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
                                 span class="icon-tile" aria-hidden="true" {
                                     svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true" { path d="M12 5v14M5 12h14" {} }
                                 }
-                                span class="tag" data-js-tag { "Needs JavaScript" }
+                                (ui::Tag::new("Needs JavaScript").attr("data-js-tag", ""))
                             }
                             h3 { "Create a new wallet" }
                             p class="mk-action-card-description" {
                                 "Your browser makes a 16-word recovery phrase. Scan it straight into Cake Wallet or "
                                 "Stack Wallet, or write it down, then we check it."
                             }
-                            p class="hint" { (lock_icon()) " The phrase is made and kept on this page. It is never sent to Monokulo." }
-                            button type="submit" class="mk-btn" data-variant="primary" formaction=(flow.new_action()) disabled data-create-wallet { "Create a new wallet" }
+                            (ui::Hint::new(html! { (lock_icon()) " The phrase is made and kept on this page. It is never sent to Monokulo." }))
+                            (ui::Button::new("Create a new wallet").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)
+                                .disabled(true).attr("formaction", flow.new_action()).attr("data-create-wallet", ""))
                         }
                     }
                     section class="mk-action-card" {
@@ -300,33 +299,37 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
                             "Use a wallet you already run in Cake Wallet, Feather, the Monero GUI or anything else. "
                             "Paste its private view key and public spend key."
                         }
-                        p class="hint" { "Works without JavaScript." }
-                        button type="submit" class="mk-btn" formaction=(flow.keys_action()) { "Bring your own wallet" }
+                        (ui::Hint::new("Works without JavaScript."))
+                        (ui::Button::new("Bring your own wallet").kind(ui::ButtonType::Submit).attr("formaction", flow.keys_action()))
                     }
                     section class="mk-action-card" data-unavailable {
                         div class="mk-action-card-body" {
                             div class="mk-action-card-head" {
                                 span class="logo-row" { (trezor_logo(28)) (ledger_logo(28)) }
-                                span class="tag" { "Coming soon" }
+                                (ui::Tag::new("Coming soon"))
                             }
                             h3 { "Use a hardware wallet" }
                             p class="mk-action-card-description" {
                                 "Plug in or pair a Trezor or Ledger and confirm on its screen. Your recovery phrase "
                                 "stays on the device."
                             }
-                            button type="button" class="mk-btn" disabled { "Connect a device" }
+                            (ui::Button::new("Connect a device").disabled(true))
                         }
                     }
                 }
-                p class="warning" id="create-needs-js" data-needs-js-reason {
-                    "Creating a new wallet needs JavaScript: its recovery phrase is made inside your browser so it "
-                    "never reaches our server. Turn JavaScript on for this site and reload, or bring your own wallet."
-                }
+                (ui::Alert::new(
+                    "Creating a new wallet needs JavaScript: its recovery phrase is made inside your browser so it \
+                     never reaches our server. Turn JavaScript on for this site and reload, or bring your own wallet.",
+                    ui::Tone::Warning,
+                )
+                .quiet(true)
+                .attr("id", "create-needs-js")
+                .attr("data-needs-js-reason", ""))
             }
             div class="step-foot" {
                 @match flow {
-                    Flow::Setup(setup) => { a class="btn" href=(format!("/setup?{}", setup.query())) { "Back" } }
-                    Flow::Account => { a class="btn" href="/account?tab=wallets" { "Back" } }
+                    Flow::Setup(setup) => { (ui::LinkButton::new("Back", format!("/setup?{}", setup.query()))) }
+                    Flow::Account => { (ui::LinkButton::new("Back", "/account?tab=wallets")) }
                 }
             }
         }
@@ -368,7 +371,7 @@ pub fn import_page(chrome: &PageChrome, flow: Flow<'_>, data: &ImportViewModel) 
                 " on " (data.network) ". Monokulo asks for two watch-only keys and never your recovery phrase or private spend key."
             }
             @if let Some(error) = &data.error {
-                p class="error" role="alert" { (error) }
+                (ui::Alert::new(error.as_str(), ui::Tone::Error))
             }
             form method="post" action=(flow.keys_action()) {
                 (flow.hidden())
@@ -388,9 +391,9 @@ pub fn import_page(chrome: &PageChrome, flow: Flow<'_>, data: &ImportViewModel) 
                     (super::key_entry::snp_section(entry, (!data.custody_choices.is_empty()).then_some("key_custody_backend")))
                 }
                 div class="step-foot" {
-                    a class="btn" href=(back) { "Back" }
+                    (ui::LinkButton::new("Back", back.as_str()))
                     span class="spacer" {}
-                    button type="submit" class="btn-primary" { (flow.add_label()) }
+                    (ui::Button::new(flow.add_label()).variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit))
                 }
             }
         }
@@ -404,7 +407,7 @@ pub fn import_page(chrome: &PageChrome, flow: Flow<'_>, data: &ImportViewModel) 
 pub fn app_field(selected: &str) -> Markup {
     html! {
         label {
-            "Which app is it in? " span class="hint" { "(optional)" }
+            "Which app is it in? " (ui::Hint::new("(optional)").inline(true))
             (Select::new(
                 "app",
                 std::iter::once(Choice::new("", "Not saying").selected(selected.is_empty()))
@@ -452,14 +455,14 @@ pub fn create_page(chrome: &PageChrome, flow: Flow<'_>, data: &CreateViewModel) 
             nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href=(back) { "Wallet kind" } }
             noscript {
                 h1 { "Create a new wallet" }
-                div class="error" role="alert" {
+                (ui::Alert::new(html! {
                     "Creating a wallet needs JavaScript: its recovery phrase is made inside your browser so it never "
                     "reaches our server. Turn JavaScript on for this site and reload, or go "
                     a href=(back) { "back and bring your own wallet" } "."
-                }
+                }, ui::Tone::Error).block(true))
             }
             @if let Some(error) = &data.error {
-                p class="error" role="alert" { (error) }
+                (ui::Alert::new(error.as_str(), ui::Tone::Error))
             }
             div data-wallet-setup data-network=(data.network) data-name=(data.name) data-restore-height=(height) {
                 section data-screen="loading" {
@@ -487,10 +490,10 @@ pub fn create_page(chrome: &PageChrome, flow: Flow<'_>, data: &CreateViewModel) 
                     }
                     (paper_panel())
                     div class="step-foot" {
-                        a class="btn" href=(back) { "Back" }
-                        button type="button" data-go="skip" { "Skip backup…" }
+                        (ui::LinkButton::new("Back", back.as_str()))
+                        (ui::Button::new("Skip backup…").attr("data-go", "skip"))
                         span class="spacer" {}
-                        button type="button" class="btn-primary" data-go="check" disabled { "Next: check two words" }
+                        (ui::Button::new("Next: check two words").variant(ui::ButtonVariant::Primary).disabled(true).attr("data-go", "check"))
                     }
                 }
                 section data-screen="check" hidden {
@@ -502,19 +505,18 @@ pub fn create_page(chrome: &PageChrome, flow: Flow<'_>, data: &CreateViewModel) 
                             div class="word-q" data-question=(i) {
                                 h3 data-question-label { "Word" }
                                 div class="picks" role="group" {
-                                    @for _ in 0..4 { button type="button" data-pick {} }
+                                    @for _ in 0..4 { (ui::Button::new("").attr("data-pick", "")) }
                                 }
                                 p class="q-note" data-question-note aria-live="polite" {}
                             }
                         }
                     }
-                    p class="hint" { (lock_icon()) " Then your browser works out the wallet's watch-only keys and sends only those to Monokulo." }
+                    (ui::Hint::new(html! { (lock_icon()) " Then your browser works out the wallet's watch-only keys and sends only those to Monokulo." }))
                     div class="step-foot" {
-                        button type="button" data-go="backup" { "Back" }
+                        (ui::Button::new("Back").attr("data-go", "backup"))
                         span class="spacer" {}
-                        button type="button" class="btn-primary" data-check-next disabled {
-                            "Continue anyway in " span class="countdown" data-countdown { "20 s" }
-                        }
+                        (ui::Button::new(html! { "Continue anyway in " span class="countdown" data-countdown { "20 s" } })
+                            .variant(ui::ButtonVariant::Primary).disabled(true).attr("data-check-next", ""))
                     }
                 }
                 section data-screen="skip" hidden {
@@ -530,23 +532,22 @@ pub fn create_page(chrome: &PageChrome, flow: Flow<'_>, data: &CreateViewModel) 
                                 strong { "nobody can ever spend that money." } " It's lost for good."
                             }
                         }
-                        button type="button" class="btn-primary" data-go="backup" { "Go back and back up" }
+                        (ui::FormActions::new(ui::Button::new("Go back and back up").variant(ui::ButtonVariant::Primary).attr("data-go", "backup")))
                         hr class="rule";
-                        label class="check-line" {
-                            input type="checkbox" data-skip-understood;
-                            "I understand that without the phrase, money paid to " (data.name) " can never be spent."
-                        }
+                        (ui::Checkbox::new()
+                            .text(html! { "I understand that without the phrase, money paid to " (data.name) " can never be spent." })
+                            .attr("data-skip-understood", ""))
                         label {
                             "Type " code { "skip" } " to confirm"
-                            input type="text" autocomplete="off" spellcheck="false" data-skip-typed;
+                            (ui::Input::new("skip").autocomplete("off").attr("spellcheck", "false").attr("data-skip-typed", ""))
                         }
-                        button type="button" disabled data-skip-confirm { "Skip backup and add the wallet" }
+                        (ui::FormActions::new(ui::Button::new("Skip backup and add the wallet").disabled(true).attr("data-skip-confirm", "")))
                         span class="field-help" { "Turns on when the box is ticked and you've typed skip." }
                     }
                 }
                 section data-screen="failed" hidden {
                     h1 { "This browser can't make a wallet" }
-                    p class="error" role="alert" data-failed-reason {}
+                    (ui::Alert::new("", ui::Tone::Error).attr("data-failed-reason", ""))
                     p { a href=(back) { "Bring your own wallet" } " instead." }
                 }
                 form method="post" action=(flow.new_action()) data-register hidden {
@@ -583,7 +584,7 @@ fn phrase_head(title: &str, extra: Markup) -> Markup {
 fn print_button() -> Markup {
     html! {
         span class="card-spacer" {}
-        button type="button" data-print { "Print" }
+        (ui::Button::new("Print").attr("data-print", ""))
     }
 }
 
@@ -595,14 +596,14 @@ fn app_panel(app: &WalletApp, shown: bool, height: &str) -> Markup {
     let phrase = html! {
         div class="phrase-box" {
             @if legacy {
-                (phrase_head(app.title, html! { span class="tag tag-unknown" { "older wallets" } (print_button()) }))
+                (phrase_head(app.title, html! { (ui::Tag::new("older wallets").tone(ui::TagTone::Unknown)) (print_button()) }))
                 ol class="seed-words legacy" data-legacy-words aria-label="25-word phrase" {}
-                dl class="facts" {
-                    dt { "Restore height" }
-                    dd { @if height.is_empty() { "the block height on the wallet's birthday" } @else { (height) } }
-                    dt { "Restore with" }
-                    dd { code { "monero-wallet-cli --restore-deterministic-wallet" } ", or the GUI's Restore wallet from keys or mnemonic seed" }
-                }
+                (ui::Facts::new(vec![
+                    fact("Restore height", if height.is_empty() { "the block height on the wallet's birthday".into() } else { height.into() }),
+                    fact("Restore with", html! {
+                        code { "monero-wallet-cli --restore-deterministic-wallet" } ", or the GUI's Restore wallet from keys or mnemonic seed"
+                    }.into()),
+                ]))
             } @else {
                 (phrase_head(app.title, html! {}))
                 ol class="seed-words" data-words aria-label="Recovery phrase" {}
@@ -618,22 +619,17 @@ fn app_panel(app: &WalletApp, shown: bool, height: &str) -> Markup {
                         (phrase)
                         div class="qr-col" {
                             div class="qr-frame" data-qr=(kind) {}
-                            p class="hint" {
-                                @if kind == "restore-link" {
-                                    "Restore link: the phrase, its birthday and the wallet's name."
-                                } @else {
-                                    "The 16 words, in the format Stack Wallet reads."
-                                }
-                            }
+                            (ui::Hint::new(if kind == "restore-link" {
+                                "Restore link: the phrase, its birthday and the wallet's name."
+                            } else {
+                                "The 16 words, in the format Stack Wallet reads."
+                            }))
                         }
                     }
                 }
                 None => (phrase),
             }
-            label class="check-line" {
-                input type="checkbox" data-backed-up;
-                " " (app.done_check)
-            }
+            (ui::Checkbox::new().text(app.done_check).attr("data-backed-up", ""))
         }
     }
 }
@@ -645,17 +641,24 @@ fn paper_panel() -> Markup {
             div class="phrase-box print-sheet" {
                 (phrase_head("Write these 16 words down", print_button()))
                 ol class="seed-words" data-words aria-label="Recovery phrase" {}
-                dl class="facts" {
-                    dt { "Phrase type" } dd { "Polyseed, 16 words" }
-                    dt { "Wallet birthday" } dd { "Today " span class="hint" { "(kept in the phrase, so apps restore quickly)" } }
-                }
+                (ui::Facts::new(vec![
+                    fact("Phrase type", "Polyseed, 16 words".into()),
+                    fact("Wallet birthday", html! { "Today " (ui::Hint::new("(kept in the phrase, so apps restore quickly)").inline(true)) }.into()),
+                ]))
                 p class="hint no-print" { "No copy button on purpose: other apps can read your clipboard." }
             }
-            label class="check-line" {
-                input type="checkbox" data-backed-up;
-                " I've written all 16 words down, in order, and put them somewhere safe."
-            }
+            (ui::Checkbox::new()
+                .text("I've written all 16 words down, in order, and put them somewhere safe.")
+                .attr("data-backed-up", ""))
         }
+    }
+}
+
+/// One fact of a `ui::Facts`.
+fn fact(term: &str, value: ui::Slot) -> ui::Fact {
+    ui::Fact {
+        term: term.into(),
+        value,
     }
 }
 
@@ -700,13 +703,13 @@ pub fn list_section(wallets: &[WalletListItem], retired: &[RetiredListItem]) -> 
     html! {
             p { "Where your stores' payments go. Monokulo holds watch-only keys for each." }
             @if wallets.is_empty() {
-                p class="notice" { "No wallets yet." }
+                (ui::Alert::new("No wallets yet.", ui::Tone::Notice).quiet(true))
             } @else if main.is_empty() {
-                p class="hint" { "No mainnet wallets yet. Add one when you're ready to take real payments." }
+                (ui::Hint::new("No mainnet wallets yet. Add one when you're ready to take real payments."))
             } @else {
                 div class="net-section-head" {
                     h2 { (super::network_badge("mainnet")) }
-                    p class="hint" { "Real money · " (wallets_count(main.len())) }
+                    (ui::Hint::new(format!("Real money · {}", wallets_count(main.len()))))
                 }
                 (wallets_table(&main, false))
             }
@@ -715,35 +718,30 @@ pub fn list_section(wallets: &[WalletListItem], retired: &[RetiredListItem]) -> 
                     summary {
                         (super::test_networks_badge())
                         strong { (wallets_count(test.len())) }
-                        span class="hint" { "no real value" }
+                        (ui::Hint::new("no real value").inline(true))
                     }
                     div { (wallets_table(&test, true)) }
                 }
             }
             @if !retired.is_empty() {
-                details class="retired-wallets" {
-                    summary { strong { "Retired wallets (" (retired.len()) ")" } span class="hint" { " · keys deleted, kept for their history" } }
-                    div class="table-scroll" {
-                        table {
-                            thead { tr { th { "Name" } th { "Retired" } th { "Keys" } } }
-                            tbody {
-                                @for w in retired {
-                                    tr {
-                                        td { a href=(format!("/account/wallets/{}", w.id)) { (w.name) } }
-                                        td { (w.retired) }
-                                        td { span class="keys-deleted" { (key_gone_icon(16)) " Deleted" } }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                (ui::Disclosure::new(
+                    html! { strong { "Retired wallets (" (retired.len()) ")" } (ui::Hint::new(" · keys deleted, kept for their history").inline(true)) },
+                    ui::Table::new(ui::Slot::many(retired.iter().map(|w| {
+                        ui::Row::new(ui::Slot::many([
+                            ui::Cell::new(html! { a href=(format!("/account/wallets/{}", w.id)) { (w.name) } }).into(),
+                            ui::Cell::new(w.retired.as_str()).into(),
+                            ui::Cell::new(html! { span class="keys-deleted" { (key_gone_icon(16)) " Deleted" } }).into(),
+                        ]))
+                        .into()
+                    })))
+                    .head(head_row(&["Name", "Retired", "Keys"])),
+                ).attr("data-disclosure", "retired-wallets"))
             }
             div class="list-foot" {
                 @if !wallets.is_empty() {
-                    p class="hint" { "Open a wallet to rename it, see its history or retire it." }
+                    (ui::Hint::new("Open a wallet to rename it, see its history or retire it."))
                 }
-                a class="btn btn-primary" href="/account/wallets/add" { "+ add a wallet" }
+                (ui::LinkButton::new("+ add a wallet", "/account/wallets/add").variant(ui::ButtonVariant::Primary))
             }
     }
 }
@@ -752,30 +750,47 @@ pub fn list_section(wallets: &[WalletListItem], retired: &[RetiredListItem]) -> 
 /// network, since stagenet and testnet wallets share it. On a phone each
 /// row is a card: name and stores, then address and kind.
 fn wallets_table(wallets: &[&WalletListItem], with_network: bool) -> Markup {
+    let head: &[&str] = if with_network {
+        &["Network", "Name", "Kind", "Address", "Stores"]
+    } else {
+        &["Name", "Kind", "Address", "Stores"]
+    };
+    let rows = wallets.iter().map(|w| {
+        let network = with_network.then(|| {
+            ui::Slot::from(ui::Cell::new(super::network_badge(&w.network)).part(ui::CellPart::Meta))
+        });
+        ui::Row::new(ui::Slot::many(network.into_iter().chain([
+            ui::Cell::new(html! { a href=(format!("/account/wallets/{}", w.id)) { (w.name) } })
+                .part(ui::CellPart::Title)
+                .into(),
+            ui::Cell::new(w.kind).part(ui::CellPart::When).into(),
+            ui::Cell::new(html! { code { (super::short_address(&w.address)) } })
+                .attr("data-cell", "detail")
+                .into(),
+            ui::Cell::new(html! {
+                (w.stores)
+                span class="card-unit" { @if w.stores == 1 { " store" } @else { " stores" } }
+            })
+            .part(ui::CellPart::Status)
+            .into(),
+        ])))
+        .into()
+    });
     html! {
-        div class="table-scroll" {
-            table class="wallets-table table-cards" {
-                thead { tr {
-                    @if with_network { th { "Network" } }
-                    th { "Name" } th { "Kind" } th { "Address" } th { "Stores" }
-                } }
-                tbody {
-                    @for w in wallets {
-                        tr {
-                            @if with_network { td class="card-meta" { (super::network_badge(&w.network)) } }
-                            td class="card-title" { a href=(format!("/account/wallets/{}", w.id)) { (w.name) } }
-                            td class="card-when" { (w.kind) }
-                            td class="card-detail" { code { (super::short_address(&w.address)) } }
-                            td class="card-status" {
-                                (w.stores)
-                                span class="card-unit" { @if w.stores == 1 { " store" } @else { " stores" } }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        (ui::Table::new(ui::Slot::many(rows))
+            .head(head_row(head))
+            .look(ui::TableLook::Cards)
+            .attr("data-table", "wallets"))
     }
+}
+
+/// A table's header row of plain column names.
+fn head_row(names: &[&str]) -> ui::Row {
+    ui::Row::new(ui::Slot::many(
+        names
+            .iter()
+            .map(|name| ui::Cell::new(*name).header(true).into()),
+    ))
 }
 
 fn wallets_count(n: usize) -> String {
@@ -886,6 +901,14 @@ fn details_card(data: &DetailViewModel) -> Markup {
         ),
         None => None,
     };
+    let mut name_input = ui::Input::new("name")
+        .id("wallet-name")
+        .value(shown)
+        .required(true)
+        .attr("maxlength", crate::wallets::MAX_NAME_LEN.to_string());
+    if refusal.is_some() {
+        name_input = name_input.attr("data-saved", w.name.as_str());
+    }
     html! {
         (settings::form(&format!("/account/wallets/{}/rename", w.id), Save::Reload, "Details", html! {
             (Card::new("details", "Details")
@@ -894,14 +917,11 @@ fn details_card(data: &DetailViewModel) -> Markup {
                 .render(html! {
                     (Field::new("Name", "wallet-name")
                         .help(None, html! { "Only you see it, in wallet lists and pickers." })
-                        .render(html! {
-                            input type="text" id="wallet-name" name="name" value=(shown) maxlength=(crate::wallets::MAX_NAME_LEN) required
-                                data-saved=[refusal.map(|_| w.name.as_str())];
-                        }))
-                    dl class="facts" {
-                        dt { "Address" } dd { code { (super::short_address(&w.primary_address)) } }
-                        dt { "Kind" } dd { (kind_label(w)) }
-                    }
+                        .render(html! { (name_input) }))
+                    (ui::Facts::new(vec![
+                        fact("Address", html! { code { (super::short_address(&w.primary_address)) } }.into()),
+                        fact("Kind", kind_label(w).into()),
+                    ]))
                 }))
             (settings::save_bar(refusal.is_some(), false, html! {
                 @if let Some(message) = refusal {
@@ -932,43 +952,46 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
             div class="wallet-title" { h1 { (w.name) } (super::network_badge(&w.network)) }
             @if let Some(at) = w.retired_at {
                 p class="wallet-meta" {
-                    span class="tag tag-unknown" { "retired" }
+                    (ui::Tag::new("retired").tone(ui::TagTone::Unknown))
                     span { "Keys deleted " (chrome.clock.time(at)) ". History kept." }
                 }
             }
-            @if let Some(notice) = &data.notice { p class="success" role="status" { (notice) } }
-            @if let Some(error) = &data.error { p class="error" role="alert" { (error) } }
+            @if let Some(notice) = &data.notice { (ui::Alert::new(notice.as_str(), ui::Tone::Success)) }
+            @if let Some(error) = &data.error { (ui::Alert::new(error.as_str(), ui::Tone::Error)) }
             (where_banner(w))
             (stores_card(&data.stores, &data.past_stores))
             (details_card(data))
-            details class="history-fold" {
-                summary { "History " span class="hint" { (events_count(data.history.len())) } }
-                @if data.history.is_empty() {
-                    p class="hint" { "Nothing yet." }
-                } @else {
-                    ol class="timeline" {
-                        @for event in &data.history {
-                            li { time { (event.when) } span { (event.what) } }
-                        }
+            (ui::Disclosure::new(
+                html! { "History " (ui::Hint::new(events_count(data.history.len())).inline(true)) },
+                html! {
+                    @if data.history.is_empty() {
+                        (ui::Hint::new("Nothing yet."))
+                    } @else {
+                        (ui::Timeline::new(data.history.iter().map(|event| ui::Event {
+                            when: event.when.clone(),
+                            what: event.what.clone().into(),
+                        }).collect::<Vec<_>>()))
                     }
-                }
-            }
+                },
+            ).attr("data-disclosure", "history"))
             @if let Some(restore) = &data.restore {
                 div class="wallet-foot" {
                     div {
                         strong { "Restore this wallet" }
-                        p class="hint" { "Enter its keys again and Monokulo watches it for payments." }
+                        (ui::Hint::new("Enter its keys again and Monokulo watches it for payments."))
                     }
-                    a class="btn" href=(format!("{}/restore", wallet_path(w))) data-opens-dialog="restore-dialog" { "Restore wallet…" }
+                    (ui::LinkButton::new("Restore wallet…", format!("{}/restore", wallet_path(w))).attr("data-opens-dialog", "restore-dialog"))
                 }
                 (ui::Dialog::new("restore-dialog", "restore-title", restore_content(w, restore, None, true)))
             } @else {
                 div class="wallet-foot" {
                     div {
                         strong { "Retire this wallet" }
-                        p class="hint" { "Takes it out of every list and deletes its keys from Monokulo. The money stays in your wallet app." }
+                        (ui::Hint::new("Takes it out of every list and deletes its keys from Monokulo. The money stays in your wallet app."))
                     }
-                    a class="btn btn-danger" href=(format!("{}/retire", wallet_path(w))) data-opens-dialog="retire-dialog" { "Retire wallet…" }
+                    (ui::LinkButton::new("Retire wallet…", format!("{}/retire", wallet_path(w)))
+                        .variant(ui::ButtonVariant::Danger)
+                        .attr("data-opens-dialog", "retire-dialog"))
                 }
                 (ui::Dialog::new("retire-dialog", "retire-title", retire_content(w, &data.retire, &data.stores, None, true)))
             }
@@ -1057,7 +1080,7 @@ pub fn where_banner(w: &crate::db::WalletRow) -> Markup {
             (icon)
             div {
                 strong { (title) }
-                p class="hint" { (text) }
+                (ui::Hint::new(text))
             }
         }
     }
@@ -1112,7 +1135,7 @@ fn stores_card(stores: &[WalletStore], past: &[WalletStore]) -> Markup {
             header class="card-head" { h3 id="stores-title" { "Stores" } span class="card-meta" { (meta) } }
             div class="card-body" {
                 @if stores.is_empty() && past.is_empty() {
-                    p class="hint" { "No stores use this wallet." }
+                    (ui::Hint::new("No stores use this wallet."))
                 }
                 @if !stores.is_empty() {
                     ul class="store-rows" {
@@ -1165,82 +1188,85 @@ fn retire_content(
 ) -> Markup {
     let action = format!("{}/retire", wallet_path(w));
     let title = html! { "Retire \u{201c}" (w.name) "\u{201d}?" };
+    let checks = match state {
+        RetireState::Checked {
+            stores: in_use,
+            orders,
+            until,
+        } => vec![
+            check(*in_use == 0, "No store takes payments into it", html! {
+                @if stores.is_empty() {
+                    (if *in_use == 1 { "A store does".to_owned() } else { format!("{in_use} stores do") })
+                }
+                @for store in stores {
+                    span class="fix-line" {
+                        (store.name) " does · "
+                        a href=(change_wallet_link(&store.id)) { "change its wallet" }
+                    }
+                }
+            }),
+            check(*orders == 0, "No order on it can still be paid", html! {
+                @match until {
+                    Some(until) => { "until about " (until) }
+                    None => { (if *orders == 1 { "1 order can".to_owned() } else { format!("{orders} orders can") }) }
+                }
+            }),
+        ],
+        RetireState::Unknown => vec![check(false, "Monokulo can't check right now", html! {
+            a href=(action) { "try again" }
+        })],
+        RetireState::Retired => vec![check(true, "Already retired", html! {})],
+    };
     html! {
         (ui::DialogTitle::new("retire-title", title).in_dialog(in_dialog))
         p { "Retiring deletes its keys from Monokulo, so it stops seeing payments. The money stays in your wallet app." }
-        @if let Some(error) = error { p class="error" role="alert" { (error) } }
-        ul class="checks" {
-            @match state {
-                RetireState::Checked { stores: in_use, orders, until } => {
-                    (check(*in_use == 0, html! { "No store takes payments into it" }, html! {
-                        @if stores.is_empty() {
-                            (if *in_use == 1 { "A store does".to_owned() } else { format!("{in_use} stores do") })
-                        }
-                        @for store in stores {
-                            span class="fix-line" {
-                                (store.name) " does · "
-                                a href=(change_wallet_link(&store.id)) { "change its wallet" }
-                            }
-                        }
-                    }))
-                    (check(*orders == 0, html! { "No order on it can still be paid" }, html! {
-                        @match until {
-                            Some(until) => { "until about " (until) }
-                            None => { (if *orders == 1 { "1 order can".to_owned() } else { format!("{orders} orders can") }) }
-                        }
-                    }))
-                }
-                RetireState::Unknown => {
-                    (check(false, html! { "Monokulo can't check right now" }, html! {
-                        a href=(action) { "try again" }
-                    }))
-                }
-                RetireState::Retired => {
-                    (check(true, html! { "Already retired" }, html! {}))
-                }
-            }
-        }
+        @if let Some(error) = error { (ui::Alert::new(error, ui::Tone::Error)) }
+        (ui::Checks::new(checks))
         @if state.ready() {
             form method="post" action=(action) {
                 div class="setting-field" {
                     div class="setting-label-row" {
                         label class="setting-label" for="retire-confirm" { "Type " strong { "\u{201c}" (w.name) "\u{201d}" } " to confirm" }
                     }
-                    input type="text" id="retire-confirm" name="confirm" autocomplete="off" spellcheck="false" required;
+                    (ui::Input::new("confirm").id("retire-confirm").autocomplete("off").required(true).attr("spellcheck", "false"))
                 }
-                div class="dialog-actions" {
-                    a class="btn" href=(wallet_path(w)) data-closes-dialog { "Cancel" }
-                    button type="submit" class="btn-danger" { "Retire wallet" }
-                }
+                (ui::DialogActions::new(ui::Slot::many([
+                    close_link("Cancel", w).into(),
+                    ui::Button::new("Retire wallet").variant(ui::ButtonVariant::Danger).kind(ui::ButtonType::Submit).into(),
+                ])))
             }
         } @else {
-            p class="hint" id="retire-why" {
-                @if matches!(state, RetireState::Unknown) {
-                    "Retire becomes available once Monokulo can check."
-                } @else {
-                    "Retire becomes available when both are ticked."
-                }
-            }
-            div class="dialog-actions" {
-                a class="btn" href=(wallet_path(w)) data-closes-dialog { "Close" }
-                button type="button" class="btn-danger" disabled aria-describedby="retire-why" { "Retire wallet" }
-            }
+            (ui::Hint::new(if matches!(state, RetireState::Unknown) {
+                "Retire becomes available once Monokulo can check."
+            } else {
+                "Retire becomes available when both are ticked."
+            })
+            .attr("id", "retire-why"))
+            (ui::DialogActions::new(ui::Slot::many([
+                close_link("Close", w).into(),
+                ui::Button::new("Retire wallet")
+                    .variant(ui::ButtonVariant::Danger)
+                    .disabled(true)
+                    .attr("aria-describedby", "retire-why")
+                    .into(),
+            ])))
         }
     }
 }
 
 /// One row of the retire checklist: ✓, or ✕ with its fix beside it.
-fn check(ok: bool, what: Markup, fix: Markup) -> Markup {
-    html! {
-        li class=(if ok { "ok" } else { "no" }) {
-            span class="mark" aria-hidden="true" { (if ok { "✓" } else { "✕" }) }
-            span {
-                span class="visually-hidden" { (if ok { "Done: " } else { "Not yet: " }) }
-                (what)
-                @if !ok { span class="fix" { (fix) } }
-            }
-        }
+fn check(ok: bool, what: &str, fix: Markup) -> ui::Check {
+    ui::Check {
+        mark: if ok { ui::CheckMark::Ok } else { ui::CheckMark::No },
+        what: what.into(),
+        fix: (!ok).then(|| fix.into()),
     }
+}
+
+/// A dialog's Cancel or Close: back to the wallet's page, or with
+/// JavaScript, closing the dialog.
+fn close_link(label: &str, w: &crate::db::WalletRow) -> ui::LinkButton {
+    ui::LinkButton::new(label, wallet_path(w)).attr("data-closes-dialog", "")
 }
 
 /// Restoring a retired wallet: its keys entered again, in the dialog and
@@ -1255,7 +1281,7 @@ fn restore_content(
     html! {
         (ui::DialogTitle::new("restore-title", title).in_dialog(in_dialog))
         p { "Paste its keys again and Monokulo watches it as before. It must be the same wallet: the address has to match." }
-        @if let Some(error) = error { p class="error" role="alert" { (error) } }
+        @if let Some(error) = error { (ui::Alert::new(error, ui::Tone::Error)) }
         form method="post" action=(format!("{}/restore", wallet_path(w))) {
             (super::key_entry::key_fields(
                 "",
@@ -1269,10 +1295,10 @@ fn restore_content(
             @if let Some(entry) = &restore.snp_entry {
                 (super::key_entry::snp_section(entry, (!restore.custody_choices.is_empty()).then_some("key_custody_backend")))
             }
-            div class="dialog-actions" {
-                a class="btn" href=(wallet_path(w)) data-closes-dialog { "Cancel" }
-                button type="submit" class="btn-primary" { "Restore wallet" }
-            }
+            (ui::DialogActions::new(ui::Slot::many([
+                close_link("Cancel", w).into(),
+                ui::Button::new("Restore wallet").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit).into(),
+            ])))
         }
     }
 }
@@ -1403,7 +1429,7 @@ mod tests {
             "{html}"
         );
         // The one orange button.
-        assert_eq!(html.matches("btn-primary").count(), 1, "{html}");
+        assert_eq!(html.matches(r#"data-variant="primary""#).count(), 1, "{html}");
     }
 
     #[test]
@@ -1453,7 +1479,9 @@ mod tests {
         .into_string();
         let main_at = html.find("net-section-head").unwrap();
         let fold_at = html.find(r#"<details class="test-wallets">"#).unwrap();
-        let retired_at = html.find(r#"<details class="retired-wallets">"#).unwrap();
+        let retired_at = html
+            .find(r#"<details class="disclosure" data-disclosure="retired-wallets">"#)
+            .unwrap();
         assert!(main_at < fold_at && fold_at < retired_at, "{html}");
         assert!(html.contains("Real money · 1 wallet<"), "{html}");
         assert!(html.contains("<strong>1 wallet</strong>"), "{html}");
@@ -1660,7 +1688,7 @@ mod tests {
         .into_string()
     }
 
-    const DISABLED: &str = r#"<button type="button" class="btn-danger" disabled aria-describedby="retire-why">Retire wallet</button>"#;
+    const DISABLED: &str = r#"<button class="mk-btn" type="button" data-variant="danger" disabled aria-describedby="retire-why">Retire wallet</button>"#;
 
     #[test]
     fn retire_is_blocked_by_a_store_with_its_fix_beside_it() {
@@ -1750,8 +1778,8 @@ mod tests {
         );
         assert_eq!(html.matches(r#"<li class="ok">"#).count(), 2, "{html}");
         assert!(!html.contains(r#"class="no""#), "{html}");
-        assert!(html.contains(r#"<form method="post" action="/account/wallets/w_Shop takings/retire"><div class="setting-field"><div class="setting-label-row"><label class="setting-label" for="retire-confirm">Type <strong>“Shop takings”</strong> to confirm</label></div><input type="text" id="retire-confirm" name="confirm" autocomplete="off" spellcheck="false" required></div>"#), "{html}");
-        assert!(html.contains(r#"<div class="dialog-actions"><a class="btn" href="/account/wallets/w_Shop takings" data-closes-dialog>Cancel</a><button type="submit" class="btn-danger">Retire wallet</button></div>"#), "{html}");
+        assert!(html.contains(r#"<form method="post" action="/account/wallets/w_Shop takings/retire"><div class="setting-field"><div class="setting-label-row"><label class="setting-label" for="retire-confirm">Type <strong>“Shop takings”</strong> to confirm</label></div><input class="mk-input" type="text" name="confirm" id="retire-confirm" autocomplete="off" required spellcheck="false"></div>"#), "{html}");
+        assert!(html.contains(r#"<div class="dialog-actions"><a class="mk-btn" href="/account/wallets/w_Shop takings" data-closes-dialog="">Cancel</a><button class="mk-btn" type="submit" data-variant="danger">Retire wallet</button></div>"#), "{html}");
         assert!(
             !html.contains("disabled") && !html.contains("retire-why"),
             "{html}"
@@ -1803,7 +1831,7 @@ mod tests {
             r#"<section class="where-banner""#,
             r#"<h3 id="stores-title">Stores</h3>"#,
             r#"<h3 id="card-details-title">Details</h3>"#,
-            r#"<details class="history-fold"><summary>History <span class="hint">1 event</span></summary>"#,
+            r#"<details class="disclosure" data-disclosure="history"><summary>History <span class="hint">1 event</span></summary>"#,
             r#"<div class="wallet-foot"><div><strong>Retire this wallet</strong>"#,
             r#"<dialog id="retire-dialog""#,
         ];
@@ -1830,15 +1858,19 @@ mod tests {
         // The rename: the Details card's settings form.
         assert!(
             html.contains(r#"action="/account/wallets/w_Shop takings/rename""#)
-                && html.contains(r#"id="wallet-name" name="name" value="Shop takings""#),
+                && html.contains(r#"name="name" id="wallet-name" value="Shop takings""#),
             "{html}"
         );
         assert!(html.contains("ui-islands."), "its script: {html}");
         // One orange button, the save bar's Save; the red one is Retire's.
-        assert_eq!(html.matches("btn-primary").count(), 1, "{html}");
+        assert_eq!(
+            html.matches("btn-primary").count() + html.matches(r#"data-variant="primary""#).count(),
+            1,
+            "{html}"
+        );
         assert!(
             html.contains(
-                r#"class="btn-primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7-->"#
+                r#"class="mk-btn" data-variant="primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7-->"#
             ),
             "{html}"
         );
@@ -1852,7 +1884,7 @@ mod tests {
             html.contains(r#"<div class="wallet-foot"><div><strong>Restore this wallet</strong>"#),
             "{html}"
         );
-        assert!(html.contains(r#"<a class="btn" href="/account/wallets/w_Shop takings/restore" data-opens-dialog="restore-dialog">Restore wallet…</a>"#), "{html}");
+        assert!(html.contains(r#"<a class="mk-btn" href="/account/wallets/w_Shop takings/restore" data-opens-dialog="restore-dialog">Restore wallet…</a>"#), "{html}");
         let dialog = between(&html, r#"<dialog id="restore-dialog""#, "</dialog>");
         assert!(dialog.contains("<h2 id=\"restore-title\" class=\"dialog-title\">Restore \u{201c}Shop takings\u{201d}"), "{dialog}");
         assert!(
@@ -1862,11 +1894,11 @@ mod tests {
         );
         assert!(dialog.contains("Monero CLI"), "the key help: {dialog}");
         assert!(
-            dialog.contains(r#"<button type="submit" class="btn-primary">Restore wallet</button>"#),
+            dialog.contains(r#"<button class="mk-btn" type="submit" data-variant="primary">Restore wallet</button>"#),
             "{dialog}"
         );
         assert!(
-            !html.contains("Retire wallet") && !html.contains("btn-danger"),
+            !html.contains("Retire wallet") && !html.contains(r#"data-variant="danger""#),
             "{html}"
         );
     }

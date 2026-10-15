@@ -91,7 +91,7 @@ test('the site, the POS and the hosted payment page share one theme, light and d
       expect(await fitsSmallPhone(page)).toBe(0);
 
       await page.goto(base + store);
-      expect(await background(page.locator('.orders-table th, table th').first())).toBe(expected.tableHead);
+      expect(await background(page.locator('[data-table="orders"] th, table th').first())).toBe(expected.tableHead);
       if (theme === 'light') await captureCoverageStage(page, 'site-store-page', test.info(), { group: 'site' });
       expect(await fitsSmallPhone(page)).toBe(0);
 

@@ -1622,7 +1622,7 @@ mod tests {
             );
             assert!(
                 html.contains(
-                    r#"<a class="btn net-head-action" href="/status/engine?network=mainnet">Watch it live</a>"#
+                    r#"<a class="mk-btn" href="/status/engine?network=mainnet">Watch it live</a>"#
                 ),
                 "an admin is linked to the engine page: {html}"
             );

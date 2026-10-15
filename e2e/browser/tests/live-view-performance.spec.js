@@ -29,7 +29,7 @@ test('live view remains responsive and bounded through sustained activity and st
   await page.goto(fixture.base_url + '/status/engine?network=mainnet');
   await expect(page.locator('#tl-mode')).toHaveValue('live');
   await expect(page.locator('#engine-network')).toHaveValue('mainnet');
-  await expect(page.locator('.reload')).toBeHidden();
+  await expect(page.locator('[data-reload]')).toBeHidden();
   await page.waitForFunction(() => window.engineHistory);
   const cdp = await context.newCDPSession(page);
   await cdp.send('HeapProfiler.collectGarbage');
@@ -50,7 +50,7 @@ test('live view remains responsive and bounded through sustained activity and st
       return performance.now() - started;
     }, cycle));
     // Played on the page's next draw: its newest events are this frame's.
-    await expect(page.locator('#engine-events tr').first()).toContainText(`frame ${cycle}`);
+    await expect(page.locator('#engine-events tbody tr').first()).toContainText(`frame ${cycle}`);
     await page.locator('#tl-mode').selectOption('paused');
     await expect(page.locator('#tl-mode')).toHaveValue('paused');
     await page.locator('#tl-mode').selectOption('live');
@@ -59,16 +59,16 @@ test('live view remains responsive and bounded through sustained activity and st
   const after = await cdp.send('Runtime.getHeapUsage');
   expect(after.usedSize - before.usedSize).toBeLessThan(45 * 1024 * 1024);
   expect(Math.max(...timings)).toBeLessThan(1500);
-  await expect(page.locator('#engine-events tr')).toHaveCount(60);
+  await expect(page.locator('#engine-events tbody tr')).toHaveCount(60);
   await page.evaluate(() => window.engineSource.dispatchEvent(new Event('error')));
-  await expect(page.locator('.reload')).toBeVisible();
+  await expect(page.locator('[data-reload]')).toBeVisible();
   await page.evaluate(() => window.engineSource.dispatchEvent(new MessageEvent('history', { data: JSON.stringify(window.engineHistory) })));
-  await expect(page.locator('.reload')).toBeHidden();
+  await expect(page.locator('[data-reload]')).toBeHidden();
   await page.evaluate(() => {
     window.dispatchEvent(new PageTransitionEvent('pagehide'));
     window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
   });
-  await expect(page.locator('.reload')).toBeHidden();
+  await expect(page.locator('[data-reload]')).toBeHidden();
   await page.locator('#tl-mode').selectOption('paused');
   await expect(page.locator('#tl-mode')).toHaveValue('paused');
   await page.locator('#tl-mode').selectOption('live');

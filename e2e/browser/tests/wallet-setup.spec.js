@@ -158,8 +158,8 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   await expect(page.locator('.todo strong')).toHaveText(['Add the checkout to your site', 'Install the WooCommerce plugin', 'Open the till (POS)']);
   const guide = page.getByRole('link', { name: /Open the guide/ });
   await expect(guide).toHaveAttribute('href', /oceaneilonwy\.github\.io\/monokulo\/docs\//);
-  await expect(page.locator('.btn-primary')).toHaveCount(1);
-  await expect(guide).toHaveClass(/btn-primary/);
+  await expect(page.locator('[data-variant="primary"]')).toHaveCount(1);
+  await expect(guide).toHaveAttribute('data-variant', 'primary');
   await captureCoverageStage(page, 'setup-done-website', test.info(), { group: GROUP });
 
   // The store is called by its name; its site is the host; the backup is Feather's.
@@ -261,8 +261,8 @@ test.describe('with JavaScript off', () => {
     // No site: the till is the one orange button; the checkout needs a site first.
     const till = page.getByRole('link', { name: 'Open the till' });
     await expect(till).toHaveAttribute('href', /\/pos$/);
-    await expect(till).toHaveClass(/btn-primary/);
-    await expect(page.locator('.btn-primary')).toHaveCount(1);
+    await expect(till).toHaveAttribute('data-variant', 'primary');
+    await expect(page.locator('[data-variant="primary"]')).toHaveCount(1);
     await expect(page.getByText("add your site in the store's settings first")).toBeVisible();
     await expect(page.getByText('Not taking payments yet')).toHaveCount(0);
     await captureCoverageStage(page, 'setup-done-no-site', test.info(), { group: GROUP });
@@ -311,7 +311,7 @@ test('a wallet lists its stores and is renamed on its page', async ({ page }) =>
   await page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Dev stagenet till' })).toBeVisible();
   // History is folded until opened.
-  await page.locator('details.history-fold summary').click();
+  await page.locator('details[data-disclosure="history"] summary').click();
   await expect(page.getByText(/Renamed from/)).toBeVisible();
   await captureCoverageStage(page, 'wallets-detail', test.info(), { group: 'wallets' });
   // Put the name back for the specs' helpers.
@@ -354,7 +354,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await expect(section).toContainText('Payments go to Cafe till');
   await expect(section.getByRole('combobox', { name: 'Wallet' }).locator('.mk-current')).toHaveText('Current');
 
-  const history = section.locator('details.wallet-history');
+  const history = section.locator('details[data-disclosure="wallet-history"]');
   await expect(history.locator('summary')).toHaveText('Wallet history (2 wallets)');
   await history.locator('summary').click();
   await expect(history.locator('tbody tr')).toHaveCount(2);
@@ -367,7 +367,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   // leaves the helpers' wallet in use again.
   await page.goto(base + '/account?tab=wallets');
   await page.getByRole('link', { name: WALLET_NAME }).click();
-  await page.locator('details.history-fold summary').click();
+  await page.locator('details[data-disclosure="history"] summary').click();
   await expect(page.getByText('changed to another wallet')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Before' })).toBeVisible();
   await page.goto(base + store + '/settings');
@@ -396,11 +396,11 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await page.locator('#card-wallet').getByRole('combobox', { name: 'Wallet' }).click();
   await expect(page.locator('#card-wallet').getByRole('option', { name: /Cafe till/ })).toHaveCount(0);
   await page.keyboard.press('Escape');
-  await page.locator('#card-wallet details.wallet-history summary').click();
+  await page.locator('#card-wallet details[data-disclosure="wallet-history"] summary').click();
   await expect(page.locator('#card-wallet tbody tr', { hasText: 'Cafe till' }).locator('.tag')).toHaveText('Retired');
 
   await page.goto(base + '/account?tab=wallets');
-  await page.locator('.retired-wallets summary').click();
+  await page.locator('details[data-disclosure="retired-wallets"] summary').click();
   await page.getByRole('link', { name: 'Cafe till' }).click();
   await page.getByRole('link', { name: 'Restore wallet…' }).click();
   const restore = page.getByRole('dialog', { name: 'Restore “Cafe till”' });

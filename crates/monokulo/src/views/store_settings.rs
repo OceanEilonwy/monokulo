@@ -60,8 +60,8 @@ pub struct ConfirmationThresholdView {
 pub struct EmbedDomainView {
     pub id: String,
     pub domain: String,
-    /// `tag-*` class suffix: `ok`, `error` or `unknown`.
-    pub state_tag: &'static str,
+    /// How its tag reads: ok, error or unknown.
+    pub state_tag: ui::TagTone,
     pub state_label: &'static str,
     /// A line explaining a failing or lapsed domain's grace period.
     pub detail: Option<String>,
@@ -376,7 +376,7 @@ impl StoreSettingsData {
 fn action_error(store: &StoreSettingsData, section: StoreSection) -> Markup {
     html! {
         @if let Some(message) = store.refusal(section) {
-            p class="error" role="alert" { (message) }
+            (ui::Alert::new(message, ui::Tone::Error))
         }
     }
 }
@@ -410,14 +410,14 @@ fn key_storage_card(store: &StoreSettingsData, key_storage: &KeyStorageView) -> 
         html! {
             (action_error(store, StoreSection::KeyStorage))
             p { strong { "Kept: " } (key_storage.current) }
-            p class="hint" {
-                "The keys belong to this store's wallet: moving them moves the wallet, for every store that uses it."
-            }
+            (ui::Hint::new("The keys belong to this store's wallet: moving them moves the wallet, for every store that uses it."))
             @if key_storage.current_disabled {
-                p class="error" {
-                    "This way of storing keys has been turned off on this instance, so payments to this store aren't "
-                    "being detected. Move the keys below to start again."
-                }
+                (ui::Alert::new(
+                    "This way of storing keys has been turned off on this instance, so payments to this store aren't \
+                     being detected. Move the keys below to start again.",
+                    ui::Tone::Error,
+                )
+                .quiet(true))
             }
             form method="post" action=(action) {
                 label {
@@ -441,7 +441,7 @@ fn key_storage_card(store: &StoreSettingsData, key_storage: &KeyStorageView) -> 
                 @if let Some(entry) = &key_storage.snp_entry {
                     (super::key_entry::snp_section(entry, Some("backend")))
                 }
-                button type="submit" { "Move keys" }
+                (ui::FormActions::new(ui::Button::new("Move keys").kind(ui::ButtonType::Submit)))
             }
         },
     )
@@ -460,13 +460,20 @@ fn wallet_card(store: &StoreSettingsData) -> Markup {
         .as_ref()
         .map(|p| p.wallet_id.as_str())
         .or(wallet.current.as_ref().map(|c| c.id.as_str()));
+    let confirm = |text: String| {
+        ui::Button::new(text)
+            .variant(ui::ButtonVariant::Primary)
+            .kind(ui::ButtonType::Submit)
+            .attr("name", "confirm")
+            .attr("value", "yes")
+    };
     plain_card(
         StoreSection::Wallet.id(),
         "Wallet",
         html! {
             (action_error(store, StoreSection::Wallet))
             @if let Some(changed) = &wallet.changed {
-                p class="success" role="status" { (changed) }
+                (ui::Alert::new(changed.as_str(), ui::Tone::Success))
             }
             @if let Some(current) = &wallet.current {
                 p class="settings-summary-line" {
@@ -474,7 +481,7 @@ fn wallet_card(store: &StoreSettingsData) -> Markup {
                     " since " (store.clock.time(current.since)) "."
                 }
             } @else {
-                p class="hint" { "This store isn't linked to one of your wallets yet. Pick the one it takes payments into." }
+                (ui::Hint::new("This store isn't linked to one of your wallets yet. Pick the one it takes payments into."))
             }
             // Picking a wallet sends it at once (static/fx-glue.js), to ask.
             form method="post" action=(action) fx-submit-on-change {
@@ -502,30 +509,28 @@ fn wallet_card(store: &StoreSettingsData) -> Markup {
                             "New orders take payments into " strong { (pending.wallet_name) } ". "
                             (open_orders_line(pending.open_orders, &current.name))
                         }
-                        button type="submit" name="confirm" value="yes" class="btn-primary" { "Change to " (pending.wallet_name) }
+                        (ui::FormActions::new(confirm(format!("Change to {}", pending.wallet_name))))
                     }
                 } @else if let Some(pending) = &wallet.pending {
                     div class="change-confirm" role="status" {
                         h3 { "Take payments into " (pending.wallet_name) "?" }
-                        button type="submit" name="confirm" value="yes" class="btn-primary" { "Use " (pending.wallet_name) }
+                        (ui::FormActions::new(confirm(format!("Use {}", pending.wallet_name))))
                     }
                 } @else {
-                    button type="submit" { "Change wallet" }
+                    (ui::FormActions::new(ui::Button::new("Change wallet").kind(ui::ButtonType::Submit)))
                 }
             }
             @if !wallet.history.is_empty() {
-                details class="wallet-history" {
-                    summary { "Wallet history (" (wallets_label(wallet.history.len())) ")" }
-                    table {
-                        thead { tr { th { "Wallet" } th { "From" } th { "Until" } th class="num" { "Orders" } } }
-                        tbody {
+                (ui::Disclosure::new(
+                    format!("Wallet history ({})", wallets_label(wallet.history.len())),
+                    ui::Table::new(html! {
                             @for period in &wallet.history {
                                 tr class=[period.until.is_none().then_some("current")] aria-current=[period.until.is_none().then_some("true")] {
                                     td {
                                         @match (&period.wallet_id, &period.wallet_name) {
                                             (Some(id), Some(name)) => {
                                                 a href=(format!("/account/wallets/{id}")) { (name) }
-                                                @if period.wallet_retired { " " span class="tag tag-unknown" { "Retired" } }
+                                                @if period.wallet_retired { " " (ui::Tag::new("Retired").tone(ui::TagTone::Unknown)) }
                                             },
                                             _ => span class="muted" { "A deleted wallet" },
                                         }
@@ -535,9 +540,11 @@ fn wallet_card(store: &StoreSettingsData) -> Markup {
                                     td class="num" { (period.orders) }
                                 }
                             }
-                        }
-                    }
-                }
+                    })
+                    .head(html! { tr { th { "Wallet" } th { "From" } th { "Until" } th class="num" { "Orders" } } })
+                    .scroll(false),
+                )
+                .attr("data-disclosure", "wallet-history"))
             }
         },
     )
@@ -590,8 +597,12 @@ fn store_card(store: &StoreSettingsData) -> Markup {
             (Field::new("Store name", "store-name")
                 .help(None, html! { "Shown on your dashboard, the till and the checkout." })
                 .render(html! {
-                    input type="text" id="store-name" name="store_name" value=(name) maxlength=(crate::stores::MAX_NAME_LEN) required
-                        data-saved=[store.saved_attr(&store.display_name)];
+                    (ui::Input::new("store_name")
+                        .id("store-name")
+                        .value(name.as_str())
+                        .required(true)
+                        .attr("maxlength", crate::stores::MAX_NAME_LEN.to_string())
+                        .maybe_attr("data-saved", store.saved_attr(&store.display_name)))
                 }))
             (super::store_site::website_field(&store.sites, &site))
         },
@@ -635,18 +646,25 @@ fn confirmations_card(store: &StoreSettingsData) -> Markup {
         StoreSection::Confirmations,
         "Confirmation thresholds",
         html! {
-            p class="hint" {
-                "How many blocks a payment needs before this store's orders read as paid. The default "
-                "is the fallback used whenever no custom threshold applies; custom thresholds let a higher-value "
-                "order require more confirmations (or a lower-value one fewer) based on its amount in this store's base "
-                "currency."
-            }
+            (ui::Hint::new(
+                "How many blocks a payment needs before this store's orders read as paid. The default \
+                 is the fallback used whenever no custom threshold applies; custom thresholds let a higher-value \
+                 order require more confirmations (or a lower-value one fewer) based on its amount in this store's base \
+                 currency.",
+            ))
             (Field::new("Default confirmations", "confirmations-required")
                 .help(Some("confirmations-required-help"), html! { "Blocks a payment waits before an order counts as paid, from 0 to 720." })
                 .render(html! {
-                    input type="text" class="confirmations-input" id="confirmations-required" name="confirmations_required"
-                        value=(store.shown("confirmations_required", &default)) size="3" maxlength="3" inputmode="numeric" required
-                        aria-describedby="confirmations-required-help" data-saved=[store.saved_attr(&default)];
+                    (ui::Input::new("confirmations_required")
+                        .id("confirmations-required")
+                        .value(store.shown("confirmations_required", &default))
+                        .described_by("confirmations-required-help")
+                        .required(true)
+                        .attr("data-input", "confirmations")
+                        .attr("size", "3")
+                        .attr("maxlength", "3")
+                        .attr("inputmode", "numeric")
+                        .maybe_attr("data-saved", store.saved_attr(&default)))
                 }))
             (Field::new("Accept unconfirmed (0-conf) payments", "zero-conf")
                 .help(Some("zero-conf-help"), html! {
@@ -662,19 +680,18 @@ fn confirmations_card(store: &StoreSettingsData) -> Markup {
                     "require its number of confirmations. Up to 5; tick Delete to remove one when you save."
                 })
                 .render(html! {
-                    table class="thresholds-table table-stack" {
-                        thead { tr { th { "Amount (" (store.base_currency) ")" } th { "Confirmations required" } th { "Delete" } } }
-                        tbody {
+                    (ui::Table::new(html! {
                             @for threshold in &store.confirmation_thresholds {
                                 @let name = format!("delete_{}", threshold.id);
                                 tr {
                                     td data-label=(format!("Amount ({})", store.base_currency)) { (threshold.unit_amount) }
                                     td data-label="Confirmations required" { (threshold.confirmations_required) }
                                     td {
-                                        label class="inline" {
-                                            input type="checkbox" name=(name) checked[store.ticked(&name, false)] data-saved=[store.saved_box(false)];
-                                            " Delete"
-                                        }
+                                        (ui::Checkbox::new()
+                                            .text("Delete")
+                                            .name(name.as_str())
+                                            .checked(store.ticked(&name, false))
+                                            .maybe_attr("data-saved", store.saved_box(false)))
                                     }
                                 }
                             }
@@ -683,20 +700,31 @@ fn confirmations_card(store: &StoreSettingsData) -> Markup {
                                     td colspan="3" class="muted" { "Maximum of 5 custom thresholds reached - delete one to add another." }
                                 } @else {
                                     td {
-                                        input type="text" name="new_unit_amount" value=(store.shown("new_unit_amount", ""))
-                                            placeholder=(format!("Minimum Amount ({})", store.base_currency))
-                                            aria-label=(format!("New threshold's amount ({})", store.base_currency)) data-saved=[store.saved_attr("")];
+                                        (ui::Input::new("new_unit_amount")
+                                            .value(store.shown("new_unit_amount", ""))
+                                            .placeholder(format!("Minimum Amount ({})", store.base_currency))
+                                            .label(format!("New threshold's amount ({})", store.base_currency))
+                                            .maybe_attr("data-saved", store.saved_attr("")))
                                     }
                                     td {
-                                        input type="text" class="confirmations-input" name="new_confirmations_required" value=(store.shown("new_confirmations_required", ""))
-                                            size="3" maxlength="3" inputmode="numeric" placeholder="# Confirmations"
-                                            aria-label="New threshold's confirmations" data-saved=[store.saved_attr("")];
+                                        (ui::Input::new("new_confirmations_required")
+                                            .value(store.shown("new_confirmations_required", ""))
+                                            .placeholder("# Confirmations")
+                                            .label("New threshold's confirmations")
+                                            .attr("data-input", "confirmations")
+                                            .attr("size", "3")
+                                            .attr("maxlength", "3")
+                                            .attr("inputmode", "numeric")
+                                            .maybe_attr("data-saved", store.saved_attr("")))
                                     }
                                     td class="muted" { "New" }
                                 }
                             }
-                        }
-                    }
+                    })
+                    .head(html! { tr { th { "Amount (" (store.base_currency) ")" } th { "Confirmations required" } th { "Delete" } } })
+                    .look(ui::TableLook::Stack)
+                    .scroll(false)
+                    .attr("data-table", "thresholds"))
                 }))
         },
     )
@@ -714,10 +742,10 @@ fn fx_provider_card(store: &StoreSettingsData) -> Markup {
         html! {
             @if store.fx_provider_options.is_empty() {
                 p { strong { "Exchange rate providers:" } " " span class="muted" { "none enabled on this instance" } }
-                p class="hint" {
-                    "Only XMR-denominated orders can be created until an admin of this Monokulo instance "
-                    "enables a provider (e.g. Coingecko)."
-                }
+                (ui::Hint::new(
+                    "Only XMR-denominated orders can be created until an admin of this Monokulo instance \
+                     enables a provider (e.g. Coingecko).",
+                ))
             } @else {
                 (Field::group("Providers", "fx-providers")
                     .help(Some("fx-providers-help"), html! {
@@ -728,66 +756,88 @@ fn fx_provider_card(store: &StoreSettingsData) -> Markup {
                         "recorded on it. Changes apply to the next order created."
                     })
                     .render(html! {
-                        table class="fx-providers" {
-                            thead { tr { th { "Use" } th { "Provider" } th { "Order" } } }
-                            tbody {
+                        (ui::Table::new(html! {
                                 @for (index, opt) in store.fx_provider_options.iter().enumerate() {
                                     @let use_name = format!("use_{}", opt.name);
                                     @let position_name = format!("position_{}", opt.name);
                                     @let position = (index + 1).to_string();
                                     tr {
-                                        td { input type="checkbox" name=(use_name) value="on" checked[store.ticked(&use_name, opt.selected)] aria-label=(format!("Use {}", opt.name)) data-saved=[store.saved_box(opt.selected)]; }
+                                        td {
+                                            (ui::Checkbox::new()
+                                                .name(use_name.as_str())
+                                                .checked(store.ticked(&use_name, opt.selected))
+                                                .label(format!("Use {}", opt.name))
+                                                .maybe_attr("data-saved", store.saved_box(opt.selected)))
+                                        }
                                         td { (opt.name) }
-                                        td { input type="number" name=(position_name) value=(store.shown(&position_name, &position)) min="1" max=(count) aria-label=(format!("Preference order of {}", opt.name)) data-saved=[store.saved_attr(&position)]; }
+                                        td {
+                                            (ui::Input::new(position_name.as_str())
+                                                .kind(ui::InputType::Number)
+                                                .value(store.shown(&position_name, &position))
+                                                .label(format!("Preference order of {}", opt.name))
+                                                .attr("min", "1")
+                                                .attr("max", count.to_string())
+                                                .maybe_attr("data-saved", store.saved_attr(&position)))
+                                        }
                                     }
                                 }
-                            }
-                        }
+                        })
+                        .head(html! { tr { th { "Use" } th { "Provider" } th { "Order" } } })
+                        .scroll(false))
                     }))
                 @if let Some(haveno) = &store.haveno_settings {
                     h4 { "Haveno (RetoSwap) limits" }
-                    p class="hint" {
-                        "Haveno prices from a thin peer-to-peer order book, so it only quotes when the book "
-                        "meets the limits below; otherwise the next provider in your order is used. These "
-                        "only matter while Haveno is ticked above."
-                    }
+                    (ui::Hint::new(
+                        "Haveno prices from a thin peer-to-peer order book, so it only quotes when the book \
+                         meets the limits below; otherwise the next provider in your order is used. These \
+                         only matter while Haveno is ticked above.",
+                    ))
                     (haveno_field(store, crate::fx_provider_settings::HAVENO_CURRENCIES, "Currencies Haveno may quote", &haveno.currencies,
                         "Comma-separated. Leave empty to allow every currency.",
-                        |name, id, value, saved| html! { input type="text" name=(name) value=(value) id=(id) placeholder="USD, EUR, GBP" autocomplete="off" data-saved=[saved]; }))
+                        |input| input.placeholder("USD, EUR, GBP").autocomplete("off")))
                     (haveno_field(store, crate::fx_provider_settings::HAVENO_MAX_SPREAD_PCT, "Maximum spread (%)", &haveno.max_spread_pct,
                         "The largest gap between the best buy and sell offer, as a percentage of their midpoint.",
-                        |name, id, value, saved| html! { input type="number" name=(name) value=(value) id=(id) min="0.01" max="100" step="any" data-saved=[saved]; }))
+                        |input| number(input, "0.01", "100", "any")))
                     (haveno_field(store, crate::fx_provider_settings::HAVENO_MIN_OFFERS_PER_SIDE, "Minimum offers on each side", &haveno.min_offers_per_side,
                         "Buy offers and sell offers must each number at least this many.",
-                        |name, id, value, saved| html! { input type="number" name=(name) value=(value) id=(id) min="1" max="1000" step="1" data-saved=[saved]; }))
+                        |input| number(input, "1", "1000", "1")))
                     (haveno_field(store, crate::fx_provider_settings::HAVENO_MIN_DEPTH_XMR_PER_SIDE, "Minimum XMR on each side", &haveno.min_depth_xmr_per_side,
                         "Total XMR offered on each side must be at least this much. 0 turns the check off.",
-                        |name, id, value, saved| html! { input type="number" name=(name) value=(value) id=(id) min="0" max="1000000" step="any" data-saved=[saved]; }))
+                        |input| number(input, "0", "1000000", "any")))
                 }
             }
         },
     )
 }
 
-/// One of Haveno's limits: `control(name, id, value shown, data-saved)`.
+/// One of Haveno's limits: its input, named, valued and marked with what's
+/// saved, finished by `control`.
 fn haveno_field(
     store: &StoreSettingsData,
     name: &str,
     label: &str,
     saved: &str,
     help: &str,
-    control: impl Fn(&str, &str, &str, Option<String>) -> Markup,
+    control: impl Fn(ui::Input) -> ui::Input,
 ) -> Markup {
     let id = name.replace('_', "-");
     let help_id = format!("{id}-help");
+    let input = ui::Input::new(name)
+        .id(id.as_str())
+        .value(store.shown(name, saved))
+        .maybe_attr("data-saved", store.saved_attr(saved));
     Field::new(label, &id)
         .help(Some(&help_id), html! { (help) })
-        .render(control(
-            name,
-            &id,
-            &store.shown(name, saved),
-            store.saved_attr(saved),
-        ))
+        .render(html! { (control(input)) })
+}
+
+/// A number input between `min` and `max`, in steps of `step`.
+fn number(field: ui::Input, min: &str, max: &str, step: &str) -> ui::Input {
+    field
+        .kind(ui::InputType::Number)
+        .attr("min", min)
+        .attr("max", max)
+        .attr("step", step)
 }
 
 /// "Webhooks" (`views::webhooks`): actions of their own, not part of the
@@ -901,32 +951,32 @@ fn verified_domains_card(store: &StoreSettingsData) -> Markup {
         "Verified domains",
         html! {
             (action_error(store, StoreSection::Domains))
-            p class="hint" {
-                "Prove you own the websites that show this store's checkout. Add a domain, publish the TXT record shown here in "
-                "that domain's DNS settings, then check it. A verified domain covers all of its subdomains. Onion addresses can't "
-                "be verified, because they have no DNS."
-            }
+            (ui::Hint::new(
+                "Prove you own the websites that show this store's checkout. Add a domain, publish the TXT record shown here in \
+                 that domain's DNS settings, then check it. A verified domain covers all of its subdomains. Onion addresses can't \
+                 be verified, because they have no DNS.",
+            ))
             form class="embed-restriction" method="post" action=(format!("{base}/embed-restriction")) {
                 @if store.embed_restricted {
                     p {
-                        span class="tag tag-ok" { "On" } " "
+                        (ui::Tag::new("On").tone(ui::TagTone::Ok)) " "
                         strong { "Only my verified domains can show this checkout." }
                         " Browsers won't show it on any other website, and orders from other websites are refused. Pages on "
                         "this server (the POS, the payment link) always work."
                     }
                     input type="hidden" name="restricted" value="off";
-                    button type="submit" { "Turn off" }
+                    (ui::Button::new("Turn off").kind(ui::ButtonType::Submit))
                 } @else {
                     p {
-                        span class="tag tag-unknown" { "Off" } " "
+                        (ui::Tag::new("Off").tone(ui::TagTone::Unknown)) " "
                         strong { "Any website can show this checkout." }
                         " Turn this on to allow only the verified domains below, and their subdomains."
                     }
                     input type="hidden" name="restricted" value="on";
-                    @if store.embed_can_restrict {
-                        button type="submit" { "Only allow my verified domains" }
-                    } @else {
-                        button type="submit" disabled { "Only allow my verified domains" }
+                    (ui::Button::new("Only allow my verified domains")
+                        .kind(ui::ButtonType::Submit)
+                        .disabled(!store.embed_can_restrict))
+                    @if !store.embed_can_restrict {
                         span class="field-help" { "Verify a domain first." }
                     }
                 }
@@ -934,15 +984,13 @@ fn verified_domains_card(store: &StoreSettingsData) -> Markup {
             @if store.embed_domains.is_empty() {
                 p class="muted" { "No domains yet." }
             } @else {
-                table class="domains-table table-stack" {
-                    thead { tr { th { "Domain" } th { "Status" } th { "Last checked" } th {} } }
-                    tbody {
+                (ui::Table::new(html! {
                         @for domain in &store.embed_domains {
                             tr {
                                 td {
                                     strong { (domain.domain) }
-                                    @if let Some(detail) = &domain.detail { div class="hint" { (detail) } }
-                                    @if let Some(error) = &domain.last_error { div class="hint" { (error) } }
+                                    @if let Some(detail) = &domain.detail { (ui::Hint::new(detail.as_str())) }
+                                    @if let Some(error) = &domain.last_error { (ui::Hint::new(error.as_str())) }
                                     @if domain.show_record {
                                         dl class="dns-record" {
                                             dt { "Type" } dd { code { "TXT" } }
@@ -951,21 +999,24 @@ fn verified_domains_card(store: &StoreSettingsData) -> Markup {
                                         }
                                     }
                                 }
-                                td { span class=(format!("tag tag-{}", domain.state_tag)) { (domain.state_label) } }
+                                td { (ui::Tag::new(domain.state_label).tone(domain.state_tag)) }
                                 td data-label="Last checked" { (domain.last_checked) }
                                 td class="domain-actions" {
                                     form method="post" action=(format!("{base}/domains/{}/check", domain.id)) {
-                                        button type="submit" { "Check now" }
+                                        (ui::Button::new("Check now").kind(ui::ButtonType::Submit))
                                     }
                                     form method="post" action=(format!("{base}/domains/{}/delete", domain.id))
                                         onsubmit="return confirm('Remove this domain? You would need a new DNS record to verify it again.');" {
-                                        button type="submit" { "Remove" }
+                                        (ui::Button::new("Remove").kind(ui::ButtonType::Submit))
                                     }
                                 }
                             }
                         }
-                    }
-                }
+                })
+                .head(html! { tr { th { "Domain" } th { "Status" } th { "Last checked" } th {} } })
+                .look(ui::TableLook::Stack)
+                .scroll(false)
+                .attr("data-table", "domains"))
             }
             form method="post" action=(format!("{base}/domains")) {
                 (Field::new("Domain", "new-domain")
@@ -973,12 +1024,15 @@ fn verified_domains_card(store: &StoreSettingsData) -> Markup {
                         "Just the domain, like shop.example. Its subdomains are covered too."
                     })
                     .render(html! {
-                        input type="text" name="domain" id="new-domain" aria-describedby="new-domain-help"
-                            placeholder="shop.example" required autocomplete="off" spellcheck="false";
+                        (ui::Input::new("domain")
+                            .id("new-domain")
+                            .described_by("new-domain-help")
+                            .placeholder("shop.example")
+                            .required(true)
+                            .autocomplete("off")
+                            .attr("spellcheck", "false"))
                     }))
-                div class="form-actions" {
-                    button type="submit" { "Add domain" }
-                }
+                (ui::FormActions::new(ui::Button::new("Add domain").kind(ui::ButtonType::Submit)))
             }
         },
     )
@@ -1095,19 +1149,21 @@ mod tests {
             min_depth_xmr_per_side: 1.5,
         });
         assert!(
-            html.contains(r#"name="haveno_currencies" value="USD, EUR""#),
+            html.contains(r#"name="haveno_currencies" id="haveno-currencies" value="USD, EUR""#),
             "got: {html}"
         );
         assert!(
-            html.contains(r#"name="haveno_max_spread_pct" value="2.5""#),
+            html.contains(r#"name="haveno_max_spread_pct" id="haveno-max-spread-pct" value="2.5""#),
             "got: {html}"
         );
         assert!(
-            html.contains(r#"name="haveno_min_offers_per_side" value="3""#),
+            html.contains(
+                r#"name="haveno_min_offers_per_side" id="haveno-min-offers-per-side" value="3""#
+            ),
             "got: {html}"
         );
         assert!(
-            html.contains(r#"name="haveno_min_depth_xmr_per_side" value="1.5""#),
+            html.contains(r#"name="haveno_min_depth_xmr_per_side" id="haveno-min-depth-xmr-per-side" value="1.5""#),
             "got: {html}"
         );
     }
@@ -1116,19 +1172,21 @@ mod tests {
     fn the_default_haveno_limits_render_as_plain_numbers() {
         let html = with_haveno(Default::default());
         assert!(
-            html.contains(r#"name="haveno_currencies" value="""#),
+            html.contains(r#"name="haveno_currencies" id="haveno-currencies" value="""#),
             "got: {html}"
         );
         assert!(
-            html.contains(r#"name="haveno_max_spread_pct" value="5""#),
+            html.contains(r#"name="haveno_max_spread_pct" id="haveno-max-spread-pct" value="5""#),
             "got: {html}"
         );
         assert!(
-            html.contains(r#"name="haveno_min_offers_per_side" value="1""#),
+            html.contains(
+                r#"name="haveno_min_offers_per_side" id="haveno-min-offers-per-side" value="1""#
+            ),
             "got: {html}"
         );
         assert!(
-            html.contains(r#"name="haveno_min_depth_xmr_per_side" value="0""#),
+            html.contains(r#"name="haveno_min_depth_xmr_per_side" id="haveno-min-depth-xmr-per-side" value="0""#),
             "got: {html}"
         );
     }
@@ -1215,8 +1273,12 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains("settings-dialogs"), "{html}");
-        assert_eq!(html.matches("btn-primary").count(), 1, "{html}");
-        assert!(html.contains(r#"<a class="btn" href="/dashboard/stores/conn_1/settings" data-discard-all data-mk="5">Discard changes</a>"#), "{html}");
+        assert_eq!(
+            html.matches("btn-primary").count() + html.matches(r#"data-variant="primary""#).count(),
+            1,
+            "{html}"
+        );
+        assert!(html.contains(r#"<a class="mk-btn" href="/dashboard/stores/conn_1/settings" data-discard-all data-mk="5">Discard changes</a>"#), "{html}");
     }
 
     #[test]
@@ -1251,12 +1313,16 @@ mod tests {
         );
         assert!(html.contains(r#"<div class="card-body"><p class="error" role="alert" data-mk="6">Enter a whole number of confirmations.</p>"#), "{html}");
         assert!(
-            html.contains(r#"name="confirmations_required" value="abc""#),
+            html.contains(
+                r#"name="confirmations_required" id="confirmations-required" value="abc""#
+            ),
             "{html}"
         );
         assert!(html.contains(r#"data-saved="10""#), "{html}");
         assert!(
-            html.contains(r#"<input type="checkbox" name="delete_t1" checked data-saved="off">"#),
+            html.contains(
+                r#"<input type="checkbox" name="delete_t1" value="on" checked data-saved="off">"#
+            ),
             "{html}"
         );
         assert!(
@@ -1327,14 +1393,16 @@ mod tests {
             },
         )
         .into_string();
-        assert!(html.contains(r#"<input type="hidden" name="restricted" value="on"><button type="submit" disabled>Only allow my verified domains</button>"#), "got: {html}");
+        assert!(html.contains(r#"<input type="hidden" name="restricted" value="on"><button class="mk-btn" type="submit" disabled>Only allow my verified domains</button>"#), "got: {html}");
 
         let store = StoreSettingsData {
             embed_can_restrict: true,
             ..base_store()
         };
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
-        assert!(html.contains(r#"<button type="submit">Only allow my verified domains</button>"#));
+        assert!(html.contains(
+            r#"<button class="mk-btn" type="submit">Only allow my verified domains</button>"#
+        ));
 
         let store = StoreSettingsData {
             embed_can_restrict: true,
@@ -1363,7 +1431,7 @@ mod tests {
             |id: &str, name: &str, state_label: &'static str, show_record: bool| EmbedDomainView {
                 id: id.to_string(),
                 domain: name.to_string(),
-                state_tag: "unknown",
+                state_tag: ui::TagTone::Unknown,
                 state_label,
                 detail: None,
                 show_record,
@@ -1445,14 +1513,14 @@ mod tests {
     #[test]
     fn confirmations_required_input_is_narrow_and_capped_at_three_digits() {
         let html = render(base_store());
-        assert!(html.contains(r#"class="confirmations-input" id="confirmations-required" name="confirmations_required" value="10" size="3" maxlength="3" inputmode="numeric" required"#), "got: {html}");
+        assert!(html.contains(r#"name="confirmations_required" id="confirmations-required" value="10" aria-describedby="confirmations-required-help" required data-input="confirmations" size="3" maxlength="3" inputmode="numeric""#), "got: {html}");
     }
 
     #[test]
     fn a_custom_threshold_is_added_in_the_tables_last_row() {
         let html = render(base_store());
         assert!(html.contains("<th>Delete</th>"), "got: {html}");
-        assert!(html.contains(r#"<tr class="new-threshold-row"><td><input type="text" name="new_unit_amount" value="" placeholder="Minimum Amount (XMR)""#), "got: {html}");
+        assert!(html.contains(r#"<tr class="new-threshold-row"><td><input class="mk-input" type="text" name="new_unit_amount" value="" placeholder="Minimum Amount (XMR)""#), "got: {html}");
         assert!(
             html.contains(r##"placeholder="# Confirmations""##),
             "got: {html}"
@@ -1473,7 +1541,7 @@ mod tests {
         let html = render(store);
         assert!(html.contains("Maximum of 5 custom thresholds reached"));
         assert!(
-            html.contains(r#"<input type="checkbox" name="delete_threshold_1">"#),
+            html.contains(r#"<input type="checkbox" name="delete_threshold_1" value="on">"#),
             "got: {html}"
         );
         assert!(!html.contains("new_unit_amount"), "{html}");
@@ -1491,11 +1559,11 @@ mod tests {
         )
         .into_string();
         assert!(
-            html.contains(r#"<div class="setting-label-row"><label class="setting-label" for="new-domain">Domain</label><span class="changed-mark">changed</span></div><p class="field-help" id="new-domain-help">Just the domain, like shop.example. Its subdomains are covered too.</p><input type="text" name="domain" id="new-domain" aria-describedby="new-domain-help""#),
+            html.contains(r#"<div class="setting-label-row"><label class="setting-label" for="new-domain">Domain</label><span class="changed-mark">changed</span></div><p class="field-help" id="new-domain-help">Just the domain, like shop.example. Its subdomains are covered too.</p><input class="mk-input" type="text" name="domain" id="new-domain" placeholder="shop.example" autocomplete="off" aria-describedby="new-domain-help" required spellcheck="false">"#),
             "{html}"
         );
         assert!(html.contains(
-            r#"<div class="form-actions"><button type="submit">Add domain</button></div>"#
+            r#"<div class="form-actions"><button class="mk-btn" type="submit">Add domain</button></div>"#
         ));
     }
 

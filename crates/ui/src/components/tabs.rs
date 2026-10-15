@@ -56,6 +56,8 @@ pub struct TabLink {
     pub label: String,
     /// The page this is.
     pub current: bool,
+    /// How many things the page holds, beside its label.
+    pub count: Option<String>,
 }
 
 component! {
@@ -69,7 +71,10 @@ component! {
     html {
         nav class="mk-tabs" aria-label=(label) {
             @for link in links {
-                a href=(link.href) aria-current="page" if link.current { (link.label) }
+                a href=(link.href) aria-current="page" if link.current {
+                    (link.label)
+                    @if let Some(count) = link.count { span class="mk-tab-count" { (count) } }
+                }
             }
         }
     }
@@ -107,6 +112,7 @@ pub(super) fn tab_links_examples() -> Vec<(&'static str, TabLinks)> {
         href: href.into(),
         label: label.into(),
         current,
+        count: None,
     };
     vec![(
         "Settings sections",
@@ -115,7 +121,10 @@ pub(super) fn tab_links_examples() -> Vec<(&'static str, TabLinks)> {
             vec![
                 link("#component-tab-links", "General", true),
                 link("#component-select", "Networks", false),
-                link("#component-alert", "Notifications", false),
+                TabLink {
+                    count: Some("3".into()),
+                    ..link("#component-alert", "Notifications", false)
+                },
             ],
         ),
     )]

@@ -49,15 +49,15 @@ test('each webhook says how it is doing; the deliveries of one that needs you ar
   const healthy = webhook(page, 'https://bakery.example/hooks/monokulo');
   await expect(healthy.locator('.wh-health .tag')).toHaveText('delivering');
   await expect(healthy.locator('.wh-health .hint')).toContainText('last 2 min ago · 200 in');
-  await expect(healthy.locator('details.wh-deliveries')).not.toHaveAttribute('open', '');
-  await healthy.locator('details.wh-deliveries').scrollIntoViewIfNeeded();
+  await expect(healthy.locator('details[data-disclosure="deliveries"]')).not.toHaveAttribute('open', '');
+  await healthy.locator('details[data-disclosure="deliveries"]').scrollIntoViewIfNeeded();
   await captureCoverageStage(page, 'store-webhooks-healthy', test.info(), { group: GROUP });
 
   const retrying = webhook(page, 'https://erp.bakery.example/payments/in');
   await expect(retrying.locator('.wh-health .tag')).toHaveText('retrying');
   await expect(retrying.locator('.wh-health .hint')).toContainText('next try at');
   await expect(retrying.locator('.wh-health .hint')).toContainText('attempt 5 of 8 failed (503)');
-  await expect(retrying.locator('details.wh-deliveries')).toHaveAttribute('open', '');
+  await expect(retrying.locator('details[data-disclosure="deliveries"]')).toHaveAttribute('open', '');
   await expect(retrying.locator('td[data-label="Attempt"]').first()).toHaveText('4 of 8');
   await retrying.scrollIntoViewIfNeeded();
   await captureCoverageStage(page, 'store-webhooks-retrying', test.info(), { group: GROUP });
@@ -65,7 +65,7 @@ test('each webhook says how it is doing; the deliveries of one that needs you ar
   const gaveUp = webhook(page, 'https://old-shop.example/?wc-api=monokulo');
   await expect(gaveUp.locator('.wh-health .tag')).toHaveText('gave up');
   await expect(gaveUp.locator('.wh-health .hint')).toContainText('after 8 attempts (connection refused)');
-  await expect(gaveUp.locator('details.wh-deliveries')).toHaveAttribute('open', '');
+  await expect(gaveUp.locator('details[data-disclosure="deliveries"]')).toHaveAttribute('open', '');
   const sendAgain = gaveUp.getByRole('button', { name: 'Send again', exact: true });
   await expect(sendAgain).toHaveCount(1);
   await expect(sendAgain).toHaveAttribute('title', 'Send again');
@@ -82,10 +82,11 @@ test('each webhook says how it is doing; the deliveries of one that needs you ar
   await expect(gaveUp.getByRole('button', { name: 'Retry failed (1)' })).toBeVisible();
   // Delete is the site's red danger button, as Retire is on a wallet's page.
   const remove = gaveUp.getByRole('link', { name: 'Delete', exact: true });
-  await expect(remove).toHaveClass(/\bbtn-danger\b/);
+  await expect(remove).toHaveAttribute('data-variant', 'danger');
   const danger = await page.evaluate(() => {
     const probe = document.createElement('a');
-    probe.className = 'btn btn-danger';
+    probe.className = 'mk-btn';
+    probe.dataset.variant = 'danger';
     document.body.append(probe);
     const colour = getComputedStyle(probe).backgroundColor;
     probe.remove();
@@ -145,13 +146,13 @@ test("a delivery's details open as a dialog, with its attempts, request and last
   await expect(dialog).toBeVisible();
   // The status at the top right, on the title's line, beside the close
   // button; the facts under it.
-  const title = await dialog.locator('.dialog-title').boundingBox();
-  const status = await dialog.locator('.delivery-head-end .tag').boundingBox();
-  const close = await dialog.locator('.delivery-head-end .dialog-x').boundingBox();
+  const title = await dialog.locator('.dialog-title > span:not(.tag)').boundingBox();
+  const status = await dialog.locator('.dialog-title .tag').boundingBox();
+  const close = await dialog.locator('.dialog-title .dialog-x').boundingBox();
   expect(status.x).toBeGreaterThan(title.x + title.width);
   expect(Math.abs((status.y + status.height / 2) - (title.y + title.height / 2))).toBeLessThan(4);
   expect(close.x).toBeGreaterThan(status.x + status.width);
-  await expect(dialog.locator('.delivery-facts dt')).toHaveText(['Endpoint', 'Order', 'Next try']);
+  await expect(dialog.locator('[data-facts="delivery"] dt')).toHaveText(['Endpoint', 'Order', 'Next try']);
   await expect(dialog.locator('table tbody tr')).toHaveCount(4);
   await expect(dialog.locator('tbody tr').first().locator('td').first()).toContainText('4');
   await dialog.getByText('Request', { exact: true }).click();
@@ -171,7 +172,7 @@ test('a webhook with many deliveries pages through them in place, 20 at a time',
   expect(response.ok).toBe(true);
   await page.goto(`${settings()}#card-webhooks`);
   const hook = webhook(page, 'https://bakery.example/hooks/monokulo');
-  await hook.locator('details.wh-deliveries summary').click();
+  await hook.locator('details[data-disclosure="deliveries"] summary').click();
   const rows = hook.locator('.deliveries-results tbody tr');
   await expect(rows).toHaveCount(20);
   const newest = await rows.first().locator('td[data-label="Order"]').innerText();
@@ -240,7 +241,7 @@ test('without JavaScript, Details and Delete are pages and Send again is a form'
   const remove = webhook(page, 'https://bakery.example/hooks/monokulo').getByRole('link', { name: 'Delete', exact: true });
   await page.goto(fixture.base_url + await remove.getAttribute('href'));
   await expect(page.getByRole('heading', { level: 1, name: 'Delete this webhook?' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Delete webhook' })).toHaveClass(/\bbtn-danger\b/);
+  await expect(page.getByRole('button', { name: 'Delete webhook' })).toHaveAttribute('data-variant', 'danger');
   await page.getByRole('button', { name: 'Delete webhook' }).click();
   await expect(page).toHaveURL(/\/settings\?saved=webhooks#card-webhooks$/);
   await expect(card(page).locator('.card-meta')).toHaveText('2 webhooks');

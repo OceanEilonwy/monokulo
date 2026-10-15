@@ -303,7 +303,7 @@ async fn an_email_another_account_has_or_one_that_isnt_an_address_is_refused() {
     );
     // What was sent stays in the form, against what is saved.
     assert!(
-        html.contains(r#"value="second@example.com" required autocomplete="email" data-email-input data-saved="first@example.com">"#),
+        html.contains(r#"value="second@example.com" autocomplete="email" required data-email-input="" data-saved="first@example.com">"#),
         "{html}"
     );
     assert!(

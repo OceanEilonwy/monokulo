@@ -9,14 +9,43 @@ report's charts). This file tracks what has moved.
 
 | Pattern | Component | Status |
 |---|---|---|
-| Buttons, button links | `Button`, `LinkButton` | sign-up/log-in, POS actions |
-| Text inputs | `Field` | sign-up/log-in, POS reference |
-| Dropdowns | `Select` | done |
+| Buttons, button links, icon buttons and links | `Button`, `LinkButton`, `IconButton`, `IconLink`, `FormActions` | monokulo done; pages site's landing |
+| Text inputs, text areas, checkboxes, switches, radio cards | `Field`, `Input`, `TextArea`, `Checkbox`, `Switch`, `RadioCards` | monokulo done |
+| Dropdowns | `Select` | done (pages site's OpenWrt version too) |
 | Settings pages | `SettingsForm`, `SettingsCard`, `Setting`, `SaveBar`, `Toast` | done |
 | Setup progress | `ProgressSteps` | done |
+| Panels, messages, hints, headings | `Panel`, `Alert`, `Hint`, `Heading` | monokulo done; pages site's notes |
+| Facts, tags, network badges, short values | `Facts`, `Tag`, `NetworkBadge`, `ShortValue` | monokulo done |
+| Disclosures, checklists, timelines | `Disclosure`, `Checks`, `Timeline` | monokulo done |
+| Tables | `Table`, `Row`, `Cell` | monokulo done |
+| Dialogs | `Dialog`, `DialogTitle`, `DialogActions`, `DialogPage` | done; `confirm-dialogs.js` gone |
 | Copy a value | `CopyValue` | component; app adoption to do |
-| In-page tabs, page tabs | `Tabs`, `TabLinks` | components; app adoption to do |
-| Site bar, account menu, theme switch, status dot | `SiteNav`, `Menu`, `ThemeToggle`, `StatusDot` | done (pages and POS) |
+| In-page tabs, page tabs | `Tabs`, `TabLinks` | pages site (install tabs, docs, testing report) |
+| Site bar, account menu, theme switch, status dot | `SiteNav`, `Menu`, `ThemeToggle`, `StatusDot` | done (pages site and POS too) |
+
+### Left as page markup, and why
+
+- Custom visualisations, as above, and the engine page's `details.mini`
+  panels and help popover, the node rows' drag-to-reorder `details`, the
+  log rows' `details`, the wallets' test-networks fold.
+- The checkout's copy-address and refund scan/upload buttons, drawn inside
+  the field by the checkout's own CSS; its read-only address text area.
+- The store page's launcher tiles (`.widget-link`: the POS one has no
+  `href` until its script gives it one) and embed warnings.
+- The backup screen's wallet-app tabs: logos in their labels, driven by
+  `wallet-setup.js`.
+- Settings' inline field notes (`.field-help`, `.field-check`,
+  `.setting-problem`) and locked inputs (no `name`: never sent).
+- The account menu's Log out (a menu item), pagination links,
+  `span.tag-active`, `dl.dns-record`.
+
+### Gaps worth a component or variant
+
+`InputType::DatetimeLocal` (the logs page's From and To); a `Field` for a
+text area; an inline field note; `CellPart::Detail`; a dashed, flex-summary
+disclosure look; a pill-shaped toggle button (the query help's chips);
+utility visibility (`no-js-only`, `js-only`, `no-print`) on a component,
+for now a wrapping `span`.
 
 ## Converting a page
 

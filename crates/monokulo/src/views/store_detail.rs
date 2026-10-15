@@ -116,11 +116,27 @@ fn embed_warnings(connection_id: &str, warnings: &EmbedWarnings) -> Markup {
                 }
                 form method="post" action=(format!("/dashboard/stores/{connection_id}/embed-warning/dismiss"))
                     fx-action=(format!("/dashboard/stores/{connection_id}/embed-warning/dismiss")) fx-method="POST" fx-target="#embed-warning" {
-                    button type="submit" class="btn-secondary" { "Dismiss" }
+                    (ui::Button::new("Dismiss").kind(ui::ButtonType::Submit))
                 }
             }
         }
     }
+}
+
+/// A store's health as a tag: `"ok"` or `"error"`
+/// (`http::orders::health_of_tenant_lookup`), in words.
+pub fn health_tag(health: &str, label: &str) -> ui::Tag {
+    let tone = if health == "ok" { ui::TagTone::Ok } else { ui::TagTone::Error };
+    ui::Tag::new(label).tone(tone)
+}
+
+/// A row of the store's facts: its name, then its value.
+fn fact_row(name: &str, value: Markup) -> ui::Slot {
+    ui::Row::new(ui::Slot::many([
+        ui::Cell::new(name).header(true).into(),
+        ui::Slot::from(ui::Cell::new(value)),
+    ]))
+    .into()
 }
 
 pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
@@ -134,7 +150,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                     // One line: the site shows as its host, cut with an ellipsis
                     // rather than broken mid-word; the link keeps the full URL.
                     span class="store-header-status" {
-                        span class=(format!("tag tag-{}", store.health)) { (store.health_label) }
+                        (health_tag(&store.health, &store.health_label))
                         // The site is a host (`crate::stores::normalize_site`),
                         // so the link is built, never the merchant's text.
                         @if !store.site.is_empty() {
@@ -142,36 +158,35 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                             a class="store-site" href=(crate::stores::site_link(&store.site)) title=(store.site) { (store.site) }
                         }
                     }
-                    a class="btn btn-secondary settings-link" href=(format!("/dashboard/stores/{}/settings", store.connection_id)) {
-                        "Settings " span aria-hidden="true" { "→" }
-                    }
-                    a class="btn btn-secondary help-control" href=(super::DOCS_URL) target="_blank" rel="noopener" {
-                        "Help " (super::external_link_icon())
-                    }
+                    (ui::LinkButton::new(html! { "Settings " span aria-hidden="true" { "→" } }, format!("/dashboard/stores/{}/settings", store.connection_id))
+                        .attr("data-store-link", "settings"))
+                    (ui::LinkButton::new(html! { "Help " (super::external_link_icon()) }, super::DOCS_URL)
+                        .attr("target", "_blank")
+                        .attr("rel", "noopener")
+                        .attr("data-store-link", "help"))
                 }
 
                 (embed_warnings(store.connection_id.as_str(), &store.embed_warnings))
 
-                table class="kv-table" {
-                    tr {
-                        th { "Wallet" }
-                        td {
-                            @match &store.wallet {
-                                Some((id, name)) => a href=(format!("/account/wallets/{id}")) { (name) },
-                                None => span class="muted" { "-" },
-                            }
+                (ui::Table::new(ui::Slot::many([
+                    fact_row("Wallet", html! {
+                        @match &store.wallet {
+                            Some((id, name)) => a href=(format!("/account/wallets/{id}")) { (name) },
+                            None => span class="muted" { "-" },
                         }
-                    }
-                    tr { th { "Base currency" } td { (store.base_currency) } }
-                    tr { th { "Public key" } td { code { (store.public_key) } } }
-                    tr { th { "Connected" } td { (chrome.clock.time(store.created_at)) } }
-                }
+                    }),
+                    fact_row("Base currency", html! { (store.base_currency) }),
+                    fact_row("Public key", html! { code { (store.public_key) } }),
+                    fact_row("Connected", chrome.clock.time(store.created_at)),
+                ]))
+                .look(ui::TableLook::Facts)
+                .scroll(false))
                 @if chrome.is_admin {
                     p { (super::logs_link(chrome, "store.id", store.connection_id.as_str(), "This store's logs")) }
                 }
 
                 div class="widget-links" {
-                    a class="btn widget-link pos-launch-disabled" id="pos-launch" data-href=(format!("/dashboard/stores/{}/pos", store.connection_id)) aria-disabled="true" tabindex="-1" {
+                    a class="mk-btn widget-link pos-launch-disabled" id="pos-launch" data-href=(format!("/dashboard/stores/{}/pos", store.connection_id)) aria-disabled="true" tabindex="-1" {
                         span class="widget-link-icon" {
                             svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
                                 stroke-linejoin="round" aria-hidden="true" focusable="false" {
@@ -194,7 +209,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                         }
                     }
                     (script("store-detail.js", Load::Now))
-                    a class="btn widget-link" href=(format!("/dashboard/stores/{}/orders/new", store.connection_id)) {
+                    a class="mk-btn widget-link" href=(format!("/dashboard/stores/{}/orders/new", store.connection_id)) {
                         span class="widget-link-icon" {
                             svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
                                 stroke-linejoin="round" aria-hidden="true" focusable="false" {
@@ -431,12 +446,8 @@ mod tests {
             html.contains(r#"href="/dashboard/stores/conn_1/settings""#),
             "expected a Settings link, got: {html}"
         );
-        let help = html
-            .find("class=\"btn btn-secondary help-control\"")
-            .unwrap();
-        let settings = html
-            .find("class=\"btn btn-secondary settings-link\"")
-            .unwrap();
+        let help = html.find(r#"data-store-link="help""#).unwrap();
+        let settings = html.find(r#"data-store-link="settings""#).unwrap();
         assert!(
             settings < help,
             "Help should be the rightmost control in the store header: {html}"
@@ -444,7 +455,7 @@ mod tests {
         // Help is the docs, in a new tab.
         assert!(
             html.contains(&format!(
-                r#"<a class="btn btn-secondary help-control" href="{}" target="_blank" rel="noopener">Help "#,
+                r#"<a class="mk-btn" href="{}" target="_blank" rel="noopener" data-store-link="help">Help "#,
                 crate::views::DOCS_URL
             )),
             "expected Help to link to the docs: {html}"

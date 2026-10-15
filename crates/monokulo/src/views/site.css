@@ -7,13 +7,13 @@
 
 * { box-sizing: border-box; }
 /* Minimal reset for form controls - browsers (and this file's own later,
-   more specific `button, .btn` rule) give buttons/inputs/etc. their own
+   more specific `button` rule) give buttons/inputs/etc. their own
    default margin/font, which silently leaks into any context that isn't
    "a standalone block-level control with space below it" - e.g. a
    <button> reused as an inline nav link (`.nav-link-button` in
    `_nav.html.hbs`) inheriting a form button's `margin-top` and sitting
    visibly out of line with its sibling <a> tags. Reset the baseline here;
-   components that genuinely want spacing (the real `button, .btn` rule
+   components that genuinely want spacing (the real `button` rule
    below) declare it themselves, deliberately, rather than relying on a
    default nothing else was meant to inherit. */
 button, input, textarea, select { margin: 0; font: inherit; }
@@ -29,24 +29,14 @@ html, body {
 body { padding-bottom: 4rem; }
 a { color: var(--ink); text-decoration: underline; text-decoration-thickness: 1px; }
 a:hover { color: var(--accent-text); }
-/* Disclosures (issue #8): every <details> opens with a pointer, without the
-   browser's marker, and shows a focus ring from the keyboard. Its summary
-   reads as a text link with a caret that turns over when open, unless the
-   disclosure is a component with a look of its own: the admin page's node
-   rows and the Account menu (here), the test networks' wallets fold, the
-   Logs page's rows and trace spans, the engine page's panels and its "?",
-   and a summary drawn as a button (the store page's Help). Those keep their
-   look and have their own hover. */
+/* Every <details> opens with a pointer, without the browser's marker, and
+   shows a focus ring from the keyboard; ui::Disclosure draws the rest. */
 summary { cursor: pointer; list-style: none; }
 summary::-webkit-details-marker { display: none; }
 summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: 2px; }
-details:not(.mk-disclosure, .node-row, .acct, .test-wallets, .log-row, .trace-span-details, .mini, .engine-help) > summary:not(.btn) { display: inline; color: var(--ink); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
-details:not(.mk-disclosure, .node-row, .acct, .test-wallets, .log-row, .trace-span-details, .mini, .engine-help) > summary:not(.btn)::after { content: " \25BE"; color: var(--muted); }
-details:not(.mk-disclosure, .node-row, .acct, .test-wallets, .log-row, .trace-span-details, .mini, .engine-help)[open] > summary:not(.btn)::after { content: " \25B4"; }
-details:not(.mk-disclosure, .node-row, .acct, .test-wallets, .log-row, .trace-span-details, .mini, .engine-help) > summary:not(.btn):hover { color: var(--accent-text); }
 h1, h2, h3 { font-weight: 700; letter-spacing: -0.01em; margin: 1.4em 0 0.6em; }
 /* A block taking us over two minutes: slow, not broken (docs/engine_scaling.md section 5). */
-.notice.slow-block { background: var(--tint-warning); border-color: var(--warning); }
+.notice[data-slow-block] { background: var(--tint-warning); border-color: var(--warning); }
 h1 { font-size: 1.6rem; border-bottom: 2px solid var(--line); padding-bottom: 0.3em; margin: var(--space-lg) 0 var(--space-sm); }
 .context-nav + h1 { margin-top: var(--space-xs); }
 h2 { font-size: 1.15rem; border-bottom: 1px solid var(--line); padding-bottom: 0.2em; }
@@ -62,7 +52,6 @@ code, pre {
   padding: 0.1em 0.35em;
 }
 pre { padding: var(--space-md); overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
-.wrap { max-width: 880px; margin: 0 auto; padding: 0 1.2rem; }
 /* The status page's network card (`views::status`): the network's name as
    its title with its states beside it and "Watch it live" at the right,
    then small-caps section heads, well under the title's size. */
@@ -72,8 +61,8 @@ pre { padding: var(--space-md); overflow-x: auto; white-space: pre-wrap; word-br
 .verdict.is-ok::before { background: var(--pow-verdict-ok); }
 .verdict.is-watch::before { background: var(--pow-verdict-watch); }
 .verdict.is-bad::before { background: var(--pow-verdict-bad); }
-.node-table .sub { display: block; color: var(--muted); font-size: 0.85em; overflow-wrap: anywhere; }
-.node-table td.card-meta { font-size: inherit; color: inherit; }
+table[data-table="nodes"] .sub { display: block; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
+table[data-table="nodes"] td.card-meta { font-size: inherit; color: inherit; }
 /* Proof of work: the sentence with its chip, then the last blocks at a
    fixed scale (filled proven, outlined seen, ringed where orders settle
    to, a bar at the tip), the legend and figures on their own line. */
@@ -92,15 +81,14 @@ pre { padding: var(--space-md); overflow-x: auto; white-space: pre-wrap; word-br
 .pip-legend .pip { flex: none; width: 10px; height: 10px; }
 .pip-legend .pip-tip { height: 12px; margin: 0; }
 .pip-figures { margin: var(--space-xs) 0 0; font-size: 0.8em; color: var(--muted); font-variant-numeric: tabular-nums; }
-.pip-anchor { margin: var(--space-xs) 0 0; }
+[data-pip-anchor] { margin: var(--space-xs) 0 0; }
 /* Settlement held: the reason and the way out, in one calm box; the
    header's tag says it in red. */
 .proof-held { border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--surface-sunken); padding: var(--space-sm) var(--space-md); margin: var(--space-sm) 0; }
 .proof-held p { margin: var(--space-xs) 0; }
 .proof-held form { margin: var(--space-sm) 0 0; }
-.proof-held button { margin: 0; }
-.proof-facts { margin: var(--space-md) 0 0; }
-.proof-facts > .facts { margin-top: var(--space-sm); }
+[data-proof-facts] { margin: var(--space-md) 0 0; }
+[data-proof-facts] > .facts { margin-top: var(--space-sm); }
 /* The Monero nodes tab: a card per network, a row per node, closed to a
    line until opened. */
 .node-rows { display: grid; gap: var(--space-sm); margin: var(--space-sm) 0 var(--space-lg); }
@@ -129,7 +117,6 @@ pre { padding: var(--space-md); overflow-x: auto; white-space: pre-wrap; word-br
 @media (prefers-reduced-motion: reduce) { .node-row { transition: none; } }
 .node-status { margin: var(--space-xs) 0; color: var(--muted); }
 .node-status.is-problem { color: var(--error); }
-.node-row-actions button { margin-top: var(--space-xs); }
 /* How the engine is performing (`views::scaling`), on the engine page: the
    "Machine and links" strip's stacked charts and sparklines, the Scanning
    panel's figures. The Monero nodes tab links there from each network. */
@@ -171,15 +158,15 @@ html.js .no-js-only { display: none; }
 /* The one-time "just deleted" row an admin table shows right after a real
    delete (`admin_invites.html.hbs`) - struck through and faded so it reads
    as gone-but-still-visible-for-confirmation, not a live row. */
-.row-deleted td { opacity: 0.45; text-decoration: line-through; }
+tr[data-deleted] td { opacity: 0.45; text-decoration: line-through; }
 .nowrap { white-space: nowrap; }
 @media (max-width: 640px) {
   /* The status page's nodes: the verdict beside the height, then what
      went wrong across the card; reachability only when it's a problem. */
-  table.node-table td.card-amount { display: contents; font-weight: 400; }
-  table.node-table td.card-amount > .verdict { grid-column: 1; grid-row: 2; }
-  table.node-table td.card-amount > .sub { grid-column: 1 / -1; }
-  table.node-table .card-meta.is-quiet { display: none; }
+  table[data-table="nodes"] td.card-amount { display: contents; font-weight: 400; }
+  table[data-table="nodes"] td.card-amount > .verdict { grid-column: 1; grid-row: 2; }
+  table[data-table="nodes"] td.card-amount > .sub { grid-column: 1 / -1; }
+  table[data-table="nodes"] .card-meta[data-quiet] { display: none; }
 }
 /* Highlights the whole row containing a native browser find-in-page match
    (Ctrl+F / Cmd+F) - no JS. `::target-text` is the pseudo-element the
@@ -193,7 +180,7 @@ html.js .no-js-only { display: none; }
 }
 form label { display: block; margin: 0.9em 0 0.6em; font-weight: 700; }
 /* Long unbroken words (an address, a file name) wrap rather than widen the page. */
-form .field-help { display: block; font-weight: 400; color: var(--muted); margin-top: 0.15em; font-size: 0.88em; overflow-wrap: anywhere; }
+form :is(.field-help, [data-field-help]) { display: block; font-weight: 400; color: var(--muted); margin-top: 0.15em; font-size: var(--text-sm); overflow-wrap: anywhere; }
 /* `.setting-source` (admin settings page): a caption naming where a field's
    current value came from. Left inline, it lets a submit `button` that
    immediately follows the last field in a form (e.g. "Save scanner
@@ -237,16 +224,17 @@ input[type=text]:where(:not(.mk-input)), input[type=email]:where(:not(.mk-input)
 }
 textarea { resize: vertical; }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--focus-ring); }
-/* `margin-right`: two `.btn`/`button` elements written as separate Maud
+/* A hand-written button (ui::Button is .mk-btn, with no margins).
+   `margin-right`: two buttons written as separate Maud
    markup expressions (a Save beside a Discard, say) render
    with no whitespace text node between them - unlike a hand-written .hbs
    template's literal newline/indentation, Maud never inserts one - so an
    explicit horizontal gap is the only thing keeping adjacent buttons from
    touching. */
-button, .btn {
+button {
   display: inline-block;
   font-family: inherit;
-  font-size: 1em;
+  font-size: inherit;
   font-weight: 700;
   background: var(--btn-bg);
   color: var(--btn-ink);
@@ -258,20 +246,13 @@ button, .btn {
   margin-top: 0.9em;
   margin-right: var(--space-md);
 }
-button:hover, .btn:hover { background: var(--btn-hover-bg); color: var(--btn-ink); border-color: var(--btn-hover-border); }
-button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-/* Neutral is the default: a settings page has a dozen Save buttons, and
-   orange on all of them would mark none. `.btn-primary` is the one main
-   action of a form or page (Add, Log in, Search), the same orange as the
-   POS's Charge. `.btn-secondary` is kept as a name for the default. */
-.btn-primary, .btn-primary:hover { color: var(--btn-primary-ink); }
-.btn-primary { background: var(--btn-primary-bg); border-color: var(--btn-primary-bg); }
-.btn-primary:hover { background: var(--btn-primary-hover); border-color: var(--btn-primary-hover); }
+button:hover { background: var(--btn-hover-bg); color: var(--btn-ink); border-color: var(--btn-hover-border); }
+button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 /* Store-detail "widget" launchers (POS terminal, create-order) - a row of
    tappable tiles above the Recent orders table, each opening its own
    full-screen tool page rather than an inline form on this page. */
 .widget-links { display: flex; flex-wrap: wrap; gap: var(--space-md); margin: 1em 0 1.4em; }
-.widget-link {
+.widget-links .widget-link {
   display: flex;
   flex-direction: row;
   align-items: center;
@@ -281,25 +262,24 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
   padding: var(--space-md) var(--space-lg);
   text-align: left;
 }
-.widget-link-icon { flex: none; display: flex; }
-.widget-link-icon svg { width: 1.7em; height: 1.7em; }
-.widget-link-text { display: flex; flex-direction: column; gap: 0.2em; }
-.widget-link-title { font-weight: 700; }
-.widget-link-hint { font-weight: 400; font-size: 0.82em; opacity: 0.85; }
-.pos-launch-disabled, .pos-launch-disabled:hover { opacity: 0.45; cursor: not-allowed; background: var(--btn-bg); color: var(--btn-ink); border-color: var(--btn-border); }
+.widget-links .widget-link-icon { flex: none; display: flex; }
+.widget-links .widget-link-icon svg { width: 1.7em; height: 1.7em; }
+.widget-links .widget-link-text { display: flex; flex-direction: column; gap: 0.2em; }
+.widget-links .widget-link-title { font-weight: 700; }
+.widget-links .widget-link-hint { font-weight: 400; font-size: var(--text-sm); opacity: 0.85; }
+.widget-links .pos-launch-disabled, .widget-links .pos-launch-disabled:hover { opacity: 0.45; cursor: not-allowed; background: var(--btn-bg); color: var(--btn-ink); border-color: var(--btn-border); }
 /* The confirmations-required count never needs more than 720's own 3
    digits (`scanner::http::admin::MAX_CONFIRMATIONS_REQUIRED`) - overrides
    the site-wide `input[type=text] { width: 100% }` default, which would
    otherwise stretch it to the full cell. */
-.confirmations-input { width: 4.5em; }
+[data-input="confirmations"] { width: 4.5em; }
 /* Highlight the entry row while keeping it in the same table. */
-.thresholds-table .new-threshold-row td {
+[data-table="thresholds"] .new-threshold-row td {
   background: var(--tint-highlight);
   border-top: 3px solid var(--accent);
   padding-block: var(--space-sm);
 }
-.thresholds-table .new-threshold-row .confirmations-input { width: min(100%, 11em); }
-.thresholds-table .new-threshold-row button { margin: 0; }
+[data-table="thresholds"] .new-threshold-row [data-input="confirmations"] { width: min(100%, 11em); }
 .rule { border: none; border-top: 2px dashed var(--line); margin: 1.6em 0; }
 .steps { padding-left: 1.4em; }
 .steps li { margin: 0.5em 0; }
@@ -309,27 +289,19 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 .store-header-row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto 5.5em; align-items: center; column-gap: var(--space-sm); margin-bottom: 1.2em; }
 .store-header-status { min-width: 0; display: flex; align-items: center; gap: .4em; white-space: nowrap; }
 .store-header-status .store-site { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.store-header-row .settings-link { margin: 0; white-space: nowrap; }
-/* The details element spans the content width; its summary is positioned in
-   the header's reserved Help slot, away from status and Settings. */
-.help-disclosure { grid-column: 1 / -1; grid-row: 2; width: 100%; }
-.help-disclosure summary { position: absolute; top: 0; right: 0; }
-.help-disclosure .help-control { margin: 0; white-space: nowrap; }
-.help-disclosure[open] .help-control::after { content: " \25B4"; }
+.store-header-row [data-store-link] { white-space: nowrap; }
 /* A phone: the status line gets the width to itself, above Settings and
    Help (which keep their places: Settings left, Help's slot right). */
 @media (max-width: 640px) {
   .store-header-row { grid-template-columns: auto minmax(0, 1fr) 5.5em; padding-top: 2.4em; }
   .store-header-status { position: absolute; top: 0; left: 0; right: 0; height: 1.9em; }
-  .help-disclosure summary { top: 2.4em; }
 }
-.help-disclosure:not([open]) .help-control::after { content: " \25BE"; }
 /* The Orders page's search: field and button on one line. */
 .orders-search { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0.5em; margin: 0 0 1em; }
 .orders-search input[type="search"] { flex: 1 1 16em; min-width: 0; padding: 0.5em 0.7em; font: inherit; }
 .orders-search button { margin: 0; }
 .orders-search a { align-self: center; }
-.orders-table td:nth-child(2) { max-width: 14em; overflow-wrap: anywhere; }
+[data-table="orders"] td:nth-child(2) { max-width: 14em; overflow-wrap: anywhere; }
 .orders-pages { display: flex; gap: 0.5em; }
 /* Visually hidden but still readable by assistive tech: the theme toggle's
    labels, the checkout's heading, the Logs page's search label. */
@@ -353,9 +325,7 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
    (`text-decoration: inherit`: an inline-block doesn't get it otherwise). */
 
 /* A small manual refresh alongside page actions, also usable without JS. */
-.reload { display: inline-flex; align-items: center; justify-content: center; width: 2.25rem; height: 2.25rem; padding: .4rem; margin: 0; flex: none; }
-.reload svg { width: 1.1rem; height: 1.1rem; }
-.reload[hidden] { display: none; }
+[data-reload] { flex: none; }
 
 
 .engine-network { display: flex; align-items: center; gap: .5rem; margin: 0; }
@@ -374,15 +344,14 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 /* Step footer: Back on the left, the one way on to the right. */
 .step-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin-top: var(--space-lg); padding-top: var(--space-md); border-top: 1px solid var(--line); }
 .step-foot .spacer { flex: 1; }
-.step-foot button, .step-foot .btn, .step-foot form { margin: 0; }
+.step-foot button, .step-foot form { margin: 0; }
 .inline-form { display: inline; margin: 0; }
 .inline-form button { margin: 0; }
 @media (max-width: 640px) {
   .step-foot { flex-direction: column-reverse; align-items: stretch; }
   .step-foot .spacer { display: none; }
-  .step-foot button, .step-foot .btn, .step-foot form button { width: 100%; text-align: center; }
+  .step-foot .mk-btn, .step-foot form .mk-btn { width: 100%; text-align: center; }
 }
-.btn-primary[disabled], button.btn-primary[disabled]:hover { opacity: .45; cursor: not-allowed; background: var(--btn-primary-bg); border-color: var(--btn-primary-bg); }
 
 /* A field's check, under it: right, wrong, or just a hint. */
 .field-check { display: block; font-size: .88em; font-weight: 700; margin-top: var(--space-xs); color: var(--muted); }
@@ -474,14 +443,12 @@ input[aria-invalid="true"] { border-color: var(--error); }
 
 /* Done: never "you can take payments" for a website; what's left, in order. */
 .store-summary { margin: var(--space-md) 0; }
-.not-yet { margin-right: var(--space-xs); }
+[data-not-yet] { margin-right: var(--space-xs); }
 .todo { list-style: none; padding: 0; margin: var(--space-md) 0; display: grid; gap: var(--space-sm); }
 .todo li { display: grid; grid-template-columns: 2rem minmax(0, 1fr) auto; gap: var(--space-md); align-items: center; padding: var(--space-md) var(--space-lg); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
 .todo .num { display: inline-flex; align-items: center; justify-content: center; width: 1.8rem; height: 1.8rem; border-radius: 50%; border: 1px solid var(--line-strong); font-weight: 800; font-size: .85em; }
 .todo li p { margin: 0; }
 .todo li .hint { display: block; }
-.todo li .btn { margin: 0; }
-.docs-link, .help-control { display: inline-flex; align-items: center; gap: var(--space-xs); }
 .external-icon { flex: none; }
 
 /* A paper backup, printed: the words and their facts, nothing else. */
@@ -517,8 +484,6 @@ input[aria-invalid="true"] { border-color: var(--error); }
 .email-confirm-page { max-width: 34rem; }
 .signup-form .setting-field { margin: var(--space-lg) 0; }
 
-.btn-danger, .btn-danger:hover { color: var(--btn-danger-ink); background: var(--btn-danger-bg); border-color: var(--btn-danger-bg); }
-.btn-danger:hover { border-color: var(--ink); }
 @media (max-width: 640px) {
   .seed-words, .seed-words.legacy { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -528,15 +493,15 @@ input[aria-invalid="true"] { border-color: var(--error); }
 .change-confirm { margin: var(--space-md) 0 0; padding: var(--space-md) var(--space-lg); border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--tint-neutral); }
 .change-confirm h3 { margin: 0 0 var(--space-xs); }
 .change-confirm p { margin: 0 0 var(--space-md); }
-.wallet-history { margin-top: var(--space-lg); }
-.wallet-history table { margin-top: var(--space-sm); }
-.wallet-history .num { text-align: right; }
-.wallet-history tr.current td { background: var(--tint-highlight); font-weight: 600; }
+[data-disclosure="wallet-history"] { margin-top: var(--space-lg); }
+[data-disclosure="wallet-history"] table { margin-top: var(--space-sm); }
+[data-disclosure="wallet-history"] .num { text-align: right; }
+[data-disclosure="wallet-history"] tr.current td { background: var(--tint-highlight); font-weight: 600; }
 
 /* A retired wallet: its keys deleted, in the wallets list. */
 .key-gone { flex: none; color: var(--ink); }
 .keys-deleted { display: inline-flex; gap: var(--space-xs); align-items: center; }
-.retired-wallets { margin: var(--space-lg) 0; }
+[data-disclosure="retired-wallets"] { margin: var(--space-lg) 0; }
 
 /* The wallets list (`views::wallets::list_section`): mainnet wallets
    under a head of their own, the test networks' folded in a dashed box,
@@ -549,12 +514,12 @@ input[aria-invalid="true"] { border-color: var(--error); }
 .test-wallets > summary:hover { background: var(--btn-hover-bg); }
 .test-wallets[open] > summary { border-bottom: 1px dashed var(--line-strong); border-radius: var(--radius-md) var(--radius-md) 0 0; }
 .test-wallets > div { padding: 0 var(--space-md) var(--space-sm); }
-.wallets-table .card-unit { display: none; }
+table[data-table="wallets"] .card-unit { display: none; }
 .list-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-sm); margin-top: var(--space-lg); }
-.list-foot p, .list-foot .btn { margin: 0; }
+.list-foot p { margin: 0; }
 @media (max-width: 640px) {
-  table.table-cards .card-detail { grid-column: 1; grid-row: 2; }
-  .wallets-table .card-unit { display: inline; }
+  table.table-cards [data-cell="detail"] { grid-column: 1; grid-row: 2; }
+  table[data-table="wallets"] .card-unit { display: inline; }
 }
 /* A wallet's page (`views::wallets::detail_page`), one column: its name
    and network; where it lives; Stores, Details and History; Retire (or
@@ -577,12 +542,11 @@ input[aria-invalid="true"] { border-color: var(--error); }
 .store-rows.past li, .store-rows.past a { color: var(--muted); }
 .store-rows.past .sr-name { font-weight: 400; }
 .wallet-page .facts { margin: var(--space-lg) 0 0; }
-.history-fold { margin: 0 0 var(--space-lg); }
-.history-fold > summary { cursor: pointer; font-weight: 700; padding: var(--space-xs) 0; }
-.history-fold .timeline { margin-top: var(--space-sm); }
+[data-disclosure="history"] { margin: 0 0 var(--space-lg); }
+[data-disclosure="history"] > summary { cursor: pointer; font-weight: 700; padding: var(--space-xs) 0; }
+[data-disclosure="history"] .timeline { margin-top: var(--space-sm); }
 .wallet-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-sm) var(--space-lg); margin-top: var(--space-xl); padding-top: var(--space-lg); border-top: 1px solid var(--line); }
 .wallet-foot p { margin: var(--space-xs) 0 0; }
-.wallet-foot .btn { margin: 0; }
 .confirm-dialog .setting-field, .confirm-dialog-page .setting-field { margin: var(--space-md) 0 0; }
 .confirm-dialog .setting-field .setting-label-row, .confirm-dialog-page .setting-field .setting-label-row { margin: 0 0 var(--space-sm); }
 .confirm-dialog .setting-field.first, .confirm-dialog-page .setting-field.first { margin-top: 0; }
@@ -592,13 +556,11 @@ input[aria-invalid="true"] { border-color: var(--error); }
 .locked-input .ico { color: var(--muted); }
 .ico { width: 1.1em; height: 1.1em; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .lock-note { margin: var(--space-sm) 0 0; color: var(--muted); font-size: .88em; }
-.card-note { margin: 0; }
 .int-rows { list-style: none; margin: 0; padding: 0; }
 .int-rows li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-xs) var(--space-md); align-items: center; padding: var(--space-sm) 0; border-top: 1px solid var(--line); }
 .int-rows li:first-child { border-top: 0; padding-top: 0; }
 .int-rows .int-name { font-weight: 700; }
 .int-rows .int-meta { display: block; color: var(--muted); font-size: .85em; overflow-wrap: anywhere; }
-.int-rows .btn { margin: 0; padding: var(--space-xs) var(--space-md); font-size: .85em; }
 .int-rows.past .int-name { font-weight: 400; color: var(--muted); }
 .int-rows.past .int-mark { opacity: .6; }
 .int-mark { display: inline-flex; align-items: center; justify-content: center; width: 2.2rem; height: 2.2rem; flex: none; border-radius: var(--radius-md); background: var(--surface-sunken); color: var(--ink); }
@@ -607,9 +569,9 @@ input[aria-invalid="true"] { border-color: var(--error); }
 .woo-text { fill: var(--paper-raised); font: 800 10.5px var(--font-ui); letter-spacing: -.03em; }
 .tag-active { font-size: .75em; font-weight: 700; border: 1px solid var(--line-strong); border-radius: 999px; padding: var(--pill-pad-y) var(--pill-pad-x); color: var(--ink); }
 @media (max-width: 640px) {
-  .wallet-foot .btn { flex-basis: 100%; text-align: center; }
+  .wallet-foot .mk-btn { flex-basis: 100%; text-align: center; }
   .int-rows li { grid-template-columns: auto minmax(0, 1fr); }
-  .int-rows li > .btn { grid-column: 1 / -1; text-align: center; }
+  .int-rows li > .mk-btn { grid-column: 1 / -1; text-align: center; }
 }
 
 /* A store's webhooks (views::webhooks): one per block, a health line, its
@@ -620,39 +582,37 @@ input[aria-invalid="true"] { border-color: var(--error); }
 .wh-url { background: none; border: 0; padding: 0; overflow-wrap: anywhere; font-weight: 700; }
 .wh-health { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm); margin: var(--space-xs) 0 var(--space-sm); }
 .wh-health .hint { margin: 0; }
-.btn-sm, button.btn-sm { margin: 0; padding: var(--space-xs) var(--space-md); font-size: 0.85em; }
-.del-table { font-size: 0.9em; }
-.del-table td, .del-table th { white-space: nowrap; }
+[data-table="deliveries"] { font-size: var(--text-sm); }
+[data-table="deliveries"] td, [data-table="deliveries"] th { white-space: nowrap; }
 .row-acts { text-align: right; }
 /* Fixed slots: Details, then the Send again icon or an empty slot. */
 .act-slots { display: grid; grid-template-columns: max-content 1.75rem; gap: var(--space-sm); align-items: center; justify-content: end; }
 .act-slot { width: 1.75rem; }
 /* "Send again" as an icon: a 28px target, the row's own height. */
 .row-acts .icon-only { width: 1.75rem; height: 1.75rem; min-height: 0; }
-.wh-deliveries { margin-top: var(--space-xs); }
-.wh-deliveries > .table-scroll { margin-top: var(--space-sm); }
+[data-disclosure="deliveries"] { margin-top: var(--space-xs); }
+[data-disclosure="deliveries"] > .table-scroll { margin-top: var(--space-sm); }
 .mini-h { margin: var(--space-md) 0 var(--space-xs); font-size: 0.75rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
-.req { margin-top: var(--space-sm); }
-.req pre { margin: var(--space-xs) 0; font-size: 0.82em; white-space: pre-wrap; overflow-wrap: anywhere; }
+[data-disclosure="request"] { margin-top: var(--space-sm); }
+[data-disclosure="request"] pre { margin: var(--space-xs) 0; font-size: var(--text-sm); white-space: pre-wrap; overflow-wrap: anywhere; }
 /* A delivery's head: its title, then its status at the top right (beside
    the dialog's close button); on a phone the status goes under it. */
-.delivery-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm); margin: 0 0 var(--space-md); }
-.delivery-head .dialog-title { flex: 1 1 auto; margin: 0; }
+.delivery-head { margin: 0 0 var(--space-md); }
+.delivery-head .dialog-title { margin: 0; }
+.delivery-head .dialog-title .tag { margin-left: auto; white-space: nowrap; }
+.delivery-head .dialog-title .tag + .dialog-x { margin-left: 0; }
 .delivery-head .event-name { font-family: var(--font-mono); font-weight: 600; font-size: 0.95em; overflow-wrap: anywhere; }
-.delivery-head-end { display: flex; align-items: center; gap: var(--space-sm); margin-left: auto; }
-.delivery-head-end .tag { white-space: nowrap; }
-.delivery-head-end .dialog-x { margin: 0; }
-.delivery-facts { margin: 0 0 var(--space-lg); }
-.delivery-facts dd { font-weight: 400; }
-.delivery-facts .endpoint { font-family: var(--font-mono); font-size: 0.9em; }
-.delivery-facts + .mini-h { margin-top: 0; }
+[data-facts="delivery"] { margin: 0 0 var(--space-lg); }
+[data-facts="delivery"] dd { font-weight: 400; }
+[data-facts="delivery"] .endpoint { font-family: var(--font-mono); font-size: var(--text-sm); }
+[data-facts="delivery"] + .mini-h { margin-top: 0; }
 .deliveries-page { margin: var(--space-lg) 0; }
 @media (max-width: 640px) {
   /* A delivery on a phone is a compact two-column card, not a tall list. */
-  table.del-table tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 var(--space-md); }
-  table.del-table td.row-acts { grid-column: 1 / -1; text-align: left; }
-  table.del-table .act-slots { justify-content: start; }
-  .del-table td, .del-table th { white-space: normal; }
+  table[data-table="deliveries"] tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 var(--space-md); }
+  table[data-table="deliveries"] td.row-acts { grid-column: 1 / -1; text-align: left; }
+  table[data-table="deliveries"] .act-slots { justify-content: start; }
+  [data-table="deliveries"] td, [data-table="deliveries"] th { white-space: normal; }
 }
 
 /* On the settings page it sits at the right edge, where the other controls

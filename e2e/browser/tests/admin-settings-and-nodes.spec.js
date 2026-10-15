@@ -161,7 +161,7 @@ for (const javaScript of [true, false]) {
       await expectSaved(page);
       expect(asked).toBe(false);
       await page.reload();
-      await expect(page.locator('#card-network-testnet details.node-network-closed > summary')).toHaveText('Add a node for testnet');
+      await expect(page.locator('#card-network-testnet details[data-node-network-closed] > summary')).toHaveText('Add a node for testnet');
     } finally {
       if (context) await context.close();
     }
