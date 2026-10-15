@@ -61,7 +61,9 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; background:
 .book-generated > .book-note { max-width: 50rem; margin-bottom: 2rem; }
 .book-props { margin-block: 1rem; font-size: var(--text-sm); }
 .book-props td:last-child { min-width: 16rem; }
-.book-specimen { margin: 1.5rem 0 0; }
+.book-specimens { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr)); gap: 1.5rem; margin-top: 1.5rem; }
+.book-specimen { margin: 0; min-width: 0; }
+.book-specimen:has(> .book-source[open]) { grid-column: 1 / -1; }
 .book-specimen > figcaption { font-weight: 700; }
 .book-specimen > .book-example { margin-top: .5rem; }
 .book-source-label { margin-top: .75rem; font-weight: 700; color: var(--muted); }
