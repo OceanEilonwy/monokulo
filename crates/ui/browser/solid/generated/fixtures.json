@@ -3305,6 +3305,38 @@
     "title": "Signed out"
   },
   {
+    "component": "Breadcrumbs",
+    "html": "<nav class=\"mk-breadcrumbs\" aria-label=\"Breadcrumb\"><a href=\"#component-breadcrumbs\" title=\"Home\">Home</a></nav>",
+    "props": {
+      "label": "Breadcrumb",
+      "links": [
+        {
+          "href": "#component-breadcrumbs",
+          "label": "Home"
+        }
+      ]
+    },
+    "title": "Back to a page"
+  },
+  {
+    "component": "Breadcrumbs",
+    "html": "<nav class=\"mk-breadcrumbs\" aria-label=\"Breadcrumb\"><a href=\"#component-breadcrumbs\" title=\"Corner store with a long name to see it shortened\">Corner store with a long name to see it shortened</a><a href=\"#component-breadcrumbs\" title=\"Orders\">Orders</a></nav>",
+    "props": {
+      "label": "Breadcrumb",
+      "links": [
+        {
+          "href": "#component-breadcrumbs",
+          "label": "Corner store with a long name to see it shortened"
+        },
+        {
+          "href": "#component-breadcrumbs",
+          "label": "Orders"
+        }
+      ]
+    },
+    "title": "Two levels up"
+  },
+  {
     "component": "Menu",
     "html": "<details class=\"acct\" data-mk=\"1\" data-island=\"Menu\" data-props=\"{}\"><summary class=\"acct-button\" aria-label=\"Example account menu\" title=\"alex@example.test\">Account</summary><div class=\"acct-menu\"><a class=\"mk-btn\" href=\"#component-menu\" data-variant=\"quiet\">Account settings</a><a class=\"mk-btn\" href=\"#component-menu\" data-variant=\"quiet\">Wallets</a></div></details>",
     "props": {

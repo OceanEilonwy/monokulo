@@ -37,7 +37,6 @@ h1, h2, h3 { font-weight: 700; letter-spacing: -0.01em; margin: 1.4em 0 0.6em; }
 /* A block taking us over two minutes: slow, not broken (docs/engine_scaling.md section 5). */
 .notice[data-slow-block] { background: var(--tint-warning); border-color: var(--warning); }
 h1 { font-size: var(--text-xl); border-bottom: 2px solid var(--line); padding-bottom: 0.3em; margin: var(--space-lg) 0 var(--space-sm); }
-.context-nav + h1 { margin-top: var(--space-xs); }
 h2 { font-size: var(--text-lg); border-bottom: 1px solid var(--line); padding-bottom: 0.2em; }
 p { margin: 0.6em 0; }
 /* Code/addresses/txids stay monospace regardless of the UI font choice -
@@ -202,7 +201,6 @@ button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px
 .steps li { margin: 0.5em 0; }
 /* Store overview: status stays left, with Settings then Help at the right.
    The disclosure spans the container so its content matches other panels. */
-.context-nav { margin: .8em 0 .25em; }
 .store-header-row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto 5.5em; align-items: center; column-gap: var(--space-sm); margin-bottom: 1.2em; }
 .store-header-status { min-width: 0; display: flex; align-items: center; gap: .4em; white-space: nowrap; }
 .store-header-status .store-site { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -364,7 +362,7 @@ input[aria-invalid="true"] { border-color: var(--error); }
 
 /* A paper backup, printed: the words and their facts, nothing else. */
 @media print {
-  .site-nav, .context-nav, .mk-wizard-steps, [data-wallet-setup] .mk-tabs, .step-foot, .check-line,
+  .site-nav, .mk-breadcrumbs, .mk-wizard-steps, [data-wallet-setup] .mk-tabs, .step-foot, .check-line,
   .phrase-head button, .phrase-box .steps, .qr-col, [data-wallet-setup] > section > p,
   [data-wallet-setup] [hidden] { display: none !important; }
   .phrase-box { border: 0; padding: 0; }

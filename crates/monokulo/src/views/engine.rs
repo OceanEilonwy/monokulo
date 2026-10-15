@@ -52,7 +52,6 @@ const ENGINE_STYLE: &str = r#"
 .wrap.engine-page { max-width: 1880px; display: grid; gap: var(--space-sm); padding-bottom: var(--space-xl); }
 .engine-page h1 { border: 0; margin: 0; padding: 0; font-size: 1.3rem; }
 .engine-page h2 { border: 0; margin: 0; padding: 0; font-size: 0.85rem; font-weight: 800; }
-.wrap.engine-page > .context-nav { margin: var(--space-sm) 0 0; }
 .engine-titlebar { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); }
 .titlebar-spacer { flex: 1; }
 .engine-tabs { display: inline-flex; height: 26px; border: 1px solid var(--btn-border); border-radius: var(--radius-sm); overflow: hidden; }
@@ -374,7 +373,7 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
     let body = html! {
         div id="engine-stage" {
         main class="wrap engine-page" data-network=(page.network) {
-            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/status" { "Status" } }
+            (super::breadcrumbs(&[("/status", "Status")]))
             div class="engine-titlebar" {
                 h1 { "Engine" }
                 (help())

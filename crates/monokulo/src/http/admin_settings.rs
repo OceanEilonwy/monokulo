@@ -3768,12 +3768,16 @@ mod tests {
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
-        let page = body_text(get_settings_page(&router, &cookie).await).await;
+        let page = files_tab(&router, &cookie).await;
         assert!(page.contains(&path.display().to_string()), "{page}");
         assert!(
             page.contains(r#"action="/dashboard/admin/settings/reload""#),
             "{page}"
         );
+        // The files are the Files tab's: the other tabs are their settings.
+        let general = body_text(get_settings_page(&router, &cookie).await).await;
+        assert!(!general.contains(r#"action="/dashboard/admin/settings/reload""#), "{general}");
+        assert!(general.contains(r#"href="/dashboard/admin/settings?tab=files""#), "{general}");
 
         let save = post_settings(
             &router,
@@ -3862,7 +3866,7 @@ mod tests {
         let state = test_app_state_in_process(&engine).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
-        let page = body_text(get_settings_page(&router, &cookie).await).await;
+        let page = files_tab(&router, &cookie).await;
         assert!(page.contains(r#"name="owner" value="engine""#), "{page}");
 
         let reloaded = router
@@ -3912,7 +3916,8 @@ mod tests {
             )
             .await,
         );
-        assert!(page.contains("It can't be written by monokulo"), "{page}");
+        let files = files_tab(&router, &cookie).await;
+        assert!(files.contains("It can't be written by monokulo"), "{files}");
         assert!(
             page.contains("can't be written by monokulo, so this is changed by editing it"),
             "{page}"
@@ -4005,6 +4010,12 @@ mod tests {
         );
     }
 
+    /// The Files tab: each options file, what it is, and its Reload.
+    async fn files_tab(router: &Router, cookie: &str) -> String {
+        let tab = crate::views::admin::SettingsTab::Files.href();
+        unescaped(&body_text(get(router, &tab, Some(cookie)).await).await)
+    }
+
     /// No options file yet: the page says so, everything is editable, and
     /// the first save creates the file, which the page then names as there.
     #[tokio::test]
@@ -4014,11 +4025,12 @@ mod tests {
         let (engine, state) = embedded_on_file(&path).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
-        let page = unescaped(&body_text(get_settings_page(&router, &cookie).await).await);
+        let files = files_tab(&router, &cookie).await;
         assert!(
-            page.contains("Not created yet: saving a setting here creates it."),
-            "{page}"
+            files.contains("Not created yet: saving a setting here creates it."),
+            "{files}"
         );
+        let page = unescaped(&body_text(get_settings_page(&router, &cookie).await).await);
         assert!(page.contains(r#"name="public_url""#), "editable: {page}");
 
         let saved = post_settings(
@@ -4032,10 +4044,10 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "[abuse]\nsoft_per_min = 61\n"
         );
-        let page = unescaped(&body_text(get_settings_page(&router, &cookie).await).await);
+        let files = files_tab(&router, &cookie).await;
         assert!(
-            page.contains("Saving here writes it; after editing it by hand, reload it."),
-            "{page}"
+            files.contains("Saving here writes it; after editing it by hand, reload it."),
+            "{files}"
         );
 
         // The engine's first save adds its table to the file monokulo made.

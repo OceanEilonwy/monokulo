@@ -314,3 +314,45 @@ pub(super) fn status_dot_examples() -> Vec<(&'static str, StatusDot)> {
         ),
     ]
 }
+
+/// One link of [`Breadcrumbs`].
+#[derive(Clone, Debug, crate::UiRecord)]
+pub struct Crumb {
+    pub href: String,
+    pub label: String,
+}
+
+component! {
+    /// Where a page sits, under the site's bar: links to the pages above
+    /// it, the nearest last ("Home › Logs"). One link is a back link,
+    /// with an arrow. Real links: no history needed.
+    pub struct Breadcrumbs {
+        links: Vec<Crumb>,
+        #[default(String::from("Breadcrumb"))]
+        label: String,
+    }
+    html {
+        nav class="mk-breadcrumbs" aria-label=(label) {
+            @for link in links {
+                a href=(link.href) title=(link.label) { (link.label) }
+            }
+        }
+    }
+}
+
+pub(super) fn breadcrumbs_examples() -> Vec<(&'static str, Breadcrumbs)> {
+    let crumb = |href: &str, label: &str| Crumb {
+        href: href.into(),
+        label: label.into(),
+    };
+    vec![
+        ("Back to a page", Breadcrumbs::new(vec![crumb("#component-breadcrumbs", "Home")])),
+        (
+            "Two levels up",
+            Breadcrumbs::new(vec![
+                crumb("#component-breadcrumbs", "Corner store with a long name to see it shortened"),
+                crumb("#component-breadcrumbs", "Orders"),
+            ]),
+        ),
+    ]
+}

@@ -283,4 +283,10 @@ test('every tab, for the gallery', async ({ page }) => {
     }
     await captureCoverageStage(page, `admin-settings-${tab}`, test.info(), { group: 'admin-settings', shapes: ['mobile-portrait', 'desktop'] });
   }
+  // The options files, each with its Reload, are a tab of their own.
+  await expect(page.locator('#settings-panel form[action="/dashboard/admin/settings/reload"]')).toHaveCount(0);
+  await page.locator('#settings-tabs').getByRole('link', { name: 'Files' }).click();
+  await expect(page).toHaveURL(/\?tab=files$/);
+  await expect(page.locator('#settings-panel').getByRole('button', { name: 'Reload options file' })).toHaveCount(2);
+  await captureCoverageStage(page, 'admin-settings-files', test.info(), { group: 'admin-settings', shapes: ['mobile-portrait', 'desktop'] });
 });
