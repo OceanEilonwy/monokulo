@@ -1,6 +1,6 @@
 //! `GET /status` - `http::status_page::status_page`.
 
-use maud::{html, Markup};
+use maud::{html, Markup, PreEscaped};
 pub use shared::proof::{NodeVerdict, ProofState};
 use ui::{Alert, Button, ButtonType, Cell, CellPart, Disclosure, Fact, Facts, Hint, LinkButton, Panel, Row, Slot, Table, TableLook, Tag, TagTone, Tone};
 
@@ -224,7 +224,7 @@ fn abuse_protection(abuse: &AbuseStatusView) -> Markup {
         ])))
     };
     html! {
-        h2 { "Abuse protection" }
+        div class="net-head" { h2 { "Abuse protection" } }
         (Hint::new("Only operators see this."))
         p {
             "Under-attack mode: "
@@ -262,7 +262,7 @@ fn network_card(network: &StatusNetworkView, engine_page: bool) -> Markup {
                 span class="mk-status-text" data-tone=[tone(class)] { (label) }
             }
             @if engine_page {
-                (LinkButton::new("Watch it live", format!("/status/engine?network={}", network.network)))
+                (LinkButton::new(html! { (PreEscaped(ui::assets::icons::EYE)) "Watch it live" }, format!("/status/engine?network={}", network.network)))
             }
         }
 
@@ -786,8 +786,9 @@ mod tests {
     fn watch_it_live_is_a_button_in_the_header_for_an_admin_only() {
         let html = render(&admin_with(following(0, 1), vec![]));
         assert!(
-            html.contains(r#"<a class="mk-btn" href="/status/engine?network=mainnet">Watch it live</a></div>"#),
-            "{html}"
+            html.contains(r#"<a class="mk-btn" href="/status/engine?network=mainnet"><svg xmlns="http://www.w3.org/2000/svg" class="mk-icon""#)
+                && html.contains("</svg>Watch it live</a></div>"),
+            "an eye, then the words: {html}"
         );
         assert_eq!(html.matches("/status/engine").count(), 1);
         let html = render(&StatusPageViewModel {

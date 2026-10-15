@@ -607,7 +607,7 @@ async fn searches_are_saved_and_removed_with_or_without_fixi() {
     )
     .unwrap();
     assert!(
-        fragment.starts_with(r#"<div class="box" id="saved-searches""#)
+        fragment.starts_with(r#"<section id="card-saved-searches" class="settings-card""#)
             && fragment.contains("Give the search a name"),
         "{fragment}"
     );

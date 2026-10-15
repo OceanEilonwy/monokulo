@@ -763,7 +763,7 @@ fn wallets_table(wallets: &[&WalletListItem], with_network: bool) -> Markup {
     };
     let rows = wallets.iter().map(|w| {
         let network = with_network.then(|| {
-            ui::Slot::from(ui::Cell::new(super::network_badge(&w.network)).part(ui::CellPart::Meta))
+            ui::Slot::from(ui::Cell::new(super::network_icon(&w.network)).part(ui::CellPart::Meta))
         });
         ui::Row::new(ui::Slot::many(network.into_iter().chain([
             ui::Cell::new(html! { a href=(format!("/account/wallets/{}", w.id)) { (w.name) } })
@@ -1453,15 +1453,15 @@ mod tests {
             ),
             "{fold}"
         );
-        assert!(fold.contains("Test networks</span><strong>2 wallets</strong><span class=\"hint\">no real value</span></summary>"), "{fold}");
+        assert!(fold.contains("Test networks</span></span><strong>2 wallets</strong><span class=\"hint\">no real value</span></summary>"), "{fold}");
         assert!(fold.contains("<th>Network</th><th>Name</th>"), "{fold}");
         // Each row carries its own network's badge.
         assert!(
-            fold.contains(r#"<td class="card-meta"><span class="tag-network is-test">"#),
+            fold.contains(r#"<td class="card-meta"><span class="tag-network is-test" data-size="icon" title="Stagenet">"#),
             "{fold}"
         );
-        assert!(fold.contains("</svg>Stagenet</span>"), "{fold}");
-        assert!(fold.contains("</svg>Testnet</span>"), "{fold}");
+        assert!(fold.contains(r#"<span class="tag-network-name">Stagenet</span>"#), "{fold}");
+        assert!(fold.contains(r#"<span class="tag-network-name">Testnet</span>"#), "{fold}");
         assert!(!html.contains("tag-slow"), "{html}");
     }
 

@@ -90,6 +90,10 @@
 .tag-network svg { width: 1.05em; height: 1.05em; flex: none; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .tag-network.is-main { background: var(--network-main-bg); border-color: var(--network-main-edge); }
 .tag-network.is-test { background: var(--network-test-bg); border-style: dashed; }
+/* Icon only (beside a wallet's name, in a table): a round badge, its name
+   for screen readers and on hover. */
+.tag-network[data-size="icon"] { padding: var(--pill-pad-y); border-radius: 50%; }
+.tag-network[data-size="icon"] > .tag-network-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 /* `views::state_badge`: the short words replace the long ones on a phone;
    the long ones stay for screen readers. */

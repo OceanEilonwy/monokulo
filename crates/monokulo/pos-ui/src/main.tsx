@@ -603,6 +603,10 @@ function App() {
     }
   };
 
+  /** The way to every order this session has seen, under the keypad and
+   * the payment's actions. */
+  const AllOrders = () => <Button variant="quiet" size="compact" data-pos="all-orders" onClick={showList}>All orders</Button>;
+
   return <><StatusSymbols/>
     <header class="pos-top">
       <span class="pos-brand-slot" ref={adoptSiteBrand}/>
@@ -615,10 +619,6 @@ function App() {
       </Show>
       <span class="pos-mode">POS</span>
       <span class="pos-top-end">
-        <Show when={screen() !== 'list'}>
-          <IconButton label="All orders" onClick={showList}
-            icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="18" r="1" fill="currentColor"/></svg>}/>
-        </Show>
         <span class="pos-site-controls" ref={adoptSiteControls}/>
       </span>
     </header>
@@ -655,6 +655,7 @@ function App() {
           value={reference()} maxlength="120" onInput={event => setReference(event.currentTarget.value)}/>
         <Show when={error()}><p class="pos-error" role="alert">{error()}</p></Show>
         <Button variant="primary" size="touch" block data-pos="primary" disabled={/^0+$/.test(digits()) || busy()} onClick={() => void charge()}>{busy() ? 'Creating order…' : 'Charge'}</Button>
+        <AllOrders/>
       </main>
     </Show>
 
@@ -688,6 +689,7 @@ function App() {
               <p class="pos-action-hint">Background keeps this payment open · Cancel asks for confirmation</p>
             </Show>
           </Show>
+          <AllOrders/>
         </div>
       </main>
     )}</Show>}</Show>

@@ -326,9 +326,14 @@ component! {
         name: String,
         #[default(false)]
         main: bool,
+        /// Only the icon and the edge, its name for screen readers and on
+        /// hover: in a table's cell, beside a wallet's name.
+        #[default(false)]
+        icon_only: bool,
     }
     html {
-        span class=join["tag-network", "is-main" if main, "is-test" if !main] {
+        span class=join["tag-network", "is-main" if main, "is-test" if !main] data-size="icon" if icon_only
+            title=(name) if icon_only {
             svg viewBox="0 0 24 24" aria-hidden="true" {
                 @if main {
                     circle cx="12" cy="12" r="9" {}
@@ -338,7 +343,7 @@ component! {
                     path d="M7.5 15h9" {}
                 }
             }
-            (name)
+            span class="tag-network-name" { (name) }
         }
     }
 }
@@ -347,6 +352,8 @@ pub(super) fn network_badge_examples() -> Vec<(&'static str, NetworkBadge)> {
     vec![
         ("Mainnet", NetworkBadge::new("Mainnet").main(true)),
         ("A test network", NetworkBadge::new("Stagenet")),
+        ("Mainnet, icon only", NetworkBadge::new("Mainnet").main(true).icon_only(true)),
+        ("A test network, icon only", NetworkBadge::new("Stagenet").icon_only(true)),
     ]
 }
 
