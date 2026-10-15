@@ -53,6 +53,7 @@ pub fn sections(catalogue: &[Specimens]) -> String {
             paragraphs(info.doc)
         );
         s.push_str(&props_table(info));
+        s.push_str("<div class=\"book-specimens\">");
         for (i, (title, slot)) in specimens.examples.iter().enumerate() {
             let html = render(slot);
             let _ = write!(
@@ -69,7 +70,7 @@ pub fn sections(catalogue: &[Specimens]) -> String {
                 escape(&html)
             );
         }
-        s.push_str("</section>\n");
+        s.push_str("</div></section>\n");
     }
     s
 }
@@ -113,8 +114,21 @@ fn render(slot: &Slot) -> String {
 fn paragraphs(text: &str) -> String {
     text.split("\n\n")
         .filter(|p| !p.trim().is_empty())
-        .map(|p| format!("<p>{}</p>", escape(&p.replace('\n', " "))))
+        .map(|p| format!("<p>{}</p>", code_spans(&escape(&p.replace('\n', " ")))))
         .collect()
+}
+
+/// Doc comments' `code` as `<code>`.
+fn code_spans(text: &str) -> String {
+    let mut s = String::new();
+    for (i, piece) in text.split('`').enumerate() {
+        if i % 2 == 1 {
+            let _ = write!(s, "<code>{piece}</code>");
+        } else {
+            s.push_str(piece);
+        }
+    }
+    s
 }
 
 fn props_table(info: &ComponentInfo) -> String {
@@ -122,17 +136,24 @@ fn props_table(info: &ComponentInfo) -> String {
         "<div class=\"mk-table-scroll\"><table class=\"mk-table book-props\"><caption>Props</caption><thead><tr><th scope=\"col\">Prop</th><th scope=\"col\">Type</th><th scope=\"col\">About</th></tr></thead><tbody>",
     );
     for prop in &info.props {
+        // A prop with no doc of its own reads as its enum's or record's.
+        let doc = match (prop.doc, prop.ty) {
+            ("", Ty::Enum(e)) => e.doc,
+            ("", Ty::Option(Ty::Enum(e))) => e.doc,
+            ("", Ty::List(Ty::Record(r))) => r().doc,
+            (doc, _) => doc,
+        };
         let about = match (&prop.default, prop.required) {
-            (_, true) => format!("Required. {}", prop.doc),
-            (Some(d), _) => format!("{} Default: {}.", prop.doc, value_text(d)),
-            (None, _) => prop.doc.to_string(),
+            (_, true) => format!("Required. {doc}"),
+            (Some(d), _) => format!("{doc} Default: {}.", value_text(d)),
+            (None, _) => doc.to_string(),
         };
         let _ = write!(
             s,
             "<tr><th scope=\"row\"><code>{}</code></th><td><code>{}</code></td><td>{}</td></tr>",
             prop.name,
             escape(&type_name(&prop.ty)),
-            escape(about.trim())
+            code_spans(&escape(about.trim()))
         );
     }
     s.push_str("</tbody></table></div>");
