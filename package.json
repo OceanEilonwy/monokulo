@@ -1,0 +1,26 @@
+{
+  "name": "monokulo-web",
+  "private": true,
+  "workspaces": [
+    "packages/ui",
+    "apps/stylebook",
+    "crates/monokulo/pos-ui"
+  ],
+  "scripts": {
+    "stylebook": "npm run dev -w @monokulo/stylebook",
+    "build:stylebook": "npm run build -w @monokulo/stylebook",
+    "build:ui": "npm run build -w @monokulo/ui",
+    "test:ui": "playwright test -c packages/ui/playwright.config.js",
+    "lint:ui": "node packages/ui/tools/lint.mjs",
+    "test:ui:unit": "node --test packages/ui/tools/lint.test.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "postcss": "8.5.28",
+    "parse5": "7.3.0",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

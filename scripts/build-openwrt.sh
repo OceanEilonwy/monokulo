@@ -79,8 +79,8 @@ toolchain=$(ls -d "$toolchain_root"/staging_dir/toolchain-"$ARCH"_gcc-*_musl* | 
 }
 
 # monokulo's build script builds the POS app from its locked dependencies.
-[ -d crates/monokulo/pos-ui/node_modules ] ||
-	npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
+[ -d node_modules ] ||
+	npm ci --no-audit --no-fund
 
 # randomx-rs (the engine's proof-of-work check) asks for C++'s standard
 # library as a shared library, which would make monokulo a dynamic

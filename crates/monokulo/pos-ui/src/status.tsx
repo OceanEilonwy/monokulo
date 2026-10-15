@@ -1,4 +1,5 @@
 import { Show } from 'solid-js';
+import STATUS_SYMBOLS from '@monokulo/ui/status/symbols.svg?raw';
 
 /** What the POS needs to know about an order to show its status. */
 export type StatusSource = {
@@ -33,26 +34,7 @@ export function progressPercent(order: StatusSource): number {
  * a partial payment: the larger fragment solid, a dashed outline for the
  * missing piece). Rendered once per page. */
 export function StatusSymbols() {
-  return <svg class="pos-symbol-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-    <defs>
-      <clipPath id="pos-coin-fragment"><path d="M0 0h21.5l-3.5 9.5 3.5 5.9L17.8 32H0Z"/></clipPath>
-      <symbol id="pos-coin" viewBox="0 0 32 32">
-        <path d="M4 12.5v6c0 5 5.4 9 12 9s12-4 12-9v-6" fill="currentColor" fill-opacity=".24" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
-        <path d="M8 22.5v3M16 24.5v3M24 22.5v3" fill="none" stroke="currentColor" stroke-opacity=".55" stroke-width="1"/>
-        <ellipse cx="16" cy="12.5" rx="12" ry="9" fill="var(--pos-coin-face)" stroke="currentColor" stroke-width="1.6"/>
-        <path d="M9.5 15.7V9.4l6.5 5 6.5-5v6.3" fill="none" class="pos-coin-mark" stroke-width="2.5" stroke-linecap="square"/>
-        <path d="M9.5 15.7v1.2h13v-1.2" fill="none" stroke="currentColor" stroke-width="1"/>
-      </symbol>
-      <symbol id="pos-coin-partial" viewBox="0 0 32 32">
-        <use href="#pos-coin" clip-path="url(#pos-coin-fragment)"/>
-        <path d="M21.5 4 18 9.5 21.5 15.4 17.8 27" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
-        <path d="M21.5 4.2C25.6 6 28 8.9 28 12.5v6c0 4.7-4.2 8.1-10.2 8.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2.2 2.2" stroke-linecap="round"/>
-      </symbol>
-      <symbol id="pos-coins-overpaid" viewBox="0 0 44 32">
-        <use href="#pos-coin" x="0" y="3" width="30" height="29"/><use href="#pos-coin" x="13" y="0" width="30" height="29"/>
-      </symbol>
-    </defs>
-  </svg>;
+  return <span class="pos-symbol-defs" aria-hidden="true" innerHTML={STATUS_SYMBOLS}/>;
 }
 
 /** One status symbol, centred in a square box sized by the caller's CSS. */
@@ -65,23 +47,10 @@ export function StatusIcon(props: { order: StatusSource; offline?: boolean }) {
     <Show when={state() === 'partial'}><svg viewBox="0 0 32 32"><use href="#pos-coin-partial"/></svg></Show>
     <Show when={state() === 'paid'}><svg viewBox="0 0 32 32"><use href="#pos-coin"/></svg></Show>
     <Show when={state() === 'overpaid'}><svg viewBox="0 0 44 32"><use href="#pos-coins-overpaid"/></svg></Show>
-    <Show when={state() === 'expired'}>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M6 3h12M6 21h12M7.5 3v3.5c0 2.6 4.5 4 4.5 5.5s-4.5 2.9-4.5 5.5V21M16.5 3v3.5c0 2.6-4.5 4-4.5 5.5s4.5 2.9 4.5 5.5V21"/>
-        <path d="M8.5 20.2c.8-1.8 2.2-2.6 3.5-2.6s2.7.8 3.5 2.6Z" fill="currentColor" stroke="none"/>
-      </svg>
-    </Show>
-    <Show when={state() === 'double-spend'}>
-      <svg viewBox="0 0 24 24" fill="currentColor"><rect x="10.4" y="3.5" width="3.2" height="11" rx="1.2"/><circle cx="12" cy="19" r="1.9"/></svg>
-    </Show>
-    <Show when={state() === 'offline'}>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-        <path d="M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0M8.8 15.8a5 5 0 0 1 6.4 0"/><circle cx="12" cy="19.5" r="1.1" fill="currentColor" stroke="none"/><path d="M4 4l16 16"/>
-      </svg>
-    </Show>
-    <Show when={state() === 'cancelled'}>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M7 7l10 10M17 7 7 17"/></svg>
-    </Show>
+    <Show when={state() === 'expired'}><svg viewBox="0 0 24 24"><use href="#pos-expired"/></svg></Show>
+    <Show when={state() === 'double-spend'}><svg viewBox="0 0 24 24"><use href="#pos-double-spend"/></svg></Show>
+    <Show when={state() === 'offline'}><svg viewBox="0 0 24 24"><use href="#pos-offline"/></svg></Show>
+    <Show when={state() === 'cancelled'}><svg viewBox="0 0 24 24"><use href="#pos-cancelled"/></svg></Show>
   </span>;
 }
 

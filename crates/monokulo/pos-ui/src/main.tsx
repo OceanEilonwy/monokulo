@@ -1,3 +1,4 @@
+import '@monokulo/ui/status.css';
 import { createEffect, createMemo, createSignal, flush, For, onSettled, Show, untrack } from 'solid-js';
 import { render } from '@solidjs/web';
 import { StatusBadge, StatusIcon, StatusSymbols, stateOf, statusName } from './status';
@@ -5,6 +6,8 @@ import { addressFromQr, decodeImageFile, looksLikeAddress, scanCamera } from './
 import { LOADING_MARK } from './logo';
 import { applyTheme, type Theme } from './theme';
 import { createTimeline, routeOf, watchPage } from './timeline';
+import '@monokulo/ui';
+import '@monokulo/ui/components.css';
 import './pos.css';
 
 type Order = {
@@ -315,9 +318,9 @@ function PaymentCard(props: { order: Order }) {
       <Show when={awaiting()}><button type="button" onClick={() => void copy()} aria-label="Copy payment address">{copied() === 'copied' ? 'Copied' : copied() === 'failed' ? 'Not copied' : 'Copy'}</button></Show>
     </div>
     <hr/>
-    <label class="pos-field-label" for="pos-refund">Refund address <span>(optional)</span></label>
+    <label class="mk-label" for="pos-refund">Refund address <span>(optional)</span></label>
     <div class={['pos-refund', `state-${refundState()}`]}>
-      <input id="pos-refund" type="text" autocomplete="off" spellcheck={false} placeholder="Your Monero refund address"
+      <input class="mk-input" data-size="compact" id="pos-refund" type="text" autocomplete="off" spellcheck={false} placeholder="Your Monero refund address"
         value={refund()} onInput={event => onRefundInput(event.currentTarget.value)} onBlur={() => void save(refund().trim())}
         aria-invalid={refundState() === 'invalid' ? 'true' : 'false'} aria-describedby="pos-refund-note"/>
       <span class="pos-refund-state" role="status" aria-label={refundState() === 'saving' ? 'Saving refund address' : refundState() === 'saved' ? 'Refund address saved' : ''}>
@@ -670,13 +673,13 @@ function App() {
             {key === '⌫' ? <svg viewBox="0 0 28 20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round" aria-hidden="true"><path d="M9 2h16a1.5 1.5 0 0 1 1.5 1.5v13A1.5 1.5 0 0 1 25 18H9l-7.5-8Z"/><path d="m13 6.5 8 7m0-7-8 7" stroke-linecap="round"/></svg> : key}
           </button>}</For>
         </div>
-        <div class="pos-field">
-          <label class="pos-field-label" for="pos-reference">Reference <span>(optional)</span></label>
-          <input id="pos-reference" class="pos-input" type="text" maxlength="120" placeholder="E.g. customer name or note" autocomplete="off"
+        <div class="mk-field pos-field">
+          <label class="mk-label" for="pos-reference">Reference <span>(optional)</span></label>
+          <input id="pos-reference" class="mk-input pos-input" type="text" maxlength="120" placeholder="E.g. customer name or note" autocomplete="off"
             value={reference()} onInput={event => setReference(event.currentTarget.value)}/>
         </div>
         <Show when={error()}><p class="pos-error" role="alert">{error()}</p></Show>
-        <button type="button" class="pos-primary" disabled={/^0+$/.test(digits()) || busy()} onClick={() => void charge()}>{busy() ? 'Creating order…' : 'Charge'}</button>
+        <button type="button" class="mk-btn pos-primary" data-variant="primary" data-size="touch" data-block disabled={/^0+$/.test(digits()) || busy()} onClick={() => void charge()}>{busy() ? 'Creating order…' : 'Charge'}</button>
       </main>
     </Show>
 
@@ -695,10 +698,10 @@ function App() {
         <PaymentCard order={order()}/>
         <div class="pos-actions">
           <Show when={error()}><p class="pos-error" role="alert">{error()}</p></Show>
-          <Show when={!terminal(order())} fallback={<button type="button" class="pos-primary" onClick={resetKeypad}>New order</button>}>
-            <button type="button" class="pos-primary" disabled={busy()} onClick={() => void backgroundOrder()}>Background order</button>
+          <Show when={!terminal(order())} fallback={<button type="button" class="mk-btn pos-primary" data-variant="primary" data-size="touch" data-block onClick={resetKeypad}>New order</button>}>
+            <button type="button" class="mk-btn pos-primary" data-variant="primary" data-size="touch" data-block disabled={busy()} onClick={() => void backgroundOrder()}>Background order</button>
             <Show when={order().status === 'pending' && !order().error} fallback={<p class="pos-action-hint">Background keeps this payment open while you serve the next customer</p>}>
-              <button type="button" class="pos-cancel" disabled={busy()} onClick={() => void cancelOrder()}>Cancel order</button>
+              <button type="button" class="mk-btn pos-cancel" data-variant="danger" data-block disabled={busy()} onClick={() => void cancelOrder()}>Cancel order</button>
               <p class="pos-action-hint">Background keeps this payment open · Cancel asks for confirmation</p>
             </Show>
           </Show>
@@ -712,7 +715,7 @@ function App() {
         <p class="pos-list-subtitle">Choose an order to open.</p>
         <div class="pos-search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></svg>
-          <input class="pos-input" type="search" aria-label="Search reference or order ID" placeholder="Search reference or order ID" value={search()} onInput={event => setSearch(event.currentTarget.value)}/>
+          <input class="mk-input pos-input" type="search" aria-label="Search reference or order ID" placeholder="Search reference or order ID" value={search()} onInput={event => setSearch(event.currentTarget.value)}/>
         </div>
         <div class="pos-tabs" role="tablist" aria-label="Order status">
           <button type="button" role="tab" aria-selected={tab() === 'active' ? 'true' : 'false'} class={{ selected: tab() === 'active' }} onClick={() => setTab('active')}>Active · {activeOrders().length}</button>

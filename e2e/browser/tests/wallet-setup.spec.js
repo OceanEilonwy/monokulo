@@ -75,7 +75,7 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
 
   // Store: a name, and a website apart from it, optional. No kinds.
   await page.goto(base + '/setup');
-  await expect(page.locator('.setup-steps [aria-current="step"]')).toHaveText('1Store');
+  await expect(page.locator('.setup-steps [aria-current="step"]')).toHaveText('StoreIn progress');
   await expect(page.getByRole('heading', { name: 'Set up a store' })).toBeVisible();
   await expect(page.locator('label.kind-card')).toHaveCount(0);
   await expect(page.locator('label[for="store-site"]')).toHaveText('Your website');
@@ -84,15 +84,15 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   await toWalletStep(page, 'Geomart', 'https://geomart.example/shop?page=2');
 
   // Wallet: its small steps beside it, the name first, checked as it changes.
-  await expect(page.locator('.setup-steps .sub-timeline [aria-current="step"]')).toHaveText('Kind');
+  await expect(page.locator('.mk-progress-steps [aria-current="step"] small')).toHaveText('Kind · step 1 of 3');
   await expect(page.locator('input[name="name"]')).toHaveValue('Geomart takings');
   await expect(page.locator('#wallet-name-check')).toContainText('Free to use');
   await captureCoverageStage(page, 'setup-wallet-choice', test.info(), { group: GROUP });
 
   await startNewWallet(page, 'Geomart takings');
-  const timeline = page.locator('[data-screen="backup"] .setup-steps .sub-timeline');
-  await expect(timeline.locator('li.done')).toHaveText('Kind');
-  await expect(timeline.locator('[aria-current="step"]')).toHaveText('Back up');
+  await expect(page.locator('[data-screen="backup"] .mk-progress-steps [aria-current="step"] small')).toHaveText('Back up · step 2 of 3');
+  await expect(page.locator('[data-screen="backup"] .mk-step-progress').nth(1)).toHaveAttribute('value', '1');
+  await expect(page.locator('[data-screen="backup"] .mk-step-progress').nth(1)).toHaveAttribute('max', '3');
   // The words and the QR, straight away, with nothing to reveal.
   const cake = page.locator('[data-app-panel="cake"]');
   await expect(cake.locator('[data-words] li')).toHaveCount(16);
@@ -126,6 +126,7 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
 
   // Check: two words, four choices each; a wrong one is marked and can be tried again.
   await expect(page.getByRole('heading', { name: 'Check two words' })).toBeVisible();
+  await expect(page.locator('[data-screen="check"] .mk-step-progress').nth(1)).toHaveAttribute('value', '2');
   const go = page.locator('[data-check-next]');
   await expect(go).toBeDisabled();
   await expect(go).toContainText('Continue anyway in');
@@ -152,7 +153,7 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   // Done: never "taking payments" yet; every way to start, the guide the
   // one orange button.
   await expect(page.getByRole('heading', { name: 'Geomart is set up' })).toBeVisible();
-  await expect(page.locator('.setup-steps [aria-current="step"]')).toHaveText('3Done');
+  await expect(page.locator('.setup-steps [aria-current="step"]')).toHaveText('DoneComplete');
   await expect(page.getByText('Not taking payments yet')).toBeVisible();
   await expect(page.locator('.todo strong')).toHaveText(['Add the checkout to your site', 'Install the WooCommerce plugin', 'Open the till (POS)']);
   const guide = page.getByRole('link', { name: /Open the guide/ });
@@ -190,7 +191,7 @@ test('the check lets you go on without answering after 20 seconds', async ({ pag
   await page.goto(base + '/account/wallets/add');
   // Outside setup: the wallet's own steps only.
   await expect(page.locator('.setup-steps')).toHaveCount(0);
-  await expect(page.locator('.sub-timeline [aria-current="step"]')).toHaveText('Kind');
+  await expect(page.locator('.mk-progress-steps [aria-current="step"] small')).toHaveText('Kind · step 1 of 3');
   await startNewWallet(page, 'Patient Wren');
   await page.getByRole('tab', { name: 'On paper' }).click();
   await expect(page.locator('[data-app-panel="paper"] [data-words] li')).toHaveCount(16);
@@ -284,7 +285,7 @@ test.describe('with JavaScript off', () => {
     await page.locator('input[name="name"]').fill('Keys only');
     await page.getByRole('button', { name: 'Bring your own wallet' }).click();
     await expect(page.getByRole('heading', { name: 'Bring your own wallet' })).toBeVisible();
-    await expect(page.locator('.sub-timeline [aria-current="step"]')).toHaveText('Keys');
+    await expect(page.locator('.mk-progress-steps [aria-current="step"] small')).toHaveText('Keys · step 2 of 2');
     await page.getByText('Where do I find these keys?').click();
     await expect(page.getByText('Copy the secret one')).toBeVisible();
     await captureCoverageStage(page, 'wallets-keys-no-javascript', test.info(), { group: 'wallets' });
@@ -340,7 +341,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await expect(section).toContainText(`Payments go to ${WALLET_NAME}`);
   const wallet = section.getByRole('combobox', { name: 'Wallet' });
   await expect(wallet).toContainText(WALLET_NAME);
-  await expect(wallet.locator('.tag-ok')).toHaveText('Current');
+  await expect(wallet.locator('.mk-current')).toHaveText('Current');
 
   await wallet.click();
   await section.getByRole('option', { name: /Cafe till/ }).click();
@@ -351,7 +352,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await section.getByRole('button', { name: 'Change to Cafe till' }).click();
   await expect(section.getByText('Changed to Cafe till.')).toBeVisible();
   await expect(section).toContainText('Payments go to Cafe till');
-  await expect(section.getByRole('combobox', { name: 'Wallet' }).locator('.tag-ok')).toHaveText('Current');
+  await expect(section.getByRole('combobox', { name: 'Wallet' }).locator('.mk-current')).toHaveText('Current');
 
   const history = section.locator('details.wallet-history');
   await expect(history.locator('summary')).toHaveText('Wallet history (2 wallets)');

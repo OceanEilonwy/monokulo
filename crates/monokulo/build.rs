@@ -8,7 +8,7 @@
 //! `MONOKULO_POS_BUILD=development|production` overrides the choice.
 //!
 //! Needs Node and the app's dependencies installed from its lockfile (`npm ci`
-//! in `crates/monokulo/pos-ui`). This script never installs anything itself:
+//! at the repository root). This script never installs anything itself:
 //! a build that reaches the network would break offline builds and make
 //! builds depend on the registry.
 
@@ -24,13 +24,7 @@ use std::process::Command;
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let ui = manifest.join("pos-ui");
-    for input in [
-        "src",
-        "package.json",
-        "package-lock.json",
-        "vite.config.ts",
-        "tsconfig.json",
-    ] {
+    for input in ["src", "package.json", "vite.config.ts", "tsconfig.json"] {
         println!("cargo:rerun-if-changed={}", ui.join(input).display());
     }
     println!("cargo:rerun-if-env-changed=MONOKULO_POS_BUILD");
@@ -45,13 +39,17 @@ fn main() {
         None => "development",
     };
 
-    let vite = ui.join("node_modules/vite/bin/vite.js");
-    let tsc = ui.join("node_modules/typescript/bin/tsc");
+    let workspace = manifest.join("../..");
+    for input in ["packages/ui/src", "package.json", "package-lock.json"] {
+        println!("cargo:rerun-if-changed={}", workspace.join(input).display());
+    }
+    let vite = workspace.join("node_modules/vite/bin/vite.js");
+    let tsc = workspace.join("node_modules/typescript/bin/tsc");
     if !vite.exists() || !tsc.exists() {
         panic!(
             "\n\nThe POS app's dependencies are not installed. Install them from the lockfile:\n\n    \
              cd {} && npm ci\n\n(Node 24 or later is required to build monokulo.)\n",
-            ui.display()
+            workspace.display()
         );
     }
 

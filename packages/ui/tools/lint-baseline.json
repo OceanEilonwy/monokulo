@@ -1,0 +1,1022 @@
+{
+  "crates/monokulo/pos-ui/src/main.tsx:js-native-control:409bdf245f13c29b": {
+    "count": 1,
+    "snippet": "document.createElement('textarea')"
+  },
+  "crates/monokulo/pos-ui/src/main.tsx:shared-control:682baf70a47666c5": {
+    "count": 1,
+    "snippet": "<button type=\"button\" onClick={() => void copy()} aria-label=\"Copy payment address\">"
+  },
+  "crates/monokulo/pos-ui/src/main.tsx:shared-control:e776518ef96b722c": {
+    "count": 1,
+    "snippet": "<button type=\"button\" onClick={() => void scan()}>"
+  },
+  "crates/monokulo/pos-ui/src/main.tsx:shared-control:c70d198da12a75ff": {
+    "count": 1,
+    "snippet": "<button type=\"button\" onClick={() => fileInput?.click()}>"
+  },
+  "crates/monokulo/pos-ui/src/main.tsx:shared-control:2f964e236553e427": {
+    "count": 1,
+    "snippet": "<input ref={el => { fileInput = el; }} type=\"file\" accept=\"image/*\" hidden onChange={event => void chooseImage(event.currentTarget.files?.[0])}/>"
+  },
+  "crates/monokulo/pos-ui/src/main.tsx:shared-control:54e18bc2fb5eb3ed": {
+    "count": 1,
+    "snippet": "<button class=\"pos-back\" type=\"button\" onClick={() => setScreen('keypad')} aria-label=\"Back to POS\">"
+  },
+  "crates/monokulo/pos-ui/src/main.tsx:shared-control:bcb22a5c23f134a2": {
+    "count": 1,
+    "snippet": "<button class=\"pos-orders-link\" type=\"button\" onClick={showList} aria-label=\"All orders\" title=\"All orders\">"
+  },
+  "crates/monokulo/pos-ui/src/main.tsx:shared-control:160fd6760a8f03e5": {
+    "count": 1,
+    "snippet": "<button type=\"button\" onClick={showList}>"
+  },
+  "crates/monokulo/pos-ui/src/main.tsx:shared-control:da08e919b0b2e62c": {
+    "count": 1,
+    "snippet": "<button type=\"button\" class={['pos-stack-card', `state-${stateOf(order(), offline())}`]} title={`${fullLabel(order())} · ${statusName[stateOf(order(), offline())]} · ${shownAmount(order())} ${order().currency}`} aria-label={`Open ${fullLabel(order())}, ${statusName[stateOf(order(), offline())]}, ${shownAmount(order())} ${order().currency}`} onClick={() => void openOrder(order())}>"
+  },
+  "crates/monokulo/pos-ui/src/main.tsx:shared-control:5294ca472896b3d1": {
+    "count": 1,
+    "snippet": "<button type=\"button\" class={{ clear: key === 'C', delete: key === '⌫' }} aria-label={key === 'C' ? 'Clear' : key === '⌫' ? 'Backspace' : key} onClick={() => key === 'C' ? setDigits('0') : key === '⌫' ? backspace() : pushDigit(key)}>"
+  },
+  "crates/monokulo/pos-ui/src/main.tsx:shared-control:20735f3df2ad6ad1": {
+    "count": 1,
+    "snippet": "<button type=\"button\" role=\"tab\" aria-selected={tab() === 'active' ? 'true' : 'false'} class={{ selected: tab() === 'active' }} onClick={() => setTab('active')}>"
+  },
+  "crates/monokulo/pos-ui/src/main.tsx:shared-control:36885d64ed22c934": {
+    "count": 1,
+    "snippet": "<button type=\"button\" role=\"tab\" aria-selected={tab() === 'finished' ? 'true' : 'false'} class={{ selected: tab() === 'finished' }} onClick={() => setTab('finished')}>"
+  },
+  "crates/monokulo/pos-ui/src/main.tsx:shared-control:0718aae5149c42a0": {
+    "count": 1,
+    "snippet": "<button type=\"button\" class=\"pos-link\" onClick={() => void refresh()}>"
+  },
+  "crates/monokulo/pos-ui/src/main.tsx:shared-control:6940f0c75c3d0c62": {
+    "count": 1,
+    "snippet": "<button type=\"button\" class=\"pos-link\" onClick={() => void openOrder(order())}>"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:component-override:0b1409073931bae7": {
+    "count": 1,
+    "snippet": "#pos-root :where(h1, h2, p, button, input, label, hr, code, small):not(:where(.pos-site-controls *, .mk-btn, .mk-input, .mk-label)) { font-family: inherit }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:component-override:ef1fef63e83517ea": {
+    "count": 1,
+    "snippet": "#pos-root :where(h1, h2, p, button, input, label, hr, code, small):not(:where(.pos-site-controls *, .mk-btn, .mk-input, .mk-label)) { color: inherit }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:e794ddc4c264d458": {
+    "count": 1,
+    "snippet": ".pos-top { font-size: 13px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:e6ec55deb1af95c5": {
+    "count": 1,
+    "snippet": ".pos-brand { font-size: 14px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:0d259ef2698405af": {
+    "count": 1,
+    "snippet": ".pos-mode { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:de4a3ba1326cd353": {
+    "count": 1,
+    "snippet": ".pos-store { font-size: 13px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:db86f225f01f8ed9": {
+    "count": 1,
+    "snippet": ".pos-site-controls .theme-toggle { font-size: 14px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:84f312ba2fa78391": {
+    "count": 1,
+    "snippet": ".pos-error { font-size: 12px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:6ca7d06a21db14bc": {
+    "count": 1,
+    "snippet": ".pos-link { font-size: 12px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:8112dad48735ada0": {
+    "count": 1,
+    "snippet": ".pos-empty, .pos-loading { font-size: 13px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:5b83c6ed0e2d25cb": {
+    "count": 1,
+    "snippet": ".pos-amount { font-size: 48px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:2a60ab22af1aebe2": {
+    "count": 1,
+    "snippet": ".pos-amount.len-2 { font-size: 36px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:e10d91c4c5b43571": {
+    "count": 1,
+    "snippet": ".pos-amount.len-3 { font-size: 28px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:cf37c09cc7b3b82d": {
+    "count": 1,
+    "snippet": ".pos-amount.len-4 { font-size: 22px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:29cfc46d9e0d9817": {
+    "count": 1,
+    "snippet": ".pos-amount span { font-size: 13px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:98ba659ae14c5050": {
+    "count": 1,
+    "snippet": ".pos-keys button { font-size: 30px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:e4d59962fb031cc0": {
+    "count": 1,
+    "snippet": ".pos-stack-heading { font-size: 12px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:23113b16dd25f424": {
+    "count": 1,
+    "snippet": ".pos-stack-heading button { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:2b9c52614b347122": {
+    "count": 1,
+    "snippet": ".pos-stack-ref { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:397ddc66511e2361": {
+    "count": 1,
+    "snippet": ".pos-stack-amount { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:da32293860617077": {
+    "count": 1,
+    "snippet": ".pos-keypad.has-stack .pos-amount { font-size: 40px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:caec553be88da5a2": {
+    "count": 1,
+    "snippet": ".pos-keypad.has-stack .pos-amount.len-2 { font-size: 32px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:6857a6349c94ae71": {
+    "count": 1,
+    "snippet": ".pos-keypad.has-stack .pos-amount.len-3 { font-size: 26px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:dc0fc6c9e8f07a5d": {
+    "count": 1,
+    "snippet": ".pos-keypad.has-stack .pos-amount.len-4 { font-size: 20px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:f883e95a5a8c2515": {
+    "count": 1,
+    "snippet": ".pos-badge { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:58161d5b1b2455d4": {
+    "count": 1,
+    "snippet": ".pos-order-heading h1 { font-size: 24px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:8c9edd1455be5f19": {
+    "count": 1,
+    "snippet": ".pos-order-heading p { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:4a8388dd1a4b6f65": {
+    "count": 1,
+    "snippet": ".pos-track li { font-size: 10px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:3d29e24ec5ca4ab5": {
+    "count": 1,
+    "snippet": ".pos-stage-msg { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:4b28072a0a5e84a1": {
+    "count": 1,
+    "snippet": ".pos-pay-caption { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:6f07f5421cc23841": {
+    "count": 1,
+    "snippet": ".pos-pay-xmr { font-size: 26px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:1c8d312432bc62ed": {
+    "count": 1,
+    "snippet": ".pos-pay-xmr span { font-size: 22px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:2d3acb98c7139c0b": {
+    "count": 1,
+    "snippet": ".pos-pay-fiat { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:881a909df2cf149a": {
+    "count": 1,
+    "snippet": ".pos-qr-new-tab { font-size: 10px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:31008c8289195a92": {
+    "count": 1,
+    "snippet": ".pos-quiet-label { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:8b145397766e364e": {
+    "count": 1,
+    "snippet": ".pos-address code { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:9032c2ed6c8658d2": {
+    "count": 1,
+    "snippet": ".pos-address button { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:component-override:f4bbc2c53a41f8d5": {
+    "count": 1,
+    "snippet": ".pos-refund .mk-input { padding-right: 30px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:6ea63190c70ae8f3": {
+    "count": 1,
+    "snippet": ".pos-refund-tools button { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:2cde562d17a12822": {
+    "count": 1,
+    "snippet": ".pos-refund-message { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:d5eeb8b53303ec8b": {
+    "count": 1,
+    "snippet": ".pos-note { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:c1ce102d889dc559": {
+    "count": 1,
+    "snippet": ".pos-action-hint { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:0b4f0720dad0f895": {
+    "count": 1,
+    "snippet": ".pos-list h1 { font-size: 24px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:467b33483bff2c1b": {
+    "count": 1,
+    "snippet": ".pos-list-subtitle { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:41fb703308fed523": {
+    "count": 1,
+    "snippet": ".pos-tabs button { font-size: 12px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:49074f7299285ff6": {
+    "count": 1,
+    "snippet": ".pos-order-card h2 { font-size: 15px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:97101db8f0aecbcc": {
+    "count": 1,
+    "snippet": ".pos-order-card-head p { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:30d52e700d6f98bf": {
+    "count": 1,
+    "snippet": ".pos-order-sum { font-size: 22px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:0a7724ec7c6bdc8b": {
+    "count": 1,
+    "snippet": ".pos-order-sum span { font-size: 12px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:3c269b400008cb63": {
+    "count": 1,
+    "snippet": ".pos-order-foot small { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:49252c32d4b89163": {
+    "count": 1,
+    "snippet": ".pos-list-note { font-size: 11px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:92e058d9c4e47df8": {
+    "count": 1,
+    "snippet": ".pos-keys button { font-size: 24px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:377c4100dcf4fc03": {
+    "count": 1,
+    "snippet": ".pos-keypad .pos-keys button, .pos-keypad.has-stack .pos-keys button { font-size: 18px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:41f91c686ae32bc7": {
+    "count": 1,
+    "snippet": ".pos-keypad .pos-amount, .pos-keypad.has-stack .pos-amount { font-size: clamp(22px, 7vh, 36px) }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:0b93bbe174c75d17": {
+    "count": 1,
+    "snippet": ".pos-keypad .pos-amount.len-2, .pos-keypad.has-stack .pos-amount.len-2 { font-size: clamp(18px, 6vh, 26px) }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:f77dcb5acf683e61": {
+    "count": 1,
+    "snippet": ".pos-keypad .pos-amount.len-3, .pos-keypad.has-stack .pos-amount.len-3 { font-size: clamp(16px, 5vh, 20px) }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:536e0051699b3b1b": {
+    "count": 1,
+    "snippet": ".pos-keypad .pos-amount.len-4, .pos-keypad.has-stack .pos-amount.len-4 { font-size: 16px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:41b0e589b1f2cf33": {
+    "count": 1,
+    "snippet": ".pos-order-heading h1 { font-size: 20px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:6685a77ea01734df": {
+    "count": 1,
+    "snippet": ".pos-pay-card .pos-pay-xmr { font-size: 22px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:4e4187bdcef1364f": {
+    "count": 1,
+    "snippet": ".pos-pay-card .pos-pay-xmr span { font-size: 17px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:ee0bdf936e79abea": {
+    "count": 1,
+    "snippet": "#pos-root .pos-store { font-size: 13px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:c4a83c5cd747354c": {
+    "count": 1,
+    "snippet": "#pos-root .pos-stack-heading { font-size: 13px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:af91d7849b044bf2": {
+    "count": 1,
+    "snippet": "#pos-root .pos-stack-ref { font-size: 14px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:0e991569c3fb7068": {
+    "count": 1,
+    "snippet": "#pos-root .pos-stack-amount { font-size: 13px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:0fe52dd428150a95": {
+    "count": 1,
+    "snippet": "#pos-root .pos-keypad.has-stack .pos-amount { font-size: 48px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:ff0ce171f2b0106e": {
+    "count": 1,
+    "snippet": "#pos-root .pos-keypad.has-stack .pos-amount.len-2 { font-size: 36px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:3e8a8073536ca530": {
+    "count": 1,
+    "snippet": "#pos-root .pos-keypad.has-stack .pos-amount.len-3 { font-size: 28px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:0a0ba00935a394e1": {
+    "count": 1,
+    "snippet": "#pos-root .pos-keypad.has-stack .pos-amount.len-4 { font-size: 22px }"
+  },
+  "crates/monokulo/pos-ui/src/pos.css:type-token:05c4255e99203609": {
+    "count": 1,
+    "snippet": "#pos-root .pos-keys button { font-size: 34px }"
+  },
+  "crates/monokulo/src/views/account.rs:shared-control:ddea56f420fb9237": {
+    "count": 1,
+    "snippet": "input type=\"email\" id=\"email\" name=\"email\" value=(shown.email) required autocomplete=\"email\" data-email-input data-saved=[refused.then_some(&saved.email)];"
+  },
+  "crates/monokulo/src/views/account.rs:shared-control:4be1807123b5c729": {
+    "count": 1,
+    "snippet": "select id=\"timezone\" name=\"timezone\" data-saved=[refused.then(|| saved.timezone.clone().unwrap_or_default())] {"
+  },
+  "crates/monokulo/src/views/account.rs:shared-control:a6b4dc14def8268d": {
+    "count": 1,
+    "snippet": "select id=\"language\" disabled {"
+  },
+  "crates/monokulo/src/views/account.rs:shared-control:a13bf14bef0389b7": {
+    "count": 1,
+    "snippet": "input type=\"email\" id=\"email-again\" name=\"confirm_email\" autocomplete=\"off\" data-email-again;"
+  },
+  "crates/monokulo/src/views/account.rs:shared-control:ea453dc3a4be6c88": {
+    "count": 1,
+    "snippet": "button type=\"button\" data-email-cancel {"
+  },
+  "crates/monokulo/src/views/account.rs:shared-control:2864724fa87be307": {
+    "count": 1,
+    "snippet": "button type=\"button\" class=\"btn-primary\" data-email-go {"
+  },
+  "crates/monokulo/src/views/account.rs:shared-control:cde42f4f09ea25ad": {
+    "count": 1,
+    "snippet": "input type=\"password\" id=\"current-password\" name=\"current_password\" autocomplete=\"current-password\";"
+  },
+  "crates/monokulo/src/views/account.rs:shared-control:dd7430415def4aea": {
+    "count": 1,
+    "snippet": "input type=\"password\" id=\"new-password\" name=\"new_password\" minlength=(min) autocomplete=\"new-password\";"
+  },
+  "crates/monokulo/src/views/account.rs:shared-control:921df9092e87e0a3": {
+    "count": 1,
+    "snippet": "input type=\"email\" id=\"email-again\" name=\"confirm_email\" required autocomplete=\"off\" autofocus;"
+  },
+  "crates/monokulo/src/views/account.rs:shared-control:f62b09aa87cdf272": {
+    "count": 1,
+    "snippet": "button type=\"submit\" class=\"btn-primary\" {"
+  },
+  "crates/monokulo/src/views/admin.rs:shared-control:f62b09aa87cdf272": {
+    "count": 3,
+    "snippet": "button type=\"submit\" class=\"btn-primary\" {"
+  },
+  "crates/monokulo/src/views/admin.rs:shared-control:fe3d96bf1eca333b": {
+    "count": 3,
+    "snippet": "button type=\"submit\" {"
+  },
+  "crates/monokulo/src/views/admin.rs:shared-control:103f2ce3d8218858": {
+    "count": 1,
+    "snippet": "input type=\"number\" name=(name) value=(field.value) min=[min] max=[max] step=\"1\" id=(id) aria-describedby=[help] data-saved=[saved];"
+  },
+  "crates/monokulo/src/views/admin.rs:shared-control:f539c7932d18241b": {
+    "count": 2,
+    "snippet": "select name=(name) id=(id) aria-describedby=[help] data-saved=[saved] {"
+  },
+  "crates/monokulo/src/views/admin.rs:shared-control:ec5d571a2ad69725": {
+    "count": 1,
+    "snippet": "input type=\"password\" value=\"locked\" id=(field_id(field.form_name())) aria-describedby=[help_id(field)] disabled;"
+  },
+  "crates/monokulo/src/views/admin.rs:shared-control:22030d0fd42a1c06": {
+    "count": 1,
+    "snippet": "input type=\"text\" value=(field.value) id=(field_id(field.form_name())) aria-describedby=[help_id(field)] disabled;"
+  },
+  "crates/monokulo/src/views/admin.rs:shared-control:d05eb4a3ac8264fd": {
+    "count": 1,
+    "snippet": "input type=\"text\" name=(name(\"address\")) id=(id(\"address\")) value=(row.row.address) aria-describedby=(described) data-saved=[saved_text(|s| &s.address)] aria-invalid=[row.row.error.as_ref().map(|_| \"true\")] autocomplete=\"off\" spellcheck=\"false\" inputmode=\"url\";"
+  },
+  "crates/monokulo/src/views/admin.rs:shared-control:a483a1f9198557be": {
+    "count": 1,
+    "snippet": "input type=\"text\" name=(name(\"zmq_pub\")) id=(id(\"zmq_pub\")) value=(row.row.zmq_pub) aria-describedby=(id(\"zmq_pub-help\")) data-saved=[saved_text(|s| &s.zmq_pub)] autocomplete=\"off\" spellcheck=\"false\" inputmode=\"url\";"
+  },
+  "crates/monokulo/src/views/admin.rs:shared-control:112c676670a6fe78": {
+    "count": 1,
+    "snippet": "button type=\"submit\" class=\"no-js-only\" name=\"node_action\" value=(format!(\"up:{"
+  },
+  "crates/monokulo/src/views/admin.rs:shared-control:5db700f0aa3c02ae": {
+    "count": 1,
+    "snippet": "button type=\"submit\" class=\"no-js-only\" name=\"node_action\" value=(format!(\"down:{"
+  },
+  "crates/monokulo/src/views/admin.rs:shared-control:6c5fb17c7cfadb35": {
+    "count": 1,
+    "snippet": "button type=\"submit\" name=\"node_action\" value=(format!(\"remove:{"
+  },
+  "crates/monokulo/src/views/admin.rs:shared-control:a3089bbb68ba0fbf": {
+    "count": 1,
+    "snippet": "button type=\"button\" class=\"js-only node-add-another\" data-node-add-another=(n) {"
+  },
+  "crates/monokulo/src/views/admin.rs:shared-control:3909478604bc5691": {
+    "count": 1,
+    "snippet": "button type=\"submit\" class=\"visually-hidden\" tabindex=\"-1\" aria-hidden=\"true\" {"
+  },
+  "crates/monokulo/src/views/checkout.rs:shared-control:c3403c12dd53a88e": {
+    "count": 1,
+    "snippet": "button type=\"button\" id=\"copy-address\" class=\"address-copy-btn\" aria-label=\"Copy payment address\" title=\"Copy payment address\" hidden {"
+  },
+  "crates/monokulo/src/views/checkout.rs:shared-control:94400b794fe5a469": {
+    "count": 1,
+    "snippet": "textarea class=\"address-text\" id=\"address\" readonly aria-labelledby=\"address-label\" {"
+  },
+  "crates/monokulo/src/views/checkout.rs:shared-control:0d7a3c0b8e877a07": {
+    "count": 1,
+    "snippet": "button type=\"button\" id=\"scan-refund\" class=\"refund-icon-btn\" aria-label=\"Scan refund QR\" title=\"Scan refund QR\" hidden {"
+  },
+  "crates/monokulo/src/views/checkout.rs:shared-control:0ee830ebc21aab25": {
+    "count": 1,
+    "snippet": "button type=\"button\" id=\"upload-refund\" class=\"refund-icon-btn\" aria-label=\"Choose QR image\" title=\"Choose QR image\" hidden {"
+  },
+  "crates/monokulo/src/views/checkout.rs:shared-control:bd917819eb8c8ae9": {
+    "count": 1,
+    "snippet": "input type=\"file\" id=\"refund-image\" accept=\"image/*\" hidden;"
+  },
+  "crates/monokulo/src/views/connect.rs:shared-control:0049f5c87ab5559f": {
+    "count": 1,
+    "snippet": "select name=\"key_custody_backend\" {"
+  },
+  "crates/monokulo/src/views/connect.rs:shared-control:f62b09aa87cdf272": {
+    "count": 1,
+    "snippet": "button type=\"submit\" class=\"btn-primary\" {"
+  },
+  "crates/monokulo/src/views/create_order.rs:shared-control:6e4b6bc086d9f22f": {
+    "count": 1,
+    "snippet": "input type=\"text\" id=\"amount\" name=\"amount\" value=(data.amount) required;"
+  },
+  "crates/monokulo/src/views/create_order.rs:shared-control:6c69e90ae305d1c4": {
+    "count": 1,
+    "snippet": "input type=\"text\" id=\"currency\" name=\"currency\" value=\"XMR\" readonly;"
+  },
+  "crates/monokulo/src/views/create_order.rs:shared-control:d3f007e868b7211e": {
+    "count": 1,
+    "snippet": "select id=\"currency\" name=\"currency\" {"
+  },
+  "crates/monokulo/src/views/create_order.rs:shared-control:ec5a0b72483f0d7a": {
+    "count": 1,
+    "snippet": "input type=\"text\" id=\"merchant_order_id\" name=\"merchant_order_id\" value=(data.merchant_order_id);"
+  },
+  "crates/monokulo/src/views/create_order.rs:shared-control:f62b09aa87cdf272": {
+    "count": 1,
+    "snippet": "button type=\"submit\" class=\"btn-primary\" {"
+  },
+  "crates/monokulo/src/views/engine.rs:shared-control:71224b0e2a3c2d9b": {
+    "count": 1,
+    "snippet": "select id=\"engine-network\" name=\"network\" {"
+  },
+  "crates/monokulo/src/views/engine.rs:shared-control:97930429f93672a8": {
+    "count": 1,
+    "snippet": "button type=\"submit\" class=\"network-go no-js-only\" {"
+  },
+  "crates/monokulo/src/views/engine.rs:shared-control:599c727c4b6ed3d9": {
+    "count": 1,
+    "snippet": "select id=\"tl-mode\" name=\"tl-mode\" {"
+  },
+  "crates/monokulo/src/views/key_entry.rs:shared-control:b5ac7001639dc427": {
+    "count": 1,
+    "snippet": "input type=\"password\" name=\"view_key_hex\" value=(view_key_hex) required[required] pattern=\"[0-9a-fA-F]{"
+  },
+  "crates/monokulo/src/views/key_entry.rs:shared-control:9c2fb49c4dda7beb": {
+    "count": 1,
+    "snippet": "input type=\"text\" name=\"spend_pubkey_hex\" value=(spend_pubkey_hex) required[required] pattern=\"[0-9a-fA-F]{"
+  },
+  "crates/monokulo/src/views/key_entry.rs:shared-control:a2b0fd03debec54e": {
+    "count": 1,
+    "snippet": "textarea name=\"encrypted_keys\" rows=\"4\" autocomplete=\"off\" spellcheck=\"false\" {"
+  },
+  "crates/monokulo/src/views/logs.rs:shared-control:900fef19ed3f253e": {
+    "count": 1,
+    "snippet": "button type=\"submit\" class=\"btn-secondary\" aria-label=(format!(\"Remove {"
+  },
+  "crates/monokulo/src/views/logs.rs:shared-control:fe3d96bf1eca333b": {
+    "count": 1,
+    "snippet": "button type=\"submit\" {"
+  },
+  "crates/monokulo/src/views/logs.rs:shared-control:0842c2408b96ad53": {
+    "count": 1,
+    "snippet": "select name=(name) aria-label=(label) {"
+  },
+  "crates/monokulo/src/views/logs.rs:shared-control:32e313608413860a": {
+    "count": 1,
+    "snippet": "button type=\"submit\" form=\"log-search\" class=\"btn-secondary\" {"
+  },
+  "crates/monokulo/src/views/logs.rs:shared-control:4cf879f1c60b2f70": {
+    "count": 1,
+    "snippet": "button type=\"button\" id=\"log-live\" class=\"btn-secondary log-live js-only\" aria-pressed=\"false\" disabled[vm.tail_url.is_none()] fx-action=(vm.tail_url.as_deref().unwrap_or(LIVE_NONE)) fx-target=\"#log-rows\" fx-swap=\"afterbegin\" fx-sse-reconnect {"
+  },
+  "crates/monokulo/src/views/logs.rs:shared-control:64767c64ac85ad81": {
+    "count": 1,
+    "snippet": "input type=\"search\" id=\"log-q\" name=\"q\" value=(vm.form.q) autocomplete=\"off\" spellcheck=\"false\" placeholder=\"level >= warn and order.id = 'o_1'\";"
+  },
+  "crates/monokulo/src/views/logs.rs:shared-control:f62b09aa87cdf272": {
+    "count": 1,
+    "snippet": "button type=\"submit\" class=\"btn-primary\" {"
+  },
+  "crates/monokulo/src/views/mod.rs:shared-control:2f770798762cf1bc": {
+    "count": 1,
+    "snippet": "button type=\"submit\" class=\"nav-link-button\" {"
+  },
+  "crates/monokulo/src/views/mod.rs:shared-control:0c004536d8975715": {
+    "count": 1,
+    "snippet": "button type=\"submit\" name=\"theme\" value=\"system\" class=\"theme-toggle-option theme-toggle-option-system\" aria-label=\"System theme\" aria-pressed=(chrome.theme == Theme::System) title=\"System theme\" {"
+  },
+  "crates/monokulo/src/views/mod.rs:shared-control:bf9e1c0f23ba7592": {
+    "count": 1,
+    "snippet": "button type=\"submit\" name=\"theme\" value=\"light\" class=\"theme-toggle-option theme-toggle-option-light\" aria-label=\"Light theme\" aria-pressed=(chrome.theme == Theme::Light) title=\"Light theme\" {"
+  },
+  "crates/monokulo/src/views/mod.rs:shared-control:f174989f0bd56e33": {
+    "count": 1,
+    "snippet": "button type=\"submit\" name=\"theme\" value=\"dark\" class=\"theme-toggle-option theme-toggle-option-dark\" aria-label=\"Dark theme\" aria-pressed=(chrome.theme == Theme::Dark) title=\"Dark theme\" {"
+  },
+  "crates/monokulo/src/views/mod.rs:shared-control:8eaca04a98990e19": {
+    "count": 1,
+    "snippet": "button.starts_with(r#\"<summary class=\"acct-button\" aria-label=\"Account menu\" title=\"rachel.dz@example.org\"><svg class=\"acct-icon\"\"#), \"{"
+  },
+  "crates/monokulo/src/views/orders.rs:shared-control:9844a140a1cbb301": {
+    "count": 1,
+    "snippet": "input type=\"text\" name=\"txid\" value=(txid_value) placeholder=\"Transaction ID (64 hex characters)\" pattern=\"[0-9a-fA-F]{"
+  },
+  "crates/monokulo/src/views/orders.rs:shared-control:f62b09aa87cdf272": {
+    "count": 2,
+    "snippet": "button type=\"submit\" class=\"btn-primary\" {"
+  },
+  "crates/monokulo/src/views/orders.rs:shared-control:a1c1bc91812e6aac": {
+    "count": 1,
+    "snippet": "input type=\"search\" id=\"orders-search\" name=\"q\" value=(data.search) placeholder=\"Search by reference or order ID\" maxlength=\"120\";"
+  },
+  "crates/monokulo/src/views/settings.rs:shared-control:58df4c83a286307d": {
+    "count": 1,
+    "snippet": "button type=\"button\" class=\"card-discard js-only\" data-card-discard hidden {"
+  },
+  "crates/monokulo/src/views/settings.rs:shared-control:87294197a05197a3": {
+    "count": 1,
+    "snippet": "button type=\"submit\" class=\"btn-primary\" data-save {"
+  },
+  "crates/monokulo/src/views/settings.rs:shared-control:8a7285e76e27b1a0": {
+    "count": 1,
+    "snippet": "button type=\"button\" class=\"toast-close js-only\" aria-label=\"Dismiss\" data-toast-close {"
+  },
+  "crates/monokulo/src/views/setup.rs:shared-control:40d787913d24882c": {
+    "count": 1,
+    "snippet": "input id=\"store-name\" type=\"text\" name=\"store_name\" value=(data.name) maxlength=(crate::stores::MAX_NAME_LEN) autocomplete=\"organization\" required aria-invalid=[data.name_error.as_ref().map(|_| \"true\")] aria-describedby=[data.name_error.as_ref().map(|_| \"store-name-error\")];"
+  },
+  "crates/monokulo/src/views/setup.rs:shared-control:a08bb60154d5c821": {
+    "count": 1,
+    "snippet": "input id=\"store-site\" type=\"text\" name=\"store_site\" value=(data.site) inputmode=\"url\" autocomplete=\"url\" placeholder=\"shop.example\" readonly[data.plugin_host.is_some()] aria-invalid=[data.site_error.as_ref().map(|_| \"true\")] aria-describedby=[data.site_error.as_ref().map(|_| \"store-site-error\")];"
+  },
+  "crates/monokulo/src/views/setup.rs:shared-control:f62b09aa87cdf272": {
+    "count": 2,
+    "snippet": "button type=\"submit\" class=\"btn-primary\" {"
+  },
+  "crates/monokulo/src/views/site.css:type-token:7af55def3c50c2fd": {
+    "count": 1,
+    "snippet": "html, body { font-size: 15px }"
+  },
+  "crates/monokulo/src/views/site.css:component-override:6cdf161376193e71": {
+    "count": 1,
+    "snippet": "details:not(.mk-disclosure, .node-row, .acct, .test-wallets, .log-row, .trace-span-details, .mini, .engine-help) > summary:not(.btn) { color: var(--ink) }"
+  },
+  "crates/monokulo/src/views/site.css:component-override:f5dd3f0e3a900e62": {
+    "count": 1,
+    "snippet": "details:not(.mk-disclosure, .node-row, .acct, .test-wallets, .log-row, .trace-span-details, .mini, .engine-help) > summary:not(.btn)::after { color: var(--muted) }"
+  },
+  "crates/monokulo/src/views/site.css:component-override:6fd76b58b58db451": {
+    "count": 1,
+    "snippet": "details:not(.mk-disclosure, .node-row, .acct, .test-wallets, .log-row, .trace-span-details, .mini, .engine-help) > summary:not(.btn):hover { color: var(--accent-text) }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:9648e7152cbd65b2": {
+    "count": 1,
+    "snippet": "h1 { font-size: 1.6rem }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:277fa7b295f621aa": {
+    "count": 1,
+    "snippet": "h2 { font-size: 1.15rem }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:a156ac88ff1dfdc3": {
+    "count": 1,
+    "snippet": ".hint { font-size: 0.9em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:d8abce67d80d717a": {
+    "count": 1,
+    "snippet": ".node-table .sub { font-size: 0.85em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:d8ba7361e8a24caf": {
+    "count": 1,
+    "snippet": ".pip-legend { font-size: 0.8em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:ddef70e0bdf27210": {
+    "count": 1,
+    "snippet": ".pip-figures { font-size: 0.8em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:984a3aa3ab2fc5e9": {
+    "count": 1,
+    "snippet": ".node-handle { font-size: 1.1em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:24af75eb5aa45850": {
+    "count": 1,
+    "snippet": ".node-row-status { font-size: 0.85em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:8f808a4c3b18071b": {
+    "count": 1,
+    "snippet": ".card-head .engine-link { font-size: 0.85em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:e3faed14b3ab6ef9": {
+    "count": 1,
+    "snippet": ".dns-record dt { font-size: 0.85em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:4f4576b239fa4d18": {
+    "count": 1,
+    "snippet": "table.table-cards .card-when { font-size: 0.85em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:cadc48e16403224a": {
+    "count": 1,
+    "snippet": "table.table-cards .card-meta { font-size: 0.85em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:d47f5b5c1346d37a": {
+    "count": 1,
+    "snippet": ".kv-table th { font-size: 0.8em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:ce5eeacd04460a90": {
+    "count": 1,
+    "snippet": "table.table-stack td[data-label]::before { font-size: 0.8em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:196500425f78ba2d": {
+    "count": 1,
+    "snippet": "form .field-help { font-size: 0.88em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:f7bca76ef801deae": {
+    "count": 1,
+    "snippet": ".source-chip { font-size: 0.8em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:fda1df7dd33d75f2": {
+    "count": 1,
+    "snippet": ".options-file-state { font-size: 0.85em }"
+  },
+  "crates/monokulo/src/views/site.css:component-override:5f1d8096ebbaedaf": {
+    "count": 1,
+    "snippet": "input[type=text]:where(:not(.mk-input)), input[type=email]:where(:not(.mk-input)), input[type=password]:where(:not(.mk-input)), input[type=url]:where(:not(.mk-input)), input[type=search]:where(:not(.mk-input)), input[type=number]:where(:not(.mk-input)), input[type=date]:where(:not(.mk-input)), input[type=datetime-local]:where(:not(.mk-input)), input[type=time]:where(:not(.mk-input)), select:where(:not(.mk-input)), textarea:where(:not(.mk-input)) { font-family: inherit }"
+  },
+  "crates/monokulo/src/views/site.css:component-override:cffc474c6ea1086d": {
+    "count": 1,
+    "snippet": "input[type=text]:where(:not(.mk-input)), input[type=email]:where(:not(.mk-input)), input[type=password]:where(:not(.mk-input)), input[type=url]:where(:not(.mk-input)), input[type=search]:where(:not(.mk-input)), input[type=number]:where(:not(.mk-input)), input[type=date]:where(:not(.mk-input)), input[type=datetime-local]:where(:not(.mk-input)), input[type=time]:where(:not(.mk-input)), select:where(:not(.mk-input)), textarea:where(:not(.mk-input)) { font-size: 1em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:cffc474c6ea1086d": {
+    "count": 1,
+    "snippet": "input[type=text]:where(:not(.mk-input)), input[type=email]:where(:not(.mk-input)), input[type=password]:where(:not(.mk-input)), input[type=url]:where(:not(.mk-input)), input[type=search]:where(:not(.mk-input)), input[type=number]:where(:not(.mk-input)), input[type=date]:where(:not(.mk-input)), input[type=datetime-local]:where(:not(.mk-input)), input[type=time]:where(:not(.mk-input)), select:where(:not(.mk-input)), textarea:where(:not(.mk-input)) { font-size: 1em }"
+  },
+  "crates/monokulo/src/views/site.css:component-override:d3750354c4c5fd74": {
+    "count": 1,
+    "snippet": "input[type=text]:where(:not(.mk-input)), input[type=email]:where(:not(.mk-input)), input[type=password]:where(:not(.mk-input)), input[type=url]:where(:not(.mk-input)), input[type=search]:where(:not(.mk-input)), input[type=number]:where(:not(.mk-input)), input[type=date]:where(:not(.mk-input)), input[type=datetime-local]:where(:not(.mk-input)), input[type=time]:where(:not(.mk-input)), select:where(:not(.mk-input)), textarea:where(:not(.mk-input)) { padding: calc(var(--space-sm) + 1px) calc(var(--space-md) + 1px) }"
+  },
+  "crates/monokulo/src/views/site.css:component-override:5dd7e3d4192814a2": {
+    "count": 1,
+    "snippet": "input[type=text]:where(:not(.mk-input)), input[type=email]:where(:not(.mk-input)), input[type=password]:where(:not(.mk-input)), input[type=url]:where(:not(.mk-input)), input[type=search]:where(:not(.mk-input)), input[type=number]:where(:not(.mk-input)), input[type=date]:where(:not(.mk-input)), input[type=datetime-local]:where(:not(.mk-input)), input[type=time]:where(:not(.mk-input)), select:where(:not(.mk-input)), textarea:where(:not(.mk-input)) { border: 1px solid var(--control-border) }"
+  },
+  "crates/monokulo/src/views/site.css:component-override:bc180c12fa24bac5": {
+    "count": 1,
+    "snippet": "input[type=text]:where(:not(.mk-input)), input[type=email]:where(:not(.mk-input)), input[type=password]:where(:not(.mk-input)), input[type=url]:where(:not(.mk-input)), input[type=search]:where(:not(.mk-input)), input[type=number]:where(:not(.mk-input)), input[type=date]:where(:not(.mk-input)), input[type=datetime-local]:where(:not(.mk-input)), input[type=time]:where(:not(.mk-input)), select:where(:not(.mk-input)), textarea:where(:not(.mk-input)) { border-radius: var(--radius-sm) }"
+  },
+  "crates/monokulo/src/views/site.css:component-override:8616ccbef470049b": {
+    "count": 1,
+    "snippet": "input[type=text]:where(:not(.mk-input)), input[type=email]:where(:not(.mk-input)), input[type=password]:where(:not(.mk-input)), input[type=url]:where(:not(.mk-input)), input[type=search]:where(:not(.mk-input)), input[type=number]:where(:not(.mk-input)), input[type=date]:where(:not(.mk-input)), input[type=datetime-local]:where(:not(.mk-input)), input[type=time]:where(:not(.mk-input)), select:where(:not(.mk-input)), textarea:where(:not(.mk-input)) { background: var(--control-bg) }"
+  },
+  "crates/monokulo/src/views/site.css:component-override:910139cf2cb08732": {
+    "count": 1,
+    "snippet": "input[type=text]:where(:not(.mk-input)), input[type=email]:where(:not(.mk-input)), input[type=password]:where(:not(.mk-input)), input[type=url]:where(:not(.mk-input)), input[type=search]:where(:not(.mk-input)), input[type=number]:where(:not(.mk-input)), input[type=date]:where(:not(.mk-input)), input[type=datetime-local]:where(:not(.mk-input)), input[type=time]:where(:not(.mk-input)), select:where(:not(.mk-input)), textarea:where(:not(.mk-input)) { color: var(--ink) }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:b74722c512e6444a": {
+    "count": 1,
+    "snippet": "button, .btn { font-size: 1em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:1dc96e042af69ed7": {
+    "count": 1,
+    "snippet": ".widget-link-hint { font-size: 0.82em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:1305bbb3d7e77727": {
+    "count": 1,
+    "snippet": ".acct-menu .menu-note { font-size: 0.85em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:d94dfd7896abf71c": {
+    "count": 1,
+    "snippet": ".nav-toggle-label { font-size: 1.4rem }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:f619e4efe147dd46": {
+    "count": 1,
+    "snippet": ".field-check { font-size: .88em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:6a04dcd4fb7a43e8": {
+    "count": 1,
+    "snippet": ".or-divider { font-size: .8rem }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:8e475c3d45cecfd7": {
+    "count": 1,
+    "snippet": ".keys-help-body h4 { font-size: .95rem }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:8b660ebb32d00a7f": {
+    "count": 1,
+    "snippet": ".keys-help-body pre { font-size: .85em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:f2fa06328b2477df": {
+    "count": 1,
+    "snippet": ".phrase-head h3 { font-size: 1.05rem }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:2be84d81adf0f248": {
+    "count": 1,
+    "snippet": ".seed-words li::before { font-size: .8rem }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:dcc69105708bfadd": {
+    "count": 1,
+    "snippet": ".word-q h3 { font-size: 1rem }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:03371c3f0cc336c6": {
+    "count": 1,
+    "snippet": ".word-q .q-note { font-size: .88em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:e0d0ea119b25b17a": {
+    "count": 1,
+    "snippet": ".field-error { font-size: .88em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:c4f82148c2da1ada": {
+    "count": 1,
+    "snippet": ".field-ok { font-size: .88em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:add53daa06314487": {
+    "count": 1,
+    "snippet": ".todo .num { font-size: .85em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:90fb11d32d6c8968": {
+    "count": 1,
+    "snippet": ".net-section-head h2 { font-size: 1.05rem }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:e3e3104f27e43710": {
+    "count": 1,
+    "snippet": ".sr-host { font-size: .9em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:9fbfe48c07ecc09b": {
+    "count": 1,
+    "snippet": ".sr-act { font-size: .9em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:278532091f6808e2": {
+    "count": 1,
+    "snippet": ".dialog-title { font-size: 1.15rem }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:74f1ae783cd52630": {
+    "count": 1,
+    "snippet": ".confirm-dialog-page .dialog-title { font-size: 1.5rem }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:b363f4070aaab29b": {
+    "count": 1,
+    "snippet": ".dialog-x, .dialog-x:hover { font-size: 1.3em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:5818297456cd0d86": {
+    "count": 1,
+    "snippet": ".checks .fix { font-size: .9em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:920795679583cfae": {
+    "count": 1,
+    "snippet": ".lock-note { font-size: .88em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:0526e81f8ad5da9a": {
+    "count": 1,
+    "snippet": ".int-rows .int-meta { font-size: .85em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:d4486b2d8eecf732": {
+    "count": 1,
+    "snippet": ".int-rows .btn { font-size: .85em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:8a451382e7712d0e": {
+    "count": 1,
+    "snippet": ".tag-active { font-size: .75em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:29693e435b5e8ef0": {
+    "count": 1,
+    "snippet": ".btn-sm, button.btn-sm { font-size: 0.85em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:35d9c8bc363452dc": {
+    "count": 1,
+    "snippet": ".del-table { font-size: 0.9em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:28ed34647f991fc1": {
+    "count": 1,
+    "snippet": ".mini-h { font-size: 0.75rem }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:303f84646fa75c93": {
+    "count": 1,
+    "snippet": ".req pre { font-size: 0.82em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:169ac6c88fd0e3de": {
+    "count": 1,
+    "snippet": ".delivery-head .event-name { font-size: 0.95em }"
+  },
+  "crates/monokulo/src/views/site.css:type-token:f833efcfabe8a75b": {
+    "count": 1,
+    "snippet": ".delivery-facts .endpoint { font-size: 0.9em }"
+  },
+  "crates/monokulo/src/views/status.rs:shared-control:fe3d96bf1eca333b": {
+    "count": 1,
+    "snippet": "button type=\"submit\" {"
+  },
+  "crates/monokulo/src/views/store_detail.rs:shared-control:34645d70ecae5d47": {
+    "count": 1,
+    "snippet": "button type=\"submit\" class=\"btn-secondary\" {"
+  },
+  "crates/monokulo/src/views/store_settings.rs:shared-control:f8c6bc4bc6ef7639": {
+    "count": 1,
+    "snippet": "select name=\"backend\" {"
+  },
+  "crates/monokulo/src/views/store_settings.rs:shared-control:fe3d96bf1eca333b": {
+    "count": 7,
+    "snippet": "button type=\"submit\" {"
+  },
+  "crates/monokulo/src/views/store_settings.rs:shared-control:1842af4a338d65b0": {
+    "count": 1,
+    "snippet": "select name=\"wallet_id\" required {"
+  },
+  "crates/monokulo/src/views/store_settings.rs:shared-control:9c0ec3f2dea5e8cf": {
+    "count": 2,
+    "snippet": "button type=\"submit\" name=\"confirm\" value=\"yes\" class=\"btn-primary\" {"
+  },
+  "crates/monokulo/src/views/store_settings.rs:shared-control:c314e466c395ff4c": {
+    "count": 1,
+    "snippet": "input type=\"text\" id=\"store-name\" name=\"store_name\" value=(name) maxlength=(crate::stores::MAX_NAME_LEN) required data-saved=[store.saved_attr(&store.display_name)];"
+  },
+  "crates/monokulo/src/views/store_settings.rs:shared-control:c1a88890f872cbff": {
+    "count": 1,
+    "snippet": "select name=\"base_currency\" id=\"base-currency\" data-saved=[store.saved_attr(&store.base_currency)] {"
+  },
+  "crates/monokulo/src/views/store_settings.rs:shared-control:453c32939885fb5b": {
+    "count": 1,
+    "snippet": "input type=\"text\" class=\"confirmations-input\" id=\"confirmations-required\" name=\"confirmations_required\" value=(store.shown(\"confirmations_required\", &default)) size=\"3\" maxlength=\"3\" inputmode=\"numeric\" required aria-describedby=\"confirmations-required-help\" data-saved=[store.saved_attr(&default)];"
+  },
+  "crates/monokulo/src/views/store_settings.rs:shared-control:4a4292181f3f6697": {
+    "count": 1,
+    "snippet": "input type=\"text\" name=\"new_unit_amount\" value=(store.shown(\"new_unit_amount\", \"\")) placeholder=(format!(\"Minimum Amount ({"
+  },
+  "crates/monokulo/src/views/store_settings.rs:shared-control:dc5136c3650cf245": {
+    "count": 1,
+    "snippet": "input type=\"text\" class=\"confirmations-input\" name=\"new_confirmations_required\" value=(store.shown(\"new_confirmations_required\", \"\")) size=\"3\" maxlength=\"3\" inputmode=\"numeric\" placeholder=\"# Confirmations\" aria-label=\"New threshold's confirmations\" data-saved=[store.saved_attr(\"\")];"
+  },
+  "crates/monokulo/src/views/store_settings.rs:shared-control:d03d277db9a08a14": {
+    "count": 1,
+    "snippet": "button type=\"submit\" disabled {"
+  },
+  "crates/monokulo/src/views/store_settings.rs:shared-control:952b1ee6335d89ec": {
+    "count": 1,
+    "snippet": "input type=\"text\" name=\"domain\" id=\"new-domain\" aria-describedby=\"new-domain-help\" placeholder=\"shop.example\" required autocomplete=\"off\" spellcheck=\"false\";"
+  },
+  "crates/monokulo/src/views/store_site.rs:shared-control:a37993c6c6315e78": {
+    "count": 1,
+    "snippet": "input type=\"text\" id=\"store-site\" name=\"store_site\" value=(shown) inputmode=\"url\" autocomplete=\"url\" placeholder=\"shop.example\" data-site-saved=(view.site);"
+  },
+  "crates/monokulo/src/views/store_site.rs:shared-control:dd28963c011b4397": {
+    "count": 1,
+    "snippet": "button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog {"
+  },
+  "crates/monokulo/src/views/store_site.rs:shared-control:770edf61a90fc7ce": {
+    "count": 1,
+    "snippet": "input type=\"text\" id=(id) name=\"confirm\" autocomplete=\"off\" spellcheck=\"false\" required;"
+  },
+  "crates/monokulo/src/views/store_site.rs:shared-control:cacd49c09ec4e068": {
+    "count": 1,
+    "snippet": "button type=\"button\" class=\"btn-danger\" disabled aria-describedby=(format!(\"{"
+  },
+  "crates/monokulo/src/views/store_site.rs:shared-control:a44236abb0c97254": {
+    "count": 1,
+    "snippet": "input type=\"text\" id=(format!(\"{"
+  },
+  "crates/monokulo/src/views/store_site.rs:shared-control:4c4121da6ccefb39": {
+    "count": 2,
+    "snippet": "button type=\"submit\" class=\"btn-danger\" {"
+  },
+  "crates/monokulo/src/views/store_site.rs:shared-control:a60408b0af8667ec": {
+    "count": 1,
+    "snippet": "button type=\"button\" class=\"btn-danger\" disabled aria-describedby=\"disconnect-why\" {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:8f673560b650611c": {
+    "count": 1,
+    "snippet": "select name=\"network\" id=\"wallet-network\" {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:0e0be9b55f65aeaa": {
+    "count": 1,
+    "snippet": "select id=\"existing-wallet\" name=\"wallet_id\" required {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:fe3d96bf1eca333b": {
+    "count": 1,
+    "snippet": "button type=\"submit\" {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:15269643e089b409": {
+    "count": 1,
+    "snippet": "input id=\"wallet-name\" type=\"text\" name=\"name\" value=(data.name) maxlength=(crate::wallets::MAX_NAME_LEN) autocomplete=\"off\" aria-describedby=\"wallet-name-check\" aria-invalid=[data.name_problem.as_ref().map(|_| \"true\")] fx-action=\"/account/wallets/name-check\" fx-target=\"#wallet-name-check\" fx-swap=\"outerHTML\";"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:f62b09aa87cdf272": {
+    "count": 2,
+    "snippet": "button type=\"submit\" class=\"btn-primary\" {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:5f1f2f836886028f": {
+    "count": 1,
+    "snippet": "select name=\"app\" {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:0e2bd71489530682": {
+    "count": 1,
+    "snippet": "button type=\"button\" role=\"tab\" id=(format!(\"tab-{"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:8a1c17dfe820e482": {
+    "count": 1,
+    "snippet": "button type=\"button\" role=\"tab\" id=\"tab-paper\" aria-controls=\"app-paper\" aria-selected=\"false\" data-app-tab=\"paper\" {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:a62c4d5032417d6e": {
+    "count": 1,
+    "snippet": "button type=\"button\" data-go=\"skip\" {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:2a3f0a9c1f0ff6eb": {
+    "count": 1,
+    "snippet": "button type=\"button\" class=\"btn-primary\" data-go=\"check\" disabled {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:b31f6dfb99cac334": {
+    "count": 1,
+    "snippet": "button type=\"button\" data-go=\"backup\" {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:51fb327d64942c85": {
+    "count": 1,
+    "snippet": "button type=\"button\" class=\"btn-primary\" data-check-next disabled {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:cdef265f78a35491": {
+    "count": 1,
+    "snippet": "button type=\"button\" class=\"btn-primary\" data-go=\"backup\" {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:81272f5399c9b416": {
+    "count": 1,
+    "snippet": "input type=\"text\" autocomplete=\"off\" spellcheck=\"false\" data-skip-typed;"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:0209b75991eb5de8": {
+    "count": 1,
+    "snippet": "button type=\"button\" disabled data-skip-confirm {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:4829e4c32d93b442": {
+    "count": 1,
+    "snippet": "button type=\"button\" class=\"icon-only regen\" data-regenerate aria-label=\"Make a different phrase\" title=\"Make a different phrase\" {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:e92781ef50a8c697": {
+    "count": 1,
+    "snippet": "button type=\"button\" data-print {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:5f8be826b32fa24f": {
+    "count": 1,
+    "snippet": "input type=\"text\" id=\"wallet-name\" name=\"name\" value=(shown) maxlength=(crate::wallets::MAX_NAME_LEN) required data-saved=[refusal.map(|_| w.name.as_str())];"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:dd28963c011b4397": {
+    "count": 2,
+    "snippet": "button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:c70ef58a33292dd6": {
+    "count": 1,
+    "snippet": "input type=\"text\" id=\"retire-confirm\" name=\"confirm\" autocomplete=\"off\" spellcheck=\"false\" required;"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:4c4121da6ccefb39": {
+    "count": 1,
+    "snippet": "button type=\"submit\" class=\"btn-danger\" {"
+  },
+  "crates/monokulo/src/views/wallets.rs:shared-control:fd248f3a03a615c8": {
+    "count": 1,
+    "snippet": "button type=\"button\" class=\"btn-danger\" disabled aria-describedby=\"retire-why\" {"
+  },
+  "crates/monokulo/src/views/webhooks.rs:shared-control:61c72b490e2d0c4f": {
+    "count": 1,
+    "snippet": "button type=\"submit\" class=\"btn-sm\" {"
+  },
+  "crates/monokulo/src/views/webhooks.rs:shared-control:5e91742eee6ed52c": {
+    "count": 1,
+    "snippet": "button type=\"submit\" class=\"icon-only send-again\" aria-label=\"Send again\" title=\"Send again\" {"
+  },
+  "crates/monokulo/src/views/webhooks.rs:shared-control:c94becb8e45ac56f": {
+    "count": 1,
+    "snippet": "input type=\"url\" name=\"url\" id=\"webhook-url\" aria-describedby=\"webhook-url-help\" placeholder=\"https://your-endpoint.example.com/monokulo-webhook\" required;"
+  },
+  "crates/monokulo/src/views/webhooks.rs:shared-control:ae7997cc61148a0f": {
+    "count": 1,
+    "snippet": "textarea name=\"extra_headers\" id=\"webhook-headers\" aria-describedby=\"webhook-headers-help\" rows=\"3\" placeholder=\"X-Api-Key: your-value\\nAnother-Header: another-value\" {"
+  },
+  "crates/monokulo/src/views/webhooks.rs:shared-control:fe3d96bf1eca333b": {
+    "count": 2,
+    "snippet": "button type=\"submit\" {"
+  },
+  "crates/monokulo/src/views/webhooks.rs:shared-control:dd28963c011b4397": {
+    "count": 2,
+    "snippet": "button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog {"
+  },
+  "crates/monokulo/src/views/webhooks.rs:shared-control:4c4121da6ccefb39": {
+    "count": 1,
+    "snippet": "button type=\"submit\" class=\"btn-danger\" {"
+  }
+}

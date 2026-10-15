@@ -23,3 +23,11 @@ moneropay.db-wal
 /openwrt/monokulo/files/monokulo
 /openwrt/monokulo/files/monokulo-engine
 /dist/
+
+# JavaScript workspace outputs
+node_modules/
+packages/*/dist/
+apps/*/dist/
+/test-results/
+/playwright-report/
+packages/*/test-results/

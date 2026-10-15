@@ -64,7 +64,7 @@ jobs:
           save: 'false'
           npm-lockfiles: |
             e2e/browser/package-lock.json
-            crates/monokulo/pos-ui/package-lock.json
+            package-lock.json
       - name: Restore the CI wallets
         id: wallets-cache
         uses: actions/cache/restore@v6

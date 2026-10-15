@@ -27,8 +27,11 @@ COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
 WORKDIR /src
 # The POS app's dependencies first, so they stay cached until its lockfile changes.
-COPY crates/monokulo/pos-ui/package.json crates/monokulo/pos-ui/package-lock.json crates/monokulo/pos-ui/
-RUN npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
+COPY package.json package-lock.json ./
+COPY crates/monokulo/pos-ui/package.json crates/monokulo/pos-ui/
+COPY packages/ui/package.json packages/ui/
+COPY apps/stylebook/package.json apps/stylebook/
+RUN npm ci --no-audit --no-fund
 COPY rust-toolchain.toml ./
 RUN rustup toolchain install
 COPY . .

@@ -394,12 +394,13 @@ fn rust_module() -> String {
 }
 
 fn ts_module() -> String {
-    let svg = format!(
-        r#"<svg viewBox="0 0 64 64" aria-hidden="true" focusable="false">{}</svg>"#,
-        drawing(Kind::Loading, &INLINE, "monokulo-lens-loading", "")
-    );
+    format!("// {GENERATED_NOTE}\nexport {{ default as LOADING_MARK }} from '@monokulo/ui/brand/loading.svg?raw';\n")
+}
+
+fn package_svg(kind: Kind) -> String {
     format!(
-        "// The Monokulo mark's loading drawing. {GENERATED_NOTE}\n// Lines are currentColor; the facets take the --logo-* roles in theme.css.\n// The `.logo-glow` group is the animation; hide it for reduced motion.\nexport const LOADING_MARK = '{svg}';\n"
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true" focusable="false">{}</svg>"#,
+        drawing(kind, &INLINE, "monokulo-brand", "")
     )
 }
 
@@ -425,11 +426,16 @@ fn render(path: &str) -> String {
         }
         "crates/monokulo/src/views/logo_art.rs" => rust_module(),
         "crates/monokulo/pos-ui/src/logo.ts" => ts_module(),
+        "packages/ui/src/brand/full.svg" => package_svg(Kind::Full),
+        "packages/ui/src/brand/small.svg" => package_svg(Kind::Small),
+        "packages/ui/src/brand/icon.svg" => package_svg(Kind::Icon),
+        "packages/ui/src/brand/loading.svg" => package_svg(Kind::Loading),
+        "packages/ui/src/brand/hero.svg" => package_svg(Kind::Hero),
         _ => unreachable!("{path} is not a logo output"),
     }
 }
 
-const OUTPUTS: [&str; 7] = [
+const OUTPUTS: [&str; 12] = [
     "crates/monokulo/static/logo.svg",
     "docs/readme/logo.svg",
     "docs/readme/logo-dark.svg",
@@ -437,6 +443,11 @@ const OUTPUTS: [&str; 7] = [
     "plugins/woocommerce/assets/monokulo-icon.svg",
     "crates/monokulo/src/views/logo_art.rs",
     "crates/monokulo/pos-ui/src/logo.ts",
+    "packages/ui/src/brand/full.svg",
+    "packages/ui/src/brand/small.svg",
+    "packages/ui/src/brand/icon.svg",
+    "packages/ui/src/brand/loading.svg",
+    "packages/ui/src/brand/hero.svg",
 ];
 
 /// Writes every output under `root` that differs from what the mark draws.

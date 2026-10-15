@@ -38,9 +38,9 @@ pub static ASSETS: &[Asset] = &[
     asset!("fixi.js", JS),
     asset!("ssexi.js", JS),
     // Every dropdown (`views::controls`).
-    asset!("mk-select.js", JS),
+    asset!(from "mk-select.js", "../../packages/ui/src/components/select.js", JS),
     // Every settings form (`views::settings`).
-    asset!("settings-form.js", JS),
+    asset!(from "settings-form.js", "../../packages/ui/src/components/settings.js", JS),
     // Browser problem reports (`http::telemetry_client`).
     asset!("telemetry.js", JS),
     // The checkout embed (`views::checkout`), the QR decoder it and the
@@ -71,9 +71,9 @@ pub static ASSETS: &[Asset] = &[
     // -- Fonts and marks ---------------------------------------------------
     // The UI typeface (site.css's `@font-face`), Latin subset only: this
     // UI has no other script.
-    asset!("manrope-500.woff2", WOFF2),
-    asset!("manrope-700.woff2", WOFF2),
-    asset!("manrope-800.woff2", WOFF2),
+    asset!(from "manrope-500.woff2", "../../packages/ui/src/fonts/manrope-500.woff2", WOFF2),
+    asset!(from "manrope-700.woff2", "../../packages/ui/src/fonts/manrope-700.woff2", WOFF2),
+    asset!(from "manrope-800.woff2", "../../packages/ui/src/fonts/manrope-800.woff2", WOFF2),
     // The full Monokulo mark (with the chain and the facet lines),
     // ink-on-paper, for other sites to link to; the pages draw it inline
     // (`views::logo_mark`). The square version is every page's icon. Both

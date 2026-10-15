@@ -1,0 +1,23 @@
+<form action="#action-cards" method="get">
+  <div class="mk-card-grid">
+    <section class="mk-action-card" data-recommended aria-labelledby="card-woo-title">
+      <div class="mk-action-card-head"><span class="mk-badge">Plugin</span><span class="mk-badge">Recommended</span></div>
+      <h3 id="card-woo-title">WooCommerce</h3>
+      <p class="mk-action-card-description">Connect an existing shop to accept payments at checkout.</p>
+      <a class="mk-btn" data-variant="primary" href="#compositions">Connect WooCommerce</a>
+    </section>
+    <section class="mk-action-card" aria-labelledby="card-wallet-title">
+      <div class="mk-action-card-head"><span class="mk-badge">Existing wallet</span></div>
+      <h3 id="card-wallet-title">Bring your own wallet</h3>
+      <p class="mk-action-card-description">Use a wallet you already run. Keep spending access in your wallet app.</p>
+      <p class="mk-hint">Works without JavaScript.</p>
+      <button class="mk-btn" type="submit" name="wallet-kind" value="existing">Bring your own wallet</button>
+    </section>
+    <section class="mk-action-card" data-unavailable aria-labelledby="card-device-title">
+      <div class="mk-action-card-head"><span class="mk-badge">Coming soon</span></div>
+      <h3 id="card-device-title">Use a hardware wallet</h3>
+      <p class="mk-action-card-description" id="card-device-reason">Connecting a hardware device is not available yet.</p>
+      <button class="mk-btn" type="button" disabled aria-describedby="card-device-reason">Connect a device</button>
+    </section>
+  </div>
+</form>

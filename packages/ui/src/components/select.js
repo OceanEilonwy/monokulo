@@ -14,7 +14,7 @@
 //   data-detail  monospace, muted: an address, a currency code
 //   data-network a wallet's Monero network, drawn as the site's network
 //                badge (`views::network_badge`)
-//   data-chip    a short tag; data-chip-tone="current" makes it green
+//   data-chip    a short tag; data-chip-tone="current" renders plain green text
 //   data-note    muted, at the end: a count, a date, why it's off
 //
 // Attributes on <mk-select>:
@@ -198,7 +198,7 @@
       if (p.label) out.push(el('span', 'mk-label', p.label));
       if (p.detail) out.push(el('span', 'mk-detail', p.detail));
       if (p.network) out.push(networkBadge(p.network));
-      if (p.chip) out.push(el('span', `tag ${p.current ? 'tag-ok' : 'tag-unknown'} mk-chip`, p.chip));
+      if (p.chip) out.push(el('span', p.current ? 'mk-current' : 'tag tag-unknown mk-chip', p.chip));
       if (withNote && p.note) out.push(el('span', 'mk-note', p.note));
       return out;
     }
@@ -237,7 +237,7 @@
       });
       this.button.setAttribute('aria-controls', list.id);
       if (this.searching()) {
-        const find = el('input', 'mk-find');
+        const find = el('input', 'mk-input mk-find');
         find.type = 'search';
         find.placeholder = 'Type to find…';
         find.autocomplete = 'off';

@@ -1,0 +1,12 @@
+/* The card is a section. Its actual link or button owns the action. */
+.mk-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: var(--space-lg); margin: 0; }
+.mk-action-card { box-sizing: border-box; display: flex; flex-direction: column; gap: var(--space-sm); min-width: 0; padding: var(--space-xl); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); color: var(--ink); box-shadow: 0 var(--shadow-ambient-y) var(--shadow-ambient-blur) var(--shadow-ambient); overflow-wrap: anywhere; }
+.mk-action-card :is(h2, h3) { margin: 0; padding: 0; border: 0; font-size: var(--text-lg); line-height: 1.35; }
+.mk-action-card p { margin: 0; }
+.mk-action-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-sm); min-height: 2.25rem; }
+.mk-action-card-body { display: flex; flex-direction: column; flex: 1; gap: var(--space-sm); min-width: 0; }
+.mk-action-card-description { flex: 1; }
+.mk-action-card .mk-btn { align-self: flex-start; max-width: 100%; margin-top: var(--space-sm); }
+.mk-action-card[data-recommended] { border-color: var(--line-strong); }
+.mk-action-card[data-unavailable] { background: var(--surface-sunken); border-style: dashed; border-color: var(--line-strong); }
+.mk-action-card[hidden] { display: none; }

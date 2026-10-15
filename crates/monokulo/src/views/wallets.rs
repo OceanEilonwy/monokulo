@@ -209,10 +209,10 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
         div class="wrap wallet-choice" {
             @match flow {
                 Flow::Setup(setup) => {
-                    nav class="context-nav" aria-label="Breadcrumb" { a href=(format!("/setup?{}", setup.query())) { "Store" } }
+                    nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href=(format!("/setup?{}", setup.query())) { "Store" } }
                 }
                 Flow::Account => {
-                    nav class="context-nav" aria-label="Breadcrumb" { a href="/account?tab=wallets" { "Wallets" } }
+                    nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/account?tab=wallets" { "Wallets" } }
                 }
             }
             (flow.steps(WalletPath::New, 0))
@@ -266,26 +266,26 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
                         (network_select(&data.network))
                     }
                 }
-                div class="pick-grid three" {
-                    section class="pick-card recommended unavailable" data-needs-js {
-                        div class="faded" {
-                            div class="pick-card-head" {
+                div class="mk-card-grid" {
+                    section class="mk-action-card" data-recommended data-unavailable data-needs-js {
+                        div class="mk-action-card-body" {
+                            div class="mk-action-card-head" {
                                 span class="icon-tile" aria-hidden="true" {
                                     svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true" { path d="M12 5v14M5 12h14" {} }
                                 }
                                 span class="tag" data-js-tag { "Needs JavaScript" }
                             }
                             h3 { "Create a new wallet" }
-                            p class="grow" {
+                            p class="mk-action-card-description" {
                                 "Your browser makes a 16-word recovery phrase. Scan it straight into Cake Wallet or "
                                 "Stack Wallet, or write it down, then we check it."
                             }
                             p class="hint" { (lock_icon()) " The phrase is made and kept on this page. It is never sent to Monokulo." }
-                            button type="submit" class="btn-primary" formaction=(flow.new_action()) disabled data-create-wallet { "Create a new wallet" }
+                            button type="submit" class="mk-btn" data-variant="primary" formaction=(flow.new_action()) disabled data-create-wallet { "Create a new wallet" }
                         }
                     }
-                    section class="pick-card" {
-                        div class="pick-card-head" {
+                    section class="mk-action-card" {
+                        div class="mk-action-card-head" {
                             span class="logo-row" role="img" aria-label="Works with Cake Wallet, Feather, Stack Wallet, the Monero GUI and others" {
                                 (app_logo("cake", 28, None))
                                 (app_logo("feather", 28, None))
@@ -294,25 +294,25 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
                             }
                         }
                         h3 { "Bring your own wallet" }
-                        p class="grow" {
+                        p class="mk-action-card-description" {
                             "Use a wallet you already run in Cake Wallet, Feather, the Monero GUI or anything else. "
                             "Paste its private view key and public spend key."
                         }
                         p class="hint" { "Works without JavaScript." }
-                        button type="submit" formaction=(flow.keys_action()) { "Bring your own wallet" }
+                        button type="submit" class="mk-btn" formaction=(flow.keys_action()) { "Bring your own wallet" }
                     }
-                    section class="pick-card unavailable" {
-                        div class="faded" {
-                            div class="pick-card-head" {
+                    section class="mk-action-card" data-unavailable {
+                        div class="mk-action-card-body" {
+                            div class="mk-action-card-head" {
                                 span class="logo-row" { (trezor_logo(28)) (ledger_logo(28)) }
                                 span class="tag" { "Coming soon" }
                             }
                             h3 { "Use a hardware wallet" }
-                            p class="grow" {
+                            p class="mk-action-card-description" {
                                 "Plug in or pair a Trezor or Ledger and confirm on its screen. Your recovery phrase "
                                 "stays on the device."
                             }
-                            button type="button" disabled { "Connect a device" }
+                            button type="button" class="mk-btn" disabled { "Connect a device" }
                         }
                     }
                 }
@@ -358,7 +358,7 @@ pub fn import_page(chrome: &PageChrome, flow: Flow<'_>, data: &ImportViewModel) 
     let back = flow.choice_href(&data.name, &data.network);
     let body = html! {
         div class="wrap" {
-            nav class="context-nav" aria-label="Breadcrumb" { a href=(back) { "Wallet kind" } }
+            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href=(back) { "Wallet kind" } }
             (flow.steps(WalletPath::Keys, 1))
             h1 { "Bring your own wallet" }
             p {
@@ -447,7 +447,7 @@ pub fn create_page(chrome: &PageChrome, flow: Flow<'_>, data: &CreateViewModel) 
     let back = flow.choice_href(&data.name, &data.network);
     let body = html! {
         div class="wrap" {
-            nav class="context-nav" aria-label="Breadcrumb" { a href=(back) { "Wallet kind" } }
+            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href=(back) { "Wallet kind" } }
             noscript {
                 h1 { "Create a new wallet" }
                 div class="error" role="alert" {
@@ -928,7 +928,7 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
     let w = &data.wallet;
     let body = html! {
         div class="wrap wallet-page" {
-            nav class="context-nav" aria-label="Breadcrumb" { a href="/account?tab=wallets" { "Wallets" } }
+            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/account?tab=wallets" { "Wallets" } }
             div class="wallet-title" { h1 { (w.name) } (super::network_badge(&w.network)) }
             @if let Some(at) = w.retired_at {
                 p class="wallet-meta" {
@@ -1306,7 +1306,7 @@ fn dialog_page(
 ) -> Markup {
     let body = html! {
         div class="wrap wallet-page" {
-            nav class="context-nav" aria-label="Breadcrumb" {
+            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" {
                 a href="/account?tab=wallets" { "Wallets" }
                 " › "
                 a href=(wallet_path(w)) { (w.name) }

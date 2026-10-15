@@ -108,17 +108,35 @@ pub use shorten::{short_address, short_address_text, short_id, short_id_text};
 
 /// Every colour, and the spacing, radius and type tokens: the only place a
 /// colour is defined (`theme_tests`).
-pub(crate) const THEME_CSS: &str = include_str!("theme.css");
+pub(crate) const THEME_CSS: &str = include_str!("../../../../packages/ui/src/tokens.css");
 /// The fonts and every shared component, painted with `THEME_CSS`'s roles.
-pub(crate) const SITE_CSS: &str = include_str!("site.css");
+pub(crate) const SITE_CSS: &str = concat!(
+    include_str!("site.css"),
+    "\n",
+    include_str!("../../../../packages/ui/src/components/primitives.css"),
+    "\n",
+    include_str!("../../../../packages/ui/src/components/select.css"),
+    "\n",
+    include_str!("../../../../packages/ui/src/components/navigation.css"),
+    "\n",
+    include_str!("../../../../packages/ui/src/components/steps.css"),
+    "\n",
+    include_str!("../../../../packages/ui/src/components/action-card.css"),
+    "\n",
+    include_str!("../../../../packages/ui/src/components/settings.css"),
+    "\n",
+    include_str!("../../../../packages/ui/src/components/patterns.css"),
+    "\n",
+    include_str!("../../../../packages/ui/src/components/monitoring.css")
+);
 
 /// Shared back links for store pages and pages nested under Orders.
 pub fn store_breadcrumb(connection_id: &str, display_name: &str, include_orders: bool) -> Markup {
     html! {
-        nav class="context-nav" aria-label="Breadcrumb" {
+        nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" {
             a href=(format!("/dashboard/stores/{connection_id}")) title=(display_name) { (display_name) }
             @if include_orders {
-                span class="breadcrumb-sep" aria-hidden="true" { "›" }
+                span class="mk-breadcrumb-separator" aria-hidden="true" { "›" }
                 a href=(format!("/dashboard/stores/{connection_id}/orders")) { "Orders" }
             }
         }
@@ -485,7 +503,7 @@ pub fn test_networks_badge() -> Markup {
 }
 
 /// The icons of [`network_badge`]: a coin marked M for mainnet, a flask
-/// for a test network. `static/mk-select.js` draws the same two.
+/// for a test network. `packages/ui/src/components/select.js` draws the same two.
 fn network_tag(main: bool, word: &str) -> Markup {
     html! {
         span class=(if main { "tag-network is-main" } else { "tag-network is-test" }) {
@@ -951,7 +969,7 @@ mod tests {
     /// `::before` makes a 44px target. The account button is 2em too.
     #[test]
     fn the_nav_row_keeps_one_height_and_the_status_dot_is_a_44px_target() {
-        let css = include_str!("site.css");
+        let css = SITE_CSS;
         let rule = |selector: &str| {
             let at = &css[css.find(selector).unwrap_or_else(|| panic!("{selector}"))..];
             at[..at.find('}').unwrap()].to_string()
@@ -1005,7 +1023,7 @@ mod tests {
 
     #[test]
     fn theme_hover_moves_the_thumb_and_recolors_only_the_hovered_icon() {
-        let css = include_str!("site.css");
+        let css = SITE_CSS;
         for option in ["light", "system", "dark"] {
             assert!(css.contains(&format!(
                 ".theme-toggle-option-{option}:is(:hover, :focus-visible) ~ .theme-toggle-thumb"

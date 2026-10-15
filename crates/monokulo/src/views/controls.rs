@@ -1,7 +1,7 @@
 //! The site's dropdown and on/off switch (docs/dropdowns.md).
 //!
 //! Every dropdown is a plain `<select>` inside `<mk-select>`
-//! (`static/mk-select.js`), its options written with [`Choice`]: the
+//! (`packages/ui/src/components/select.js`), its options written with [`Choice`]: the
 //! option's text says everything in words, for a browser without
 //! JavaScript, and its data attributes give the component the parts to
 //! draw (a logo, a label, a monospace detail, a network badge, a chip, a

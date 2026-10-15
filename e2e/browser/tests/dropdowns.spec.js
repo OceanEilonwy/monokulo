@@ -170,7 +170,7 @@ test('a required dropdown left on its prompt is refused, and green is only for C
 
   await button.click();
   await expect(dropdown.getByRole('option')).toHaveCount(3);
-  await expect(dropdown.getByRole('option', { name: /Copper Heron/ }).locator('.tag-ok')).toHaveText('Current');
+  await expect(dropdown.getByRole('option', { name: /Copper Heron/ }).locator('.mk-current')).toHaveText('Current');
   await expect(dropdown.getByRole('option', { name: /Café till/ }).locator('.tag-unknown')).toHaveText('Kept here');
   const off = dropdown.getByRole('option', { name: /Quiet Lantern/ });
   await expect(off).toHaveAttribute('aria-disabled', 'true');

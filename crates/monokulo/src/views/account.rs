@@ -373,7 +373,7 @@ pub fn email_confirm_page(
 ) -> Markup {
     let body = html! {
         div class="wrap settings-page email-confirm-page" {
-            nav class="context-nav" aria-label="Breadcrumb" { a href="/account" { "Account" } }
+            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/account" { "Account" } }
             h1 { "Log in with a new email?" }
             @if let Some(error) = error {
                 p class="error" role="alert" { (error) }

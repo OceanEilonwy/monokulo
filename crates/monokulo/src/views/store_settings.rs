@@ -1393,7 +1393,7 @@ mod tests {
         )
         .into_string();
         assert!(
-            html.contains(r#"<nav class="context-nav" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a></nav><h1>Settings</h1>"#),
+            html.contains(r#"<nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a></nav><h1>Settings</h1>"#),
             "expected a store link above the Settings heading, got: {html}"
         );
     }

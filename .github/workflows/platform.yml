@@ -162,7 +162,7 @@ jobs:
           save: ${{ inputs.coverage }}
           npm-lockfiles: |
             e2e/browser/package-lock.json
-            crates/monokulo/pos-ui/package-lock.json
+            package-lock.json
       - name: Install the browser tests' dependencies
         run: npm ci --prefix e2e/browser --no-audit --no-fund
       # Chromium runs every browser test; Firefox and WebKit run the POS's

@@ -383,7 +383,7 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
     let body = html! {
         div id="engine-stage" {
         main class="wrap engine-page" data-network=(page.network) {
-            nav class="context-nav" aria-label="Breadcrumb" { a href="/status" { "Status" } }
+            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/status" { "Status" } }
             div class="engine-titlebar" {
                 h1 { "Engine" }
                 (help())

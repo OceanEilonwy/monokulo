@@ -353,7 +353,7 @@ pub fn row_page(chrome: &PageChrome, row_view: Option<&RowView>, back_url: &str)
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
     let body = html! {
         div class="wrap wrap-wide" {
-            nav class="context-nav" aria-label="Breadcrumb" {
+            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" {
                 a href="/" { "Dashboard" } " / " a href=(back_url) { "Logs" }
             }
             h1 { "Log line" }
@@ -592,7 +592,7 @@ pub fn syntax_page(chrome: &PageChrome, names: &[String]) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
     let body = html! {
         div class="wrap" {
-            nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard/admin/logs" { "Logs" } }
+            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/dashboard/admin/logs" { "Logs" } }
             h1 { "Search syntax" }
             div class="qh-page" { (syntax(names, false)) }
         }
@@ -608,7 +608,7 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
     let body = html! {
         div class="wrap wrap-wide" {
-            nav class="context-nav" aria-label="Breadcrumb" { a href="/" { "Dashboard" } }
+            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/" { "Dashboard" } }
             div class="logs-head" {
                 h1 { "Logs" }
                 // Submits the search as it stands: its newest lines.
@@ -711,7 +711,7 @@ pub fn pos_timeline_page(chrome: &PageChrome, vm: &PosTimelineViewModel) -> Mark
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) (PreEscaped(TIMELINE_STYLE)) } };
     let body = html! {
         div class="wrap wrap-wide" {
-            nav class="context-nav" aria-label="Breadcrumb" {
+            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" {
                 a href="/" { "Dashboard" } " / " a href="/dashboard/admin/logs" { "Logs" }
             }
             h1 { "POS session" }
@@ -808,7 +808,7 @@ pub fn trace_page(chrome: &PageChrome, vm: &TraceViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
     let body = html! {
         div class="wrap wrap-wide" {
-            nav class="context-nav" aria-label="Breadcrumb" {
+            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" {
                 a href="/" { "Dashboard" } " / " a href="/dashboard/admin/logs" { "Logs" }
             }
             h1 { "Trace " code { (vm.trace_id) } }

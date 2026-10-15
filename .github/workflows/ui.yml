@@ -1,0 +1,45 @@
+name: UI components
+on:
+  pull_request:
+    paths:
+      - 'packages/ui/**'
+      - 'apps/stylebook/**'
+      - 'package*.json'
+      - 'crates/monokulo/src/views/**'
+      - 'crates/monokulo/static/**'
+      - 'xtask/src/logo.rs'
+      - 'crates/monokulo/pos-ui/src/**'
+      - '.github/workflows/ui.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/ui/**'
+      - 'apps/stylebook/**'
+      - 'package*.json'
+      - 'crates/monokulo/src/views/**'
+      - 'crates/monokulo/static/**'
+      - 'xtask/src/logo.rs'
+      - 'crates/monokulo/pos-ui/src/**'
+      - '.github/workflows/ui.yml'
+permissions:
+  contents: read
+jobs:
+  components:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: npm run lint:ui
+      - run: npm run test:ui:unit
+      - run: npm run build:ui
+      - run: npm run test:ui
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-review
+          path: test-results/
