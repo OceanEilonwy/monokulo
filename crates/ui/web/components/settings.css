@@ -1,19 +1,33 @@
-/* A setting reads name, what it's for, then its control, then anything
-   more about it, on the site's spacing steps: the name sits close to what
-   it's for (xs), the control a step apart from both (sm), and settings a
-   wide step apart (xl), so each reads as one block. */
+/* A setting (Setting): its name and what it's for on the left, its
+   control and any notes under it on the right; settings a line apart. A
+   wide control (radio cards, a list of choices, a text area, a table, an
+   ordered list) and a phone put the control under the name. A field
+   written by hand (a dialog's "type the name to confirm") stays one
+   column: name, then control. */
 .setting-field { margin: 0 0 var(--space-xl); }
 .setting-field:last-child { margin-bottom: 0; }
+.setting-field:has(> .setting-about) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(12rem, 22rem); gap: var(--space-sm) var(--space-lg); align-items: start; margin: 0; }
+.setting-field:has(> .setting-about) + .setting-field:has(> .setting-about) { margin-top: var(--space-md); padding-top: var(--space-md); border-top: 1px solid var(--line); }
+.setting-field:has(> .setting-control > :is(.radio-cards, .setting-choices, textarea, table, .table-scroll, .mk-sortable):first-child) { grid-template-columns: minmax(0, 1fr); }
+.setting-field[hidden] { display: none; }
+.setting-about { min-width: 0; }
 .setting-field .setting-label-row { margin: 0 0 var(--space-xs); line-height: 1.3; }
+.setting-about > .setting-label-row { margin: 0; }
 .setting-field .setting-label { display: inline; margin: 0; font-weight: 700; }
-.setting-field > :is(.field-help) { margin: 0; }
+.setting-about > .field-help { margin: var(--space-xs) 0 0; }
+.setting-control { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-xs); }
+.setting-control > * { min-width: 0; }
+.setting-control > :is(.field-help, .setting-pending, .setting-problem, .field-check) { margin: 0; }
+.setting-control:has(> :is(.switch, .mk-checkbox):only-child) { justify-self: end; }
+/* A hand-written field: its name, then its control. */
 .setting-field > .setting-label-row + :is(.field-help) { margin-bottom: var(--space-sm); }
-.setting-field > :is(input, select, textarea, .locked-input, .setting-choices) { margin-top: 0; }
-.setting-field > :is(input, select, textarea, .locked-input, .setting-choices) + * { margin-top: var(--space-sm); }
-.setting-field > :is(.field-help, .setting-pending, .setting-problem) + :is(.field-help, .setting-pending, .setting-problem) { margin-top: var(--space-xs); }
 .setting-choices .check-line { display: inline-flex; gap: 0.3em; align-items: center; margin: 0.2em 1.2em 0.2em 0; font-weight: 400; }
 .setting-field input, .setting-field select, .setting-field textarea { max-width: 100%; }
 .setting-field textarea { width: 100%; font-family: ui-monospace, monospace; }
+@media (max-width: 640px) {
+  .setting-field:has(> .setting-about) { grid-template-columns: minmax(0, 1fr); }
+  .setting-control:has(> :is(.switch, .mk-checkbox):only-child) { justify-self: start; }
+}
 /* The admin settings page's tabs: a row of plain links. On a phone the row
    scrolls sideways inside itself rather than widening the page. */
 .tab-bar { position: relative; display: flex; gap: var(--space-xs); overflow-x: auto; margin: var(--space-md) 0 var(--space-lg); border-bottom: 1px solid var(--line); }
@@ -117,16 +131,3 @@ body:has(.save-bar):not(:has(.save-bar:not([data-placement="inline"]))) { paddin
 .toast-warning { background: var(--tint-warning); }
 .toast-error { background: var(--tint-error); }
 .toast-neutral { background: var(--tint-neutral); }
-
-/* A setting as a row (Setting row): its name and help on the left, its
-   control on the right; a phone stacks them. */
-.setting-field.is-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(12rem, 22rem); gap: var(--space-xs) var(--space-lg); align-items: start; }
-.setting-field.is-row + .setting-field.is-row { margin-top: var(--space-md); padding-top: var(--space-md); border-top: 1px solid var(--line); }
-.setting-field.is-row .setting-label-row { margin: 0; }
-.setting-field.is-row .field-help { margin: var(--space-xs) 0 0; }
-.setting-control { min-width: 0; }
-.setting-control:has(> :is(.switch, .mk-checkbox):only-child) { justify-self: end; }
-@media (max-width: 640px) {
-  .setting-field.is-row { grid-template-columns: minmax(0, 1fr); }
-  .setting-control:has(> :is(.switch, .mk-checkbox):only-child) { justify-self: start; }
-}

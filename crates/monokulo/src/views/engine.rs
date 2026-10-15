@@ -62,7 +62,6 @@ const ENGINE_STYLE: &str = r#"
 .engine-tabs a[aria-current] { background: var(--ink); color: var(--paper-raised); }
 .engine-tabs span.off { opacity: 0.45; cursor: not-allowed; }
 /* The legend opens under the whole title bar, from its left edge. */
-.engine-titlebar > .help-tip { position: static; }
 .engine-legend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-xs) var(--space-lg); }
 .engine-legend h3 { grid-column: 1 / -1; margin: var(--space-sm) 0 0; padding: 0; border: 0; font-size: 0.8rem; font-weight: 800; }
 .engine-legend dl { margin: 0; display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 5px 8px; align-items: start; }
@@ -279,7 +278,6 @@ const ENGINE_STYLE: &str = r#"
    on a phone; an open one takes the whole row. */
 .engine-panels { display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: var(--space-sm); align-items: start; }
 .engine-panels > [open] { grid-column: 1 / -1; }
-.engine-panels > [data-alert] { border-color: var(--error); }
 .engine-panels .tierchip { flex: none; width: 96px; }
 .engine-panels .sum { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; }
 .engine-panels .sum > span { overflow: hidden; text-overflow: ellipsis; }
@@ -887,7 +885,7 @@ fn help() -> Markup {
                 }
                 p class="wide" { "The panels under the round sum up the scan's pace, the reorg check, the pool, orders, upkeep, the database worker and what a restart would lose. Click one for its figures." }
             }
-        }).id("engine-help").wide(true))
+        }).id("engine-help").wide(true).anchor(ui::TipAnchor::Container))
     }
 }
 
@@ -1075,7 +1073,7 @@ fn panels(view: &Presented, scanning: Option<&ScanningView>) -> Markup {
                 span class="tierchip t-chain" { "Reorg" } span class="sum" { span { (side.reorg.summary) } }
             }, panel_body(&side.reorg, "Opens by itself while the node's chain differs from the recorded one. Blocks wait, and no order is settled as paid, until the rewind."))
             .open(side.reorg.alert)
-            .maybe_attr("data-alert", side.reorg.alert.then_some("")))
+            .alert(side.reorg.alert))
             (panel("d-mempool", html! {
                 span class="tierchip t-mempool" { "Mempool" }
                 span class="sum" {

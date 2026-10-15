@@ -31,7 +31,11 @@ export function setup(props: SettingsCardProps): SettingsCardBehaviour {
     const form = store();
     if (!element || !form || !shown()) return 0;
     form.version();
-    const own = Array.from(element.querySelectorAll('.setting-field')).filter(settingChanged).length;
+    // Not a setting inside what the page counts itself (`data-counted-by-page`:
+    // the admin page's node rows), which it adds with `mk-count`.
+    const own = Array.from(element.querySelectorAll('.setting-field'))
+      .filter(field => !field.closest('[data-counted-by-page]'))
+      .filter(settingChanged).length;
     // A page script adds what it tracks itself (the admin page's node rows).
     const extra = { changes: 0 };
     element.dispatchEvent(new CustomEvent('mk-count', { detail: extra }));

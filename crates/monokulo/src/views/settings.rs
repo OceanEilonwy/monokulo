@@ -447,12 +447,12 @@ mod tests {
         );
         assert_eq!(
             field,
-            r#"<div class="setting-field" data-mk="1" data-island="Setting"><div class="setting-label-row"><label class="setting-label" for="name">Name</label><span class="changed-mark">changed</span></div><p class="field-help" id="name-help">Only you see it.</p><input id="name" name="name"></div>"#
+            r#"<div class="setting-field" data-mk="1" data-island="Setting"><div class="setting-about"><div class="setting-label-row"><label class="setting-label" for="name">Name</label><span class="changed-mark">changed</span></div><p class="field-help" id="name-help">Only you see it.</p></div><div class="setting-control"><input id="name" name="name"></div></div>"#
         );
         let group = markup(Field::group("Theme", "theme-label").render(html! {}));
         assert_eq!(
             group,
-            r#"<div class="setting-field" role="group" aria-labelledby="theme-label" data-mk="1" data-island="Setting"><div class="setting-label-row"><span class="setting-label" id="theme-label">Theme</span><span class="changed-mark">changed</span></div></div>"#
+            r#"<div class="setting-field" role="group" aria-labelledby="theme-label" data-mk="1" data-island="Setting"><div class="setting-about"><div class="setting-label-row"><span class="setting-label" id="theme-label">Theme</span><span class="changed-mark">changed</span></div></div><div class="setting-control"></div></div>"#
         );
     }
 

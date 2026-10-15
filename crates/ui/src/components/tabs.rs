@@ -1,4 +1,4 @@
-use crate::{component, Slot, UiRecord};
+use crate::{component, Attrs, Slot, UiRecord};
 
 /// One tab of [`Tabs`]: its label and the panel it shows.
 #[derive(Clone, Debug, UiRecord)]
@@ -20,6 +20,7 @@ component! {
         /// What the tabs are of.
         label: String,
         tabs: Vec<Tab>,
+        rest: Attrs,
     }
     behaviour "tabs.behaviour.ts" {
         uses(tabs),
@@ -30,7 +31,7 @@ component! {
         ref root,
     }
     html {
-        div class="mk-tabset" ref=root {
+        div class="mk-tabset" ..rest ref=root {
             div class="mk-tabs" aria-label=(label) role="tablist" if enhanced {
                 @for tab in tabs {
                     a href={ "#" (tab.id) } id={ (tab.id) "-tab" } role="tab" if enhanced
@@ -42,7 +43,7 @@ component! {
             }
             div class="mk-tab-panels" {
                 @for tab in tabs {
-                    section id=(tab.id) role="tabpanel" if enhanced aria-labelledby={ (tab.id) "-tab" } if enhanced
+                    section id=(tab.id) data-tab-panel="" role="tabpanel" if enhanced aria-labelledby={ (tab.id) "-tab" } if enhanced
                         tabindex="0" if enhanced hidden[tab.id != b.selected] {
                         (tab.panel)
                     }

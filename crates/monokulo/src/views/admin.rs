@@ -1573,8 +1573,7 @@ fn node_row(
         .help(html! { "The node's host and port, like " code { (example) } ". "
             code { "http://" } " or " code { "https://" } " in front is fine (" code { "https://" } " also ticks Use TLS); "
             "an IPv6 address goes in brackets, like " code { "[::1]:18081" } "." })
-        .help_id(address_help)
-        .row(true))
+        .help_id(address_help))
         (ui::Setting::new("Use TLS", id("ssl"), ui::Checkbox::new()
             .name(name("ssl"))
             .id(id("ssl"))
@@ -1583,20 +1582,17 @@ fn node_row(
             .flag("data-node-tls")
             .maybe_attr("data-saved", saved_box(|s| s.ssl)))
         .help("Connect with TLS (https). Off by default; most nodes on port 18081 or 18089 don't use it.")
-        .help_id(ssl_help)
-        .row(true))
+        .help_id(ssl_help))
         // Shown only while Use TLS is ticked, with JavaScript.
-        div data-node-self-signed {
-            (ui::Setting::new("Accept a self-signed certificate", id("self_signed"), ui::Checkbox::new()
-                .name(name("self_signed"))
-                .id(id("self_signed"))
-                .checked(row.row.self_signed)
-                .described_by(self_signed_help.as_str())
-                .maybe_attr("data-saved", saved_box(|s| s.self_signed)))
-            .help("Many community nodes use a self-signed TLS certificate; tick this to accept one. Only used with TLS.")
-            .help_id(self_signed_help)
-            .row(true))
-        }
+        (ui::Setting::new("Accept a self-signed certificate", id("self_signed"), ui::Checkbox::new()
+            .name(name("self_signed"))
+            .id(id("self_signed"))
+            .checked(row.row.self_signed)
+            .described_by(self_signed_help.as_str())
+            .maybe_attr("data-saved", saved_box(|s| s.self_signed)))
+        .help("Many community nodes use a self-signed TLS certificate; tick this to accept one. Only used with TLS.")
+        .help_id(self_signed_help)
+        .flag("data-node-self-signed"))
         (ui::Setting::new("Announcements (ZMQ)", id("zmq_pub"), ui::Input::new(name("zmq_pub"))
             .id(id("zmq_pub"))
             .value(row.row.zmq_pub.as_str())
@@ -1608,8 +1604,7 @@ fn node_row(
         .help(html! { "Optional, for your own node: the address it was started with as " code { "--zmq-pub" } ", like "
             code { "tcp://127.0.0.1:18083" } ". Payments are then seen the moment the node sees them, instead of at the next check. "
             "Needs an engine built with ZMQ support; leave empty otherwise." })
-        .help_id(zmq_help)
-        .row(true))
+        .help_id(zmq_help))
         @if let Some(status) = &row.status { (node_status(status)) }
         @if let Some((at, count)) = position {
             @let action = |label: &str, value: String| {
@@ -1799,7 +1794,9 @@ fn network_card(
                     .map(ui::Slot::from),
             ),
         )
-        .attr("data-node-rows", n.as_str()))
+        .attr("data-node-rows", n.as_str())
+        // admin-settings.js counts a row's changes once, as the row's.
+        .flag("data-counted-by-page"))
         div class="node-add-another" data-only="script" { (ui::Button::new("Add another").attr("data-node-add-another", n.as_str())) }
         // Whether this network's blocks' proof of work is checked
         // (`proof_of_work.<network>`).
@@ -2752,8 +2749,8 @@ mod tests {
         assert!(
             html.contains(concat!(
                 r#"<span class="visually-hidden">From the options file, which saving here writes.</span></span><span class="changed-mark">changed</span></div>"#,
-                r#"<p class="field-help" id="setting-help-engine.url">Where the engine listens.</p>"#,
-                r#"<input class="mk-input" type="url" name="engine.url" id="setting-engine.url" value="http://scanner.internal""#,
+                r#"<p class="field-help" id="setting-help-engine.url">Where the engine listens.</p></div>"#,
+                r#"<div class="setting-control"><input class="mk-input" type="url" name="engine.url" id="setting-engine.url" value="http://scanner.internal""#,
             )),
             "then what it is for, then its control: {html}"
         );
@@ -2857,7 +2854,7 @@ mod tests {
         );
         // Each field: its name and what it's for on the left, the control
         // on the right.
-        assert!(block.contains(r#"<div class="setting-field is-row" data-mk="1" data-island="Setting" data-props="{&quot;row&quot;:true}"><div class="setting-about"><div class="setting-label-row"><label class="setting-label" for="node-stagenet-0-address">Address</label><span class="changed-mark">changed</span></div><p class="field-help" id="node-stagenet-0-address-help">The node's host and port, like <code>node.example.com:18089</code>."#), "{block}");
+        assert!(block.contains(r#"<div class="setting-field" data-mk="1" data-island="Setting" data-props="{}"><div class="setting-about"><div class="setting-label-row"><label class="setting-label" for="node-stagenet-0-address">Address</label><span class="changed-mark">changed</span></div><p class="field-help" id="node-stagenet-0-address-help">The node's host and port, like <code>node.example.com:18089</code>."#), "{block}");
         assert!(block.contains(r#"<div class="setting-control"><input class="mk-input" type="text" name="node_stagenet_0_address""#), "{block}");
         // Enter in an address box saves, rather than pressing a row's button.
         let form = &html[html.find("<form ").unwrap()..];
