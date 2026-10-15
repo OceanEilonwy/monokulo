@@ -2,7 +2,6 @@ name: UI components
 on:
   pull_request:
     paths:
-      - 'packages/ui/**'
       - 'crates/ui/**'
       - 'crates/ui-macros/**'
       - 'xtask/src/ui.rs'
@@ -16,7 +15,6 @@ on:
   push:
     branches: [main]
     paths:
-      - 'packages/ui/**'
       - 'crates/ui/**'
       - 'crates/ui-macros/**'
       - 'xtask/src/ui.rs'

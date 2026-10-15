@@ -107,28 +107,12 @@ pub mod webhooks;
 pub use shorten::{short_address, short_address_text, short_id, short_id_text};
 
 /// Every colour, and the spacing, radius and type tokens: the only place a
-/// colour is defined (`theme_tests`).
-pub(crate) const THEME_CSS: &str = include_str!("../../../../packages/ui/src/tokens.css");
-/// The fonts and every shared component, painted with `THEME_CSS`'s roles.
-pub(crate) const SITE_CSS: &str = concat!(
-    include_str!("site.css"),
-    "\n",
-    include_str!("../../../../packages/ui/src/components/primitives.css"),
-    "\n",
-    include_str!("../../../../packages/ui/src/components/select.css"),
-    "\n",
-    include_str!("../../../../packages/ui/src/components/navigation.css"),
-    "\n",
-    include_str!("../../../../packages/ui/src/components/steps.css"),
-    "\n",
-    include_str!("../../../../packages/ui/src/components/action-card.css"),
-    "\n",
-    include_str!("../../../../packages/ui/src/components/settings.css"),
-    "\n",
-    include_str!("../../../../packages/ui/src/components/patterns.css"),
-    "\n",
-    include_str!("../../../../packages/ui/src/components/monitoring.css")
-);
+/// colour is defined (`theme_tests`). The `ui` package's.
+pub(crate) const THEME_CSS: &str = ui::assets::TOKENS_CSS;
+/// This site's own components and pages, painted with `THEME_CSS`'s roles.
+/// The shared components' styles are the `ui` package's (`ui.css`), linked
+/// after it.
+pub(crate) const SITE_CSS: &str = include_str!("site.css");
 
 /// Shared back links for store pages and pages nested under Orders.
 pub fn store_breadcrumb(connection_id: &str, display_name: &str, include_orders: bool) -> Markup {
@@ -316,6 +300,7 @@ fn page_shell(
                 style { (PreEscaped(font_faces())) }
                 (stylesheet("theme.css"))
                 (stylesheet("site.css"))
+                (stylesheet("ui.css"))
                 // The trace of the request that rendered this page, so
                 // browser reports join it (structured_logging.md 2.5).
                 @if let Some(traceparent) = telemetry::trace::current_traceparent() {
@@ -503,7 +488,7 @@ pub fn test_networks_badge() -> Markup {
 }
 
 /// The icons of [`network_badge`]: a coin marked M for mainnet, a flask
-/// for a test network. `packages/ui/src/components/select.js` draws the same two.
+/// for a test network. `mk-select` (crates/ui/web/components/select.js) draws the same two.
 fn network_tag(main: bool, word: &str) -> Markup {
     html! {
         span class=(if main { "tag-network is-main" } else { "tag-network is-test" }) {

@@ -142,6 +142,9 @@ macro_rules! asset {
     (from $name:literal, $path:expr, $content_type:expr) => {
         $crate::asset!(@entry $name, include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $path)), $content_type, $crate::Policy::Fingerprinted)
     };
+    (bytes $name:literal, $bytes:expr, $content_type:expr) => {
+        $crate::asset!(@entry $name, $bytes, $content_type, $crate::Policy::Fingerprinted)
+    };
     (text $name:literal, $text:expr, $content_type:expr) => {
         $crate::asset!(@entry $name, $text.as_bytes(), $content_type, $crate::Policy::Fingerprinted)
     };

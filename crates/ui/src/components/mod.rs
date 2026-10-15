@@ -1,4 +1,4 @@
-//! The components. Each one's CSS is in packages/ui/src/components; its
+//! The components. Each one's CSS and behaviour is in web/components; its
 //! examples, below, are what the stylebook shows and what the Solid
 //! translation is checked against.
 

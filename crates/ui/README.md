@@ -1,16 +1,48 @@
-# @monokulo/ui
+# ui (`@monokulo/ui`)
 
-Framework-independent, light-DOM UI components. Native HTML is the functional
-baseline; JavaScript enhances controls. The package has no application routes,
-API clients, authentication, Rust or Solid dependencies.
+Monokulo's shared UI: one package for both languages. This directory is the
+Rust crate `ui` (`Cargo.toml`) and the npm package `@monokulo/ui`
+(`package.json`), and holds everything a component is:
+
+| Where | What | Written by |
+|---|---|---|
+| `src/components/*.rs` | each component's props and markup (`component!`) and its examples | hand |
+| `web/components/*.css` | its appearance, painted with `web/tokens.css`'s roles | hand |
+| `web/components/*.js` | its behaviour: light-DOM custom elements that upgrade its markup | hand |
+| `web/` (tokens, fonts, icons, brand, status) | the foundations | hand (`brand/` by `cargo xtask logo`) |
+| `solid/` | the Solid components the POS imports | `cargo xtask ui` |
+| `browser/solid/generated/` | the examples as fixtures, for the equivalence test | `cargo xtask ui` |
+| `../../apps/stylebook/examples/generated/` | the stylebook's section per component | `cargo xtask ui` |
+
+Native HTML is the baseline: a component's markup works with JavaScript off,
+and its custom element, when it has one, enhances it. Nothing here knows
+application routes, API clients or authentication.
+
+## Consumers
+
+- **Rust** (monokulo's views, the pages site): build a component and render
+  it with maud, `(Button::new("Save").variant(ButtonVariant::Primary))`.
+  Serve [`ui::assets`](src/assets.rs): the tokens, the components'
+  stylesheet, the scripts, fonts and icons, baked into the binary.
+- **npm** (the POS, the stylebook): import the stylesheets and scripts, and
+  the Solid components from `@monokulo/ui/solid`.
+
+## Changing a component
+
+Edit its `component!` in `src/components` and its CSS or script in
+`web/components`, give it examples (they are what the stylebook shows and
+what the Solid version is checked against), list it in `catalogue()`, then
+run `cargo xtask ui` and commit what it writes. Never edit generated files;
+CI runs `cargo xtask ui --check`.
 
 From the repository root:
 
 ```sh
 npm ci
-npm run stylebook
-npm run build:ui
-npm run test:ui
+cargo xtask ui        # regenerate solid/, fixtures and stylebook sections
+npm run stylebook     # review
+npm run test:ui       # stylebook contracts, and Solid against Rust
+cargo nextest run -p ui
 ```
 
 Install the test browser once with `npx playwright install chromium`.
@@ -22,9 +54,8 @@ Install the test browser once with `npx playwright install chromium`.
 - `@monokulo/ui/tokens.css`: palette, spacing, typography and role tokens.
 - `@monokulo/ui/components.css`: native layout and control primitives.
 - `@monokulo/ui`: registers select, copy, tabs and menu enhancements.
-- `@monokulo/ui/solid`: Solid components generated from `crates/ui` by
-  `cargo xtask ui` (needs `solid-js` and `@solidjs/web`). Don't edit them:
-  see [component adoption and validation](../../docs/ui-components.md).
+- `@monokulo/ui/solid`: the Solid components, generated from `src/` by
+  `cargo xtask ui` (needs `solid-js` and `@solidjs/web`).
 
 ```js
 import '@monokulo/ui/styles.css';
@@ -55,7 +86,7 @@ anchors for navigation, and real form actions for server-rendered workflows.
 `value` or `selectedIndex` to update it; listen to the native `change` event.
 Programmatic assignment does not synthesize a change event. It supports
 `compact` and `search="auto|show|hide"`, plus option display metadata described
-in [select.js](src/components/select.js). The registration is idempotent.
+in [select.js](web/components/select.js). The registration is idempotent.
 Without JavaScript the native select is usable. The `.switch` contract styles
 a native checkbox, retaining native submission and keyboard behaviour.
 

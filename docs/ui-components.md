@@ -12,9 +12,9 @@ language that only reads props. From that one declaration:
   label or a misspelt variant doesn't compile; the macro also type-checks
   every prop, field and enum variant a template names.
 - `cargo xtask ui` writes the Solid component the POS imports
-  (`@monokulo/ui/solid`, in `packages/ui/src/solid`), the stylebook's
+  (`@monokulo/ui/solid`, in `crates/ui/solid`), the stylebook's
   section for it (`apps/stylebook/examples/generated`) and fixtures of its
-  examples (`packages/ui/tests/solid/generated`). Each specimen shows how to
+  examples (`crates/ui/browser/solid/generated`). Each specimen shows how to
   write the example in Rust and in Solid, and the HTML both render.
 - `npm run test:ui` renders every example through the generated Solid
   component and compares its DOM with the Rust component's HTML
@@ -24,8 +24,8 @@ language that only reads props. From that one declaration:
 Never edit the generated files. To add or change a component: edit or add
 it in `crates/ui/src/components`, give it examples (they are what the
 stylebook shows and what Solid is checked against), add it to
-`catalogue()`, run `cargo xtask ui`, and keep its CSS in
-`packages/ui/src/components`. Behaviour stays in packages/ui's custom
+`catalogue()`, run `cargo xtask ui`, and keep its CSS and script in
+`crates/ui/web/components`. Behaviour stays in the package's custom
 elements (`mk-select`, `mk-copy`, the settings form): a component only
 decides the markup they upgrade. A caller adds attributes (`fx-*`,
 `data-*`, Solid's `onClick`) through the component's spread; `class` and
@@ -40,15 +40,16 @@ Monokulo's setup steps and sign-up/log-in forms and the POS's Charge,
 order and Reference controls use them. The hand-written examples below
 cover what hasn't moved yet.
 
-The root npm workspace contains `packages/ui` (`@monokulo/ui`),
+The root npm workspace contains `crates/ui` (`@monokulo/ui`, also the Rust crate `ui`),
 `apps/stylebook` and the existing `crates/monokulo/pos-ui`. One root lockfile
 pins their tools. The browser integration suite in `e2e/browser` retains its
 independent install and lockfile.
 
 ## Ownership
 
-- `packages/ui`: theme tokens, native HTML/CSS contracts and progressive
-  enhancement behaviours. No app routes, API calls or framework dependencies.
+- `crates/ui`: one package for Rust and npm. The components (`src/`), theme
+  tokens, CSS and progressive-enhancement behaviours (`web/`), and the
+  generated Solid components (`solid/`). No app routes or API calls.
 - `apps/stylebook`: independently runnable review site consuming public exports.
   Its examples are included in HTML at build time, not rendered by JavaScript.
 - `crates/monokulo/src/views`: Maud markup and application composition. Rust
@@ -63,10 +64,11 @@ Run `npm ci` from the root before building Monokulo. Cargo resolves tools from
 root `node_modules` and watches the UI package sources and workspace lockfile.
 Docker, CI and OpenWrt preparation use the same root install.
 
-The application embeds the package's token CSS, component CSS and select script
-through its existing fingerprinted asset pipeline. CSS and the select script
-are already browser-native, so Rust can include their sources without a second
-bundling step. POS imports the public component CSS and enhancement entry; the
+The application serves the package's tokens (`theme.css`), component CSS
+(`ui.css`, after its own `site.css`), scripts and fonts from `ui::assets`
+through its fingerprinted asset pipeline: the crate bakes them in, so
+monokulo never reads the package's files by path. They are already
+browser-native, so there is no second bundling step. POS imports the public component CSS and enhancement entry; the
 custom element registration is idempotent. The application does not build or
 serve the stylebook.
 
@@ -85,8 +87,7 @@ Legacy page styles remain in `site.css`, and some specialized POS controls
 (keypad, order tiles, scan actions) still have application styling. Migrate
 these deliberately after reviewing their contracts in the stylebook. Do not
 move application-specific CSS wholesale into the library or add a second
-implementation of an existing primitive. The former `views/theme.css` is only
-a CSS import compatibility entry for local HTML previews.
+implementation of an existing primitive.
 
 For each next adoption: choose an existing primitive or document a reusable
 variant, render the stylebook example, update the page markup, remove redundant
@@ -147,12 +148,12 @@ DOM-created native controls outside the package, literal CSS colors, numeric
 font sizes, visual overrides of `.mk-*` components outside the package,
 unnamed icon-only buttons, button-links without destinations and unwrapped
 selects. Current legacy violations are recorded by file, rule, normalized
-source hash and count in `packages/ui/tools/lint-baseline.json`. Copying an old
+source hash and count in `crates/ui/tools/lint-baseline.json`. Copying an old
 violation or changing its declaration does not grant an exemption. All new
 shared library and stylebook sources pass without baseline exceptions.
 
 Treat baseline changes as a reviewed migration decision. The explicit command
-`node packages/ui/tools/lint.mjs --write-baseline` records the current debt; CI
+`node crates/ui/tools/lint.mjs --write-baseline` records the current debt; CI
 never runs it. Remove obsolete exceptions during adoption. Do not refresh the
 baseline merely to make a failed check pass.
 

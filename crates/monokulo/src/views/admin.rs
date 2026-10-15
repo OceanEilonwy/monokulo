@@ -2938,10 +2938,7 @@ mod tests {
             html.contains(&crate::assets::url("settings-form.js")),
             "{html}"
         );
-        assert!(
-            include_str!("../../../../packages/ui/src/components/settings.js")
-                .contains(r#"mk-settings-card[data-shown-by]"#)
-        );
+        assert!(ui::assets::SETTINGS_JS.contains(r#"mk-settings-card[data-shown-by]"#));
 
         let html = page("plain,snp");
         assert!(html.contains(r#"<mk-settings-card id="card-custody-snp" class="settings-card" name="custody-snp" data-shown-by="key_custody.enabled_backends=snp" role="region" aria-labelledby="card-custody-snp-title"><header class="card-head"><h3 id="card-custody-snp-title">SEV-SNP</h3>"#), "{html}");
@@ -3284,9 +3281,7 @@ mod tests {
         };
         let success = toast(ToastKind::Success, None);
         assert!(success.contains(r#"class="toast toast-success" role="status""#));
-        assert!(
-            success.contains(include_str!("../../../../packages/ui/src/icons/check.svg").trim())
-        );
+        assert!(success.contains(ui::assets::icons::CHECK));
         assert!(success.contains("<strong>Webhooks saved and applied</strong>"));
         assert!(success.contains(r#"<span class="toast-line">One more thing.</span>"#));
         assert!(!success.contains("Show"), "{success}");

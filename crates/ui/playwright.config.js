@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from '@playwright/test';
 export default defineConfig({
-  testDir: './tests',
+  testDir: './browser',
   outputDir: fileURLToPath(new URL('../../test-results/ui', import.meta.url)),
   use: { baseURL: 'http://127.0.0.1:4179', browserName: 'chromium' },
   webServer: [{
@@ -14,7 +14,7 @@ export default defineConfig({
     url: 'http://127.0.0.1:4180', reuseExistingServer: !process.env.CI,
   }, {
     cwd: fileURLToPath(new URL('../../', import.meta.url)),
-    command: 'npx vite --config packages/ui/tests/solid/vite.config.js --host 127.0.0.1 --port 4181 --strictPort',
+    command: 'npx vite --config crates/ui/browser/solid/vite.config.js --host 127.0.0.1 --port 4181 --strictPort',
     url: 'http://127.0.0.1:4181', reuseExistingServer: !process.env.CI,
   }],
 });

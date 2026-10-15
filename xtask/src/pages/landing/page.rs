@@ -25,7 +25,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { "Monokulo: self-hosted Monero payments" }
                 meta name="description" content="Monokulo is a self-hosted Monero payment gateway for Linux, macOS, Windows and OpenWrt routers like the GL.iNet Flint 2. Watch-only: it never holds a spend key.";
-                // Colours come only from monokulo's own theme (crates/monokulo/src/views/theme.css,
+                // Colours come only from monokulo's own theme (crates/ui/web/tokens.css,
                 // copied here at build time): light or dark follows the OS.
                 (site_assets::head(""))
             }

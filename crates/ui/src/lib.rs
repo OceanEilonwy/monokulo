@@ -11,12 +11,18 @@
 //!
 //! Required props are the builder's `new` arguments, so a label or an
 //! accessible name can't be left out; choices are enums, so a variant can't
-//! be misspelt. Appearance stays in packages/ui's CSS, behaviour in its
-//! custom elements: a component only decides the markup they target.
+//! be misspelt.
+//!
+//! This directory is one package for both languages: the Rust crate here,
+//! and `@monokulo/ui` for npm (`package.json`). Appearance and behaviour
+//! live beside the components in `web/`: CSS painted with the theme tokens,
+//! and light-DOM custom elements that upgrade the components' markup.
+//! Rust consumers get them from [`assets`]; npm consumers import them.
 
 // `component!` names this crate `::ui`, as it does from outside.
 extern crate self as ui;
 
+pub mod assets;
 pub mod book;
 pub mod components;
 pub mod ir;

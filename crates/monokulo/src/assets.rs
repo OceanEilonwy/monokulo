@@ -27,10 +27,12 @@ pub use static_assets::{Asset, Policy};
 
 pub static ASSETS: &[Asset] = &[
     // -- The pages' own scripts and styles --------------------------------
-    // Every page's style: the colours (`views/theme.css`) and the
-    // components (`views/site.css`), linked in that order.
+    // Every page's style, linked in this order: the colours and other
+    // tokens (the `ui` package's), this site's own components and pages
+    // (`views/site.css`), and the shared components (the `ui` package's).
     asset!(text "theme.css", crate::views::THEME_CSS, CSS),
     asset!(text "site.css", crate::views::SITE_CSS, CSS),
+    asset!(text "ui.css", ui::assets::COMPONENTS_CSS, CSS),
     // Partial page updates and server-sent events on the server-rendered
     // pages (`http::fx`). fixi and ssexi are vendored, pinned copies (see
     // their `.SOURCE` files); fx-glue is what they leave out on purpose.
@@ -38,9 +40,9 @@ pub static ASSETS: &[Asset] = &[
     asset!("fixi.js", JS),
     asset!("ssexi.js", JS),
     // Every dropdown (`views::controls`).
-    asset!(from "mk-select.js", "../../packages/ui/src/components/select.js", JS),
+    asset!(text "mk-select.js", ui::assets::SELECT_JS, JS),
     // Every settings form (`views::settings`).
-    asset!(from "settings-form.js", "../../packages/ui/src/components/settings.js", JS),
+    asset!(text "settings-form.js", ui::assets::SETTINGS_JS, JS),
     // Browser problem reports (`http::telemetry_client`).
     asset!("telemetry.js", JS),
     // The checkout embed (`views::checkout`), the QR decoder it and the
@@ -71,9 +73,9 @@ pub static ASSETS: &[Asset] = &[
     // -- Fonts and marks ---------------------------------------------------
     // The UI typeface (site.css's `@font-face`), Latin subset only: this
     // UI has no other script.
-    asset!(from "manrope-500.woff2", "../../packages/ui/src/fonts/manrope-500.woff2", WOFF2),
-    asset!(from "manrope-700.woff2", "../../packages/ui/src/fonts/manrope-700.woff2", WOFF2),
-    asset!(from "manrope-800.woff2", "../../packages/ui/src/fonts/manrope-800.woff2", WOFF2),
+    asset!(bytes "manrope-500.woff2", ui::assets::MANROPE_500, WOFF2),
+    asset!(bytes "manrope-700.woff2", ui::assets::MANROPE_700, WOFF2),
+    asset!(bytes "manrope-800.woff2", ui::assets::MANROPE_800, WOFF2),
     // The full Monokulo mark (with the chain and the facet lines),
     // ink-on-paper, for other sites to link to; the pages draw it inline
     // (`views::logo_mark`). The square version is every page's icon. Both

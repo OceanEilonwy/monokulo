@@ -12,4 +12,4 @@ The engine rate-limits each store (120 requests a minute by default). The POS li
 
 The app uses Solid `2.0.0-rc.9` and `@solidjs/vite-plugin` `3.0.0-next.44`. The local POS records hold merchant workflow state; the engine remains the source of truth for payment state and checkout details.
 
-Shared controls come from `@monokulo/ui` (`packages/ui`). Solid owns order state and workflow; use the package’s public classes, native HTML and custom elements for low-level controls. `pos.css` owns terminal composition and layout. Review component changes in `npm run stylebook` from the repository root.
+Shared controls come from `@monokulo/ui` (`crates/ui`): its Solid components (`@monokulo/ui/solid`), stylesheets and custom elements. Solid owns order state and workflow; use the package’s public classes, native HTML and custom elements for low-level controls. `pos.css` owns terminal composition and layout. Review component changes in `npm run stylebook` from the repository root.

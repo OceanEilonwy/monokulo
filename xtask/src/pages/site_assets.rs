@@ -11,18 +11,18 @@ use static_assets::{asset, Asset, CSS, JS, SVG, WOFF2};
 use std::{fs, io, path::Path};
 
 pub(super) static ASSETS: &[Asset] = &[
-    // The colours, monokulo's own (`packages/ui/src/tokens.css`),
-    // then the site's components (`assets/styles.css`), linked in that order.
-    asset!(from "theme.css", "../packages/ui/src/tokens.css", CSS),
+    // The colours, the `ui` package's (monokulo's own), then the site's
+    // components (`assets/styles.css`), linked in that order.
+    asset!(text "theme.css", ui::assets::TOKENS_CSS, CSS),
     asset!(from "styles.css", "src/pages/assets/styles.css", CSS),
     // The landing page's tabs and copy buttons, and the testing report's
     // filters and screenshot viewer.
     asset!(from "landing.js", "src/pages/assets/landing/landing.js", JS),
     asset!(from "coverage.js", "src/pages/assets/coverage/coverage.js", JS),
-    // The typeface and the icon, monokulo's own files.
-    asset!(from "manrope-500.woff2", "../packages/ui/src/fonts/manrope-500.woff2", WOFF2),
-    asset!(from "manrope-700.woff2", "../packages/ui/src/fonts/manrope-700.woff2", WOFF2),
-    asset!(from "manrope-800.woff2", "../packages/ui/src/fonts/manrope-800.woff2", WOFF2),
+    // The typeface (the `ui` package's) and the icon (monokulo's).
+    asset!(bytes "manrope-500.woff2", ui::assets::MANROPE_500, WOFF2),
+    asset!(bytes "manrope-700.woff2", ui::assets::MANROPE_700, WOFF2),
+    asset!(bytes "manrope-800.woff2", ui::assets::MANROPE_800, WOFF2),
     asset!(from "favicon.svg", "../crates/monokulo/static/favicon.svg", SVG),
 ];
 

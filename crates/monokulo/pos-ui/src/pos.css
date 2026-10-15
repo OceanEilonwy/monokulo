@@ -1,5 +1,5 @@
 /* Monokulo POS mini-app. Every colour is a role from the site's own theme
-   (views/theme.css, loaded on this page like every other), so the POS
+   (the ui package's web/tokens.css, loaded on this page like every other), so the POS
    follows the merchant's light / dark / system theme and matches the site.
    Layout and sizes follow docs/pos-background-orders-sketches.html. */
 
