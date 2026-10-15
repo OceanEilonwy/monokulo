@@ -128,14 +128,14 @@ test('tabs, account menu and dialog support keyboard interaction', async ({ page
   await expect(page.locator('#example-charge')).toBeHidden();
   await page.keyboard.press('End');
   await expect(tabs.getByRole('tab', { name: 'Terminal' })).toHaveAttribute('aria-selected', 'true');
-  const menu = page.locator('.mk-menu');
+  const menu = page.locator('#component-menu details.acct');
   await menu.locator('summary').click();
   await menu.getByRole('link', { name: 'Account settings' }).focus();
   await page.keyboard.press('Escape');
   await expect(menu).not.toHaveAttribute('open', '');
   await expect(menu.locator('summary')).toBeFocused();
   await menu.locator('summary').click();
-  await page.locator('#menus > h2').click();
+  await page.locator('#component-menu > h2').click();
   await expect(menu).not.toHaveAttribute('open', '');
   await page.getByRole('link', { name: 'Review retirement' }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
@@ -171,7 +171,7 @@ test('new patterns retain content and actions without JavaScript', async ({ brow
   await value.focus();
   expect(await value.evaluate(el => getComputedStyle(el).whiteSpace)).toBe('normal');
   await page.getByLabel('Example account menu').click();
-  await expect(page.locator('.mk-menu').getByRole('link', { name: 'Account settings' })).toBeVisible();
+  await expect(page.locator('#component-menu details.acct').getByRole('link', { name: 'Account settings' })).toBeVisible();
   await page.getByRole('link', { name: 'Review retirement' }).click();
   await expect(page).toHaveURL(/#dialog-fallback$/);
   await expect(page.getByRole('region', { name: 'Example save changes' })).toBeVisible();

@@ -16,3 +16,4 @@ report's charts). This file tracks what has moved.
 | Setup progress | `ProgressSteps` | done |
 | Copy a value | `CopyValue` | component; app adoption to do |
 | In-page tabs, page tabs | `Tabs`, `TabLinks` | components; app adoption to do |
+| Site bar, account menu, theme switch, status dot | `SiteNav`, `Menu`, `ThemeToggle`, `StatusDot` | done (pages and POS) |

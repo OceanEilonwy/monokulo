@@ -20,7 +20,7 @@
 //! own changes (`static/admin-settings.js` listens for `mk-count` on their
 //! card).
 
-use maud::{html, Markup, Render};
+use maud::{html, Markup};
 pub use ui::ToastKind;
 
 /// How a settings form saves.

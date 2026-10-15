@@ -1179,5 +1179,152 @@
       "title": "Nothing changed"
     },
     "title": "Nothing to save"
+  },
+  {
+    "component": "SiteNav",
+    "html": "<nav class=\"site-nav\"><div class=\"wrap site-nav-row\"><a href=\"#component-site-nav\" class=\"site-nav-brand\">Monokulo</a><a href=\"#component-status-dot\" class=\"nav-status-link\" id=\"book-nav-status\" title=\"all systems healthy\" aria-label=\"Status: all systems healthy\" data-mk=\"1\" data-island=\"StatusDot\" data-props=\"{&quot;health&quot;:&quot;ok&quot;,&quot;poll&quot;:&quot;/status/summary&quot;}\"><span class=\"status-dot status-dot-ok\" data-mk=\"2\"></span></a><input type=\"checkbox\" id=\"nav-toggle\" class=\"nav-toggle-checkbox\"><label for=\"nav-toggle\" class=\"nav-toggle-label\" aria-label=\"Menu\">☰</label><div class=\"site-nav-links\"><a class=\"mk-btn\" href=\"#component-site-nav\" data-variant=\"quiet\">Log in</a><a class=\"mk-btn\" href=\"#component-site-nav\" data-variant=\"quiet\">Sign up</a></div></div></nav>",
+    "props": {
+      "brand": {
+        "$slot": [
+          "Monokulo"
+        ]
+      },
+      "home": "#component-site-nav",
+      "links": {
+        "$slot": [
+          {
+            "$component": "LinkButton",
+            "props": {
+              "block": false,
+              "children": {
+                "$slot": [
+                  "Log in"
+                ]
+              },
+              "href": "#component-site-nav",
+              "variant": "quiet"
+            }
+          },
+          {
+            "$component": "LinkButton",
+            "props": {
+              "block": false,
+              "children": {
+                "$slot": [
+                  "Sign up"
+                ]
+              },
+              "href": "#component-site-nav",
+              "variant": "quiet"
+            }
+          }
+        ]
+      },
+      "status": {
+        "$slot": [
+          {
+            "$component": "StatusDot",
+            "props": {
+              "health": "ok",
+              "href": "#component-status-dot",
+              "id": "book-nav-status",
+              "place": "nav",
+              "poll": "/status/summary"
+            }
+          }
+        ]
+      }
+    },
+    "title": "Signed out"
+  },
+  {
+    "component": "Menu",
+    "html": "<details class=\"acct\" data-mk=\"1\" data-island=\"Menu\" data-props=\"{}\"><summary class=\"acct-button\" aria-label=\"Example account menu\" title=\"alex@example.test\">Account</summary><div class=\"acct-menu\"><a class=\"mk-btn\" href=\"#component-menu\" data-variant=\"quiet\">Account settings</a><a class=\"mk-btn\" href=\"#component-menu\" data-variant=\"quiet\">Wallets</a></div></details>",
+    "props": {
+      "button": {
+        "$slot": [
+          "Account"
+        ]
+      },
+      "children": {
+        "$slot": [
+          {
+            "$component": "LinkButton",
+            "props": {
+              "block": false,
+              "children": {
+                "$slot": [
+                  "Account settings"
+                ]
+              },
+              "href": "#component-menu",
+              "variant": "quiet"
+            }
+          },
+          {
+            "$component": "LinkButton",
+            "props": {
+              "block": false,
+              "children": {
+                "$slot": [
+                  "Wallets"
+                ]
+              },
+              "href": "#component-menu",
+              "variant": "quiet"
+            }
+          }
+        ]
+      },
+      "label": "Example account menu",
+      "title": "alex@example.test"
+    },
+    "title": "The account menu"
+  },
+  {
+    "component": "ThemeToggle",
+    "html": "<form method=\"post\" action=\"#component-theme-toggle\" class=\"nav-theme-form\"><input type=\"hidden\" name=\"next\" value=\"/\"><div class=\"theme-toggle theme-toggle-system\" role=\"group\" aria-label=\"Theme\"><span class=\"theme-toggle-track\"><button type=\"submit\" name=\"theme\" value=\"system\" class=\"theme-toggle-option theme-toggle-option-system\" aria-label=\"System theme\" aria-pressed=\"true\" title=\"System theme\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"3\" y=\"3\" width=\"18\" height=\"13\" rx=\"2\"></rect><line x1=\"12\" y1=\"16\" x2=\"12\" y2=\"21\"></line><line x1=\"8\" y1=\"21\" x2=\"16\" y2=\"21\"></line></svg></button><button type=\"submit\" name=\"theme\" value=\"light\" class=\"theme-toggle-option theme-toggle-option-light\" aria-label=\"Light theme\" aria-pressed=\"false\" title=\"Light theme\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"4\"></circle><line x1=\"12\" y1=\"2\" x2=\"12\" y2=\"4\"></line><line x1=\"12\" y1=\"20\" x2=\"12\" y2=\"22\"></line><line x1=\"4.2\" y1=\"4.2\" x2=\"5.6\" y2=\"5.6\"></line><line x1=\"18.4\" y1=\"18.4\" x2=\"19.8\" y2=\"19.8\"></line><line x1=\"2\" y1=\"12\" x2=\"4\" y2=\"12\"></line><line x1=\"20\" y1=\"12\" x2=\"22\" y2=\"12\"></line><line x1=\"4.2\" y1=\"19.8\" x2=\"5.6\" y2=\"18.4\"></line><line x1=\"18.4\" y1=\"5.6\" x2=\"19.8\" y2=\"4.2\"></line></svg></button><button type=\"submit\" name=\"theme\" value=\"dark\" class=\"theme-toggle-option theme-toggle-option-dark\" aria-label=\"Dark theme\" aria-pressed=\"false\" title=\"Dark theme\"><svg viewBox=\"0 0 24 24\" fill=\"currentColor\" stroke=\"none\" aria-hidden=\"true\"><path d=\"M21 12.5A9 9 0 1 1 11.5 3 7 7 0 0 0 21 12.5Z\"></path></svg></button><span class=\"theme-toggle-thumb\"></span></span></div></form>",
+    "props": {
+      "action": "#component-theme-toggle",
+      "next": "/",
+      "theme": "system"
+    },
+    "title": "Following the system"
+  },
+  {
+    "component": "StatusDot",
+    "html": "<a href=\"#component-status-dot\" class=\"nav-status-link\" id=\"book-status-ok\" title=\"all systems healthy\" aria-label=\"Status: all systems healthy\" data-mk=\"1\" data-island=\"StatusDot\" data-props=\"{&quot;health&quot;:&quot;ok&quot;,&quot;poll&quot;:&quot;&quot;}\"><span class=\"status-dot status-dot-ok\" data-mk=\"2\"></span></a>",
+    "props": {
+      "health": "ok",
+      "href": "#component-status-dot",
+      "id": "book-status-ok",
+      "place": "nav",
+      "poll": ""
+    },
+    "title": "Healthy"
+  },
+  {
+    "component": "StatusDot",
+    "html": "<a href=\"#component-status-dot\" class=\"nav-status-link\" id=\"book-status-slow\" title=\"scanning is slow - see the status page\" aria-label=\"Status: scanning is slow - see the status page\" data-mk=\"1\" data-island=\"StatusDot\" data-props=\"{&quot;health&quot;:&quot;slow&quot;,&quot;poll&quot;:&quot;&quot;}\"><span class=\"status-dot status-dot-slow\" data-mk=\"2\"></span></a>",
+    "props": {
+      "health": "slow",
+      "href": "#component-status-dot",
+      "id": "book-status-slow",
+      "place": "nav",
+      "poll": ""
+    },
+    "title": "Slow"
+  },
+  {
+    "component": "StatusDot",
+    "html": "<a href=\"#component-status-dot\" class=\"nav-status-link\" id=\"book-status-error\" title=\"an issue was detected - see the status page\" aria-label=\"Status: an issue was detected - see the status page\" data-mk=\"1\" data-island=\"StatusDot\" data-props=\"{&quot;health&quot;:&quot;error&quot;,&quot;poll&quot;:&quot;&quot;}\"><span class=\"status-dot status-dot-error\" data-mk=\"2\"></span></a>",
+    "props": {
+      "health": "error",
+      "href": "#component-status-dot",
+      "id": "book-status-error",
+      "place": "nav",
+      "poll": ""
+    },
+    "title": "A problem"
   }
 ]

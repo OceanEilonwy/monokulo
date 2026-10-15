@@ -620,6 +620,11 @@ fn expand_component(input: ComponentInput) -> syn::Result<Tokens> {
             pub fn new(#(#new_args),*) -> Self {
                 Self { #(#new_fields),* }
             }
+            /// The component's markup, as maud renders it in a template.
+            #[must_use]
+            pub fn render(&self) -> ::ui::__private::maud::Markup {
+                ::ui::__private::maud::Render::render(self)
+            }
             #(#setters)*
         }
 

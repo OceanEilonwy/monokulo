@@ -4,7 +4,6 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./web/index.js",
     "./styles.css": "./web/styles.css",
     "./tokens.css": "./web/tokens.css",
     "./components.css": "./web/components/primitives.css",

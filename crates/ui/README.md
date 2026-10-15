@@ -161,10 +161,10 @@ links to them. For tabs that are separate pages use `TabLinks`, plain links
 with the current one marked; a framework may own tab state and reuse the same
 `.mk-tabs` CSS and ARIA instead.
 
-`.mk-menu` is a native `details` with a named summary and `.mk-menu-content`.
-Use ordinary links/buttons, not `role="menu"`: Tab follows native navigation.
-Escape closes from within and returns focus to the summary; outside click also
-closes. `.mk-nav` wraps naturally on small screens without a JS-only hamburger.
+`Menu` (`ui::Menu`) is a native `details` with a named button: Tab follows
+native navigation, and once its island attaches a click outside it or
+Escape closes it, Escape returning focus to the button. `SiteNav` is the
+site's bar; on a phone its links fold behind a CSS-only hamburger.
 
 `.mk-qr` presents server-generated SVG or images with a complete text/link
 alternative. Never truncate the encoded data or remove its quiet zone. The

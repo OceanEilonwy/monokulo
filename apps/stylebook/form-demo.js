@@ -1,4 +1,3 @@
-import '@monokulo/ui';
 import '@monokulo/ui/islands';
 
 // Demo only: start from real defaults, then exercise normal change tracking.
