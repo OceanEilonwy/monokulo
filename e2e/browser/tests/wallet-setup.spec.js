@@ -75,7 +75,7 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
 
   // Store: a name, and a website apart from it, optional. No kinds.
   await page.goto(base + '/setup');
-  await expect(page.locator('.setup-steps [aria-current="step"]')).toHaveText('StoreIn progress');
+  await expect(page.getByRole('list', { name: 'Setup progress' }).locator('[aria-current="step"]')).toHaveText('StoreIn progress');
   await expect(page.getByRole('heading', { name: 'Set up a store' })).toBeVisible();
   await expect(page.locator('label.kind-card')).toHaveCount(0);
   await expect(page.locator('label[for="store-site"]')).toHaveText('Your website');
@@ -153,7 +153,7 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   // Done: never "taking payments" yet; every way to start, the guide the
   // one orange button.
   await expect(page.getByRole('heading', { name: 'Geomart is set up' })).toBeVisible();
-  await expect(page.locator('.setup-steps [aria-current="step"]')).toHaveText('DoneComplete');
+  await expect(page.getByRole('list', { name: 'Setup progress' }).locator('[aria-current="step"]')).toHaveText('DoneComplete');
   await expect(page.getByText('Not taking payments yet')).toBeVisible();
   await expect(page.locator('.todo strong')).toHaveText(['Add the checkout to your site', 'Install the WooCommerce plugin', 'Open the till (POS)']);
   const guide = page.getByRole('link', { name: /Open the guide/ });
@@ -190,7 +190,7 @@ test('the check lets you go on without answering after 20 seconds', async ({ pag
   await page.clock.install();
   await page.goto(base + '/account/wallets/add');
   // Outside setup: the wallet's own steps only.
-  await expect(page.locator('.setup-steps')).toHaveCount(0);
+  await expect(page.getByRole('list', { name: 'Setup progress' })).toHaveCount(0);
   await expect(page.locator('.mk-progress-steps [aria-current="step"] small')).toHaveText('Kind · step 1 of 3');
   await startNewWallet(page, 'Patient Wren');
   await page.getByRole('tab', { name: 'On paper' }).click();

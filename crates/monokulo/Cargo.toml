@@ -22,6 +22,8 @@ snp = ["engine?/snp", "engine-test-support/snp"]
 
 [dependencies]
 engine = { path = "../engine", optional = true }
+# The shared UI components (crates/ui): rendered here, translated for the POS.
+ui = { path = "../ui" }
 # `ServiceExt::oneshot` and body collection, to call the embedded engine's
 # router in-process.
 tower = { version = "0.5.3", features = ["util"], optional = true }

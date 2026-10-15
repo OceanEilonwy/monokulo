@@ -1292,7 +1292,9 @@ mod tests {
         assert!(html.contains("<h1>Add a wallet</h1>"), "{html}");
         // The wallet's own small steps, without setup's.
         assert!(
-            html.contains(r#"<li aria-current="step"><span>Wallet<small>Kind · step 1 of 3</small></span>"#),
+            html.contains(
+                r#"<li aria-current="step"><span>Wallet<small>Kind · step 1 of 3</small></span>"#
+            ),
             "{html}"
         );
         assert!(!html.contains("Setup progress"));
@@ -1301,7 +1303,8 @@ mod tests {
         assert!(name_at < html.find("Create a new wallet").unwrap());
         assert!(html.contains("Free to use"), "{html}");
         // Drawn unavailable, with the reason, until the script turns it on.
-        assert!(html.contains(r#"class="mk-action-card" data-recommended data-unavailable data-needs-js"#));
+        assert!(html
+            .contains(r#"class="mk-action-card" data-recommended data-unavailable data-needs-js"#));
         assert!(
             html.contains(r#"formaction="/account/wallets/new" disabled"#),
             "{html}"

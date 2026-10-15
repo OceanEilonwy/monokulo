@@ -2717,6 +2717,7 @@ dependencies = [
  "tower",
  "tower-http 0.7.1",
  "tracing",
+ "ui",
  "url",
  "uuid",
  "wallet-setup",

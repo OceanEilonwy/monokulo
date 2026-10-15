@@ -8,6 +8,7 @@ import { applyTheme, type Theme } from './theme';
 import { createTimeline, routeOf, watchPage } from './timeline';
 import '@monokulo/ui';
 import '@monokulo/ui/components.css';
+import { Button, Field } from '@monokulo/ui/solid';
 import './pos.css';
 
 type Order = {
@@ -673,13 +674,10 @@ function App() {
             {key === '⌫' ? <svg viewBox="0 0 28 20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round" aria-hidden="true"><path d="M9 2h16a1.5 1.5 0 0 1 1.5 1.5v13A1.5 1.5 0 0 1 25 18H9l-7.5-8Z"/><path d="m13 6.5 8 7m0-7-8 7" stroke-linecap="round"/></svg> : key}
           </button>}</For>
         </div>
-        <div class="mk-field pos-field">
-          <label class="mk-label" for="pos-reference">Reference <span>(optional)</span></label>
-          <input id="pos-reference" class="mk-input pos-input" type="text" maxlength="120" placeholder="E.g. customer name or note" autocomplete="off"
-            value={reference()} onInput={event => setReference(event.currentTarget.value)}/>
-        </div>
+        <Field label="Reference (optional)" id="pos-reference" name="reference" placeholder="E.g. customer name or note" autocomplete="off"
+          value={reference()} maxlength="120" onInput={event => setReference(event.currentTarget.value)}/>
         <Show when={error()}><p class="pos-error" role="alert">{error()}</p></Show>
-        <button type="button" class="mk-btn pos-primary" data-variant="primary" data-size="touch" data-block disabled={/^0+$/.test(digits()) || busy()} onClick={() => void charge()}>{busy() ? 'Creating order…' : 'Charge'}</button>
+        <Button variant="primary" size="touch" block data-pos="primary" disabled={/^0+$/.test(digits()) || busy()} onClick={() => void charge()}>{busy() ? 'Creating order…' : 'Charge'}</Button>
       </main>
     </Show>
 
@@ -698,10 +696,10 @@ function App() {
         <PaymentCard order={order()}/>
         <div class="pos-actions">
           <Show when={error()}><p class="pos-error" role="alert">{error()}</p></Show>
-          <Show when={!terminal(order())} fallback={<button type="button" class="mk-btn pos-primary" data-variant="primary" data-size="touch" data-block onClick={resetKeypad}>New order</button>}>
-            <button type="button" class="mk-btn pos-primary" data-variant="primary" data-size="touch" data-block disabled={busy()} onClick={() => void backgroundOrder()}>Background order</button>
+          <Show when={!terminal(order())} fallback={<Button variant="primary" size="touch" block data-pos="primary" onClick={resetKeypad}>New order</Button>}>
+            <Button variant="primary" size="touch" block data-pos="primary" disabled={busy()} onClick={() => void backgroundOrder()}>Background order</Button>
             <Show when={order().status === 'pending' && !order().error} fallback={<p class="pos-action-hint">Background keeps this payment open while you serve the next customer</p>}>
-              <button type="button" class="mk-btn pos-cancel" data-variant="danger" data-block disabled={busy()} onClick={() => void cancelOrder()}>Cancel order</button>
+              <Button variant="danger" block data-pos="cancel" disabled={busy()} onClick={() => void cancelOrder()}>Cancel order</Button>
               <p class="pos-action-hint">Background keeps this payment open · Cancel asks for confirmation</p>
             </Show>
           </Show>
