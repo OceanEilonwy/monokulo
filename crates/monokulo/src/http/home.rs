@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 
 use crate::db::UserRow;
 use crate::views;
-use crate::views::dashboard::{DashboardOrderRow, DashboardStoreRow, DashboardViewModel};
+use crate::views::home::{HomeOrderRow, HomeStoreRow, HomeViewModel};
 
 use super::dashboard::redirect_302;
 use super::orders::health_of_tenant_lookup;
@@ -69,7 +69,7 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
     };
 
     let mut stores = Vec::with_capacity(rows.len());
-    let mut all_orders: Vec<DashboardOrderRow> = Vec::new();
+    let mut all_orders: Vec<HomeOrderRow> = Vec::new();
     let mut total_received_piconero: u128 = 0;
 
     for row in rows {
@@ -89,7 +89,7 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
         let (health, health_label) = health_of_tenant_lookup(&tenant_result);
         let display_name = row.name.clone();
 
-        stores.push(DashboardStoreRow {
+        stores.push(HomeStoreRow {
             connection_id: row.id.clone(),
             display_name: display_name.clone(),
             site: row.site.clone(),
@@ -106,7 +106,7 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
             for o in orders {
                 total_received_piconero += o.amount_received_piconero as u128;
                 // Filled in below for the orders that make the list.
-                all_orders.push(DashboardOrderRow {
+                all_orders.push(HomeOrderRow {
                     connection_id: row.id.clone(),
                     display_name: display_name.clone(),
                     order_id: o.order_id,
@@ -151,13 +151,13 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
     }
 
     let chrome = super::page_chrome(state, Some(user), "/").await;
-    let view_model = DashboardViewModel {
+    let view_model = HomeViewModel {
         has_stores: !stores.is_empty(),
         stores,
         recent_orders: all_orders,
         total_received_xmr: format_piconero_as_xmr(total_received_piconero),
     };
-    views::dashboard::page(&chrome, &view_model).into_response()
+    views::home::page(&chrome, &view_model).into_response()
 }
 
 /// 1 XMR = 10^12 piconero (the same fixed-point convention every other

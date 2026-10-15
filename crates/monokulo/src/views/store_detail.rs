@@ -179,7 +179,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
             @if let Some(store) = &data.store {
-                nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/" { "Dashboard" } }
+                (super::breadcrumbs(&[("/", "Home")]))
                 h1 { (store.display_name) }
 
                 div class="store-header-row" {

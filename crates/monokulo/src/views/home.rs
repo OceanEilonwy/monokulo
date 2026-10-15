@@ -4,7 +4,7 @@ use maud::{html, Markup};
 
 use super::{layout, PageChrome};
 
-/// One connected store as shown on the dashboard home page - a much smaller
+/// One connected store as shown on the home page - a much smaller
 /// projection of [`crate::db::StoreConnectionRow`] than the full order/
 /// webhook views need, plus two fields no engine or database call directly
 /// hands back: `display_name` (there is no user-facing name column on
@@ -14,7 +14,7 @@ use super::{layout, PageChrome};
 /// connection's decrypted `sk_...` succeeded, `"error"` otherwise - the only
 /// signal actually available without this service also probing the
 /// merchant's own `site_url`, which nothing here does).
-pub struct DashboardStoreRow {
+pub struct HomeStoreRow {
     pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
     /// Its site's host; empty for a store with no site.
@@ -27,10 +27,10 @@ pub struct DashboardStoreRow {
     pub wallet: Option<(String, String)>,
 }
 
-/// One order row on the dashboard home page - like an orders-list row but
-/// also carrying which store it belongs to, since the dashboard shows
+/// One order row on the home page - like an orders-list row but
+/// also carrying which store it belongs to, since the home page shows
 /// orders across every connected store, not just one.
-pub struct DashboardOrderRow {
+pub struct HomeOrderRow {
     pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
     pub order_id: crate::db::OrderId,
@@ -43,10 +43,10 @@ pub struct DashboardOrderRow {
 /// `has_stores` is redundant with `!stores.is_empty()` but kept as an
 /// explicit field rather than computed in the view - documentation of that
 /// fact at the call site rather than a second source of truth to drift.
-pub struct DashboardViewModel {
+pub struct HomeViewModel {
     pub has_stores: bool,
-    pub stores: Vec<DashboardStoreRow>,
-    pub recent_orders: Vec<DashboardOrderRow>,
+    pub stores: Vec<HomeStoreRow>,
+    pub recent_orders: Vec<HomeOrderRow>,
     /// Sum of every order's `amount_received_piconero` across every
     /// connected store - "total received XMR that has been detected",
     /// deliberately the *detected* amount rather than only orders in a
@@ -55,10 +55,10 @@ pub struct DashboardViewModel {
     pub total_received_xmr: String,
 }
 
-pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
+pub fn page(chrome: &PageChrome, data: &HomeViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
-            h1 { "Dashboard" }
+            h1 { "Home" }
 
             @if data.has_stores {
                 (ui::Panel::new(html! {
@@ -109,10 +109,10 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
         }
     };
 
-    layout(chrome, "Dashboard - Monokulo", body)
+    layout(chrome, "Home - Monokulo", body)
 }
 
-fn store_row(store: &DashboardStoreRow) -> ui::Slot {
+fn store_row(store: &HomeStoreRow) -> ui::Slot {
     ui::Row::new(ui::Slot::many([
         ui::Cell::new(store.display_name.as_str()).into(),
         ui::Cell::new(html! {
@@ -133,7 +133,7 @@ fn store_row(store: &DashboardStoreRow) -> ui::Slot {
     .into()
 }
 
-fn order_row(chrome: &PageChrome, order: &DashboardOrderRow) -> ui::Slot {
+fn order_row(chrome: &PageChrome, order: &HomeOrderRow) -> ui::Slot {
     ui::Row::new(ui::Slot::many([
         ui::Cell::new(order.display_name.as_str()).optional(true).into(),
         ui::Cell::new(html! {
@@ -157,8 +157,8 @@ mod tests {
         PageChrome::from_user(None, "/dashboard")
     }
 
-    fn empty_data() -> DashboardViewModel {
-        DashboardViewModel {
+    fn empty_data() -> HomeViewModel {
+        HomeViewModel {
             has_stores: false,
             stores: vec![],
             recent_orders: vec![],
@@ -172,15 +172,15 @@ mod tests {
         assert!(html.contains(r#"href="/setup""#));
         assert!(
             !html.contains("<table"),
-            "an empty dashboard shouldn't render a store table at all"
+            "an empty home page shouldn't render a store table at all"
         );
     }
 
     #[test]
     fn lists_stores_and_recent_orders_when_present() {
-        let data = DashboardViewModel {
+        let data = HomeViewModel {
             has_stores: true,
-            stores: vec![DashboardStoreRow {
+            stores: vec![HomeStoreRow {
                 connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
                 display_name: "shop.example.com".to_string(),
                 site: "shop.example.com".to_string(),
@@ -189,7 +189,7 @@ mod tests {
                 health_label: "healthy".to_string(),
                 wallet: Some(("Feather test".to_string(), "stagenet".to_string())),
             }],
-            recent_orders: vec![DashboardOrderRow {
+            recent_orders: vec![HomeOrderRow {
                 connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
                 display_name: "shop.example.com".to_string(),
                 order_id: shared::ids::OrderId::new("pay_xyz".to_string()),
@@ -220,9 +220,9 @@ mod tests {
     fn a_long_public_key_and_order_id_are_shortened_with_the_whole_in_reach() {
         let public_key = format!("pk_b4c4e8{}3fa21c", "0".repeat(36));
         let order_id = "order_a8723b2e45b0d44ea8723b2e45b0d44e";
-        let data = DashboardViewModel {
+        let data = HomeViewModel {
             has_stores: true,
-            stores: vec![DashboardStoreRow {
+            stores: vec![HomeStoreRow {
                 connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
                 display_name: "shop.example.com".to_string(),
                 site: "shop.example.com".to_string(),
@@ -231,7 +231,7 @@ mod tests {
                 health_label: "healthy".to_string(),
                 wallet: None,
             }],
-            recent_orders: vec![DashboardOrderRow {
+            recent_orders: vec![HomeOrderRow {
                 connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
                 display_name: "shop.example.com".to_string(),
                 order_id: shared::ids::OrderId::new(order_id.to_string()),
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn never_shows_a_meta_refresh() {
-        // `docs/txid_lookup_and_scan_chunking_wbs.md` Part C.8 - the dashboard's
+        // `docs/txid_lookup_and_scan_chunking_wbs.md` Part C.8 - the home page's
         // only meta-refresh was the rescan syncing banner's; with that feature
         // gone, this page never auto-refreshes at all.
         let html = page(&chrome(), &empty_data()).into_string();

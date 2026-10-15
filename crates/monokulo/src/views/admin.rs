@@ -216,7 +216,7 @@ pub fn invites_section(data: &AdminInvitesViewModel) -> Markup {
 pub fn admin_invites_page(chrome: &PageChrome, data: &AdminInvitesViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
-            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/" { "Dashboard" } }
+            (super::breadcrumbs(&[("/", "Home")]))
             h1 { "Invites" }
             (invites_section(data))
         }
@@ -538,6 +538,8 @@ pub enum SettingsTab {
     Abuse,
     Server,
     Logging,
+    /// The options files the settings are kept in, each with its Reload.
+    Files,
     /// Engine (or monokulo) settings added after this map was written and
     /// not placed yet. Only shown while something is in it.
     Other,
@@ -546,7 +548,7 @@ pub enum SettingsTab {
 impl SettingsTab {
     /// Every tab, in the order the tab bar shows them. General comes first:
     /// the engine's tabs stay empty until its connection there works.
-    pub const ALL: [SettingsTab; 8] = [
+    pub const ALL: [SettingsTab; 9] = [
         SettingsTab::General,
         SettingsTab::Nodes,
         SettingsTab::Payments,
@@ -554,6 +556,7 @@ impl SettingsTab {
         SettingsTab::Abuse,
         SettingsTab::Server,
         SettingsTab::Logging,
+        SettingsTab::Files,
         SettingsTab::Other,
     ];
 
@@ -567,6 +570,7 @@ impl SettingsTab {
             SettingsTab::Abuse => "abuse",
             SettingsTab::Server => "server",
             SettingsTab::Logging => "logging",
+            SettingsTab::Files => "files",
             SettingsTab::Other => "other",
         }
     }
@@ -580,6 +584,7 @@ impl SettingsTab {
             SettingsTab::Abuse => "Abuse protection",
             SettingsTab::Server => "Server",
             SettingsTab::Logging => "Logging",
+            SettingsTab::Files => "Files",
             SettingsTab::Other => "Other",
         }
     }
@@ -626,6 +631,7 @@ impl SettingsTab {
             ],
             SettingsTab::Server => &[Group::Server(Monokulo), Group::Server(Engine)],
             SettingsTab::Logging => &[Group::Logging(Monokulo), Group::Logging(Engine)],
+            SettingsTab::Files => &[],
             SettingsTab::Other => &[Group::Other(Monokulo), Group::Other(Engine)],
         }
     }
@@ -1409,9 +1415,14 @@ fn tab_fields(data: &AdminSettingsViewModel, tab: SettingsTab) -> Vec<&AdminScal
 }
 
 /// Whether a tab has anything to show: always, except Other, which only
-/// shows while a setting nobody placed is in it.
+/// shows while a setting nobody placed is in it, and Files, while there is
+/// an options file.
 fn tab_shown(data: &AdminSettingsViewModel, tab: SettingsTab) -> bool {
-    tab != SettingsTab::Other || !tab_fields(data, tab).is_empty()
+    match tab {
+        SettingsTab::Other => !tab_fields(data, tab).is_empty(),
+        SettingsTab::Files => !data.options_files.is_empty(),
+        _ => true,
+    }
 }
 
 /// Whether a tab's label carries the marker (T5): a network stores use has
@@ -1891,38 +1902,50 @@ pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
     html! {
         section id="settings-panel" aria-labelledby="settings-panel-title" data-tab=(tab.id()) data-tab-label=(tab.label()) {
             h2 id="settings-panel-title" tabindex="-1" data-fx-focus[focus] { (tab.label()) }
-            (ui::Hint::new("Saving writes the options file and applies the change straight away. A setting given on the command line or in the environment is locked here: change it where it is given."))
-            @if tab == SettingsTab::Abuse {
-                (ui::Hint::new(html! {
-                    "How this instance tells visitors apart and slows down anyone sending too many requests. A visitor "
-                    "past the soft limit is asked to pass a short check (automatic with JavaScript, a 10-second wait "
-                    "without); past the hard limit they're refused until the minute is up. Signed-in merchants and "
-                    "plugins using their store's secret key are never checked."
-                }))
-            }
-            @if tab == SettingsTab::Nodes {
-                (ui::Hint::new(html! {
-                    "The Monero nodes the engine reads each network's chain from: a primary, and fallbacks tried when it fails. "
-                    "A network with no nodes isn't used. A node that doesn't answer is still saved; one on another network is refused."
-                }))
-            }
-            @if tab.engine_only() && !engine_available(data) {
-                (engine_unavailable(data))
+            @if tab == SettingsTab::Files {
+                (ui::Hint::new("Each process keeps its settings in an options file. After editing one by hand, reload it here to apply it."))
+                (options_file_bars(data))
             } @else {
-                (super::settings::form("/dashboard/admin/settings", Save::Fixi { target: "#settings-panel" }, tab.label(), html! {
-                    input type="hidden" name="tab" value=(tab.id());
-                    @if tab == SettingsTab::Nodes {
-                        // Enter in a text box presses a form's first submit
-                        // button; here that would be a row's Move or Remove.
-                        // This one, first and out of sight, is Save.
-                        span class="visually-hidden" {
-                            (ui::Button::new("Save").kind(ui::ButtonType::Submit).attr("tabindex", "-1").attr("aria-hidden", "true"))
-                        }
-                    }
-                    (tab_cards(data, tab))
-                    (save_bar(data))
-                }))
+                (settings_tab(data, tab))
             }
+        }
+    }
+}
+
+/// A tab of settings: its cards in the settings form, and the save bar.
+fn settings_tab(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
+    html! {
+        (ui::Hint::new("Saving writes the options file and applies the change straight away. A setting given on the command line or in the environment is locked here: change it where it is given."))
+        @if tab == SettingsTab::Abuse {
+            (ui::Hint::new(html! {
+                "How this instance tells visitors apart and slows down anyone sending too many requests. A visitor "
+                "past the soft limit is asked to pass a short check (automatic with JavaScript, a 10-second wait "
+                "without); past the hard limit they're refused until the minute is up. Signed-in merchants and "
+                "plugins using their store's secret key are never checked."
+            }))
+        }
+        @if tab == SettingsTab::Nodes {
+            (ui::Hint::new(html! {
+                "The Monero nodes the engine reads each network's chain from: a primary, and fallbacks tried when it fails. "
+                "A network with no nodes isn't used. A node that doesn't answer is still saved; one on another network is refused."
+            }))
+        }
+        @if tab.engine_only() && !engine_available(data) {
+            (engine_unavailable(data))
+        } @else {
+            (super::settings::form("/dashboard/admin/settings", Save::Fixi { target: "#settings-panel" }, tab.label(), html! {
+                input type="hidden" name="tab" value=(tab.id());
+                @if tab == SettingsTab::Nodes {
+                    // Enter in a text box presses a form's first submit
+                    // button; here that would be a row's Move or Remove.
+                    // This one, first and out of sight, is Save.
+                    span class="visually-hidden" {
+                        (ui::Button::new("Save").kind(ui::ButtonType::Submit).attr("tabindex", "-1").attr("aria-hidden", "true"))
+                    }
+                }
+                (tab_cards(data, tab))
+                (save_bar(data))
+            }))
         }
     }
 }
@@ -1962,10 +1985,9 @@ fn node_clear_dialog() -> Markup {
 pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
-            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/" { "Dashboard" } }
+            (super::breadcrumbs(&[("/", "Home")]))
             h1 { "Admin settings" }
             (banners(data, false))
-            (options_file_bars(data))
             (tab_bar(data, false))
             (settings_panel(data, false))
             (toasts(data, false))
@@ -2221,7 +2243,7 @@ mod tests {
 
     #[test]
     fn a_tab_is_found_by_its_id_and_anything_else_is_general() {
-        for tab in SettingsTab::ALL {
+        for tab in SettingsTab::ALL.into_iter().filter(|tab| *tab != SettingsTab::Files) {
             assert_eq!(SettingsTab::from_id(Some(tab.id())), tab);
         }
         assert_eq!(SettingsTab::from_id(None), SettingsTab::General);
@@ -2469,7 +2491,7 @@ mod tests {
 
     #[test]
     fn each_tab_shows_only_its_own_settings() {
-        for tab in SettingsTab::ALL {
+        for tab in SettingsTab::ALL.into_iter().filter(|tab| *tab != SettingsTab::Files) {
             let html = page(&full_view(tab));
             for (key, owner, placed, _) in PLACEMENTS
                 .iter()
@@ -2566,7 +2588,7 @@ mod tests {
         );
         for tab in SettingsTab::ALL
             .into_iter()
-            .filter(|tab| *tab != SettingsTab::Other)
+            .filter(|tab| !matches!(tab, SettingsTab::Other | SettingsTab::Files))
         {
             let html = page(&full_view(tab));
             let bar = &html[html.find(r#"<nav id="settings-tabs""#).unwrap()..];
@@ -2598,7 +2620,7 @@ mod tests {
 
     #[test]
     fn banners_are_above_the_tab_bar_on_every_tab() {
-        for tab in SettingsTab::ALL {
+        for tab in SettingsTab::ALL.into_iter().filter(|tab| *tab != SettingsTab::Files) {
             let data = AdminSettingsViewModel {
                 notices: vec![
                     Notice::Error("Something is broken.".into()),
@@ -2626,7 +2648,7 @@ mod tests {
         assert!(
             SettingsTab::ALL
                 .iter()
-                .filter(|t| **t != SettingsTab::Other)
+                .filter(|t| !matches!(t, SettingsTab::Other | SettingsTab::Files))
                 .all(|t| !marked(&html, *t)),
             "nothing to see: {html}"
         );
@@ -2679,7 +2701,7 @@ mod tests {
         };
         for tab in SettingsTab::ALL
             .into_iter()
-            .filter(|tab| *tab != SettingsTab::Other)
+            .filter(|tab| !matches!(tab, SettingsTab::Other | SettingsTab::Files))
         {
             let data = unreachable(tab);
             let message = "Could not reach the configured engine: connection refused";

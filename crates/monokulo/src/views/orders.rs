@@ -578,7 +578,7 @@ mod tests {
             order: Some(test_order_detail_data(None)),
         };
         let html = detail_page(&chrome(), &data).into_string();
-        assert!(html.contains(r#"<nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a><span class="mk-breadcrumb-separator" aria-hidden="true">›</span><a href="/dashboard/stores/conn_1/orders">Orders</a></nav>"#));
+        assert!(html.contains(r#"<nav class="mk-breadcrumbs" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a><a href="/dashboard/stores/conn_1/orders" title="Orders">Orders</a></nav>"#));
         assert!(html.contains(r#"<span class="order-title-label">Order · </span><code class="order-title-id">pay_abc123</code>"#), "{html}");
     }
 

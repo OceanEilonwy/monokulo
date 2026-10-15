@@ -84,7 +84,7 @@ pub mod checkout;
 pub mod connect;
 pub mod controls;
 pub mod create_order;
-pub mod dashboard;
+pub mod home;
 pub mod engine;
 
 pub mod key_entry;
@@ -114,16 +114,24 @@ pub(crate) const THEME_CSS: &str = ui::assets::TOKENS_CSS;
 /// after it.
 pub(crate) const SITE_CSS: &str = include_str!("site.css");
 
+/// Where a page sits (`ui::Breadcrumbs`): links to the pages above it,
+/// nearest last; one link is a back link.
+pub fn breadcrumbs(links: &[(&str, &str)]) -> Markup {
+    let links: Vec<ui::Crumb> = links
+        .iter()
+        .map(|(href, label)| ui::Crumb { href: href.to_string(), label: label.to_string() })
+        .collect();
+    ui::Breadcrumbs::new(links).render()
+}
+
 /// Shared back links for store pages and pages nested under Orders.
 pub fn store_breadcrumb(connection_id: &str, display_name: &str, include_orders: bool) -> Markup {
-    html! {
-        nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" {
-            a href=(format!("/dashboard/stores/{connection_id}")) title=(display_name) { (display_name) }
-            @if include_orders {
-                span class="mk-breadcrumb-separator" aria-hidden="true" { "›" }
-                a href=(format!("/dashboard/stores/{connection_id}/orders")) { "Orders" }
-            }
-        }
+    let store = format!("/dashboard/stores/{connection_id}");
+    let orders = format!("{store}/orders");
+    if include_orders {
+        breadcrumbs(&[(&store, display_name), (&orders, "Orders")])
+    } else {
+        breadcrumbs(&[(&store, display_name)])
     }
 }
 
@@ -576,8 +584,9 @@ pub fn status_indicator(health: Option<Health>, place: ui::DotPlace) -> Markup {
     ui::StatusDot::new(health, place).render()
 }
 
-/// The site nav (`ui::SiteNav`): the brand (linking to `/`, the
-/// dashboard), the admin links, the status dot, then the account menu once
+/// The site nav (`ui::SiteNav`): the brand and, once signed in, Home
+/// (both `/`, the stores' overview), the admin links, the status dot, then
+/// the account menu once
 /// signed in (the theme switch is in it: an anonymous visitor has no
 /// account to keep a choice against, and gets `prefers-color-scheme`), or
 /// Log in and Sign up. The row is one height either way.
@@ -587,6 +596,9 @@ pub fn status_indicator(health: Option<Health>, place: ui::DotPlace) -> Markup {
 /// orders it between the links and the account menu.
 fn nav(chrome: &PageChrome) -> Markup {
     let links = html! {
+        @if chrome.logged_in {
+            a href="/" aria-current=[(chrome.current_path == "/").then_some("page")] { "Home" }
+        }
         @if chrome.is_admin {
             a href="/dashboard/admin/settings" { "Admin" }
             a href="/dashboard/admin/invites" { "Invites" }
@@ -747,6 +759,7 @@ mod tests {
         let status = at(r#"<a href="/status" class="nav-status-link""#);
         let hamburger = at(r#"<label for="nav-toggle""#);
         let links = at(r#"<div class="site-nav-links">"#);
+        let home = at(r#"<a href="/" aria-current="page">Home</a>"#);
         let admin = at(r#"href="/dashboard/admin/settings">Admin<"#);
         let invites = at(r#"href="/dashboard/admin/invites">Invites<"#);
         let logs = at(r#"href="/dashboard/admin/logs">Logs<"#);
@@ -754,20 +767,33 @@ mod tests {
         assert!(
             status < hamburger
                 && hamburger < links
-                && links < admin
+                && links < home
+                && home < admin
                 && admin < invites
                 && invites < logs
                 && logs < menu,
             "{html}"
         );
-        // The brand is the way to the dashboard: no separate link, and no
-        // top-level wallets link (the account menu has it).
+        // The brand and Home both go to the home page; no top-level
+        // wallets link (the account menu has it).
         assert!(
             html.contains(r#"<a href="/" class="site-nav-brand">"#),
             "{html}"
         );
         assert!(!html.contains(r#"href="/dashboard""#), "{html}");
         assert!(!html.contains(">wallets<"), "{html}");
+    }
+
+    /// Home is the current page on the home page, and isn't there for a
+    /// visitor who isn't signed in (they have no home page).
+    #[test]
+    fn home_is_marked_on_the_home_page_and_only_for_someone_signed_in() {
+        let mut chrome = signed_in("rachel.dz@example.org", false, Theme::System);
+        chrome.current_path = "/".into();
+        let html = nav(&chrome).into_string();
+        assert!(html.contains(r#"<a href="/" aria-current="page">Home</a>"#), "{html}");
+        let html = nav(&PageChrome::from_user(None, "/")).into_string();
+        assert!(!html.contains(">Home</a>"), "{html}");
     }
 
     #[test]

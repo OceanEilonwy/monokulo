@@ -204,10 +204,10 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
         div class="wrap wallet-choice" {
             @match flow {
                 Flow::Setup(setup) => {
-                    nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href=(format!("/setup?{}", setup.query())) { "Store" } }
+                    (super::breadcrumbs(&[(&format!("/setup?{}", setup.query()), "Store")]))
                 }
                 Flow::Account => {
-                    nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/account?tab=wallets" { "Wallets" } }
+                    (super::breadcrumbs(&[("/account?tab=wallets", "Wallets")]))
                 }
             }
             (flow.steps(WalletPath::New, 0))
@@ -363,7 +363,7 @@ pub fn import_page(chrome: &PageChrome, flow: Flow<'_>, data: &ImportViewModel) 
     let back = flow.choice_href(&data.name, &data.network);
     let body = html! {
         div class="wrap" {
-            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href=(back) { "Wallet kind" } }
+            (super::breadcrumbs(&[(&back, "Wallet kind")]))
             (flow.steps(WalletPath::Keys, 1))
             h1 { "Bring your own wallet" }
             p {
@@ -452,7 +452,7 @@ pub fn create_page(chrome: &PageChrome, flow: Flow<'_>, data: &CreateViewModel) 
     let back = flow.choice_href(&data.name, &data.network);
     let body = html! {
         div class="wrap" {
-            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href=(back) { "Wallet kind" } }
+            (super::breadcrumbs(&[(&back, "Wallet kind")]))
             noscript {
                 h1 { "Create a new wallet" }
                 (ui::Alert::new(html! {
@@ -954,7 +954,7 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
     let w = &data.wallet;
     let body = html! {
         div class="wrap wallet-page" {
-            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/account?tab=wallets" { "Wallets" } }
+            (super::breadcrumbs(&[("/account?tab=wallets", "Wallets")]))
             div class="wallet-title" { h1 { (w.name) } (super::network_badge(&w.network)) }
             @if let Some(at) = w.retired_at {
                 p class="wallet-meta" {
@@ -1319,11 +1319,7 @@ fn dialog_page(
 ) -> Markup {
     let body = html! {
         div class="wrap wallet-page" {
-            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" {
-                a href="/account?tab=wallets" { "Wallets" }
-                " › "
-                a href=(wallet_path(w)) { (w.name) }
-            }
+            (super::breadcrumbs(&[("/account?tab=wallets", "Wallets"), (&wallet_path(w), &w.name)]))
             (ui::DialogPage::new(content))
         }
     };

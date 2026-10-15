@@ -160,7 +160,7 @@ mod tests {
     // `views::connect`'s own test module - those pages no longer go through
     // this engine at all.
 
-    // Dashboard home page tests moved to `views::dashboard`'s own test
+    // Dashboard home page tests moved to `views::home`'s own test
     // module - that page no longer goes through this engine at all.
 
     // Store detail / integration-help / woocommerce-instructions page tests

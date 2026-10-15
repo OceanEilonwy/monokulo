@@ -213,6 +213,14 @@ export interface Choice {
 }
 
 /**
+ * One link of [`Breadcrumbs`].
+ */
+export interface Crumb {
+  readonly href: string;
+  readonly label: string;
+}
+
+/**
  * One event of a [`Timeline`].
  */
 export interface Event {

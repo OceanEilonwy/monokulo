@@ -149,7 +149,7 @@ const PAGE_STYLE: &str = r#"
 [data-query-error] mark { background: var(--tint-error); color: inherit; border-bottom: 2px solid currentColor; }
 /* The title bar holds Refresh and Live, which act on the whole page. */
 .logs-head { display: flex; align-items: center; flex-wrap: wrap; gap: .5em; margin: var(--space-lg) 0 var(--space-sm); padding-bottom: .3em; border-bottom: 2px solid var(--line); }
-.context-nav + .logs-head { margin-top: var(--space-xs); }
+.mk-breadcrumbs + .logs-head { margin-top: var(--space-xs); }
 .logs-head h1 { flex: 1; margin: 0; padding: 0; border: 0; }
 .logs-head svg { width: 1.1em; height: 1.1em; flex: none; }
 #log-live > span { display: inline-flex; }
@@ -352,9 +352,7 @@ pub fn row_page(chrome: &PageChrome, row_view: Option<&RowView>, back_url: &str)
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
     let body = html! {
         div class="wrap wrap-wide" {
-            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" {
-                a href="/" { "Dashboard" } " / " a href=(back_url) { "Logs" }
-            }
+            (super::breadcrumbs(&[("/", "Home"), (&back_url, "Logs")]))
             h1 { "Log line" }
             @if let Some(r) = row_view {
                 div class="log-rows" { (row(r)) }
@@ -611,7 +609,7 @@ pub fn syntax_page(chrome: &PageChrome, names: &[String]) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
     let body = html! {
         div class="wrap" {
-            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/dashboard/admin/logs" { "Logs" } }
+            (super::breadcrumbs(&[("/dashboard/admin/logs", "Logs")]))
             h1 { "Search syntax" }
             div class="qh-page" { (syntax(names, false)) }
         }
@@ -627,7 +625,7 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
     let body = html! {
         div class="wrap wrap-wide" {
-            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" { a href="/" { "Dashboard" } }
+            (super::breadcrumbs(&[("/", "Home")]))
             div class="logs-head" {
                 h1 { "Logs" }
                 // Submits the search as it stands: its newest lines.
@@ -751,9 +749,7 @@ pub fn pos_timeline_page(chrome: &PageChrome, vm: &PosTimelineViewModel) -> Mark
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) (PreEscaped(TIMELINE_STYLE)) } };
     let body = html! {
         div class="wrap wrap-wide" {
-            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" {
-                a href="/" { "Dashboard" } " / " a href="/dashboard/admin/logs" { "Logs" }
-            }
+            (super::breadcrumbs(&[("/", "Home"), ("/dashboard/admin/logs", "Logs")]))
             h1 { "POS session" }
             (ui::Hint::new(html! {
                 code { (vm.session) }
@@ -848,9 +844,7 @@ pub fn trace_page(chrome: &PageChrome, vm: &TraceViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
     let body = html! {
         div class="wrap wrap-wide" {
-            nav class="context-nav mk-breadcrumbs" aria-label="Breadcrumb" {
-                a href="/" { "Dashboard" } " / " a href="/dashboard/admin/logs" { "Logs" }
-            }
+            (super::breadcrumbs(&[("/", "Home"), ("/dashboard/admin/logs", "Logs")]))
             h1 { "Trace " code { (vm.trace_id) } }
             @for problem in &vm.problems { (status_problem(problem)) }
             @if vm.spans.is_empty() {
