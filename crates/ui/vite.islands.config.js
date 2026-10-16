@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import solid from '@solidjs/vite-plugin';
 
@@ -8,7 +9,7 @@ import solid from '@solidjs/vite-plugin';
 export default defineConfig(({ mode }) => {
   const development = mode === 'development';
   return {
-    root: new URL('.', import.meta.url).pathname,
+    root: fileURLToPath(new URL('.', import.meta.url)),
     // As in the POS's config: the plugin's own dev flag stays off, Solid's
     // development build comes from the resolve conditions.
     plugins: [solid(development ? { dev: false, solid: { dev: true, sourceNames: true } } : {})],

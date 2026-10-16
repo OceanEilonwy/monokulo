@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import solid from '@solidjs/vite-plugin';
 
@@ -6,6 +7,6 @@ import solid from '@solidjs/vite-plugin';
 // POS's config, the plugin's own dev flag stays off (it sends an option the
 // compiler no longer takes).
 export default defineConfig({
-  root: new URL('.', import.meta.url).pathname,
+  root: fileURLToPath(new URL('.', import.meta.url)),
   plugins: [solid({ dev: false })],
 });
