@@ -1,6 +1,7 @@
 //! The header every page of the GitHub Pages site shares: the brand and the
 //! site's links, the same on the landing page, the docs and the testing
-//! report: `ui::SiteNav`, monokulo's own bar.
+//! report: `ui::SiteNav`, monokulo's own bar. The stylebook, built by Vite
+//! into /stylebook/, has its own page and no header.
 
 use crate::logo;
 use maud::{html, Markup, PreEscaped};
@@ -38,6 +39,7 @@ pub(super) fn render(current: Section, root: &str, github_url: &str) -> Markup {
         a href=(format!("{root}#install")) { "Install" }
         (link(Section::Docs, format!("{root}docs/"), "Docs"))
         (link(Section::Testing, format!("{root}testing/"), "Testing"))
+        a href=(format!("{root}stylebook/")) { "Stylebook" }
         a href=(github_url) { "Source code" }
     };
     ui::SiteNav::new(brand, links)
@@ -75,11 +77,12 @@ mod tests {
                     "Install",
                     "Docs",
                     "Testing",
+                    "Stylebook",
                     "Source code"
                 ],
                 "{section:?} at {root:?}"
             );
-            for href in ["#how", "#install", "docs/", "testing/"] {
+            for href in ["#how", "#install", "docs/", "testing/", "stylebook/"] {
                 assert!(
                     html.contains(&format!(r#"href="{root}{href}""#)),
                     "{href} {html}"
