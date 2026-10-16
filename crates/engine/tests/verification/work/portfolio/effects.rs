@@ -306,7 +306,12 @@ impl World {
         tokio::time::pause();
         let timeout = run_round_at(&cold, &input, Duration::ZERO, self.now.get());
         tokio::pin!(timeout);
-        tokio::select! { biased; r=&mut timeout => panic!("hanging fleet unexpectedly returned: {r:?}"), ()=tokio::task::yield_now()=>{} }
+        let early =
+            tokio::select! { biased; r=&mut timeout => Some(r), ()=tokio::task::yield_now()=>None };
+        assert!(
+            early.is_none(),
+            "hanging fleet unexpectedly returned: {early:?}"
+        );
         tokio::time::advance(Duration::from_secs(61)).await;
         assert!(
             timeout.await.into_status_result().is_err(),
