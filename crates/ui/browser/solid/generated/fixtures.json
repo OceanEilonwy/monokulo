@@ -3241,7 +3241,7 @@
   },
   {
     "component": "SiteNav",
-    "html": "<nav class=\"site-nav\"><div class=\"wrap site-nav-row\"><a href=\"#component-site-nav\" class=\"site-nav-brand\">Monokulo</a><a href=\"#component-status-dot\" class=\"nav-status-link\" id=\"book-nav-status\" title=\"all systems healthy\" aria-label=\"Status: all systems healthy\" data-mk=\"1\" data-island=\"StatusDot\" data-props=\"{&quot;health&quot;:&quot;ok&quot;,&quot;poll&quot;:&quot;/status/summary&quot;}\"><span class=\"status-dot status-dot-ok\" data-mk=\"2\"></span></a><input type=\"checkbox\" id=\"nav-toggle\" class=\"nav-toggle-checkbox\"><label for=\"nav-toggle\" class=\"nav-toggle-label\" aria-label=\"Menu\">☰</label><div class=\"site-nav-links\"><a class=\"mk-btn\" href=\"#component-site-nav\" data-variant=\"quiet\">Log in</a><a class=\"mk-btn\" href=\"#component-site-nav\" data-variant=\"quiet\">Sign up</a></div></div></nav>",
+    "html": "<nav class=\"site-nav\"><div class=\"wrap site-nav-row\"><a href=\"#component-site-nav\" class=\"site-nav-brand\">Monokulo</a><a href=\"#component-status-dot\" class=\"nav-status-link\" id=\"book-nav-status\" title=\"all systems healthy\" aria-label=\"Status: all systems healthy\" data-mk=\"1\" data-island=\"StatusDot\" data-props=\"{&quot;health&quot;:&quot;ok&quot;,&quot;poll&quot;:&quot;/status/summary&quot;}\"><span class=\"status-dot status-dot-ok\" data-mk=\"2\"></span></a><input type=\"checkbox\" id=\"book-nav-toggle\" class=\"nav-toggle-checkbox\"><label for=\"book-nav-toggle\" class=\"nav-toggle-label\" aria-label=\"Menu\">☰</label><div class=\"site-nav-links\"><a class=\"mk-btn\" href=\"#component-site-nav\" data-variant=\"quiet\">Log in</a><a class=\"mk-btn\" href=\"#component-site-nav\" data-variant=\"quiet\">Sign up</a></div></div></nav>",
     "props": {
       "brand": {
         "$slot": [
@@ -3292,6 +3292,7 @@
           }
         ]
       },
+      "toggle_id": "book-nav-toggle",
       "width": "normal"
     },
     "title": "Signed out"

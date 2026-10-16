@@ -4,7 +4,8 @@
 //!
 //! - crates/ui/solid: the Solid components the POS imports;
 //! - apps/stylebook/examples/generated: the stylebook's section for each
-//!   component, with its examples rendered by the Rust components;
+//!   component, with its examples rendered by the Rust components, and the
+//!   Pages site's header, as the stylebook is published at /stylebook/;
 //! - crates/ui/browser/solid/generated/fixtures.json: the same examples as props and
 //!   HTML, which the browser suite renders through the Solid components and
 //!   compares.
@@ -49,9 +50,17 @@ fn outputs() -> BTreeMap<&'static str, BTreeMap<String, String>> {
             ui::book::partials(&catalogue)
                 .into_iter()
                 .map(|(name, html)| (format!("{name}.html"), html))
+                .chain([("site-header.html".to_string(), site_header())])
                 .collect(),
         ),
     ])
+}
+
+/// The Pages site's header, for the stylebook at /stylebook/: its links go
+/// up to the site's root.
+fn site_header() -> String {
+    use crate::pages::site_header::{render, Section, GITHUB_URL};
+    render(Section::Stylebook, "../", GITHUB_URL).into_string() + "\n"
 }
 
 pub(crate) fn ui(root: &Path, args: &[&str]) -> io::Result<Exit> {

@@ -21,7 +21,7 @@ mod model;
 mod render;
 mod serve;
 mod site_assets;
-mod site_header;
+pub(crate) mod site_header;
 #[cfg(test)]
 mod tests;
 

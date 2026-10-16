@@ -1,27 +1,28 @@
 //! The header every page of the GitHub Pages site shares: the brand and the
 //! site's links, the same on the landing page, the docs and the testing
 //! report: `ui::SiteNav`, monokulo's own bar. The stylebook, built by Vite
-//! into /stylebook/, has its own page and no header.
+//! into /stylebook/, takes it as a partial `cargo xtask ui` writes.
 
 use crate::logo;
 use maud::{html, Markup, PreEscaped};
 
 /// The repository the site links to when no other is given.
-pub(super) const GITHUB_URL: &str = "https://github.com/OceanEilonwy/monokulo";
+pub(crate) const GITHUB_URL: &str = "https://github.com/OceanEilonwy/monokulo";
 
 /// The part of the site a page is in; the header marks its link as current.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Section {
+pub(crate) enum Section {
     /// The landing page, whose own sections the first two links open.
     Home,
     Docs,
     Testing,
+    Stylebook,
 }
 
 /// The header for a page in `current`, `root` being the relative link prefix
 /// from the page to the site's root (`""` on the landing page, `"../"` on the
 /// testing report).
-pub(super) fn render(current: Section, root: &str, github_url: &str) -> Markup {
+pub(crate) fn render(current: Section, root: &str, github_url: &str) -> Markup {
     let link = |section: Section, href: String, label: &str| {
         html! {
             a href=(href) aria-current=[(section == current).then_some("page")] { (label) }
@@ -39,7 +40,7 @@ pub(super) fn render(current: Section, root: &str, github_url: &str) -> Markup {
         a href=(format!("{root}#install")) { "Install" }
         (link(Section::Docs, format!("{root}docs/"), "Docs"))
         (link(Section::Testing, format!("{root}testing/"), "Testing"))
-        a href=(format!("{root}stylebook/")) { "Stylebook" }
+        (link(Section::Stylebook, format!("{root}stylebook/"), "Stylebook"))
         a href=(github_url) { "Source code" }
     };
     ui::SiteNav::new(brand, links)
@@ -61,6 +62,7 @@ mod tests {
             (Section::Docs, "../", Some("Docs")),
             (Section::Docs, "../../", Some("Docs")),
             (Section::Testing, "../", Some("Testing")),
+            (Section::Stylebook, "../", Some("Stylebook")),
         ];
         for (section, root, current) in pages {
             let html = render(section, root, GITHUB_URL).0;

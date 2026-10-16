@@ -32,6 +32,12 @@ export interface SiteNavProps {
    * @default "normal"
    */
   width?: PageWidth;
+  /**
+   * The id of the hamburger's checkbox, unique on the page: another
+   * bar on it (the stylebook's specimen) needs its own.
+   * @default "nav-toggle"
+   */
+  toggle_id?: string;
 }
 
 /**
@@ -53,8 +59,8 @@ export function SiteNav(props: SiteNavProps): JSX.Element {
         ) : (
           null
         )}
-        <input type="checkbox" id="nav-toggle" class="nav-toggle-checkbox" />
-        <label for="nav-toggle" class="nav-toggle-label" aria-label="Menu">
+        <input type="checkbox" id={(props.toggle_id ?? "nav-toggle")} class="nav-toggle-checkbox" />
+        <label for={(props.toggle_id ?? "nav-toggle")} class="nav-toggle-label" aria-label="Menu">
           ☰
         </label>
         <div class="site-nav-links">
