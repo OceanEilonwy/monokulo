@@ -7,6 +7,8 @@
 #               live-network tests
 #   /docs/      the guides for adding Monokulo to a site (`cargo xtask
 #               pages docs`, from xtask/src/pages/docs/), and the Geomart sample shop
+#   /stylebook/ the ui components' stylebook (`npm run build -w @monokulo/stylebook`,
+#               apps/stylebook), from this checkout
 #
 # The site is in parts, each made by one workflow on main, which deploys the
 # whole site when it finishes (Pages serves a single deployment):
@@ -95,6 +97,10 @@ jobs:
       # checkout, with the Geomart sample shop under /docs/geomart/.
       - name: Build the docs beside the landing page
         run: cargo xtask pages docs --out target/pages/site/docs
+      # Every ui component, in both themes, from apps/stylebook in this
+      # checkout. Its asset links are relative (base './').
+      - name: Build the stylebook beside the landing page
+        run: npm run build -w @monokulo/stylebook -- --outDir "$GITHUB_WORKSPACE/target/pages/site/stylebook" --emptyOutDir
       - uses: actions/upload-pages-artifact@v5
         with:
           path: target/pages/site/
