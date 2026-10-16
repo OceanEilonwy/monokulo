@@ -24,7 +24,7 @@
 .mk-track > .step-now .mk-track-dot { border-color: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
 .mk-track > .step-part .mk-track-dot { border-color: currentColor; background: conic-gradient(currentColor 0 50%, var(--paper-raised) 50% 100%); }
 .mk-track > .step-fail .mk-track-dot { background: var(--state-border); border-color: var(--state-border); color: var(--paper-raised); }
-.mk-track > .step-todo { opacity: .6; }
+.mk-track > .step-todo { opacity: .85; }
 .mk-stage-msg { margin: 0; font-size: var(--text-sm); line-height: 1.4; }
 .mk-stage[data-size="compact"] { padding: var(--space-sm); }
 .mk-stage[data-size="compact"] .mk-track > li { font-size: var(--text-2xs); }

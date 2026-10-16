@@ -22,7 +22,9 @@ export function setup(props: SaveBarProps): SaveBarBehaviour {
   // names no card, until the next save.
   const failed = createMemo(() => {
     const form = store();
-    if (!form || own() || leaving() || !failedAtLoad()) return false;
+    // Outside a settings form (the stylebook's), what the server said.
+    if (!form) return failedAtLoad();
+    if (own() || leaving() || !failedAtLoad()) return false;
     return form.loaded.refusedCards === 0 || form.cards().some(card => card.refused());
   });
 
@@ -39,7 +41,8 @@ export function setup(props: SaveBarProps): SaveBarBehaviour {
   };
 
   return {
-    idle: () => !(total() > 0 || failed() || !!leaving()),
+    // Outside a settings form there's nothing to follow: it stays shown.
+    idle: () => !!store() && !(total() > 0 || failed() || !!leaving()),
     dirty: () => total() > 0,
     failed,
     leaving: () => !!leaving(),

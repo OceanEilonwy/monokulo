@@ -81,9 +81,18 @@ pub(super) fn dialog_examples() -> Vec<(&'static str, Dialog)> {
         ])
     };
     vec![(
-        "A question (the button opens it)",
+        DIALOG_EXAMPLE,
         Dialog::new("book-dialog", "book-dialog-title", body("book-dialog")),
     )]
+}
+
+pub(super) const DIALOG_EXAMPLE: &str = "A question (the button opens it)";
+
+/// What opens the stylebook's dialog: with JavaScript the dialog, without
+/// it the same question as a page (DialogPage's example).
+pub(super) fn dialog_opener() -> crate::LinkButton {
+    crate::LinkButton::new("Retire wallet…", "#component-dialog-page-1")
+        .attr("data-opens-dialog", "book-dialog")
 }
 
 component! {

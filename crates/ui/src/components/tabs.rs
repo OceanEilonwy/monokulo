@@ -35,7 +35,7 @@ component! {
             div class="mk-tabs" aria-label=(label) role="tablist" if enhanced {
                 @for tab in tabs {
                     a href={ "#" (tab.id) } id={ (tab.id) "-tab" } role="tab" if enhanced
-                        aria-controls=(tab.id) if enhanced aria-selected="true" if tab.id == b.selected
+                        aria-controls=(tab.id) if enhanced aria-selected=join["true" if tab.id == b.selected, "false" if tab.id != b.selected]
                         tabindex="-1" if tab.id != b.selected on:click=pick(tab.id) on:keydown=key {
                         (tab.label)
                     }

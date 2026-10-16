@@ -917,7 +917,7 @@
   },
   {
     "component": "SortableList",
-    "html": "<ol class=\"mk-sortable\" aria-label=\"Example nodes\" data-mk=\"1\" data-island=\"SortableList\" data-props=\"{}\"><li class=\"mk-sortable-item\"><details class=\"disclosure-row\"><summary><span class=\"mk-sort-handle\" role=\"button\" tabindex=\"0\" title=\"Drag to reorder\" aria-label=\"Reorder Primary: press the up or down arrow\" data-sortable-handle=\"\" data-only=\"script\">⠿</span>Primary · node-a.example:18081</summary><div class=\"disclosure-body\">The node's address, and whether it uses TLS.</div></details></li><li class=\"mk-sortable-item\"><details class=\"disclosure-row\"><summary><span class=\"mk-sort-handle\" role=\"button\" tabindex=\"0\" title=\"Drag to reorder\" aria-label=\"Reorder Fallback 1: press the up or down arrow\" data-sortable-handle=\"\" data-only=\"script\">⠿</span>Fallback 1 · node-b.example:18081</summary><div class=\"disclosure-body\">The node's address, and whether it uses TLS.</div></details></li><li class=\"mk-sortable-item\"><details class=\"disclosure-row\"><summary><span class=\"mk-sort-handle\" role=\"button\" tabindex=\"0\" title=\"Drag to reorder\" aria-label=\"Reorder Fallback 2: press the up or down arrow\" data-sortable-handle=\"\" data-only=\"script\">⠿</span>Fallback 2 · node-c.example:18081</summary><div class=\"disclosure-body\">The node's address, and whether it uses TLS.</div></details></li><li class=\"mk-sortable-item\" data-sortable-fixed=\"\"><details class=\"disclosure-row\"><summary>+ Add a node</summary><div class=\"disclosure-body\">An address to try last.</div></details></li></ol>",
+    "html": "<ol class=\"mk-sortable\" aria-label=\"Example nodes\" data-mk=\"1\" data-island=\"SortableList\" data-props=\"{}\"><li class=\"mk-sortable-item\"><details class=\"disclosure-row\"><summary><span class=\"mk-sort-handle\" role=\"button\" tabindex=\"0\" title=\"Drag to reorder\" aria-label=\"Reorder Primary: press the up or down arrow\" data-sortable-handle=\"\" data-only=\"script\">⠿</span>Primary · node-a.example:18081</summary><div class=\"disclosure-body\">The node's address, and whether it uses TLS.<div class=\"form-actions\"><button class=\"mk-btn\" type=\"button\" data-only=\"no-script\">Move down</button></div></div></details></li><li class=\"mk-sortable-item\"><details class=\"disclosure-row\"><summary><span class=\"mk-sort-handle\" role=\"button\" tabindex=\"0\" title=\"Drag to reorder\" aria-label=\"Reorder Fallback 1: press the up or down arrow\" data-sortable-handle=\"\" data-only=\"script\">⠿</span>Fallback 1 · node-b.example:18081</summary><div class=\"disclosure-body\">The node's address, and whether it uses TLS.<div class=\"form-actions\"><button class=\"mk-btn\" type=\"button\" data-only=\"no-script\">Move up</button><button class=\"mk-btn\" type=\"button\" data-only=\"no-script\">Move down</button></div></div></details></li><li class=\"mk-sortable-item\"><details class=\"disclosure-row\"><summary><span class=\"mk-sort-handle\" role=\"button\" tabindex=\"0\" title=\"Drag to reorder\" aria-label=\"Reorder Fallback 2: press the up or down arrow\" data-sortable-handle=\"\" data-only=\"script\">⠿</span>Fallback 2 · node-c.example:18081</summary><div class=\"disclosure-body\">The node's address, and whether it uses TLS.<div class=\"form-actions\"><button class=\"mk-btn\" type=\"button\" data-only=\"no-script\">Move up</button></div></div></details></li><li class=\"mk-sortable-item\" data-sortable-fixed=\"\"><details class=\"disclosure-row\"><summary>+ Add a node</summary><div class=\"disclosure-body\">An address to try last.</div></details></li></ol>",
     "props": {
       "children": {
         "$slot": [
@@ -932,7 +932,31 @@
                       "alert": false,
                       "children": {
                         "$slot": [
-                          "The node's address, and whether it uses TLS."
+                          "The node's address, and whether it uses TLS.",
+                          {
+                            "$component": "FormActions",
+                            "props": {
+                              "children": {
+                                "$slot": [
+                                  {
+                                    "$component": "Button",
+                                    "props": {
+                                      "block": false,
+                                      "busy": false,
+                                      "children": {
+                                        "$slot": [
+                                          "Move down"
+                                        ]
+                                      },
+                                      "data-only": "no-script",
+                                      "disabled": false,
+                                      "kind": "button"
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          }
                         ]
                       },
                       "look": "row",
@@ -966,7 +990,46 @@
                       "alert": false,
                       "children": {
                         "$slot": [
-                          "The node's address, and whether it uses TLS."
+                          "The node's address, and whether it uses TLS.",
+                          {
+                            "$component": "FormActions",
+                            "props": {
+                              "children": {
+                                "$slot": [
+                                  {
+                                    "$component": "Button",
+                                    "props": {
+                                      "block": false,
+                                      "busy": false,
+                                      "children": {
+                                        "$slot": [
+                                          "Move up"
+                                        ]
+                                      },
+                                      "data-only": "no-script",
+                                      "disabled": false,
+                                      "kind": "button"
+                                    }
+                                  },
+                                  {
+                                    "$component": "Button",
+                                    "props": {
+                                      "block": false,
+                                      "busy": false,
+                                      "children": {
+                                        "$slot": [
+                                          "Move down"
+                                        ]
+                                      },
+                                      "data-only": "no-script",
+                                      "disabled": false,
+                                      "kind": "button"
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          }
                         ]
                       },
                       "look": "row",
@@ -1000,7 +1063,31 @@
                       "alert": false,
                       "children": {
                         "$slot": [
-                          "The node's address, and whether it uses TLS."
+                          "The node's address, and whether it uses TLS.",
+                          {
+                            "$component": "FormActions",
+                            "props": {
+                              "children": {
+                                "$slot": [
+                                  {
+                                    "$component": "Button",
+                                    "props": {
+                                      "block": false,
+                                      "busy": false,
+                                      "children": {
+                                        "$slot": [
+                                          "Move up"
+                                        ]
+                                      },
+                                      "data-only": "no-script",
+                                      "disabled": false,
+                                      "kind": "button"
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          }
                         ]
                       },
                       "look": "row",
@@ -3241,7 +3328,7 @@
   },
   {
     "component": "SiteNav",
-    "html": "<nav class=\"site-nav\"><div class=\"wrap site-nav-row\"><a href=\"#component-site-nav\" class=\"site-nav-brand\">Monokulo</a><a href=\"#component-status-dot\" class=\"nav-status-link\" id=\"book-nav-status\" title=\"all systems healthy\" aria-label=\"Status: all systems healthy\" data-mk=\"1\" data-island=\"StatusDot\" data-props=\"{&quot;health&quot;:&quot;ok&quot;,&quot;poll&quot;:&quot;/status/summary&quot;}\"><span class=\"status-dot status-dot-ok\" data-mk=\"2\"></span></a><input type=\"checkbox\" id=\"book-nav-toggle\" class=\"nav-toggle-checkbox\"><label for=\"book-nav-toggle\" class=\"nav-toggle-label\" aria-label=\"Menu\">☰</label><div class=\"site-nav-links\"><a class=\"mk-btn\" href=\"#component-site-nav\" data-variant=\"quiet\">Log in</a><a class=\"mk-btn\" href=\"#component-site-nav\" data-variant=\"quiet\">Sign up</a></div></div></nav>",
+    "html": "<nav class=\"site-nav\"><div class=\"wrap site-nav-row\"><a href=\"#component-site-nav\" class=\"site-nav-brand\">Monokulo</a><a href=\"#component-status-dot\" class=\"nav-status-link\" id=\"book-nav-status\" title=\"all systems healthy\" aria-label=\"Status: all systems healthy\" data-mk=\"1\" data-island=\"StatusDot\" data-props=\"{&quot;health&quot;:&quot;ok&quot;,&quot;poll&quot;:&quot;&quot;}\"><span class=\"status-dot status-dot-ok\" data-mk=\"2\"></span></a><input type=\"checkbox\" id=\"book-nav-toggle\" class=\"nav-toggle-checkbox\"><label for=\"book-nav-toggle\" class=\"nav-toggle-label\" aria-label=\"Menu\">☰</label><div class=\"site-nav-links\"><a class=\"mk-btn\" href=\"#component-site-nav\" data-variant=\"quiet\">Log in</a><a class=\"mk-btn\" href=\"#component-site-nav\" data-variant=\"quiet\">Sign up</a></div></div></nav>",
     "props": {
       "brand": {
         "$slot": [
@@ -3287,7 +3374,7 @@
               "health": "ok",
               "href": "#component-status-dot",
               "id": "book-nav-status",
-              "poll": "/status/summary"
+              "poll": ""
             }
           }
         ]
@@ -3430,39 +3517,40 @@
   },
   {
     "component": "Menu",
-    "html": "<details class=\"acct\" data-mk=\"1\" data-island=\"Menu\" data-props=\"{}\"><summary class=\"acct-button\" aria-label=\"Example account menu\" title=\"alex@example.test\">Account</summary><div class=\"acct-menu\"><a class=\"mk-btn\" href=\"#component-menu\" data-variant=\"quiet\">Account settings</a><a class=\"mk-btn\" href=\"#component-menu\" data-variant=\"quiet\">Wallets</a></div></details>",
+    "html": "<details class=\"acct\" data-mk=\"1\" data-island=\"Menu\" data-props=\"{}\"><summary class=\"acct-button\" aria-label=\"Example account menu\" title=\"alex@example.test\">A</summary><div class=\"acct-menu\"><a class=\"menu-item\" href=\"#component-menu\"><span>Account</span></a><a class=\"menu-item\" href=\"#component-menu\"><span>Wallets</span><span class=\"menu-note\">2</span></a></div></details>",
     "props": {
       "button": {
         "$slot": [
-          "Account"
+          "A"
         ]
       },
       "children": {
         "$slot": [
           {
-            "$component": "LinkButton",
+            "$component": "MenuItem",
             "props": {
-              "block": false,
               "children": {
                 "$slot": [
-                  "Account settings"
+                  "Account"
                 ]
               },
-              "href": "#component-menu",
-              "variant": "quiet"
+              "href": "#component-menu"
             }
           },
           {
-            "$component": "LinkButton",
+            "$component": "MenuItem",
             "props": {
-              "block": false,
               "children": {
                 "$slot": [
                   "Wallets"
                 ]
               },
               "href": "#component-menu",
-              "variant": "quiet"
+              "note": {
+                "$slot": [
+                  "2"
+                ]
+              }
             }
           }
         ]

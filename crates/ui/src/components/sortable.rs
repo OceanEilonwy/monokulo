@@ -60,7 +60,16 @@ component! {
 }
 
 pub(super) fn sortable_list_examples() -> Vec<(&'static str, SortableList)> {
-    let item = |place: &str, address: &str| {
+    let item = |place: &str, address: &str, first: bool, last: bool| {
+        let moves = Slot::many(
+            [
+                (!first).then_some("Move up"),
+                (!last).then_some("Move down"),
+            ]
+            .into_iter()
+            .flatten()
+            .map(|label| Slot::from(crate::Button::new(label).attr("data-only", "no-script"))),
+        );
         Slot::from(SortableItem::new(
             crate::Disclosure::new(
                 Slot::many([
@@ -69,7 +78,10 @@ pub(super) fn sortable_list_examples() -> Vec<(&'static str, SortableList)> {
                     ))),
                     Slot::from(format!("{place} · {address}")),
                 ]),
-                "The node's address, and whether it uses TLS.",
+                Slot::many([
+                    Slot::from("The node's address, and whether it uses TLS."),
+                    Slot::from(crate::FormActions::new(moves)),
+                ]),
             )
             .look(crate::DisclosureLook::Row),
         ))
@@ -79,9 +91,9 @@ pub(super) fn sortable_list_examples() -> Vec<(&'static str, SortableList)> {
         SortableList::new(
             "Example nodes",
             Slot::many([
-                item("Primary", "node-a.example:18081"),
-                item("Fallback 1", "node-b.example:18081"),
-                item("Fallback 2", "node-c.example:18081"),
+                item("Primary", "node-a.example:18081", true, false),
+                item("Fallback 1", "node-b.example:18081", false, false),
+                item("Fallback 2", "node-c.example:18081", false, true),
                 Slot::from(
                     SortableItem::new(
                         crate::Disclosure::new("+ Add a node", "An address to try last.")
