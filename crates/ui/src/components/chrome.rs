@@ -26,14 +26,18 @@ component! {
         /// The width of the page under it, which its row lines up with.
         #[default(PageWidth::Normal)]
         width: PageWidth,
+        /// The id of the hamburger's checkbox, unique on the page: another
+        /// bar on it (the stylebook's specimen) needs its own.
+        #[default(String::from("nav-toggle"))]
+        toggle_id: String,
     }
     html {
         nav class="site-nav" data-width="wide" if width == PageWidth::Wide {
             div class="wrap site-nav-row" {
                 a href=(home) class="site-nav-brand" { (brand) }
                 @if let Some(status) = status { (status) }
-                input type="checkbox" id="nav-toggle" class="nav-toggle-checkbox";
-                label for="nav-toggle" class="nav-toggle-label" aria-label="Menu" { "☰" }
+                input type="checkbox" id=(toggle_id) class="nav-toggle-checkbox";
+                label for=(toggle_id) class="nav-toggle-label" aria-label="Menu" { "☰" }
                 div class="site-nav-links" { (links) }
             }
         }
@@ -252,6 +256,7 @@ pub(super) fn site_nav_examples() -> Vec<(&'static str, SiteNav)> {
             ]),
         )
         .home("#component-site-nav")
+        .toggle_id("book-nav-toggle")
         .status(
             StatusDot::new(HealthState::Ok)
                 .href("#component-status-dot")
