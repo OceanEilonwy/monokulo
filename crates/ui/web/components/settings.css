@@ -6,7 +6,7 @@
    column: name, then control. */
 .setting-field { margin: 0 0 var(--space-xl); }
 .setting-field:last-child { margin-bottom: 0; }
-.setting-field:has(> .setting-about) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(12rem, 22rem); gap: var(--space-sm) var(--space-lg); align-items: start; margin: 0; }
+.setting-field:has(> .setting-about) { display: grid; grid-template-columns: minmax(10rem, 1fr) minmax(12rem, 22rem); gap: var(--space-sm) var(--space-lg); align-items: start; margin: 0; }
 .setting-field:has(> .setting-about) + .setting-field:has(> .setting-about) { margin-top: var(--space-md); padding-top: var(--space-md); border-top: 1px solid var(--line); }
 .setting-field:has(> .setting-control > :is(.radio-cards, .setting-choices, textarea, table, .table-scroll, .mk-sortable):first-child) { grid-template-columns: minmax(0, 1fr); }
 .setting-field[hidden] { display: none; }
@@ -62,7 +62,7 @@
 .badge-error { background: var(--tint-error); }
 .badge-warning { background: var(--tint-warning); }
 /* "changed" beside a setting the admin has edited (shown by the script). */
-.changed-mark { display: none; font-size: var(--text-xs); font-weight: 700; color: var(--card-changed); }
+.changed-mark { display: none; margin-left: var(--space-xs); font-size: var(--text-xs); font-weight: 700; color: var(--card-changed); }
 .setting-field.is-changed .changed-mark { display: inline; }
 .setting-field.is-changed input:not([disabled]), .setting-field.is-changed select, .setting-field.is-changed textarea { border-color: var(--card-changed); }
 /* The bar at the bottom of the window that saves the page's settings.

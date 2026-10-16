@@ -260,6 +260,7 @@ pub(super) fn site_nav_examples() -> Vec<(&'static str, SiteNav)> {
         .status(
             StatusDot::new(HealthState::Ok)
                 .href("#component-status-dot")
+                .poll("")
                 .id("book-nav-status"),
         ),
     )]
@@ -270,16 +271,10 @@ pub(super) fn menu_examples() -> Vec<(&'static str, Menu)> {
         "The account menu",
         Menu::new(
             "Example account menu",
-            "Account",
+            "A",
             Slot::many([
-                Slot::from(
-                    crate::LinkButton::new("Account settings", "#component-menu")
-                        .variant(crate::ButtonVariant::Quiet),
-                ),
-                Slot::from(
-                    crate::LinkButton::new("Wallets", "#component-menu")
-                        .variant(crate::ButtonVariant::Quiet),
-                ),
+                Slot::from(MenuItem::new("Account").href("#component-menu")),
+                Slot::from(MenuItem::new("Wallets").href("#component-menu").note("2")),
             ]),
         )
         .title("alex@example.test"),

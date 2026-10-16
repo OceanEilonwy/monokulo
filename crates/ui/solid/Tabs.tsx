@@ -5,7 +5,7 @@ import { createRoot, onCleanup, getOwner, runWithOwner, createRenderEffect, For,
 import type { Accessor } from 'solid-js';
 import { insert, registerDelegatedRoot, unregisterDelegatedRoot } from '@solidjs/web';
 import type { JSX } from '@solidjs/web';
-import { mark, marks, on, setAttr } from './runtime';
+import { mark, marks, on, setAttr, tokens } from './runtime';
 import { setup } from '../web/components/tabs.behaviour';
 import type { Tab } from './types';
 
@@ -46,7 +46,7 @@ export function Tabs(props: TabsProps): JSX.Element {
       <div class="mk-tabs" aria-label={props.label} role={enhanced ? `tablist` : undefined}>
         <For each={props.tabs}>
           {(tab) => (
-            <a href={`#${tab.id}`} id={`${tab.id}-tab`} role={enhanced ? `tab` : undefined} aria-controls={enhanced ? `${tab.id}` : undefined} aria-selected={enhanced ? tab.id === b.selected() ? `true` : undefined : undefined} tabindex={enhanced ? tab.id !== b.selected() ? `-1` : undefined : undefined} onClick={(event: Event) => b.pick(tab.id, event)} onKeyDown={b.key}>
+            <a href={`#${tab.id}`} id={`${tab.id}-tab`} role={enhanced ? `tab` : undefined} aria-controls={enhanced ? `${tab.id}` : undefined} aria-selected={enhanced ? tokens(tab.id === b.selected() && `true`, tab.id !== b.selected() && `false`) : undefined} tabindex={enhanced ? tab.id !== b.selected() ? `-1` : undefined : undefined} onClick={(event: Event) => b.pick(tab.id, event)} onKeyDown={b.key}>
               {tab.label}
             </a>
           )}
@@ -99,7 +99,7 @@ export function attachTabs(root: Element, props: TabsProps): () => void {
       if (n3) {
         setAttr(n3, "role", enhanced ? `tab` : undefined);
         setAttr(n3, "aria-controls", enhanced ? `${tab.id}` : undefined);
-        createRenderEffect(() => tab.id === b.selected() ? `true` : undefined, (value) => setAttr(n3, "aria-selected", value));
+        createRenderEffect(() => tokens(tab.id === b.selected() && `true`, tab.id !== b.selected() && `false`), (value) => setAttr(n3, "aria-selected", value));
         createRenderEffect(() => tab.id !== b.selected() ? `-1` : undefined, (value) => setAttr(n3, "tabindex", value));
         on(n3, "click", (event: Event) => b.pick(tab.id, event));
         on(n3, "keydown", b.key);

@@ -35,6 +35,10 @@ pub struct Specimens {
     /// Rendered only for hand-written stylebook pages to include
     /// (`<!-- example:generated/partials/NAME -->`), not shown as specimens.
     pub partials: Vec<(&'static str, Slot)>,
+    /// What the stylebook shows in an example's frame before it, by the
+    /// example's title: what a dialog needs to be opened by. Not part of
+    /// the example, so not in its source or the Solid fixtures.
+    pub leads: Vec<(&'static str, Slot)>,
 }
 
 fn specimens<C: crate::Component>(examples: Vec<(&'static str, C)>) -> Specimens {
@@ -45,6 +49,7 @@ fn specimens<C: crate::Component>(examples: Vec<(&'static str, C)>) -> Specimens
             .map(|(title, c)| (title, Slot::from(c)))
             .collect(),
         partials: Vec::new(),
+        leads: Vec::new(),
     }
 }
 
@@ -53,7 +58,19 @@ impl Specimens {
         self.partials.push((name, Slot::from(component)));
         self
     }
+
+    fn lead<C: crate::Component>(mut self, example: &'static str, component: C) -> Self {
+        assert!(
+            self.examples.iter().any(|(title, _)| *title == example),
+            "a lead for an example {} doesn't have: {example}",
+            self.info.name
+        );
+        self.leads.push((example, Slot::from(component)));
+        self
+    }
 }
+
+use dialog::DIALOG_EXAMPLE;
 
 /// Every component, with its examples.
 pub fn catalogue() -> Vec<Specimens> {
@@ -83,7 +100,7 @@ pub fn catalogue() -> Vec<Specimens> {
         // Shown in Table's examples: a row or a cell alone isn't a table.
         specimens(Vec::<(&str, content::Row)>::new()),
         specimens(Vec::<(&str, content::Cell)>::new()),
-        specimens(dialog::dialog_examples()),
+        specimens(dialog::dialog_examples()).lead(DIALOG_EXAMPLE, dialog::dialog_opener()),
         specimens(dialog::dialog_title_examples()),
         specimens(dialog::dialog_actions_examples()),
         specimens(dialog::dialog_page_examples()),

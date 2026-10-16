@@ -58,9 +58,15 @@ pub fn sections(catalogue: &[Specimens]) -> String {
         s.push_str("<div class=\"book-specimens\">");
         for (i, (title, slot)) in specimens.examples.iter().enumerate() {
             let html = render(slot);
+            let lead = specimens
+                .leads
+                .iter()
+                .filter(|(example, _)| example == title)
+                .map(|(_, lead)| render(lead))
+                .collect::<String>();
             let _ = write!(
                 s,
-                "<figure class=\"book-specimen\" id=\"{id}-{}\"><figcaption>{}</figcaption><div class=\"book-example\">{html}</div>\
+                "<figure class=\"book-specimen\" id=\"{id}-{}\"><figcaption>{}</figcaption><div class=\"book-example\">{lead}{html}</div>\
                  <details class=\"book-source\"><summary>Rust, Solid and HTML</summary>\
                  <p class=\"book-source-label\">Rust</p><pre><code>{}</code></pre>\
                  <p class=\"book-source-label\">Solid</p><pre><code>{}</code></pre>\
