@@ -35,7 +35,11 @@ pub struct History {
     marks: VecDeque<Mark>,
     live: State,
     next: u64,
+    /// The engine's clock in its last page, and when that page arrived:
+    /// the engine streams only when it records something, so a quiet
+    /// network's last page can be minutes old.
     engine_now_ms: i64,
+    engine_now_at: tokio::time::Instant,
 }
 
 /// The state just after the event before `next_seq`.
@@ -93,6 +97,7 @@ impl History {
             live: State::default(),
             next: first,
             engine_now_ms: page.now_ms,
+            engine_now_at: tokio::time::Instant::now(),
         };
         let _ = history.apply(page.events);
         history.next = page.next;
@@ -106,6 +111,7 @@ impl History {
             return Update::Restarted;
         }
         self.engine_now_ms = page.now_ms;
+        self.engine_now_at = tokio::time::Instant::now();
         self.tuning = page.tuning;
         self.next = self.next.max(page.next);
         let (applied, effects, marks) = self.apply(page.events);
@@ -198,9 +204,13 @@ impl History {
         &self.network
     }
 
-    /// The engine's clock as of its last page.
+    /// The engine's clock now: as of its last page, moved on by the time
+    /// since that page arrived. A page set by a stale clock would think
+    /// every report the engine sends is from the future.
     pub fn engine_now_ms(&self) -> i64 {
+        let since = self.engine_now_at.elapsed().as_millis();
         self.engine_now_ms
+            .saturating_add(i64::try_from(since).unwrap_or(i64::MAX))
     }
 
     /// The oldest moment the history can show.

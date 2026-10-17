@@ -352,3 +352,24 @@ fn any_moment_asked_for_is_answered() {
     let _ = history.frame_at(i64::MIN);
     let _ = history.frame_at(i64::MAX);
 }
+
+/// The engine streams only when it records something. A page opened while
+/// the network is quiet still starts from the engine's clock now, not the
+/// clock of the last page, so the reports it gets aren't from the future.
+#[tokio::test(start_paused = true)]
+async fn the_engine_clock_moves_on_between_pages() {
+    let events = network(1);
+    let last = events.last().unwrap().at_ms;
+    let mut history = History::new(page(&events, "e1"));
+    assert_eq!(history.engine_now_ms(), last);
+
+    tokio::time::advance(std::time::Duration::from_secs(90)).await;
+    assert_eq!(history.engine_now_ms(), last + 90_000);
+
+    // A newer page sets the clock again.
+    let mut quiet = page(&[], "e1");
+    quiet.now_ms = last + 100_000;
+    quiet.next = history.next();
+    history.update(quiet);
+    assert_eq!(history.engine_now_ms(), last + 100_000);
+}
