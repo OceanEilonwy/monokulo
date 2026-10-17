@@ -164,7 +164,8 @@ async fn index(Query(look): Query<Look>) -> Html<String> {
 fn page(look: &Look, path: &str, title: &str, header: PageHeader, body: Markup) -> Html<String> {
     Html(
         Page::new(format!("{title} - Design demo"), header)
-            .class("settings-page")
+            // The Query page takes the full width, as the Logs page does.
+            .class(if path.starts_with("/query") { "settings-page wrap-wide" } else { "settings-page" })
             .head(html! { style { (PreEscaped(DEMO_STYLE)) } })
             .render(&look.chrome(path), body)
             .into_string(),
@@ -173,6 +174,7 @@ fn page(look: &Look, path: &str, title: &str, header: PageHeader, body: Markup) 
 
 /// Page layout the designs add (no colours: those are the ui's roles).
 const DEMO_STYLE: &str = r#"
+.wrap.wrap-wide { max-width: 1200px; }
 .query-band { display: grid; grid-template-columns: minmax(12rem, 16rem) minmax(0, 1fr); gap: var(--space-md); height: 17rem; }
 .query-band > * { min-height: 0; }
 .query-editor { display: flex; flex-direction: column; gap: var(--space-sm); margin: 0; min-width: 0; }
@@ -305,7 +307,7 @@ fn restriction_banner(look: &Look, restriction: Restriction) -> Markup {
                     .size(ControlSize::Compact)
                     .attr("data-opens-dialog", "allow-any"),
             ),
-        Restriction::Off => StatusBanner::new("Any website can show this checkout.", Tone::Notice)
+        Restriction::Off => StatusBanner::new("Any website can show this checkout.", Tone::Warning)
             .icon(icon(icons::LOCK_OPEN))
             .tip(tip("Allow only your verified domains to stop other websites showing this checkout and taking orders for your store."))
             .action(
@@ -313,7 +315,7 @@ fn restriction_banner(look: &Look, restriction: Restriction) -> Markup {
                     .variant(ButtonVariant::Primary)
                     .size(ControlSize::Compact),
             ),
-        Restriction::NothingVerified => StatusBanner::new("Any website can show this checkout.", Tone::Notice)
+        Restriction::NothingVerified => StatusBanner::new("Any website can show this checkout.", Tone::Warning)
             .icon(icon(icons::LOCK_OPEN))
             .tip(tip("A domain must be verified before you can allow only your own. Add one below and publish its DNS record."))
             .action(

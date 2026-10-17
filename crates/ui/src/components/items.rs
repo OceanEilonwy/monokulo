@@ -52,7 +52,7 @@ pub(super) fn status_banner_examples() -> Vec<(&'static str, StatusBanner)> {
         ),
         (
             "Off",
-            StatusBanner::new("Any website can show this checkout.", crate::Tone::Notice)
+            StatusBanner::new("Any website can show this checkout.", crate::Tone::Warning)
                 .icon("🔓")
                 .tip(tip("Allow only your verified domains to stop other websites showing it."))
                 .action(

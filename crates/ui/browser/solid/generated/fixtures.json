@@ -1645,7 +1645,7 @@
   },
   {
     "component": "StatusBanner",
-    "html": "<div class=\"mk-status-banner\" data-tone=\"notice\"><span class=\"mk-status-banner-icon\" aria-hidden=\"true\">🔓</span><div class=\"mk-status-banner-title\"><strong>Any website can show this checkout.</strong><details class=\"help-tip\" data-anchor=\"container\" data-mk=\"1\" data-island=\"HelpTip\" data-props=\"{}\"><summary aria-label=\"What this means\" title=\"What this means\">?</summary><div class=\"help-tip-body\">Allow only your verified domains to stop other websites showing it.</div></details></div><div class=\"mk-status-banner-action\"><button class=\"mk-btn\" type=\"button\" data-variant=\"primary\" data-size=\"compact\">Only allow my domains</button></div></div>",
+    "html": "<div class=\"mk-status-banner\" data-tone=\"warning\"><span class=\"mk-status-banner-icon\" aria-hidden=\"true\">🔓</span><div class=\"mk-status-banner-title\"><strong>Any website can show this checkout.</strong><details class=\"help-tip\" data-anchor=\"container\" data-mk=\"1\" data-island=\"HelpTip\" data-props=\"{}\"><summary aria-label=\"What this means\" title=\"What this means\">?</summary><div class=\"help-tip-body\">Allow only your verified domains to stop other websites showing it.</div></details></div><div class=\"mk-status-banner-action\"><button class=\"mk-btn\" type=\"button\" data-variant=\"primary\" data-size=\"compact\">Only allow my domains</button></div></div>",
     "props": {
       "action": {
         "$slot": [
@@ -1690,7 +1690,7 @@
         ]
       },
       "title": "Any website can show this checkout.",
-      "tone": "notice"
+      "tone": "warning"
     },
     "title": "Off"
   },

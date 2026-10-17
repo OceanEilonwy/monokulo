@@ -60,6 +60,7 @@
 .mk-status-banner[data-tone="error"] { background: var(--tint-error); }
 .mk-status-banner-icon { display: flex; }
 .mk-status-banner[data-tone="success"] > .mk-status-banner-icon { color: var(--success); }
+.mk-status-banner[data-tone="warning"] > .mk-status-banner-icon { color: var(--warning); }
 .mk-status-banner-title { flex: 1 1 14rem; min-width: 0; }
 .mk-status-banner-title > .help-tip { margin-left: var(--space-xs); vertical-align: middle; }
 .mk-status-banner-action { margin-left: auto; }
