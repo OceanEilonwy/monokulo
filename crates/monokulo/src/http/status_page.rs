@@ -1690,14 +1690,14 @@ mod tests {
             .await
         }
 
-        /// The engine page polls the engine twice a second while anyone
-        /// watches. Inside monokulo, at the engine's real defaults, that
-        /// never uses up a budget the status needs: after more than ten
-        /// minutes' worth of the page's polls (far past the instance limit a
-        /// standalone engine has, and the 120 a minute every call used to
-        /// share), the status still answers and the dot is green.
+        /// Inside monokulo, at the engine's real defaults, monokulo's own
+        /// calls never use up a budget the status needs: with the engine
+        /// page following a network, 2,400 more calls without a store's key
+        /// (far past the instance limit a standalone engine has, and the 120
+        /// a minute every call used to share) still leave the status
+        /// answering and the dot green.
         #[tokio::test]
-        async fn the_engine_page_polling_an_embedded_engine_keeps_the_status_dot_green() {
+        async fn monokulos_own_calls_to_an_embedded_engine_keep_the_status_dot_green() {
             let engine = engine_test_support::TestEngineConfig::new()
                 .embedded()
                 .with_production_rate_limits()
@@ -1709,20 +1709,21 @@ mod tests {
                 .activity(monero::Network::Mainnet)
                 .record(shared::activity::Event::Seeded { height: 100 });
             let client = EngineClient::embedded_for_tests(engine.router());
-            // The page's own poller, quicker than the page's 500 ms so the
-            // test needn't wait minutes, and the same calls made directly
-            // beside it, as many as 20 minutes of the page's polling.
-            let relay = std::sync::Arc::new(crate::engine_view::relay::Relay::with_timing(
-                client.clone(),
-                std::time::Duration::from_millis(1),
-                crate::engine_view::relay::LINGER,
-            ));
+            // The engine page following the network, and calls without a
+            // store's key made beside it.
+            let relay = std::sync::Arc::new(
+                crate::engine_view::relay::Relay::with_timing(
+                    client.clone(),
+                    crate::engine_view::relay::Timing::DEFAULT,
+                )
+                .unwrap(),
+            );
             let _watch = relay.watch("mainnet").await.unwrap();
-            for poll in 0..2_400 {
+            for call in 0..2_400 {
                 client
-                    .engine_activity("mainnet", None)
+                    .get_status()
                     .await
-                    .unwrap_or_else(|e| panic!("poll {poll} was refused: {e}"));
+                    .unwrap_or_else(|e| panic!("call {call} was refused: {e}"));
             }
 
             engine.record_scan_round_ok(monero::Network::Mainnet);
