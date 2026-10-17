@@ -3,11 +3,11 @@
 //! (`GET /dashboard/admin/invites` and its create-link/delete actions), and
 //! the public `GET`/`POST /request-invite` form.
 
-use maud::{html, Markup};
+use maud::{html, Markup, PreEscaped};
 
 use super::settings::{Card, Field, Save};
 pub use super::settings::{Toast, ToastKind};
-use super::{mail_icon, script, trash_icon, Load, PageChrome};
+use super::{script, Load, PageChrome};
 use ui::{Choice, Select};
 
 /// `error` means the same thing every other page's own re-render-on-
@@ -135,13 +135,13 @@ fn invite_row(row: &AdminInviteRequestRow, page: u32) -> ui::Row {
         vec![
             action(html! {
                 @if let Some(href) = &row.mailto_href {
-                    (ui::IconLink::new(format!("Email an invite to {}", row.email), href, mail_icon()))
+                    (ui::IconLink::new(format!("Email an invite to {}", row.email), href, html! { (PreEscaped(ui::assets::icons::MAIL)) }))
                 }
             })
             .into(),
             action(html! {
                 form method="post" action=(delete) class="inline-form" fx-action=(delete) fx-method="POST" fx-target="#invites" {
-                    (ui::IconButton::new(format!("Delete the request from {}", row.email), trash_icon())
+                    (ui::IconButton::new(format!("Delete the request from {}", row.email), html! { (PreEscaped(ui::assets::icons::TRASH)) })
                         .kind(ui::ButtonType::Submit)
                         .attr("data-variant", "danger"))
                 }

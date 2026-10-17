@@ -4,6 +4,7 @@ import { render } from '@solidjs/web';
 import { StatusIcon, StatusSymbols, StatusTag, stateOf, statusName } from './status';
 import { addressFromQr, decodeImageFile, looksLikeAddress, scanCamera } from './refund';
 import { LOADING_MARK } from './logo';
+import ARROW_LEFT from '@monokulo/ui/icons/arrow-left.svg?raw';
 import { applyTheme, type Theme } from './theme';
 import { createTimeline, routeOf, watchPage } from './timeline';
 import '@monokulo/ui/components.css';
@@ -668,7 +669,7 @@ function App() {
         <PaymentCard order={order()}/>
         <div class="pos-actions">
           <Show when={error()}><p class="pos-error" role="alert">{error()}</p></Show>
-          <Show when={!terminal(order())} fallback={<Button variant="primary" size="touch" block data-pos="primary" onClick={resetKeypad}><svg class="pos-back-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5m6-6-6 6 6 6"/></svg>New order</Button>}>
+          <Show when={!terminal(order())} fallback={<Button variant="primary" size="touch" block data-pos="primary" onClick={resetKeypad}><span class="pos-back-icon" innerHTML={ARROW_LEFT}/>New order</Button>}>
             <Button variant="primary" size="touch" block data-pos="primary" disabled={busy()} onClick={() => void backgroundOrder()}>Background order</Button>
             <Show when={order().status === 'pending' && !order().error} fallback={<p class="pos-action-hint">Background keeps this payment open while you serve the next customer</p>}>
               <Button variant="danger" block data-pos="cancel" disabled={busy()} data-opens-dialog="pos-cancel-dialog">Cancel order…</Button>

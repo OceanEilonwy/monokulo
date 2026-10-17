@@ -139,8 +139,8 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .is-spent .pos-qr svg { opacity: .14; filter: grayscale(1); }
   .is-spent .pos-address { opacity: .55; }
   .pos-actions { display: flex; flex-direction: column; gap: 9px; }
-  /* New order's arrow: back to the keypad. */
-  .pos-back-icon { width: 1.15em; height: 1.15em; flex: none; }
+  /* New order's arrow (the set's arrow-left): back to the keypad. */
+  .pos-back-icon { display: contents; }
   .pos-pay-caption { text-align: center; font-size: var(--text-xs); color: var(--muted); margin-top: 4px; }
   .pos-pay-xmr { text-align: center; font-size: var(--text-display-md); font-weight: 800; letter-spacing: -.02em; line-height: 1.1; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
   .pos-pay-xmr span { font-size: var(--text-display-sm); }

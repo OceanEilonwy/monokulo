@@ -52,4 +52,8 @@ pub mod icons {
     pub const WARNING: &str = include_str!("../web/icons/warning.svg").trim_ascii();
     pub const INFO: &str = include_str!("../web/icons/info.svg").trim_ascii();
     pub const EYE: &str = include_str!("../web/icons/eye.svg").trim_ascii();
+    pub const PLUS: &str = include_str!("../web/icons/plus.svg").trim_ascii();
+    pub const MAIL: &str = include_str!("../web/icons/mail.svg").trim_ascii();
+    pub const TRASH: &str = include_str!("../web/icons/trash.svg").trim_ascii();
+    pub const STORE: &str = include_str!("../web/icons/store.svg").trim_ascii();
 }

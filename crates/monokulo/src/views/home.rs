@@ -1,8 +1,9 @@
 //! `GET /` (signed in) - `http::home::home`.
 
-use maud::{html, Markup};
+use maud::{html, Markup, PreEscaped};
+use ui::assets::icons;
 
-use super::{plus_icon, store_icon, PageChrome};
+use super::PageChrome;
 
 /// One connected store as shown on the home page - a much smaller
 /// projection of [`crate::db::StoreConnectionRow`] than the full order/
@@ -68,7 +69,7 @@ pub fn page(chrome: &PageChrome, data: &HomeViewModel) -> Markup {
             }))
 
             h2 { "Your stores" }
-            (ui::FormActions::new(ui::LinkButton::new(html! { (plus_icon()) "Add another store" }, "/setup")))
+            (ui::FormActions::new(ui::LinkButton::new(html! { (PreEscaped(icons::PLUS)) "Add another store" }, "/setup")))
             // On a phone each store is a card: its name and health, its
             // wallet and link, then its site.
             (ui::Table::new(ui::Slot::many(data.stores.iter().map(store_row)))
@@ -104,7 +105,7 @@ pub fn page(chrome: &PageChrome, data: &HomeViewModel) -> Markup {
             // title, then the body.
             section id="card-first-store" class="settings-card" aria-labelledby="card-first-store-title" {
                 header class="card-head" {
-                    (store_icon())
+                    (PreEscaped(icons::STORE))
                     h2 id="card-first-store-title" { "Connect your first store" }
                 }
                 div class="card-body" {
@@ -112,7 +113,7 @@ pub fn page(chrome: &PageChrome, data: &HomeViewModel) -> Markup {
                         "You don't have any stores connected yet. Adding one takes a couple of minutes - pick the "
                         "guided flow for WooCommerce, or the advanced form if you're integrating something custom."
                     }
-                    (ui::FormActions::new(ui::LinkButton::new(html! { (plus_icon()) "Add a store" }, "/setup").variant(ui::ButtonVariant::Primary)))
+                    (ui::FormActions::new(ui::LinkButton::new(html! { (PreEscaped(icons::PLUS)) "Add a store" }, "/setup").variant(ui::ButtonVariant::Primary)))
                 }
             }
         }
@@ -184,7 +185,7 @@ mod tests {
         assert!(html.contains(r#"href="/setup""#));
         // A card head with the shop icon and the title, then the body.
         assert!(
-            html.contains(r#"<section id="card-first-store" class="settings-card" aria-labelledby="card-first-store-title"><header class="card-head"><svg class="card-icon""#),
+            html.contains(r#"<section id="card-first-store" class="settings-card" aria-labelledby="card-first-store-title"><header class="card-head"><svg xmlns="http://www.w3.org/2000/svg" class="mk-icon""#),
             "{html}"
         );
         assert!(
