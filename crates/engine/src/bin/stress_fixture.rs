@@ -581,6 +581,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
             )])),
             scanner_status: new_scanner_status_map(),
         },
+        activity_stream: engine::activity::StreamTuning::DEFAULT,
     };
     let http = build_router(app_state, 1_000_000);
     let http_done = Arc::new(AtomicU64::new(0));

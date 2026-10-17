@@ -652,6 +652,7 @@ mod tests {
                 daemons: daemons.clone(),
                 scanner_status: Arc::clone(&status),
             },
+            activity_stream: crate::activity::StreamTuning::DEFAULT,
         };
         let router = crate::http::build_router(state, 1 << 20);
         let db = Db::over_shared(Arc::clone(&store));
@@ -790,8 +791,9 @@ mod tests {
             "nobody watched the first round"
         );
 
-        // Someone is watching now (the read above): the next round has the
-        // node's whole pool recorded beside it.
+        // Someone is watching now (a stream is open): the next round has
+        // the node's whole pool recorded beside it.
+        let _watching = scan_state.activity().watching();
         node.push_block("h2", vec![]);
         scan_state.node_wakes().chain_changed();
         eventually("a round for the announced block", || ticks() == 2).await;

@@ -3,7 +3,8 @@
 //! the marks. It answers the live state, the state at any moment (the
 //! timeline's scrubbing) and the frames between two moments (replay).
 //!
-//! No I/O: the relay (`engine_view::relay`) feeds it the engine's pages.
+//! No I/O: the relay (`engine_view::relay`) feeds it the pages the engine
+//! streams.
 
 use std::collections::VecDeque;
 
@@ -98,7 +99,7 @@ impl History {
         history
     }
 
-    /// Takes the engine's next page (asked for from [`Self::next`]).
+    /// Takes the engine's next page (streamed from [`Self::next`]).
     pub fn update(&mut self, page: ActivityPage) -> Update {
         if page.epoch != self.epoch || page.gap {
             *self = Self::new(page);

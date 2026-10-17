@@ -124,6 +124,10 @@ pub struct AppState {
     /// The hash of the engine token (`ENGINE_TOKEN`), which
     /// every request must carry ([`engine_token_middleware`]).
     pub engine_token: Arc<shared::auth::TokenHash>,
+    /// How the activity stream sends a network's record
+    /// (`http::activity`): [`crate::activity::StreamTuning::DEFAULT`],
+    /// except in tests that set their own.
+    pub activity_stream: crate::activity::StreamTuning,
 }
 
 /// The engine token every test state (and `engine-test-support`'s
@@ -171,6 +175,7 @@ impl AppState {
                 )])),
                 scanner_status: crate::scanner_status::new_scanner_status_map(),
             },
+            activity_stream: crate::activity::StreamTuning::DEFAULT,
         }
     }
 }
@@ -294,17 +299,15 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         .route("/api/v1/admin/logs/trace/{trace_id}", get(logs::trace))
         .route("/api/v1/admin/logs/histogram", get(logs::histogram))
         .route("/api/v1/admin/logs/attributes", get(logs::attributes))
-        // What the scanner has been doing, for monokulo's engine page
-        // (docs/engine_visualizer.md).
-        .route("/api/v1/admin/engine/activity", get(activity::activity))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_rate_limit_middleware,
         ));
 
     // The long-lived streams (a store's order changes, one per store
-    // monokulo is watching, and the order-event log monokulo delivers
-    // webhooks from) are kept out of the request limits below: a request
+    // monokulo is watching, the order-event log monokulo delivers
+    // webhooks from, and what the scanner is doing on a network monokulo's
+    // engine page watches, docs/engine_visualizer.md) are kept out of the request limits below: a request
     // timeout would cut streams off, and a shared concurrency limit would
     // fill up with them. Streams get a cap of their own instead (task 7.10).
     let limits = RequestLimits::default();
@@ -313,6 +316,10 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         .route(
             "/api/v1/admin/order-events",
             get(order_events::order_events),
+        )
+        .route(
+            "/api/v1/admin/engine/activity/stream",
+            get(activity::stream),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),

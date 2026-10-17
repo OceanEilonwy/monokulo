@@ -247,6 +247,7 @@ impl Engine {
                 daemons: daemons.clone(),
                 scanner_status: Arc::clone(&scanner_status),
             },
+            activity_stream: crate::activity::StreamTuning::DEFAULT,
         };
 
         let (stop, stopped) = tokio::sync::watch::channel(false);

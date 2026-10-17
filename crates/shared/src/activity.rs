@@ -467,7 +467,9 @@ pub struct Tuning {
     pub poll_ms: u64,
 }
 
-/// `GET /api/v1/admin/engine/activity`: one network's recorded events.
+/// One message of `GET /api/v1/admin/engine/activity/stream`: one
+/// network's recorded events, the first message's from where the reader
+/// asked, each later one's what was recorded since the one before.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ActivityPage {
     pub network: String,
@@ -478,7 +480,7 @@ pub struct ActivityPage {
     /// Oldest first. Without `from` (or when `from` has left the record),
     /// from the oldest snapshot kept.
     pub events: Vec<Recorded>,
-    /// The `from` to ask with next time.
+    /// The `from` to reopen the stream with, should it end here.
     pub next: u64,
     /// `from` had already left the record (or belongs to another epoch):
     /// the page starts over.

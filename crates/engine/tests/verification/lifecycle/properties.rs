@@ -137,6 +137,7 @@ proptest! {
                 settings:Arc::clone(&settings),
                 custody:crate::http::Custody { snp:None,backends:Arc::clone(&custody),default_backend:"plain".into(),wallet_handles:Arc::clone(&wallet_handles) },
                 networks:crate::http::Networks { daemons:daemons.clone(),scanner_status:Arc::clone(&status) },
+                activity_stream:crate::activity::StreamTuning::DEFAULT,
             };
             let router = crate::http::build_router(state,1<<20);
             let manager = tokio::spawn(manage_network_loops(Db::over_shared(Arc::clone(&store)),custody,daemons.clone(),wallet_handles,Arc::clone(&status),settings));

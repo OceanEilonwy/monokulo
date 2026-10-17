@@ -59,9 +59,15 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await timingDetails.locator('summary').click();
   // Just "Timing details": the round it is for is the card's heading.
   await expect(timingDetails.locator('summary')).toHaveText('Timing details');
+  // What the engine records next reaches this page as it happens, pushed
+  // to it: the same document, never reloaded.
+  await page.evaluate(() => { window.engineStoryWatched = true; });
+  const before = await page.locator('#engine-events tr').count();
   await page.request.post(`${fixture.base_url}/__coverage/engine/story`);
   const events = page.locator('#engine-events');
+  await expect.poll(() => page.locator('#engine-events tr').count(), { timeout: 20000 }).toBeGreaterThan(before);
   await expect(events).toContainText('Block 3,412,881 scanned for 41 stores and committed, 1 payment found in it.', { timeout: 20000 });
+  expect(await page.evaluate(() => window.engineStoryWatched)).toBe(true);
   await expect(events).toContainText('Transaction 6e7f8a9b in the pool pays an order', { timeout: 20000 });
   await expect(page.locator('#orders-sum')).toContainText('unconfirmed');
   await expect(events).toContainText('Rewound: block 3,412,881 deleted', { timeout: 20000 });
@@ -74,7 +80,7 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await captureCoverageStage(page, 'engine-live', test.info(), shot);
 
   // The reorg, gone to from its event (live, it can begin and end within
-  // one poll on a slow machine): its panel opens by itself while it is open.
+  // one message on a slow machine): its panel opens by itself while it is open.
   await events.locator('tr', { hasText: "The node's chain differs from block 3,412,881" }).click();
   await expect(mode()).toHaveValue('paused');
   await expect(page.locator('#d-reorg')).toHaveAttribute('open', '');

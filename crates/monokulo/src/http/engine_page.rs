@@ -638,10 +638,7 @@ mod tests {
     #[tokio::test]
     async fn scrubbing_and_replay_answer_from_the_history() {
         let (engine, router, cookie) = site().await;
-        let page = EngineClient::embedded_for_tests(engine.router())
-            .engine_activity("stagenet", None)
-            .await
-            .unwrap();
+        let page = engine.activity(Network::Stagenet).page(None);
         let (first, last) = (page.events[0].at_ms, page.events[2].at_ms);
         let before = body_json(
             get(

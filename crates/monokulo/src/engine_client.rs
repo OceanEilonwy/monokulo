@@ -975,25 +975,30 @@ impl EngineClient {
 
 /// The engine page's feed (`docs/engine_visualizer.md`).
 impl EngineClient {
-    /// `network`'s activity record from sequence number `from` on; without
-    /// `from`, everything from the oldest snapshot the engine keeps.
-    pub async fn engine_activity(
+    /// `GET /api/v1/admin/engine/activity/stream` — `network`'s activity
+    /// record as never-ending server-sent events, each an `activity` whose
+    /// data is a `shared::activity::ActivityPage`: first the record from
+    /// sequence number `from` on (without `from`, or when the engine can't
+    /// follow it, everything from the oldest snapshot it keeps), then what
+    /// the engine records next, as it records it
+    /// (`crate::engine_view::relay` reads it).
+    pub async fn open_engine_activity(
         &self,
         network: &str,
         from: Option<u64>,
-    ) -> Result<shared::activity::ActivityPage, EngineClientError> {
+    ) -> Result<EventStream, EngineClientError> {
         #[derive(Serialize)]
         struct Query<'a> {
             network: &'a str,
             #[serde(skip_serializing_if = "Option::is_none")]
             from: Option<u64>,
         }
-        self.send(Call::get(with_query(
-            "/api/v1/admin/engine/activity",
-            &Query { network, from },
-        )))
-        .await?
-        .parsed()
+        self.target()
+            .stream(Call::get(with_query(
+                "/api/v1/admin/engine/activity/stream",
+                &Query { network, from },
+            )))
+            .await
     }
 }
 
@@ -2007,6 +2012,25 @@ mod contract_tests {
         }
     }
 
+    /// The next `activity` message on an engine activity stream.
+    async fn next_activity(stream: &mut EventStream) -> shared::activity::ActivityPage {
+        let mut parser = crate::live::SseParser::default();
+        loop {
+            let chunk = tokio::time::timeout(std::time::Duration::from_secs(10), stream.next())
+                .await
+                .expect("the stream says something within 10 s")
+                .expect("the stream is open")
+                .unwrap();
+            if let Some(event) = parser
+                .push(&chunk)
+                .into_iter()
+                .find(|event| event.event == "activity")
+            {
+                return serde_json::from_str(&event.data).unwrap();
+            }
+        }
+    }
+
     /// Every method, in the order a store's life uses them; each line of
     /// the transcript is one observable outcome.
     async fn transcript(transport: &str) -> Vec<String> {
@@ -2217,17 +2241,28 @@ mod contract_tests {
         engine
             .activity(monero::Network::Mainnet)
             .record(shared::activity::Event::Snapshot(Box::default()));
-        let activity = client.engine_activity("mainnet", None).await.unwrap();
-        assert!(
-            !activity.events.is_empty(),
-            "the recorded snapshot reaches monokulo over {transport}"
-        );
+        let mut activity = client.open_engine_activity("mainnet", None).await.unwrap();
+        let first = next_activity(&mut activity).await;
+        // Pushed as the engine records it, on the stream already open.
+        engine
+            .activity(monero::Network::Mainnet)
+            .record(shared::activity::Event::ReorgCollected);
+        let pushed = next_activity(&mut activity).await;
+        drop(activity);
+        let mut resumed = client
+            .open_engine_activity("mainnet", Some(1))
+            .await
+            .unwrap();
+        let resumed = next_activity(&mut resumed).await;
         lines.push(format!(
-            "activity: {} events; from 0: {}; a network with no node: {}; an unknown network: {}",
-            activity.events.len(),
-            outcome(&client.engine_activity("mainnet", Some(0)).await),
-            outcome(&client.engine_activity("stagenet", None).await),
-            outcome(&client.engine_activity("nowhere", None).await)
+            "activity stream: first {} event(s), then pushed {:?}; from 1: {} event(s), gap {}; \
+             a network with no node: {}; an unknown network: {}",
+            first.events.len(),
+            pushed.events.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            resumed.events.len(),
+            resumed.gap,
+            outcome(&client.open_engine_activity("stagenet", None).await),
+            outcome(&client.open_engine_activity("nowhere", None).await)
         ));
 
         let mut events = client.open_order_events(&sk).await.unwrap();
@@ -2294,6 +2329,8 @@ mod contract_tests {
             "status networks: [\"mainnet\"]",
             "settings: 200 OK",
             "refused save: 400 Bad Request naming \"payment.confirmations_required\"",
+            "activity stream: first 1 event(s), then pushed [1]; from 1: 1 event(s), gap false; \
+             a network with no node: 404 Not Found: not found; an unknown network: 400 Bad Request",
             "events start with ready: true",
             "with the wrong engine token: 401 Unauthorized",
             "after deleting the tenant: 401 Unauthorized",

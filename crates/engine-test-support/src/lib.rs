@@ -294,6 +294,9 @@ pub struct TestEngineHandle {
     /// How many tenant admin API requests (`/api/v1/admin/tenant/...`) this
     /// engine has received - the requests its per-token rate limit counts.
     tenant_requests: Arc<std::sync::atomic::AtomicUsize>,
+    /// How many requests of any kind this engine has received, over HTTP
+    /// or through [`TestEngineHandle::router`].
+    requests: Arc<std::sync::atomic::AtomicUsize>,
     /// The admin lookup node's mempool (see [`LookupDaemonClient`]).
     lookup_mempool: Arc<parking_lot::Mutex<Vec<monero::Transaction>>>,
     /// What the engine's `/status` and activity API report per network.
@@ -410,8 +413,15 @@ impl TestEngineHandle {
         self.router.clone()
     }
 
-    /// `network`'s activity record, which the engine serves at
-    /// `/api/v1/admin/engine/activity` (`docs/engine_visualizer.md`): a test
+    /// Requests of any kind received so far: for a caller asserting how
+    /// many engine requests its own work costs (a stream is one, however
+    /// long it stays open).
+    pub fn request_count(&self) -> usize {
+        self.requests.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// `network`'s activity record, which the engine streams at
+    /// `/api/v1/admin/engine/activity/stream` (`docs/engine_visualizer.md`): a test
     /// records events into it to see them reach monokulo's engine page.
     pub fn activity(&self, network: Network) -> Arc<engine::activity::Activity> {
         engine::scanner_status::activity_of(&self.scanner_status, network)
@@ -976,13 +986,16 @@ impl TestEngineConfig {
                 daemons,
                 scanner_status: scanner_status.clone(),
             },
+            activity_stream: engine::activity::StreamTuning::DEFAULT,
         };
         let tenant_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counter = tenant_requests.clone();
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (tenant_counter, counter) = (tenant_requests.clone(), requests.clone());
         let router = build_router(app_state, MAX_BODY_BYTES).layer(axum::middleware::from_fn(
             move |request: axum::extract::Request, next: axum::middleware::Next| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 if request.uri().path().starts_with("/api/v1/admin/tenant/") {
-                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tenant_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
                 next.run(request)
             },
@@ -1059,6 +1072,7 @@ impl TestEngineConfig {
             key_custody,
             wallet_handles,
             tenant_requests,
+            requests,
             lookup_mempool,
             scanner_status,
             snp_vcek,

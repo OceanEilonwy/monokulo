@@ -1674,7 +1674,10 @@ async fn every_route_refuses_a_request_without_the_engine_token() {
         ("GET", "/api/v1/admin/settings"),
         ("POST", "/api/v1/admin/settings"),
         ("GET", "/api/v1/admin/logs"),
-        ("GET", "/api/v1/admin/engine/activity?network=mainnet"),
+        (
+            "GET",
+            "/api/v1/admin/engine/activity/stream?network=mainnet",
+        ),
         ("GET", "/api/v1/admin/tenant"),
         ("GET", "/api/v1/admin/tenant/orders"),
         ("GET", "/api/v1/admin/tenant/events"),

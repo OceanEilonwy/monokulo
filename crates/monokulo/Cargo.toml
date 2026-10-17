@@ -89,6 +89,9 @@ monokulo = { path = ".", features = ["test-support"] }
 # `shared`'s test helpers (the test engine token).
 shared = { path = "../shared", features = ["test-support"] }
 engine-test-support = { path = "../engine-test-support" }
+# Paused time (`test-util`): a test watching the engine page for a minute
+# runs in an instant.
+tokio = { version = "1.53.1", features = ["full", "test-util"] }
 http-body-util = "0.1.5"
 engine = { path = "../engine" }
 tower = { version = "0.5.3", features = ["util"] }

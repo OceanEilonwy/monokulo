@@ -2,7 +2,8 @@
 //!
 //! Its rounds and units, blocks fetched and scanned, reorgs, the pool,
 //! recomputes (`docs/engine_visualizer.md`). The scan loops record events as
-//! they work; the admin API serves them (`http::activity`).
+//! they work; the admin API streams them to monokulo (`http::activity`),
+//! woken by each event recorded ([`Activity::subscribe`]), never polling.
 //!
 //! Purely observational, like `scanner_status`: nothing here feeds back
 //! into scanning, and a restart loses only history. The record is bounded
@@ -10,7 +11,8 @@
 //! on: a page opened after something happened can still scrub back to it.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -23,11 +25,68 @@ pub const KEEP: Duration = Duration::from_mins(30);
 pub const MAX_EVENTS: usize = 50_000;
 /// How often the scan loop records a snapshot of the state the page draws.
 pub const SNAPSHOT_EVERY: Duration = Duration::from_secs(10);
-/// How long after the record was last read someone counts as watching.
-pub const WATCHED_FOR: Duration = Duration::from_mins(1);
-/// How often, while someone watches, the node is asked about its whole
-/// pool (`Event::NodePool`): the engine itself never needs to know.
+/// How often, while someone watches (a stream is open), the node is asked
+/// about its whole pool (`Event::NodePool`): the engine itself never needs
+/// to know.
 pub const NODE_POOL_EVERY: Duration = Duration::from_secs(5);
+
+/// How the activity stream (`http::activity`) sends a record to monokulo.
+/// The engine runs [`StreamTuning::DEFAULT`]; tests pass their own values
+/// explicitly (`AppState::activity_stream`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamTuning {
+    /// Events recorded within this long of each other go in one message: a
+    /// catch-up records hundreds a second, and the page draws a few frames
+    /// a second at most. 200 ms keeps the page live (its replay frames are
+    /// 500 ms apart) at five messages a second at most.
+    pub coalesce: Duration,
+    /// A comment this often on a quiet stream, so the reader can tell a
+    /// quiet engine from a dead connection. 15 s, like the engine's other
+    /// streams.
+    pub keepalive: Duration,
+    /// Messages a stream may hold for a reader that isn't reading. Past
+    /// that the stream is closed: the reader reconnects from the last
+    /// sequence number it got and catches up from the record, so nothing
+    /// is lost and nothing is buffered without bound. 16 messages is about
+    /// three seconds of a busy network.
+    pub buffer: usize,
+}
+
+/// Why a [`StreamTuning`] can't be used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum StreamTuningError {
+    #[error("the coalescing interval must be above zero and at most a second")]
+    Coalesce,
+    #[error("the keep-alive must be longer than the coalescing interval")]
+    Keepalive,
+    #[error("a stream must be able to hold at least one message")]
+    Buffer,
+}
+
+impl StreamTuning {
+    pub const DEFAULT: Self = Self {
+        coalesce: Duration::from_millis(200),
+        keepalive: Duration::from_secs(15),
+        buffer: 16,
+    };
+
+    pub const fn validate(&self) -> Result<(), StreamTuningError> {
+        if self.coalesce.is_zero() || self.coalesce.as_millis() > 1_000 {
+            Err(StreamTuningError::Coalesce)
+        } else if self.keepalive.as_nanos() <= self.coalesce.as_nanos() {
+            Err(StreamTuningError::Keepalive)
+        } else if self.buffer == 0 {
+            Err(StreamTuningError::Buffer)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+const _: () = match StreamTuning::DEFAULT.validate() {
+    Ok(()) => (),
+    Err(_) => panic!("the default activity stream tuning is invalid"),
+};
 
 /// One network's record.
 pub struct Activity {
@@ -36,8 +95,22 @@ pub struct Activity {
     record: Mutex<Record>,
     rounds: AtomicU64,
     last_snapshot: Mutex<Option<Instant>>,
-    last_read: Mutex<Option<Instant>>,
     last_node_pool: Mutex<Option<Instant>>,
+    /// The next sequence number, sent each time an event is recorded: what
+    /// wakes the streams.
+    appended: tokio::sync::watch::Sender<u64>,
+    /// Streams open on this record: while there are any, someone watches.
+    streams: AtomicUsize,
+}
+
+/// A stream's hold on the record ([`Activity::watching`]): while it is
+/// held, someone watches.
+pub struct Watching(Arc<Activity>);
+
+impl Drop for Watching {
+    fn drop(&mut self) {
+        self.0.streams.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 #[derive(Default)]
@@ -61,8 +134,9 @@ impl Default for Activity {
             record: Mutex::default(),
             rounds: AtomicU64::new(0),
             last_snapshot: Mutex::new(None),
-            last_read: Mutex::new(None),
             last_node_pool: Mutex::new(None),
+            appended: tokio::sync::watch::Sender::new(0),
+            streams: AtomicUsize::new(0),
         }
     }
 }
@@ -99,6 +173,25 @@ impl Activity {
             .back()
             .map_or_else(now_ms, |last| now_ms().max(last.at_ms));
         Self::push(&mut record, at_ms, event);
+        // Under the lock, so the number sent never goes back.
+        self.appended.send_replace(record.next_seq);
+    }
+
+    /// Woken each time an event is recorded (with the next sequence
+    /// number): a stream waits on it instead of polling.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.appended.subscribe()
+    }
+
+    /// Counts a stream as watching for as long as the returned hold lives.
+    pub fn watching(self: &Arc<Self>) -> Watching {
+        self.streams.fetch_add(1, Ordering::SeqCst);
+        Watching(Arc::clone(self))
+    }
+
+    /// Streams open on this record now.
+    pub fn streams(&self) -> usize {
+        self.streams.load(Ordering::SeqCst)
     }
 
     fn push(record: &mut Record, at_ms: i64, event: Event) {
@@ -134,13 +227,10 @@ impl Activity {
     }
 
     /// Whether the node's whole pool is due to be asked for (and, if so,
-    /// marks it asked now): only while someone has read the record in the
-    /// last [`WATCHED_FOR`], every [`NODE_POOL_EVERY`].
+    /// marks it asked now): only while a stream is open on the record
+    /// ([`Self::watching`]), every [`NODE_POOL_EVERY`].
     pub fn node_pool_due(&self) -> bool {
-        let watched = self
-            .last_read
-            .lock()
-            .is_some_and(|at| at.elapsed() < WATCHED_FOR);
+        let watched = self.streams() > 0;
         let mut last = self.last_node_pool.lock();
         let due = watched && last.is_none_or(|at| at.elapsed() >= NODE_POOL_EVERY);
         if due {
@@ -158,7 +248,6 @@ impl Activity {
     /// another epoch's numbering), everything from the oldest snapshot kept,
     /// so the reader can rebuild the state from there; `gap` says it had to.
     pub fn page(&self, from: Option<u64>) -> Page {
-        *self.last_read.lock() = Some(Instant::now());
         let record = self.record.lock();
         let oldest = record.events.front().map_or(record.next_seq, |e| e.seq);
         let continues = from.filter(|from| (oldest..=record.next_seq).contains(from));
@@ -281,23 +370,67 @@ mod tests {
         assert_eq!(seqs(&behind), [2]);
     }
 
-    /// The node's whole pool is asked for only while someone reads the
-    /// record, and then at most every [`NODE_POOL_EVERY`].
+    /// The node's whole pool is asked for only while a stream is open on
+    /// the record, and then at most every [`NODE_POOL_EVERY`].
     #[test]
     fn the_node_s_pool_is_asked_for_only_while_someone_watches() {
-        let activity = Activity::default();
-        assert!(!activity.node_pool_due(), "nobody has read the record");
+        let activity = Arc::new(Activity::default());
         activity.page(None);
+        assert!(!activity.node_pool_due(), "a read alone isn't watching");
+        let watching = activity.watching();
         assert!(activity.node_pool_due());
         assert!(!activity.node_pool_due(), "asked a moment ago");
         *activity.last_node_pool.lock() = Instant::now().checked_sub(NODE_POOL_EVERY);
         assert!(activity.node_pool_due(), "due again after the interval");
         *activity.last_node_pool.lock() = None;
-        *activity.last_read.lock() = Instant::now().checked_sub(WATCHED_FOR);
-        assert!(
-            !activity.node_pool_due(),
-            "the last reader left a minute ago"
-        );
+        drop(watching);
+        assert_eq!(activity.streams(), 0);
+        assert!(!activity.node_pool_due(), "the last stream closed");
+    }
+
+    /// Each event recorded wakes a stream waiting on the record, with the
+    /// number the next will get.
+    #[tokio::test]
+    async fn recording_wakes_the_streams() {
+        let activity = Activity::default();
+        let mut appended = activity.subscribe();
+        activity.record(Event::ReorgCollected);
+        appended.changed().await.unwrap();
+        assert_eq!(*appended.borrow_and_update(), 1);
+    }
+
+    /// The default stream tuning is valid; one that would send a message
+    /// per event, keep nothing alive, or hold nothing is not.
+    #[test]
+    fn stream_tuning_is_validated() {
+        let ok = StreamTuning::DEFAULT;
+        assert_eq!(ok.validate(), Ok(()));
+        for (tuning, error) in [
+            (
+                StreamTuning {
+                    coalesce: Duration::ZERO,
+                    ..ok
+                },
+                StreamTuningError::Coalesce,
+            ),
+            (
+                StreamTuning {
+                    coalesce: Duration::from_secs(2),
+                    ..ok
+                },
+                StreamTuningError::Coalesce,
+            ),
+            (
+                StreamTuning {
+                    keepalive: ok.coalesce,
+                    ..ok
+                },
+                StreamTuningError::Keepalive,
+            ),
+            (StreamTuning { buffer: 0, ..ok }, StreamTuningError::Buffer),
+        ] {
+            assert_eq!(tuning.validate(), Err(error));
+        }
     }
 
     /// Older than [`KEEP`] or past [`MAX_EVENTS`], the oldest go.

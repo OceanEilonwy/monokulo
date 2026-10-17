@@ -392,6 +392,11 @@ pub(crate) struct SseEvent {
 #[derive(Default)]
 pub(crate) struct SseParser {
     buffer: Vec<u8>,
+    /// How much of `buffer` is known to hold no newline: a long line (the
+    /// engine page's first activity message is the engine's whole record)
+    /// arrives in many chunks, and each is searched once, not the whole
+    /// line again every time.
+    searched: usize,
     event: String,
     id: String,
     data: String,
@@ -401,7 +406,16 @@ impl SseParser {
     pub(crate) fn push(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
         self.buffer.extend_from_slice(chunk);
         let mut out = Vec::new();
-        while let Some(newline) = self.buffer.iter().position(|b| *b == b'\n') {
+        loop {
+            let Some(newline) = self.buffer[self.searched..]
+                .iter()
+                .position(|b| *b == b'\n')
+                .map(|at| self.searched + at)
+            else {
+                self.searched = self.buffer.len();
+                break;
+            };
+            self.searched = 0;
             let line: Vec<u8> = self.buffer.drain(..=newline).collect();
             let line = String::from_utf8_lossy(&line);
             let line = line.trim_end_matches(['\r', '\n']);
