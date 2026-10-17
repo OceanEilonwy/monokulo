@@ -274,13 +274,12 @@ settings! {
         key: "server.instance_rate_limit",
         default: true,
         description: "Whether the engine limits the requests made without a store's key: its status, settings, logs and engine pages, and making stores. Off by default when the engine runs inside monokulo, where only monokulo can call it; on for a standalone engine, which anything holding its token can reach.",
-        example: "true",
     },
     SERVER_INSTANCE_RATE_LIMIT_PER_MIN: u32 {
         key: "server.instance_rate_limit_per_min",
         default: 600,
         check: range(1, 1_000_000),
-        description: "Requests a minute the engine allows, all together, without a store's key, while server.instance_rate_limit is on. The engine page alone asks twice a second.",
+        description: "Requests a minute the engine allows, all together, without a store's key, while they are limited (server.instance_rate_limit). The engine page alone asks twice a second.",
         example: "600",
     },
     SERVER_MAX_BODY_BYTES: usize {

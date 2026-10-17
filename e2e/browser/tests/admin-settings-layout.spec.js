@@ -174,6 +174,7 @@ test('the count of monokulo\'s own requests follows its switch, and saves either
   const card = page.locator('#card-server-engine');
   const toggle = card.getByRole('switch', { name: "Limit monokulo's own requests" });
   const count = card.getByRole('spinbutton', { name: "Requests a minute for monokulo's own calls" });
+  const flip = () => card.locator('.switch', { has: page.locator('input[role=switch][name="server.instance_rate_limit"]') }).click();
   await expect(toggle).toBeChecked();
   await expect(count).toBeEnabled();
   await expect(card.getByText('Off when the engine runs inside monokulo: only monokulo can call it.')).toBeVisible();
@@ -195,7 +196,7 @@ test('the count of monokulo\'s own requests follows its switch, and saves either
   await shoot('on');
 
   // Off: the count is disabled at once, and Discard puts both back.
-  await card.locator('.switch', { has: toggle }).click();
+  await flip();
   await expect(toggle).not.toBeChecked();
   await expect(count).toBeDisabled();
   await card.getByRole('button', { name: 'Discard' }).click();
@@ -204,7 +205,7 @@ test('the count of monokulo\'s own requests follows its switch, and saves either
 
   // Saved off, the count stays as it was and comes back disabled.
   const before = await count.inputValue();
-  await card.locator('.switch', { has: toggle }).click();
+  await flip();
   await pressSave(page);
   await expectSaved(page);
   await openSettingsTab(page, 'server');
@@ -214,7 +215,7 @@ test('the count of monokulo\'s own requests follows its switch, and saves either
   await shoot('off');
 
   // On again, with a count of its own.
-  await card.locator('.switch', { has: toggle }).click();
+  await flip();
   await expect(count).toBeEnabled();
   await count.fill('50000');
   await pressSave(page);
