@@ -286,3 +286,49 @@ test('tabs with logos in their labels keep working, and tell the page', async ({
   await tabs.getByRole('tab', { name: 'History' }).click();
   expect(await told).toBe('example-history');
 });
+
+// A part-done step's dot is filled on its right half with one straight
+// edge. Its 2.13em is a fraction of a pixel, and where the dot lands in
+// a pixel moves with the page's width; at some, a conic-gradient's hard
+// stop drew the top and bottom halves of the edge a device pixel apart, a
+// notch down the middle. Phone widths a pixel apart cover where it lands.
+for (const theme of ['light', 'dark']) {
+  for (const scale of [1, 1.5, 2]) {
+    test(`${theme}, ${scale}x: a part-done step is half filled with one straight edge on a phone`, async ({ browser }) => {
+      const context = await browser.newContext({ viewport: { width: 320, height: 740 }, deviceScaleFactor: scale, colorScheme: theme });
+      const page = await context.newPage();
+      await page.goto('/');
+      const dot = page.locator('.step-part .mk-track-dot').first();
+      for (let width = 320; width < 332; width++) {
+        await page.setViewportSize({ width, height: 740 });
+        await dot.scrollIntoViewIfNeeded();
+        const png = (await dot.screenshot({ animations: 'disabled' })).toString('base64');
+        // Read the pixels back through a canvas: where each row turns from
+        // the left half's colour to the right's.
+        const { edges, left, right } = await page.evaluate(async png => {
+        const image = new Image();
+        image.src = `data:image/png;base64,${png}`;
+        await image.decode();
+        const canvas = Object.assign(document.createElement('canvas'), { width: image.width, height: image.height });
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(image, 0, 0);
+        const { data, width, height } = ctx.getImageData(0, 0, image.width, image.height);
+        const at = (x, y) => [...data.slice((y * width + x) * 4, (y * width + x) * 4 + 3)];
+        const mid = Math.round(height / 2);
+        const left = at(Math.round(width * 0.3), mid), right = at(Math.round(width * 0.7), mid);
+        const near = (a, b) => a.reduce((sum, v, i) => sum + Math.abs(v - b[i]), 0);
+        const edges = [];
+        for (let y = Math.round(height * 0.25); y < Math.round(height * 0.75); y++) {
+          let x = Math.round(width * 0.3);
+          while (x < width * 0.7 && near(at(x, y), left) <= near(at(x, y), right)) x++;
+          edges.push(x);
+        }
+        return { edges, left, right };
+      }, png);
+        expect(left, `${width}px`).not.toEqual(right);
+        expect(new Set(edges).size, `${width}px: edge columns ${edges}`).toBe(1);
+      }
+      await context.close();
+    });
+  }
+}
