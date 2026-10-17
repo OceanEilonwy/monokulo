@@ -1,5 +1,5 @@
 //! `GET /account` - the Account page (`http::account`): a tab each for the
-//! profile (email, theme, time zone, language), wallets and security.
+//! profile (email, theme, time zone, language, password) and wallets.
 //!
 //! Its settings are the settings components (`views::settings`): cards in
 //! one form, one bottom save bar and a toast. Saving posts the tab's form
@@ -22,15 +22,10 @@ pub enum AccountTab {
     #[default]
     Profile,
     Wallets,
-    Security,
 }
 
 impl AccountTab {
-    pub const ALL: [AccountTab; 3] = [
-        AccountTab::Profile,
-        AccountTab::Wallets,
-        AccountTab::Security,
-    ];
+    pub const ALL: [AccountTab; 2] = [AccountTab::Profile, AccountTab::Wallets];
 
     /// The tab `id` names, Profile for none or one that doesn't exist.
     pub fn from_id(id: Option<&str>) -> Self {
@@ -44,7 +39,6 @@ impl AccountTab {
         match self {
             AccountTab::Profile => "profile",
             AccountTab::Wallets => "wallets",
-            AccountTab::Security => "security",
         }
     }
 
@@ -52,7 +46,6 @@ impl AccountTab {
         match self {
             AccountTab::Profile => "Profile",
             AccountTab::Wallets => "Wallets",
-            AccountTab::Security => "Security",
         }
     }
 
@@ -171,20 +164,21 @@ impl AccountViewModel {
                 "Nothing to save",
                 vec!["Nothing had changed.".to_string()],
             ),
-            Outcome::Saved(cards) if cards.contains(&Card::Password) => toast(
-                ToastKind::Success,
-                "Password changed",
-                vec!["Every other session was logged out.".to_string()],
-            ),
-            Outcome::Saved(cards) => toast(
-                ToastKind::Success,
-                "Profile saved",
+            Outcome::Saved(cards) => {
+                let mut lines = Vec::new();
                 if cards.contains(&Card::Email) {
-                    vec![format!("You log in with {} from now on.", self.saved.email)]
+                    lines.push(format!("You log in with {} from now on.", self.saved.email));
+                }
+                if cards.contains(&Card::Password) {
+                    lines.push("Every other session was logged out.".to_string());
+                }
+                let title = if cards == &[Card::Password] {
+                    "Password changed"
                 } else {
-                    Vec::new()
-                },
-            ),
+                    "Profile saved"
+                };
+                toast(ToastKind::Success, title, lines)
+            }
             Outcome::Refused { message, .. } => {
                 toast(ToastKind::Error, "Not saved", vec![message.clone()])
             }
@@ -287,6 +281,7 @@ fn profile_panel(data: &AccountViewModel) -> Markup {
                             .disabled(true))
                     }))
             }))
+            (password_card(data))
             (email_confirm_dialog(saved))
             (save_bar(data, "Saving changes your profile straight away."))
         },
@@ -326,32 +321,33 @@ fn email_confirm_dialog(saved: &Profile) -> Markup {
     }
 }
 
-fn security_panel(data: &AccountViewModel) -> Markup {
+/// The Password card: the current password, and the new one typed twice.
+/// Left empty, saving the profile leaves the password as it is.
+fn password_card(data: &AccountViewModel) -> Markup {
     let min = crate::http::MIN_PASSWORD_LEN;
-    super::settings::form(
-        "/account/password",
-        Save::Reload,
-        "Security",
+    let password = |name: &str, id: &str, autocomplete: &str| {
+        ui::Input::new(name)
+            .id(id)
+            .kind(ui::InputType::Password)
+            .autocomplete(autocomplete)
+    };
+    card(
+        data,
+        Card::Password,
         html! {
-            input type="hidden" name="tab" value="security";
-            (card(data, Card::Password, html! {
-                (Field::new("Current password", "current-password").render(html! {
-                    (ui::Input::new("current_password")
-                        .id("current-password")
-                        .kind(ui::InputType::Password)
-                        .autocomplete("current-password"))
-                }))
-                (Field::new("New password", "new-password")
-                    .help(None, html! { "At least " (min) " characters. Changing it logs you out everywhere else." })
-                    .render(html! {
-                        (ui::Input::new("new_password")
-                            .id("new-password")
-                            .kind(ui::InputType::Password)
-                            .autocomplete("new-password")
-                            .attr("minlength", min.to_string()))
-                    }))
+            (Field::new("Current password", "current-password").render(html! {
+                (password("current_password", "current-password", "current-password"))
             }))
-            (save_bar(data, "Saving changes your password."))
+            (Field::new("New password", "new-password")
+                .help(None, html! { "At least " (min) " characters. Changing it logs you out everywhere else." })
+                .render(html! {
+                    (password("new_password", "new-password", "new-password").attr("minlength", min.to_string()))
+                }))
+            (Field::new("Confirm new password", "confirm-password")
+                .help(None, html! { "The new password again." })
+                .render(html! {
+                    (password("confirm_password", "confirm-password", "new-password").attr("minlength", min.to_string()))
+                }))
         },
     )
 }
@@ -371,7 +367,6 @@ pub fn account_page(chrome: &PageChrome, data: &AccountViewModel) -> Markup {
             @match tab {
                 AccountTab::Profile => (profile_panel(data)),
                 AccountTab::Wallets => (super::wallets::list_section(&data.wallets, &data.retired)),
-                AccountTab::Security => (security_panel(data)),
             }
         }
         (toast_region(toast.as_ref(), false))
@@ -461,7 +456,7 @@ mod tests {
     fn tabs_are_named_by_their_query_and_profile_is_the_default() {
         assert_eq!(AccountTab::from_id(None), AccountTab::Profile);
         assert_eq!(AccountTab::from_id(Some("nope")), AccountTab::Profile);
-        assert_eq!(AccountTab::from_id(Some("security")), AccountTab::Security);
+        assert_eq!(AccountTab::from_id(Some("security")), AccountTab::Profile);
         assert_eq!(AccountTab::Profile.href(), "/account");
         assert_eq!(AccountTab::Wallets.href(), "/account?tab=wallets");
         let html = account_page(&chrome(), &view(AccountTab::Wallets, None)).into_string();
@@ -470,7 +465,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"<nav id="settings-tabs" class="tab-bar" aria-label="Account"><a href="/account">Profile</a><a href="/account?tab=wallets" aria-current="page">Wallets</a><a href="/account?tab=security">Security</a></nav>"#),
+            html.contains(r#"<nav id="settings-tabs" class="tab-bar" aria-label="Account"><a href="/account">Profile</a><a href="/account?tab=wallets" aria-current="page">Wallets</a></nav>"#),
             "{html}"
         );
         assert!(html.contains("No wallets yet."), "{html}");
@@ -483,7 +478,8 @@ mod tests {
     /// The profile's cards, as the admin page's: each a settings card in
     /// one settings form with one save bar.
     #[test]
-    fn the_profile_tab_has_email_appearance_and_language_and_time_cards_and_one_save_bar() {
+    fn the_profile_tab_has_email_appearance_language_and_time_and_password_cards_and_one_save_bar()
+    {
         let html = account_page(&chrome(), &view(AccountTab::Profile, None)).into_string();
         let at = |needle: &str| {
             html.find(needle)
@@ -493,9 +489,14 @@ mod tests {
         let email = at(r#"name="email" role="region""#);
         let appearance = at(r#"name="appearance" role="region""#);
         let time = at(r#"<section id="card-time""#);
+        let password = at(r#"<section id="card-password""#);
         let bar = at(r#"<div id="save-bar" class="save-bar""#);
         assert!(
-            form < email && email < appearance && appearance < time && time < bar,
+            form < email
+                && email < appearance
+                && appearance < time
+                && time < password
+                && password < bar,
             "{html}"
         );
         assert_eq!(
@@ -600,7 +601,7 @@ mod tests {
         let html = account_page(
             &chrome(),
             &view(
-                AccountTab::Security,
+                AccountTab::Profile,
                 Some(Outcome::Saved(vec![Card::Password])),
             ),
         )
@@ -609,21 +610,25 @@ mod tests {
 
         let html = account_page(
             &chrome(),
-            &view(AccountTab::Security, Some(Outcome::Unchanged)),
+            &view(
+                AccountTab::Profile,
+                Some(Outcome::Saved(vec![Card::Time, Card::Password])),
+            ),
+        )
+        .into_string();
+        assert!(html.contains("<strong>Profile saved</strong><span class=\"toast-line\">Every other session was logged out.</span>"), "{html}");
+
+        let html = account_page(
+            &chrome(),
+            &view(AccountTab::Profile, Some(Outcome::Unchanged)),
         )
         .into_string();
         assert!(html.contains("<strong>Nothing to save</strong>"), "{html}");
     }
 
     #[test]
-    fn the_security_tab_asks_for_the_current_password_and_a_new_one() {
-        let html = account_page(&chrome(), &view(AccountTab::Security, None)).into_string();
-        assert!(
-            html.contains(
-                r#"<form method="post" action="/account/password" id="settings-form" data-mk="2">"#
-            ),
-            "{html}"
-        );
+    fn the_profile_tab_asks_for_the_current_password_and_the_new_one_twice() {
+        let html = account_page(&chrome(), &view(AccountTab::Profile, None)).into_string();
         assert!(
             html.contains(
                 r#"name="current_password" id="current-password" autocomplete="current-password">"#
@@ -633,6 +638,13 @@ mod tests {
         assert!(
             html.contains(&format!(
                 r#"name="new_password" id="new-password" autocomplete="new-password" minlength="{}">"#,
+                crate::http::MIN_PASSWORD_LEN
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"name="confirm_password" id="confirm-password" autocomplete="new-password" minlength="{}">"#,
                 crate::http::MIN_PASSWORD_LEN
             )),
             "{html}"

@@ -1,6 +1,7 @@
 //! `GET /` (signed in) - `http::home::home`.
 
-use maud::{html, Markup};
+use maud::{html, Markup, PreEscaped};
+use ui::assets::icons;
 
 use super::PageChrome;
 
@@ -68,7 +69,7 @@ pub fn page(chrome: &PageChrome, data: &HomeViewModel) -> Markup {
             }))
 
             h2 { "Your stores" }
-            (ui::FormActions::new(ui::LinkButton::new("+ add another store", "/setup")))
+            (ui::FormActions::new(ui::LinkButton::new(html! { (PreEscaped(icons::PLUS)) "Add another store" }, "/setup")))
             // On a phone each store is a card: its name and health, its
             // wallet and link, then its site.
             (ui::Table::new(ui::Slot::many(data.stores.iter().map(store_row)))
@@ -100,14 +101,21 @@ pub fn page(chrome: &PageChrome, data: &HomeViewModel) -> Markup {
             }
         }
         @if !data.has_stores {
-            (ui::Panel::new(html! {
-                h2 { "Connect your first store" }
-                p {
-                    "You don't have any stores connected yet. Adding one takes a couple of minutes - pick the "
-                    "guided flow for WooCommerce, or the advanced form if you're integrating something custom."
+            // A card like the settings pages': a head with an icon and the
+            // title, then the body.
+            section id="card-first-store" class="settings-card" aria-labelledby="card-first-store-title" {
+                header class="card-head" {
+                    (PreEscaped(icons::STORE))
+                    h2 id="card-first-store-title" { "Connect your first store" }
                 }
-                (ui::FormActions::new(ui::LinkButton::new("+ add a store", "/setup").variant(ui::ButtonVariant::Primary)))
-            }))
+                div class="card-body" {
+                    p {
+                        "You don't have any stores connected yet. Adding one takes a couple of minutes - pick the "
+                        "guided flow for WooCommerce, or the advanced form if you're integrating something custom."
+                    }
+                    (ui::FormActions::new(ui::LinkButton::new(html! { (PreEscaped(icons::PLUS)) "Add a store" }, "/setup").variant(ui::ButtonVariant::Primary)))
+                }
+            }
         }
     };
     super::Page::new("Home - Monokulo", header).render(chrome, body)
@@ -175,6 +183,17 @@ mod tests {
     fn shows_the_add_store_cta_when_the_user_has_no_stores() {
         let html = page(&chrome(), &empty_data()).into_string();
         assert!(html.contains(r#"href="/setup""#));
+        // A card head with the shop icon and the title, then the body.
+        assert!(
+            html.contains(r#"<section id="card-first-store" class="settings-card" aria-labelledby="card-first-store-title"><header class="card-head"><svg xmlns="http://www.w3.org/2000/svg" class="mk-icon""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<h2 id="card-first-store-title">Connect your first store</h2></header><div class="card-body">"#),
+            "{html}"
+        );
+        assert!(html.contains("</svg>Add a store</a>"), "{html}");
+        assert!(!html.contains("+ add"), "{html}");
         assert!(
             !html.contains("<table"),
             "an empty home page shouldn't render a store table at all"

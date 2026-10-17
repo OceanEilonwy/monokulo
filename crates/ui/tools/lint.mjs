@@ -69,7 +69,11 @@ export function inspect(file, source) {
   } else if (file.endsWith('.rs')) {
     // Maud has no HTML AST: scan native control declarations conservatively.
     // Runtime contract tests cover the actual rendered DOM (labels, IDs, ARIA).
-    for (const match of source.matchAll(/^\s*(button|input|textarea|select)\b([^;{]*)(?:;|\{)/gm)) {
+    // A line starting with the word is an element unless the word is a Rust
+    // value: a method called on it (`button.variant(…)`) or the end of an
+    // expression (`button }`). Maud's class shorthand (`button.mk-btn`) has
+    // no call, so it still counts.
+    for (const match of source.matchAll(/^\s*(button|input|textarea|select)\b(?![\w.]*\()(?!\s*[)}])([^;{]*)(?:;|\{)/gm)) {
       checkControl(match[1], match[2], match[0], source.slice(0, match.index).split('\n').length);
     }
   }

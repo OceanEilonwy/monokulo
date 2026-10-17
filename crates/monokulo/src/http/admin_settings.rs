@@ -218,20 +218,25 @@ async fn fetch_engine_settings(
     let fields = parsed
         .scalars
         .into_iter()
-        .map(|(key, s)| AdminScalarFieldView {
-            label: humanize_key(&key),
-            name: engine_form_name(&key),
-            key,
-            value: s.value,
-            source: SettingSourceView::from_name(&s.source),
-            help: s.description,
-            kind: s.kind,
-            example: s.example,
-            restart_only: s.applies.as_deref() == Some("restart"),
-            pending_restart: s.pending_restart,
-            problem: s.problem,
-            locked: s.locked,
-            saved_value: None,
+        .map(|(key, s)| {
+            let words = views::admin::engine_setting_words(&key);
+            AdminScalarFieldView {
+                label: words.map_or_else(|| humanize_key(&key), |(name, _)| name.to_string()),
+                name: engine_form_name(&key),
+                help: words
+                    .and_then(|(_, help)| help.map(str::to_string))
+                    .or(s.description),
+                key,
+                value: s.value,
+                source: SettingSourceView::from_name(&s.source),
+                kind: s.kind,
+                example: s.example,
+                restart_only: s.applies.as_deref() == Some("restart"),
+                pending_restart: s.pending_restart,
+                problem: s.problem,
+                locked: s.locked,
+                saved_value: None,
+            }
         })
         .collect();
     let mut networks_meta = parsed.networks;
@@ -2165,6 +2170,7 @@ mod tests {
             ("abuse.client_logs_per_min", "45"),
             ("abuse.challenge_bits", "18"),
             ("abuse.under_attack", "true"),
+            ("admin.query_enabled", "false"),
             ("rate_limit.per_store_key_per_min", "444"),
             ("public_url", "https://pay.example.com"),
             ("abuse.trusted_proxies", "127.0.0.1, 10.0.0.0/8"),
@@ -2258,6 +2264,9 @@ mod tests {
             ("server.cpus", "0"),
             ("server.nice", "5"),
             ("server.rate_limit_per_token_per_min", "200"),
+            // On by default for a standalone engine.
+            ("server.instance_rate_limit", "false"),
+            ("server.instance_rate_limit_per_min", "900"),
             ("server.max_body_bytes", "16384"),
             // The same key as monokulo's own, so sent as `engine:<key>`.
             ("engine:database.read_connections", "6"),
@@ -4231,6 +4240,9 @@ mod tests {
             ("server.cpus", "0"),
             ("server.nice", "5"),
             ("server.rate_limit_per_token_per_min", "200"),
+            // Off by default inside monokulo.
+            ("server.instance_rate_limit", "true"),
+            ("server.instance_rate_limit_per_min", "900"),
             ("server.max_body_bytes", "16384"),
             // The same key as monokulo's own, so sent as `engine:<key>`.
             ("engine:database.read_connections", "6"),

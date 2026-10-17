@@ -67,7 +67,7 @@ test('killing the engine at random moments never loses a confirmed order or reus
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      scalars: { 'payment.mempool_poll_interval_ms': '100', 'server.rate_limit_per_token_per_min': '100000' },
+      scalars: { 'payment.mempool_poll_interval_ms': '100', 'server.rate_limit_per_token_per_min': '100000', 'server.instance_rate_limit_per_min': '100000' },
       monero_node: { stagenet: { host: fakeHost, port: Number(fakePort), ssl: false, accept_self_signed_certs: true, fallbacks: [] } },
     }),
   });

@@ -597,7 +597,7 @@ mod tests {
     use super::*;
     use crate::daemon::fake::FakeDaemonClient;
     use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
-    use crate::http::rate_limit::RateLimiter;
+    use crate::http::rate_limit::ApiRateLimits;
     use crate::key_custody::{CustodyRouter, PlainKeyCustody, WalletMaterial};
     use crate::store::{NewTenant, Store};
     use axum::body::Body;
@@ -619,13 +619,13 @@ mod tests {
     async fn saving_a_node_starts_its_networks_loops_and_clearing_it_stops_them() {
         let store = Store::open_in_memory().unwrap().into_shared();
         let daemons = Daemons::default();
-        let rate_limiter = Arc::new(RateLimiter::new(10_000));
+        let rate_limits = Arc::new(ApiRateLimits::new(10_000, Some(10_000)));
         let settings = EngineSettings::load_with(
             Arc::clone(&store),
             Some(crate::engine_settings::NodesReloadable {
                 daemons: daemons.clone(),
             }),
-            Arc::clone(&rate_limiter),
+            Arc::clone(&rate_limits),
             live_settings::Env::fixed(Vec::<(String, String)>::new()),
         )
         .await
@@ -636,7 +636,7 @@ mod tests {
         let status = scanner_status::new_scanner_status_map();
         let state = crate::http::AppState {
             db: crate::store::Database::inline(Arc::clone(&store)),
-            admin_rate_limiter: rate_limiter,
+            rate_limits,
             log_store: None,
             engine_token: Arc::new(
                 shared::auth::RawToken::presented(crate::http::TEST_ENGINE_TOKEN).hash(),
@@ -652,6 +652,7 @@ mod tests {
                 daemons: daemons.clone(),
                 scanner_status: Arc::clone(&status),
             },
+            activity_stream: crate::activity::StreamTuning::DEFAULT,
         };
         let router = crate::http::build_router(state, 1 << 20);
         let db = Db::over_shared(Arc::clone(&store));
@@ -790,8 +791,9 @@ mod tests {
             "nobody watched the first round"
         );
 
-        // Someone is watching now (the read above): the next round has the
-        // node's whole pool recorded beside it.
+        // Someone is watching now (a stream is open): the next round has
+        // the node's whole pool recorded beside it.
+        let _watching = scan_state.activity().watching();
         node.push_block("h2", vec![]);
         scan_state.node_wakes().chain_changed();
         eventually("a round for the announced block", || ticks() == 2).await;

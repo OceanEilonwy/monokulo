@@ -1,19 +1,22 @@
-<section class="book-section" id="component-button"><h2>Button</h2><p>A button for an action on the page. One that goes somewhere is a <code>LinkButton</code>: a link, not a button.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>children</code></th><td><code>Slot</code></td><td>Required. What it says: the action, as a verb (&quot;Save&quot;, &quot;Delete store&quot;).</td></tr><tr><th scope="row"><code>variant</code></th><td><code>Option&lt;ButtonVariant (primary | danger | quiet)&gt;</code></td><td>How much a button stands out. Without one it is secondary: most buttons
+<section class="book-section" id="component-button"><h2>Button</h2><p>A button for an action on the page. One that goes somewhere is a <code>LinkButton</code>: a link, not a button.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>children</code></th><td><code>Slot</code></td><td>Required. What it says: the action, as a verb (&quot;Save&quot;, &quot;Delete store&quot;).</td></tr><tr><th scope="row"><code>variant</code></th><td><code>Option&lt;ButtonVariant (primary | danger | caution | quiet)&gt;</code></td><td>How much a button stands out. Without one it is secondary: most buttons
 are, and a page has at most one primary.</td></tr><tr><th scope="row"><code>size</code></th><td><code>Option&lt;ControlSize (compact | touch)&gt;</code></td><td>A control's size. Without one it is the normal size.</td></tr><tr><th scope="row"><code>kind</code></th><td><code>ButtonType (button | submit | reset)</code></td><td>Defaults to <code>button</code>, so it never submits a form by accident. Default: button.</td></tr><tr><th scope="row"><code>block</code></th><td><code>bool</code></td><td>Fills its container's width. Default: false.</td></tr><tr><th scope="row"><code>disabled</code></th><td><code>bool</code></td><td>Default: false.</td></tr><tr><th scope="row"><code>busy</code></th><td><code>bool</code></td><td>Marks it working (a save in flight): the cursor shows progress. Default: false.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-button-1"><figcaption>Primary</figcaption><div class="book-example"><button class="mk-btn" type="button" data-variant="primary">Save changes</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Button::new(&quot;Save changes&quot;)
     .variant(ButtonVariant::Primary)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Button variant=&quot;primary&quot;&gt;Save changes&lt;/Button&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; data-variant=&quot;primary&quot;&gt;Save changes&lt;/button&gt;</code></pre></details></figure><figure class="book-specimen" id="component-button-2"><figcaption>Secondary</figcaption><div class="book-example"><button class="mk-btn" type="button">Cancel</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Button::new(&quot;Cancel&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Button&gt;Cancel&lt;/Button&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot;&gt;Cancel&lt;/button&gt;</code></pre></details></figure><figure class="book-specimen" id="component-button-3"><figcaption>Danger</figcaption><div class="book-example"><button class="mk-btn" type="button" data-variant="danger">Delete store</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Button::new(&quot;Delete store&quot;)
     .variant(ButtonVariant::Danger)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Button variant=&quot;danger&quot;&gt;Delete store&lt;/Button&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; data-variant=&quot;danger&quot;&gt;Delete store&lt;/button&gt;</code></pre></details></figure><figure class="book-specimen" id="component-button-4"><figcaption>Quiet</figcaption><div class="book-example"><button class="mk-btn" type="button" data-variant="quiet">Discard</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Button::new(&quot;Discard&quot;)
-    .variant(ButtonVariant::Quiet)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Button variant=&quot;quiet&quot;&gt;Discard&lt;/Button&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; data-variant=&quot;quiet&quot;&gt;Discard&lt;/button&gt;</code></pre></details></figure><figure class="book-specimen" id="component-button-5"><figcaption>Submits its form</figcaption><div class="book-example"><button class="mk-btn" type="submit" data-variant="primary">Log in</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Button::new(&quot;Log in&quot;)
+    .variant(ButtonVariant::Quiet)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Button variant=&quot;quiet&quot;&gt;Discard&lt;/Button&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; data-variant=&quot;quiet&quot;&gt;Discard&lt;/button&gt;</code></pre></details></figure><figure class="book-specimen" id="component-button-5"><figcaption>Caution</figcaption><div class="book-example"><button class="mk-btn" type="button" data-variant="caution">Allow any website</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Button::new(&quot;Allow any website&quot;)
+    .variant(ButtonVariant::Caution)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Button variant=&quot;caution&quot;&gt;Allow any website&lt;/Button&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; data-variant=&quot;caution&quot;&gt;Allow any website&lt;/button&gt;</code></pre></details></figure><figure class="book-specimen" id="component-button-6"><figcaption>Submits its form</figcaption><div class="book-example"><button class="mk-btn" type="submit" data-variant="primary">Log in</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Button::new(&quot;Log in&quot;)
     .variant(ButtonVariant::Primary)
-    .kind(ButtonType::Submit)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Button variant=&quot;primary&quot; kind=&quot;submit&quot;&gt;Log in&lt;/Button&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;button class=&quot;mk-btn&quot; type=&quot;submit&quot; data-variant=&quot;primary&quot;&gt;Log in&lt;/button&gt;</code></pre></details></figure><figure class="book-specimen" id="component-button-6"><figcaption>Compact</figcaption><div class="book-example"><button class="mk-btn" type="button" data-size="compact">Discard</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Button::new(&quot;Discard&quot;)
-    .size(ControlSize::Compact)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Button size=&quot;compact&quot;&gt;Discard&lt;/Button&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; data-size=&quot;compact&quot;&gt;Discard&lt;/button&gt;</code></pre></details></figure><figure class="book-specimen" id="component-button-7"><figcaption>Touch</figcaption><div class="book-example"><button class="mk-btn" type="button" data-variant="primary" data-size="touch" data-block>Charge</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Button::new(&quot;Charge&quot;)
+    .kind(ButtonType::Submit)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Button variant=&quot;primary&quot; kind=&quot;submit&quot;&gt;Log in&lt;/Button&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;button class=&quot;mk-btn&quot; type=&quot;submit&quot; data-variant=&quot;primary&quot;&gt;Log in&lt;/button&gt;</code></pre></details></figure><figure class="book-specimen" id="component-button-7"><figcaption>Compact</figcaption><div class="book-example"><button class="mk-btn" type="button" data-size="compact">Discard</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Button::new(&quot;Discard&quot;)
+    .size(ControlSize::Compact)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Button size=&quot;compact&quot;&gt;Discard&lt;/Button&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; data-size=&quot;compact&quot;&gt;Discard&lt;/button&gt;</code></pre></details></figure><figure class="book-specimen" id="component-button-8"><figcaption>Touch</figcaption><div class="book-example"><button class="mk-btn" type="button" data-variant="primary" data-size="touch" data-block>Charge</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Button::new(&quot;Charge&quot;)
     .variant(ButtonVariant::Primary)
     .size(ControlSize::Touch)
-    .block(true)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Button variant=&quot;primary&quot; size=&quot;touch&quot; block&gt;Charge&lt;/Button&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; data-variant=&quot;primary&quot; data-size=&quot;touch&quot; data-block&gt;Charge&lt;/button&gt;</code></pre></details></figure><figure class="book-specimen" id="component-button-8"><figcaption>Disabled</figcaption><div class="book-example"><button class="mk-btn" type="button" disabled>Export orders</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Button::new(&quot;Export orders&quot;)
-    .disabled(true)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Button disabled&gt;Export orders&lt;/Button&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; disabled&gt;Export orders&lt;/button&gt;</code></pre></details></figure><figure class="book-specimen" id="component-button-9"><figcaption>Busy</figcaption><div class="book-example"><button class="mk-btn" type="button" data-variant="primary" disabled aria-busy="true">Saving…</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Button::new(&quot;Saving…&quot;)
+    .block(true)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Button variant=&quot;primary&quot; size=&quot;touch&quot; block&gt;Charge&lt;/Button&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; data-variant=&quot;primary&quot; data-size=&quot;touch&quot; data-block&gt;Charge&lt;/button&gt;</code></pre></details></figure><figure class="book-specimen" id="component-button-9"><figcaption>Disabled</figcaption><div class="book-example"><button class="mk-btn" type="button" disabled>Export orders</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Button::new(&quot;Export orders&quot;)
+    .disabled(true)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Button disabled&gt;Export orders&lt;/Button&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; disabled&gt;Export orders&lt;/button&gt;</code></pre></details></figure><figure class="book-specimen" id="component-button-10"><figcaption>Disabled primary</figcaption><div class="book-example"><button class="mk-btn" type="button" data-variant="primary" disabled>Only allow my domains</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Button::new(&quot;Only allow my domains&quot;)
+    .variant(ButtonVariant::Primary)
+    .disabled(true)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Button variant=&quot;primary&quot; disabled&gt;Only allow my domains&lt;/Button&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; data-variant=&quot;primary&quot; disabled&gt;Only allow my domains&lt;/button&gt;</code></pre></details></figure><figure class="book-specimen" id="component-button-11"><figcaption>Busy</figcaption><div class="book-example"><button class="mk-btn" type="button" data-variant="primary" disabled aria-busy="true">Saving…</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Button::new(&quot;Saving…&quot;)
     .variant(ButtonVariant::Primary)
     .disabled(true)
     .busy(true)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Button variant=&quot;primary&quot; disabled busy&gt;Saving…&lt;/Button&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; data-variant=&quot;primary&quot; disabled aria-busy=&quot;true&quot;&gt;Saving…&lt;/button&gt;</code></pre></details></figure></div></section>
-<section class="book-section" id="component-link-button"><h2>LinkButton</h2><p>A link that looks like a button: for a call to action that goes to another page. It needs somewhere to go.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>children</code></th><td><code>Slot</code></td><td>Required.</td></tr><tr><th scope="row"><code>href</code></th><td><code>String</code></td><td>Required.</td></tr><tr><th scope="row"><code>variant</code></th><td><code>Option&lt;ButtonVariant (primary | danger | quiet)&gt;</code></td><td>How much a button stands out. Without one it is secondary: most buttons
+<section class="book-section" id="component-link-button"><h2>LinkButton</h2><p>A link that looks like a button: for a call to action that goes to another page. It needs somewhere to go.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>children</code></th><td><code>Slot</code></td><td>Required.</td></tr><tr><th scope="row"><code>href</code></th><td><code>String</code></td><td>Required.</td></tr><tr><th scope="row"><code>variant</code></th><td><code>Option&lt;ButtonVariant (primary | danger | caution | quiet)&gt;</code></td><td>How much a button stands out. Without one it is secondary: most buttons
 are, and a page has at most one primary.</td></tr><tr><th scope="row"><code>size</code></th><td><code>Option&lt;ControlSize (compact | touch)&gt;</code></td><td>A control's size. Without one it is the normal size.</td></tr><tr><th scope="row"><code>block</code></th><td><code>bool</code></td><td>Default: false.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-link-button-1"><figcaption>Primary</figcaption><div class="book-example"><a class="mk-btn" href="#component-link-button" data-variant="primary">Add a store</a></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>LinkButton::new(&quot;Add a store&quot;, &quot;#component-link-button&quot;)
     .variant(ButtonVariant::Primary)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;LinkButton href=&quot;#component-link-button&quot; variant=&quot;primary&quot;&gt;Add a store&lt;/LinkButton&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;a class=&quot;mk-btn&quot; href=&quot;#component-link-button&quot; data-variant=&quot;primary&quot;&gt;Add a store&lt;/a&gt;</code></pre></details></figure><figure class="book-specimen" id="component-link-button-2"><figcaption>Secondary</figcaption><div class="book-example"><a class="mk-btn" href="#component-link-button">Watch it live</a></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>LinkButton::new(&quot;Watch it live&quot;, &quot;#component-link-button&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;LinkButton href=&quot;#component-link-button&quot;&gt;Watch it live&lt;/LinkButton&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;a class=&quot;mk-btn&quot; href=&quot;#component-link-button&quot;&gt;Watch it live&lt;/a&gt;</code></pre></details></figure><figure class="book-specimen" id="component-link-button-3"><figcaption>Compact</figcaption><div class="book-example"><a class="mk-btn" href="#component-link-button" data-size="compact">Discard changes</a></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>LinkButton::new(&quot;Discard changes&quot;, &quot;#component-link-button&quot;)
     .size(ControlSize::Compact)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;LinkButton href=&quot;#component-link-button&quot; size=&quot;compact&quot;&gt;Discard changes&lt;/LinkButton&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;a class=&quot;mk-btn&quot; href=&quot;#component-link-button&quot; data-size=&quot;compact&quot;&gt;Discard changes&lt;/a&gt;</code></pre></details></figure></div></section>
@@ -432,6 +435,513 @@ the up or down arrow&quot;).</td></tr><tr><th scope="row"><code>rest</code></th>
     }
   ]
 }} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;article class=&quot;mk-card&quot;&gt;&lt;div class=&quot;mk-card-head&quot;&gt;&lt;div&gt;&lt;h3 class=&quot;mk-card-title&quot;&gt;Table 4&lt;/h3&gt;&lt;p class=&quot;mk-card-sub&quot;&gt;Created 14:02&lt;/p&gt;&lt;/div&gt;&lt;span class=&quot;tag state-pending&quot;&gt;&lt;span class=&quot;label-long&quot;&gt;Waiting for payment&lt;/span&gt;&lt;span class=&quot;label-short&quot; aria-hidden=&quot;true&quot;&gt;Waiting&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;&lt;p class=&quot;mk-card-amount&quot;&gt;0.42 XMR&lt;/p&gt;&lt;div class=&quot;mk-card-foot&quot;&gt;&lt;small&gt;Expires in 52 min&lt;/small&gt;&lt;a class=&quot;mk-btn&quot; href=&quot;#component-card&quot; data-variant=&quot;quiet&quot; data-size=&quot;compact&quot;&gt;Open&lt;/a&gt;&lt;/div&gt;&lt;/article&gt;</code></pre></details></figure></div></section>
+<section class="book-section" id="component-status-banner"><h2>StatusBanner</h2><p>A state the page is in, at the top of what it governs: an icon, the state in bold, a &quot;?&quot; (<code>HelpTip</code>) with what it means, and the one action that changes it. The tone's tint backs the words up; its edge stays thin.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>title</code></th><td><code>String</code></td><td>Required. The state, in a sentence (&quot;Any website can show this checkout.&quot;).</td></tr><tr><th scope="row"><code>tone</code></th><td><code>Tone (error | warning | success | notice)</code></td><td>Required. What a message says about how something went. The words say it; the
+colour only backs them up.</td></tr><tr><th scope="row"><code>icon</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Before the title: an inline SVG (<code>assets::icons::LOCK</code>).</td></tr><tr><th scope="row"><code>tip</code></th><td><code>Option&lt;Slot&gt;</code></td><td>After the title: a <code>HelpTip</code>, anchored to the banner
+(<code>TipAnchor::Container</code>) so its help stays on a phone's screen.</td></tr><tr><th scope="row"><code>action</code></th><td><code>Option&lt;Slot&gt;</code></td><td>At the right: the button that changes the state.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-status-banner-1"><figcaption>On</figcaption><div class="book-example"><div class="mk-status-banner" data-tone="success"><span class="mk-status-banner-icon" aria-hidden="true">🔒</span><div class="mk-status-banner-title"><strong>Only your verified domains can show this checkout.</strong><details class="help-tip" data-anchor="container" data-mk="1" data-island="HelpTip" data-props="{}"><summary aria-label="What this means" title="What this means">?</summary><div class="help-tip-body">Browsers won't show it on any other website, and orders started there are refused.</div></details></div><div class="mk-status-banner-action"><button class="mk-btn" type="button" data-variant="caution" data-size="compact">Allow any website</button></div></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>StatusBanner::new(&quot;Only your verified domains can show this checkout.&quot;, Tone::Success)
+    .icon(&quot;🔒&quot;)
+    .tip(HelpTip::new(&quot;What this means&quot;, &quot;Browsers won't show it on any other website, and orders started there are refused.&quot;)
+        .anchor(TipAnchor::Container))
+    .action(Button::new(&quot;Allow any website&quot;)
+        .variant(ButtonVariant::Caution)
+        .size(ControlSize::Compact))</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;StatusBanner title=&quot;Only your verified domains can show this checkout.&quot; tone=&quot;success&quot; icon={{
+  &quot;$slot&quot;: [
+    &quot;🔒&quot;
+  ]
+}} tip={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;HelpTip&quot;,
+      &quot;props&quot;: {
+        &quot;anchor&quot;: &quot;container&quot;,
+        &quot;children&quot;: {
+          &quot;$slot&quot;: [
+            &quot;Browsers won't show it on any other website, and orders started there are refused.&quot;
+          ]
+        },
+        &quot;label&quot;: &quot;What this means&quot;,
+        &quot;wide&quot;: false
+      }
+    }
+  ]
+}} action={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;Button&quot;,
+      &quot;props&quot;: {
+        &quot;block&quot;: false,
+        &quot;busy&quot;: false,
+        &quot;children&quot;: {
+          &quot;$slot&quot;: [
+            &quot;Allow any website&quot;
+          ]
+        },
+        &quot;disabled&quot;: false,
+        &quot;kind&quot;: &quot;button&quot;,
+        &quot;size&quot;: &quot;compact&quot;,
+        &quot;variant&quot;: &quot;caution&quot;
+      }
+    }
+  ]
+}} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;mk-status-banner&quot; data-tone=&quot;success&quot;&gt;&lt;span class=&quot;mk-status-banner-icon&quot; aria-hidden=&quot;true&quot;&gt;🔒&lt;/span&gt;&lt;div class=&quot;mk-status-banner-title&quot;&gt;&lt;strong&gt;Only your verified domains can show this checkout.&lt;/strong&gt;&lt;details class=&quot;help-tip&quot; data-anchor=&quot;container&quot; data-mk=&quot;1&quot; data-island=&quot;HelpTip&quot; data-props=&quot;{}&quot;&gt;&lt;summary aria-label=&quot;What this means&quot; title=&quot;What this means&quot;&gt;?&lt;/summary&gt;&lt;div class=&quot;help-tip-body&quot;&gt;Browsers won't show it on any other website, and orders started there are refused.&lt;/div&gt;&lt;/details&gt;&lt;/div&gt;&lt;div class=&quot;mk-status-banner-action&quot;&gt;&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; data-variant=&quot;caution&quot; data-size=&quot;compact&quot;&gt;Allow any website&lt;/button&gt;&lt;/div&gt;&lt;/div&gt;</code></pre></details></figure><figure class="book-specimen" id="component-status-banner-2"><figcaption>Off</figcaption><div class="book-example"><div class="mk-status-banner" data-tone="warning"><span class="mk-status-banner-icon" aria-hidden="true">🔓</span><div class="mk-status-banner-title"><strong>Any website can show this checkout.</strong><details class="help-tip" data-anchor="container" data-mk="1" data-island="HelpTip" data-props="{}"><summary aria-label="What this means" title="What this means">?</summary><div class="help-tip-body">Allow only your verified domains to stop other websites showing it.</div></details></div><div class="mk-status-banner-action"><button class="mk-btn" type="button" data-variant="primary" data-size="compact">Only allow my domains</button></div></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>StatusBanner::new(&quot;Any website can show this checkout.&quot;, Tone::Warning)
+    .icon(&quot;🔓&quot;)
+    .tip(HelpTip::new(&quot;What this means&quot;, &quot;Allow only your verified domains to stop other websites showing it.&quot;)
+        .anchor(TipAnchor::Container))
+    .action(Button::new(&quot;Only allow my domains&quot;)
+        .variant(ButtonVariant::Primary)
+        .size(ControlSize::Compact))</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;StatusBanner title=&quot;Any website can show this checkout.&quot; tone=&quot;warning&quot; icon={{
+  &quot;$slot&quot;: [
+    &quot;🔓&quot;
+  ]
+}} tip={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;HelpTip&quot;,
+      &quot;props&quot;: {
+        &quot;anchor&quot;: &quot;container&quot;,
+        &quot;children&quot;: {
+          &quot;$slot&quot;: [
+            &quot;Allow only your verified domains to stop other websites showing it.&quot;
+          ]
+        },
+        &quot;label&quot;: &quot;What this means&quot;,
+        &quot;wide&quot;: false
+      }
+    }
+  ]
+}} action={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;Button&quot;,
+      &quot;props&quot;: {
+        &quot;block&quot;: false,
+        &quot;busy&quot;: false,
+        &quot;children&quot;: {
+          &quot;$slot&quot;: [
+            &quot;Only allow my domains&quot;
+          ]
+        },
+        &quot;disabled&quot;: false,
+        &quot;kind&quot;: &quot;button&quot;,
+        &quot;size&quot;: &quot;compact&quot;,
+        &quot;variant&quot;: &quot;primary&quot;
+      }
+    }
+  ]
+}} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;mk-status-banner&quot; data-tone=&quot;warning&quot;&gt;&lt;span class=&quot;mk-status-banner-icon&quot; aria-hidden=&quot;true&quot;&gt;🔓&lt;/span&gt;&lt;div class=&quot;mk-status-banner-title&quot;&gt;&lt;strong&gt;Any website can show this checkout.&lt;/strong&gt;&lt;details class=&quot;help-tip&quot; data-anchor=&quot;container&quot; data-mk=&quot;1&quot; data-island=&quot;HelpTip&quot; data-props=&quot;{}&quot;&gt;&lt;summary aria-label=&quot;What this means&quot; title=&quot;What this means&quot;&gt;?&lt;/summary&gt;&lt;div class=&quot;help-tip-body&quot;&gt;Allow only your verified domains to stop other websites showing it.&lt;/div&gt;&lt;/details&gt;&lt;/div&gt;&lt;div class=&quot;mk-status-banner-action&quot;&gt;&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; data-variant=&quot;primary&quot; data-size=&quot;compact&quot;&gt;Only allow my domains&lt;/button&gt;&lt;/div&gt;&lt;/div&gt;</code></pre></details></figure></div></section>
+<section class="book-section" id="component-item-card"><h2>ItemCard</h2><p>One thing in a list, as a card: its icon, name and state on the first line with what to do at the right (the same place whatever its state), a line about it under them, and what it needs next below (a record to publish). Cards follow each other with a small gap.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>title</code></th><td><code>Slot</code></td><td>Required. Its name: a heading (<code>h4</code>).</td></tr><tr><th scope="row"><code>icon</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Before the name: an inline SVG.</td></tr><tr><th scope="row"><code>status</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Right after the name: a <code>Tag</code>.</td></tr><tr><th scope="row"><code>actions</code></th><td><code>Option&lt;Slot&gt;</code></td><td>At the head's right: its buttons.</td></tr><tr><th scope="row"><code>meta</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Muted, under the head: when it was checked, what it's missing.</td></tr><tr><th scope="row"><code>body</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Under a line: what it needs next.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-item-card-1"><figcaption>Verified</figcaption><div class="book-example"><article class="mk-item-card"><div class="mk-item-card-head"><div class="mk-item-card-name"><h4 class="mk-item-card-title"><span class="mk-item-card-icon" aria-hidden="true">🌐</span><span>rachelshandicrafts.com</span></h4><span class="tag tag-ok">Verified</span></div><div class="mk-item-card-actions"><button class="mk-btn" type="button" data-variant="danger" data-size="compact">Remove</button></div></div><p class="mk-item-card-meta">Checked 3 h ago · re-checked every 6 h</p></article></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>ItemCard::new(&quot;rachelshandicrafts.com&quot;)
+    .icon(&quot;🌐&quot;)
+    .status(Tag::new(&quot;Verified&quot;)
+        .tone(TagTone::Ok))
+    .actions(Button::new(&quot;Remove&quot;)
+        .variant(ButtonVariant::Danger)
+        .size(ControlSize::Compact))
+    .meta(&quot;Checked 3 h ago · re-checked every 6 h&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;ItemCard title={{
+  &quot;$slot&quot;: [
+    &quot;rachelshandicrafts.com&quot;
+  ]
+}} icon={{
+  &quot;$slot&quot;: [
+    &quot;🌐&quot;
+  ]
+}} status={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;Tag&quot;,
+      &quot;props&quot;: {
+        &quot;children&quot;: {
+          &quot;$slot&quot;: [
+            &quot;Verified&quot;
+          ]
+        },
+        &quot;tone&quot;: &quot;ok&quot;
+      }
+    }
+  ]
+}} actions={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;Button&quot;,
+      &quot;props&quot;: {
+        &quot;block&quot;: false,
+        &quot;busy&quot;: false,
+        &quot;children&quot;: {
+          &quot;$slot&quot;: [
+            &quot;Remove&quot;
+          ]
+        },
+        &quot;disabled&quot;: false,
+        &quot;kind&quot;: &quot;button&quot;,
+        &quot;size&quot;: &quot;compact&quot;,
+        &quot;variant&quot;: &quot;danger&quot;
+      }
+    }
+  ]
+}} meta={{
+  &quot;$slot&quot;: [
+    &quot;Checked 3 h ago · re-checked every 6 h&quot;
+  ]
+}} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;article class=&quot;mk-item-card&quot;&gt;&lt;div class=&quot;mk-item-card-head&quot;&gt;&lt;div class=&quot;mk-item-card-name&quot;&gt;&lt;h4 class=&quot;mk-item-card-title&quot;&gt;&lt;span class=&quot;mk-item-card-icon&quot; aria-hidden=&quot;true&quot;&gt;🌐&lt;/span&gt;&lt;span&gt;rachelshandicrafts.com&lt;/span&gt;&lt;/h4&gt;&lt;span class=&quot;tag tag-ok&quot;&gt;Verified&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;mk-item-card-actions&quot;&gt;&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; data-variant=&quot;danger&quot; data-size=&quot;compact&quot;&gt;Remove&lt;/button&gt;&lt;/div&gt;&lt;/div&gt;&lt;p class=&quot;mk-item-card-meta&quot;&gt;Checked 3 h ago · re-checked every 6 h&lt;/p&gt;&lt;/article&gt;</code></pre></details></figure><figure class="book-specimen" id="component-item-card-2"><figcaption>Waiting, with what it needs</figcaption><div class="book-example"><article class="mk-item-card"><div class="mk-item-card-head"><div class="mk-item-card-name"><h4 class="mk-item-card-title"><span class="mk-item-card-icon" aria-hidden="true">🌐</span><span>shop.rachelshandicrafts.com</span></h4><span class="tag tag-unknown">Not verified</span></div><div class="mk-item-card-actions"><button class="mk-btn" type="button" data-size="compact">Check again</button><button class="mk-btn" type="button" data-variant="danger" data-size="compact">Remove</button></div></div><p class="mk-item-card-meta">Added 10 min ago · the record isn't there yet</p><div class="mk-item-card-body"><table class="table-stack mk-dns-record"><thead><tr><th scope="col">Type</th><th scope="col">Host</th><th scope="col">Value</th></tr></thead><tbody><tr><td data-label="Type"><code>TXT</code></td><td data-label="Host"><div class="mk-copy" data-island="CopyValue" data-props="{&quot;copy_label&quot;:&quot;Copy the host&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;_monokulo&quot;}"><span class="mk-copy-value mk-mono" data-copy-value tabindex="0" data-mk="1">_monokulo</span><!--mk:2--></div></td><td data-label="Value"><div class="mk-copy" data-island="CopyValue" data-props="{&quot;copy_label&quot;:&quot;Copy the value&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;monokulo-verify=6c168c735d314966ac858a7a71de5eaf&quot;}"><span class="mk-copy-value mk-mono" data-copy-value tabindex="0" data-mk="1">monokulo-verify=6c168c735d314966ac858a7a71de5eaf</span><!--mk:2--></div></td></tr></tbody></table></div></article></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>ItemCard::new(&quot;shop.rachelshandicrafts.com&quot;)
+    .icon(&quot;🌐&quot;)
+    .status(Tag::new(&quot;Not verified&quot;)
+        .tone(TagTone::Unknown))
+    .actions(Slot::many([Button::new(&quot;Check again&quot;)
+        .size(ControlSize::Compact), Button::new(&quot;Remove&quot;)
+        .variant(ButtonVariant::Danger)
+        .size(ControlSize::Compact)]))
+    .meta(&quot;Added 10 min ago · the record isn't there yet&quot;)
+    .body(DnsRecord::new(&quot;TXT&quot;, CopyValue::new(&quot;_monokulo&quot;)
+        .copy_label(&quot;Copy the host&quot;), CopyValue::new(&quot;monokulo-verify=6c168c735d314966ac858a7a71de5eaf&quot;)
+        .copy_label(&quot;Copy the value&quot;)))</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;ItemCard title={{
+  &quot;$slot&quot;: [
+    &quot;shop.rachelshandicrafts.com&quot;
+  ]
+}} icon={{
+  &quot;$slot&quot;: [
+    &quot;🌐&quot;
+  ]
+}} status={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;Tag&quot;,
+      &quot;props&quot;: {
+        &quot;children&quot;: {
+          &quot;$slot&quot;: [
+            &quot;Not verified&quot;
+          ]
+        },
+        &quot;tone&quot;: &quot;unknown&quot;
+      }
+    }
+  ]
+}} actions={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;Button&quot;,
+      &quot;props&quot;: {
+        &quot;block&quot;: false,
+        &quot;busy&quot;: false,
+        &quot;children&quot;: {
+          &quot;$slot&quot;: [
+            &quot;Check again&quot;
+          ]
+        },
+        &quot;disabled&quot;: false,
+        &quot;kind&quot;: &quot;button&quot;,
+        &quot;size&quot;: &quot;compact&quot;
+      }
+    },
+    {
+      &quot;$component&quot;: &quot;Button&quot;,
+      &quot;props&quot;: {
+        &quot;block&quot;: false,
+        &quot;busy&quot;: false,
+        &quot;children&quot;: {
+          &quot;$slot&quot;: [
+            &quot;Remove&quot;
+          ]
+        },
+        &quot;disabled&quot;: false,
+        &quot;kind&quot;: &quot;button&quot;,
+        &quot;size&quot;: &quot;compact&quot;,
+        &quot;variant&quot;: &quot;danger&quot;
+      }
+    }
+  ]
+}} meta={{
+  &quot;$slot&quot;: [
+    &quot;Added 10 min ago · the record isn't there yet&quot;
+  ]
+}} body={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;DnsRecord&quot;,
+      &quot;props&quot;: {
+        &quot;host&quot;: {
+          &quot;$slot&quot;: [
+            {
+              &quot;$component&quot;: &quot;CopyValue&quot;,
+              &quot;props&quot;: {
+                &quot;copy_label&quot;: &quot;Copy the host&quot;,
+                &quot;head&quot;: 8,
+                &quot;tail&quot;: 8,
+                &quot;truncate&quot;: &quot;end&quot;,
+                &quot;value&quot;: &quot;_monokulo&quot;
+              }
+            }
+          ]
+        },
+        &quot;record_type&quot;: &quot;TXT&quot;,
+        &quot;value&quot;: {
+          &quot;$slot&quot;: [
+            {
+              &quot;$component&quot;: &quot;CopyValue&quot;,
+              &quot;props&quot;: {
+                &quot;copy_label&quot;: &quot;Copy the value&quot;,
+                &quot;head&quot;: 8,
+                &quot;tail&quot;: 8,
+                &quot;truncate&quot;: &quot;end&quot;,
+                &quot;value&quot;: &quot;monokulo-verify=6c168c735d314966ac858a7a71de5eaf&quot;
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;article class=&quot;mk-item-card&quot;&gt;&lt;div class=&quot;mk-item-card-head&quot;&gt;&lt;div class=&quot;mk-item-card-name&quot;&gt;&lt;h4 class=&quot;mk-item-card-title&quot;&gt;&lt;span class=&quot;mk-item-card-icon&quot; aria-hidden=&quot;true&quot;&gt;🌐&lt;/span&gt;&lt;span&gt;shop.rachelshandicrafts.com&lt;/span&gt;&lt;/h4&gt;&lt;span class=&quot;tag tag-unknown&quot;&gt;Not verified&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;mk-item-card-actions&quot;&gt;&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; data-size=&quot;compact&quot;&gt;Check again&lt;/button&gt;&lt;button class=&quot;mk-btn&quot; type=&quot;button&quot; data-variant=&quot;danger&quot; data-size=&quot;compact&quot;&gt;Remove&lt;/button&gt;&lt;/div&gt;&lt;/div&gt;&lt;p class=&quot;mk-item-card-meta&quot;&gt;Added 10 min ago · the record isn't there yet&lt;/p&gt;&lt;div class=&quot;mk-item-card-body&quot;&gt;&lt;table class=&quot;table-stack mk-dns-record&quot;&gt;&lt;thead&gt;&lt;tr&gt;&lt;th scope=&quot;col&quot;&gt;Type&lt;/th&gt;&lt;th scope=&quot;col&quot;&gt;Host&lt;/th&gt;&lt;th scope=&quot;col&quot;&gt;Value&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;&lt;tbody&gt;&lt;tr&gt;&lt;td data-label=&quot;Type&quot;&gt;&lt;code&gt;TXT&lt;/code&gt;&lt;/td&gt;&lt;td data-label=&quot;Host&quot;&gt;&lt;div class=&quot;mk-copy&quot; data-island=&quot;CopyValue&quot; data-props=&quot;{&amp;quot;copy_label&amp;quot;:&amp;quot;Copy the host&amp;quot;,&amp;quot;head&amp;quot;:8,&amp;quot;tail&amp;quot;:8,&amp;quot;truncate&amp;quot;:&amp;quot;end&amp;quot;,&amp;quot;value&amp;quot;:&amp;quot;_monokulo&amp;quot;}&quot;&gt;&lt;span class=&quot;mk-copy-value mk-mono&quot; data-copy-value tabindex=&quot;0&quot; data-mk=&quot;1&quot;&gt;_monokulo&lt;/span&gt;&lt;!--mk:2--&gt;&lt;/div&gt;&lt;/td&gt;&lt;td data-label=&quot;Value&quot;&gt;&lt;div class=&quot;mk-copy&quot; data-island=&quot;CopyValue&quot; data-props=&quot;{&amp;quot;copy_label&amp;quot;:&amp;quot;Copy the value&amp;quot;,&amp;quot;head&amp;quot;:8,&amp;quot;tail&amp;quot;:8,&amp;quot;truncate&amp;quot;:&amp;quot;end&amp;quot;,&amp;quot;value&amp;quot;:&amp;quot;monokulo-verify=6c168c735d314966ac858a7a71de5eaf&amp;quot;}&quot;&gt;&lt;span class=&quot;mk-copy-value mk-mono&quot; data-copy-value tabindex=&quot;0&quot; data-mk=&quot;1&quot;&gt;monokulo-verify=6c168c735d314966ac858a7a71de5eaf&lt;/span&gt;&lt;!--mk:2--&gt;&lt;/div&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/tbody&gt;&lt;/table&gt;&lt;/div&gt;&lt;/article&gt;</code></pre></details></figure></div></section>
+<section class="book-section" id="component-dns-record"><h2>DnsRecord</h2><p>A DNS record to publish, as a DNS provider's form asks for it: its type, host and value, the host and value each to copy (<code>CopyValue</code>). On a phone each is a line of its own, named.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>record_type</code></th><td><code>String</code></td><td>Required. <code>TXT</code>.</td></tr><tr><th scope="row"><code>host</code></th><td><code>Slot</code></td><td>Required. The host, relative to the domain (<code>_monokulo</code>).</td></tr><tr><th scope="row"><code>value</code></th><td><code>Slot</code></td><td>Required.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-dns-record-1"><figcaption>A TXT record</figcaption><div class="book-example"><table class="table-stack mk-dns-record"><thead><tr><th scope="col">Type</th><th scope="col">Host</th><th scope="col">Value</th></tr></thead><tbody><tr><td data-label="Type"><code>TXT</code></td><td data-label="Host"><div class="mk-copy" data-island="CopyValue" data-props="{&quot;copy_label&quot;:&quot;Copy the host&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;_monokulo&quot;}"><span class="mk-copy-value mk-mono" data-copy-value tabindex="0" data-mk="1">_monokulo</span><!--mk:2--></div></td><td data-label="Value"><div class="mk-copy" data-island="CopyValue" data-props="{&quot;copy_label&quot;:&quot;Copy the value&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;monokulo-verify=6c168c735d314966ac858a7a71de5eaf&quot;}"><span class="mk-copy-value mk-mono" data-copy-value tabindex="0" data-mk="1">monokulo-verify=6c168c735d314966ac858a7a71de5eaf</span><!--mk:2--></div></td></tr></tbody></table></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>DnsRecord::new(&quot;TXT&quot;, CopyValue::new(&quot;_monokulo&quot;)
+    .copy_label(&quot;Copy the host&quot;), CopyValue::new(&quot;monokulo-verify=6c168c735d314966ac858a7a71de5eaf&quot;)
+    .copy_label(&quot;Copy the value&quot;))</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;DnsRecord record_type=&quot;TXT&quot; host={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;CopyValue&quot;,
+      &quot;props&quot;: {
+        &quot;copy_label&quot;: &quot;Copy the host&quot;,
+        &quot;head&quot;: 8,
+        &quot;tail&quot;: 8,
+        &quot;truncate&quot;: &quot;end&quot;,
+        &quot;value&quot;: &quot;_monokulo&quot;
+      }
+    }
+  ]
+}} value={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;CopyValue&quot;,
+      &quot;props&quot;: {
+        &quot;copy_label&quot;: &quot;Copy the value&quot;,
+        &quot;head&quot;: 8,
+        &quot;tail&quot;: 8,
+        &quot;truncate&quot;: &quot;end&quot;,
+        &quot;value&quot;: &quot;monokulo-verify=6c168c735d314966ac858a7a71de5eaf&quot;
+      }
+    }
+  ]
+}} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;table class=&quot;table-stack mk-dns-record&quot;&gt;&lt;thead&gt;&lt;tr&gt;&lt;th scope=&quot;col&quot;&gt;Type&lt;/th&gt;&lt;th scope=&quot;col&quot;&gt;Host&lt;/th&gt;&lt;th scope=&quot;col&quot;&gt;Value&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;&lt;tbody&gt;&lt;tr&gt;&lt;td data-label=&quot;Type&quot;&gt;&lt;code&gt;TXT&lt;/code&gt;&lt;/td&gt;&lt;td data-label=&quot;Host&quot;&gt;&lt;div class=&quot;mk-copy&quot; data-island=&quot;CopyValue&quot; data-props=&quot;{&amp;quot;copy_label&amp;quot;:&amp;quot;Copy the host&amp;quot;,&amp;quot;head&amp;quot;:8,&amp;quot;tail&amp;quot;:8,&amp;quot;truncate&amp;quot;:&amp;quot;end&amp;quot;,&amp;quot;value&amp;quot;:&amp;quot;_monokulo&amp;quot;}&quot;&gt;&lt;span class=&quot;mk-copy-value mk-mono&quot; data-copy-value tabindex=&quot;0&quot; data-mk=&quot;1&quot;&gt;_monokulo&lt;/span&gt;&lt;!--mk:2--&gt;&lt;/div&gt;&lt;/td&gt;&lt;td data-label=&quot;Value&quot;&gt;&lt;div class=&quot;mk-copy&quot; data-island=&quot;CopyValue&quot; data-props=&quot;{&amp;quot;copy_label&amp;quot;:&amp;quot;Copy the value&amp;quot;,&amp;quot;head&amp;quot;:8,&amp;quot;tail&amp;quot;:8,&amp;quot;truncate&amp;quot;:&amp;quot;end&amp;quot;,&amp;quot;value&amp;quot;:&amp;quot;monokulo-verify=6c168c735d314966ac858a7a71de5eaf&amp;quot;}&quot;&gt;&lt;span class=&quot;mk-copy-value mk-mono&quot; data-copy-value tabindex=&quot;0&quot; data-mk=&quot;1&quot;&gt;monokulo-verify=6c168c735d314966ac858a7a71de5eaf&lt;/span&gt;&lt;!--mk:2--&gt;&lt;/div&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/tbody&gt;&lt;/table&gt;</code></pre></details></figure></div></section>
+<section class="book-section" id="component-data-grid"><h2>DataGrid</h2><p>A query's rows, any number of columns: in a box of its own that scrolls both ways, its header row and first column staying in sight. Above it, what came back (&quot;4 rows · 9 ms&quot;) and, for a wide one, that it scrolls sideways.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>head</code></th><td><code>Slot</code></td><td>Required. The header row: a <code>Row</code> of header <code>DataCell</code>s.</td></tr><tr><th scope="row"><code>children</code></th><td><code>Slot</code></td><td>Required. The rows: <code>Row</code>s of <code>DataCell</code>s.</td></tr><tr><th scope="row"><code>caption</code></th><td><code>String</code></td><td>Required. What the grid holds, for screen readers: the scroll box's name.</td></tr><tr><th scope="row"><code>stats</code></th><td><code>Option&lt;Slot&gt;</code></td><td>At the bar's left: what came back, a tag for hidden columns.</td></tr><tr><th scope="row"><code>scroll_hint</code></th><td><code>Option&lt;Slot&gt;</code></td><td>At the bar's right: &quot;Scroll sideways for more columns&quot;.</td></tr><tr><th scope="row"><code>sticky_first</code></th><td><code>bool</code></td><td>The first column stays while the rest scroll sideways. Default: true.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-data-grid-1"><figcaption>Rows, a long value in each</figcaption><div class="book-example"><div class="mk-data-grid" data-sticky-first=""><div class="mk-data-grid-bar"><span class="mk-data-grid-stats">2 rows · 6 ms · monokulo</span></div><div class="mk-data-grid-scroll" tabindex="0" role="region" aria-label="Query results"><table><thead><tr><th scope="col" class="mk-data-cell">id</th><th scope="col" class="mk-data-cell">status</th><th scope="col" class="mk-data-cell">amount_fiat</th><th scope="col" class="mk-data-cell">payment_id</th><th scope="col" class="mk-data-cell">payload</th></tr></thead><tbody><tr><td class="mk-data-cell">order_2282ae</td><td class="mk-data-cell">paid</td><td class="mk-data-cell" data-kind="number">24.50</td><td class="mk-data-cell" data-kind="null">NULL</td><td class="mk-data-cell"><div class="mk-data-long"><span class="mk-data-value">{&quot;event&quot;:&quot;order.paid&quot;,&quot;order&quot;:{&quot;id&quot;:&quot;order_2282ae&quot;}}</span><span class="mk-data-size">1.8 KB</span><span class="mk-data-actions"><button type="button" class="mk-btn icon-only" aria-label="Expand payload" title="Expand payload">⤢</button></span></div></td></tr><tr><td class="mk-data-cell">order_77c0d1</td><td class="mk-data-cell">confirmed</td><td class="mk-data-cell" data-kind="number">9.00</td><td class="mk-data-cell" data-kind="null">NULL</td><td class="mk-data-cell"><div class="mk-data-long"><span class="mk-data-value">{&quot;event&quot;:&quot;order.confirmed&quot;,&quot;order&quot;:{&quot;id&quot;:&quot;order_77c0d1&quot;}}</span><span class="mk-data-size">1.9 KB</span><span class="mk-data-actions"><button type="button" class="mk-btn icon-only" aria-label="Expand payload" title="Expand payload">⤢</button></span></div></td></tr></tbody></table></div></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>DataGrid::new(Row::new(Slot::many([DataCell::new(&quot;id&quot;)
+    .header(true), DataCell::new(&quot;status&quot;)
+    .header(true), DataCell::new(&quot;amount_fiat&quot;)
+    .header(true), DataCell::new(&quot;payment_id&quot;)
+    .header(true), DataCell::new(&quot;payload&quot;)
+    .header(true)])), Slot::many([Row::new(Slot::many([DataCell::new(&quot;order_2282ae&quot;), DataCell::new(&quot;paid&quot;), DataCell::new(&quot;24.50&quot;)
+    .kind(DataKind::Number), DataCell::new(&quot;NULL&quot;)
+    .kind(DataKind::Null), DataCell::new(&quot;{\&quot;event\&quot;:\&quot;order.paid\&quot;,\&quot;order\&quot;:{\&quot;id\&quot;:\&quot;order_2282ae\&quot;}}&quot;)
+    .size(&quot;1.8 KB&quot;)
+    .actions(IconButton::new(&quot;Expand payload&quot;, &quot;⤢&quot;))])), Row::new(Slot::many([DataCell::new(&quot;order_77c0d1&quot;), DataCell::new(&quot;confirmed&quot;), DataCell::new(&quot;9.00&quot;)
+    .kind(DataKind::Number), DataCell::new(&quot;NULL&quot;)
+    .kind(DataKind::Null), DataCell::new(&quot;{\&quot;event\&quot;:\&quot;order.confirmed\&quot;,\&quot;order\&quot;:{\&quot;id\&quot;:\&quot;order_77c0d1\&quot;}}&quot;)
+    .size(&quot;1.9 KB&quot;)
+    .actions(IconButton::new(&quot;Expand payload&quot;, &quot;⤢&quot;))]))]), &quot;Query results&quot;)
+    .stats(&quot;2 rows · 6 ms · monokulo&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;DataGrid head={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;Row&quot;,
+      &quot;props&quot;: {
+        &quot;children&quot;: {
+          &quot;$slot&quot;: [
+            {
+              &quot;$component&quot;: &quot;DataCell&quot;,
+              &quot;props&quot;: {
+                &quot;children&quot;: {
+                  &quot;$slot&quot;: [
+                    &quot;id&quot;
+                  ]
+                },
+                &quot;header&quot;: true
+              }
+            },
+            {
+              &quot;$component&quot;: &quot;DataCell&quot;,
+              &quot;props&quot;: {
+                &quot;children&quot;: {
+                  &quot;$slot&quot;: [
+                    &quot;status&quot;
+                  ]
+                },
+                &quot;header&quot;: true
+              }
+            },
+            {
+              &quot;$component&quot;: &quot;DataCell&quot;,
+              &quot;props&quot;: {
+                &quot;children&quot;: {
+                  &quot;$slot&quot;: [
+                    &quot;amount_fiat&quot;
+                  ]
+                },
+                &quot;header&quot;: true
+              }
+            },
+            {
+              &quot;$component&quot;: &quot;DataCell&quot;,
+              &quot;props&quot;: {
+                &quot;children&quot;: {
+                  &quot;$slot&quot;: [
+                    &quot;payment_id&quot;
+                  ]
+                },
+                &quot;header&quot;: true
+              }
+            },
+            {
+              &quot;$component&quot;: &quot;DataCell&quot;,
+              &quot;props&quot;: {
+                &quot;children&quot;: {
+                  &quot;$slot&quot;: [
+                    &quot;payload&quot;
+                  ]
+                },
+                &quot;header&quot;: true
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}} caption=&quot;Query results&quot; stats={{
+  &quot;$slot&quot;: [
+    &quot;2 rows · 6 ms · monokulo&quot;
+  ]
+}}&gt;&lt;Row&gt;&lt;DataCell&gt;order_2282ae&lt;/DataCell&gt;&lt;DataCell&gt;paid&lt;/DataCell&gt;&lt;DataCell kind=&quot;number&quot;&gt;24.50&lt;/DataCell&gt;&lt;DataCell kind=&quot;null&quot;&gt;NULL&lt;/DataCell&gt;&lt;DataCell size=&quot;1.8 KB&quot; actions={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;IconButton&quot;,
+      &quot;props&quot;: {
+        &quot;disabled&quot;: false,
+        &quot;icon&quot;: {
+          &quot;$slot&quot;: [
+            &quot;⤢&quot;
+          ]
+        },
+        &quot;kind&quot;: &quot;button&quot;,
+        &quot;label&quot;: &quot;Expand payload&quot;
+      }
+    }
+  ]
+}}&gt;{&quot;event&quot;:&quot;order.paid&quot;,&quot;order&quot;:{&quot;id&quot;:&quot;order_2282ae&quot;}}&lt;/DataCell&gt;&lt;/Row&gt;&lt;Row&gt;&lt;DataCell&gt;order_77c0d1&lt;/DataCell&gt;&lt;DataCell&gt;confirmed&lt;/DataCell&gt;&lt;DataCell kind=&quot;number&quot;&gt;9.00&lt;/DataCell&gt;&lt;DataCell kind=&quot;null&quot;&gt;NULL&lt;/DataCell&gt;&lt;DataCell size=&quot;1.9 KB&quot; actions={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;IconButton&quot;,
+      &quot;props&quot;: {
+        &quot;disabled&quot;: false,
+        &quot;icon&quot;: {
+          &quot;$slot&quot;: [
+            &quot;⤢&quot;
+          ]
+        },
+        &quot;kind&quot;: &quot;button&quot;,
+        &quot;label&quot;: &quot;Expand payload&quot;
+      }
+    }
+  ]
+}}&gt;{&quot;event&quot;:&quot;order.confirmed&quot;,&quot;order&quot;:{&quot;id&quot;:&quot;order_77c0d1&quot;}}&lt;/DataCell&gt;&lt;/Row&gt;&lt;/DataGrid&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;mk-data-grid&quot; data-sticky-first=&quot;&quot;&gt;&lt;div class=&quot;mk-data-grid-bar&quot;&gt;&lt;span class=&quot;mk-data-grid-stats&quot;&gt;2 rows · 6 ms · monokulo&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;mk-data-grid-scroll&quot; tabindex=&quot;0&quot; role=&quot;region&quot; aria-label=&quot;Query results&quot;&gt;&lt;table&gt;&lt;thead&gt;&lt;tr&gt;&lt;th scope=&quot;col&quot; class=&quot;mk-data-cell&quot;&gt;id&lt;/th&gt;&lt;th scope=&quot;col&quot; class=&quot;mk-data-cell&quot;&gt;status&lt;/th&gt;&lt;th scope=&quot;col&quot; class=&quot;mk-data-cell&quot;&gt;amount_fiat&lt;/th&gt;&lt;th scope=&quot;col&quot; class=&quot;mk-data-cell&quot;&gt;payment_id&lt;/th&gt;&lt;th scope=&quot;col&quot; class=&quot;mk-data-cell&quot;&gt;payload&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;&lt;tbody&gt;&lt;tr&gt;&lt;td class=&quot;mk-data-cell&quot;&gt;order_2282ae&lt;/td&gt;&lt;td class=&quot;mk-data-cell&quot;&gt;paid&lt;/td&gt;&lt;td class=&quot;mk-data-cell&quot; data-kind=&quot;number&quot;&gt;24.50&lt;/td&gt;&lt;td class=&quot;mk-data-cell&quot; data-kind=&quot;null&quot;&gt;NULL&lt;/td&gt;&lt;td class=&quot;mk-data-cell&quot;&gt;&lt;div class=&quot;mk-data-long&quot;&gt;&lt;span class=&quot;mk-data-value&quot;&gt;{&amp;quot;event&amp;quot;:&amp;quot;order.paid&amp;quot;,&amp;quot;order&amp;quot;:{&amp;quot;id&amp;quot;:&amp;quot;order_2282ae&amp;quot;}}&lt;/span&gt;&lt;span class=&quot;mk-data-size&quot;&gt;1.8 KB&lt;/span&gt;&lt;span class=&quot;mk-data-actions&quot;&gt;&lt;button type=&quot;button&quot; class=&quot;mk-btn icon-only&quot; aria-label=&quot;Expand payload&quot; title=&quot;Expand payload&quot;&gt;⤢&lt;/button&gt;&lt;/span&gt;&lt;/div&gt;&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;td class=&quot;mk-data-cell&quot;&gt;order_77c0d1&lt;/td&gt;&lt;td class=&quot;mk-data-cell&quot;&gt;confirmed&lt;/td&gt;&lt;td class=&quot;mk-data-cell&quot; data-kind=&quot;number&quot;&gt;9.00&lt;/td&gt;&lt;td class=&quot;mk-data-cell&quot; data-kind=&quot;null&quot;&gt;NULL&lt;/td&gt;&lt;td class=&quot;mk-data-cell&quot;&gt;&lt;div class=&quot;mk-data-long&quot;&gt;&lt;span class=&quot;mk-data-value&quot;&gt;{&amp;quot;event&amp;quot;:&amp;quot;order.confirmed&amp;quot;,&amp;quot;order&amp;quot;:{&amp;quot;id&amp;quot;:&amp;quot;order_77c0d1&amp;quot;}}&lt;/span&gt;&lt;span class=&quot;mk-data-size&quot;&gt;1.9 KB&lt;/span&gt;&lt;span class=&quot;mk-data-actions&quot;&gt;&lt;button type=&quot;button&quot; class=&quot;mk-btn icon-only&quot; aria-label=&quot;Expand payload&quot; title=&quot;Expand payload&quot;&gt;⤢&lt;/button&gt;&lt;/span&gt;&lt;/div&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/tbody&gt;&lt;/table&gt;&lt;/div&gt;&lt;/div&gt;</code></pre></details></figure></div></section>
+<section class="book-section" id="component-data-cell"><h2>DataCell</h2><p>One cell of a <code>DataGrid</code>. A long value (<code>size</code>) is one line, cut with an ellipsis, with its size and its <code>actions</code> (Expand, Copy) after it; <code>cut</code> says when only part of it came back at all.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>children</code></th><td><code>Slot</code></td><td>Required.</td></tr><tr><th scope="row"><code>kind</code></th><td><code>Option&lt;DataKind (number | null | blob | hidden)&gt;</code></td><td>What a grid cell holds, beyond plain text.</td></tr><tr><th scope="row"><code>size</code></th><td><code>Option&lt;String&gt;</code></td><td>A long value's size (&quot;1.8 KB&quot;).</td></tr><tr><th scope="row"><code>cut</code></th><td><code>Option&lt;String&gt;</code></td><td>Only part of the value came back (&quot;cut at 64 KiB of 2.4 MB&quot;).</td></tr><tr><th scope="row"><code>actions</code></th><td><code>Option&lt;Slot&gt;</code></td><td>After a long value: <code>IconButton</code>s or <code>IconLink</code>s.</td></tr><tr><th scope="row"><code>header</code></th><td><code>bool</code></td><td>Default: false.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"></div></section>
+<section class="book-section" id="component-table-browser"><h2>TableBrowser</h2><p>The tables a query can read, beside its editor: a label, a filter box, then one compact <code>Disclosure</code> per table (its name and rows) that opens to its columns. Scrolls inside its own height.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>label</code></th><td><code>String</code></td><td>Required. What it lists (&quot;Tables&quot;).</td></tr><tr><th scope="row"><code>children</code></th><td><code>Slot</code></td><td>Required. The tables: compact <code>Disclosure</code>s.</td></tr><tr><th scope="row"><code>filter</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Above the list: an <code>Input</code> that narrows it.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-table-browser-1"><figcaption>Two tables</figcaption><div class="book-example"><nav class="mk-table-browser" aria-label="Tables"><p class="mk-table-browser-label">Tables</p><input class="mk-input" type="text" name="table-filter" placeholder="Filter tables…" aria-label="Filter tables"><div class="mk-table-browser-list"><details class="disclosure-compact"><summary>stores<span class="tag tag-muted">3</span></summary><div class="disclosure-body"><dl class="facts"><dt>id</dt><dd>TEXT</dd><dt>name</dt><dd>TEXT</dd></dl></div></details><details class="disclosure-compact"><summary>sessions<span class="tag tag-muted">4</span></summary><div class="disclosure-body"><dl class="facts"><dt>user_id</dt><dd>TEXT</dd><dt>token</dt><dd><span class="tag tag-muted">hidden</span></dd></dl></div></details></div></nav></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>TableBrowser::new(&quot;Tables&quot;, Slot::many([Disclosure::new(Slot::many([&quot;stores&quot;, Tag::new(&quot;3&quot;)
+    .tone(TagTone::Muted)]), Facts::new(vec![
+    Fact { term: &quot;id&quot;.into(), value: &quot;TEXT&quot;.into() },
+    Fact { term: &quot;name&quot;.into(), value: &quot;TEXT&quot;.into() },
+]))
+    .look(DisclosureLook::Compact), Disclosure::new(Slot::many([&quot;sessions&quot;, Tag::new(&quot;4&quot;)
+    .tone(TagTone::Muted)]), Facts::new(vec![
+    Fact { term: &quot;user_id&quot;.into(), value: &quot;TEXT&quot;.into() },
+    Fact { term: &quot;token&quot;.into(), value: Tag::new(&quot;hidden&quot;)
+        .tone(TagTone::Muted).into() },
+]))
+    .look(DisclosureLook::Compact)]))
+    .filter(Input::new(&quot;table-filter&quot;)
+        .placeholder(&quot;Filter tables…&quot;)
+        .label(&quot;Filter tables&quot;))</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;TableBrowser label=&quot;Tables&quot; filter={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;Input&quot;,
+      &quot;props&quot;: {
+        &quot;disabled&quot;: false,
+        &quot;invalid&quot;: false,
+        &quot;kind&quot;: &quot;text&quot;,
+        &quot;label&quot;: &quot;Filter tables&quot;,
+        &quot;name&quot;: &quot;table-filter&quot;,
+        &quot;placeholder&quot;: &quot;Filter tables…&quot;,
+        &quot;readonly&quot;: false,
+        &quot;required&quot;: false
+      }
+    }
+  ]
+}}&gt;&lt;Disclosure summary={{
+  &quot;$slot&quot;: [
+    &quot;stores&quot;,
+    {
+      &quot;$component&quot;: &quot;Tag&quot;,
+      &quot;props&quot;: {
+        &quot;children&quot;: {
+          &quot;$slot&quot;: [
+            &quot;3&quot;
+          ]
+        },
+        &quot;tone&quot;: &quot;muted&quot;
+      }
+    }
+  ]
+}} look=&quot;compact&quot;&gt;&lt;Facts facts={[
+  {
+    &quot;term&quot;: &quot;id&quot;,
+    &quot;value&quot;: {
+      &quot;$slot&quot;: [
+        &quot;TEXT&quot;
+      ]
+    }
+  },
+  {
+    &quot;term&quot;: &quot;name&quot;,
+    &quot;value&quot;: {
+      &quot;$slot&quot;: [
+        &quot;TEXT&quot;
+      ]
+    }
+  }
+]} /&gt;&lt;/Disclosure&gt;&lt;Disclosure summary={{
+  &quot;$slot&quot;: [
+    &quot;sessions&quot;,
+    {
+      &quot;$component&quot;: &quot;Tag&quot;,
+      &quot;props&quot;: {
+        &quot;children&quot;: {
+          &quot;$slot&quot;: [
+            &quot;4&quot;
+          ]
+        },
+        &quot;tone&quot;: &quot;muted&quot;
+      }
+    }
+  ]
+}} look=&quot;compact&quot;&gt;&lt;Facts facts={[
+  {
+    &quot;term&quot;: &quot;user_id&quot;,
+    &quot;value&quot;: {
+      &quot;$slot&quot;: [
+        &quot;TEXT&quot;
+      ]
+    }
+  },
+  {
+    &quot;term&quot;: &quot;token&quot;,
+    &quot;value&quot;: {
+      &quot;$slot&quot;: [
+        {
+          &quot;$component&quot;: &quot;Tag&quot;,
+          &quot;props&quot;: {
+            &quot;children&quot;: {
+              &quot;$slot&quot;: [
+                &quot;hidden&quot;
+              ]
+            },
+            &quot;tone&quot;: &quot;muted&quot;
+          }
+        }
+      ]
+    }
+  }
+]} /&gt;&lt;/Disclosure&gt;&lt;/TableBrowser&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;nav class=&quot;mk-table-browser&quot; aria-label=&quot;Tables&quot;&gt;&lt;p class=&quot;mk-table-browser-label&quot;&gt;Tables&lt;/p&gt;&lt;input class=&quot;mk-input&quot; type=&quot;text&quot; name=&quot;table-filter&quot; placeholder=&quot;Filter tables…&quot; aria-label=&quot;Filter tables&quot;&gt;&lt;div class=&quot;mk-table-browser-list&quot;&gt;&lt;details class=&quot;disclosure-compact&quot;&gt;&lt;summary&gt;stores&lt;span class=&quot;tag tag-muted&quot;&gt;3&lt;/span&gt;&lt;/summary&gt;&lt;div class=&quot;disclosure-body&quot;&gt;&lt;dl class=&quot;facts&quot;&gt;&lt;dt&gt;id&lt;/dt&gt;&lt;dd&gt;TEXT&lt;/dd&gt;&lt;dt&gt;name&lt;/dt&gt;&lt;dd&gt;TEXT&lt;/dd&gt;&lt;/dl&gt;&lt;/div&gt;&lt;/details&gt;&lt;details class=&quot;disclosure-compact&quot;&gt;&lt;summary&gt;sessions&lt;span class=&quot;tag tag-muted&quot;&gt;4&lt;/span&gt;&lt;/summary&gt;&lt;div class=&quot;disclosure-body&quot;&gt;&lt;dl class=&quot;facts&quot;&gt;&lt;dt&gt;user_id&lt;/dt&gt;&lt;dd&gt;TEXT&lt;/dd&gt;&lt;dt&gt;token&lt;/dt&gt;&lt;dd&gt;&lt;span class=&quot;tag tag-muted&quot;&gt;hidden&lt;/span&gt;&lt;/dd&gt;&lt;/dl&gt;&lt;/div&gt;&lt;/details&gt;&lt;/div&gt;&lt;/nav&gt;</code></pre></details></figure></div></section>
 <section class="book-section" id="component-row"><h2>Row</h2><p>A table's row.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>children</code></th><td><code>Slot</code></td><td>Required.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"></div></section>
 <section class="book-section" id="component-cell"><h2>Cell</h2><p>A table's cell; a header cell with <code>header</code>.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>children</code></th><td><code>Slot</code></td><td>Required.</td></tr><tr><th scope="row"><code>header</code></th><td><code>bool</code></td><td>Default: false.</td></tr><tr><th scope="row"><code>part</code></th><td><code>Option&lt;CellPart (title | status | amount | when | meta | detail)&gt;</code></td><td>Where a cell goes when its row is a card on a phone.</td></tr><tr><th scope="row"><code>label</code></th><td><code>Option&lt;String&gt;</code></td><td>Its column's name, shown above it in a <code>Stack</code> table on a phone.</td></tr><tr><th scope="row"><code>optional</code></th><td><code>bool</code></td><td>Left out on a phone. Default: false.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"></div></section>
 <section class="book-section" id="component-dialog"><h2>Dialog</h2><p>A modal dialog, opened by the links and buttons naming it in <code>data-opens-dialog</code>. It gives focus to its first field, and back to what opened it once it closes.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>id</code></th><td><code>String</code></td><td>Required.</td></tr><tr><th scope="row"><code>labelled_by</code></th><td><code>String</code></td><td>Required. The id of its title (a <code>DialogTitle</code>).</td></tr><tr><th scope="row"><code>children</code></th><td><code>Slot</code></td><td>Required.</td></tr><tr><th scope="row"><code>size</code></th><td><code>DialogSize (confirm | wide)</code></td><td>How wide a dialog is. Default: confirm.</td></tr><tr><th scope="row"><code>confirms</code></th><td><code>Option&lt;String&gt;</code></td><td>A form's field (its <code>name</code>) whose change the form's save asks
@@ -1237,7 +1747,7 @@ controls off (not sent) while hidden.</td></tr><tr><th scope="row"><code>rest</c
     .readonly(true)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;SettingsCard name=&quot;book-readonly&quot; title=&quot;Server&quot; readonly&gt;Its settings.&lt;/SettingsCard&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;section id=&quot;card-book-readonly&quot; class=&quot;settings-card&quot; data-name=&quot;book-readonly&quot; role=&quot;region&quot; aria-labelledby=&quot;card-book-readonly-title&quot; data-mk=&quot;1&quot; data-island=&quot;SettingsCard&quot; data-props=&quot;{&amp;quot;failed&amp;quot;:false,&amp;quot;hidden&amp;quot;:false,&amp;quot;name&amp;quot;:&amp;quot;book-readonly&amp;quot;,&amp;quot;title&amp;quot;:&amp;quot;Server&amp;quot;}&quot;&gt;&lt;header class=&quot;card-head&quot;&gt;&lt;h3 id=&quot;card-book-readonly-title&quot;&gt;Server&lt;/h3&gt;&lt;span class=&quot;card-state&quot; data-card-state&gt;&lt;!--mk:2--&gt;&lt;/span&gt;&lt;span class=&quot;card-spacer&quot;&gt;&lt;/span&gt;&lt;span class=&quot;card-meta&quot;&gt;Can't be changed here&lt;/span&gt;&lt;/header&gt;&lt;div class=&quot;card-body&quot;&gt;Its settings.&lt;/div&gt;&lt;/section&gt;</code></pre></details></figure></div></section>
 <section class="book-section" id="component-setting"><h2>Setting</h2><p>One setting: its name and what it's for on the left, its control on the right (a phone, or a wide control such as radio cards, a list of choices, a text area or a table, puts the control under them), and &quot;changed&quot; while it differs from what's saved (a control's <code>data-saved</code> after a refused save, its default value otherwise).</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>label</code></th><td><code>String</code></td><td>Required.</td></tr><tr><th scope="row"><code>id</code></th><td><code>String</code></td><td>Required. The id of the control the label is for; for a group, the
 label's own id, which names the group.</td></tr><tr><th scope="row"><code>children</code></th><td><code>Slot</code></td><td>Required. The control, and anything under it.</td></tr><tr><th scope="row"><code>group</code></th><td><code>bool</code></td><td>Several controls (radio buttons, checkboxes): a group named by
-its label. Default: false.</td></tr><tr><th scope="row"><code>chip</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Beside the label: where its value comes from.</td></tr><tr><th scope="row"><code>help</code></th><td><code>Option&lt;Slot&gt;</code></td><td>What it's for, under the label.</td></tr><tr><th scope="row"><code>help_id</code></th><td><code>Option&lt;String&gt;</code></td><td>The help's id, for the control to point at.</td></tr><tr><th scope="row"><code>described_by</code></th><td><code>Option&lt;String&gt;</code></td><td>A group's description: its help's id.</td></tr><tr><th scope="row"><code>label_id</code></th><td><code>Option&lt;String&gt;</code></td><td>The label's own id, for a control that names itself by it.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td><code>data-*</code> attributes of the page's own, <code>hidden</code>.</td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-setting-1"><figcaption>With help</figcaption><div class="book-example"><div class="setting-field" data-mk="1" data-island="Setting" data-props="{}"><div class="setting-about"><div class="setting-label-row"><label class="setting-label" for="book-setting-confirmations">Confirmations</label><span class="changed-mark">changed</span></div><p class="field-help" id="book-setting-confirmations-help">Blocks a payment waits for before it counts as paid.</p></div><div class="setting-control"><input class="mk-input" type="number" name="confirmations" id="book-setting-confirmations" value="10" aria-describedby="book-setting-confirmations-help"></div></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Setting::new(&quot;Confirmations&quot;, &quot;book-setting-confirmations&quot;, Input::new(&quot;confirmations&quot;)
+its label. Default: false.</td></tr><tr><th scope="row"><code>chip</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Beside the label: where its value comes from.</td></tr><tr><th scope="row"><code>help</code></th><td><code>Option&lt;Slot&gt;</code></td><td>What it's for, under the label.</td></tr><tr><th scope="row"><code>help_id</code></th><td><code>Option&lt;String&gt;</code></td><td>The help's id, for the control to point at.</td></tr><tr><th scope="row"><code>described_by</code></th><td><code>Option&lt;String&gt;</code></td><td>A group's description: its help's id.</td></tr><tr><th scope="row"><code>label_id</code></th><td><code>Option&lt;String&gt;</code></td><td>The label's own id, for a control that names itself by it.</td></tr><tr><th scope="row"><code>layout</code></th><td><code>Option&lt;SettingLayout (stacked)&gt;</code></td><td>Stacked: the control under the name, full width, at any width.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td><code>data-*</code> attributes of the page's own, <code>hidden</code>.</td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-setting-1"><figcaption>With help</figcaption><div class="book-example"><div class="setting-field" data-mk="1" data-island="Setting" data-props="{}"><div class="setting-about"><div class="setting-label-row"><label class="setting-label" for="book-setting-confirmations">Confirmations</label><span class="changed-mark">changed</span></div><p class="field-help" id="book-setting-confirmations-help">Blocks a payment waits for before it counts as paid.</p></div><div class="setting-control"><input class="mk-input" type="number" name="confirmations" id="book-setting-confirmations" value="10" aria-describedby="book-setting-confirmations-help"></div></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Setting::new(&quot;Confirmations&quot;, &quot;book-setting-confirmations&quot;, Input::new(&quot;confirmations&quot;)
     .id(&quot;book-setting-confirmations&quot;)
     .kind(InputType::Number)
     .value(&quot;10&quot;)
@@ -1256,7 +1766,45 @@ its label. Default: false.</td></tr><tr><th scope="row"><code>chip</code></th><t
   &quot;$slot&quot;: [
     &quot;Connect with https. Most nodes on port 18081 don't use it.&quot;
   ]
-}} help_id=&quot;book-setting-tls-help&quot;&gt;&lt;Checkbox name=&quot;tls&quot; id=&quot;book-setting-tls&quot; described_by=&quot;book-setting-tls-help&quot; /&gt;&lt;/Setting&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;setting-field&quot; data-mk=&quot;1&quot; data-island=&quot;Setting&quot; data-props=&quot;{}&quot;&gt;&lt;div class=&quot;setting-about&quot;&gt;&lt;div class=&quot;setting-label-row&quot;&gt;&lt;label class=&quot;setting-label&quot; for=&quot;book-setting-tls&quot;&gt;Use TLS&lt;/label&gt;&lt;span class=&quot;changed-mark&quot;&gt;changed&lt;/span&gt;&lt;/div&gt;&lt;p class=&quot;field-help&quot; id=&quot;book-setting-tls-help&quot;&gt;Connect with https. Most nodes on port 18081 don't use it.&lt;/p&gt;&lt;/div&gt;&lt;div class=&quot;setting-control&quot;&gt;&lt;input type=&quot;checkbox&quot; class=&quot;mk-checkbox&quot; name=&quot;tls&quot; id=&quot;book-setting-tls&quot; value=&quot;on&quot; aria-describedby=&quot;book-setting-tls-help&quot;&gt;&lt;/div&gt;&lt;/div&gt;</code></pre></details></figure><figure class="book-specimen" id="component-setting-3"><figcaption>A group</figcaption><div class="book-example"><div class="setting-field" role="group" aria-labelledby="book-setting-accept" aria-describedby="book-setting-accept-help" data-mk="1" data-island="Setting" data-props="{}"><div class="setting-about"><div class="setting-label-row"><span class="setting-label" id="book-setting-accept">Accept</span><span class="changed-mark">changed</span></div><p class="field-help" id="book-setting-accept-help">What a payment may arrive as.</p></div><div class="setting-control">Its checkboxes.</div></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Setting::new(&quot;Accept&quot;, &quot;book-setting-accept&quot;, &quot;Its checkboxes.&quot;)
+}} help_id=&quot;book-setting-tls-help&quot;&gt;&lt;Checkbox name=&quot;tls&quot; id=&quot;book-setting-tls&quot; described_by=&quot;book-setting-tls-help&quot; /&gt;&lt;/Setting&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;setting-field&quot; data-mk=&quot;1&quot; data-island=&quot;Setting&quot; data-props=&quot;{}&quot;&gt;&lt;div class=&quot;setting-about&quot;&gt;&lt;div class=&quot;setting-label-row&quot;&gt;&lt;label class=&quot;setting-label&quot; for=&quot;book-setting-tls&quot;&gt;Use TLS&lt;/label&gt;&lt;span class=&quot;changed-mark&quot;&gt;changed&lt;/span&gt;&lt;/div&gt;&lt;p class=&quot;field-help&quot; id=&quot;book-setting-tls-help&quot;&gt;Connect with https. Most nodes on port 18081 don't use it.&lt;/p&gt;&lt;/div&gt;&lt;div class=&quot;setting-control&quot;&gt;&lt;input type=&quot;checkbox&quot; class=&quot;mk-checkbox&quot; name=&quot;tls&quot; id=&quot;book-setting-tls&quot; value=&quot;on&quot; aria-describedby=&quot;book-setting-tls-help&quot;&gt;&lt;/div&gt;&lt;/div&gt;</code></pre></details></figure><figure class="book-specimen" id="component-setting-3"><figcaption>Stacked: a control that needs the width</figcaption><div class="book-example"><div class="setting-field" data-layout="stacked" data-mk="1" data-island="Setting" data-props="{}"><div class="setting-about"><div class="setting-label-row"><label class="setting-label" for="book-setting-wallet">Wallet</label><span class="changed-mark">changed</span></div><p class="field-help" id="book-setting-wallet-help">New payments go into this wallet. Only Mainnet wallets can be picked.</p></div><div class="setting-control"><div class="mk-select" data-mk="1" data-island="Select" data-props="{&quot;search&quot;:&quot;auto&quot;}"><select class="mk-input" name="wallet" id="book-setting-wallet" data-mk="2" aria-describedby="book-setting-wallet-help"><option value="w_rh01" selected data-label="Rachel's Handicrafts" data-detail="47UhAM…qbLgRU" data-network="mainnet" data-chip="Current" data-chip-tone="current" data-note="this store only">Rachel's Handicrafts (47UhAM…qbLgRU) [Mainnet] [Current] - this store only</option><option value="w_ms02" data-label="Market stall float" data-detail="48abcD…9xYzQ2" data-network="mainnet" data-note="used by 1 other store">Market stall float (48abcD…9xYzQ2) [Mainnet] - used by 1 other store</option></select><!--mk:3--></div></div></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Setting::new(&quot;Wallet&quot;, &quot;book-setting-wallet&quot;, Select::new(&quot;wallet&quot;, vec![
+    Choice::new(&quot;w_rh01&quot;, &quot;Rachel's Handicrafts&quot;).detail(&quot;47UhAM…qbLgRU&quot;).network(&quot;mainnet&quot;).chip(&quot;Current&quot;).current(true).note(&quot;this store only&quot;).selected(true),
+    Choice::new(&quot;w_ms02&quot;, &quot;Market stall float&quot;).detail(&quot;48abcD…9xYzQ2&quot;).network(&quot;mainnet&quot;).note(&quot;used by 1 other store&quot;),
+])
+    .id(&quot;book-setting-wallet&quot;)
+    .attr(&quot;aria-describedby&quot;, &quot;book-setting-wallet-help&quot;))
+    .help(&quot;New payments go into this wallet. Only Mainnet wallets can be picked.&quot;)
+    .help_id(&quot;book-setting-wallet-help&quot;)
+    .layout(SettingLayout::Stacked)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Setting label=&quot;Wallet&quot; id=&quot;book-setting-wallet&quot; help={{
+  &quot;$slot&quot;: [
+    &quot;New payments go into this wallet. Only Mainnet wallets can be picked.&quot;
+  ]
+}} help_id=&quot;book-setting-wallet-help&quot; layout=&quot;stacked&quot;&gt;&lt;Select name=&quot;wallet&quot; options={[
+  {
+    &quot;chip&quot;: &quot;Current&quot;,
+    &quot;current&quot;: true,
+    &quot;data_label&quot;: &quot;Rachel's Handicrafts&quot;,
+    &quot;detail&quot;: &quot;47UhAM…qbLgRU&quot;,
+    &quot;disabled&quot;: false,
+    &quot;label&quot;: &quot;Rachel's Handicrafts&quot;,
+    &quot;network&quot;: &quot;mainnet&quot;,
+    &quot;note&quot;: &quot;this store only&quot;,
+    &quot;selected&quot;: true,
+    &quot;text&quot;: &quot;Rachel's Handicrafts (47UhAM…qbLgRU) [Mainnet] [Current] - this store only&quot;,
+    &quot;value&quot;: &quot;w_rh01&quot;
+  },
+  {
+    &quot;current&quot;: false,
+    &quot;data_label&quot;: &quot;Market stall float&quot;,
+    &quot;detail&quot;: &quot;48abcD…9xYzQ2&quot;,
+    &quot;disabled&quot;: false,
+    &quot;label&quot;: &quot;Market stall float&quot;,
+    &quot;network&quot;: &quot;mainnet&quot;,
+    &quot;note&quot;: &quot;used by 1 other store&quot;,
+    &quot;selected&quot;: false,
+    &quot;text&quot;: &quot;Market stall float (48abcD…9xYzQ2) [Mainnet] - used by 1 other store&quot;,
+    &quot;value&quot;: &quot;w_ms02&quot;
+  }
+]} id=&quot;book-setting-wallet&quot; aria-describedby=&quot;book-setting-wallet-help&quot; /&gt;&lt;/Setting&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;setting-field&quot; data-layout=&quot;stacked&quot; data-mk=&quot;1&quot; data-island=&quot;Setting&quot; data-props=&quot;{}&quot;&gt;&lt;div class=&quot;setting-about&quot;&gt;&lt;div class=&quot;setting-label-row&quot;&gt;&lt;label class=&quot;setting-label&quot; for=&quot;book-setting-wallet&quot;&gt;Wallet&lt;/label&gt;&lt;span class=&quot;changed-mark&quot;&gt;changed&lt;/span&gt;&lt;/div&gt;&lt;p class=&quot;field-help&quot; id=&quot;book-setting-wallet-help&quot;&gt;New payments go into this wallet. Only Mainnet wallets can be picked.&lt;/p&gt;&lt;/div&gt;&lt;div class=&quot;setting-control&quot;&gt;&lt;div class=&quot;mk-select&quot; data-mk=&quot;1&quot; data-island=&quot;Select&quot; data-props=&quot;{&amp;quot;search&amp;quot;:&amp;quot;auto&amp;quot;}&quot;&gt;&lt;select class=&quot;mk-input&quot; name=&quot;wallet&quot; id=&quot;book-setting-wallet&quot; data-mk=&quot;2&quot; aria-describedby=&quot;book-setting-wallet-help&quot;&gt;&lt;option value=&quot;w_rh01&quot; selected data-label=&quot;Rachel's Handicrafts&quot; data-detail=&quot;47UhAM…qbLgRU&quot; data-network=&quot;mainnet&quot; data-chip=&quot;Current&quot; data-chip-tone=&quot;current&quot; data-note=&quot;this store only&quot;&gt;Rachel's Handicrafts (47UhAM…qbLgRU) [Mainnet] [Current] - this store only&lt;/option&gt;&lt;option value=&quot;w_ms02&quot; data-label=&quot;Market stall float&quot; data-detail=&quot;48abcD…9xYzQ2&quot; data-network=&quot;mainnet&quot; data-note=&quot;used by 1 other store&quot;&gt;Market stall float (48abcD…9xYzQ2) [Mainnet] - used by 1 other store&lt;/option&gt;&lt;/select&gt;&lt;!--mk:3--&gt;&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;</code></pre></details></figure><figure class="book-specimen" id="component-setting-4"><figcaption>A group</figcaption><div class="book-example"><div class="setting-field" role="group" aria-labelledby="book-setting-accept" aria-describedby="book-setting-accept-help" data-mk="1" data-island="Setting" data-props="{}"><div class="setting-about"><div class="setting-label-row"><span class="setting-label" id="book-setting-accept">Accept</span><span class="changed-mark">changed</span></div><p class="field-help" id="book-setting-accept-help">What a payment may arrive as.</p></div><div class="setting-control">Its checkboxes.</div></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Setting::new(&quot;Accept&quot;, &quot;book-setting-accept&quot;, &quot;Its checkboxes.&quot;)
     .group(true)
     .help(&quot;What a payment may arrive as.&quot;)
     .help_id(&quot;book-setting-accept-help&quot;)
@@ -1297,7 +1845,7 @@ its label. Default: false.</td></tr><tr><th scope="row"><code>chip</code></th><t
 ]} show=&quot;book-refused&quot; persistent /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;toast toast-error&quot; role=&quot;alert&quot; data-toast data-persistent data-mk=&quot;1&quot; data-island=&quot;Toast&quot; data-props=&quot;{&amp;quot;kind&amp;quot;:&amp;quot;error&amp;quot;}&quot;&gt;&lt;span class=&quot;toast-icon&quot; aria-hidden=&quot;true&quot;&gt;&lt;svg class=&quot;mk-icon&quot; viewBox=&quot;0 0 24 24&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;2&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;m12 3 10 18H2Z M12 9v5M12 17v1&quot;&gt;&lt;/path&gt;&lt;/svg&gt;&lt;/span&gt;&lt;div class=&quot;toast-text&quot;&gt;&lt;strong&gt;Nothing saved&lt;/strong&gt;&lt;span class=&quot;toast-line&quot;&gt;The URL must use https.&lt;/span&gt;&lt;a class=&quot;toast-show&quot; href=&quot;#card-book-refused&quot; data-show-card=&quot;book-refused&quot;&gt;Show&lt;/a&gt;&lt;/div&gt;&lt;!--mk:2--&gt;&lt;/div&gt;</code></pre></details></figure><figure class="book-specimen" id="component-toast-4"><figcaption>Nothing to save</figcaption><div class="book-example"><div class="toast toast-neutral" role="status" data-toast data-persistent data-mk="1" data-island="Toast" data-props="{&quot;kind&quot;:&quot;neutral&quot;}"><span class="toast-icon" aria-hidden="true"><svg class="mk-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v6M12 7v1"></path></svg></span><div class="toast-text"><strong>Nothing changed</strong></div><!--mk:2--></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Toast::new(ToastKind::Neutral, &quot;Nothing changed&quot;, vec![
 ])
     .persistent(true)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Toast kind=&quot;neutral&quot; title=&quot;Nothing changed&quot; lines={[]} persistent /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;toast toast-neutral&quot; role=&quot;status&quot; data-toast data-persistent data-mk=&quot;1&quot; data-island=&quot;Toast&quot; data-props=&quot;{&amp;quot;kind&amp;quot;:&amp;quot;neutral&amp;quot;}&quot;&gt;&lt;span class=&quot;toast-icon&quot; aria-hidden=&quot;true&quot;&gt;&lt;svg class=&quot;mk-icon&quot; viewBox=&quot;0 0 24 24&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;2&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot; aria-hidden=&quot;true&quot;&gt;&lt;circle cx=&quot;12&quot; cy=&quot;12&quot; r=&quot;9&quot;&gt;&lt;/circle&gt;&lt;path d=&quot;M12 11v6M12 7v1&quot;&gt;&lt;/path&gt;&lt;/svg&gt;&lt;/span&gt;&lt;div class=&quot;toast-text&quot;&gt;&lt;strong&gt;Nothing changed&lt;/strong&gt;&lt;/div&gt;&lt;!--mk:2--&gt;&lt;/div&gt;</code></pre></details></figure></div></section>
-<section class="book-section" id="component-site-nav"><h2>SiteNav</h2><p>The site's bar: the brand on the left, then the links, the status dot and the account menu. On a phone the links fold into a menu behind a hamburger, a checkbox and its label: no JavaScript.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>brand</code></th><td><code>Slot</code></td><td>Required. The brand: the logo and the name.</td></tr><tr><th scope="row"><code>links</code></th><td><code>Slot</code></td><td>Required. The links, and the account menu once signed in.</td></tr><tr><th scope="row"><code>home</code></th><td><code>String</code></td><td>Where the brand goes. Default: &quot;/&quot;.</td></tr><tr><th scope="row"><code>status</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Beside the hamburger, in sight on a phone: the status dot.</td></tr><tr><th scope="row"><code>width</code></th><td><code>PageWidth (normal | wide)</code></td><td>The width of the page under it, which its row lines up with. Default: normal.</td></tr><tr><th scope="row"><code>toggle_id</code></th><td><code>String</code></td><td>The id of the hamburger's checkbox, unique on the page: another
+<section class="book-section" id="component-site-nav"><h2>SiteNav</h2><p>The site's bar: the brand on the left, then the links, the status dot and the account menu. On a phone the links fold into a menu behind a hamburger, a checkbox and its label: no JavaScript.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>brand</code></th><td><code>Slot</code></td><td>Required. The brand: the logo and the name.</td></tr><tr><th scope="row"><code>links</code></th><td><code>Slot</code></td><td>Required. The links, and the account menu once signed in.</td></tr><tr><th scope="row"><code>home</code></th><td><code>String</code></td><td>Where the brand goes. Default: &quot;/&quot;.</td></tr><tr><th scope="row"><code>status</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Beside the hamburger, in sight on a phone: the status dot.</td></tr><tr><th scope="row"><code>width</code></th><td><code>PageWidth (normal | wide | full)</code></td><td>The width of the page under it, which its row lines up with. Default: normal.</td></tr><tr><th scope="row"><code>toggle_id</code></th><td><code>String</code></td><td>The id of the hamburger's checkbox, unique on the page: another
 bar on it (the stylebook's specimen) needs its own. Default: &quot;nav-toggle&quot;.</td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-site-nav-1"><figcaption>Signed out</figcaption><div class="book-example"><nav class="site-nav"><div class="wrap site-nav-row"><a href="#component-site-nav" class="site-nav-brand">Monokulo</a><a href="#component-status-dot" class="nav-status-link" id="book-nav-status" title="all systems healthy" aria-label="Status: all systems healthy" data-mk="1" data-island="StatusDot" data-props="{&quot;health&quot;:&quot;ok&quot;,&quot;poll&quot;:&quot;&quot;}"><span class="status-dot status-dot-ok" data-mk="2"></span></a><input type="checkbox" id="book-nav-toggle" class="nav-toggle-checkbox"><label for="book-nav-toggle" class="nav-toggle-label" aria-label="Menu">☰</label><div class="site-nav-links"><a class="mk-btn" href="#component-site-nav" data-variant="quiet">Log in</a><a class="mk-btn" href="#component-site-nav" data-variant="quiet">Sign up</a></div></div></nav></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>SiteNav::new(&quot;Monokulo&quot;, Slot::many([LinkButton::new(&quot;Log in&quot;, &quot;#component-site-nav&quot;)
     .variant(ButtonVariant::Quiet), LinkButton::new(&quot;Sign up&quot;, &quot;#component-site-nav&quot;)
     .variant(ButtonVariant::Quiet)]))
@@ -1483,13 +2031,16 @@ bar on it (the stylebook's specimen) needs its own. Default: &quot;nav-toggle&qu
 }}&gt;Wallets&lt;/MenuItem&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;a class=&quot;menu-item&quot; href=&quot;#component-menu-item&quot;&gt;&lt;span&gt;Wallets&lt;/span&gt;&lt;span class=&quot;menu-note&quot;&gt;1&lt;/span&gt;&lt;/a&gt;</code></pre></details></figure><figure class="book-specimen" id="component-menu-item-2"><figcaption>A form's button</figcaption><div class="book-example"><form method="post" action="#component-menu-item" class="menu-form"><button type="submit" class="menu-item"><span>Log out</span></button></form></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>MenuItem::new(&quot;Log out&quot;)
     .post_to(&quot;#component-menu-item&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;MenuItem post_to=&quot;#component-menu-item&quot;&gt;Log out&lt;/MenuItem&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;form method=&quot;post&quot; action=&quot;#component-menu-item&quot; class=&quot;menu-form&quot;&gt;&lt;button type=&quot;submit&quot; class=&quot;menu-item&quot;&gt;&lt;span&gt;Log out&lt;/span&gt;&lt;/button&gt;&lt;/form&gt;</code></pre></details></figure></div></section>
 <section class="book-section" id="component-theme-toggle"><h2>ThemeToggle</h2><p>The theme switch: System, Light and Dark, each a submit button, so it works without JavaScript; the thumb slides to the one hovered.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>theme</code></th><td><code>ThemeChoice (system | light | dark)</code></td><td>Required. A colour theme.</td></tr><tr><th scope="row"><code>action</code></th><td><code>String</code></td><td>Required. Where the choice is posted.</td></tr><tr><th scope="row"><code>next</code></th><td><code>String</code></td><td>Required. The page to come back to.</td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-theme-toggle-1"><figcaption>Following the system</figcaption><div class="book-example"><form method="post" action="#component-theme-toggle" class="nav-theme-form"><input type="hidden" name="next" value="/"><div class="theme-toggle theme-toggle-system" role="group" aria-label="Theme"><span class="theme-toggle-track"><button type="submit" name="theme" value="system" class="theme-toggle-option theme-toggle-option-system" aria-label="System theme" aria-pressed="true" title="System theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="13" rx="2"></rect><line x1="12" y1="16" x2="12" y2="21"></line><line x1="8" y1="21" x2="16" y2="21"></line></svg></button><button type="submit" name="theme" value="light" class="theme-toggle-option theme-toggle-option-light" aria-label="Light theme" aria-pressed="false" title="Light theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><line x1="12" y1="2" x2="12" y2="4"></line><line x1="12" y1="20" x2="12" y2="22"></line><line x1="4.2" y1="4.2" x2="5.6" y2="5.6"></line><line x1="18.4" y1="18.4" x2="19.8" y2="19.8"></line><line x1="2" y1="12" x2="4" y2="12"></line><line x1="20" y1="12" x2="22" y2="12"></line><line x1="4.2" y1="19.8" x2="5.6" y2="18.4"></line><line x1="18.4" y1="5.6" x2="19.8" y2="4.2"></line></svg></button><button type="submit" name="theme" value="dark" class="theme-toggle-option theme-toggle-option-dark" aria-label="Dark theme" aria-pressed="false" title="Dark theme"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M21 12.5A9 9 0 1 1 11.5 3 7 7 0 0 0 21 12.5Z"></path></svg></button><span class="theme-toggle-thumb"></span></span></div></form></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>ThemeToggle::new(ThemeChoice::System, &quot;#component-theme-toggle&quot;, &quot;/&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;ThemeToggle theme=&quot;system&quot; action=&quot;#component-theme-toggle&quot; next=&quot;/&quot; /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;form method=&quot;post&quot; action=&quot;#component-theme-toggle&quot; class=&quot;nav-theme-form&quot;&gt;&lt;input type=&quot;hidden&quot; name=&quot;next&quot; value=&quot;/&quot;&gt;&lt;div class=&quot;theme-toggle theme-toggle-system&quot; role=&quot;group&quot; aria-label=&quot;Theme&quot;&gt;&lt;span class=&quot;theme-toggle-track&quot;&gt;&lt;button type=&quot;submit&quot; name=&quot;theme&quot; value=&quot;system&quot; class=&quot;theme-toggle-option theme-toggle-option-system&quot; aria-label=&quot;System theme&quot; aria-pressed=&quot;true&quot; title=&quot;System theme&quot;&gt;&lt;svg viewBox=&quot;0 0 24 24&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;2&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot; aria-hidden=&quot;true&quot;&gt;&lt;rect x=&quot;3&quot; y=&quot;3&quot; width=&quot;18&quot; height=&quot;13&quot; rx=&quot;2&quot;&gt;&lt;/rect&gt;&lt;line x1=&quot;12&quot; y1=&quot;16&quot; x2=&quot;12&quot; y2=&quot;21&quot;&gt;&lt;/line&gt;&lt;line x1=&quot;8&quot; y1=&quot;21&quot; x2=&quot;16&quot; y2=&quot;21&quot;&gt;&lt;/line&gt;&lt;/svg&gt;&lt;/button&gt;&lt;button type=&quot;submit&quot; name=&quot;theme&quot; value=&quot;light&quot; class=&quot;theme-toggle-option theme-toggle-option-light&quot; aria-label=&quot;Light theme&quot; aria-pressed=&quot;false&quot; title=&quot;Light theme&quot;&gt;&lt;svg viewBox=&quot;0 0 24 24&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;2&quot; stroke-linecap=&quot;round&quot; stroke-linejoin=&quot;round&quot; aria-hidden=&quot;true&quot;&gt;&lt;circle cx=&quot;12&quot; cy=&quot;12&quot; r=&quot;4&quot;&gt;&lt;/circle&gt;&lt;line x1=&quot;12&quot; y1=&quot;2&quot; x2=&quot;12&quot; y2=&quot;4&quot;&gt;&lt;/line&gt;&lt;line x1=&quot;12&quot; y1=&quot;20&quot; x2=&quot;12&quot; y2=&quot;22&quot;&gt;&lt;/line&gt;&lt;line x1=&quot;4.2&quot; y1=&quot;4.2&quot; x2=&quot;5.6&quot; y2=&quot;5.6&quot;&gt;&lt;/line&gt;&lt;line x1=&quot;18.4&quot; y1=&quot;18.4&quot; x2=&quot;19.8&quot; y2=&quot;19.8&quot;&gt;&lt;/line&gt;&lt;line x1=&quot;2&quot; y1=&quot;12&quot; x2=&quot;4&quot; y2=&quot;12&quot;&gt;&lt;/line&gt;&lt;line x1=&quot;20&quot; y1=&quot;12&quot; x2=&quot;22&quot; y2=&quot;12&quot;&gt;&lt;/line&gt;&lt;line x1=&quot;4.2&quot; y1=&quot;19.8&quot; x2=&quot;5.6&quot; y2=&quot;18.4&quot;&gt;&lt;/line&gt;&lt;line x1=&quot;18.4&quot; y1=&quot;5.6&quot; x2=&quot;19.8&quot; y2=&quot;4.2&quot;&gt;&lt;/line&gt;&lt;/svg&gt;&lt;/button&gt;&lt;button type=&quot;submit&quot; name=&quot;theme&quot; value=&quot;dark&quot; class=&quot;theme-toggle-option theme-toggle-option-dark&quot; aria-label=&quot;Dark theme&quot; aria-pressed=&quot;false&quot; title=&quot;Dark theme&quot;&gt;&lt;svg viewBox=&quot;0 0 24 24&quot; fill=&quot;currentColor&quot; stroke=&quot;none&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M21 12.5A9 9 0 1 1 11.5 3 7 7 0 0 0 21 12.5Z&quot;&gt;&lt;/path&gt;&lt;/svg&gt;&lt;/button&gt;&lt;span class=&quot;theme-toggle-thumb&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;&lt;/form&gt;</code></pre></details></figure></div></section>
-<section class="book-section" id="component-status-dot"><h2>StatusDot</h2><p>A glowing dot linking to the status page (in the site's bar and the POS's alike), as the instance was when the page was rendered, so it is right without JavaScript. Once its island attaches it polls <code>poll</code> every 30 seconds while the tab is in sight. Its title and accessible name carry the words.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>health</code></th><td><code>HealthState (ok | slow | error | unknown)</code></td><td>Required. How the instance is, as the status dot shows it.</td></tr><tr><th scope="row"><code>href</code></th><td><code>String</code></td><td>Default: &quot;/status&quot;.</td></tr><tr><th scope="row"><code>poll</code></th><td><code>String</code></td><td>Answers <code>{&quot;state&quot;: &quot;ok&quot; | &quot;slow&quot; | ...}</code>. Default: &quot;/status/summary&quot;.</td></tr><tr><th scope="row"><code>id</code></th><td><code>String</code></td><td>Its id: a page has one, <code>status-indicator</code>. Default: &quot;status-indicator&quot;.</td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-status-dot-1"><figcaption>Healthy</figcaption><div class="book-example"><a href="#component-status-dot" class="nav-status-link" id="book-status-ok" title="all systems healthy" aria-label="Status: all systems healthy" data-mk="1" data-island="StatusDot" data-props="{&quot;health&quot;:&quot;ok&quot;,&quot;poll&quot;:&quot;&quot;}"><span class="status-dot status-dot-ok" data-mk="2"></span></a></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>StatusDot::new(HealthState::Ok)
+<section class="book-section" id="component-status-dot"><h2>StatusDot</h2><p>A glowing dot linking to the status page (in the site's bar and the POS's alike), as the instance was when the page was rendered, so it is right without JavaScript. Once its island attaches it polls <code>poll</code> every 30 seconds while the tab is in sight. Its title and accessible name carry the words.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>health</code></th><td><code>HealthState (ok | slow | busy | error | unknown)</code></td><td>Required. How the instance is, as the status dot shows it.</td></tr><tr><th scope="row"><code>href</code></th><td><code>String</code></td><td>Default: &quot;/status&quot;.</td></tr><tr><th scope="row"><code>poll</code></th><td><code>String</code></td><td>Answers <code>{&quot;state&quot;: &quot;ok&quot; | &quot;slow&quot; | ...}</code>. Default: &quot;/status/summary&quot;.</td></tr><tr><th scope="row"><code>id</code></th><td><code>String</code></td><td>Its id: a page has one, <code>status-indicator</code>. Default: &quot;status-indicator&quot;.</td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-status-dot-1"><figcaption>Healthy</figcaption><div class="book-example"><a href="#component-status-dot" class="nav-status-link" id="book-status-ok" title="all systems healthy" aria-label="Status: all systems healthy" data-mk="1" data-island="StatusDot" data-props="{&quot;health&quot;:&quot;ok&quot;,&quot;poll&quot;:&quot;&quot;}"><span class="status-dot status-dot-ok" data-mk="2"></span></a></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>StatusDot::new(HealthState::Ok)
     .href(&quot;#component-status-dot&quot;)
     .poll(&quot;&quot;)
     .id(&quot;book-status-ok&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;StatusDot health=&quot;ok&quot; href=&quot;#component-status-dot&quot; poll=&quot;&quot; id=&quot;book-status-ok&quot; /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;a href=&quot;#component-status-dot&quot; class=&quot;nav-status-link&quot; id=&quot;book-status-ok&quot; title=&quot;all systems healthy&quot; aria-label=&quot;Status: all systems healthy&quot; data-mk=&quot;1&quot; data-island=&quot;StatusDot&quot; data-props=&quot;{&amp;quot;health&amp;quot;:&amp;quot;ok&amp;quot;,&amp;quot;poll&amp;quot;:&amp;quot;&amp;quot;}&quot;&gt;&lt;span class=&quot;status-dot status-dot-ok&quot; data-mk=&quot;2&quot;&gt;&lt;/span&gt;&lt;/a&gt;</code></pre></details></figure><figure class="book-specimen" id="component-status-dot-2"><figcaption>Slow</figcaption><div class="book-example"><a href="#component-status-dot" class="nav-status-link" id="book-status-slow" title="scanning is slow - see the status page" aria-label="Status: scanning is slow - see the status page" data-mk="1" data-island="StatusDot" data-props="{&quot;health&quot;:&quot;slow&quot;,&quot;poll&quot;:&quot;&quot;}"><span class="status-dot status-dot-slow" data-mk="2"></span></a></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>StatusDot::new(HealthState::Slow)
     .href(&quot;#component-status-dot&quot;)
     .poll(&quot;&quot;)
-    .id(&quot;book-status-slow&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;StatusDot health=&quot;slow&quot; href=&quot;#component-status-dot&quot; poll=&quot;&quot; id=&quot;book-status-slow&quot; /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;a href=&quot;#component-status-dot&quot; class=&quot;nav-status-link&quot; id=&quot;book-status-slow&quot; title=&quot;scanning is slow - see the status page&quot; aria-label=&quot;Status: scanning is slow - see the status page&quot; data-mk=&quot;1&quot; data-island=&quot;StatusDot&quot; data-props=&quot;{&amp;quot;health&amp;quot;:&amp;quot;slow&amp;quot;,&amp;quot;poll&amp;quot;:&amp;quot;&amp;quot;}&quot;&gt;&lt;span class=&quot;status-dot status-dot-slow&quot; data-mk=&quot;2&quot;&gt;&lt;/span&gt;&lt;/a&gt;</code></pre></details></figure><figure class="book-specimen" id="component-status-dot-3"><figcaption>A problem</figcaption><div class="book-example"><a href="#component-status-dot" class="nav-status-link" id="book-status-error" title="an issue was detected - see the status page" aria-label="Status: an issue was detected - see the status page" data-mk="1" data-island="StatusDot" data-props="{&quot;health&quot;:&quot;error&quot;,&quot;poll&quot;:&quot;&quot;}"><span class="status-dot status-dot-error" data-mk="2"></span></a></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>StatusDot::new(HealthState::Error)
+    .id(&quot;book-status-slow&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;StatusDot health=&quot;slow&quot; href=&quot;#component-status-dot&quot; poll=&quot;&quot; id=&quot;book-status-slow&quot; /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;a href=&quot;#component-status-dot&quot; class=&quot;nav-status-link&quot; id=&quot;book-status-slow&quot; title=&quot;scanning is slow - see the status page&quot; aria-label=&quot;Status: scanning is slow - see the status page&quot; data-mk=&quot;1&quot; data-island=&quot;StatusDot&quot; data-props=&quot;{&amp;quot;health&amp;quot;:&amp;quot;slow&amp;quot;,&amp;quot;poll&amp;quot;:&amp;quot;&amp;quot;}&quot;&gt;&lt;span class=&quot;status-dot status-dot-slow&quot; data-mk=&quot;2&quot;&gt;&lt;/span&gt;&lt;/a&gt;</code></pre></details></figure><figure class="book-specimen" id="component-status-dot-3"><figcaption>Busy</figcaption><div class="book-example"><a href="#component-status-dot" class="nav-status-link" id="book-status-busy" title="the engine is busy - see the status page" aria-label="Status: the engine is busy - see the status page" data-mk="1" data-island="StatusDot" data-props="{&quot;health&quot;:&quot;busy&quot;,&quot;poll&quot;:&quot;&quot;}"><span class="status-dot status-dot-busy" data-mk="2"></span></a></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>StatusDot::new(HealthState::Busy)
+    .href(&quot;#component-status-dot&quot;)
+    .poll(&quot;&quot;)
+    .id(&quot;book-status-busy&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;StatusDot health=&quot;busy&quot; href=&quot;#component-status-dot&quot; poll=&quot;&quot; id=&quot;book-status-busy&quot; /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;a href=&quot;#component-status-dot&quot; class=&quot;nav-status-link&quot; id=&quot;book-status-busy&quot; title=&quot;the engine is busy - see the status page&quot; aria-label=&quot;Status: the engine is busy - see the status page&quot; data-mk=&quot;1&quot; data-island=&quot;StatusDot&quot; data-props=&quot;{&amp;quot;health&amp;quot;:&amp;quot;busy&amp;quot;,&amp;quot;poll&amp;quot;:&amp;quot;&amp;quot;}&quot;&gt;&lt;span class=&quot;status-dot status-dot-busy&quot; data-mk=&quot;2&quot;&gt;&lt;/span&gt;&lt;/a&gt;</code></pre></details></figure><figure class="book-specimen" id="component-status-dot-4"><figcaption>A problem</figcaption><div class="book-example"><a href="#component-status-dot" class="nav-status-link" id="book-status-error" title="an issue was detected - see the status page" aria-label="Status: an issue was detected - see the status page" data-mk="1" data-island="StatusDot" data-props="{&quot;health&quot;:&quot;error&quot;,&quot;poll&quot;:&quot;&quot;}"><span class="status-dot status-dot-error" data-mk="2"></span></a></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>StatusDot::new(HealthState::Error)
     .href(&quot;#component-status-dot&quot;)
     .poll(&quot;&quot;)
     .id(&quot;book-status-error&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;StatusDot health=&quot;error&quot; href=&quot;#component-status-dot&quot; poll=&quot;&quot; id=&quot;book-status-error&quot; /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;a href=&quot;#component-status-dot&quot; class=&quot;nav-status-link&quot; id=&quot;book-status-error&quot; title=&quot;an issue was detected - see the status page&quot; aria-label=&quot;Status: an issue was detected - see the status page&quot; data-mk=&quot;1&quot; data-island=&quot;StatusDot&quot; data-props=&quot;{&amp;quot;health&amp;quot;:&amp;quot;error&amp;quot;,&amp;quot;poll&amp;quot;:&amp;quot;&amp;quot;}&quot;&gt;&lt;span class=&quot;status-dot status-dot-error&quot; data-mk=&quot;2&quot;&gt;&lt;/span&gt;&lt;/a&gt;</code></pre></details></figure></div></section>

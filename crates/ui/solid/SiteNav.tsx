@@ -47,7 +47,7 @@ export interface SiteNavProps {
  */
 export function SiteNav(props: SiteNavProps): JSX.Element {
   return (
-    <nav class="site-nav" data-width={(props.width ?? "normal") === "wide" ? `wide` : undefined}>
+    <nav class="site-nav" data-width={(props.width ?? "normal") !== "normal" ? `${(props.width ?? "normal")}` : undefined}>
       <div class="wrap site-nav-row">
         <a href={(props.home ?? "/")} class="site-nav-brand">
           {props.brand}

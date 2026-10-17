@@ -17,7 +17,7 @@ export type ButtonType = "button" | "submit" | "reset";
  * How much a button stands out. Without one it is secondary: most buttons
  * are, and a page has at most one primary.
  */
-export type ButtonVariant = "primary" | "danger" | "quiet";
+export type ButtonVariant = "primary" | "danger" | "caution" | "quiet";
 
 /**
  * Where a cell goes when its row is a card on a phone.
@@ -38,6 +38,11 @@ export type ConfirmWhen = "changed" | "emptied";
  * A control's size. Without one it is the normal size.
  */
 export type ControlSize = "compact" | "touch";
+
+/**
+ * What a grid cell holds, beyond plain text.
+ */
+export type DataKind = "number" | "null" | "blob" | "hidden";
 
 /**
  * How wide a dialog is.
@@ -62,7 +67,7 @@ export type HeadingLevel = "h2" | "h3" | "h4";
 /**
  * How the instance is, as the status dot shows it.
  */
-export type HealthState = "ok" | "slow" | "error" | "unknown";
+export type HealthState = "ok" | "slow" | "busy" | "error" | "unknown";
 
 /**
  * The kind of text an input takes: phones show the matching keyboard.
@@ -83,7 +88,7 @@ export type OrderState = "pending" | "unconfirmed" | "confirming" | "partial" | 
 /**
  * How wide a page's column is.
  */
-export type PageWidth = "normal" | "wide";
+export type PageWidth = "normal" | "wide" | "full";
 
 /**
  * A panel's look.
@@ -105,6 +110,11 @@ export type Saved = "on" | "off";
  * Whether the list has a find box.
  */
 export type SearchMode = "auto" | "show" | "hide";
+
+/**
+ * How a setting lays out its name and its control.
+ */
+export type SettingLayout = "stacked";
 
 /**
  * How far a step of [`ProgressSteps`] has got.

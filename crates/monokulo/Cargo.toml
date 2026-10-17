@@ -63,7 +63,6 @@ live-settings = { path = "../live-settings" }
 telemetry = { path = "../telemetry", features = ["axum"] }
 tracing = "0.1.44"
 uuid = { version = "1.26.0", features = ["v4"] }
-hickory-resolver = "0.26.3"
 serde_urlencoded = "0.7"
 # The time zone database is built in, so time zones work (and tests pass)
 # on a host without tzdata installed.
@@ -90,6 +89,9 @@ monokulo = { path = ".", features = ["test-support"] }
 # `shared`'s test helpers (the test engine token).
 shared = { path = "../shared", features = ["test-support"] }
 engine-test-support = { path = "../engine-test-support" }
+# Paused time (`test-util`): a test watching the engine page for a minute
+# runs in an instant.
+tokio = { version = "1.53.1", features = ["full", "test-util"] }
 http-body-util = "0.1.5"
 engine = { path = "../engine" }
 tower = { version = "0.5.3", features = ["util"] }

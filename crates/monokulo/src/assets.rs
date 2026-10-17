@@ -59,11 +59,14 @@ pub static ASSETS: &[Asset] = &[
     asset!("wallet-setup.js", JS),
     asset!(built "wallet-setup.wasm", "/wallet_setup.wasm", WASM),
     // One page each: the admin settings page's node rows, the account
-    // page's email question, the Logs page, the order form, the store page.
+    // page's email question, the Logs page, the order form, the store page,
+    // a store's domains (checked again while one waits).
     asset!("admin-settings.js", JS),
     asset!("account.js", JS),
     asset!("logs.js", JS),
+    asset!("query.js", JS),
     asset!("create-order.js", JS),
+    asset!("domains.js", JS),
     // The POS app (`pos-ui/`, built by `build.rs`).
     asset!(built "pos-app.js", "/pos-ui/pos-app.js", JS),
     asset!(built "pos-app.css", "/pos-ui/pos-app.css", CSS),

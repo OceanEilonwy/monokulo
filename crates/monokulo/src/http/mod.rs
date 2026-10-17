@@ -66,6 +66,7 @@ mod orders;
 mod pay;
 mod pos;
 mod pos_logs;
+pub(crate) mod query_page;
 mod setup;
 mod signup;
 pub mod status_page;
@@ -399,6 +400,22 @@ pub fn build_router(state: AppState) -> Router {
             "/dashboard/admin/logs/saved/{id}/delete",
             post(logs_page::delete_search),
         )
+        .route(
+            "/dashboard/admin/query",
+            axum::routing::get(query_page::page),
+        )
+        .route(
+            "/dashboard/admin/query/schema",
+            axum::routing::get(query_page::schema),
+        )
+        .route(
+            "/dashboard/admin/query/value",
+            axum::routing::get(query_page::value),
+        )
+        .route(
+            "/dashboard/admin/query/export",
+            axum::routing::get(query_page::export),
+        )
         .route("/status", axum::routing::get(status_page::status_page))
         .route(
             "/status/summary",
@@ -460,7 +477,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/setup/done/{id}", axum::routing::get(setup::done))
         .route("/account", axum::routing::get(account::page))
         .route("/account/profile", post(account::save_profile))
-        .route("/account/password", post(account::change_password))
         .route("/account/wallets/add", axum::routing::get(wallets::add))
         .route(
             "/account/wallets/name-check",
@@ -500,8 +516,16 @@ pub fn build_router(state: AppState) -> Router {
             post(embed_domains::add_domain),
         )
         .route(
+            "/dashboard/stores/{id}/settings/domains/add",
+            axum::routing::get(embed_domains::add_form),
+        )
+        .route(
+            "/dashboard/stores/{id}/settings/domains/{domain_id}/record",
+            axum::routing::get(embed_domains::record_page),
+        )
+        .route(
             "/dashboard/stores/{id}/settings/domains/{domain_id}/check",
-            post(embed_domains::check_domain),
+            axum::routing::get(embed_domains::check_page).post(embed_domains::check_domain),
         )
         .route(
             "/dashboard/stores/{id}/settings/domains/{domain_id}/delete",
@@ -944,6 +968,7 @@ pub(crate) async fn page_chrome(
         .with_health(status_page::known_health(&state.engine))
         .with_alerts(alerts);
     chrome.wallet_count = wallet_count;
+    chrome.query_enabled = user.is_some_and(|user| user.is_admin) && state.settings.query_enabled();
     // Only a store's own pages depend on its opt-in; every other page keeps
     // `from_user`'s choice.
     if let Some(reports) = browser_reports {

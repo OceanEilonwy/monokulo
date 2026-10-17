@@ -59,9 +59,15 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await timingDetails.locator('summary').click();
   // Just "Timing details": the round it is for is the card's heading.
   await expect(timingDetails.locator('summary')).toHaveText('Timing details');
+  // What the engine records next reaches this page as it happens, pushed
+  // to it: the same document, never reloaded.
+  await page.evaluate(() => { window.engineStoryWatched = true; });
+  const before = await page.locator('#engine-events tr').count();
   await page.request.post(`${fixture.base_url}/__coverage/engine/story`);
   const events = page.locator('#engine-events');
+  await expect.poll(() => page.locator('#engine-events tr').count(), { timeout: 20000 }).toBeGreaterThan(before);
   await expect(events).toContainText('Block 3,412,881 scanned for 41 stores and committed, 1 payment found in it.', { timeout: 20000 });
+  expect(await page.evaluate(() => window.engineStoryWatched)).toBe(true);
   await expect(events).toContainText('Transaction 6e7f8a9b in the pool pays an order', { timeout: 20000 });
   await expect(page.locator('#orders-sum')).toContainText('unconfirmed');
   await expect(events).toContainText('Rewound: block 3,412,881 deleted', { timeout: 20000 });
@@ -74,7 +80,7 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await captureCoverageStage(page, 'engine-live', test.info(), shot);
 
   // The reorg, gone to from its event (live, it can begin and end within
-  // one poll on a slow machine): its panel opens by itself while it is open.
+  // one message on a slow machine): its panel opens by itself while it is open.
   await events.locator('tr', { hasText: "The node's chain differs from block 3,412,881" }).click();
   await expect(mode()).toHaveValue('paused');
   await expect(page.locator('#d-reorg')).toHaveAttribute('open', '');
@@ -529,6 +535,44 @@ test('on a phone a gap between the thresholds is joined', async ({ page, context
   expect(Math.abs(blocks.work.left - blocks.fill.right)).toBeLessThanOrEqual(0.5);
   expect(blocks.work.height).toBe(blocks.fill.height);
 });
+
+// Shapes back to back in a segment are one run, `(    ][****)`: Chain's
+// tip request (outlined) runs straight into its unit (solid). Where they
+// meet, both are square and touch; the run's own ends stay rounded. The
+// page draws it on the server and again in its script: both, on a wide
+// track and a phone's.
+for (const width of [1280, 390]) {
+  for (const javaScriptEnabled of [false, true]) {
+    test(`${width}px, ${javaScriptEnabled ? 'drawn by the script' : 'as served'}: an outline and a unit back to back are one run`, async ({ browser }) => {
+      const context = await browser.newContext({ viewport: { width, height: 900 }, javaScriptEnabled });
+      const page = await context.newPage();
+      await openAsAdmin(page, context);
+      await expect(page.locator('#engine-round .track.t-chain .bar').first()).toBeVisible();
+      if (javaScriptEnabled) await expect(page.locator('#engine-timeline')).toBeVisible();
+      const runs = await page.evaluate(() => [...document.querySelectorAll('#engine-round .bar')].flatMap((bar) => {
+        const shapes = [...bar.children].map((el) => {
+          const s = getComputedStyle(el), box = el.getBoundingClientRect();
+          return { cls: el.className, left: box.left, right: box.right, tl: s.borderTopLeftRadius, bl: s.borderBottomLeftRadius, tr: s.borderTopRightRadius, br: s.borderBottomRightRadius };
+        });
+        return shapes.slice(1).map((next, i) => ({ lane: bar.closest('.track').className, prev: shapes[i], next }));
+      }));
+      const chain = runs.find((pair) => pair.lane.includes('t-chain'));
+      expect(chain, JSON.stringify(runs)).toBeTruthy();
+      expect(chain.prev.cls).toBe('work meets-next');
+      expect(chain.next.cls).toBe('fill meets-prev');
+      // Outer ends rounded, the shared edge square, no gap between them.
+      expect([chain.prev.tl, chain.prev.bl, chain.next.tr, chain.next.br]).toEqual(['2px', '2px', '2px', '2px']);
+      expect([chain.prev.tr, chain.prev.br, chain.next.tl, chain.next.bl]).toEqual(['0px', '0px', '0px', '0px']);
+      expect(Math.abs(chain.next.left - chain.prev.right)).toBeLessThanOrEqual(0.5);
+      // And every pair that meets anywhere on the page, square at the seam.
+      for (const pair of runs.filter((pair) => pair.prev.cls.includes('meets-next'))) {
+        expect(pair.next.cls, JSON.stringify(pair)).toContain('meets-prev');
+        expect([pair.prev.tr, pair.prev.br, pair.next.tl, pair.next.bl], JSON.stringify(pair)).toEqual(['0px', '0px', '0px', '0px']);
+      }
+      await context.close();
+    });
+  }
+}
 
 // The script's label rule, run on the cases the server's is tested with
 // (views/label_levels.json): one rule, two places, kept in step.

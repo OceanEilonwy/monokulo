@@ -23,7 +23,7 @@ use parking_lot::RwLock;
 #[cfg(feature = "snp")]
 use crate::engine_settings::SnpBootConfig;
 use crate::engine_settings::{Daemons, EngineSettings, ALL, SERVER_TOKEN, STANDALONE_ONLY};
-use crate::http::rate_limit::RateLimiter;
+use crate::http::rate_limit::ApiRateLimits;
 use crate::http::{build_router, AppState};
 use crate::key_custody::{CustodyRouter, KeyCustody, WalletHandle};
 #[cfg(feature = "snp")]
@@ -157,10 +157,11 @@ impl Engine {
 
         // Every setting, live (admin_settings_v2.md part 1). Node clients
         // are built into `daemons` from the saved node settings, and rebuilt
-        // whenever they are saved; the rate limiter and the key custody
-        // backends (part 5) follow their settings the same way.
+        // whenever they are saved; the rate limits and the key custody
+        // backends (part 5) follow their settings the same way (the limits
+        // here are replaced by the settings' as they load).
         let daemons = Daemons::default();
-        let admin_rate_limiter = Arc::new(RateLimiter::new(1));
+        let rate_limits = Arc::new(ApiRateLimits::new(1, Some(1)));
         let custody_router = Arc::new(CustodyRouter::default());
         // The snp backend's settings apply at a restart: read once, here. It
         // starts when it is first enabled (`SnpSlot`). Only in a build with
@@ -192,7 +193,7 @@ impl Engine {
                 Arc::clone(&custody_router),
                 snp.clone(),
             ),
-            Arc::clone(&admin_rate_limiter),
+            Arc::clone(&rate_limits),
             env.clone(),
             config.options,
             embedded,
@@ -233,7 +234,7 @@ impl Engine {
                 .map_err(StartError::ReadPool)?;
         let app_state = AppState {
             db: crate::store::Database::from_parts(db.clone(), read_pool, &store.lock()),
-            admin_rate_limiter,
+            rate_limits,
             log_store,
             engine_token,
             settings: Arc::clone(&settings),
@@ -247,6 +248,7 @@ impl Engine {
                 daemons: daemons.clone(),
                 scanner_status: Arc::clone(&scanner_status),
             },
+            activity_stream: crate::activity::StreamTuning::DEFAULT,
         };
 
         let (stop, stopped) = tokio::sync::watch::channel(false);

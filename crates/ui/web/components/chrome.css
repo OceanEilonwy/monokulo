@@ -1,6 +1,9 @@
 /* A page's column, and the bar's row lined up with it. */
 .wrap { max-width: 880px; margin: 0 auto; padding: 0 1.2rem; }
 .site-nav[data-width="wide"] .wrap { max-width: 1120px; }
+/* A page of data (the Logs and Query pages, `wrap-wide`), and the bar's
+   row lined up with it. */
+.wrap.wrap-wide, .site-nav[data-width="full"] .wrap { max-width: 1200px; }
 .site-nav { background: var(--chrome-bg); color: var(--chrome-ink); border-bottom: 3px solid var(--chrome-rule); }
 .site-nav-row {
   display: flex;
@@ -20,7 +23,7 @@
 .site-nav-logo { display: block; }
 .logo-mark { flex: none; }
 .site-nav-links { display: flex; align-items: center; flex-wrap: wrap; }
-.site-nav-links a {
+.site-nav-links > a {
   color: var(--chrome-ink);
   margin: 0 0 0 1.2em;
   background: none;
@@ -31,8 +34,8 @@
   font-weight: 600;
   text-decoration: none;
 }
-.site-nav-links a[aria-current="page"] { color: var(--accent-text); }
-.site-nav-links a:hover { color: var(--accent-text); background: none; text-decoration: underline; text-decoration-thickness: 1px; }
+.site-nav-links > a[aria-current="page"] { color: var(--accent-text); }
+.site-nav-links > a:hover { color: var(--accent-text); background: none; text-decoration: underline; text-decoration-thickness: 1px; }
 .site-nav-links .nav-theme-form { margin: 0; display: inline; }
 /* The status dot's link: a 2em box round the dot, and a transparent
    ::before that makes the target at least 44px square. */
@@ -164,7 +167,7 @@ button.menu-item { border: 0; background: none; font: inherit; cursor: pointer; 
     gap: 0.6em;
     margin-top: 0.6em;
   }
-  .site-nav-links a, .theme-toggle { margin-left: 0; }
+  .site-nav-links > a, .theme-toggle { margin-left: 0; }
   .nav-toggle-checkbox:checked ~ .site-nav-links { display: flex; }
   /* The account menu's items join the list, each row at least 44px. A
      browser that can't show a closed <details>'s content keeps the
@@ -198,6 +201,7 @@ button.menu-item { border: 0; background: none; font: inherit; cursor: pointer; 
 .status-dot-ok { background: var(--success); box-shadow: 0 0 6px 2px color-mix(in srgb, var(--success) 75%, transparent); animation: status-pulse 2s ease-in-out infinite; }
 .status-dot-error { background: var(--error); box-shadow: 0 0 6px 2px color-mix(in srgb, var(--error) 75%, transparent); animation: status-pulse 1.2s ease-in-out infinite; }
 .status-dot-slow { background: var(--warning); box-shadow: 0 0 6px 2px color-mix(in srgb, var(--warning) 75%, transparent); animation: status-pulse 1.2s ease-in-out infinite; }
+.status-dot-busy { background: var(--warning); box-shadow: 0 0 6px 2px color-mix(in srgb, var(--warning) 75%, transparent); animation: status-pulse 2s ease-in-out infinite; }
 .status-dot-unknown { background: var(--muted); box-shadow: none; animation: none; }
 @keyframes status-pulse {
   0%, 100% { opacity: 1; }

@@ -164,18 +164,10 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         }
     };
 
-    // Verified embed domains: the machine's own resolver. If it can't be set
-    // up, the dashboard still works and every check says why it failed.
+    // Verified embed domains: looked up from the root servers down
+    // (`shared::dns`), so a record shows the moment it is published.
     let dns: Arc<dyn monokulo::embed_domains::TxtLookup> =
-        match monokulo::embed_domains::SystemDns::new() {
-            Ok(dns) => Arc::new(dns),
-            Err(e) => {
-                tracing::error!(error = %e, "DNS resolver unavailable, domain verification will fail");
-                Arc::new(monokulo::embed_domains::UnavailableDns(format!(
-                    "this server's DNS resolver is unavailable ({e})"
-                )))
-            }
-        };
+        Arc::new(monokulo::embed_domains::LiveDns::new());
 
     // Every setting, live (admin_settings_v2.md parts 1 and 3): the engine
     // client, exchange-rate providers, abuse protection and onion listener

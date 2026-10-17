@@ -1,5 +1,6 @@
 //! The dashboard side of verified embed domains (`crate::embed_domains`):
-//! adding, checking and removing a store's domains and turning the
+//! adding a domain (its own three pages: the domain, the record, the
+//! check), checking and removing a store's domains and turning the
 //! restriction on or off on its settings page, and the warnings its store
 //! page shows - plus [`embed_policy_middleware`], which enforces the
 //! restriction on the public `/pay/{pk}/...` routes.
@@ -7,15 +8,15 @@
 use axum::extract::{Path, Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
 use serde::Deserialize;
 
 use crate::db::StoreDomainRow;
 use crate::embed_domains::{self, DomainState};
 use crate::templates::{format_duration_since, format_duration_until};
+use crate::views::domains::{DomainStatus, DomainView, StoreRef};
 use crate::views::store_detail::{EmbedWarnings, FailingDomainWarning};
-use crate::views::store_settings::EmbedDomainView;
 
 use super::fx::FxRequest;
 use super::orders::{load_owned_connection, render_store_settings_page, saved};
@@ -128,48 +129,74 @@ fn ago(then: i64, now: i64) -> String {
     }
 }
 
-/// The settings page's rows for a store's domains.
-pub(super) fn domain_views(rows: Vec<StoreDomainRow>, now: i64) -> Vec<EmbedDomainView> {
+/// One of a store's domains as its card and its pages show it; `wait` is
+/// the seconds left before it may be checked again, when a check was asked
+/// for too soon.
+pub(super) fn domain_view(row: StoreDomainRow, now: i64, wait: Option<i64>) -> DomainView {
+    let checked = row.last_checked_at.map(|at| ago(at, now));
+    let (status, meta, reason) = match DomainState::of(&row, now) {
+        DomainState::Verified => (
+            DomainStatus::Verified,
+            format!(
+                "Checked {} · checked again every day",
+                checked.as_deref().unwrap_or("never")
+            ),
+            None,
+        ),
+        DomainState::Pending => (
+            DomainStatus::Waiting,
+            format!(
+                "Added {} · {}",
+                ago(row.created_at, now),
+                checked.map_or_else(
+                    || "not checked yet".to_string(),
+                    |at| format!("checked {at}")
+                )
+            ),
+            Some(row.last_error.clone().unwrap_or_else(|| {
+                "Not checked yet: publish the record, then check again.".to_string()
+            })),
+        ),
+        DomainState::Failing { since } => {
+            let (missing, left) = (
+                format_duration_since(since, now),
+                format_duration_until(since + embed_domains::GRACE_SECS, now),
+            );
+            (
+                DomainStatus::Failing,
+                format!("Record missing for {missing} · still counts as verified for {left}"),
+                Some(format!(
+                    "The record was there, and went {missing} ago. Publish it again within {left} to keep the domain."
+                )),
+            )
+        }
+        DomainState::Lapsed { since } => {
+            let missing = format_duration_since(since, now);
+            (
+                DomainStatus::Lapsed,
+                format!("Record missing for {missing} · it no longer counts"),
+                Some(format!(
+                    "The record has been missing for {missing}, so the domain no longer counts. Publish it again and check."
+                )),
+            )
+        }
+    };
+    DomainView {
+        record_host: embed_domains::RECORD_LABEL,
+        record_value: embed_domains::record_value(&row.token),
+        id: row.id,
+        domain: row.domain,
+        status,
+        meta,
+        reason,
+        wait,
+    }
+}
+
+/// The settings page's cards for a store's domains.
+pub(super) fn domain_views(rows: Vec<StoreDomainRow>, now: i64) -> Vec<DomainView> {
     rows.into_iter()
-        .map(|row| {
-            let state = DomainState::of(&row, now);
-            let (state_tag, state_label, detail) = match state {
-                DomainState::Pending => (ui::TagTone::Unknown, "Waiting for DNS", None),
-                DomainState::Verified => (ui::TagTone::Ok, "Verified", None),
-                DomainState::Failing { since } => (
-                    ui::TagTone::Error,
-                    "Failing",
-                    Some(format!(
-                        "Record missing for {}. Still counts as verified for {}.",
-                        format_duration_since(since, now),
-                        format_duration_until(since + embed_domains::GRACE_SECS, now)
-                    )),
-                ),
-                DomainState::Lapsed { since } => (
-                    ui::TagTone::Error,
-                    "No longer verified",
-                    Some(format!(
-                        "Record missing for {}. Publish it again and check.",
-                        format_duration_since(since, now)
-                    )),
-                ),
-            };
-            EmbedDomainView {
-                record_name: embed_domains::record_name(&row.domain),
-                record_value: embed_domains::record_value(&row.token),
-                show_record: state != DomainState::Verified,
-                last_checked: row
-                    .last_checked_at
-                    .map(|at| ago(at, now))
-                    .unwrap_or_else(|| "never".to_string()),
-                last_error: row.last_error.filter(|_| state != DomainState::Verified),
-                id: row.id,
-                domain: row.domain,
-                state_tag,
-                state_label,
-                detail,
-            }
-        })
+        .map(|row| domain_view(row, now, None))
         .collect()
 }
 
@@ -279,46 +306,88 @@ pub async fn set_embed_restriction(
     }
 }
 
+fn store_ref(row: &super::OwnedStore) -> StoreRef<'_> {
+    StoreRef {
+        id: row.id.as_str(),
+        name: &row.name,
+    }
+}
+
+/// A page of a store's settings, as `user` sees it.
+async fn store_page(
+    state: &AppState,
+    user: &crate::db::UserRow,
+    row: &super::OwnedStore,
+    render: impl FnOnce(&crate::views::PageChrome, &StoreRef) -> maud::Markup,
+) -> maud::Markup {
+    let chrome = super::page_chrome(
+        state,
+        Some(user),
+        format!("/dashboard/stores/{}/settings", row.id),
+    )
+    .await;
+    render(&chrome, &store_ref(row))
+}
+
+/// `GET /dashboard/stores/{id}/settings/domains/add` - adding a domain, its
+/// first step: the domain.
+pub async fn add_form(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<crate::db::ConnectionId>,
+) -> Response {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    store_page(&state, &user, &row, |chrome, store| {
+        crate::views::domains::add_page(chrome, store, "", None)
+    })
+    .await
+    .into_response()
+}
+
 #[derive(Deserialize)]
 pub struct AddDomainForm {
     pub domain: String,
 }
 
 /// `POST /dashboard/stores/{id}/settings/domains` - adds a domain waiting
-/// for its DNS record.
+/// for its DNS record, then shows the record to publish. One that can't be
+/// added answers with the domain's page again, saying why.
 pub async fn add_domain(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<crate::db::ConnectionId>,
     Form(form): Form<AddDomainForm>,
 ) -> Response {
-    const SECTION: StoreSection = StoreSection::Domains;
     let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let domain = match embed_domains::normalize_domain(&form.domain) {
-        Ok(domain) => domain,
-        Err(message) => {
-            return render_store_settings_page(
-                &state,
-                row,
-                &user,
-                Some(message.to_string()),
-                None,
-                Some(SECTION),
-            )
-            .await
+    let refused = |error: String| {
+        let (state, user, row, typed) = (&state, &user, &row, form.domain.clone());
+        async move {
+            let page = store_page(state, user, row, |chrome, store| {
+                crate::views::domains::add_page(chrome, store, &typed, Some(&error))
+            })
+            .await;
+            (StatusCode::UNPROCESSABLE_ENTITY, page).into_response()
         }
     };
+    let domain = match embed_domains::normalize_domain(&form.domain) {
+        Ok(domain) => domain,
+        Err(message) => return refused(message.to_string()).await,
+    };
     let domain_id = uuid::Uuid::new_v4().to_string();
-    let (store_id, new_domain) = (row.id.clone(), domain.clone());
+    let (store_id, new_domain, new_id) = (row.id.clone(), domain.clone(), domain_id.clone());
     let created = state
         .db
         .write(move |db| {
             db.create_store_domain(
-                &domain_id,
+                &new_id,
                 &store_id,
                 &new_domain,
                 &embed_domains::new_token(),
@@ -328,7 +397,11 @@ pub async fn add_domain(
         })
         .await;
     let error = match created {
-        Ok(true) => return saved(&id, SECTION),
+        Ok(true) => {
+            return super::dashboard::redirect_303(&format!(
+                "/dashboard/stores/{id}/settings/domains/{domain_id}/record"
+            ))
+        }
         Ok(false) => format!(
             "A store can have at most {} domains. Remove one to add another.",
             embed_domains::MAX_DOMAINS_PER_STORE
@@ -336,65 +409,154 @@ pub async fn add_domain(
         Err(e) if e.is_unique_violation() => format!("{domain} is already on this store's list."),
         Err(_) => "Something went wrong. Please try again.".to_string(),
     };
-    render_store_settings_page(&state, row, &user, Some(error), None, Some(SECTION)).await
+    refused(error).await
 }
 
-/// `POST /dashboard/stores/{id}/settings/domains/{domain_id}/check` - looks
-/// the domain's record up now. The result shows on the settings page.
-pub async fn check_domain(
-    State(state): State<AppState>,
-    AuthedUser(user, _): AuthedUser,
-    Path((id, domain_id)): Path<(crate::db::ConnectionId, String)>,
-) -> Response {
-    const SECTION: StoreSection = StoreSection::Domains;
-    let row = match load_owned_connection(&state.db, &user, &id).await {
+/// The store and one of its domains, or the status when either isn't
+/// there (or isn't `user`'s).
+async fn load_domain(
+    state: &AppState,
+    user: &crate::db::UserRow,
+    id: &crate::db::ConnectionId,
+    domain_id: String,
+) -> Result<(super::OwnedStore, StoreDomainRow), StatusCode> {
+    let row = match load_owned_connection(&state.db, user, id).await {
         Ok(Some(row)) => row,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(()) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
     let store_id = row.id.clone();
-    let domain = match state
+    match state
         .db
         .read(move |db| db.get_store_domain(&store_id, &domain_id))
         .await
     {
-        Ok(Some(domain)) => domain,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(Some(domain)) => Ok((row, domain)),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// `GET /dashboard/stores/{id}/settings/domains/{domain_id}/record` - the
+/// TXT record to publish for a domain, and the way to its check.
+pub async fn record_page(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path((id, domain_id)): Path<(crate::db::ConnectionId, String)>,
+) -> Response {
+    let (row, domain) = match load_domain(&state, &user, &id, domain_id).await {
+        Ok(loaded) => loaded,
+        Err(status) => return status.into_response(),
+    };
+    let view = domain_view(domain, crate::now_unix(), None);
+    store_page(&state, &user, &row, |chrome, store| {
+        crate::views::domains::record_page(chrome, store, &view)
+    })
+    .await
+    .into_response()
+}
+
+/// `GET /dashboard/stores/{id}/settings/domains/{domain_id}/check` - what
+/// the last check of a domain found.
+pub async fn check_page(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path((id, domain_id)): Path<(crate::db::ConnectionId, String)>,
+) -> Response {
+    let (row, domain) = match load_domain(&state, &user, &id, domain_id).await {
+        Ok(loaded) => loaded,
+        Err(status) => return status.into_response(),
+    };
+    let checked = domain.last_checked_at.is_some();
+    let view = domain_view(domain, crate::now_unix(), None);
+    store_page(&state, &user, &row, |chrome, store| {
+        crate::views::domains::check_page(chrome, store, &view, checked)
+    })
+    .await
+    .into_response()
+}
+
+#[derive(Deserialize, Default)]
+pub struct CheckForm {
+    /// `check` from the check page (its result is what's swapped);
+    /// absent from a domain's card on the settings page.
+    #[serde(default)]
+    pub from: Option<String>,
+}
+
+/// `POST /dashboard/stores/{id}/settings/domains/{domain_id}/check` - looks
+/// the domain's record up now, unless it was looked up moments ago
+/// ([`embed_domains::MIN_CHECK_GAP_SECS`]: then the answer says when it can
+/// be, in place). The result is never a "saved" toast: with JavaScript it's
+/// swapped in where it was asked for (the check page's result, or the
+/// domain's card, with the restriction banner, which a verified domain may
+/// enable); without, it's the check page.
+pub async fn check_domain(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
+    Path((id, domain_id)): Path<(crate::db::ConnectionId, String)>,
+    Form(form): Form<CheckForm>,
+) -> Response {
+    let (row, domain) = match load_domain(&state, &user, &id, domain_id.clone()).await {
+        Ok(loaded) => loaded,
+        Err(status) => return status.into_response(),
     };
     let now = crate::now_unix();
-    if let Some(last) = domain.last_checked_at {
-        let wait = embed_domains::MIN_CHECK_GAP_SECS - (now - last);
-        if wait > 0 {
-            let error = format!(
-                "{} was checked moments ago. Try again in {wait} seconds.",
-                domain.domain
-            );
-            return render_store_settings_page(
-                &state,
-                row,
-                &user,
-                Some(error),
-                None,
-                Some(SECTION),
-            )
-            .await;
-        }
-    }
-    match embed_domains::check_and_record(&state.db, state.dns.as_ref(), &domain, now).await {
-        Ok(_) => saved(&id, SECTION),
-        Err(_) => {
-            render_store_settings_page(
-                &state,
-                row,
-                &user,
-                Some("Something went wrong. Please try again.".to_string()),
-                None,
-                Some(SECTION),
-            )
+    let wait = domain
+        .last_checked_at
+        .map(|last| embed_domains::MIN_CHECK_GAP_SECS - (now - last))
+        .filter(|wait| *wait > 0);
+    if wait.is_none()
+        && embed_domains::check_and_record(&state.db, state.dns.as_ref(), &domain, now)
             .await
-        }
+            .is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
+    let store_id = row.id.clone();
+    let (domain, restricted, can_restrict) = match state
+        .db
+        .read(move |db| {
+            let domains = db.list_store_domains(&store_id)?;
+            Ok::<_, crate::db::DbError>((
+                domains.iter().find(|d| d.id == domain_id).cloned(),
+                db.embed_restricted(&store_id).unwrap_or(false),
+                domains.iter().any(|d| DomainState::of(d, now).counts()),
+            ))
+        })
+        .await
+    {
+        Ok((Some(domain), restricted, can_restrict)) => (domain, restricted, can_restrict),
+        Ok((None, ..)) => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let checked = domain.last_checked_at.is_some();
+    let view = domain_view(domain, now, wait);
+    let store = store_ref(&row);
+    let from_check_page = form.from.as_deref() == Some("check");
+    if fx.0 {
+        let fragment = if from_check_page {
+            crate::views::domains::check_result(&store, &view, checked)
+        } else {
+            maud::html! {
+                (crate::views::domains::card_only(&store, &view))
+                (crate::views::domains::restriction_banner_oob(&store, restricted, can_restrict))
+            }
+        };
+        return Html(fragment.into_string()).into_response();
+    }
+    if wait.is_some() {
+        return store_page(&state, &user, &row, |chrome, store| {
+            crate::views::domains::check_page(chrome, store, &view, checked)
+        })
+        .await
+        .into_response();
+    }
+    super::dashboard::redirect_303(&format!(
+        "/dashboard/stores/{id}/settings/domains/{}/check",
+        view.id
+    ))
 }
 
 /// `POST /dashboard/stores/{id}/settings/domains/{domain_id}/delete`.
@@ -526,7 +688,8 @@ mod tests {
             .method(method)
             .uri(uri)
             .header("authorization", format!("Bearer {session}"));
-        if form.is_some() {
+        // A browser posts every form urlencoded, even one with no fields.
+        if form.is_some() || method == "POST" {
             builder = builder.header("content-type", "application/x-www-form-urlencoded");
         }
         let response = router
@@ -534,6 +697,47 @@ mod tests {
             .oneshot(
                 builder
                     .body(Body::from(form.unwrap_or("").to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    /// Where a post redirects to.
+    async fn post_location(router: &Router, uri: &str, session: &str, form: &str) -> String {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post(uri)
+                    .header("authorization", format!("Bearer {session}"))
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(form.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER, "{uri}");
+        response.headers()["location"].to_str().unwrap().to_string()
+    }
+
+    /// A post as fixi sends it: the fragment that comes back.
+    async fn fx_post(
+        router: &Router,
+        uri: &str,
+        session: &str,
+        form: &str,
+    ) -> (StatusCode, String) {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post(uri)
+                    .header("authorization", format!("Bearer {session}"))
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("FX-Request", "true")
+                    .body(Body::from(form.to_string()))
                     .unwrap(),
             )
             .await
@@ -1494,16 +1698,30 @@ mod tests {
             "got: {html}"
         );
 
-        // Added from a pasted URL; the record to publish is shown.
-        let (status, _) = send(
+        // Adding a domain is a page of its own, from the settings card.
+        let (status, html) = send(
             &router,
-            "POST",
-            &format!("{settings}/domains"),
+            "GET",
+            &format!("{settings}/domains/add"),
             &session,
-            Some("domain=https%3A%2F%2FShop.Example%2Fcart"),
+            None,
         )
         .await;
-        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains(r#"<h1>Add a domain</h1>"#), "got: {html}");
+        assert!(
+            html.contains(r#"<form method="post" action="/dashboard/stores/"#),
+            "got: {html}"
+        );
+
+        // Added from a pasted URL: next, the record to publish.
+        let to = post_location(
+            &router,
+            &format!("{settings}/domains"),
+            &session,
+            "domain=https%3A%2F%2FShop.Example%2Fcart",
+        )
+        .await;
         let shop = |state: &AppState| {
             state
                 .db
@@ -1515,16 +1733,30 @@ mod tests {
                 .unwrap()
         };
         let row = shop(&state);
-        let (_, html) = send(&router, "GET", &settings, &session, None).await;
+        assert_eq!(to, format!("{settings}/domains/{}/record", row.id));
+        let (status, html) = send(&router, "GET", &to, &session, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains("<h1>Add the record</h1>"), "got: {html}");
+        assert!(html.contains(r#"<td data-label="Host">"#), "got: {html}");
         assert!(
-            html.contains("<code>_monokulo.shop.example</code>"),
+            html.contains("_monokulo.shop.example"),
+            "the full name, for providers that want it: {html}"
+        );
+        assert!(
+            html.contains(&format!("monokulo-verify={}", row.token)),
             "got: {html}"
         );
-        assert!(html.contains(&format!("<code>monokulo-verify={}</code>", row.token)));
-        assert!(html.contains("Waiting for DNS"));
+        // It waits in Settings, with its record, until it's verified.
+        let (_, html) = send(&router, "GET", &settings, &session, None).await;
+        assert!(
+            html.contains(&format!("monokulo-verify={}", row.token)),
+            "got: {html}"
+        );
+        assert!(html.contains(">Not verified</span>"), "got: {html}");
 
-        // The same domain twice, and an onion address, are refused.
-        let (_, html) = send(
+        // The same domain twice, and an onion address, are refused on the
+        // domain's page, keeping what was typed.
+        let (status, html) = send(
             &router,
             "POST",
             &format!("{settings}/domains"),
@@ -1532,10 +1764,13 @@ mod tests {
             Some("domain=shop.example"),
         )
         .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert!(
             html.contains("shop.example is already on this store's list."),
             "got: {html}"
         );
+        assert!(html.contains(r#"value="shop.example""#), "got: {html}");
+        assert!(html.contains(r#"aria-invalid="true""#), "got: {html}");
         let (_, html) = send(
             &router,
             "POST",
@@ -1546,20 +1781,33 @@ mod tests {
         .await;
         assert!(html.contains("Onion addresses can"), "got: {html}");
 
-        // No record yet: still waiting, with the reason.
+        // No record yet: the check page says so, with the reason, and
+        // nothing claims it was saved.
         let check = format!("{settings}/domains/{}/check", row.id);
         assert_eq!(
-            send(&router, "POST", &check, &session, None).await.0,
-            StatusCode::SEE_OTHER
+            post_location(&router, &check, &session, "from=check").await,
+            check
         );
+        let (_, html) = send(&router, "GET", &check, &session, None).await;
+        assert!(html.contains("Not found yet."), "got: {html}");
+        assert!(
+            html.contains("No TXT record at _monokulo.shop.example"),
+            "got: {html}"
+        );
+        assert!(!html.contains("toast-success"), "got: {html}");
         let (_, html) = send(&router, "GET", &settings, &session, None).await;
         assert!(
             html.contains("No TXT record at _monokulo.shop.example"),
             "got: {html}"
         );
-        // A second check straight away is refused.
-        let (_, html) = send(&router, "POST", &check, &session, None).await;
-        assert!(html.contains("was checked moments ago"), "got: {html}");
+        // A second check straight away isn't looked up: the page says when
+        // it can be, in place.
+        let (status, html) = send(&router, "POST", &check, &session, Some("from=check")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            html.contains("Checked moments ago: you can check again in"),
+            "got: {html}"
+        );
 
         // Published: verified (checked directly, past the rate limit).
         dns.publish(
@@ -1675,6 +1923,126 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    /// With JavaScript a check swaps only what asked for it: a card gets
+    /// itself back (and the banner, which a verified domain may enable),
+    /// the check page its result; never a "saved" toast. Then the
+    /// restriction turns on, and Allow any website turns it off again.
+    #[tokio::test]
+    async fn a_check_answers_in_place_and_a_verified_domain_lets_the_restriction_on() {
+        let dns = Arc::new(FakeDns::default());
+        let (state, _engine) = test_state(dns.clone()).await;
+        let router = build_router(state.clone());
+        let session = session_for(&router, "in-place@example.com").await;
+        let id = create_store(&router, &session).await;
+        let settings = format!("/dashboard/stores/{id}/settings");
+        let row = state
+            .db
+            .lock()
+            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+            .unwrap()
+            .pop()
+            .unwrap();
+        let check = format!("{settings}/domains/{}/check", row.id);
+
+        // From its card, before the record exists: the card, still waiting,
+        // with the reason, and the banner, still unable to turn on.
+        let (status, fragment) = fx_post(&router, &check, &session, "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            fragment.starts_with(&format!(
+                r#"<article class="mk-item-card" id="domain-{}""#,
+                row.id
+            )),
+            "{fragment}"
+        );
+        assert!(fragment.contains(">Not verified</span>"), "{fragment}");
+        assert!(
+            fragment.contains("No TXT record at _monokulo.store-home.example"),
+            "{fragment}"
+        );
+        assert!(
+            fragment.contains(r#"<form id="embed-restriction""#)
+                && fragment.contains("data-fx-oob"),
+            "{fragment}"
+        );
+        assert!(!fragment.contains("toast"), "{fragment}");
+        // Asked again at once: the card says when it can be checked.
+        let (_, fragment) = fx_post(&router, &check, &session, "").await;
+        assert!(
+            fragment.contains("Checked moments ago: you can check again in"),
+            "{fragment}"
+        );
+
+        // Published, and checked from the check page (past the 30 seconds):
+        // its result says verified, with Done back to the card.
+        dns.publish(
+            "_monokulo.store-home.example",
+            &embed_domains::record_value(&row.token),
+        );
+        state
+            .db
+            .lock()
+            .record_store_domain_check(
+                &row.id,
+                crate::now_unix() - embed_domains::MIN_CHECK_GAP_SECS,
+                Some("missing"),
+            )
+            .unwrap();
+        let (_, fragment) = fx_post(&router, &check, &session, "from=check").await;
+        assert!(
+            fragment.starts_with(r#"<div id="domain-check" class="domain-check">"#),
+            "{fragment}"
+        );
+        assert!(
+            fragment.contains("store-home.example is verified."),
+            "{fragment}"
+        );
+        assert!(
+            fragment.contains(&format!(r##"href="{settings}#domain-{}""##, row.id)),
+            "{fragment}"
+        );
+        assert!(
+            !fragment.contains("data-recheck"),
+            "a verified domain isn't checked again: {fragment}"
+        );
+
+        // The banner can turn the restriction on now; Allow any website
+        // turns it off.
+        let (_, html) = send(&router, "GET", &settings, &session, None).await;
+        assert!(
+            html.contains("Any website can show this checkout."),
+            "{html}"
+        );
+        assert_eq!(
+            post_location(
+                &router,
+                &format!("{settings}/embed-restriction"),
+                &session,
+                "restricted=on"
+            )
+            .await,
+            format!("{settings}?saved=verified-domains#card-verified-domains")
+        );
+        let (_, html) = send(&router, "GET", &settings, &session, None).await;
+        assert!(
+            html.contains("Only your verified domains can show this checkout."),
+            "{html}"
+        );
+        assert!(html.contains(r#"data-opens-dialog="allow-any""#), "{html}");
+        post_location(
+            &router,
+            &format!("{settings}/embed-restriction"),
+            &session,
+            "restricted=off",
+        )
+        .await;
+        let (_, html) = send(&router, "GET", &settings, &session, None).await;
+        assert!(
+            html.contains("Any website can show this checkout."),
+            "{html}"
         );
     }
 

@@ -56,25 +56,6 @@ pub struct ConfirmationThresholdView {
     pub confirmations_required: u64,
 }
 
-/// One verified-embed domain row (`http::embed_domains::domain_views`).
-pub struct EmbedDomainView {
-    pub id: String,
-    pub domain: String,
-    /// How its tag reads: ok, error or unknown.
-    pub state_tag: ui::TagTone,
-    pub state_label: &'static str,
-    /// A line explaining a failing or lapsed domain's grace period.
-    pub detail: Option<String>,
-    /// The TXT record to publish - shown until the domain is verified, and
-    /// again while it's failing.
-    pub show_record: bool,
-    pub record_name: String,
-    pub record_value: String,
-    pub last_checked: String,
-    /// The latest failed check's reason; `None` once verified.
-    pub last_error: Option<String>,
-}
-
 pub struct StoreSettingsData {
     /// The zone the page shows times in (the signed-in user's).
     pub clock: super::time::Clock,
@@ -116,7 +97,7 @@ pub struct StoreSettingsData {
     /// The settings form's fields as sent, after a save it refused: shown
     /// in place of the saved values, to fix or discard.
     pub sent: Option<Vec<(String, String)>>,
-    pub embed_domains: Vec<EmbedDomainView>,
+    pub embed_domains: Vec<super::domains::DomainView>,
     /// "Only my verified domains can show this checkout" is on.
     pub embed_restricted: bool,
     /// At least one domain counts as verified, so it can be turned on.
@@ -447,11 +428,12 @@ fn key_storage_card(store: &StoreSettingsData, key_storage: &KeyStorageView) -> 
     )
 }
 
-/// "Wallet": which wallet the store takes payments into, a dropdown of the
-/// account's wallets to change it (the current one marked Current), and,
-/// collapsed, the wallets it used before. Picking another wallet asks first,
-/// saying what happens to the orders already open: an action of its own,
-/// not part of the settings form.
+/// "Wallet": which wallet the store takes payments into, as a full-width
+/// dropdown of the account's wallets (the current one marked Current, since
+/// when in the help), and, collapsed, the wallets it used before. Picking
+/// another wallet asks first, saying what happens to the orders already
+/// open: an action of its own, not part of the settings form. With
+/// JavaScript the pick posts at once; without, Change wallet does.
 fn wallet_card(store: &StoreSettingsData) -> Markup {
     let wallet = &store.wallet;
     let action = format!("/dashboard/stores/{}/settings/wallet", store.connection_id);
@@ -475,32 +457,34 @@ fn wallet_card(store: &StoreSettingsData) -> Markup {
             @if let Some(changed) = &wallet.changed {
                 (ui::Alert::new(changed.as_str(), ui::Tone::Success))
             }
-            @if let Some(current) = &wallet.current {
-                p class="settings-summary-line" {
-                    "Payments go to " strong { a href=(format!("/account/wallets/{}", current.id)) { (current.name) } }
-                    " since " (store.clock.time(current.since)) "."
-                }
-            } @else {
-                (ui::Hint::new("This store isn't linked to one of your wallets yet. Pick the one it takes payments into."))
-            }
             // Picking a wallet sends it at once (static/fx-glue.js), to ask.
             form method="post" action=(action) fx-submit-on-change {
-                (super::settings::Field::new("Wallet", "store-wallet")
-                    .help(None, html! { "The store takes new payments into the wallet picked here."
-                        @if wallet.current.is_some() { " A store can only change to a wallet on its own network." } })
-                    .render(html! {
-                        (Select::new(
-                            "wallet_id",
-                            picked
-                                .is_none()
-                                .then(|| Choice::prompt("Choose a wallet…", true))
-                                .into_iter()
-                                .chain(wallet.choices.iter().map(|choice| wallet_choice(choice, picked)))
-                                .collect::<Vec<_>>(),
-                        )
-                        .id("store-wallet")
-                        .required(true))
-                    }))
+                (ui::Setting::new(
+                    "Wallet",
+                    "store-wallet",
+                    Select::new(
+                        "wallet_id",
+                        picked
+                            .is_none()
+                            .then(|| Choice::prompt("Choose a wallet…", true))
+                            .into_iter()
+                            .chain(wallet.choices.iter().map(|choice| wallet_choice(choice, picked)))
+                            .collect::<Vec<_>>(),
+                    )
+                    .id("store-wallet")
+                    .required(true)
+                    .attr("aria-describedby", "store-wallet-help"),
+                )
+                .help(html! {
+                    @if let Some(current) = &wallet.current {
+                        "New payments go into this wallet, since " (store.clock.time(current.since))
+                        ". A store can only change to a wallet on its own network."
+                    } @else {
+                        "This store isn't linked to one of your wallets yet. Pick the one it takes payments into."
+                    }
+                })
+                .help_id("store-wallet-help")
+                .layout(ui::SettingLayout::Stacked))
                 @if let (Some(pending), Some(current)) = (&wallet.pending, &wallet.current) {
                     div class="change-confirm" role="status" {
                         h3 { "Change to " (pending.wallet_name) "?" }
@@ -516,7 +500,9 @@ fn wallet_card(store: &StoreSettingsData) -> Markup {
                         (ui::FormActions::new(confirm(format!("Use {}", pending.wallet_name))))
                     }
                 } @else {
-                    (ui::FormActions::new(ui::Button::new("Change wallet").kind(ui::ButtonType::Submit)))
+                    // With JavaScript, picking a wallet sends it.
+                    (ui::FormActions::new(ui::Button::new("Change wallet").kind(ui::ButtonType::Submit))
+                        .attr("data-only", "no-script"))
                 }
             }
             @if !wallet.history.is_empty() {
@@ -945,112 +931,22 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
 }
 
 /// Adding, checking and removing the domains this store has proved it owns
-/// (`crate::embed_domains`), and whether only they may show its checkout:
-/// actions of their own, not part of the settings form (turning the
-/// restriction on needs a verified domain first).
+/// (`crate::embed_domains`, `views::domains`), and whether only they may
+/// show its checkout: actions of their own, not part of the settings form
+/// (turning the restriction on needs a verified domain first).
 fn verified_domains_card(store: &StoreSettingsData) -> Markup {
-    let base = format!("/dashboard/stores/{}/settings", store.connection_id);
+    let store_ref = super::domains::StoreRef {
+        id: store.connection_id.as_str(),
+        name: &store.display_name,
+    };
     plain_card(
         StoreSection::Domains.id(),
         "Verified domains",
         html! {
             (action_error(store, StoreSection::Domains))
-            (ui::Hint::new(
-                "Prove you own the websites that show this store's checkout. Add a domain, publish the TXT record shown here in \
-                 that domain's DNS settings, then check it. A verified domain covers all of its subdomains. Onion addresses can't \
-                 be verified, because they have no DNS.",
-            ))
-            form class="embed-restriction" method="post" action=(format!("{base}/embed-restriction")) {
-                @if store.embed_restricted {
-                    p {
-                        (ui::Tag::new("On").tone(ui::TagTone::Ok)) " "
-                        strong { "Only my verified domains can show this checkout." }
-                        " Browsers won't show it on any other website, and orders from other websites are refused. Pages on "
-                        "this server (the POS, the payment link) always work."
-                    }
-                    input type="hidden" name="restricted" value="off";
-                    (ui::Button::new("Turn off").kind(ui::ButtonType::Submit))
-                } @else {
-                    p {
-                        (ui::Tag::new("Off").tone(ui::TagTone::Unknown)) " "
-                        strong { "Any website can show this checkout." }
-                        " Turn this on to allow only the verified domains below, and their subdomains."
-                    }
-                    input type="hidden" name="restricted" value="on";
-                    (ui::Button::new("Only allow my verified domains")
-                        .kind(ui::ButtonType::Submit)
-                        .disabled(!store.embed_can_restrict))
-                    @if !store.embed_can_restrict {
-                        (ui::FieldNote::new("Verify a domain first."))
-                    }
-                }
-            }
-            @if store.embed_domains.is_empty() {
-                p class="muted" { "No domains yet." }
-            } @else {
-                (ui::Table::new(html! {
-                        @for domain in &store.embed_domains {
-                            tr {
-                                td {
-                                    strong { (domain.domain) }
-                                    @if let Some(detail) = &domain.detail { (ui::Hint::new(detail.as_str())) }
-                                    @if let Some(error) = &domain.last_error { (ui::Hint::new(error.as_str())) }
-                                    @if domain.show_record {
-                                        dl class="dns-record" {
-                                            dt { "Type" } dd { code { "TXT" } }
-                                            dt { "Name" } dd { code { (domain.record_name) } }
-                                            dt { "Value" } dd { code { (domain.record_value) } }
-                                        }
-                                    }
-                                }
-                                td { (ui::Tag::new(domain.state_label).tone(domain.state_tag)) }
-                                td data-label="Last checked" { (domain.last_checked) }
-                                td class="domain-actions" {
-                                    form method="post" action=(format!("{base}/domains/{}/check", domain.id)) {
-                                        (ui::Button::new("Check now").kind(ui::ButtonType::Submit))
-                                    }
-                                    // Without JavaScript Remove removes; with it, it asks first.
-                                    form method="post" action=(format!("{base}/domains/{}/delete", domain.id))
-                                        id=(format!("domain-delete-{}", domain.id)) {
-                                        (ui::Button::new("Remove").kind(ui::ButtonType::Submit)
-                                            .attr("data-opens-dialog", format!("domain-remove-{}", domain.id)))
-                                    }
-                                }
-                            }
-                        }
-                })
-                .head(html! { tr { th { "Domain" } th { "Status" } th { "Last checked" } th {} } })
-                .look(ui::TableLook::Stack)
-                .scroll(false)
-                .attr("data-table", "domains"))
-                @for domain in &store.embed_domains {
-                    @let id = format!("domain-remove-{}", domain.id);
-                    (ui::Dialog::new(id.as_str(), format!("{id}-title"), html! {
-                        (ui::DialogTitle::new(format!("{id}-title"), html! { "Remove " (domain.domain) "?" }))
-                        p { "You would need a new DNS record to verify it again." }
-                        (ui::DialogActions::new(html! {
-                            (ui::Button::new("Keep it").attr("data-closes-dialog", ""))
-                            (ui::Button::new("Remove domain").variant(ui::ButtonVariant::Danger).kind(ui::ButtonType::Submit)
-                                .attr("form", format!("domain-delete-{}", domain.id)))
-                        }))
-                    }))
-                }
-            }
-            form method="post" action=(format!("{base}/domains")) {
-                (Field::new("Domain", "new-domain")
-                    .help(Some("new-domain-help"), html! {
-                        "Just the domain, like shop.example. Its subdomains are covered too."
-                    })
-                    .render(html! {
-                        (ui::Input::new("domain")
-                            .id("new-domain")
-                            .described_by("new-domain-help")
-                            .placeholder("shop.example")
-                            .required(true)
-                            .autocomplete("off")
-                            .attr("spellcheck", "false"))
-                    }))
-                (ui::FormActions::new(ui::Button::new("Add domain").kind(ui::ButtonType::Submit)))
+            (super::domains::domains_body(&store_ref, &store.embed_domains, store.embed_restricted, store.embed_can_restrict))
+            @if store.embed_domains.iter().any(|domain| domain.status != super::domains::DomainStatus::Verified) {
+                (super::script("domains.js", super::Load::Defer))
             }
         },
     )
@@ -1291,8 +1187,16 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains("settings-dialogs"), "{html}");
+        // The settings form's one primary is Save; the Verified domains
+        // card, an action of its own, has its own next step.
+        let (before, rest) = html
+            .split_once(r#"<section id="card-verified-domains""#)
+            .unwrap();
+        let after = rest.split_once("</section>").unwrap().1;
+        let outside = format!("{before}{after}");
         assert_eq!(
-            html.matches("btn-primary").count() + html.matches(r#"data-variant="primary""#).count(),
+            outside.matches("btn-primary").count()
+                + outside.matches(r#"data-variant="primary""#).count(),
             1,
             "{html}"
         );
@@ -1402,78 +1306,169 @@ mod tests {
         assert!(!html.contains("save-bar is-failed"), "{html}");
     }
 
-    #[test]
-    fn the_restriction_switch_needs_a_verified_domain_to_turn_on() {
-        let html = page(
-            &chrome(),
-            &StoreSettingsViewModel {
-                store: Some(base_store()),
-            },
-        )
-        .into_string();
-        assert!(html.contains(r#"<input type="hidden" name="restricted" value="on"><button class="mk-btn" type="submit" disabled>Only allow my verified domains</button>"#), "got: {html}");
-
-        let store = StoreSettingsData {
-            embed_can_restrict: true,
-            ..base_store()
-        };
-        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
-        assert!(html.contains(
-            r#"<button class="mk-btn" type="submit">Only allow my verified domains</button>"#
-        ));
-
-        let store = StoreSettingsData {
-            embed_can_restrict: true,
-            embed_restricted: true,
-            ..base_store()
-        };
-        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
-        assert!(html.contains("Only my verified domains can show this checkout."));
-        assert!(html.contains(r#"<input type="hidden" name="restricted" value="off">"#));
+    /// The restriction banner's form: its state, and the one button that
+    /// changes it.
+    fn banner(html: &str) -> &str {
+        html.split(r#"<form id="embed-restriction""#)
+            .nth(1)
+            .and_then(|rest| rest.split("</form>").next())
+            .unwrap_or_else(|| panic!("the restriction banner in {html}"))
     }
 
     #[test]
-    fn verified_domains_show_the_record_to_publish_until_verified() {
-        let html = page(
-            &chrome(),
-            &StoreSettingsViewModel {
-                store: Some(base_store()),
-            },
-        )
-        .into_string();
-        assert!(html.contains(r#"<section id="card-verified-domains" class="settings-card" aria-labelledby="card-verified-domains-title"><header class="card-head"><h3 id="card-verified-domains-title">Verified domains</h3>"#));
-        assert!(html.contains("No domains yet."));
-        assert!(html.contains(r#"action="/dashboard/stores/conn_1/settings/domains""#));
+    fn the_restriction_banner_needs_a_verified_domain_to_turn_on() {
+        let html = render(base_store());
+        let off = banner(&html);
+        assert!(
+            off.contains(r#"<input type="hidden" name="restricted" value="on">"#),
+            "{off}"
+        );
+        assert!(off.contains(r#"data-tone="warning""#), "{off}");
+        assert!(
+            off.contains("<strong>Any website can show this checkout.</strong>"),
+            "{off}"
+        );
+        assert!(
+            off.contains("A domain must be verified before you can allow only your own."),
+            "{off}"
+        );
+        // Nothing verified: the button is the plain disabled one.
+        let button = off.split("<button").last().unwrap();
+        assert!(
+            button.contains(" disabled") && !button.contains("data-variant"),
+            "{button}"
+        );
 
-        let domain =
-            |id: &str, name: &str, state_label: &'static str, show_record: bool| EmbedDomainView {
+        let html = render(StoreSettingsData {
+            embed_can_restrict: true,
+            ..base_store()
+        });
+        let off = banner(&html);
+        let button = off.split("<button").last().unwrap();
+        assert!(
+            button.contains(r#"data-variant="primary""#) && button.contains(r#"type="submit""#),
+            "{button}"
+        );
+        assert!(!button.contains(" disabled"), "{button}");
+        assert!(button.contains("Only allow my domains"), "{button}");
+
+        let html = render(StoreSettingsData {
+            embed_can_restrict: true,
+            embed_restricted: true,
+            ..base_store()
+        });
+        let on = banner(&html);
+        assert!(on.contains(r#"data-tone="success""#), "{on}");
+        assert!(
+            on.contains("<strong>Only your verified domains can show this checkout.</strong>"),
+            "{on}"
+        );
+        assert!(
+            on.contains(r#"<input type="hidden" name="restricted" value="off">"#),
+            "{on}"
+        );
+        // Allowing any website is a caution, and asks first.
+        assert!(on.contains(r#"data-variant="caution""#), "{on}");
+        assert!(on.contains(r#"data-opens-dialog="allow-any""#), "{on}");
+        assert!(html.contains(r#"<dialog id="allow-any""#), "{html}");
+        assert!(
+            html.contains("Allow any website to show this checkout?"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn verified_domains_are_cards_with_their_actions_at_the_top() {
+        let html = render(base_store());
+        assert!(html.contains(r#"<section id="card-verified-domains" class="settings-card" aria-labelledby="card-verified-domains-title"><header class="card-head"><h3 id="card-verified-domains-title">Verified domains</h3>"#));
+        assert!(html.contains("<strong>No domains yet</strong>"), "{html}");
+        // With nothing verified, adding a domain is the card's primary.
+        assert!(
+            html.contains(
+                r#"href="/dashboard/stores/conn_1/settings/domains/add" data-variant="primary">"#
+            ),
+            "{html}"
+        );
+        let script = crate::assets::url("domains.js");
+        assert!(!html.contains(&script), "nothing is waiting: {html}");
+
+        let domain = |id: &str, name: &str, status: super::super::domains::DomainStatus| {
+            super::super::domains::DomainView {
                 id: id.to_string(),
                 domain: name.to_string(),
-                state_tag: ui::TagTone::Unknown,
-                state_label,
-                detail: None,
-                show_record,
-                record_name: format!("_monokulo.{name}"),
+                status,
+                meta: "Checked 3 h ago".to_string(),
+                record_host: "_monokulo",
                 record_value: format!("monokulo-verify=token-{id}"),
-                last_checked: "never".to_string(),
-                last_error: None,
-            };
-        let store = StoreSettingsData {
-            embed_domains: vec![
-                domain("d1", "shop.example", "Verified", false),
-                domain("d2", "new.example", "Waiting for DNS", true),
-            ],
-            ..base_store()
+                reason: (status != super::super::domains::DomainStatus::Verified)
+                    .then(|| "No TXT record yet.".to_string()),
+                wait: None,
+            }
         };
-        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
+        let html = render(StoreSettingsData {
+            embed_domains: vec![
+                domain(
+                    "d1",
+                    "shop.example",
+                    super::super::domains::DomainStatus::Verified,
+                ),
+                domain(
+                    "d2",
+                    "new.example",
+                    super::super::domains::DomainStatus::Waiting,
+                ),
+            ],
+            embed_can_restrict: true,
+            ..base_store()
+        });
+        let card = |id: &str| {
+            html.split(&format!(r#"id="domain-{id}""#))
+                .nth(1)
+                .and_then(|rest| rest.split("</article>").next())
+                .unwrap_or_else(|| panic!("domain {id}'s card in {html}"))
+                .to_string()
+        };
+        let verified = card("d1");
         assert!(
-            !html.contains("monokulo-verify=token-d1"),
-            "a verified domain doesn't need its record shown"
+            !verified.contains("monokulo-verify=token-d1"),
+            "a verified domain's record isn't shown: {verified}"
         );
-        assert!(html.contains("<code>_monokulo.new.example</code>"));
-        assert!(html.contains("<code>monokulo-verify=token-d2</code>"));
-        assert!(html.contains(r#"action="/dashboard/stores/conn_1/settings/domains/d2/check""#));
-        assert!(html.contains(r#"action="/dashboard/stores/conn_1/settings/domains/d1/delete""#));
+        assert!(!verified.contains("/check"), "nothing to check: {verified}");
+        assert!(
+            verified.contains(r#"action="/dashboard/stores/conn_1/settings/domains/d1/delete""#),
+            "{verified}"
+        );
+        assert!(
+            verified.contains(r#"data-variant="danger""#),
+            "Remove is red: {verified}"
+        );
+        assert!(verified.contains(">Verified<"), "{verified}");
+
+        let waiting = card("d2");
+        assert!(waiting.contains(">Not verified<"), "{waiting}");
+        assert!(waiting.contains("monokulo-verify=token-d2"), "{waiting}");
+        assert!(waiting.contains("_monokulo"), "{waiting}");
+        assert!(waiting.contains("No TXT record yet."), "{waiting}");
+        // Check again swaps this card, and checks again by itself.
+        assert!(
+            waiting.contains(r#"fx-action="/dashboard/stores/conn_1/settings/domains/d2/check""#),
+            "{waiting}"
+        );
+        assert!(waiting.contains(r##"fx-target="#domain-d2""##), "{waiting}");
+        assert!(waiting.contains("data-recheck"), "{waiting}");
+        // The actions come before the meta line: in the card's head.
+        assert!(
+            waiting.find("Check again").unwrap() < waiting.find("Checked 3 h ago").unwrap(),
+            "{waiting}"
+        );
+        assert!(html.contains(&script), "a domain is waiting: {html}");
+        // Something is verified: adding another isn't the primary.
+        assert!(
+            html.contains(
+                r#"<a class="mk-btn" href="/dashboard/stores/conn_1/settings/domains/add">"#
+            ),
+            "{html}"
+        );
     }
 
     #[test]
@@ -1563,26 +1558,6 @@ mod tests {
             "got: {html}"
         );
         assert!(!html.contains("new_unit_amount"), "{html}");
-    }
-
-    /// The Verified domains form is a settings field: its name, its help,
-    /// then the input, described by the help.
-    #[test]
-    fn the_verified_domains_form_uses_the_settings_field() {
-        let html = page(
-            &chrome(),
-            &StoreSettingsViewModel {
-                store: Some(base_store()),
-            },
-        )
-        .into_string();
-        assert!(
-            html.contains(r#"<div class="setting-label-row"><label class="setting-label" for="new-domain">Domain</label><span class="changed-mark">changed</span></div><p class="field-help" id="new-domain-help">Just the domain, like shop.example. Its subdomains are covered too.</p></div><div class="setting-control"><input class="mk-input" type="text" name="domain" id="new-domain" placeholder="shop.example" autocomplete="off" aria-describedby="new-domain-help" required spellcheck="false">"#),
-            "{html}"
-        );
-        assert!(html.contains(
-            r#"<div class="form-actions"><button class="mk-btn" type="submit">Add domain</button></div>"#
-        ));
     }
 
     #[test]

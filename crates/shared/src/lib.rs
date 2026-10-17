@@ -11,6 +11,7 @@ pub mod activity;
 pub mod announcements;
 pub mod auth;
 pub mod coinmarketcap;
+pub mod dns;
 pub mod exchange_rate;
 pub mod haveno;
 pub mod http_cache;
@@ -27,6 +28,7 @@ pub mod resources;
 pub mod scaling;
 pub mod shutdown;
 pub mod sqlite;
+pub mod sqlite_query;
 pub mod supervise;
 pub mod time;
 #[cfg(any(test, feature = "test-support"))]

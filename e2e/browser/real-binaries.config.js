@@ -14,6 +14,7 @@ module.exports = defineConfig({
     'admin-settings-layout.spec.js',
     'engine-crash-recovery.spec.js',
     'log-search-and-tracing.spec.js',
+    'admin-query.spec.js',
     'settings-section-updates.spec.js',
     'pos-session-diagnostics.spec.js',
     'site-themes.spec.js',

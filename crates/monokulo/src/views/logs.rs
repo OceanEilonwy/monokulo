@@ -136,7 +136,6 @@ const SERVICES: &[(&str, &str)] = &[
 ];
 
 const PAGE_STYLE: &str = r#"
-.wrap.wrap-wide { max-width: 1200px; }
 .logs-search { display: grid; gap: .5em; margin-bottom: 1em; }
 .logs-search .q-row { display: flex; gap: .5em; align-items: stretch; }
 .logs-search .q-row input { flex: 1; min-width: 0; font-family: var(--font-mono); }
@@ -171,6 +170,9 @@ const PAGE_STYLE: &str = r#"
 .log-row > summary:hover, .trace-span:hover { background: var(--surface-sunken); }
 .log-row > summary .msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-row[open] > summary .msg { white-space: normal; overflow-wrap: anywhere; }
+/* The trace page's title: its id in plain monospace after "Trace", no
+   chip round it. */
+.trace-id { font-family: var(--font-mono); font-size: .75em; font-weight: 400; color: var(--muted); overflow-wrap: anywhere; }
 /* Trace and session, on every line: a slot each, so they line up. */
 .row-acts { display: flex; gap: .2em; justify-content: flex-end; }
 .row-acts > * { display: inline-flex; align-items: center; justify-content: center; width: 1.6em; height: 1.6em; border-radius: var(--radius-sm); color: var(--muted); }
@@ -358,7 +360,7 @@ pub fn row_page(chrome: &PageChrome, row_view: Option<&RowView>, back_url: &str)
         p { a href=(back_url) { "Back to the search" } }
     };
     super::Page::new("Log line - Monokulo", header)
-        .class("wrap-wide")
+        .wide()
         .head(extra_head)
         .render(chrome, body)
 }
@@ -715,7 +717,7 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
         (script("logs.js", Load::Now))
     };
     super::Page::new("Logs - Monokulo", header)
-        .class("wrap-wide")
+        .wide()
         .head(extra_head)
         .render(chrome, body)
 }
@@ -817,7 +819,7 @@ pub fn pos_timeline_page(chrome: &PageChrome, vm: &PosTimelineViewModel) -> Mark
         }
     };
     super::Page::new("POS session - Monokulo", header)
-        .class("wrap-wide")
+        .wide()
         .head(extra_head)
         .render(chrome, body)
 }
@@ -867,10 +869,9 @@ pub struct TraceViewModel {
 pub fn trace_page(chrome: &PageChrome, vm: &TraceViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
     let header =
-        ui::PageHeader::new(html! { "Trace " code { (vm.trace_id) } }).crumbs(super::crumbs(&[
-            ("/", "Home"),
-            ("/dashboard/admin/logs", "Logs"),
-        ]));
+        ui::PageHeader::new(html! { "Trace " span class="trace-id" { (vm.trace_id) } }).crumbs(
+            super::crumbs(&[("/", "Home"), ("/dashboard/admin/logs", "Logs")]),
+        );
     let body = html! {
         @for problem in &vm.problems { (status_problem(problem)) }
         @if vm.spans.is_empty() {
@@ -905,7 +906,7 @@ pub fn trace_page(chrome: &PageChrome, vm: &TraceViewModel) -> Markup {
         div class="log-rows" { @for r in &vm.rows { (row(r)) } }
     };
     super::Page::new("Trace - Monokulo", header)
-        .class("wrap-wide")
+        .wide()
         .head(extra_head)
         .render(chrome, body)
 }

@@ -1,4 +1,4 @@
-name: UI components
+name: ui components
 on:
   pull_request:
     paths:

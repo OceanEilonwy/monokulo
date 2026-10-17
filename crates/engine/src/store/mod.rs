@@ -31,6 +31,7 @@ pub mod db;
 pub mod dispatch;
 mod order_events;
 pub mod proof;
+pub mod query_columns;
 mod work;
 pub use db::{Db, DbMetrics};
 pub use order_events::{
@@ -1181,6 +1182,26 @@ impl Store {
                 .set_prepared_statement_cache_capacity(shared::sqlite::STATEMENT_CACHE);
         }
         seen
+    }
+
+    /// One statement from monokulo's Query page (`shared::sqlite_query`),
+    /// read-only and with the secret columns read as NULL
+    /// ([`query_columns::COLUMNS`]).
+    pub fn admin_query(
+        &self,
+        sql: &str,
+        limits: shared::sqlite_query::Limits,
+    ) -> std::result::Result<shared::sqlite_query::QueryResult, shared::sqlite_query::QueryError>
+    {
+        shared::sqlite_query::run(&self.conn, sql, limits, &query_columns::COLUMNS)
+    }
+
+    /// The tables the Query page lists.
+    pub fn admin_query_schema(&self) -> Result<Vec<shared::sqlite_query::TableInfo>> {
+        Ok(shared::sqlite_query::schema(
+            &self.conn,
+            &query_columns::COLUMNS,
+        )?)
     }
 
     /// The connection itself, for exploration that queries it directly.

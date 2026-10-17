@@ -185,7 +185,7 @@ fn routes(p: &Principal) -> Vec<Route> {
         ("GET", "/api/v1/admin/logs/trace/unknown"),
         ("GET", "/api/v1/admin/logs/histogram"),
         ("GET", "/api/v1/admin/logs/attributes"),
-        ("GET", "/api/v1/admin/engine/activity"),
+        ("GET", "/api/v1/admin/engine/activity/stream"),
         ("GET", "/api/v1/admin/order-events"),
     ];
     tenant

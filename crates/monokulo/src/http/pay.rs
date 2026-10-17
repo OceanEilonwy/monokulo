@@ -712,7 +712,6 @@ mod tests {
             "/status".into(),
             "/account".into(),
             "/account?tab=wallets".into(),
-            "/account?tab=security".into(),
             "/setup".into(),
             "/account/wallets/add".into(),
             format!("/dashboard/stores/{store_id}"),

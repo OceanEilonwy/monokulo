@@ -22,7 +22,14 @@
 .mk-track-dot svg { width: 1.2em; height: 1.2em; }
 .mk-track > .step-done .mk-track-dot { background: var(--state-paid-border); border-color: var(--state-paid-border); color: var(--paper-raised); }
 .mk-track > .step-now .mk-track-dot { border-color: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
-.mk-track > .step-part .mk-track-dot { border-color: currentColor; background: conic-gradient(currentColor 0 50%, var(--paper-raised) 50% 100%); }
+/* Half filled, the right half: one straight edge. (A conic-gradient's hard
+   stop drew its top and bottom halves a pixel apart when the dot's 2.13em
+   came to a fraction of a pixel, a notch down the middle.) */
+/* Its right half is a box of its own, not a gradient's hard stop: a box's
+   edge is snapped to one device pixel for every row, where a gradient's
+   stop can land a pixel apart from one strip of rows to the next. */
+.mk-track > .step-part .mk-track-dot { position: relative; overflow: hidden; border-color: currentColor; }
+.mk-track > .step-part .mk-track-dot::before { content: ""; position: absolute; inset: 0 0 0 50%; background: currentColor; }
 .mk-track > .step-fail .mk-track-dot { background: var(--state-border); border-color: var(--state-border); color: var(--paper-raised); }
 .mk-track > .step-todo { opacity: .85; }
 .mk-stage-msg { margin: 0; font-size: var(--text-sm); line-height: 1.4; }

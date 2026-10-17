@@ -94,11 +94,11 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
 
   // Wallet: its small steps beside it, the name first, checked as it changes.
   await expect(page.locator('.mk-wizard-steps [aria-current="step"] small')).toHaveText('Kind · step 1 of 3');
-  await expect(page.locator('input[name="name"]')).toHaveValue('Geomart takings');
+  await expect(page.locator('input[name="name"]')).toHaveValue('Geomart');
   await expect(page.locator('#wallet-name-check')).toContainText('Free to use');
   await captureCoverageStage(page, 'setup-wallet-choice', test.info(), { group: GROUP });
 
-  await startNewWallet(page, 'Geomart takings');
+  await startNewWallet(page, 'Geomart');
   await expect(page.locator('[data-screen="backup"] .mk-wizard-steps [aria-current="step"] small')).toHaveText('Back up · step 2 of 3');
   await expect(page.locator('[data-screen="backup"] .mk-wizard-progress').nth(1)).toHaveAttribute('value', '1');
   await expect(page.locator('[data-screen="backup"] .mk-wizard-progress').nth(1)).toHaveAttribute('max', '3');
@@ -177,7 +177,7 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   await expect(page.locator('.store-site')).toHaveText('geomart.example');
   await expect(page.getByRole('link', { name: /Help/ })).toHaveAttribute('href', /\/monokulo\/docs\//);
   await page.goto(base + '/account?tab=wallets');
-  await page.getByRole('link', { name: 'Geomart takings' }).click();
+  await page.getByRole('link', { name: 'Geomart', exact: true }).click();
   await expect(page.locator('.where-banner strong')).toHaveText('Backed up to Feather');
 
   // The same site again is refused, linking to the store.
@@ -347,7 +347,9 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   const section = page.locator('#card-wallet');
   // Shown in place, not behind an Edit button.
   await expect(section.getByRole('button', { name: /Edit/ })).toHaveCount(0);
-  await expect(section).toContainText(`Payments go to ${WALLET_NAME}`);
+  // The wallet setting is stacked: the dropdown spans the card under its
+  // help, which says since when payments go there.
+  await expect(section.locator('.setting-field[data-layout="stacked"]')).toContainText('New payments go into this wallet, since');
   const wallet = section.getByRole('combobox', { name: 'Wallet' });
   await expect(wallet).toContainText(WALLET_NAME);
   await expect(wallet.locator('.mk-current')).toHaveText('Current');
@@ -360,7 +362,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await captureCoverageStage(page, 'wallets-change-ask', test.info(), { group: 'wallets' });
   await section.getByRole('button', { name: 'Change to Cafe till' }).click();
   await expect(section.getByText('Changed to Cafe till.')).toBeVisible();
-  await expect(section).toContainText('Payments go to Cafe till');
+  await expect(section.getByRole('combobox', { name: 'Wallet' })).toContainText('Cafe till');
   await expect(section.getByRole('combobox', { name: 'Wallet' }).locator('.mk-current')).toHaveText('Current');
 
   const history = section.locator('details[data-disclosure="wallet-history"]');
@@ -383,7 +385,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await page.locator('#card-wallet').getByRole('combobox', { name: 'Wallet' }).click();
   await page.locator('#card-wallet').getByRole('option', { name: new RegExp(WALLET_NAME) }).click();
   await page.locator('#card-wallet').getByRole('button', { name: `Change to ${WALLET_NAME}` }).click();
-  await expect(page.locator('#card-wallet')).toContainText(`Payments go to ${WALLET_NAME}`);
+  await expect(page.locator('#card-wallet').getByRole('combobox', { name: 'Wallet' })).toContainText(WALLET_NAME);
 
   // Cafe till is used by nothing now: retired, its keys deleted, said at
   // the top of its page; then brought back with its keys.

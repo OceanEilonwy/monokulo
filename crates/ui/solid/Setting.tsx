@@ -7,6 +7,7 @@ import { insert, registerDelegatedRoot, unregisterDelegatedRoot } from '@solidjs
 import type { JSX } from '@solidjs/web';
 import { mark, setAttr, tokens } from './runtime';
 import { setup } from '../web/components/setting.behaviour';
+import type { SettingLayout } from './types';
 
 /**
  * One setting: its name and what it's for on the left, its control on
@@ -15,7 +16,7 @@ import { setup } from '../web/components/setting.behaviour';
  * "changed" while it differs from what's saved (a control's
  * `data-saved` after a refused save, its default value otherwise).
  */
-export interface SettingProps extends Omit<JSX.IntrinsicElements["div"], "aria-describedby" | "aria-labelledby" | "children" | "chip" | "class" | "classList" | "described_by" | "group" | "help" | "help_id" | "id" | "label" | "label_id" | "ref" | "role" | "style"> {
+export interface SettingProps extends Omit<JSX.IntrinsicElements["div"], "aria-describedby" | "aria-labelledby" | "children" | "chip" | "class" | "classList" | "data-layout" | "described_by" | "group" | "help" | "help_id" | "id" | "label" | "label_id" | "layout" | "ref" | "role" | "style"> {
   label: string;
   /**
    * The id of the control the label is for; for a group, the
@@ -53,6 +54,10 @@ export interface SettingProps extends Omit<JSX.IntrinsicElements["div"], "aria-d
    */
   label_id?: string;
   /**
+   * Stacked: the control under the name, full width, at any width.
+   */
+  layout?: SettingLayout;
+  /**
    * `false` renders the server's markup, without the behaviour's (tests).
    * @default true
    */
@@ -67,12 +72,12 @@ export interface SettingProps extends Omit<JSX.IntrinsicElements["div"], "aria-d
  * `data-saved` after a refused save, its default value otherwise).
  */
 export function Setting(props: SettingProps): JSX.Element {
-  const rest = omit(props, "label", "id", "children", "group", "chip", "help", "help_id", "described_by", "label_id", "enhanced");
+  const rest = omit(props, "label", "id", "children", "group", "chip", "help", "help_id", "described_by", "label_id", "layout", "enhanced");
   const enhanced = props.enhanced ?? true;
   const b = setup(props);
   const owner = getOwner();
   return (
-    <div class={enhanced ? tokens(`setting-field`, b.changed() && `is-changed`) : "setting-field"} role={(props.group ?? false) ? `group` : undefined} aria-labelledby={(props.group ?? false) ? `${props.id}` : undefined} aria-describedby={props.described_by} ref={(el) => runWithOwner(owner, () => b.root(el))} {...rest}>
+    <div class={enhanced ? tokens(`setting-field`, b.changed() && `is-changed`) : "setting-field"} role={(props.group ?? false) ? `group` : undefined} aria-labelledby={(props.group ?? false) ? `${props.id}` : undefined} aria-describedby={props.described_by} data-layout={props.layout} ref={(el) => runWithOwner(owner, () => b.root(el))} {...rest}>
       <div class="setting-about">
         <div class="setting-label-row">
           {(props.group ?? false) ? (

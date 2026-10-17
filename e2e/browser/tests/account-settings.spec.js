@@ -190,3 +190,43 @@ test('the nav bar is one height signed in or out', async ({ browser }) => {
   await signedOut.close();
   await context.close();
 });
+
+test("the account menu's rows line up inside it, and the save bar has room round its buttons", async ({ page, context }) => {
+  await login(context);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(fixture.base_url + '/account');
+  await page.locator('.acct > summary').click();
+  const menu = await page.locator('.acct-menu').boundingBox();
+  const logOut = await page.locator('.acct-menu').getByRole('button', { name: 'Log out' }).boundingBox();
+  // The links are rows like Log out's: the same left edge and width (the
+  // nav bar's link style stays off them), their notes inside the menu.
+  for (const name of ['Account', /^Wallets/, /^Times in/]) {
+    const row = await page.locator('.acct-menu').getByRole('link', { name }).boundingBox();
+    expect(row.x).toBe(logOut.x);
+    expect(row.width).toBe(logOut.width);
+  }
+  for (const note of await page.locator('.acct-menu .menu-note').all()) {
+    const box = await note.boundingBox();
+    expect(box.x + box.width).toBeLessThanOrEqual(menu.x + menu.width);
+  }
+  await page.keyboard.press('Escape');
+
+  // The bar's row keeps its top and bottom padding (its .wrap mustn't
+  // zero them), and the message and the buttons share a middle.
+  await page.locator('label.radio-card', { hasText: 'Light' }).click();
+  const bar = page.locator('#save-bar');
+  await expect(bar).toBeVisible();
+  // Once it has slid in.
+  await bar.evaluate(el => Promise.all(el.getAnimations().map(a => a.finished)));
+  const padding = await bar.locator('.save-bar-inner').evaluate(el =>
+    [getComputedStyle(el).paddingTop, getComputedStyle(el).paddingBottom].map(parseFloat));
+  expect(padding[0]).toBeGreaterThan(8);
+  expect(padding[1]).toBeGreaterThan(8);
+  const middle = box => box.y + box.height / 2;
+  const message = await bar.locator('.save-bar-message').boundingBox();
+  const save = await bar.getByRole('button', { name: 'Save' }).boundingBox();
+  const discard = await bar.getByRole('link', { name: 'Discard changes' }).boundingBox();
+  expect(Math.abs(middle(message) - middle(save))).toBeLessThan(2);
+  expect(Math.abs(middle(discard) - middle(save))).toBeLessThan(2);
+  await page.locator('#card-appearance').getByRole('button', { name: 'Discard' }).click();
+});

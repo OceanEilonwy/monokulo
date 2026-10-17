@@ -56,8 +56,16 @@ pub fn command() -> Command {
         command,
         crate::settings::ENGINE_TABLE,
         &engine::engine_settings::embedded_settings(),
+        &embedded_engine_defaults(),
     );
     command
+}
+
+/// The embedded engine's own defaults where they differ from a standalone
+/// engine's, for its `--engine-…` help and the `--init` file.
+#[cfg(feature = "embedded-engine")]
+fn embedded_engine_defaults() -> live_settings::Env {
+    live_settings::Env::default().with_defaults(engine::engine_settings::EMBEDDED_DEFAULTS)
 }
 
 /// What the command line asks for.
@@ -116,6 +124,7 @@ pub fn write_init(path: &std::path::Path) -> Result<(), String> {
         crate::settings::ENGINE_TABLE,
         "The engine's own settings, used when it runs inside monokulo (engine.mode = \"embedded\", the default). With a remote engine they belong in that engine's own options file instead, and are refused here.",
         &engine::engine_settings::embedded_settings(),
+        &embedded_engine_defaults(),
     );
     #[cfg(not(feature = "embedded-engine"))]
     let text = live_settings::render_init("monokulo", crate::settings::ALL);
@@ -232,6 +241,45 @@ mod tests {
         assert!(
             refused.contains("--engine-payment-confirmations-required"),
             "{refused}"
+        );
+    }
+
+    /// The engine inside monokulo doesn't limit monokulo's own calls by
+    /// default, and its `--engine-…` help and `--init` file say so; the
+    /// option still turns it on.
+    #[cfg(feature = "embedded-engine")]
+    #[test]
+    fn the_embedded_engines_own_defaults_show_in_its_help_and_init_file() {
+        let help = command().render_long_help().to_string();
+        let option = help
+            .split("--engine-server-instance-rate-limit <true|false>")
+            .nth(1)
+            .unwrap_or_else(|| panic!("no instance limit option: {help}"));
+        let notes = option.split("--engine-").next().unwrap();
+        assert!(notes.contains("[default: false]"), "{notes}");
+        let path = std::env::temp_dir()
+            .join(format!("monokulo-init-{}", std::process::id()))
+            .join("monokulo.toml");
+        let _ = std::fs::remove_file(&path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        write_init(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let engine_server = text.split("[engine.server]").nth(1).unwrap();
+        assert!(
+            engine_server.contains("# instance_rate_limit = false\n"),
+            "{engine_server}"
+        );
+        assert!(
+            engine_server.contains("# instance_rate_limit_per_min = 600\n"),
+            "{engine_server}"
+        );
+        let args = parse_args(["monokulo", "--engine-server-instance-rate-limit", "true"]).unwrap();
+        assert_eq!(
+            args.engine
+                .get("server.instance_rate_limit")
+                .map(String::as_str),
+            Some("true")
         );
     }
 

@@ -267,8 +267,20 @@ settings! {
         key: "server.rate_limit_per_token_per_min",
         default: 120,
         check: range(1, 1_000_000),
-        description: "Requests a minute allowed per API token (per store, and for requests without a store key).",
+        description: "Requests a minute each store may make of the engine, counted by its secret key, so one busy store can't use up another's.",
         example: "120",
+    },
+    SERVER_INSTANCE_RATE_LIMIT: bool {
+        key: "server.instance_rate_limit",
+        default: true,
+        description: "Whether the engine limits the requests made without a store's key: its status, settings, logs and engine pages, and making stores. Off by default when the engine runs inside monokulo, where only monokulo can call it; on for a standalone engine, which anything holding its token can reach.",
+    },
+    SERVER_INSTANCE_RATE_LIMIT_PER_MIN: u32 {
+        key: "server.instance_rate_limit_per_min",
+        default: 600,
+        check: range(1, 1_000_000),
+        description: "Requests a minute the engine allows, all together, without a store's key, while they are limited (server.instance_rate_limit). The engine page alone asks twice a second.",
+        example: "600",
     },
     SERVER_MAX_BODY_BYTES: usize {
         key: "server.max_body_bytes",
@@ -340,6 +352,18 @@ pub const STANDALONE_ONLY: &[&'static dyn AnySetting] = &[
     &LOGGING_OTLP_ENDPOINT,
     &LOGGING_OTLP_HEADERS,
 ];
+
+/// The engine's own defaults when it runs inside monokulo, where they differ
+/// from a standalone engine's.
+///
+/// [`EngineSettings::load_full`] resolves against them when embedded, and
+/// monokulo's `--engine-…` help and `--init` file show them. The options
+/// file and the command line still win.
+///
+/// Inside monokulo nothing but monokulo can call the engine, so the
+/// instance's own requests aren't limited: its engine page polls twice a
+/// second, and a shared budget would only turn monokulo's own status red.
+pub const EMBEDDED_DEFAULTS: &[(&str, &str)] = &[("server.instance_rate_limit", "false")];
 
 /// Whether `key` is one of [`STANDALONE_ONLY`].
 pub fn standalone_only(key: &str) -> bool {
@@ -576,21 +600,34 @@ fn human_bytes(bytes: u64) -> String {
     }
 }
 
-/// API request limits (tasks 2.5, 2.6).
+/// API request limits (tasks 2.5, 2.6): the rate limits
+/// (`http::rate_limit`) and the largest body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiLimits {
+    /// Requests a minute for each store.
     pub rate_limit_per_token_per_min: u32,
+    /// Whether requests without a store's key are limited.
+    pub instance_rate_limit: bool,
+    /// Requests a minute for them, all together, when they are.
+    pub instance_rate_limit_per_min: u32,
     pub max_body_bytes: usize,
 }
 
 impl Section for ApiLimits {
     const NAME: &'static str = "api limits";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN, &SERVER_MAX_BODY_BYTES]
+        &[
+            &SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN,
+            &SERVER_INSTANCE_RATE_LIMIT,
+            &SERVER_INSTANCE_RATE_LIMIT_PER_MIN,
+            &SERVER_MAX_BODY_BYTES,
+        ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(Self {
             rate_limit_per_token_per_min: snapshot.get(&SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN),
+            instance_rate_limit: snapshot.get(&SERVER_INSTANCE_RATE_LIMIT),
+            instance_rate_limit_per_min: snapshot.get(&SERVER_INSTANCE_RATE_LIMIT_PER_MIN),
             max_body_bytes: snapshot.get(&SERVER_MAX_BODY_BYTES),
         })
     }
@@ -1129,10 +1166,11 @@ impl live_settings::Reloadable for NodesReloadable {
     }
 }
 
-/// Applies the per-token rate limit (task 2.5). The body limit (task 2.6)
-/// is read from the live section on every request.
+/// Applies the rate limits (task 2.5): each store's, and the instance's
+/// own and whether it is on. The body limit (task 2.6) is read from the
+/// live section on every request.
 pub struct LimitsReloadable {
-    pub rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
+    pub rate_limits: Arc<crate::http::rate_limit::ApiRateLimits>,
 }
 
 #[live_settings::async_trait]
@@ -1149,8 +1187,7 @@ impl live_settings::Reloadable for LimitsReloadable {
     }
 
     async fn install(&self, prepared: ApiLimits) {
-        self.rate_limiter
-            .set_limit(prepared.rate_limit_per_token_per_min);
+        self.rate_limits.apply(&prepared);
     }
 
     fn boot_policy(&self) -> live_settings::BootPolicy {
@@ -1167,7 +1204,7 @@ impl EngineSettings {
         store: SharedStore,
         daemons: Daemons,
         custody: CustodyReloadable,
-        rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
+        rate_limits: Arc<crate::http::rate_limit::ApiRateLimits>,
         env: live_settings::Env,
         options: live_settings::OptionsFile,
         embedded: bool,
@@ -1176,7 +1213,7 @@ impl EngineSettings {
             store,
             Some(NodesReloadable { daemons }),
             Some(custody),
-            rate_limiter,
+            rate_limits,
             env,
             options,
             embedded,
@@ -1191,14 +1228,14 @@ impl EngineSettings {
     pub async fn load_with(
         store: SharedStore,
         nodes: Option<NodesReloadable>,
-        rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
+        rate_limits: Arc<crate::http::rate_limit::ApiRateLimits>,
         env: live_settings::Env,
     ) -> Result<Arc<Self>, String> {
         Self::load_full(
             store,
             nodes,
             None,
-            rate_limiter,
+            rate_limits,
             env.or_var(SERVER_TOKEN.env_var, shared::auth::TEST_ENGINE_TOKEN),
             live_settings::OptionsFile::in_memory(""),
             false,
@@ -1213,11 +1250,18 @@ impl EngineSettings {
         store: SharedStore,
         nodes: Option<NodesReloadable>,
         custody: Option<CustodyReloadable>,
-        rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
+        rate_limits: Arc<crate::http::rate_limit::ApiRateLimits>,
         env: live_settings::Env,
         options: live_settings::OptionsFile,
         embedded: bool,
     ) -> Result<Arc<Self>, String> {
+        // Inside monokulo some defaults differ (EMBEDDED_DEFAULTS); whatever
+        // sets a value still wins over them.
+        let env = if embedded {
+            env.with_defaults(EMBEDDED_DEFAULTS)
+        } else {
+            env
+        };
         // The options file holds the configuration and the database the
         // runtime switches, each key in its own place.
         let layered =
@@ -1227,7 +1271,7 @@ impl EngineSettings {
             Some(reloadable) => builder.reloadable(reloadable),
             None => builder.section::<NodeConfig>(),
         };
-        let limits = builder.reloadable(LimitsReloadable { rate_limiter });
+        let limits = builder.reloadable(LimitsReloadable { rate_limits });
         let scan = builder.section::<ScanConfig>();
         let tenant_defaults = builder.section::<TenantDefaults>();
         let runtime = builder.section::<RuntimeConfig>();
@@ -1539,5 +1583,113 @@ mod tests {
             health[1].1.as_deref().unwrap().contains("snp_product"),
             "{health:?}"
         );
+    }
+
+    /// Loads settings as the engine does, standalone or inside monokulo,
+    /// over `options` and the command-line `cli` values.
+    async fn loaded(
+        embedded: bool,
+        options: &str,
+        cli: &[(&str, &str)],
+    ) -> Result<Arc<EngineSettings>, String> {
+        EngineSettings::load_full(
+            crate::store::Store::open_in_memory().unwrap().into_shared(),
+            None,
+            None,
+            Arc::new(crate::http::rate_limit::ApiRateLimits::new(1, Some(1))),
+            live_settings::Env::fixed([("ENGINE_TOKEN", crate::http::TEST_ENGINE_TOKEN)]).with_cli(
+                cli.iter()
+                    .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                    .collect(),
+            ),
+            live_settings::OptionsFile::in_memory(options),
+            embedded,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn the_instance_limit_is_on_for_a_standalone_engine_and_off_inside_monokulo() {
+        // The declared defaults are a standalone engine's.
+        assert!(SERVER_INSTANCE_RATE_LIMIT.default_value());
+        assert_eq!(SERVER_INSTANCE_RATE_LIMIT_PER_MIN.default_value(), 600);
+        assert_eq!(SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN.default_value(), 120);
+
+        let standalone = loaded(false, "", &[]).await.unwrap();
+        let limits = standalone.limits.load();
+        assert!(limits.instance_rate_limit);
+        assert_eq!(limits.instance_rate_limit_per_min, 600);
+        assert_eq!(limits.rate_limit_per_token_per_min, 120);
+
+        // Inside monokulo the switch is off; the counts are the same.
+        let embedded = loaded(true, "", &[]).await.unwrap();
+        let limits = embedded.limits.load();
+        assert!(!limits.instance_rate_limit);
+        assert_eq!(limits.instance_rate_limit_per_min, 600);
+        assert_eq!(limits.rate_limit_per_token_per_min, 120);
+        let views = embedded.registry.as_ref().unwrap().describe();
+        let switch = views
+            .iter()
+            .find(|v| v.key == SERVER_INSTANCE_RATE_LIMIT.key)
+            .unwrap();
+        assert_eq!(
+            (switch.value.as_str(), switch.default.as_str()),
+            ("false", "false")
+        );
+
+        // The options file and the command line still win over it.
+        let on = loaded(true, "[server]\ninstance_rate_limit = true\n", &[])
+            .await
+            .unwrap();
+        assert!(on.limits.load().instance_rate_limit);
+        let on = loaded(true, "", &[("server.instance_rate_limit", "true")])
+            .await
+            .unwrap();
+        assert!(on.limits.load().instance_rate_limit);
+    }
+
+    #[tokio::test]
+    async fn an_invalid_rate_limit_stops_the_engine_at_start() {
+        for (options, cli, key) in [
+            (
+                "[server]\ninstance_rate_limit_per_min = 0\n",
+                &[][..],
+                "server.instance_rate_limit_per_min",
+            ),
+            (
+                "[server]\ninstance_rate_limit = \"sometimes\"\n",
+                &[][..],
+                "server.instance_rate_limit",
+            ),
+            (
+                "",
+                &[("server.instance_rate_limit_per_min", "1000001")][..],
+                "server.instance_rate_limit_per_min",
+            ),
+            (
+                "[server]\nrate_limit_per_token_per_min = 0\n",
+                &[][..],
+                "server.rate_limit_per_token_per_min",
+            ),
+        ] {
+            for embedded in [false, true] {
+                let Err(error) = loaded(embedded, options, cli).await else {
+                    panic!("{options:?} {cli:?} was accepted")
+                };
+                assert!(error.contains(key), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_embedded_defaults_name_settings_an_embedded_engine_keeps_in_its_options_file() {
+        let embedded = embedded_settings();
+        for (key, _) in EMBEDDED_DEFAULTS {
+            let setting = embedded
+                .iter()
+                .find(|s| s.key() == *key)
+                .unwrap_or_else(|| panic!("{key} isn't an embedded engine's setting"));
+            assert!(setting.sources().toml, "{key}");
+        }
     }
 }

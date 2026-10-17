@@ -60,7 +60,7 @@ pub fn with_settings(
                 .long_help("Write an options file listing every setting with what it is for and its default, commented out, then exit. It goes where --options says, or the default place, and is never written over one that exists."),
         );
     for setting in declared.iter().filter(|s| s.sources().cli) {
-        command = command.arg(arg(*setting));
+        command = command.arg(arg(*setting, &crate::Env::default()));
     }
     let env_only: Vec<&&'static dyn AnySetting> = declared
         .iter()
@@ -167,14 +167,17 @@ pub fn values(
 /// `payment.…` with `prefix` `engine`. For the settings of a service that
 /// runs inside this process and keeps its options in this process's file,
 /// under `[prefix.…]` (an embedded engine, docs/engine_as_library.md). Their
-/// environment variables are their own.
+/// environment variables are their own. Each option's help names the
+/// default in effect under `defaults`: the host's own
+/// ([`Env::with_defaults`](crate::Env::with_defaults)) where it gives one.
 pub fn with_nested_settings(
     mut command: Command,
     prefix: &str,
     declared: &[&'static dyn AnySetting],
+    defaults: &crate::Env,
 ) -> Command {
     for setting in declared.iter().filter(|s| s.sources().cli) {
-        command = command.arg(nested_arg(*setting, prefix));
+        command = command.arg(nested_arg(*setting, prefix, defaults));
     }
     command
 }
@@ -199,24 +202,31 @@ pub fn nested_values(
         .collect()
 }
 
-fn arg(setting: &'static dyn AnySetting) -> Arg {
+fn arg(setting: &'static dyn AnySetting, defaults: &crate::Env) -> Arg {
     described(
         setting,
         setting.key().to_string(),
         setting.key().to_string(),
+        defaults,
     )
     .help_heading(heading(setting.key()))
 }
 
-fn nested_arg(setting: &'static dyn AnySetting, prefix: &str) -> Arg {
+fn nested_arg(setting: &'static dyn AnySetting, prefix: &str, defaults: &crate::Env) -> Arg {
     let key = format!("{prefix}.{}", setting.key());
     let title = heading(prefix).replace(" settings", "");
-    described(setting, key.clone(), key)
+    described(setting, key.clone(), key, defaults)
         .help_heading(format!("{title}: {}", heading(setting.key())))
 }
 
-/// The option for `setting`, with id `id` and named after `key`.
-fn described(setting: &'static dyn AnySetting, id: String, key: String) -> Arg {
+/// The option for `setting`, with id `id` and named after `key`, its help
+/// naming the default in effect under `defaults`.
+fn described(
+    setting: &'static dyn AnySetting,
+    id: String,
+    key: String,
+    defaults: &crate::Env,
+) -> Arg {
     let description = setting.description();
     let mut notes = Vec::new();
     if setting.sources().env {
@@ -225,7 +235,7 @@ fn described(setting: &'static dyn AnySetting, id: String, key: String) -> Arg {
     if setting.required() {
         notes.push("[required]".to_string());
     } else {
-        let default = setting.default_shown();
+        let default = setting.default_shown(defaults);
         notes.push(if default.is_empty() {
             "[default: none]".to_string()
         } else {

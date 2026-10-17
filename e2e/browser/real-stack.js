@@ -106,11 +106,14 @@ async function startStack() {
   fs.writeFileSync(engineOptions, [
     '[server]',
     `bind = "127.0.0.1:${enginePort}"`,
-    // Every spec shares this engine, and monokulo's requests to it without a
-    // store key share one budget (keyed on its address), so the default 120
-    // a minute is spent across specs (status reloads, the Logs page) and a
-    // later spec's settings save gets a 429 on a slow runner.
-    'rate_limit_per_token_per_min = 100000',
+    // A standalone engine limits monokulo's own calls (those without a
+    // store's key) to one budget for the instance, 600 a minute by default.
+    // Every spec shares this engine, so status reloads, the Logs and engine
+    // pages and settings saves across specs add up: the limit stays on, as
+    // in production, with room for the whole suite. Each store keeps its
+    // own default budget.
+    'instance_rate_limit = true',
+    'instance_rate_limit_per_min = 100000',
     '[database]',
     `path = ${JSON.stringify(path.join(dir, 'engine.db'))}`,
     '',

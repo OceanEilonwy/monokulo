@@ -52,4 +52,16 @@ pub mod icons {
     pub const WARNING: &str = include_str!("../web/icons/warning.svg").trim_ascii();
     pub const INFO: &str = include_str!("../web/icons/info.svg").trim_ascii();
     pub const EYE: &str = include_str!("../web/icons/eye.svg").trim_ascii();
+    pub const PLUS: &str = include_str!("../web/icons/plus.svg").trim_ascii();
+    pub const MAIL: &str = include_str!("../web/icons/mail.svg").trim_ascii();
+    pub const TRASH: &str = include_str!("../web/icons/trash.svg").trim_ascii();
+    pub const STORE: &str = include_str!("../web/icons/store.svg").trim_ascii();
+    pub const GLOBE: &str = include_str!("../web/icons/globe.svg").trim_ascii();
+    pub const LOCK: &str = include_str!("../web/icons/lock.svg").trim_ascii();
+    pub const LOCK_OPEN: &str = include_str!("../web/icons/lock-open.svg").trim_ascii();
+    pub const EXPAND: &str = include_str!("../web/icons/expand.svg").trim_ascii();
+    pub const REFRESH: &str = include_str!("../web/icons/refresh.svg").trim_ascii();
+    pub const COPY: &str = include_str!("../web/icons/copy.svg").trim_ascii();
+    pub const ARROW_LEFT: &str = include_str!("../web/icons/arrow-left.svg").trim_ascii();
+    pub const ARROW_RIGHT: &str = include_str!("../web/icons/arrow-right.svg").trim_ascii();
 }

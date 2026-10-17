@@ -52,7 +52,7 @@ use tower::ServiceExt as _;
 use engine::daemon::MoneroDaemonClient;
 use engine::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use engine::daemon_rpc::RpcDaemonClient;
-use engine::http::rate_limit::RateLimiter;
+use engine::http::rate_limit::ApiRateLimits;
 use engine::http::{build_router, now_unix, AppState};
 use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletMaterial};
 use engine::network::network_str;
@@ -178,7 +178,8 @@ async fn live_stagenet_payment_is_detected_end_to_end() {
 
     let app_state = AppState {
         db: engine::store::Database::inline(Arc::clone(&store)),
-        admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
+        rate_limits: Arc::new(ApiRateLimits::new(10_000, Some(10_000))),
+        activity_stream: engine::activity::StreamTuning::DEFAULT,
         settings: engine::engine_settings::EngineSettings::defaults(),
         log_store: None,
         engine_token: Arc::new(

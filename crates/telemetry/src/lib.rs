@@ -54,7 +54,7 @@ pub const DEFAULT_LEVEL: &str = "info";
 /// Libraries that are unreadably chatty at `debug`; development mode keeps
 /// them at `info` (or `warn`) unless the level setting names them.
 const DEV_MODE_QUIET: &str =
-    "hyper=info,hyper_util=info,h2=info,rustls=info,reqwest=info,tower=info,hickory_proto=warn,hickory_resolver=warn";
+    "hyper=info,hyper_util=info,h2=info,rustls=info,reqwest=info,tower=info";
 
 live_settings::choice_value! {
     /// How lines are written to stderr, as the `logging.format` setting

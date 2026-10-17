@@ -1,84 +1,119 @@
-//! Rate limiting for the engine's HTTP API, keyed on the presented
-//! `Authorization: Bearer ...` token.
+//! Rate limiting for the engine's HTTP API: one budget per store, and one
+//! for everything else monokulo asks of the engine.
 //!
-//! IP-based limiting is meaningless here: monokulo calls this API on behalf of
-//! every one of *its own* users from one address, so a per-IP budget would cap
-//! all of them combined rather than any one abusive caller (a real incident -
-//! see `work_notes.md`'s note on the monokulo status page tripping the old
-//! per-IP limit for a single real user). Keying on the presented `sk_...` token
-//! instead gives each tenant its own independent budget. A request with
-//! no/malformed token (tenant creation, `/status`) falls back to its IP (see
-//! `admin_rate_limit_middleware`) so it's still capped by *something*.
+//! The engine is private (`docs/DESIGN.md` §4): every request carries the
+//! engine token, checked before this ([`super::engine_token_middleware`]),
+//! so whatever reaches the limiter is monokulo, or an operator holding the
+//! token. The caller's address says nothing then: monokulo calls on behalf
+//! of every one of its users from one address, and when the engine runs
+//! inside monokulo there is no address at all. So the limiter never looks
+//! at one. Instead:
 //!
-//! The per-IP limiter that used to guard the engine's public routes is gone
-//! with those routes: the engine is private, and monokulo does per-client
-//! limiting for everything public.
+//! - A request carrying a store's `Authorization: Bearer sk_...` counts
+//!   against that store's own bucket (`server.rate_limit_per_token_per_min`),
+//!   so one busy store can't use up another's.
+//! - Anything else (`/status`, the settings, logs and engine pages, tenant
+//!   creation) counts against one bucket for the whole instance
+//!   (`server.instance_rate_limit_per_min`) when `server.instance_rate_limit`
+//!   is on, and isn't counted when it is off. It is off by default for an
+//!   engine inside monokulo, where nothing but monokulo can call it, and on
+//!   for a standalone one, which anything holding the token can reach.
 //!
-//! A fixed-window counter, not a proper token bucket - simpler, and
-//! sufficient for "stop one source from hammering this endpoint," which is the
-//! actual goal. A smarter algorithm is a reasonable future improvement, not a
-//! v1 requirement.
-//!
-//! The limiter itself (`RateLimiter<K>`, generic windowing/pruning/ceiling
-//! logic, no HTTP dependency) moved to `shared::rate_limit`
-//! (`docs/fx_refactor.md` Phase 0.1) so the monokulo can reuse the exact
-//! same, already-proven implementation for its own new public endpoints
-//! rather than reimplementing it - re-exported here so every existing
-//! `rate_limit::RateLimiter` reference in this crate keeps compiling
-//! unchanged. Only the axum-specific middleware (which key to extract from a
-//! real request) stays local to this crate.
+//! A fixed-window counter (`shared::rate_limit::RateLimiter`), not a proper
+//! token bucket: simpler, and enough for "stop one caller hammering the
+//! engine".
 
-use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{header, StatusCode};
+use axum::extract::{Request, State};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse as _, Response};
 use serde_json::json;
 
-pub use shared::rate_limit::RateLimiter;
+use shared::rate_limit::RateLimiter;
 
-/// Keyed on the presented `Authorization: Bearer sk_...` token itself, not the source IP - see this
-/// module's own doc comment for why.
-///
-/// A request with no/malformed `Authorization` header has no token to key on - falls back to IP so
-/// it's still capped by *something* rather than exempted entirely; a real `sk_...` is opaque and
-/// server-minted, not guessable, so this isn't meaningfully weaker than IP-keying would be for that
-/// case. Does not itself validate the token - an invalid one still consumes its own budget bucket and
-/// is rejected downstream by `AuthedTenant`, same as a valid one would be rejected downstream for an
-/// unrelated reason; this middleware only ever answers "is this key over budget," never "is this key
-/// valid."
-///
-/// The bucket is keyed on the token's hash, not the token: a fixed-size key,
-/// so a caller sending junk tokens as long as a header allows can't hold
-/// gigabytes in the limiter, and no secret sits in memory for a minute
-/// after its request ended.
+use crate::engine_settings::ApiLimits;
+
+/// The engine API's budgets: one per store, keyed on the hash of the
+/// store's `sk_`, and one for the instance's other calls, which can be
+/// switched off. Every limit changes live (`LimitsReloadable`).
+pub struct ApiRateLimits {
+    store: RateLimiter<String>,
+    instance: RateLimiter<()>,
+    instance_on: AtomicBool,
+}
+
+impl ApiRateLimits {
+    /// `per_store` requests a minute for each store, and `instance`
+    /// requests a minute for everything else, or no limit on it (`None`).
+    pub fn new(per_store: u32, instance: Option<u32>) -> Self {
+        let limits = Self {
+            store: RateLimiter::new(per_store),
+            instance: RateLimiter::new(1),
+            instance_on: AtomicBool::new(false),
+        };
+        limits.set_instance(instance);
+        limits
+    }
+
+    /// Applies saved settings, from the next request on. Counts already
+    /// taken in the current window stay.
+    pub fn apply(&self, settings: &ApiLimits) {
+        self.store.set_limit(settings.rate_limit_per_token_per_min);
+        self.set_instance(
+            settings
+                .instance_rate_limit
+                .then_some(settings.instance_rate_limit_per_min),
+        );
+    }
+
+    fn set_instance(&self, instance: Option<u32>) {
+        if let Some(per_minute) = instance {
+            self.instance.set_limit(per_minute);
+        }
+        self.instance_on
+            .store(instance.is_some(), Ordering::Relaxed);
+    }
+
+    /// Whether a request with these headers is allowed at `now`, having
+    /// counted it against its bucket.
+    ///
+    /// A store's `sk_` is keyed on its hash, not itself: a fixed-size key,
+    /// so a caller sending junk tokens as long as a header allows can't
+    /// hold gigabytes in the limiter, and no secret sits in memory for a
+    /// minute after its request ended. The token isn't checked here: an
+    /// invalid one uses its own bucket and is refused downstream
+    /// (`AuthedTenant`).
+    pub fn allows(&self, headers: &HeaderMap, now: i64) -> bool {
+        let store_token = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .filter(|token| token.starts_with("sk_"));
+        match store_token {
+            Some(token) => {
+                let key = shared::auth::RawToken::presented(token)
+                    .hash()
+                    .as_str()
+                    .to_owned();
+                self.store.check(key, now)
+            }
+            None if self.instance_on.load(Ordering::Relaxed) => self.instance.check((), now),
+            None => true,
+        }
+    }
+}
+
+/// Answers 429 to a request over its budget (see the module doc comment
+/// for which budget that is).
 pub async fn admin_rate_limit_middleware(
-    State(admin_rate_limiter): State<Arc<RateLimiter<String>>>,
+    State(limits): State<Arc<ApiRateLimits>>,
     req: Request,
     next: Next,
 ) -> Response {
-    let token = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    let key = match token {
-        Some(token) => shared::auth::RawToken::presented(token)
-            .hash()
-            .as_str()
-            .to_owned(),
-        None => match req.extensions().get::<ConnectInfo<SocketAddr>>() {
-            Some(ci) => ci.0.ip().to_string(),
-            // Only absent when a test drives the router directly with no
-            // accepted connection (`oneshot`); production always serves via
-            // `into_make_service_with_connect_info`, so failing open here
-            // trades nothing real.
-            None => return next.run(req).await,
-        },
-    };
-    if !admin_rate_limiter.check(key, super::now_unix()) {
+    if !limits.allows(req.headers(), super::now_unix()) {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             axum::Json(json!({ "error": "rate limit exceeded" })),
@@ -87,8 +122,3 @@ pub async fn admin_rate_limit_middleware(
     }
     next.run(req).await
 }
-
-// `RateLimiter<K>`'s own unit tests moved to `shared::rate_limit` along with
-// the type itself (see this module's own doc comment) - the middleware
-// wiring tests (real router, real `ConnectInfo`) stay in
-// `tests/verification/http/tests.rs`, unaffected by this move.

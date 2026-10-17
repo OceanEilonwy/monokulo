@@ -1119,7 +1119,7 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
         "{html}"
     );
     assert!(
-        html.contains(r#"value="Bakery takings""#),
+        html.contains(r#"value="Bakery""#),
         "a name is offered: {html}"
     );
     assert!(
@@ -1135,7 +1135,7 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
     let keys = body_text(
         cookie_get(
             &router,
-            "/setup/wallet/keys?store_name=Bakery&store_site=bakery.example&base_currency=AUD&name=Bakery%20takings&network=mainnet",
+            "/setup/wallet/keys?store_name=Bakery&store_site=bakery.example&base_currency=AUD&name=Bakery&network=mainnet",
             &cookie,
         )
         .await,
@@ -1152,7 +1152,7 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
         ("store_name", "Bakery"),
         ("store_site", "bakery.example"),
         ("base_currency", "AUD"),
-        ("name", "Bakery takings"),
+        ("name", "Bakery"),
         ("network", "mainnet"),
         ("view_key_hex", TEST_VIEW_KEY_HEX),
         ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
@@ -1182,7 +1182,7 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
         .get_wallet(&row.user_id, row.wallet_id.as_ref().unwrap())
         .unwrap()
         .unwrap();
-    assert_eq!(wallet.name, "Bakery takings");
+    assert_eq!(wallet.name, "Bakery");
     // The site's domain waits to be verified.
     let domains = state.db.lock().list_store_domains(&row.id).unwrap();
     assert_eq!(domains[0].domain, "bakery.example");
@@ -1199,7 +1199,6 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
     assert!(done.contains("Bakery is set up"), "{done}");
     assert!(done.contains("Not taking payments yet"));
     assert!(done.contains("Open the guide"));
-    assert!(done.contains("Bakery takings"));
 
     // The dashboard calls it by its name.
     let dashboard = body_text(cookie_get(&router, "/", &cookie).await).await;

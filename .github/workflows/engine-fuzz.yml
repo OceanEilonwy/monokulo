@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [scheduler, resources, inputs, queue, mempool, status, history, notifications, portfolio]
+        target: [scheduler, resources, inputs, queue, mempool, status, history, notifications, portfolio, dns_message]
         features: ['']
     env:
       RUSTUP_TOOLCHAIN: nightly-2026-10-02
@@ -93,7 +93,7 @@ jobs:
         run: cargo test --manifest-path fuzz/Cargo.toml --target-dir target --locked --features "$FUZZ_FEATURES" --test interleavings
 
   save-corpus:
-    # One job writes ci/fuzz, so the nine targets don't race each other.
+    # One job writes ci/fuzz, so the ten targets don't race each other.
     name: save the corpus to ci/fuzz
     needs: fuzz
     if: always() && github.ref == 'refs/heads/main' && needs.fuzz.result != 'skipped'

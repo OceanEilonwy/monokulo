@@ -898,6 +898,58 @@ fn joined_work_merges_into_one_outline_and_a_segment_can_be_split_after_a_join()
     );
 }
 
+/// Shapes back to back meet whatever they are: an outline then a unit (the
+/// tip request, then Chain's unit), a unit then an outline, two units (pass
+/// 1 then pass 2), two outlines; and along a chain of three. A gap, or a
+/// thread between them, and they don't.
+#[test]
+fn shapes_back_to_back_meet_and_a_gap_or_a_thread_keeps_them_apart() {
+    let leftover = |from_ms, to_ms| Shape::Fill {
+        from_ms,
+        to_ms,
+        leftover: true,
+    };
+    assert!(
+        work(0, 40, false, None).meets(&fill(40, 43)),
+        "hollow, solid"
+    );
+    assert!(
+        fill(0, 40).meets(&work(40, 50, true, None)),
+        "solid, hollow"
+    );
+    assert!(fill(0, 40).meets(&leftover(40, 60)), "solid, solid");
+    assert!(
+        work(0, 40, false, None).meets(&work(40, 50, false, None)),
+        "hollow, hollow"
+    );
+    let chain = [
+        work(0, 40, false, None),
+        fill(40, 80),
+        leftover(80, 90),
+        work(90, 95, true, None),
+    ];
+    assert!(
+        chain.windows(2).all(|pair| pair[0].meets(&pair[1])),
+        "a chain of four"
+    );
+    assert!(
+        !fill(0, 40).meets(&work(41, 50, false, None)),
+        "a millisecond apart"
+    );
+    assert!(
+        !work(0, 40, false, None).meets(&fill(0, 40)),
+        "the next one first"
+    );
+    assert!(
+        !fill(0, 40).meets(&thread(40, 60, false)),
+        "a thread is a line"
+    );
+    assert!(
+        !thread(40, 60, false).meets(&work(60, 70, false, None)),
+        "a thread is a line"
+    );
+}
+
 /// A round of a few milliseconds is drawn to a 10ms scale, not squeezed
 /// into the left of a long one, and a part under a millisecond says so.
 #[test]

@@ -9,9 +9,14 @@ const POLL_MS = 30_000;
 const WORDS: Record<HealthState, string> = {
   ok: 'all systems healthy',
   slow: 'scanning is slow - see the status page',
+  busy: 'the engine is busy - see the status page',
   error: 'an issue was detected - see the status page',
   unknown: 'could not check status',
 };
+
+// What the summary says, as a state; anything else is a problem.
+const stateOf = (state: string | undefined): HealthState =>
+  state === 'ok' || state === 'slow' || state === 'busy' ? state : 'error';
 
 export function setup(props: StatusDotProps): StatusDotBehaviour {
   const [now, setNow] = createSignal<HealthState>(props.health);
@@ -32,7 +37,7 @@ export function setup(props: StatusDotProps): StatusDotBehaviour {
           if (!response.ok) throw new Error('status unavailable');
           return response.json();
         })
-        .then((data: { state?: string }) => show(data?.state === 'ok' ? 'ok' : data?.state === 'slow' ? 'slow' : 'error'))
+        .then((data: { state?: string }) => show(stateOf(data?.state)))
         .catch(() => show('unknown'))
         .finally(() => { timer = setTimeout(poll, POLL_MS); });
     };

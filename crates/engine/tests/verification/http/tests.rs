@@ -21,7 +21,6 @@ use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use crate::key_custody::{KeyCustody, PlainKeyCustody};
 use crate::store::Store;
 
-use super::rate_limit::RateLimiter;
 use super::router_as_monokulo as build_router;
 use super::{
     request_limit_middleware, stream_limit_middleware, ApiError, AppState, RequestLimits,
@@ -788,116 +787,177 @@ async fn a_deleted_stores_keys_are_not_registered_again_by_a_request_in_flight()
     );
 }
 
-#[tokio::test]
-async fn unauthenticated_routes_are_limited_per_address_by_the_admin_limiter() {
-    // Tenant creation and `/status` carry no token, so the admin limiter keys
-    // them on the caller's address (with a fabricated `ConnectInfo`, the way
-    // production's `into_make_service_with_connect_info` provides it).
-    let mut state = AppState::for_tests();
-    state.admin_rate_limiter = Arc::new(RateLimiter::new(2));
-    let router = build_router(state, 1_000_000);
-
-    let peer: std::net::SocketAddr = "10.0.0.1:12345".parse().unwrap();
-    let make_request = || {
-        let mut req = Request::builder()
-            .method("GET")
-            .uri("/status")
-            .body(Body::empty())
-            .unwrap();
-        req.extensions_mut()
-            .insert(axum::extract::ConnectInfo(peer));
-        req
-    };
-
-    let r1 = router.clone().oneshot(make_request()).await.unwrap();
-    let r2 = router.clone().oneshot(make_request()).await.unwrap();
-    let r3 = router.oneshot(make_request()).await.unwrap();
-    assert_eq!(r1.status(), StatusCode::OK);
-    assert_eq!(r2.status(), StatusCode::OK);
-    assert_eq!(r3.status(), StatusCode::TOO_MANY_REQUESTS);
+/// A request as monokulo sends it, with a store's `sk_` if `token` is given.
+fn limited_request(uri: &str, token: Option<&str>) -> Request<Body> {
+    let mut request = Request::builder().method("GET").uri(uri);
+    if let Some(token) = token {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    request.body(Body::empty()).unwrap()
 }
 
 #[tokio::test]
-async fn admin_rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info() {
-    // Same shape as the public-route test above, but against the admin API's own
-    // separate limiter - with no `Authorization` header at all, so this exercises
-    // `admin_rate_limit_middleware`'s IP-fallback path (see its own doc comment).
-    let mut state = AppState::for_tests();
-    state.admin_rate_limiter = Arc::new(RateLimiter::new(2));
+async fn with_the_instance_limit_on_calls_without_a_store_key_share_one_budget_of_their_own() {
+    // `/status`, the instance settings and tenant creation carry no `sk_`:
+    // with the instance limit on they count against one bucket for the
+    // whole instance, at its own count, whatever store buckets hold.
+    let state = AppState {
+        rate_limits: Arc::new(super::rate_limit::ApiRateLimits::new(1, Some(3))),
+        ..AppState::for_tests()
+    };
     let router = build_router(state, 1_000_000);
 
-    let peer: std::net::SocketAddr = "10.0.0.2:12345".parse().unwrap();
-    let make_request = || {
-        let mut req = Request::builder()
-            .method("GET")
-            .uri("/api/v1/admin/tenant")
-            .body(Body::empty())
+    for uri in ["/status", "/api/v1/admin/settings", "/status"] {
+        let response = router
+            .clone()
+            .oneshot(limited_request(uri, None))
+            .await
             .unwrap();
-        req.extensions_mut()
-            .insert(axum::extract::ConnectInfo(peer));
-        req
-    };
+        // The settings API has no registry in this state (503): what counts
+        // is that the limiter let it through.
+        assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS, "{uri}");
+    }
+    let refused = router
+        .clone()
+        .oneshot(limited_request("/api/v1/admin/settings", None))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
 
-    let r1 = router.clone().oneshot(make_request()).await.unwrap();
-    let r2 = router.clone().oneshot(make_request()).await.unwrap();
-    let r3 = router.oneshot(make_request()).await.unwrap();
-
-    // All three get 401 (no auth header) or 429 - what matters is the third is
-    // specifically rate-limited, not merely unauthorized like the first two.
-    assert_eq!(r1.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(r2.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(r3.status(), StatusCode::TOO_MANY_REQUESTS);
+    // A store's own budget isn't touched by the instance's being spent: an
+    // unknown `sk_` gets through the limiter (to be refused as unknown).
+    let store = router
+        .oneshot(limited_request(
+            "/api/v1/admin/tenant",
+            Some("sk_store_one"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(store.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
-async fn admin_rate_limit_middleware_keys_on_the_presented_token_not_the_source_ip() {
-    // The real bug this whole change fixes: two different tenants' traffic,
-    // proxied through the *same* source IP (exactly what happens when a hosted
-    // control plane calls this API on every real user's behalf), must not share
-    // one budget - each `sk_...` gets its own.
-    let mut state = AppState::for_tests();
-    state.admin_rate_limiter = Arc::new(RateLimiter::new(1));
+async fn with_the_instance_limit_off_calls_without_a_store_key_are_never_refused() {
+    // Each store limited to one request a minute, the instance not at all.
+    let state = AppState {
+        rate_limits: Arc::new(super::rate_limit::ApiRateLimits::new(1, None)),
+        ..AppState::for_tests()
+    };
     let router = build_router(state, 1_000_000);
 
-    let peer: std::net::SocketAddr = "10.0.0.3:12345".parse().unwrap();
-    let make_request = |token: &str| {
-        let mut req = Request::builder()
-            .method("GET")
-            .uri("/api/v1/admin/tenant")
-            .header("authorization", format!("Bearer {token}"))
-            .body(Body::empty())
+    for _ in 0..200 {
+        let response = router
+            .clone()
+            .oneshot(limited_request("/status", None))
+            .await
             .unwrap();
-        req.extensions_mut()
-            .insert(axum::extract::ConnectInfo(peer));
-        req
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    // A store still has its limit.
+    let first = router
+        .clone()
+        .oneshot(limited_request(
+            "/api/v1/admin/tenant",
+            Some("sk_store_one"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
+    let second = router
+        .oneshot(limited_request(
+            "/api/v1/admin/tenant",
+            Some("sk_store_one"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn each_store_key_has_its_own_budget() {
+    // Every store's traffic comes from monokulo, so from one caller: each
+    // `sk_...` must still get a budget of its own.
+    let state = AppState {
+        rate_limits: Arc::new(super::rate_limit::ApiRateLimits::new(1, Some(10_000))),
+        ..AppState::for_tests()
+    };
+    let router = build_router(state, 1_000_000);
+
+    // Two different (unknown, so 401 not 200) tokens - both get through the
+    // rate limiter itself, each using its own budget of 1.
+    for token in ["sk_tenant_one", "sk_tenant_two"] {
+        let response = router
+            .clone()
+            .oneshot(limited_request("/api/v1/admin/tenant", Some(token)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{token}");
+    }
+    // Tenant one's second request is over its own budget of 1.
+    let again = router
+        .oneshot(limited_request(
+            "/api/v1/admin/tenant",
+            Some("sk_tenant_one"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(again.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn saved_rate_limits_change_the_limiter_without_a_restart() {
+    // Settings loaded the way the engine loads them, driving the limits
+    // the router uses.
+    let store = Store::open_in_memory().unwrap().into_shared();
+    let rate_limits = Arc::new(super::rate_limit::ApiRateLimits::new(1, Some(1)));
+    let settings = crate::engine_settings::EngineSettings::load_with(
+        Arc::clone(&store),
+        None,
+        Arc::clone(&rate_limits),
+        live_settings::Env::fixed(Vec::<(String, String)>::new()),
+    )
+    .await
+    .unwrap();
+    let registry = settings.registry.clone().unwrap();
+    let router = build_router(
+        AppState {
+            rate_limits,
+            settings,
+            ..AppState::for_tests_with_store(store)
+        },
+        1_000_000,
+    );
+    let status = async || {
+        router
+            .clone()
+            .oneshot(limited_request("/status", None))
+            .await
+            .unwrap()
+            .status()
     };
 
-    // Same IP, two different (unknown, so 401 not 200) tokens - both get through
-    // the rate limiter itself, each consuming its own budget of 1.
-    let r1 = router
-        .clone()
-        .oneshot(make_request("sk_tenant_one"))
+    registry
+        .save(vec![(
+            "server.instance_rate_limit_per_min".to_owned(),
+            Some("2".to_owned()),
+        )])
         .await
         .unwrap();
-    let r2 = router
-        .clone()
-        .oneshot(make_request("sk_tenant_two"))
-        .await
-        .unwrap();
-    assert_eq!(
-        r1.status(),
-        StatusCode::UNAUTHORIZED,
-        "tenant one's first request must not be rate-limited"
-    );
-    assert_eq!(
-        r2.status(),
-        StatusCode::UNAUTHORIZED,
-        "tenant two's own budget must be independent of tenant one's"
-    );
+    assert_eq!(status().await, StatusCode::OK);
+    assert_eq!(status().await, StatusCode::OK);
+    assert_eq!(status().await, StatusCode::TOO_MANY_REQUESTS);
 
-    // Tenant one's *second* request, same IP, is over its own budget of 1.
-    let r3 = router.oneshot(make_request("sk_tenant_one")).await.unwrap();
-    assert_eq!(r3.status(), StatusCode::TOO_MANY_REQUESTS);
+    // Switched off: let through straight away.
+    registry
+        .save(vec![(
+            "server.instance_rate_limit".to_owned(),
+            Some("false".to_owned()),
+        )])
+        .await
+        .unwrap();
+    for _ in 0..5 {
+        assert_eq!(status().await, StatusCode::OK);
+    }
 }
 
 #[tokio::test]
@@ -1460,7 +1520,7 @@ async fn test_app_state_with_real_daemon_and_env(
         settings: crate::engine_settings::EngineSettings::load_with(
             Arc::clone(&store),
             None,
-            Arc::new(RateLimiter::new(10_000)),
+            Arc::new(super::rate_limit::ApiRateLimits::new(10_000, Some(10_000))),
             env,
         )
         .await
@@ -1492,7 +1552,7 @@ async fn the_options_file_is_saved_to_and_reloaded_through_the_api() {
         Arc::clone(&store),
         None,
         None,
-        Arc::new(RateLimiter::new(10_000)),
+        Arc::new(super::rate_limit::ApiRateLimits::new(10_000, Some(10_000))),
         live_settings::Env::fixed([("ENGINE_TOKEN", TEST_ENGINE_TOKEN)]),
         live_settings::OptionsFile::at(&path),
         false,
@@ -1597,7 +1657,7 @@ async fn a_read_only_options_file_is_locked_and_a_save_to_it_refused() {
         Arc::clone(&store),
         None,
         None,
-        Arc::new(RateLimiter::new(10_000)),
+        Arc::new(super::rate_limit::ApiRateLimits::new(10_000, Some(10_000))),
         live_settings::Env::fixed([("ENGINE_TOKEN", TEST_ENGINE_TOKEN)]),
         live_settings::OptionsFile::at(&path),
         false,
@@ -1674,7 +1734,10 @@ async fn every_route_refuses_a_request_without_the_engine_token() {
         ("GET", "/api/v1/admin/settings"),
         ("POST", "/api/v1/admin/settings"),
         ("GET", "/api/v1/admin/logs"),
-        ("GET", "/api/v1/admin/engine/activity?network=mainnet"),
+        (
+            "GET",
+            "/api/v1/admin/engine/activity/stream?network=mainnet",
+        ),
         ("GET", "/api/v1/admin/tenant"),
         ("GET", "/api/v1/admin/tenant/orders"),
         ("GET", "/api/v1/admin/tenant/events"),
@@ -2941,26 +3004,22 @@ fn a_key_custody_backend_that_is_down_is_503() {
 
 /// An engine whose node settings really build daemon clients, as in
 /// production, starting with no node configured.
-async fn engine_that_applies_node_settings() -> (
-    Router,
-    crate::engine_settings::Daemons,
-    Arc<RateLimiter<String>>,
-) {
+async fn engine_that_applies_node_settings() -> (Router, crate::engine_settings::Daemons) {
     let store = Store::open_in_memory().unwrap().into_shared();
     let daemons = crate::engine_settings::Daemons::default();
-    let rate_limiter = Arc::new(RateLimiter::new(10_000));
+    let rate_limits = Arc::new(super::rate_limit::ApiRateLimits::new(10_000, Some(10_000)));
     let settings = crate::engine_settings::EngineSettings::load_with(
         Arc::clone(&store),
         Some(crate::engine_settings::NodesReloadable {
             daemons: daemons.clone(),
         }),
-        Arc::clone(&rate_limiter),
+        Arc::clone(&rate_limits),
         live_settings::Env::fixed(Vec::<(String, String)>::new()),
     )
     .await
     .unwrap();
     let state = AppState {
-        admin_rate_limiter: Arc::clone(&rate_limiter),
+        rate_limits,
         settings,
         networks: crate::http::Networks {
             daemons: daemons.clone(),
@@ -2968,7 +3027,7 @@ async fn engine_that_applies_node_settings() -> (
         },
         ..AppState::for_tests_with_store(store)
     };
-    (build_router(state, 16 * 1024 * 1024), daemons, rate_limiter)
+    (build_router(state, 16 * 1024 * 1024), daemons)
 }
 
 async fn save_settings(router: &Router, body: serde_json::Value) -> serde_json::Value {
@@ -2998,7 +3057,7 @@ fn stagenet_tenant_request(seed: u8) -> Request<Body> {
 
 #[tokio::test]
 async fn a_saved_node_is_used_straight_away_and_clearing_it_stops_it_the_reported_bug() {
-    let (router, daemons, _) = engine_that_applies_node_settings().await;
+    let (router, daemons) = engine_that_applies_node_settings().await;
 
     // Before: stagenet isn't configured, so a stagenet store can't be created.
     let refused = router
@@ -3060,7 +3119,7 @@ async fn a_saved_node_is_used_straight_away_and_clearing_it_stops_it_the_reporte
 
 #[tokio::test]
 async fn an_unchanged_network_keeps_its_client_when_another_network_is_saved() {
-    let (router, daemons, _) = engine_that_applies_node_settings().await;
+    let (router, daemons) = engine_that_applies_node_settings().await;
     let node = serde_json::json!({ "host": "127.0.0.1", "port": unreachable_port(), "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] });
     save_settings(
         &router,
@@ -3082,7 +3141,7 @@ async fn an_unchanged_network_keeps_its_client_when_another_network_is_saved() {
 
 #[tokio::test]
 async fn a_saved_rate_limit_body_limit_and_tenant_default_apply_to_the_next_request() {
-    let (router, _, rate_limiter) = engine_that_applies_node_settings().await;
+    let (router, _) = engine_that_applies_node_settings().await;
     save_settings(
         &router,
         serde_json::json!({ "scalars": {
@@ -3092,7 +3151,20 @@ async fn a_saved_rate_limit_body_limit_and_tenant_default_apply_to_the_next_requ
         } }),
     )
     .await;
-    assert_eq!(rate_limiter.limit(), 7);
+    // A store gets seven requests a minute, then is refused.
+    let store_call = || {
+        Request::builder()
+            .uri("/api/v1/admin/tenant")
+            .header("authorization", "Bearer sk_seven")
+            .body(Body::empty())
+            .unwrap()
+    };
+    for _ in 0..7 {
+        let response = router.clone().oneshot(store_call()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    let response = router.clone().oneshot(store_call()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
 
     let big = json_request(
         "POST",
@@ -3168,7 +3240,7 @@ async fn a_saved_rate_limit_body_limit_and_tenant_default_apply_to_the_next_requ
 
 #[tokio::test]
 async fn saving_a_restart_only_setting_says_so() {
-    let (router, _, _) = engine_that_applies_node_settings().await;
+    let (router, _) = engine_that_applies_node_settings().await;
     let saved = save_settings(
         &router,
         serde_json::json!({ "scalars": { "server.worker_threads": "4" } }),
@@ -3200,7 +3272,7 @@ async fn saving_a_restart_only_setting_says_so() {
 
 #[tokio::test]
 async fn an_unknown_setting_is_refused_and_nothing_is_saved() {
-    let (router, _, _) = engine_that_applies_node_settings().await;
+    let (router, _) = engine_that_applies_node_settings().await;
     let response = router
         .clone()
         .oneshot(settings_request(
@@ -3223,7 +3295,7 @@ async fn an_unknown_setting_is_refused_and_nothing_is_saved() {
 
 #[tokio::test]
 async fn status_lists_a_store_whose_network_has_no_answering_node() {
-    let (router, _, _) = engine_that_applies_node_settings().await;
+    let (router, _) = engine_that_applies_node_settings().await;
     // A node that answers nothing: configured, but unreachable.
     save_settings(
         &router,
@@ -3248,7 +3320,7 @@ async fn status_lists_a_store_whose_network_has_no_answering_node() {
 
 #[tokio::test]
 async fn saving_nodes_that_dont_answer_for_a_network_stores_use_is_reported() {
-    let (router, _, _) = engine_that_applies_node_settings().await;
+    let (router, _) = engine_that_applies_node_settings().await;
     let node = |port: u16| serde_json::json!({ "monero_node": { "stagenet": { "host": "127.0.0.1", "port": port, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] } } });
     let [first, second] = unreachable_ports();
     save_settings(&router, node(first)).await;
