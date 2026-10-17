@@ -337,9 +337,8 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
             (summary(data))
         }
         @if data.skipped_backup { (skipped_warning()) }
-        ol class="todo" {
+        ul class="todo" {
             li {
-                span class="num" { "1" }
                 p {
                     strong { "Add the checkout to your site" }
                     @if has_site {
@@ -358,7 +357,6 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
                 }
             }
             li {
-                span class="num" { "2" }
                 p {
                     strong { "Install the WooCommerce plugin" }
                     @if data.plugin.is_some() {
@@ -383,7 +381,6 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
                 }
             }
             li {
-                span class="num" { "3" }
                 p {
                     strong { "Open the till (POS)" }
                     (ui::Hint::new("On the phone or tablet you take payments with. Customers scan a QR code.").inline(true))
