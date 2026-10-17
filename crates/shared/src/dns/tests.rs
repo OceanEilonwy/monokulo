@@ -85,6 +85,29 @@ fn a_cut_short_or_looping_answer_is_refused_without_a_panic() {
     assert!(parse(&forward).is_err());
 }
 
+proptest::proptest! {
+    // The unit-test twin of `fuzz/fuzz_targets/dns_message.rs`, so every
+    // test run throws arbitrary bytes at the parser, and arbitrary changes
+    // at a real-shaped answer, which reach deeper than random bytes do.
+    #[test]
+    fn any_bytes_parse_or_are_refused_without_a_panic(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..600)) {
+        let _ = parse(&bytes);
+    }
+
+    #[test]
+    fn any_change_to_a_real_answer_parses_or_is_refused_without_a_panic(
+        changes in proptest::collection::vec((0usize..42, proptest::prelude::any::<u8>()), 1..6),
+        tail in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..40),
+    ) {
+        let mut answer = sample_answer();
+        for (at, byte) in changes {
+            answer[at] = byte;
+        }
+        answer.extend_from_slice(&tail);
+        let _ = parse(&answer);
+    }
+}
+
 #[test]
 fn an_odd_byte_in_a_label_cant_pass_for_a_dot() {
     let mut answer = sample_answer();
@@ -305,6 +328,43 @@ async fn a_record_is_read_from_the_zones_own_name_server_through_the_referral() 
     // Nothing is kept: asking again asks again.
     dns.txt("_monokulo.shop.example").await.unwrap();
     assert_eq!(zone_asked.load(Ordering::SeqCst), 4);
+}
+
+#[tokio::test]
+async fn a_forged_or_stray_answer_is_dropped_and_the_real_one_awaited() {
+    // A server that sends, ahead of its real answer, an answer with another
+    // id, one with the response bit clear, and one to another question:
+    // what an off-path forger or a late answer to an earlier question
+    // looks like. Only the last may be taken.
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let address = socket.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 4096];
+        loop {
+            let (n, from) = socket.recv_from(&mut buf).await.unwrap();
+            let query = parse(&buf[..n]).unwrap();
+            let reply = |value: &str| Reply {
+                authoritative: true,
+                answers: vec![("_monokulo.shop.example", txt(value))],
+                ..Reply::default()
+            };
+            let mut other_id = encode_reply(&query, &reply("forged"));
+            other_id[..2].copy_from_slice(&query.id.wrapping_add(1).to_be_bytes());
+            let mut not_a_response = encode_reply(&query, &reply("forged"));
+            not_a_response[2] &= 0x7f;
+            let other_question = Message {
+                question: Some(("_monokulo.evil.example".into(), TYPE_TXT)),
+                ..query.clone()
+            };
+            let other_question = encode_reply(&other_question, &reply("forged"));
+            let real = encode_reply(&query, &reply("real"));
+            for datagram in [other_id, not_a_response, other_question, real] {
+                socket.send_to(&datagram, from).await.unwrap();
+            }
+        }
+    });
+    let dns = resolver(&["192.0.2.11"], &[], &[("192.0.2.11", address)]);
+    assert_eq!(dns.txt("_monokulo.shop.example").await.unwrap(), ["real"]);
 }
 
 #[tokio::test]
