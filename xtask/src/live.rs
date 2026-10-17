@@ -308,7 +308,7 @@ fn check(service: &Service) -> Check {
             // The node the tests use: theirs unless ENGINE_LIVE_TEST_NODE
             // names another (`host:port`, TLS).
             let node = env::var("ENGINE_LIVE_TEST_NODE")
-                .unwrap_or_else(|_| "node.hollingworth.xyz:18089".to_string());
+                .unwrap_or_else(|_| "node.hollingworth.xyz:443".to_string());
             http("POST", &format!("https://{node}/get_height"))
         }
         Probe::Dns(host) => match (*host, 443).to_socket_addrs() {
