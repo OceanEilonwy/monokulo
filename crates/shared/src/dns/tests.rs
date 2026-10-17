@@ -1,7 +1,9 @@
 //! The wire format against hand-made bytes, and whole lookups against name
-//! servers played on loopback addresses (127.0.0.2 and up, which Linux
-//! answers on without setup), all on one port.
+//! servers played on 127.0.0.1, each on a port of its own: the resolver is
+//! told which documentation address (192.0.2.x) each one answers for, so
+//! referrals and glue name real-looking addresses on every platform.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -181,14 +183,13 @@ fn encode_reply(query: &Message, reply: &Reply) -> Vec<u8> {
 
 type Answerer = Arc<dyn Fn(&Message) -> Reply + Send + Sync>;
 
-/// Plays a name server on `ip`:`port` (UDP, and TCP too if `tcp`),
-/// answering each question with `answer`; counts the questions.
-async fn serve(ip: &str, port: u16, tcp: bool, answer: Answerer) -> (u16, Arc<AtomicUsize>) {
+/// Plays a name server on a port of its own on 127.0.0.1 (UDP, and TCP on
+/// the same port too if `tcp`), answering each question with `answer`;
+/// where it listens, and how many questions it was asked.
+async fn serve(tcp: bool, answer: Answerer) -> (SocketAddr, Arc<AtomicUsize>) {
     let asked = Arc::new(AtomicUsize::new(0));
-    let socket = UdpSocket::bind((ip.parse::<IpAddr>().unwrap(), port))
-        .await
-        .unwrap();
-    let port = socket.local_addr().unwrap().port();
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let address = socket.local_addr().unwrap();
     let (udp_answer, udp_asked) = (answer.clone(), asked.clone());
     tokio::spawn(async move {
         let mut buf = vec![0u8; 4096];
@@ -204,9 +205,7 @@ async fn serve(ip: &str, port: u16, tcp: bool, answer: Answerer) -> (u16, Arc<At
         }
     });
     if tcp {
-        let listener = tokio::net::TcpListener::bind((ip.parse::<IpAddr>().unwrap(), port))
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind(address).await.unwrap();
         tokio::spawn(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
@@ -227,30 +226,40 @@ async fn serve(ip: &str, port: u16, tcp: bool, answer: Answerer) -> (u16, Arc<At
             }
         });
     }
-    (port, asked)
+    (address, asked)
 }
 
-fn resolver(roots: &[&str], fallback: &[&str], port: u16) -> Resolver {
+/// A 127.0.0.1 address nothing listens on.
+async fn nothing_listening() -> SocketAddr {
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    socket.local_addr().unwrap()
+}
+
+/// A resolver starting at `roots`, falling back to `fallback`, that finds
+/// each documentation address in `servers` where it is played.
+fn resolver(roots: &[&str], fallback: &[&str], servers: &[(&str, SocketAddr)]) -> Resolver {
     let ips = |list: &[&str]| list.iter().map(|ip| ip.parse().unwrap()).collect();
-    Resolver::new(ips(roots), ips(fallback), port, Duration::from_secs(2))
+    let addresses: HashMap<IpAddr, SocketAddr> = servers
+        .iter()
+        .map(|(ip, address)| (ip.parse().unwrap(), *address))
+        .collect();
+    Resolver::new(ips(roots), ips(fallback), Duration::from_secs(2)).with_addresses(addresses)
 }
 
 /// A root that sends every question about shop.example to its name server
-/// at 127.0.0.3, glue included.
+/// at 192.0.2.3, glue included.
 fn root_for_shop() -> Answerer {
     Arc::new(|_| Reply {
         authorities: vec![("shop.example", ns("ns1.shop.example"))],
-        additionals: vec![("ns1.shop.example", a("127.0.0.3"))],
+        additionals: vec![("ns1.shop.example", a("192.0.2.3"))],
         ..Reply::default()
     })
 }
 
 #[tokio::test]
 async fn a_record_is_read_from_the_zones_own_name_server_through_the_referral() {
-    let (port, root_asked) = serve("127.0.0.2", 0, false, root_for_shop()).await;
-    let (_, zone_asked) = serve(
-        "127.0.0.3",
-        port,
+    let (root, root_asked) = serve(false, root_for_shop()).await;
+    let (zone, zone_asked) = serve(
         false,
         Arc::new(|query| match query.question.as_ref().unwrap().0.as_str() {
             "_monokulo.shop.example" => Reply {
@@ -273,7 +282,11 @@ async fn a_record_is_read_from_the_zones_own_name_server_through_the_referral() 
         }),
     )
     .await;
-    let dns = resolver(&["127.0.0.2"], &[], port);
+    let dns = resolver(
+        &["192.0.2.2"],
+        &[],
+        &[("192.0.2.2", root), ("192.0.2.3", zone)],
+    );
     assert_eq!(
         dns.txt("_monokulo.Shop.Example.").await.unwrap(),
         ["monokulo-verify=abc"]
@@ -296,14 +309,12 @@ async fn a_record_is_read_from_the_zones_own_name_server_through_the_referral() 
 
 #[tokio::test]
 async fn a_name_server_without_glue_is_looked_up_first() {
-    let (port, _) = serve(
-        "127.0.0.4",
-        0,
+    let (root, _) = serve(
         false,
         Arc::new(|query| match query.question.as_ref().unwrap() {
             (name, TYPE_A) if name == "ns.elsewhere" => Reply {
                 authoritative: true,
-                answers: vec![("ns.elsewhere", a("127.0.0.5"))],
+                answers: vec![("ns.elsewhere", a("192.0.2.5"))],
                 ..Reply::default()
             },
             _ => Reply {
@@ -313,9 +324,7 @@ async fn a_name_server_without_glue_is_looked_up_first() {
         }),
     )
     .await;
-    serve(
-        "127.0.0.5",
-        port,
+    let (zone, _) = serve(
         false,
         Arc::new(|_| Reply {
             authoritative: true,
@@ -324,26 +333,26 @@ async fn a_name_server_without_glue_is_looked_up_first() {
         }),
     )
     .await;
-    let dns = resolver(&["127.0.0.4"], &[], port);
+    let dns = resolver(
+        &["192.0.2.4"],
+        &[],
+        &[("192.0.2.4", root), ("192.0.2.5", zone)],
+    );
     assert_eq!(dns.txt("_monokulo.shop.example").await.unwrap(), ["found"]);
 }
 
 #[tokio::test]
 async fn a_cut_answer_is_asked_again_over_tcp() {
-    let (port, _) = serve(
-        "127.0.0.6",
-        0,
+    let (root, _) = serve(
         false,
         Arc::new(|_| Reply {
             authorities: vec![("shop.example", ns("ns1.shop.example"))],
-            additionals: vec![("ns1.shop.example", a("127.0.0.7"))],
+            additionals: vec![("ns1.shop.example", a("192.0.2.7"))],
             ..Reply::default()
         }),
     )
     .await;
-    serve(
-        "127.0.0.7",
-        port,
+    let (zone, _) = serve(
         true,
         Arc::new(|_| Reply {
             authoritative: true,
@@ -353,7 +362,11 @@ async fn a_cut_answer_is_asked_again_over_tcp() {
         }),
     )
     .await;
-    let dns = resolver(&["127.0.0.6"], &[], port);
+    let dns = resolver(
+        &["192.0.2.6"],
+        &[],
+        &[("192.0.2.6", root), ("192.0.2.7", zone)],
+    );
     assert_eq!(
         dns.txt("_monokulo.shop.example").await.unwrap(),
         ["v".repeat(600)]
@@ -362,9 +375,7 @@ async fn a_cut_answer_is_asked_again_over_tcp() {
 
 #[tokio::test]
 async fn a_cname_is_followed_and_a_cname_loop_is_refused() {
-    let (port, _) = serve(
-        "127.0.0.8",
-        0,
+    let (root, _) = serve(
         false,
         Arc::new(|query| match query.question.as_ref().unwrap().0.as_str() {
             "_monokulo.shop.example" => Reply {
@@ -389,7 +400,7 @@ async fn a_cname_is_followed_and_a_cname_loop_is_refused() {
         }),
     )
     .await;
-    let dns = resolver(&["127.0.0.8"], &[], port);
+    let dns = resolver(&["192.0.2.8"], &[], &[("192.0.2.8", root)]);
     assert_eq!(
         dns.txt("_monokulo.shop.example").await.unwrap(),
         ["via cname"]
@@ -399,10 +410,8 @@ async fn a_cname_is_followed_and_a_cname_loop_is_refused() {
 
 #[tokio::test]
 async fn unreachable_roots_fall_back_to_the_machines_resolver() {
-    // Nothing listens on 127.0.0.9.
-    let (port, asked) = serve(
-        "127.0.0.10",
-        0,
+    let unreachable = nothing_listening().await;
+    let (machine, asked) = serve(
         false,
         Arc::new(|_| Reply {
             answers: vec![("_monokulo.shop.example", txt("from the resolver"))],
@@ -410,14 +419,15 @@ async fn unreachable_roots_fall_back_to_the_machines_resolver() {
         }),
     )
     .await;
-    let dns = resolver(&["127.0.0.9"], &["127.0.0.10"], port);
+    let servers = [("192.0.2.9", unreachable), ("192.0.2.10", machine)];
+    let dns = resolver(&["192.0.2.9"], &["192.0.2.10"], &servers);
     assert_eq!(
         dns.txt("_monokulo.shop.example").await.unwrap(),
         ["from the resolver"]
     );
     assert_eq!(asked.load(Ordering::SeqCst), 1);
     // With no fallback, the failure is the answer.
-    assert!(resolver(&["127.0.0.9"], &[], port)
+    assert!(resolver(&["192.0.2.9"], &[], &servers)
         .txt("_monokulo.shop.example")
         .await
         .is_err());
@@ -431,7 +441,6 @@ async fn live_txt_records_are_read_from_the_root_servers_down() {
     let dns = Resolver::new(
         ROOT_SERVERS.into_iter().map(IpAddr::V4).collect(),
         Vec::new(),
-        53,
         Duration::from_secs(2),
     );
     let values = dns.txt("_dmarc.google.com").await.unwrap();
