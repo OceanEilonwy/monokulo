@@ -40,6 +40,27 @@ pub fn external_link_icon() -> Markup {
     }
 }
 
+/// An envelope: an icon-only button or link that sends an email.
+pub fn mail_icon() -> Markup {
+    html! {
+        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round" aria-hidden="true" focusable="false" {
+            rect x="3" y="5" width="18" height="14" rx="2" {}
+            path d="m3 7 9 6 9-6" {}
+        }
+    }
+}
+
+/// A trash can: an icon-only button that deletes.
+pub fn trash_icon() -> Markup {
+    html! {
+        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round" aria-hidden="true" focusable="false" {
+            path d="M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3" {}
+        }
+    }
+}
+
 /// How a page loads a script: as the parser reaches it, once the page is
 /// parsed (`defer`), or as a module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

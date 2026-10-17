@@ -7,7 +7,7 @@ use maud::{html, Markup};
 
 use super::settings::{Card, Field, Save};
 pub use super::settings::{Toast, ToastKind};
-use super::{script, Load, PageChrome};
+use super::{mail_icon, script, trash_icon, Load, PageChrome};
 use ui::{Choice, Select};
 
 /// `error` means the same thing every other page's own re-render-on-
@@ -123,26 +123,41 @@ pub struct AdminInvitesViewModel {
     pub created_link: Option<String>,
 }
 
+/// A row's two actions, each in a column of its own so they line up from
+/// row to row: email the invite (an envelope), and delete the request (a
+/// red trash can). A row just deleted says so across both.
 fn invite_row(row: &AdminInviteRequestRow, page: u32) -> ui::Row {
-    let actions = html! {
-        @if row.just_deleted {
-            "deleted"
-        } @else {
-            @if let Some(href) = &row.mailto_href {
-                a href=(href) { "email invite" }
-            }
-            form method="post" action=(format!("/dashboard/admin/invites/{}/delete?page={}", row.id, page)) class="inline-form"
-                fx-action=(format!("/dashboard/admin/invites/{}/delete?page={}", row.id, page)) fx-method="POST" fx-target="#invites" {
-                (ui::Button::new("delete").kind(ui::ButtonType::Submit))
-            }
-        }
+    let action = |children: Markup| ui::Cell::new(children).flag("data-invite-action");
+    let actions: Vec<ui::Slot> = if row.just_deleted {
+        vec![ui::Cell::new("deleted").attr("colspan", "2").into()]
+    } else {
+        let delete = format!("/dashboard/admin/invites/{}/delete?page={}", row.id, page);
+        vec![
+            action(html! {
+                @if let Some(href) = &row.mailto_href {
+                    (ui::IconLink::new(format!("Email an invite to {}", row.email), href, mail_icon()))
+                }
+            })
+            .into(),
+            action(html! {
+                form method="post" action=(delete) class="inline-form" fx-action=(delete) fx-method="POST" fx-target="#invites" {
+                    (ui::IconButton::new(format!("Delete the request from {}", row.email), trash_icon())
+                        .kind(ui::ButtonType::Submit)
+                        .attr("data-variant", "danger"))
+                }
+            })
+            .into(),
+        ]
     };
-    let tr = ui::Row::new(ui::Slot::many([
-        ui::Cell::new(row.email.as_str()).into(),
-        ui::Cell::new(row.message.as_str()).into(),
-        ui::Cell::new(row.created_at_display.clone()).into(),
-        ui::Cell::new(actions).into(),
-    ]));
+    let tr = ui::Row::new(ui::Slot::many(
+        [
+            ui::Cell::new(row.email.as_str()).into(),
+            ui::Cell::new(row.message.as_str()).into(),
+            ui::Cell::new(row.created_at_display.clone()).into(),
+        ]
+        .into_iter()
+        .chain(actions),
+    ));
     if row.just_deleted {
         tr.flag("data-deleted")
     } else {
@@ -153,8 +168,13 @@ fn invite_row(row: &AdminInviteRequestRow, page: u32) -> ui::Row {
 /// The invite requests' table, its header and its rows.
 fn invites_table(rows: impl IntoIterator<Item = ui::Row>) -> ui::Table {
     let head = ui::Row::new(ui::Slot::many(
-        ["Email", "Message", "Requested", "Actions"]
-            .map(|name| ui::Cell::new(name).header(true).into()),
+        ["Email", "Message", "Requested"]
+            .map(|name| ui::Cell::new(name).header(true).into())
+            .into_iter()
+            .chain([ui::Cell::new("Actions")
+                .header(true)
+                .attr("colspan", "2")
+                .into()]),
     ));
     ui::Table::new(ui::Slot::many(rows.into_iter().map(ui::Slot::from))).head(head)
 }
@@ -2342,6 +2362,21 @@ mod tests {
         assert!(html.contains("mailto:hopeful@example.com"));
         assert!(html.contains("/dashboard/admin/invites/row-1/delete?page=2"));
         assert!(html.contains("Page 2 of 2"));
+        // Each action in a column of its own, an icon with a name.
+        assert!(html.contains(r#"<th colspan="2">Actions</th>"#), "{html}");
+        assert!(
+            html.contains(r#"aria-label="Email an invite to hopeful@example.com" title="Email an invite to hopeful@example.com"><svg"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<button type="submit" class="mk-btn icon-only" aria-label="Delete the request from hopeful@example.com" title="Delete the request from hopeful@example.com" data-variant="danger"><svg"#),
+            "{html}"
+        );
+        assert_eq!(
+            html.matches(r#"<td data-invite-action="">"#).count(),
+            2,
+            "{html}"
+        );
     }
 
     #[test]
