@@ -64,6 +64,7 @@ pub static ASSETS: &[Asset] = &[
     asset!("admin-settings.js", JS),
     asset!("account.js", JS),
     asset!("logs.js", JS),
+    asset!("query.js", JS),
     asset!("create-order.js", JS),
     asset!("domains.js", JS),
     // The POS app (`pos-ui/`, built by `build.rs`).

@@ -93,6 +93,7 @@ mod logo_art;
 pub mod logs;
 pub mod orders;
 pub mod pos;
+pub mod query;
 pub mod scaling;
 pub mod settings;
 pub mod setup;
@@ -175,6 +176,9 @@ pub struct PageChrome {
     /// The zone this page shows times in (`views::time`): the signed-in
     /// user's, or UTC.
     pub clock: time::Clock,
+    /// The nav links the Query page: an admin's, while it is switched on
+    /// (`crate::http::page_chrome`).
+    pub query_enabled: bool,
 }
 
 impl PageChrome {
@@ -196,6 +200,7 @@ impl PageChrome {
                 alerts: Vec::new(),
                 browser_reports: true,
                 clock: time::Clock::for_user(u),
+                query_enabled: false,
             },
             None => PageChrome {
                 logged_in: false,
@@ -208,6 +213,7 @@ impl PageChrome {
                 alerts: Vec::new(),
                 browser_reports: true,
                 clock: time::Clock::utc(crate::now_unix()),
+                query_enabled: false,
             },
         }
     }
@@ -241,6 +247,7 @@ pub struct Page {
     header: ui::PageHeader,
     class: Option<String>,
     head: Option<Markup>,
+    wide: bool,
 }
 
 impl Page {
@@ -252,12 +259,20 @@ impl Page {
             header,
             class: None,
             head: None,
+            wide: false,
         }
     }
 
-    /// Classes beside `wrap` on the page's `main` (`wrap-wide`, `settings-page`).
+    /// Classes beside `wrap` on the page's `main` (`settings-page`).
     pub fn class(mut self, class: impl Into<String>) -> Self {
         self.class = Some(class.into());
+        self
+    }
+
+    /// A page of data (the Logs and Query pages): the page and the site
+    /// bar's row 1200px wide, not the reading width.
+    pub fn wide(mut self) -> Self {
+        self.wide = true;
         self
     }
 
@@ -269,10 +284,13 @@ impl Page {
     }
 
     pub fn render(self, chrome: &PageChrome, content: Markup) -> Markup {
-        let class = match &self.class {
+        let mut class = match &self.class {
             Some(class) => format!("wrap {class}"),
             None => "wrap".to_string(),
         };
+        if self.wide {
+            class.push_str(" wrap-wide");
+        }
         let body = html! {
             main class=(class) {
                 (self.header)
@@ -284,7 +302,14 @@ impl Page {
             &self.title,
             DEFAULT_VIEWPORT,
             self.head,
-            Some(nav(chrome)),
+            Some(nav(
+                chrome,
+                if self.wide {
+                    ui::PageWidth::Full
+                } else {
+                    ui::PageWidth::Normal
+                },
+            )),
             body,
         )
     }
@@ -671,7 +696,7 @@ pub fn status_indicator(health: Option<Health>) -> Markup {
 /// The status dot sits in the bar itself, not in the link list, so on a
 /// phone it stays in sight beside the hamburger; on a wider screen CSS
 /// orders it between the links and the account menu.
-fn nav(chrome: &PageChrome) -> Markup {
+fn nav(chrome: &PageChrome, width: ui::PageWidth) -> Markup {
     let links = html! {
         @if chrome.logged_in {
             a href="/" aria-current=[(chrome.current_path == "/").then_some("page")] { "Home" }
@@ -680,6 +705,9 @@ fn nav(chrome: &PageChrome) -> Markup {
             a href="/dashboard/admin/settings" { "Admin" }
             a href="/dashboard/admin/invites" { "Invites" }
             a href="/dashboard/admin/logs" { "Logs" }
+            @if chrome.query_enabled {
+                a href=(query::PAGE) { "Query" }
+            }
         }
         @if !chrome.logged_in {
             a href="/dashboard/login" { "Log in" }
@@ -692,6 +720,7 @@ fn nav(chrome: &PageChrome) -> Markup {
     let brand = html! { (logo_mark(24, "site-nav-logo")) "Monokulo" };
     ui::SiteNav::new(brand, links)
         .status(status_indicator(chrome.health))
+        .width(width)
         .render()
 }
 
@@ -812,7 +841,7 @@ mod tests {
         );
 
         let chrome = PageChrome::from_user(None, "/").with_health(Some(Health::Ok));
-        assert!(nav(&chrome)
+        assert!(nav(&chrome, ui::PageWidth::Normal)
             .into_string()
             .contains("status-dot status-dot-ok"));
     }
@@ -830,12 +859,17 @@ mod tests {
             alerts: Vec::new(),
             browser_reports: true,
             clock: time::Clock::new(Some("Australia/Perth"), None, 0),
+            query_enabled: is_admin,
         }
     }
 
     #[test]
     fn an_admin_sees_the_status_dot_in_the_bar_then_admin_links_then_their_account_menu() {
-        let html = nav(&signed_in("rachel.dz@example.org", true, Theme::Dark)).into_string();
+        let html = nav(
+            &signed_in("rachel.dz@example.org", true, Theme::Dark),
+            ui::PageWidth::Normal,
+        )
+        .into_string();
         let at = |needle: &str| {
             html.find(needle)
                 .unwrap_or_else(|| panic!("{needle} in {html}"))
@@ -877,18 +911,22 @@ mod tests {
     fn home_is_marked_on_the_home_page_and_only_for_someone_signed_in() {
         let mut chrome = signed_in("rachel.dz@example.org", false, Theme::System);
         chrome.current_path = "/".into();
-        let html = nav(&chrome).into_string();
+        let html = nav(&chrome, ui::PageWidth::Normal).into_string();
         assert!(
             html.contains(r#"<a href="/" aria-current="page">Home</a>"#),
             "{html}"
         );
-        let html = nav(&PageChrome::from_user(None, "/")).into_string();
+        let html = nav(&PageChrome::from_user(None, "/"), ui::PageWidth::Normal).into_string();
         assert!(!html.contains(">Home</a>"), "{html}");
     }
 
     #[test]
     fn the_account_menu_holds_who_account_wallets_theme_times_and_log_out_in_that_order() {
-        let html = nav(&signed_in("rachel.dz@example.org", true, Theme::Dark)).into_string();
+        let html = nav(
+            &signed_in("rachel.dz@example.org", true, Theme::Dark),
+            ui::PageWidth::Normal,
+        )
+        .into_string();
         let menu = &html[html.find(r#"<div class="acct-menu">"#).expect(&html)..];
         // The button is a person icon only: named for what it opens, the
         // email in its title.
@@ -931,7 +969,11 @@ mod tests {
             "{menu}"
         );
 
-        let merchant = nav(&signed_in("ann@example.org", false, Theme::System)).into_string();
+        let merchant = nav(
+            &signed_in("ann@example.org", false, Theme::System),
+            ui::PageWidth::Normal,
+        )
+        .into_string();
         assert!(merchant.contains("<small>Merchant</small>"), "{merchant}");
         assert!(!merchant.contains("/dashboard/admin"), "{merchant}");
     }
@@ -939,7 +981,7 @@ mod tests {
     #[test]
     fn signed_out_the_nav_offers_log_in_and_sign_up_and_no_account_controls() {
         let chrome = PageChrome::from_user(None, "/dashboard/login");
-        let html = nav(&chrome).into_string();
+        let html = nav(&chrome, ui::PageWidth::Normal).into_string();
         assert!(
             html.contains(r#"<a href="/dashboard/login">Log in</a>"#),
             "{html}"
@@ -985,7 +1027,7 @@ mod tests {
                 current_path: "/dashboard/stores".to_string(),
                 ..signed_in("ann@example.org", false, theme)
             };
-            let html = nav(&chrome).into_string();
+            let html = nav(&chrome, ui::PageWidth::Normal).into_string();
             assert!(
                 html.contains(&class.to_string()),
                 "expected {class} on the toggle for {theme:?}, got: {html}"

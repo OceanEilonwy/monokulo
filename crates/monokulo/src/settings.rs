@@ -6,9 +6,9 @@
 //! which wins and locks it on the page. Saving or reloading through the
 //! registry applies the change to the running process (part 3).
 //!
-//! Two runtime switches, `abuse.under_attack` and `logging.dev_mode_until`,
-//! are kept in the database instead: they are flipped from the admin page
-//! while running, not configured. Secrets come from the environment only
+//! Three runtime switches, `abuse.under_attack`, `logging.dev_mode_until`
+//! and `admin.query_enabled`, are kept in the database instead: they are
+//! flipped from the admin page while running, not configured. Secrets come from the environment only
 //! (the process list and the options file can be read by others): the
 //! engine token, the collector's headers, and `crypto.encryption_key`, the
 //! AES-256-GCM key every `store_connections.tenant_secret_token_encrypted`
@@ -425,6 +425,13 @@ settings! {
         description: "Days monokulo's log store keeps lines for the Logs page. Older lines are deleted once a minute.",
         example: "14",
     },
+    ADMIN_QUERY_ENABLED: bool {
+        key: "admin.query_enabled",
+        default: true,
+        description: "The Query page: admins can run read-only SQL against monokulo's and the engine's databases. Secret columns (password hashes, tokens, keys) always read as hidden, and every query is written to the Logs page.",
+        example: "true",
+        sources: [Database],
+    },
     LOGGING_MAX_MB: u64 {
         key: "logging.max_mb",
         default: telemetry::store::DEFAULT_MAX_MB,
@@ -838,6 +845,25 @@ impl Section for DatabaseConfig {
     }
 }
 
+/// The admin tools that can be switched off while running: read on each
+/// request ([`MonokuloSettings::query_enabled`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdminTools {
+    pub query_enabled: bool,
+}
+
+impl Section for AdminTools {
+    const NAME: &'static str = "admin tools";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[&ADMIN_QUERY_ENABLED]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(AdminTools {
+            query_enabled: snapshot.get(&ADMIN_QUERY_ENABLED),
+        })
+    }
+}
+
 impl Section for PerRequest {
     const NAME: &'static str = "per request";
     fn keys() -> &'static [&'static dyn AnySetting] {
@@ -1202,6 +1228,8 @@ pub struct MonokuloSettings {
     pub snp_bundle_limits: live_settings::Live<SnpBundleLimits>,
     /// How webhooks are delivered: read before each batch.
     pub webhooks: live_settings::Live<WebhookConfig>,
+    /// Which admin tools are on: read per request.
+    pub admin_tools: live_settings::Live<AdminTools>,
 }
 
 impl MonokuloSettings {
@@ -1249,6 +1277,9 @@ impl MonokuloSettings {
             snp_entry: live_settings::Live::new(snp_entry),
             snp_bundle_limits: live_settings::Live::new(SnpBundleLimits::default()),
             webhooks: live_settings::Live::new(WebhookConfig::default()),
+            admin_tools: live_settings::Live::new(AdminTools {
+                query_enabled: ADMIN_QUERY_ENABLED.default_value(),
+            }),
         })
     }
 
@@ -1264,7 +1295,13 @@ impl MonokuloSettings {
             snp_entry: self.snp_entry.clone(),
             snp_bundle_limits: self.snp_bundle_limits.clone(),
             webhooks: live_settings::Live::new(webhooks),
+            admin_tools: self.admin_tools.clone(),
         })
+    }
+
+    /// Whether the admin Query page is on.
+    pub fn query_enabled(&self) -> bool {
+        self.admin_tools.load().query_enabled
     }
 
     /// This instance's current signup mode.
@@ -1318,6 +1355,7 @@ impl MonokuloSettings {
         let snp_entry = builder.section::<SnpEntryPolicy>();
         let snp_bundle_limits = builder.section::<SnpBundleLimits>();
         let webhooks = builder.section::<WebhookConfig>();
+        let admin_tools = builder.section::<AdminTools>();
         // Read once at start, before the registry exists (`main.rs`).
         builder.section::<DatabaseConfig>();
         builder.section::<BootConfig>();
@@ -1343,6 +1381,7 @@ impl MonokuloSettings {
             snp_entry,
             snp_bundle_limits,
             webhooks,
+            admin_tools,
         }))
     }
 }
@@ -1569,6 +1608,7 @@ mod tests {
         assert!(BootConfig::from_snapshot(&snapshot).is_ok());
         assert!(ServerConfig::from_snapshot(&snapshot).is_ok());
         assert!(DatabaseConfig::from_snapshot(&snapshot).is_ok());
+        assert!(AdminTools::from_snapshot(&snapshot).unwrap().query_enabled);
         assert_eq!(
             WebhookConfig::from_snapshot(&snapshot).unwrap(),
             WebhookConfig::default()
@@ -1589,6 +1629,7 @@ mod tests {
             BootConfig::keys(),
             ServerConfig::keys(),
             WebhookConfig::keys(),
+            AdminTools::keys(),
         ]
         .iter()
         .flat_map(|keys| keys.iter().map(|setting| setting.key()))

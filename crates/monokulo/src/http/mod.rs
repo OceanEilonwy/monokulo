@@ -66,6 +66,7 @@ mod orders;
 mod pay;
 mod pos;
 mod pos_logs;
+pub(crate) mod query_page;
 mod setup;
 mod signup;
 pub mod status_page;
@@ -398,6 +399,22 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/dashboard/admin/logs/saved/{id}/delete",
             post(logs_page::delete_search),
+        )
+        .route(
+            "/dashboard/admin/query",
+            axum::routing::get(query_page::page),
+        )
+        .route(
+            "/dashboard/admin/query/schema",
+            axum::routing::get(query_page::schema),
+        )
+        .route(
+            "/dashboard/admin/query/value",
+            axum::routing::get(query_page::value),
+        )
+        .route(
+            "/dashboard/admin/query/export",
+            axum::routing::get(query_page::export),
         )
         .route("/status", axum::routing::get(status_page::status_page))
         .route(
@@ -951,6 +968,7 @@ pub(crate) async fn page_chrome(
         .with_health(status_page::known_health(&state.engine))
         .with_alerts(alerts);
     chrome.wallet_count = wallet_count;
+    chrome.query_enabled = user.is_some_and(|user| user.is_admin) && state.settings.query_enabled();
     // Only a store's own pages depend on its opt-in; every other page keeps
     // `from_user`'s choice.
     if let Some(reports) = browser_reports {

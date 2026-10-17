@@ -734,6 +734,8 @@ impl Group {
                 }
                 "abuse" | "rate_limit" => Group::AbuseLimits,
                 "http_cache" | "database" | "server" | "crypto" => Group::Server(owner),
+                // The Query page's switch, beside the server's own settings.
+                "admin" => Group::Server(owner),
                 "logging" => Group::Logging(owner),
                 "key_custody" if rest.starts_with("cli_") => Group::CustodyCli,
                 "key_custody" => backend(),
@@ -2083,6 +2085,7 @@ mod tests {
             ("database.path", M, Server, "server-monokulo"),
             ("server.bind", M, Server, "server-monokulo"),
             ("crypto.encryption_key", M, Server, "server-monokulo"),
+            ("admin.query_enabled", M, Server, "server-monokulo"),
             ("logging.format", M, Logging, "logging-monokulo"),
             ("abuse.soft_per_min", M, Abuse, "abuse-limits"),
             ("abuse.hard_per_min", M, Abuse, "abuse-limits"),

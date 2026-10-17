@@ -207,6 +207,31 @@ impl Db {
         &self.conn
     }
 
+    /// One statement from the admin Query page (`shared::sqlite_query`),
+    /// read-only and with the secret columns read as NULL
+    /// (`http::query_page::columns`).
+    pub fn admin_query(
+        &self,
+        sql: &str,
+        limits: shared::sqlite_query::Limits,
+    ) -> std::result::Result<shared::sqlite_query::QueryResult, shared::sqlite_query::QueryError>
+    {
+        shared::sqlite_query::run(
+            &self.conn,
+            sql,
+            limits,
+            &crate::http::query_page::columns::COLUMNS,
+        )
+    }
+
+    /// The tables the Query page lists.
+    pub fn admin_query_schema(&self) -> Result<Vec<shared::sqlite_query::TableInfo>> {
+        Ok(shared::sqlite_query::schema(
+            &self.conn,
+            &crate::http::query_page::columns::COLUMNS,
+        )?)
+    }
+
     pub fn insert_pos_order(
         &self,
         connection_id: &ConnectionId,

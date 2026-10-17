@@ -1045,6 +1045,35 @@ impl EngineClient {
     }
 }
 
+/// The engine's database, read for the admin Query page
+/// (`shared::sqlite_query`).
+impl EngineClient {
+    /// One read-only statement. A statement the engine refused or that
+    /// failed is `Ok` with its [`QueryResponse::Error`]; too many running
+    /// at once is an `EngineError` with status `429`.
+    ///
+    /// [`QueryResponse::Error`]: shared::sqlite_query::QueryResponse::Error
+    pub async fn admin_query(
+        &self,
+        request: &shared::sqlite_query::QueryRequest,
+    ) -> Result<shared::sqlite_query::QueryResponse, EngineClientError> {
+        self.send(Call::post("/api/v1/admin/query").json(request))
+            .await?
+            .parsed()
+    }
+
+    /// The engine's tables, their columns and rows.
+    pub async fn admin_query_schema(
+        &self,
+    ) -> Result<Vec<shared::sqlite_query::TableInfo>, EngineClientError> {
+        let response: shared::sqlite_query::SchemaResponse = self
+            .send(Call::get("/api/v1/admin/query/schema"))
+            .await?
+            .parsed()?;
+        Ok(response.tables)
+    }
+}
+
 /// The engine's own cap on ids per [`EngineClient::list_orders_by_ids`] call.
 pub const MAX_ORDER_IDS_PER_REQUEST: usize = 100;
 

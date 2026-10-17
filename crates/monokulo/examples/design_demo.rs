@@ -11,19 +11,13 @@
 //! screen picks the theme (the index links both).
 
 use axum::{extract::Query, response::Html, routing::get, Router};
-use maud::{html, Markup, PreEscaped, DOCTYPE};
+use maud::{html, Markup, DOCTYPE};
 use monokulo::db::Theme;
 use monokulo::http::{build_router, AppState};
 use monokulo::views::domains::{DomainStatus, DomainView, StoreRef};
 use monokulo::views::{self, Page, PageChrome};
 use serde::Deserialize;
-use ui::assets::icons;
-use ui::{
-    Alert, Button, ButtonType, ButtonVariant, Choice, ControlSize, CopyBlock, DataCell, DataGrid,
-    DataKind, Dialog, DialogActions, DialogPage, DialogTitle, Disclosure, DisclosureLook, Fact,
-    Facts, FormActions, Hint, IconButton, IconLink, Input, LinkButton, PageHeader, Row, Select,
-    Slot, TableBrowser, Tag, TagTone, TextArea, Tone,
-};
+use ui::PageHeader;
 
 const ADDRESS: &str = "127.0.0.1:4400";
 const STORE: &str = "Rachel's Handicrafts";
@@ -67,11 +61,6 @@ impl Look {
         chrome.browser_reports = false;
         chrome
     }
-}
-
-/// An icon from ui's set, before (or after) a button's words.
-fn icon(svg: &'static str) -> Markup {
-    html! { (PreEscaped(svg)) }
 }
 
 // ---------------------------------------------------------------- index
@@ -140,34 +129,11 @@ async fn index(Query(look): Query<Look>) -> Html<String> {
 fn page(look: &Look, path: &str, title: &str, header: PageHeader, body: Markup) -> Html<String> {
     Html(
         Page::new(format!("{title} - Design demo"), header)
-            // The Query page takes the full width, as the Logs page does.
-            .class(if path.starts_with("/query") {
-                "settings-page wrap-wide"
-            } else {
-                "settings-page"
-            })
-            .head(html! { style { (PreEscaped(DEMO_STYLE)) } })
+            .class("settings-page")
             .render(&look.chrome(path), body)
             .into_string(),
     )
 }
-
-/// Page layout the designs add (no colours: those are the ui's roles).
-const DEMO_STYLE: &str = r#"
-.wrap.wrap-wide { max-width: 1200px; }
-.query-band { display: grid; grid-template-columns: minmax(12rem, 16rem) minmax(0, 1fr); gap: var(--space-md); height: 17rem; }
-.query-band > * { min-height: 0; }
-.query-editor { display: flex; flex-direction: column; gap: var(--space-sm); margin: 0; min-width: 0; }
-.query-editor textarea { flex: 1; min-height: 6rem; font-family: var(--font-mono); resize: vertical; }
-.query-editor .form-actions { margin: 0; align-items: center; }
-.query-label { margin: 0; font-size: var(--text-xs); font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-.query-empty { text-align: center; }
-.query-empty .form-actions { justify-content: center; }
-@media (max-width: 640px) {
-  .query-band { grid-template-columns: minmax(0, 1fr); height: auto; }
-  .query-band > .mk-table-browser { order: 2; }
-}
-"#;
 
 // ------------------------------------------------------ 1. setup done
 
@@ -331,6 +297,110 @@ async fn check_step(Query(look): Query<Look>) -> Html<String> {
 
 // ------------------------------------------------------- 4. the query
 
+use monokulo::views::query::{self as query_view, Outcome, QueryDb, QueryViewModel};
+use shared::sqlite_query::{Cell, ColumnInfo, QueryError, QueryResult, ResultColumn, TableInfo};
+
+/// The tables beside the editor: a few of monokulo's, secrets marked.
+fn demo_tables() -> Vec<TableInfo> {
+    let table = |name: &str, rows: u64, columns: &[(&str, &str, bool)]| TableInfo {
+        name: name.into(),
+        rows,
+        columns: columns
+            .iter()
+            .map(|(name, decl_type, hidden)| ColumnInfo {
+                name: (*name).into(),
+                decl_type: (*decl_type).into(),
+                hidden: *hidden,
+            })
+            .collect(),
+    };
+    vec![
+        table(
+            "orders",
+            1_204,
+            &[
+                ("id", "TEXT", false),
+                ("status", "TEXT", false),
+                ("amount_xmr", "INTEGER", false),
+            ],
+        ),
+        table(
+            "sessions",
+            4,
+            &[("user_id", "TEXT", false), ("token", "TEXT", true)],
+        ),
+        table(
+            "store_domains",
+            4,
+            &[("domain", "TEXT", false), ("token", "TEXT", true)],
+        ),
+        table(
+            "stores",
+            3,
+            &[("id", "TEXT", false), ("name", "TEXT", false)],
+        ),
+        table(
+            "users",
+            12,
+            &[
+                ("id", "TEXT", false),
+                ("email", "TEXT", false),
+                ("password_hash", "TEXT", true),
+            ],
+        ),
+        table(
+            "wallets",
+            5,
+            &[("id", "TEXT", false), ("name", "TEXT", false)],
+        ),
+        table(
+            "webhook_deliveries",
+            38,
+            &[("id", "TEXT", false), ("payload", "TEXT", false)],
+        ),
+    ]
+}
+
+fn text(value: &str) -> Cell {
+    Cell::Text {
+        text: value.into(),
+        len: value.len(),
+    }
+}
+
+/// A plain value as its cell: NULL, a number or text.
+fn plain(value: &str) -> Cell {
+    match value {
+        "NULL" => Cell::Null,
+        v => match v.parse::<i64>() {
+            Ok(value) => Cell::Integer { value },
+            Err(_) => match v.parse::<f64>() {
+                Ok(value) => Cell::Real { value },
+                Err(_) => text(v),
+            },
+        },
+    }
+}
+
+fn result(names: &[&str], hidden: &[&str], rows: Vec<Vec<Cell>>, ms: u64) -> QueryResult {
+    QueryResult {
+        columns: names
+            .iter()
+            .map(|name| ResultColumn {
+                name: (*name).into(),
+                decl_type: None,
+                hidden: hidden.contains(name),
+            })
+            .collect(),
+        rows,
+        cut: false,
+        elapsed_ms: ms,
+        hidden: hidden.iter().map(|c| format!("users.{c}")).collect(),
+    }
+}
+
+const EXPANDED_JSON: &str = r##"{"event":"order.paid","order":{"id":"order_2282ae00c55f42fb8e295d4b45c8bfc3","store":"Rachel's Handicrafts","status":"paid","amount":{"xmr":"0.084200000000","fiat":"24.50","currency":"AUD","rate":"290.97"},"address":"86LpA1yW…Hq3wZ","confirmations":0,"required_confirmations":10,"external_ref":"#1042","created_at":"2026-10-17T05:58:12Z","paid_at":"2026-10-17T06:01:40Z"},"delivered_at":"2026-10-17T06:01:41Z"}"##;
+
 #[derive(Clone, Copy, PartialEq)]
 enum Shown {
     Results,
@@ -340,164 +410,26 @@ enum Shown {
     Empty,
 }
 
-fn query_header(look: &Look) -> PageHeader {
-    PageHeader::new("Query")
-        .crumbs(vec![ui::Crumb::new(look.href("/"), "Home")])
-        .actions(html! {
-            form class="engine-network" method="get" action="/query" {
-                label for="query-db" class="visually-hidden" { "Database" }
-                (Select::new("db", vec![Choice::new("monokulo", "Monokulo").selected(true), Choice::new("engine", "Engine")])
-                    .id("query-db")
-                    .compact(true))
-                (Button::new("Go").kind(ButtonType::Submit).attr("data-only", "no-script"))
-            }
-            (LinkButton::new("Export CSV", "#").size(ControlSize::Compact))
-            (IconLink::new("Run again", look.href("/query"), icon(icons::REFRESH)))
-        })
-}
-
-fn table_browser() -> Markup {
-    let column = |name: &str, value: Markup| Fact {
-        term: name.into(),
-        value: value.into(),
-    };
-    let text = |t: &str| html! { (t) };
-    let tables: Vec<(&str, &str, Vec<Fact>)> = vec![
-        (
-            "orders",
-            "1,204",
-            vec![
-                column("id", text("TEXT")),
-                column("status", text("TEXT")),
-                column("amount_xmr", text("INTEGER")),
-            ],
-        ),
-        (
-            "sessions",
-            "4",
-            vec![
-                column("user_id", text("TEXT")),
-                column(
-                    "token",
-                    html! { (Tag::new("hidden").tone(TagTone::Muted).icon(icon(icons::LOCK))) },
-                ),
-            ],
-        ),
-        (
-            "store_domains",
-            "4",
-            vec![
-                column("domain", text("TEXT")),
-                column(
-                    "token",
-                    html! { (Tag::new("hidden").tone(TagTone::Muted).icon(icon(icons::LOCK))) },
-                ),
-            ],
-        ),
-        (
-            "stores",
-            "3",
-            vec![column("id", text("TEXT")), column("name", text("TEXT"))],
-        ),
-        (
-            "users",
-            "12",
-            vec![
-                column("id", text("TEXT")),
-                column("email", text("TEXT")),
-                column(
-                    "password_hash",
-                    html! { (Tag::new("hidden").tone(TagTone::Muted).icon(icon(icons::LOCK))) },
-                ),
-            ],
-        ),
-        (
-            "wallets",
-            "5",
-            vec![column("id", text("TEXT")), column("name", text("TEXT"))],
-        ),
-        (
-            "webhook_deliveries",
-            "38",
-            vec![column("id", text("TEXT")), column("payload", text("TEXT"))],
-        ),
-    ];
-    html! {
-        (TableBrowser::new("Tables", Slot::many(tables.into_iter().map(|(name, rows, columns)| {
-            Slot::from(Disclosure::new(
-                html! { (name) (Tag::new(rows).tone(TagTone::Muted)) },
-                Facts::new(columns),
-            ).look(DisclosureLook::Compact))
-        })))
-        .filter(Input::new("table-filter").label("Filter tables").placeholder("Filter tables…").size(ControlSize::Compact)))
-    }
-}
-
-fn editor(sql: &str) -> Markup {
-    html! {
-        form class="box query-editor" method="get" action="/query" {
-            label class="query-label" for="query-sql" { "SQL" }
-            (TextArea::new("sql").id("query-sql").value(sql).rows(5usize).described_by("query-sql-help"))
-            (FormActions::new(Slot::many([
-                Slot::from(Hint::new("One statement. Rows past 1,000 are cut.").inline(true).attr("id", "query-sql-help")),
-                Slot::from(Disclosure::new("Examples", html! {
-                    ul { li { a href="#" { "Latest orders" } } li { a href="#" { "Stores and their wallets" } } li { a href="#" { "Unpaid orders per store" } } }
-                })),
-                Slot::from(html! { span class="spacer" {} }),
-                Slot::from(Button::new("Run").variant(ButtonVariant::Primary).kind(ButtonType::Submit)),
-            ])))
-        }
-    }
-}
-
-fn head_row(names: &[&str]) -> Slot {
-    Slot::from(Row::new(Slot::many(
-        names
-            .iter()
-            .map(|n| Slot::from(DataCell::new(n.to_string()).header(true))),
-    )))
-}
-
-fn cell(value: &str) -> Slot {
-    match value {
-        "NULL" => Slot::from(DataCell::new("NULL").kind(DataKind::Null)),
-        "hidden" => Slot::from(DataCell::new("hidden").kind(DataKind::Hidden)),
-        v if v.parse::<f64>().is_ok() => {
-            Slot::from(DataCell::new(v.to_string()).kind(DataKind::Number))
-        }
-        v => Slot::from(DataCell::new(v.to_string())),
-    }
-}
-
-fn rows(rows: &[&[&str]]) -> Slot {
-    Slot::many(
-        rows.iter()
-            .map(|row| Slot::from(Row::new(Slot::many(row.iter().map(|v| cell(v)))))),
-    )
-}
-
-fn results(shown: Shown) -> Markup {
-    let hidden = || {
-        Slot::from(
-            Tag::new("1 column hidden")
-                .tone(TagTone::Muted)
-                .icon(icon(icons::LOCK)),
-        )
-    };
+fn shown(shown: Shown) -> (QueryDb, &'static str, Outcome) {
     match shown {
-        Shown::Results => html! {
-            (DataGrid::new(
-                head_row(&["id", "email", "created_at", "password_hash"]),
-                rows(&[
-                    &["us_1", "rachel@example.com", "1760700000", "hidden"],
-                    &["us_2", "ann@example.org", "NULL", "hidden"],
-                    &["us_3", "sam@example.net", "1760610000", "hidden"],
-                    &["us_4", "kim@example.com", "1760500000", "hidden"],
-                ]),
-                "Query results",
-            )
-            .stats(Slot::many([Slot::from("4 rows · 3 ms · monokulo"), hidden()])))
-        },
+        Shown::Results => (
+            QueryDb::Monokulo,
+            "SELECT id, email, created_at, password_hash\nFROM users\nORDER BY created_at DESC",
+            Outcome::Ran(result(
+                &["id", "email", "created_at", "password_hash"],
+                &["password_hash"],
+                [
+                    ["us_1", "rachel@example.com", "1760700000"],
+                    ["us_2", "ann@example.org", "NULL"],
+                    ["us_3", "sam@example.net", "1760610000"],
+                    ["us_4", "kim@example.com", "1760500000"],
+                ]
+                .iter()
+                .map(|row| row.iter().map(|v| plain(v)).chain([Cell::Null]).collect())
+                .collect(),
+                3,
+            )),
+        ),
         Shown::Wide => {
             let names = [
                 "id",
@@ -524,13 +456,8 @@ fn results(shown: Shown) -> Markup {
                 "customer_note",
                 "refund_address",
             ];
-            let row = |id: &'static str,
-                       store: &'static str,
-                       status: &'static str,
-                       xmr: &'static str,
-                       fiat: &'static str|
-             -> Vec<&'static str> {
-                vec![
+            let row = |id: &str, store: &str, status: &str, xmr: &str, fiat: &str| -> Vec<Cell> {
+                [
                     id,
                     store,
                     status,
@@ -555,133 +482,92 @@ fn results(shown: Shown) -> Markup {
                     "NULL",
                     "NULL",
                 ]
+                .iter()
+                .map(|v| plain(v))
+                .collect()
             };
-            let data = [
-                row("order_2282ae", "st_8f3a", "confirmed", "0.0842", "24.50"),
-                row("order_77c0d1", "st_8f3a", "paid", "0.0310", "9.00"),
-                row("order_09ab44", "st_2c91", "pending", "0.1200", "35.00"),
-                row("order_5d6e2f", "st_77d0", "expired", "0.0100", "2.90"),
-            ];
-            let data: Vec<&[&str]> = data.iter().map(|r| r.as_slice()).collect();
-            html! {
-                (DataGrid::new(head_row(&names), rows(&data), "Query results")
-                    .stats("4 rows · 23 columns · 9 ms · engine")
-                    .scroll_hint(html! { (icon(icons::ARROW_LEFT)) " Scroll sideways for more columns " (icon(icons::ARROW_RIGHT)) }))
-            }
+            (
+                QueryDb::Engine,
+                "SELECT * FROM orders",
+                Outcome::Ran(result(
+                    &names,
+                    &[],
+                    vec![
+                        row("order_2282ae", "st_8f3a", "confirmed", "0.0842", "24.50"),
+                        row("order_77c0d1", "st_8f3a", "paid", "0.0310", "9.00"),
+                        row("order_09ab44", "st_2c91", "pending", "0.1200", "35.00"),
+                        row("order_5d6e2f", "st_77d0", "expired", "0.0100", "2.90"),
+                    ],
+                    9,
+                )),
+            )
         }
         Shown::Big => {
-            let long = |id: &str, json: &str, size: &str, cut: Option<&str>| {
-                let cell = DataCell::new(json.to_string())
-                    .size(size.to_string())
-                    .actions(Slot::many([
-                        Slot::from(
-                            IconLink::new(
-                                format!("Expand payload of {id}"),
-                                "/query/expand",
-                                icon(icons::EXPAND),
-                            )
-                            .attr("data-opens-dialog", "expand-value"),
-                        ),
-                        Slot::from(IconButton::new(
-                            format!("Copy payload of {id}"),
-                            icon(icons::COPY),
-                        )),
-                    ]));
-                Slot::from(match cut {
-                    Some(cut) => cell.cut(cut.to_string()),
-                    None => cell,
-                })
+            let blob = |hex: &str| Cell::Blob {
+                hex: hex.repeat(8),
+                len: 64,
             };
-            let blob = |hex: &str| {
-                Slot::from(
-                    DataCell::new(format!("‹blob 64 B› {hex}…"))
-                        .kind(DataKind::Blob)
-                        .actions(IconButton::new("Copy the bytes as hex", icon(icons::COPY))),
-                )
-            };
-            let row = |id: &str, event: &str, payload: Slot, signature: Slot, status: &str| {
-                Slot::from(Row::new(Slot::many([
-                    cell(id),
-                    cell(event),
-                    payload,
-                    signature,
-                    cell(status),
-                ])))
-            };
-            html! {
-                (DataGrid::new(
-                    head_row(&["id", "event", "payload", "signature", "status"]),
-                    Slot::many([
-                        row("wd_1a2b", "order.paid", long("wd_1a2b", r#"{"event":"order.paid","order":{"id":"order_2282ae00c55f42fb8e295d4b45c8bfc3","store":"Rachel's Handicrafts"}}"#, "1.8 KB", None), blob("9f3a1c07e2d4b8"), "delivered"),
-                        row("wd_3c4d", "order.confirmed", long("wd_3c4d", r#"{"event":"order.confirmed","order":{"id":"order_77c0d1","store":"Rachel's Handicrafts"}}"#, "1.9 KB", None), blob("41be0d77a01c5e"), "delivered"),
-                        row("wd_5e6f", "store.export", long("wd_5e6f", r#"{"event":"store.export","orders":[{"id":"order_09ab44"},{"id":"order_5d6e2f"}]}"#, "2.4 MB", Some("cut at 64 KiB of 2.4 MB")), cell("NULL"), "failed"),
-                    ]),
-                    "Query results",
-                )
-                .stats(Slot::many([Slot::from("3 rows · 6 ms · monokulo"), hidden()])))
-                (Dialog::new("expand-value", "expand-value-title", expanded()).size(ui::DialogSize::Wide))
-            }
+            (
+                QueryDb::Monokulo,
+                "SELECT * FROM webhook_deliveries",
+                Outcome::Ran(result(
+                    &["id", "event", "payload", "signature", "status"],
+                    &[],
+                    vec![
+                        vec![
+                            text("wd_1a2b"),
+                            text("order.paid"),
+                            text(EXPANDED_JSON),
+                            blob("9f3a1c07e2d4b8a1"),
+                            text("delivered"),
+                        ],
+                        vec![
+                            text("wd_3c4d"),
+                            text("order.confirmed"),
+                            text(&EXPANDED_JSON.replace("paid", "confirmed")),
+                            blob("41be0d77a01c5e22"),
+                            text("delivered"),
+                        ],
+                        vec![
+                            text("wd_5e6f"),
+                            text("store.export"),
+                            Cell::Text {
+                                text: EXPANDED_JSON.repeat(3),
+                                len: 2_516_582,
+                            },
+                            Cell::Null,
+                            text("failed"),
+                        ],
+                    ],
+                    6,
+                )),
+            )
         }
-        Shown::Refused => html! {
-            (Alert::new(html! { code { "UPDATE" } " changes data, so it is refused. Use a " code { "SELECT" } "." }, Tone::Error)
-                .title("Not run: this page only reads.")
-                .icon(icon(icons::WARNING)))
-        },
-        Shown::Empty => html! {
-            div class="box query-empty" {
-                p { strong { "Pick a table on the left, or write a SELECT." } }
-                (Hint::new("Nothing here can change data. Results stop at 1,000 rows and 5 seconds. Every query is written to the Logs page."))
-                (FormActions::new(Slot::many(["Latest orders", "Stores and their wallets", "Unpaid orders per store"].map(|label| {
-                    Slot::from(LinkButton::new(label, "/query").size(ControlSize::Compact))
-                }))))
-            }
-        },
+        Shown::Refused => (
+            QueryDb::Monokulo,
+            "UPDATE stores SET name = 'Rachel''s' WHERE id = 'st_8f3a'",
+            Outcome::Refused(QueryError::Refused {
+                action: "UPDATE".into(),
+            }),
+        ),
+        Shown::Empty => (QueryDb::Monokulo, "", Outcome::Nothing),
     }
 }
 
-const EXPANDED_JSON: &str = r##"{
-  "event": "order.paid",
-  "order": {
-    "id": "order_2282ae00c55f42fb8e295d4b45c8bfc3",
-    "store": "Rachel's Handicrafts",
-    "status": "paid",
-    "amount": { "xmr": "0.084200000000", "fiat": "24.50", "currency": "AUD", "rate": "290.97" },
-    "address": "86LpA1yW…Hq3wZ",
-    "confirmations": 0,
-    "required_confirmations": 10,
-    "external_ref": "#1042",
-    "created_at": "2026-10-17T05:58:12Z",
-    "paid_at": "2026-10-17T06:01:40Z"
-  },
-  "delivered_at": "2026-10-17T06:01:41Z"
-}"##;
-
-fn expanded() -> Markup {
-    html! {
-        (DialogTitle::new("expand-value-title", "payload").aside(Hint::new("wd_1a2b · 1.8 KB · JSON").inline(true)))
-        (CopyBlock::new(EXPANDED_JSON).copy_label("Copy the payload"))
-        (DialogActions::new(Button::new("Close").attr("data-closes-dialog", "")))
-    }
-}
-
-async fn query_page(look: Look, path: &str, shown: Shown) -> Html<String> {
-    let sql = match shown {
-        Shown::Results => {
-            "SELECT id, email, created_at, password_hash\nFROM users\nORDER BY created_at DESC"
-        }
-        Shown::Wide => "SELECT * FROM orders",
-        Shown::Big => "SELECT * FROM webhook_deliveries",
-        Shown::Refused => "UPDATE stores SET name = 'Rachel''s' WHERE id = 'st_8f3a'",
-        Shown::Empty => "",
+/// One of the Query page's states, drawn by the real view.
+async fn query_page(look: Look, path: &str, which: Shown) -> Html<String> {
+    let (db, sql, outcome) = shown(which);
+    let vm = QueryViewModel {
+        db,
+        sql: sql.into(),
+        tables: demo_tables(),
+        engine_unreachable: false,
+        outcome,
     };
-    let body = html! {
-        div class="query-band" {
-            (table_browser())
-            (editor(sql))
-        }
-        (results(shown))
-    };
-    page(&look, path, "Query", query_header(&look), body)
+    let mut chrome = look.chrome(path);
+    chrome.is_admin = true;
+    chrome.query_enabled = true;
+    Html(query_view::page(&chrome, &vm).into_string())
 }
 
 async fn query(Query(look): Query<Look>) -> Html<String> {
@@ -700,12 +586,13 @@ async fn query_empty(Query(look): Query<Look>) -> Html<String> {
     query_page(look, "/query/empty", Shown::Empty).await
 }
 
+/// A long value on its own page, as a browser without JavaScript opens it.
 async fn query_expand(Query(look): Query<Look>) -> Html<String> {
-    let header = PageHeader::new("payload")
-        .crumbs(vec![ui::Crumb::new(look.href("/query/big"), "Query")])
-        .aside(Hint::new("wd_1a2b · 1.8 KB · JSON").inline(true));
-    let body = html! { (DialogPage::new(CopyBlock::new(EXPANDED_JSON).copy_label("Copy the payload")).size(ui::DialogSize::Wide)) };
-    page(&look, "/query/expand", "payload", header, body)
+    let content = query_view::value("payload", "wd_1a2b", &text(EXPANDED_JSON));
+    let mut chrome = look.chrome("/query/expand");
+    chrome.is_admin = true;
+    chrome.query_enabled = true;
+    Html(query_view::value_page(&chrome, &look.href("/query/big"), content).into_string())
 }
 
 #[tokio::main]

@@ -136,7 +136,6 @@ const SERVICES: &[(&str, &str)] = &[
 ];
 
 const PAGE_STYLE: &str = r#"
-.wrap.wrap-wide { max-width: 1200px; }
 .logs-search { display: grid; gap: .5em; margin-bottom: 1em; }
 .logs-search .q-row { display: flex; gap: .5em; align-items: stretch; }
 .logs-search .q-row input { flex: 1; min-width: 0; font-family: var(--font-mono); }
@@ -361,7 +360,7 @@ pub fn row_page(chrome: &PageChrome, row_view: Option<&RowView>, back_url: &str)
         p { a href=(back_url) { "Back to the search" } }
     };
     super::Page::new("Log line - Monokulo", header)
-        .class("wrap-wide")
+        .wide()
         .head(extra_head)
         .render(chrome, body)
 }
@@ -718,7 +717,7 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
         (script("logs.js", Load::Now))
     };
     super::Page::new("Logs - Monokulo", header)
-        .class("wrap-wide")
+        .wide()
         .head(extra_head)
         .render(chrome, body)
 }
@@ -820,7 +819,7 @@ pub fn pos_timeline_page(chrome: &PageChrome, vm: &PosTimelineViewModel) -> Mark
         }
     };
     super::Page::new("POS session - Monokulo", header)
-        .class("wrap-wide")
+        .wide()
         .head(extra_head)
         .render(chrome, body)
 }
@@ -907,7 +906,7 @@ pub fn trace_page(chrome: &PageChrome, vm: &TraceViewModel) -> Markup {
         div class="log-rows" { @for r in &vm.rows { (row(r)) } }
     };
     super::Page::new("Trace - Monokulo", header)
-        .class("wrap-wide")
+        .wide()
         .head(extra_head)
         .render(chrome, body)
 }

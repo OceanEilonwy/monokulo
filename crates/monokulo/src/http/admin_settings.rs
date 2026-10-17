@@ -2165,6 +2165,7 @@ mod tests {
             ("abuse.client_logs_per_min", "45"),
             ("abuse.challenge_bits", "18"),
             ("abuse.under_attack", "true"),
+            ("admin.query_enabled", "false"),
             ("rate_limit.per_store_key_per_min", "444"),
             ("public_url", "https://pay.example.com"),
             ("abuse.trusted_proxies", "127.0.0.1, 10.0.0.0/8"),
