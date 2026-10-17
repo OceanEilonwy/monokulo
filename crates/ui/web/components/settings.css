@@ -73,7 +73,9 @@
    Without JavaScript it's always there; with the component defined, only
    while something changed or a save refused a card. */
 .save-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 15; background: var(--save-bar-bg); border-top: 3px solid var(--save-bar-rule); padding-bottom: env(safe-area-inset-bottom, 0px); }
-.save-bar-inner { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); padding-top: var(--space-md); padding-bottom: var(--space-md); }
+/* Two classes: the bar's `.wrap` (chrome.css, loaded later) sets padding
+   too, and must not take the bar's top and bottom room away. */
+.save-bar > .save-bar-inner { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); padding-top: var(--space-md); padding-bottom: var(--space-md); }
 /* Room under the last card for the bar, which is always there without
    JavaScript. */
 body:has(.save-bar) { padding-bottom: 9rem; }

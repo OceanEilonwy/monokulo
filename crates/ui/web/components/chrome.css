@@ -20,7 +20,7 @@
 .site-nav-logo { display: block; }
 .logo-mark { flex: none; }
 .site-nav-links { display: flex; align-items: center; flex-wrap: wrap; }
-.site-nav-links a {
+.site-nav-links > a {
   color: var(--chrome-ink);
   margin: 0 0 0 1.2em;
   background: none;
@@ -31,8 +31,8 @@
   font-weight: 600;
   text-decoration: none;
 }
-.site-nav-links a[aria-current="page"] { color: var(--accent-text); }
-.site-nav-links a:hover { color: var(--accent-text); background: none; text-decoration: underline; text-decoration-thickness: 1px; }
+.site-nav-links > a[aria-current="page"] { color: var(--accent-text); }
+.site-nav-links > a:hover { color: var(--accent-text); background: none; text-decoration: underline; text-decoration-thickness: 1px; }
 .site-nav-links .nav-theme-form { margin: 0; display: inline; }
 /* The status dot's link: a 2em box round the dot, and a transparent
    ::before that makes the target at least 44px square. */
@@ -164,7 +164,7 @@ button.menu-item { border: 0; background: none; font: inherit; cursor: pointer; 
     gap: 0.6em;
     margin-top: 0.6em;
   }
-  .site-nav-links a, .theme-toggle { margin-left: 0; }
+  .site-nav-links > a, .theme-toggle { margin-left: 0; }
   .nav-toggle-checkbox:checked ~ .site-nav-links { display: flex; }
   /* The account menu's items join the list, each row at least 44px. A
      browser that can't show a closed <details>'s content keeps the
