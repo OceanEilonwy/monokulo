@@ -11,6 +11,7 @@ pub mod activity;
 pub mod announcements;
 pub mod auth;
 pub mod coinmarketcap;
+pub mod dns;
 pub mod exchange_rate;
 pub mod haveno;
 pub mod http_cache;

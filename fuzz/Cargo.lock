@@ -873,6 +873,7 @@ version = "0.0.0"
 dependencies = [
  "engine",
  "libfuzzer-sys",
+ "shared",
 ]
 
 [[package]]

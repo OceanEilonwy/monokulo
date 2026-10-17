@@ -46,7 +46,9 @@ pub const FAILING_RECHECK_EVERY_SECS: i64 = 60 * 60;
 pub const MIN_CHECK_GAP_SECS: i64 = 30;
 /// How many domains one store can have.
 pub const MAX_DOMAINS_PER_STORE: usize = 10;
-const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
+/// A whole lookup: referrals, and the machine's resolvers if the root
+/// servers can't be reached.
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Turns what a merchant typed into a bare, lowercase domain name, or says
 /// why it can't be one. Accepts a pasted URL (`https://Shop.Example/path`)
@@ -330,60 +332,39 @@ pub trait TxtLookup: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>>;
 }
 
-/// The real lookup, through the machine's own resolver configuration
-/// (`/etc/resolv.conf` on Unix).
-pub struct SystemDns {
-    resolver: hickory_resolver::TokioResolver,
-}
+/// The real lookup ([`shared::dns`]): from the root servers down to the
+/// domain's own name servers, so a record is seen the moment it's published,
+/// with no resolver's cache still saying there is no such name.
+pub struct LiveDns(shared::dns::Resolver);
 
-impl SystemDns {
-    pub fn new() -> Result<Self, String> {
-        let resolver = hickory_resolver::TokioResolver::builder_tokio()
-            .and_then(|builder| builder.build())
-            .map_err(|e| e.to_string())?;
-        Ok(SystemDns { resolver })
+impl LiveDns {
+    pub fn new() -> Self {
+        LiveDns(shared::dns::Resolver::system())
     }
 }
 
-impl TxtLookup for SystemDns {
+impl Default for LiveDns {
+    fn default() -> Self {
+        LiveDns::new()
+    }
+}
+
+impl TxtLookup for LiveDns {
     fn txt_values<'a>(
         &'a self,
         name: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
         Box::pin(async move {
-            // Fully qualified, so the resolver's search domains never apply.
-            let lookup = match tokio::time::timeout(
-                LOOKUP_TIMEOUT,
-                self.resolver.txt_lookup(format!("{name}.")),
-            )
-            .await
-            {
-                Err(_) => return Err("timed out".to_string()),
-                Ok(Err(e)) if e.is_no_records_found() => return Ok(Vec::new()),
-                Ok(Err(e)) => return Err(e.to_string()),
-                Ok(Ok(lookup)) => lookup,
-            };
-            Ok(lookup
-                .answers()
-                .iter()
-                .filter_map(|record| match &record.data {
-                    // One TXT record may be split into several strings; they
-                    // join into one value.
-                    hickory_resolver::proto::rr::RData::TXT(txt) => Some(
-                        txt.txt_data
-                            .iter()
-                            .map(|part| String::from_utf8_lossy(part))
-                            .collect::<String>(),
-                    ),
-                    _ => None,
-                })
-                .collect())
+            match tokio::time::timeout(LOOKUP_TIMEOUT, self.0.txt(name)).await {
+                Err(_) => Err("timed out".to_string()),
+                Ok(result) => result.map_err(|e| e.to_string()),
+            }
         })
     }
 }
 
-/// A lookup that always fails - used when the system resolver couldn't be
-/// set up at startup, so the dashboard still works and says why checks fail.
+/// A lookup that always fails, saying why: for a server run without the
+/// network (the test state, the browser fixture, the e2e harness).
 pub struct UnavailableDns(pub String);
 
 impl TxtLookup for UnavailableDns {
@@ -661,23 +642,6 @@ mod tests {
             last_checked_at: None,
             last_error: None,
         }
-    }
-
-    /// Needs the network, so it runs daily (`cargo xtask live`) rather
-    /// than on every change. Resolves `_dmarc.google.com`'s TXT records.
-    #[tokio::test]
-    #[ignore = "needs live DNS"]
-    async fn live_system_resolver_reads_real_txt_records() {
-        let dns = SystemDns::new().unwrap();
-        let values = dns.txt_values("_dmarc.google.com").await.unwrap();
-        assert!(
-            values.iter().any(|v| v.starts_with("v=DMARC1")),
-            "got: {values:?}"
-        );
-        assert_eq!(
-            dns.txt_values("_monokulo.example.invalid").await,
-            Ok(vec![])
-        );
     }
 
     #[test]

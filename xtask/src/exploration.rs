@@ -23,7 +23,7 @@ use std::{
 pub(crate) const HELP: &str = "\
         engine fuzz TARGET [SECONDS] [zmq]\n\
                       One fuzz campaign (scheduler, resources, inputs, queue, mempool, status, history,\n\
-                      notifications or portfolio): reviewed seeds copied into the corpus, a calibrated\n\
+                      notifications, portfolio or dns_message): reviewed seeds copied into the corpus, a calibrated\n\
                       build, then libFuzzer for SECONDS, with its evidence under\n\
                       target/engine-exploration/fuzz (ENGINE_FUZZ_SEED sets the seed; needs cargo-fuzz)\n\
         engine properties [default|zmq]\n\
@@ -133,6 +133,8 @@ fn limits(target: &str) -> Option<Limits> {
         "portfolio" => (900, 120, 260),
         "notifications" | "queue" => (600, 60, 4096),
         "scheduler" | "resources" | "inputs" | "mempool" | "status" => (300, 10, 4096),
+        // One DNS message: at most what a TCP answer can carry.
+        "dns_message" => (300, 10, 65535),
         _ => return None,
     };
     Some(Limits {
@@ -917,7 +919,7 @@ pub(crate) fn fuzz(root: &Path, args: &[&str], tools: &Tools) -> io::Result<Exit
     let usage = || {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Target must be scheduler, resources, inputs, queue, mempool, status, history, notifications, or portfolio.",
+            "Target must be scheduler, resources, inputs, queue, mempool, status, history, notifications, portfolio, or dns_message.",
         )
     };
     let (target, seconds, features) = match args {
