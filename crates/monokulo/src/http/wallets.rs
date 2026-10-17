@@ -98,8 +98,8 @@ async fn final_name(state: &AppState, user: &UserRow, typed: &str) -> String {
     }
 }
 
-/// The name offered on the choice screen: `wanted` (the store's own idea,
-/// "Bakery takings") if it's free, else a friendly one.
+/// The name offered on the choice screen: `wanted` (the store's name,
+/// "Bakery") if it's free, else a friendly one.
 pub(super) async fn suggested_name(
     state: &AppState,
     user: &UserRow,

@@ -304,13 +304,10 @@ pub async fn wallet_form(
             let problem = super::wallets::name_problem(&state, &user, &name).await;
             (name, problem)
         }
-        None => {
-            let wanted = format!("{} takings", store.name);
-            (
-                super::wallets::suggested_name(&state, &user, Some(&wanted)).await,
-                None,
-            )
-        }
+        None => (
+            super::wallets::suggested_name(&state, &user, Some(&store.name)).await,
+            None,
+        ),
     };
     super::wallets::render_choice(
         &state,

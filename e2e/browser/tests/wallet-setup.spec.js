@@ -94,11 +94,11 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
 
   // Wallet: its small steps beside it, the name first, checked as it changes.
   await expect(page.locator('.mk-wizard-steps [aria-current="step"] small')).toHaveText('Kind · step 1 of 3');
-  await expect(page.locator('input[name="name"]')).toHaveValue('Geomart takings');
+  await expect(page.locator('input[name="name"]')).toHaveValue('Geomart');
   await expect(page.locator('#wallet-name-check')).toContainText('Free to use');
   await captureCoverageStage(page, 'setup-wallet-choice', test.info(), { group: GROUP });
 
-  await startNewWallet(page, 'Geomart takings');
+  await startNewWallet(page, 'Geomart');
   await expect(page.locator('[data-screen="backup"] .mk-wizard-steps [aria-current="step"] small')).toHaveText('Back up · step 2 of 3');
   await expect(page.locator('[data-screen="backup"] .mk-wizard-progress').nth(1)).toHaveAttribute('value', '1');
   await expect(page.locator('[data-screen="backup"] .mk-wizard-progress').nth(1)).toHaveAttribute('max', '3');
@@ -177,7 +177,7 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   await expect(page.locator('.store-site')).toHaveText('geomart.example');
   await expect(page.getByRole('link', { name: /Help/ })).toHaveAttribute('href', /\/monokulo\/docs\//);
   await page.goto(base + '/account?tab=wallets');
-  await page.getByRole('link', { name: 'Geomart takings' }).click();
+  await page.getByRole('link', { name: 'Geomart', exact: true }).click();
   await expect(page.locator('.where-banner strong')).toHaveText('Backed up to Feather');
 
   // The same site again is refused, linking to the store.
