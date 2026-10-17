@@ -171,6 +171,9 @@ const PAGE_STYLE: &str = r#"
 .log-row > summary:hover, .trace-span:hover { background: var(--surface-sunken); }
 .log-row > summary .msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-row[open] > summary .msg { white-space: normal; overflow-wrap: anywhere; }
+/* The trace page's title: its id in plain monospace after "Trace", no
+   chip round it. */
+.trace-id { font-family: var(--font-mono); font-size: .75em; font-weight: 400; color: var(--muted); overflow-wrap: anywhere; }
 /* Trace and session, on every line: a slot each, so they line up. */
 .row-acts { display: flex; gap: .2em; justify-content: flex-end; }
 .row-acts > * { display: inline-flex; align-items: center; justify-content: center; width: 1.6em; height: 1.6em; border-radius: var(--radius-sm); color: var(--muted); }
@@ -867,10 +870,9 @@ pub struct TraceViewModel {
 pub fn trace_page(chrome: &PageChrome, vm: &TraceViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
     let header =
-        ui::PageHeader::new(html! { "Trace " code { (vm.trace_id) } }).crumbs(super::crumbs(&[
-            ("/", "Home"),
-            ("/dashboard/admin/logs", "Logs"),
-        ]));
+        ui::PageHeader::new(html! { "Trace " span class="trace-id" { (vm.trace_id) } }).crumbs(
+            super::crumbs(&[("/", "Home"), ("/dashboard/admin/logs", "Logs")]),
+        );
     let body = html! {
         @for problem in &vm.problems { (status_problem(problem)) }
         @if vm.spans.is_empty() {

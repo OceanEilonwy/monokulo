@@ -506,6 +506,13 @@ async fn a_trace_shows_its_spans_and_lines() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains(&format!(
+            r#"<h1>Trace <span class="trace-id">{}</span></h1>"#,
+            s.trace_id
+        )),
+        "the id in plain monospace, no code chip: {html}"
+    );
     assert!(html.contains("logs page test request"), "the span: {html}");
     assert!(
         html.contains(r#"class="bar" style="left:0.00%;width:100.00%""#),
