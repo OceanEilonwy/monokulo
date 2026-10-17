@@ -46,7 +46,9 @@
 .settings-card.is-dirty { border-color: var(--card-changed); }
 .settings-card.is-failed { border-color: var(--card-failed); }
 .card-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); padding: var(--space-md) var(--space-lg); border-bottom: 1px solid var(--card-border); }
-.card-head h3 { margin: 0; font-size: var(--text-lg); }
+.card-head :is(h2, h3) { margin: 0; padding: 0; border: 0; font-size: var(--text-lg); }
+/* An icon before a card's title (`views::store_icon`). */
+.card-head .card-icon { width: 1.3em; height: 1.3em; flex: none; color: var(--accent-text); }
 .card-spacer { flex: 1; }
 .card-meta { font-size: var(--text-sm); color: var(--muted); }
 .card-state { display: contents; }
@@ -54,6 +56,7 @@
 .card-discard[hidden] { display: none; }
 .card-body { padding: var(--space-lg); min-width: 0; }
 .card-body > .hint:first-child { margin-top: 0; margin-bottom: var(--space-lg); }
+.card-body > p:first-child { margin-top: 0; }
 .card-body > p.error[role="alert"] { margin: 0 0 var(--space-lg); }
 /* A part of a card (Coingecko, Visitors): a small-caps heading over a rule,
    unlike a setting's name, which is plain bold. */
