@@ -94,7 +94,7 @@ pub fn id_key_digest(key: &VerifyingKey) -> [u8; 48] {
 
 /// `ID_AUTH_INFO` for `block`, signed with the ID key `key`.
 pub fn sign(block: &IdBlock, key: &SigningKey) -> [u8; ID_AUTH_LEN] {
-    let signature: Signature = ecdsa::signature::Signer::sign(key, &block.to_bytes());
+    let signature: Signature = p384::ecdsa::signature::Signer::sign(key, &block.to_bytes());
     let (r, s) = (signature.r().to_bytes(), signature.s().to_bytes());
     let mut auth = [0u8; ID_AUTH_LEN];
     auth[0x00..0x04].copy_from_slice(&ALGO_ECDSA_P384_SHA384.to_le_bytes());
@@ -161,7 +161,8 @@ mod tests {
         sec1.extend_from_slice(&be(&id_key[0x4C..0x94]));
         let verifying = VerifyingKey::from_sec1_bytes(&sec1).unwrap();
         assert_eq!(verifying, *key().verifying_key());
-        ecdsa::signature::Verifier::verify(&verifying, &block().to_bytes(), &signature).unwrap();
+        p384::ecdsa::signature::Verifier::verify(&verifying, &block().to_bytes(), &signature)
+            .unwrap();
         assert_eq!(
             id_key_digest(&verifying),
             <[u8; 48]>::from(sha2::Sha384::digest(id_key))

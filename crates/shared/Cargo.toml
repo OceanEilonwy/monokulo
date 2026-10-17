@@ -63,6 +63,9 @@ tokio = { version = "1.53.1", features = ["full", "test-util"] }
 # router, test-only (the runtime itself is now a real dependency above).
 # Defaults less `tower-log` (see crates/engine/Cargo.toml).
 axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tracing"] }
+# `dns::parse` reads other people's name servers' answers: arbitrary bytes
+# must give a message or an error, never a panic.
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

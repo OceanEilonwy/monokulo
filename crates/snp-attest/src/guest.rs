@@ -345,7 +345,7 @@ impl GuestDevice for TestGuest {
         raw[0xE0..0x110].copy_from_slice(&id.id_key_digest);
         raw[0x1A0..0x1E0].copy_from_slice(&id.chip_id);
         let signature: p384::ecdsa::Signature =
-            ecdsa::signature::Signer::sign(&self.vcek, &raw[..SIGNED_LEN]);
+            p384::ecdsa::signature::Signer::sign(&self.vcek, &raw[..SIGNED_LEN]);
         let (r, s) = (signature.r().to_bytes(), signature.s().to_bytes());
         for i in 0..48 {
             raw[SIGNED_LEN + i] = r[47 - i];
