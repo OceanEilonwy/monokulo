@@ -90,6 +90,14 @@ for (const theme of ['light', 'dark']) {
   });
 }
 
+test('a disabled button drops its variant colour, but a busy one keeps it', async ({ page }) => {
+  await page.goto('/');
+  const look = name => page.locator('#component-button').getByRole('button', { name })
+    .evaluate(el => { const s = getComputedStyle(el); return [s.backgroundColor, s.color, s.borderColor]; });
+  expect(await look('Only allow my domains')).toEqual(await look('Export orders'));
+  expect(await look('Saving…')).not.toEqual(await look('Export orders'));
+});
+
 test('the wizard strip counts completed tasks and keeps its detail on a phone', async ({ page }) => {
   await page.goto('/');
   const wallet = page.locator('#component-wizard-steps-1 [aria-current="step"]');

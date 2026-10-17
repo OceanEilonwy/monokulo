@@ -90,6 +90,12 @@ pub(super) fn button_examples() -> Vec<(&'static str, Button)> {
         ),
         ("Disabled", Button::new("Export orders").disabled(true)),
         (
+            "Disabled primary",
+            Button::new("Only allow my domains")
+                .variant(ButtonVariant::Primary)
+                .disabled(true),
+        ),
+        (
             "Busy",
             Button::new("Saving…")
                 .variant(ButtonVariant::Primary)

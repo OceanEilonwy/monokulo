@@ -136,6 +136,23 @@
   },
   {
     "component": "Button",
+    "html": "<button class=\"mk-btn\" type=\"button\" data-variant=\"primary\" disabled>Only allow my domains</button>",
+    "props": {
+      "block": false,
+      "busy": false,
+      "children": {
+        "$slot": [
+          "Only allow my domains"
+        ]
+      },
+      "disabled": true,
+      "kind": "button",
+      "variant": "primary"
+    },
+    "title": "Disabled primary"
+  },
+  {
+    "component": "Button",
     "html": "<button class=\"mk-btn\" type=\"button\" data-variant=\"primary\" disabled aria-busy=\"true\">Saving…</button>",
     "props": {
       "block": false,

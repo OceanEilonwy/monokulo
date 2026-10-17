@@ -25,6 +25,10 @@ textarea.mk-input { resize: vertical; }
 .mk-btn[data-variant="quiet"] { background: transparent; border-color: transparent; color: var(--ink); }
 .mk-btn[data-variant="quiet"]:hover { background: var(--btn-hover-bg); }
 .mk-btn:disabled { opacity: .45; cursor: not-allowed; }
+/* A disabled button can't be pressed, so it drops its variant's colour and
+   looks like any other disabled button; one busy saving keeps it. */
+.mk-btn:disabled:not([aria-busy="true"]),
+.mk-btn:disabled:not([aria-busy="true"]):hover { background: var(--btn-bg); color: var(--btn-ink); border-color: var(--btn-border); }
 .mk-btn[aria-busy="true"] { cursor: progress; }
 .mk-btn[data-size="compact"], .mk-input[data-size="compact"] { min-height: 2rem; padding: var(--space-xs) var(--space-sm); font-size: var(--text-sm); }
 .mk-btn[data-size="touch"], .mk-input[data-size="touch"] { min-height: 3rem; }
