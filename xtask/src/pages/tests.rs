@@ -645,7 +645,7 @@ fn missing_inputs_leave_their_sections_out_but_still_build_the_front_page() {
     assert!(!page.contains("class=\"tabs\""));
     let badge: serde_json::Value = read_json(&f.out().join("badge.json")).unwrap();
     assert_eq!(badge["message"], "unknown");
-    let linked = super::site_assets::assert_links_published(&page, &f.out().join("assets"));
+    let linked = super::site_assets::assert_links_published(&page, &f.out().join("../assets"));
     assert!(linked.contains(&"styles.css") && linked.contains(&"manrope-500.woff2"));
     // Fuzzing alone still gets the front page, which says what it lacks.
     f.build(&["--fuzz", &f.path("runs")]);
@@ -714,7 +714,7 @@ fn only_the_pages_with_filters_load_the_script() {
     f.build(&["--coverage", &f.path("coverage")]);
     for name in page_names(&f.out()) {
         let loads =
-            super::site_assets::assert_links_published(&f.page(&name), &f.out().join("assets"))
+            super::site_assets::assert_links_published(&f.page(&name), &f.out().join("../assets"))
                 .contains(&"coverage.js");
         assert_eq!(
             loads,

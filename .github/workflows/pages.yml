@@ -98,8 +98,11 @@ jobs:
       - name: Build the docs beside the landing page
         run: cargo xtask pages docs --out target/pages/site/docs
       # Every ui component, in both themes, from apps/stylebook in this
-      # checkout. Its asset links are relative (base './').
+      # checkout. Its asset links are relative (base './'), and its typeface
+      # is the site's shared assets/ copy, which the landing page wrote.
       - name: Build the stylebook beside the landing page
+        env:
+          STYLEBOOK_SITE_ASSETS: ${{ github.workspace }}/target/pages/site/assets
         run: npm run build -w @monokulo/stylebook -- --outDir "$GITHUB_WORKSPACE/target/pages/site/stylebook" --emptyOutDir
       - uses: actions/upload-pages-artifact@v5
         with:

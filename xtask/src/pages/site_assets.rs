@@ -1,9 +1,13 @@
 //! Every file the GitHub Pages site's pages link, in one table, baked into
 //! xtask and named by its content the way monokulo names its own
 //! (`static_assets`): `styles.<digest>.css`, which a browser may keep, as
-//! a new build's pages link new names. Each part of the site (the landing
-//! page, the docs, the testing report) writes the table into its own
-//! `assets/` folder and links its files with [`url`].
+//! a new build's pages link new names. The whole site shares one `assets/`
+//! folder, at its root: each part (the landing page, the docs, the testing
+//! report) writes the table there and links its files with [`url`], so a
+//! reader moving between parts finds the typeface and stylesheets already
+//! in the browser's cache, at the same URLs, rather than fetching another
+//! copy (and drawing the page in the fallback font meanwhile). The
+//! stylebook's build links the typeface there too (`apps/stylebook`).
 //!
 //! The `ui` components' islands script is built here too, with vite, the
 //! way monokulo's build script builds it: xtask is what writes `crates/ui`'s
@@ -132,8 +136,11 @@ static BAKED: &[Asset] = &[
     asset!(from "favicon.svg", "../crates/monokulo/static/favicon.svg", SVG),
 ];
 
-/// Writes every file into `dir` (a part's `assets/`) at its published name.
-pub(super) fn write(dir: &Path) -> io::Result<()> {
+/// Writes every file into the `assets/` folder of the site at `site` (its
+/// root, above every part) at its published name. Every part writes the
+/// same files, so whichever is built first or alone, its pages' links hold.
+pub(super) fn write(site: &Path) -> io::Result<()> {
+    let dir = &site.join("assets");
     fs::create_dir_all(dir).map_err(|e| at(dir, e))?;
     for asset in assets() {
         let path = dir.join(asset.file_name());
@@ -142,8 +149,8 @@ pub(super) fn write(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The link to the file called `name` from a page `up` (`""`, `"../"`)
-/// below its part's root, where `assets/` is.
+/// The link to the file called `name` from a page `up` (`""`, `"../"`,
+/// `"../../"`) below the site's root, where `assets/` is.
 pub(super) fn url(up: &str, name: &str) -> String {
     format!(
         "{up}assets/{}",
@@ -152,10 +159,17 @@ pub(super) fn url(up: &str, name: &str) -> String {
 }
 
 /// What every page's `<head>` loads: the icon, the typeface, the colours,
-/// the components and the site's own pieces.
+/// the components and the site's own pieces. Every page sets text in every
+/// weight (its body, its header, its heading), so each is preloaded: the
+/// browser asks for them with the page rather than once the stylesheets
+/// say they are needed, and a cached copy GitHub Pages wants checked (it
+/// sends `max-age=600`) is checked as early as it can be.
 pub(super) fn head(up: &str) -> Markup {
     html! {
         link rel="icon" href=(url(up, "favicon.svg")) type="image/svg+xml";
+        @for weight in static_assets::FONT_WEIGHTS {
+            link rel="preload" href=(url(up, &format!("manrope-{weight}.woff2"))) as="font" type="font/woff2" crossorigin;
+        }
         style { (PreEscaped(static_assets::font_faces(|name| url(up, name)))) }
         link rel="stylesheet" href=(url(up, "theme.css"));
         link rel="stylesheet" href=(url(up, "ui.css"));
@@ -194,8 +208,8 @@ mod tests {
     #[test]
     fn every_file_is_written_at_the_name_the_pages_link() {
         let scratch = Scratch::new("site-assets");
+        write(scratch.path()).unwrap();
         let dir = scratch.join("assets");
-        write(&dir).unwrap();
         for asset in assets() {
             let linked = url("../", asset.name);
             let file = linked.strip_prefix("../assets/").unwrap();
@@ -207,6 +221,9 @@ mod tests {
             linked,
             [
                 "favicon.svg",
+                "manrope-500.woff2",
+                "manrope-700.woff2",
+                "manrope-800.woff2",
                 "manrope-500.woff2",
                 "manrope-700.woff2",
                 "manrope-800.woff2",

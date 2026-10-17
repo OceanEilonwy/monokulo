@@ -10,8 +10,8 @@
 //! others link and keep.
 //!
 //! Two crates use it. monokulo serves its table from `GET /static/{*file}`
-//! (`monokulo::assets`); `cargo xtask pages` writes its table into each part
-//! of the GitHub Pages site's `assets/` folder.
+//! (`monokulo::assets`); `cargo xtask pages` writes its table into the
+//! GitHub Pages site's `assets/` folder, which every part of the site shares.
 
 /// Whether a file's name carries its digest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

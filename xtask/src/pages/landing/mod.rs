@@ -167,7 +167,7 @@ fn write(root: &Path, site: &Path, github_url: &str) -> io::Result<()> {
     let index_html = site.join("index.html");
     fs::write(&index_html, page).map_err(|e| at(&index_html, e))?;
 
-    site_assets::write(&site.join("assets"))?;
+    site_assets::write(site)?;
     // Pages would otherwise run the site through Jekyll.
     let nojekyll = site.join(".nojekyll");
     fs::write(&nojekyll, "").map_err(|e| at(&nojekyll, e))
