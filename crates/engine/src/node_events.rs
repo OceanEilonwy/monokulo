@@ -140,9 +140,6 @@ mod subscriber {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use futures_util::StreamExt as _;
-    use zeromq::{Socket as _, SocketEvent, SocketRecv as _, SubSocket};
-
     use super::NodeWakes;
     use crate::engine_settings::EngineSettings;
 
@@ -234,19 +231,14 @@ mod subscriber {
         wakes: &NodeWakes,
         retry: &mut Duration,
     ) -> String {
-        let mut socket = SubSocket::new();
-        // The socket would reconnect by itself, silently: its events say
-        // when the node went, so this session ends and `listen` reconnects
-        // (and `/status` says it was lost meanwhile).
-        let mut events = socket.monitor();
-        for topic in [POOL_TOPIC, CHAIN_TOPIC] {
-            if let Err(error) = socket.subscribe(topic).await {
-                return error.to_string();
-            }
-        }
-        if let Err(error) = socket.connect(endpoint).await {
-            return error.to_string();
-        }
+        // One connection per session: when it ends, for whatever reason,
+        // so does the session, and `listen` connects again (and `/status`
+        // says it was lost meanwhile).
+        let mut subscriber = match crate::zmtp::connect(endpoint, &[POOL_TOPIC, CHAIN_TOPIC]).await
+        {
+            Ok(subscriber) => subscriber,
+            Err(error) => return error.to_string(),
+        };
         *retry = FIRST_RETRY;
         wakes.publisher(endpoint, |p| {
             p.connected = true;
@@ -258,19 +250,14 @@ mod subscriber {
         wakes.pool_changed();
         wakes.chain_changed();
         loop {
-            let message = tokio::select! {
-                received = socket.recv() => match received {
-                    Ok(message) => message,
-                    Err(error) => return error.to_string(),
-                },
-                event = events.next() => match event {
-                    Some(SocketEvent::Disconnected(_)) | None => {
-                        return "the node closed the connection".to_owned();
-                    }
-                    Some(_) => continue,
-                },
+            let frame = match subscriber.recv().await {
+                Ok(frame) => frame,
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return "the node closed the connection".to_owned();
+                }
+                Err(error) => return error.to_string(),
             };
-            let Some(announced) = message.get(0).and_then(|frame| announcement(frame)) else {
+            let Some(announced) = announcement(&frame) else {
                 continue;
             };
             wakes.publisher(endpoint, |p| {
@@ -389,9 +376,8 @@ mod tests {
         use std::sync::Arc;
         use std::time::Duration;
 
-        use zeromq::{PubSocket, Socket as _, SocketSend as _, ZmqMessage};
-
         use super::super::subscriber::listen;
+        use super::super::test_publisher::Publisher;
         use super::super::NodeWakes;
         use super::super::{announcement, Announcement, CHAIN_TOPIC, POOL_TOPIC};
 
@@ -417,12 +403,8 @@ mod tests {
         /// The subscriber listens to the publisher a fallback's setting names.
         #[tokio::test]
         async fn the_subscriber_listens_where_the_node_settings_say() {
-            let mut publisher = PubSocket::new();
-            let endpoint = publisher
-                .bind("tcp://127.0.0.1:0")
-                .await
-                .unwrap()
-                .to_string();
+            let publisher = Publisher::bind("tcp://127.0.0.1:0").await;
+            let endpoint = publisher.endpoint().to_owned();
             let node = |zmq_pub: Option<String>| crate::settings::MoneroNodeSetting {
                 host: "127.0.0.1".to_owned(),
                 port: 9,
@@ -467,10 +449,7 @@ mod tests {
 
             // Announcements are counted by kind once they land.
             for _ in 0..100 {
-                publisher
-                    .send(ZmqMessage::from(format!("{POOL_TOPIC}:[]")))
-                    .await
-                    .unwrap();
+                publisher.send(&format!("{POOL_TOPIC}:[]"));
                 if wakes.pool_or(Duration::from_millis(50)).await
                     && publisher_status().pool_announcements > 0
                 {
@@ -500,12 +479,8 @@ mod tests {
         /// reaches it, so each is sent until it lands.
         #[tokio::test]
         async fn a_publisher_s_announcements_wake_the_loops() {
-            let mut publisher = PubSocket::new();
-            let endpoint = publisher
-                .bind("tcp://127.0.0.1:0")
-                .await
-                .unwrap()
-                .to_string();
+            let publisher = Publisher::bind("tcp://127.0.0.1:0").await;
+            let endpoint = publisher.endpoint().to_owned();
             let wakes = Arc::new(NodeWakes::default());
             let listener = tokio::spawn(listen(
                 monero::Network::Stagenet,
@@ -518,10 +493,7 @@ mod tests {
             for topic in [POOL_TOPIC, CHAIN_TOPIC] {
                 let mut landed = false;
                 for _ in 0..100 {
-                    publisher
-                        .send(ZmqMessage::from(format!("{topic}:[]")))
-                        .await
-                        .unwrap();
+                    publisher.send(&format!("{topic}:[]"));
                     let wait = Duration::from_millis(50);
                     let woke = if topic == POOL_TOPIC {
                         wakes.pool_or(wait).await
@@ -569,3 +541,9 @@ pub(crate) fn announcement(frame: &[u8]) -> Option<Announcement> {
 #[cfg(test)]
 #[path = "../tests/verification/notifications/properties.rs"]
 mod properties;
+
+#[cfg(test)]
+#[cfg(feature = "zmq")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[path = "../tests/verification/notifications/publisher.rs"]
+pub(crate) mod test_publisher;
