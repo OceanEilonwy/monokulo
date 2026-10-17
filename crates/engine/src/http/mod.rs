@@ -12,8 +12,9 @@
 //!    `Store::list_active_tenants` + `KeyCustody::unseal_and_register`), with the
 //!    lazy path in `resolve_wallet_handle` kept as a fallback for a tenant created
 //!    after boot.
-//! 3. Rate limiting (`rate_limit`) is a fixed-window per-token counter, not a proper
-//!    token bucket - simpler, and sufficient for the actual goal (§DESIGN.md §12).
+//! 3. Rate limiting (`rate_limit`) is a fixed-window counter per store and one
+//!    for the instance's other calls, not a proper token bucket - simpler, and
+//!    sufficient for the actual goal (§DESIGN.md §12).
 //!
 //! **The engine is private** (`docs/DESIGN.md` §4 and the monokulo boundary
 //! section): the only thing meant to reach it is monokulo. Every request
@@ -61,7 +62,7 @@ use crate::scanner_status::ScannerStatusMap;
 use crate::status::OrderStatus;
 use crate::store::{StoreError, Tenant};
 
-use rate_limit::{admin_rate_limit_middleware, RateLimiter};
+use rate_limit::{admin_rate_limit_middleware, ApiRateLimits};
 
 /// Key custody as the API uses it.
 #[derive(Clone)]
@@ -108,10 +109,9 @@ pub struct AppState {
     /// Key custody: the backends, which one new stores use, and the
     /// wallet handles registered so far.
     pub custody: Custody,
-    /// Per-`sk_`-token budget for every route (falling back to the caller's
-    /// address for a request without a token) - see `http::rate_limit`'s own
-    /// module doc comment for why token-keying is the right shape here.
-    pub admin_rate_limiter: Arc<RateLimiter<String>>,
+    /// A budget per store's `sk_`, and one for every other call when it is
+    /// on - see `http::rate_limit`'s own module doc comment.
+    pub rate_limits: Arc<ApiRateLimits>,
     /// The nodes of each network and the scanner's status on them.
     pub networks: Networks,
     /// Every engine setting, live (`admin_settings_v2.md` part 1): handlers
@@ -158,7 +158,7 @@ impl AppState {
         ]));
         Self {
             db: crate::store::Database::inline(store),
-            admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
+            rate_limits: Arc::new(ApiRateLimits::new(10_000, Some(10_000))),
             settings: crate::engine_settings::EngineSettings::defaults(),
             log_store: None,
             engine_token: Arc::new(shared::auth::RawToken::presented(TEST_ENGINE_TOKEN).hash()),
@@ -191,8 +191,8 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
     // `GET /status` calls it and renders the real, styled page; it reports
     // node/scanner health across every configured network, not tenant-scoped
     // data, so it sits outside the versioned `/api/v1/...` prefix like a
-    // service's own `/healthz`). Both share the admin limiter, which keys a
-    // request without an `sk_` on its address.
+    // service's own `/healthz`). Both count against the instance's own
+    // budget, when it is on.
     let unauthenticated_router = Router::new()
         .route("/api/v1/admin/tenants", post(admin::create_tenant))
         .route("/api/v1/admin/wallets", post(admin::create_wallet))
@@ -222,7 +222,7 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
     ));
 
     // Every route here requires a real `Authorization: Bearer sk_...` (see
-    // `AuthedTenant`), so each gets its own per-token budget.
+    // `AuthedTenant`), so each store gets its own budget.
     let admin_router = Router::new()
         .route(
             "/api/v1/admin/tenant",
@@ -269,11 +269,8 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
 
     // The instance-wide settings and logs API: nothing beyond the engine
     // token every route needs, unlike the store routes above, which also
-    // authenticate one specific *tenant* by its `sk_`. Shares the admin group's
-    // per-token rate limit rather than a bucket of its own - this is
-    // exactly the kind of low-volume, human-driven traffic
-    // (`admin_rate_limit_middleware`'s own generous default) that budget
-    // already exists for.
+    // authenticate one specific *tenant* by its `sk_`. Counted against the
+    // instance's own budget, when it is on.
     let instance_admin_router = Router::new()
         .route(
             "/api/v1/admin/settings",

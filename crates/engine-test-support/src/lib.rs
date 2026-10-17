@@ -38,7 +38,7 @@ use engine::daemon::{
     ChainBlock, DaemonError, FetchedTx, KeyImageStatus, MoneroDaemonClient, TxLocation,
 };
 use engine::daemon_fallback::{FallbackDaemonClient, FallbackNode};
-use engine::http::rate_limit::RateLimiter;
+use engine::http::rate_limit::ApiRateLimits;
 use engine::http::{build_router, AppState};
 use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle};
 use engine::network::network_str;
@@ -427,6 +427,21 @@ impl TestEngineHandle {
         engine::scanner_status::activity_of(&self.scanner_status, network)
     }
 
+    /// Records a scan round on `network` that just finished well, as the
+    /// scan loop does after each round, so the engine's `/status` reports
+    /// its scanner healthy (until it goes stale) without a real chain.
+    pub fn record_scan_round_ok(&self, network: Network) {
+        let now = shared::time::now_unix();
+        engine::scanner_status::record_tick(
+            &self.scanner_status,
+            network,
+            now,
+            now,
+            0,
+            &Ok::<(), String>(()),
+        );
+    }
+
     /// Runs exactly one real `run_scan_tick` against this engine's own store/
     /// key-custody and its *current* `wallet_handles` registry (re-read fresh on
     /// every call, same as the background loop) - for a caller that wants precise,
@@ -543,7 +558,7 @@ impl TestEngineHandle {
     pub fn confirm_order_payments(&self, order_id: &str) -> Result<(), engine::store::StoreError> {
         const PAYMENT_HEIGHT: i64 = 1000;
         let store = self.store.lock();
-        let now = engine::now_unix();
+        let now = shared::time::now_unix();
         for payment in store
             .get_all_payments(&engine::store::OrderId::new(order_id.to_string()))?
             .into_iter()
@@ -588,7 +603,7 @@ impl TestEngineHandle {
         let piconero = piconero.get();
         const PAYMENT_HEIGHT: i64 = 1000;
         let store = self.store.lock();
-        let now = engine::now_unix();
+        let now = shared::time::now_unix();
         let existing = store
             .get_all_payments(&engine::store::OrderId::new(order_id.to_string()))
             .map(|p| p.len())
@@ -695,6 +710,9 @@ pub struct TestEngineConfig {
     admin_lookup_daemon: bool,
     /// `Some(n)` when [`TestEngineConfig::with_rate_limit`] has been used.
     rate_limit_per_minute: Option<u32>,
+    /// `true` when [`TestEngineConfig::with_production_rate_limits`] has
+    /// been used.
+    production_rate_limits: bool,
     /// Served by the engine's log API (`with_log_store`).
     log_store: Option<telemetry::store::LogStore>,
     /// `true` when [`TestEngineConfig::with_live_nodes`] has been used.
@@ -707,11 +725,21 @@ pub struct TestEngineConfig {
 }
 
 impl TestEngineConfig {
-    /// Limits each tenant token to `per_minute` admin requests, like a
-    /// production engine (whose default is 120), instead of this harness's
-    /// effectively unlimited default.
+    /// Limits each store to `per_minute` requests, like a production engine
+    /// (whose default is 120), instead of this harness's effectively
+    /// unlimited default.
     pub fn with_rate_limit(mut self, per_minute: u32) -> Self {
         self.rate_limit_per_minute = Some(per_minute);
+        self
+    }
+
+    /// The rate limits the engine's settings give, as in production: each
+    /// store's and the instance's own, at their defaults for how the engine
+    /// runs (standalone, or [`TestEngineConfig::embedded`]) unless the
+    /// options file says otherwise, and changed live when saved. Without
+    /// it, this harness's limits are effectively unlimited.
+    pub fn with_production_rate_limits(mut self) -> Self {
+        self.production_rate_limits = true;
         self
     }
 
@@ -900,13 +928,21 @@ impl TestEngineConfig {
             Arc::new(RwLock::new(HashMap::new()));
 
         let lookup_mempool: Arc<parking_lot::Mutex<Vec<monero::Transaction>>> = Arc::default();
-        let admin_rate_limiter = Arc::new(RateLimiter::new(
-            self.rate_limit_per_minute.unwrap_or(10_000),
-        ));
+        // The limits the settings drive, and the ones the router uses:
+        // the same unless this harness keeps its own (effectively unlimited,
+        // or `with_rate_limit`'s), which a saved setting doesn't change.
+        let settings_rate_limits = Arc::new(ApiRateLimits::new(1, Some(1)));
+        let rate_limits = if self.production_rate_limits {
+            Arc::clone(&settings_rate_limits)
+        } else {
+            Arc::new(ApiRateLimits::new(
+                self.rate_limit_per_minute.unwrap_or(10_000),
+                Some(10_000),
+            ))
+        };
         // Real settings, so the instance-admin settings API works; node
         // settings are saved but not applied (this harness's daemons are
-        // fixed fakes) unless `with_live_nodes`. The rate limit keeps this
-        // harness's own value unless a test saves one.
+        // fixed fakes) unless `with_live_nodes`.
         let daemons = engine::engine_settings::Daemons::fixed(if self.admin_lookup_daemon {
             self.networks
                 .iter()
@@ -946,7 +982,7 @@ impl TestEngineConfig {
                     daemons: daemons.clone(),
                 }),
             None,
-            Arc::new(RateLimiter::new(1)),
+            settings_rate_limits,
             live_settings::Env::fixed(Vec::<(String, String)>::new()).or_var(
                 engine::engine_settings::SERVER_TOKEN.env_var,
                 TEST_ENGINE_TOKEN,
@@ -960,7 +996,7 @@ impl TestEngineConfig {
         .expect("test engine settings load from an empty store");
         let app_state = AppState {
             db: engine::store::Database::inline(store.clone()),
-            admin_rate_limiter: admin_rate_limiter.clone(),
+            rate_limits,
             log_store: self.log_store.clone(),
             engine_token: Arc::new(shared::auth::RawToken::presented(TEST_ENGINE_TOKEN).hash()),
             settings: engine_settings,

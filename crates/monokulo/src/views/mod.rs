@@ -657,6 +657,9 @@ pub enum Health {
     Ok,
     /// Everything works, but one block has taken over two minutes to scan.
     Slow,
+    /// The engine turned the status request away for now (its rate
+    /// limit): it is there, just asked too often.
+    Busy,
     /// A node or the scan is failing, or the engine can't be reached.
     Problem,
 }
@@ -667,6 +670,7 @@ impl Health {
         match self {
             Health::Ok => "ok",
             Health::Slow => "slow",
+            Health::Busy => "busy",
             Health::Problem => "error",
         }
     }
@@ -680,6 +684,7 @@ pub fn status_indicator(health: Option<Health>) -> Markup {
     let health = match health {
         Some(Health::Ok) => ui::HealthState::Ok,
         Some(Health::Slow) => ui::HealthState::Slow,
+        Some(Health::Busy) => ui::HealthState::Busy,
         Some(Health::Problem) => ui::HealthState::Error,
         None => ui::HealthState::Unknown,
     };
@@ -829,6 +834,15 @@ mod tests {
             "{slow}"
         );
         assert!(slow.contains("scanning is slow"), "{slow}");
+        let busy = status_indicator(Some(Health::Busy)).into_string();
+        assert!(
+            busy.contains(r#"class="status-dot status-dot-busy""#),
+            "{busy}"
+        );
+        assert!(
+            busy.contains("the engine is busy - see the status page"),
+            "{busy}"
+        );
         assert!(
             problem.contains(r#"class="status-dot status-dot-error""#),
             "got: {problem}"

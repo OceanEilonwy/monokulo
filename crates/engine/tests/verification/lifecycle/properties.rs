@@ -98,7 +98,7 @@ proptest! {
         runtime().block_on(async {
             use axum::{body::Body,http::{Request,StatusCode}};
             use tower::ServiceExt as _;
-            use crate::http::rate_limit::RateLimiter;
+            use crate::http::rate_limit::ApiRateLimits;
             // A node for each network, and a fourth that every network's
             // fallback names; what reaches the fourth isn't checked.
             let entered: [Arc<AtomicUsize>;4] = std::array::from_fn(|_| Arc::new(AtomicUsize::new(0)));
@@ -126,13 +126,13 @@ proptest! {
             }
             let store = crate::store::Store::open_in_memory().unwrap().into_shared();
             let daemons = Daemons::default();
-            let limiter = Arc::new(RateLimiter::new(100_000));
+            let limiter = Arc::new(ApiRateLimits::new(100_000, Some(100_000)));
             let settings = EngineSettings::load_with(Arc::clone(&store),Some(crate::engine_settings::NodesReloadable { daemons: daemons.clone() }),Arc::clone(&limiter),live_settings::Env::fixed(Vec::<(String,String)>::new())).await.unwrap();
             let custody: Arc<dyn KeyCustody> = Arc::new(crate::key_custody::PlainKeyCustody::default());
             let wallet_handles = Arc::new(RwLock::new(HashMap::new()));
             let status = scanner_status::new_scanner_status_map();
             let state = crate::http::AppState {
-                db: crate::store::Database::inline(Arc::clone(&store)),admin_rate_limiter:limiter,log_store:None,
+                db: crate::store::Database::inline(Arc::clone(&store)),rate_limits:limiter,log_store:None,
                 engine_token:Arc::new(shared::auth::RawToken::presented(crate::http::TEST_ENGINE_TOKEN).hash()),
                 settings:Arc::clone(&settings),
                 custody:crate::http::Custody { snp:None,backends:Arc::clone(&custody),default_backend:"plain".into(),wallet_handles:Arc::clone(&wallet_handles) },

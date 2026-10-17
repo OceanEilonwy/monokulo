@@ -10,7 +10,11 @@
 //   - "Add another" adds a blank row;
 //   - a row's self-signed box shows only while its Use TLS box is ticked;
 //   - the question (a ui dialog) before a save leaves a network stores use with no
-//     node.
+//     node;
+//   - a setting that needs a switch (`data-needs-switch`, the switch's id:
+//     the instance's own rate limit) is enabled as the switch turns on and
+//     disabled as it turns off. Without the script it is enabled by saving
+//     with the switch on.
 // Everything listens on the document, so it keeps working on the panel
 // fixi swaps in after a save or a tab link.
 (function () {
@@ -186,9 +190,22 @@
     }
   });
 
+  // Each control that needs a switch, enabled exactly while it is on.
+  function followSwitches(root) {
+    each(root, "[data-needs-switch]", function (control) {
+      var on = document.getElementById(control.getAttribute("data-needs-switch"));
+      if (on) control.disabled = !on.checked;
+    });
+  }
+
   document.addEventListener("change", function (event) {
     if (event.target.matches && event.target.matches("[data-node-tls]")) showSelfSigned(event.target.closest("[data-node-row]"));
+    if (event.target.matches && event.target.matches('input[role="switch"]')) followSwitches(document);
   });
+
+  // Discard puts the switch back as it was saved: once the card's own
+  // handler has done so, the controls that need it follow.
+  document.addEventListener("mk-discard", function () { setTimeout(function () { followSwitches(document); }, 0); });
 
   // ---- saving -----------------------------------------------------------
 
@@ -239,6 +256,7 @@
       if (list) listsAtLoad[card.id] = list.cloneNode(true);
     });
     showSelfSigned(document);
+    followSwitches(document);
   }
 
   // After fixi's glue has finished with a swap (fx-glue.js "fx:settled").

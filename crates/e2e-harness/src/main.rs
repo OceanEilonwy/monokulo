@@ -63,7 +63,7 @@ use tower::ServiceExt as _;
 use engine::daemon::MoneroDaemonClient;
 use engine::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use engine::daemon_rpc::RpcDaemonClient;
-use engine::http::rate_limit::RateLimiter;
+use engine::http::rate_limit::ApiRateLimits;
 use engine::http::{build_router as build_engine_router, now_unix, AppState as EngineAppState};
 use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle};
 use engine::network::network_str;
@@ -259,7 +259,7 @@ async fn main() {
 
     let engine_state = EngineAppState {
         db: engine::store::Database::inline(Arc::clone(&store)),
-        admin_rate_limiter: Arc::new(RateLimiter::new(1_000_000)),
+        rate_limits: Arc::new(ApiRateLimits::new(1_000_000, Some(1_000_000))),
         log_store: None,
         engine_token: Arc::new(
             shared::auth::RawToken::presented(shared::auth::TEST_ENGINE_TOKEN).hash(),

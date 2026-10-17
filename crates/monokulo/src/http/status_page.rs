@@ -57,6 +57,10 @@ pub struct CachedStatus {
     // `Clone` to hand out without holding the lock across an `.await`, and
     // `reqwest::Error` (inside `EngineClientError::Request`) isn't.
     result: Result<EngineStatusResponse, String>,
+    /// The engine turned the request away with 429 (its rate limit): it
+    /// is there, just asked too often, which the dot shows as busy rather
+    /// than as a problem.
+    busy: bool,
 }
 
 #[derive(Default)]
@@ -131,13 +135,17 @@ pub fn known_health(engine: &Engine) -> Option<views::Health> {
         .cached
         .as_ref()
         .filter(|cached| cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE)?;
-    Some(health_of(&cached.result))
+    Some(health_of(&cached.result, cached.busy))
 }
 
-/// Green, yellow or red: a problem if [`is_healthy`] says so, else slow if
-/// any network has a block that has taken over two minutes
+/// Green, yellow or red: busy if the engine turned the request away with
+/// 429 (`busy`), else a problem if [`is_healthy`] says so, else slow if any
+/// network has a block that has taken over two minutes
 /// (docs/engine_scaling.md section 5), else fine.
-fn health_of(result: &Result<EngineStatusResponse, String>) -> views::Health {
+fn health_of(result: &Result<EngineStatusResponse, String>, busy: bool) -> views::Health {
+    if busy && result.is_err() {
+        return views::Health::Busy;
+    }
     if !is_healthy(result) {
         return views::Health::Problem;
     }
@@ -365,6 +373,7 @@ pub(crate) fn seed_status_for_tests(engine: &Engine, status: EngineStatusRespons
     status_cache(engine).cached = Some(CachedStatus {
         fetched_at: Instant::now(),
         result: Ok(status),
+        busy: false,
     });
 }
 
@@ -377,6 +386,7 @@ pub fn hold_status_for_tests(engine: &Engine, status: EngineStatusResponse) {
     status_cache(engine).cached = Some(CachedStatus {
         fetched_at: Instant::now() + Duration::from_secs(3600),
         result: Ok(status),
+        busy: false,
     });
 }
 
@@ -418,6 +428,12 @@ fn is_healthy(result: &Result<EngineStatusResponse, String>) -> bool {
 /// engine `/status` asks every Monero node, so a burst of visitors to the
 /// public status page must not turn into a burst of node requests.
 pub(crate) async fn get_status_cached(engine: &Engine) -> Result<EngineStatusResponse, String> {
+    get_status_and_busy(engine).await.0
+}
+
+/// [`get_status_cached`], and whether the engine turned the request away
+/// with 429.
+async fn get_status_and_busy(engine: &Engine) -> (Result<EngineStatusResponse, String>, bool) {
     if let Some(fresh) = fresh_status(engine) {
         return fresh;
     }
@@ -426,25 +442,28 @@ pub(crate) async fn get_status_cached(engine: &Engine) -> Result<EngineStatusRes
     if let Some(fresh) = fresh_status(engine) {
         return fresh;
     }
-    let result = engine
-        .client
-        .get_status()
-        .await
-        .map_err(|e| describe_engine_error(&e));
+    let fetched = engine.client.get_status().await;
+    let busy = matches!(
+        &fetched,
+        Err(EngineClientError::EngineError { status, .. })
+            if *status == reqwest::StatusCode::TOO_MANY_REQUESTS
+    );
+    let result = fetched.map_err(|e| describe_engine_error(&e));
     status_cache(engine).cached = Some(CachedStatus {
         fetched_at: Instant::now(),
         result: result.clone(),
+        busy,
     });
-    result
+    (result, busy)
 }
 
-/// The cached status, if it's still fresh.
-fn fresh_status(engine: &Engine) -> Option<Result<EngineStatusResponse, String>> {
+/// The cached status, and whether it was a 429, if it's still fresh.
+fn fresh_status(engine: &Engine) -> Option<(Result<EngineStatusResponse, String>, bool)> {
     status_cache(engine)
         .cached
         .as_ref()
         .filter(|cached| cached.fetched_at.elapsed() < CACHE_TTL)
-        .map(|cached| cached.result.clone())
+        .map(|cached| (cached.result.clone(), cached.busy))
 }
 
 /// `GET /status` - the full page. Unauthenticated, so `logged_in` is a real
@@ -591,9 +610,11 @@ async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPage
 /// page itself is rendered with [`known_health`]), without pulling in the
 /// full status page's own engine round trip. See [`is_healthy`].
 pub async fn status_summary(State(engine): State<Engine>) -> Response {
-    let health = health_of(&get_status_cached(&engine).await);
+    let (result, busy) = get_status_and_busy(&engine).await;
+    let health = health_of(&result, busy);
     Json(json!({
-        "healthy": health != views::Health::Problem,
+        // Busy isn't fine: the engine is there, but turning requests away.
+        "healthy": matches!(health, views::Health::Ok | views::Health::Slow),
         "state": health.as_str(),
     }))
     .into_response()
@@ -604,6 +625,11 @@ fn describe_engine_error(err: &EngineClientError) -> String {
         EngineClientError::Request(_)
         | EngineClientError::Middleware(_)
         | EngineClientError::Embedded(_) => "the engine could not be reached".to_string(),
+        EngineClientError::EngineError { status, .. }
+            if *status == reqwest::StatusCode::TOO_MANY_REQUESTS =>
+        {
+            "the engine is busy: it is asked more often than its rate limit allows (server.instance_rate_limit_per_min), so it turned this request away. monokulo asks again in a few seconds.".to_string()
+        }
         EngineClientError::EngineError { status, .. } => {
             format!("the engine responded with an error ({status})")
         }
@@ -979,9 +1005,12 @@ mod tests {
 
     #[test]
     fn a_slow_block_is_yellow_and_says_why_and_what_would_help() {
-        assert_eq!(health_of(&Ok(status_with_slow(None))), views::Health::Ok);
+        assert_eq!(
+            health_of(&Ok(status_with_slow(None)), false),
+            views::Health::Ok
+        );
         let status = status_with_slow(Some(slow_block()));
-        assert_eq!(health_of(&Ok(status.clone())), views::Health::Slow);
+        assert_eq!(health_of(&Ok(status.clone()), false), views::Health::Slow);
         assert_eq!(
             slow_block_messages(&status, true),
             vec![
@@ -995,7 +1024,12 @@ mod tests {
         assert!(!public[0].contains("node.example"), "{public:?}");
         assert!(public[0].contains("at 3.1 Mbit/s."), "{public:?}");
         // A failing engine is still red, slow or not.
-        assert_eq!(health_of(&Err("down".into())), views::Health::Problem);
+        assert_eq!(
+            health_of(&Err("down".into()), false),
+            views::Health::Problem
+        );
+        // Turned away by the engine's rate limit: busy, not a problem.
+        assert_eq!(health_of(&Err("429".into()), true), views::Health::Busy);
     }
 
     #[test]
@@ -1039,6 +1073,7 @@ mod tests {
         status_cache(&state.engine).cached = Some(CachedStatus {
             fetched_at: too_old,
             result: Err("stale".to_string()),
+            busy: false,
         });
         status_cache(&state.engine).refreshing = true;
         assert_eq!(known_health(&state.engine), None);
@@ -1636,6 +1671,98 @@ mod tests {
                 ),
                 "{html}"
             );
+        }
+
+        /// The summary the status dot polls, as JSON.
+        async fn summary(router: &Router) -> serde_json::Value {
+            body_json(
+                router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri("/status/summary")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap(),
+            )
+            .await
+        }
+
+        /// The engine page polls the engine twice a second while anyone
+        /// watches. Inside monokulo, at the engine's real defaults, that
+        /// never uses up a budget the status needs: after more than ten
+        /// minutes' worth of the page's polls (far past the instance limit a
+        /// standalone engine has, and the 120 a minute every call used to
+        /// share), the status still answers and the dot is green.
+        #[tokio::test]
+        async fn the_engine_page_polling_an_embedded_engine_keeps_the_status_dot_green() {
+            let engine = engine_test_support::TestEngineConfig::new()
+                .embedded()
+                .with_production_rate_limits()
+                .with_networks(&[monero::Network::Mainnet])
+                .with_admin_lookup_daemon()
+                .spawn()
+                .await;
+            engine
+                .activity(monero::Network::Mainnet)
+                .record(shared::activity::Event::Seeded { height: 100 });
+            let client = EngineClient::embedded_for_tests(engine.router());
+            // The page's own poller, quicker than the page's 500 ms so the
+            // test needn't wait minutes, and the same calls made directly
+            // beside it, as many as 20 minutes of the page's polling.
+            let relay = std::sync::Arc::new(crate::engine_view::relay::Relay::with_timing(
+                client.clone(),
+                std::time::Duration::from_millis(1),
+                crate::engine_view::relay::LINGER,
+            ));
+            let _watch = relay.watch("mainnet").await.unwrap();
+            for poll in 0..2_400 {
+                client
+                    .engine_activity("mainnet", None)
+                    .await
+                    .unwrap_or_else(|e| panic!("poll {poll} was refused: {e}"));
+            }
+
+            engine.record_scan_round_ok(monero::Network::Mainnet);
+            let state = state_with_engine(client);
+            let router: Router = build_router(state);
+            let body = summary(&router).await;
+            assert_eq!(body["state"], "ok", "{body}");
+            assert_eq!(body["healthy"], true, "{body}");
+        }
+
+        /// A standalone engine limits the calls monokulo makes without a
+        /// store's key. Turned away, the status dot says the engine is busy
+        /// (amber), not that something is wrong (red).
+        #[tokio::test]
+        async fn a_remote_engine_past_its_instance_limit_shows_the_dot_busy_not_red_over_http() {
+            let engine = engine_test_support::TestEngineConfig::new()
+                .with_production_rate_limits()
+                .with_options(live_settings::OptionsFile::in_memory(
+                    "[server]\ninstance_rate_limit = true\ninstance_rate_limit_per_min = 1\n",
+                ))
+                .with_networks(&[monero::Network::Mainnet])
+                .spawn()
+                .await;
+            let client = EngineClient::for_tests(format!("http://{}", engine.addr));
+            // The minute's one call.
+            client.get_status().await.unwrap();
+
+            let state = state_with_engine(client);
+            let router: Router = build_router(state.clone());
+            let body = summary(&router).await;
+            assert_eq!(body["state"], "busy", "{body}");
+            assert_eq!(body["healthy"], false, "{body}");
+            assert_eq!(
+                super::super::known_health(&state.engine),
+                Some(crate::views::Health::Busy)
+            );
+            let dot = crate::views::status_indicator(super::super::known_health(&state.engine))
+                .into_string();
+            assert!(dot.contains("status-dot status-dot-busy"), "{dot}");
+            assert!(dot.contains("the engine is busy"), "{dot}");
         }
 
         #[tokio::test]

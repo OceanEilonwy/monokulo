@@ -28,7 +28,7 @@ use engine::daemon::{
 };
 use engine::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use engine::engine_settings::{Daemons, EngineSettings};
-use engine::http::{build_router, rate_limit::RateLimiter, AppState};
+use engine::http::{build_router, rate_limit::ApiRateLimits, AppState};
 use monero::{Network, Transaction};
 use parking_lot::RwLock;
 
@@ -561,7 +561,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
     let handles = Arc::new(RwLock::new(handles));
     let app_state = AppState {
         db: engine::store::Database::from_parts(db.clone(), reader_pool.clone(), &store.lock()),
-        admin_rate_limiter: Arc::new(RateLimiter::new(100_000)),
+        rate_limits: Arc::new(ApiRateLimits::new(100_000, Some(100_000))),
         log_store: None,
         engine_token: Arc::new(shared::auth::RawToken::presented(FIXTURE_ENGINE_TOKEN).hash()),
         settings: EngineSettings::defaults(),

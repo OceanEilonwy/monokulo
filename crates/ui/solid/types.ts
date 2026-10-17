@@ -67,7 +67,7 @@ export type HeadingLevel = "h2" | "h3" | "h4";
 /**
  * How the instance is, as the status dot shows it.
  */
-export type HealthState = "ok" | "slow" | "error" | "unknown";
+export type HealthState = "ok" | "slow" | "busy" | "error" | "unknown";
 
 /**
  * The kind of text an input takes: phones show the matching keyboard.

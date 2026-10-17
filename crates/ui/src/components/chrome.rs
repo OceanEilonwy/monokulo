@@ -193,6 +193,9 @@ pub enum HealthState {
     Ok,
     /// Everything works, but a block has taken over two minutes to scan.
     Slow,
+    /// The engine is turning requests away for now (its rate limit): it
+    /// answers, just not this often.
+    Busy,
     /// A node or the scan is failing, or the engine can't be reached.
     Error,
     /// Not checked yet, or couldn't be.
@@ -228,11 +231,13 @@ component! {
             id=(id)
             title=join["all systems healthy" if health == HealthState::Ok,
                 "scanning is slow - see the status page" if health == HealthState::Slow,
+                "the engine is busy - see the status page" if health == HealthState::Busy,
                 "an issue was detected - see the status page" if health == HealthState::Error,
                 "status not checked yet" if health == HealthState::Unknown]
             title=(b.words)
             aria-label=join["Status: all systems healthy" if health == HealthState::Ok,
                 "Status: scanning is slow - see the status page" if health == HealthState::Slow,
+                "Status: the engine is busy - see the status page" if health == HealthState::Busy,
                 "Status: an issue was detected - see the status page" if health == HealthState::Error,
                 "Status: status not checked yet" if health == HealthState::Unknown]
             aria-label={ "Status: " (b.words) } {
@@ -305,6 +310,13 @@ pub(super) fn status_dot_examples() -> Vec<(&'static str, StatusDot)> {
                 .href("#component-status-dot")
                 .poll("")
                 .id("book-status-slow"),
+        ),
+        (
+            "Busy",
+            StatusDot::new(HealthState::Busy)
+                .href("#component-status-dot")
+                .poll("")
+                .id("book-status-busy"),
         ),
         (
             "A problem",

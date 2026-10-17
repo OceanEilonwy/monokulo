@@ -164,3 +164,64 @@ test('an on/off setting is a switch: on and off both save', async ({ page }) => 
   await save();
   await expect(input).not.toBeChecked();
 });
+
+// The engine's limit on monokulo's own calls: a switch, and its count,
+// which can only be changed (and is only sent) while the switch is on.
+// This stack's engine is standalone, where the limit is on.
+test('the count of monokulo\'s own requests follows its switch, and saves either way', async ({ page }) => {
+  await signInAsAdmin(page);
+  await openSettingsTab(page, 'server');
+  const card = page.locator('#card-server-engine');
+  const toggle = card.getByRole('switch', { name: "Limit monokulo's own requests" });
+  const count = card.getByRole('spinbutton', { name: "Requests a minute for monokulo's own calls" });
+  await expect(toggle).toBeChecked();
+  await expect(count).toBeEnabled();
+  await expect(card.getByText('Off when the engine runs inside monokulo: only monokulo can call it.')).toBeVisible();
+  await expect(card.getByRole('spinbutton', { name: 'Requests a minute for each store' })).toBeVisible();
+
+  const shots = process.env.RATE_LIMIT_SHOTS;
+  const shoot = async (label) => {
+    if (!shots) return;
+    for (const scheme of ['light', 'dark']) {
+      await page.emulateMedia({ colorScheme: scheme });
+      for (const width of [1280, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        await card.screenshot({ path: `${shots}/server-engine-${label}-${scheme}-${width}.png` });
+      }
+    }
+    await page.emulateMedia({ colorScheme: 'light' });
+    await page.setViewportSize({ width: 1280, height: 900 });
+  };
+  await shoot('on');
+
+  // Off: the count is disabled at once, and Discard puts both back.
+  await card.locator('.switch', { has: toggle }).click();
+  await expect(toggle).not.toBeChecked();
+  await expect(count).toBeDisabled();
+  await card.getByRole('button', { name: 'Discard' }).click();
+  await expect(toggle).toBeChecked();
+  await expect(count).toBeEnabled();
+
+  // Saved off, the count stays as it was and comes back disabled.
+  const before = await count.inputValue();
+  await card.locator('.switch', { has: toggle }).click();
+  await pressSave(page);
+  await expectSaved(page);
+  await openSettingsTab(page, 'server');
+  await expect(toggle).not.toBeChecked();
+  await expect(count).toBeDisabled();
+  await expect(count).toHaveValue(before);
+  await shoot('off');
+
+  // On again, with a count of its own.
+  await card.locator('.switch', { has: toggle }).click();
+  await expect(count).toBeEnabled();
+  await count.fill('50000');
+  await pressSave(page);
+  await expectSaved(page);
+  await openSettingsTab(page, 'server');
+  await expect(toggle).toBeChecked();
+  await expect(count).toHaveValue('50000');
+  await saveEngineSettings(page, { 'server.instance_rate_limit_per_min': before });
+  await expectSaved(page);
+});

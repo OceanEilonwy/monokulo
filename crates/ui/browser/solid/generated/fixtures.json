@@ -4419,6 +4419,17 @@
   },
   {
     "component": "StatusDot",
+    "html": "<a href=\"#component-status-dot\" class=\"nav-status-link\" id=\"book-status-busy\" title=\"the engine is busy - see the status page\" aria-label=\"Status: the engine is busy - see the status page\" data-mk=\"1\" data-island=\"StatusDot\" data-props=\"{&quot;health&quot;:&quot;busy&quot;,&quot;poll&quot;:&quot;&quot;}\"><span class=\"status-dot status-dot-busy\" data-mk=\"2\"></span></a>",
+    "props": {
+      "health": "busy",
+      "href": "#component-status-dot",
+      "id": "book-status-busy",
+      "poll": ""
+    },
+    "title": "Busy"
+  },
+  {
+    "component": "StatusDot",
     "html": "<a href=\"#component-status-dot\" class=\"nav-status-link\" id=\"book-status-error\" title=\"an issue was detected - see the status page\" aria-label=\"Status: an issue was detected - see the status page\" data-mk=\"1\" data-island=\"StatusDot\" data-props=\"{&quot;health&quot;:&quot;error&quot;,&quot;poll&quot;:&quot;&quot;}\"><span class=\"status-dot status-dot-error\" data-mk=\"2\"></span></a>",
     "props": {
       "health": "error",

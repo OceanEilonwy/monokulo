@@ -903,7 +903,47 @@ const FIELD_ORDER: &[&str] = &[
     "server.worker_threads",
     "server.cpus",
     "server.nice",
+    "server.rate_limit_per_token_per_min",
+    "server.instance_rate_limit",
+    "server.instance_rate_limit_per_min",
 ];
+
+/// The name, and the help in place of its description, the page gives an
+/// engine setting whose key alone reads badly; any other is named after its
+/// key ([`crate::http::admin_settings`]) and helped by its description.
+pub fn engine_setting_words(key: &str) -> Option<(&'static str, Option<&'static str>)> {
+    match key {
+        "server.rate_limit_per_token_per_min" => Some(("Requests a minute for each store", None)),
+        "server.instance_rate_limit" => Some((
+            "Limit monokulo's own requests",
+            Some("Off when the engine runs inside monokulo: only monokulo can call it."),
+        )),
+        "server.instance_rate_limit_per_min" => {
+            Some(("Requests a minute for monokulo's own calls", None))
+        }
+        _ => None,
+    }
+}
+
+/// A setting that only means something while a switch in its card is on:
+/// its key, and the switch's. While the switch is off its control is
+/// disabled, so it isn't sent and a save leaves it as it is;
+/// `admin-settings.js` enables it as the switch turns on.
+const NEEDS_SWITCH: &[(&str, &str)] = &[(
+    "server.instance_rate_limit_per_min",
+    "server.instance_rate_limit",
+)];
+
+/// The switch `field` needs, among the card's `fields`: its control's id,
+/// and whether it is on.
+fn needed_switch(
+    field: &AdminScalarFieldView,
+    fields: &[&AdminScalarFieldView],
+) -> Option<(String, bool)> {
+    let (_, switch) = NEEDS_SWITCH.iter().find(|(key, _)| *key == field.key)?;
+    let switch = fields.iter().find(|f| f.key == *switch)?;
+    Some((field_id(switch.form_name()), switch.value == "true"))
+}
 
 fn field_rank(key: &str) -> usize {
     FIELD_ORDER
@@ -1049,6 +1089,12 @@ impl AdminScalarFieldView {
 }
 
 fn scalar_input(field: &AdminScalarFieldView) -> Markup {
+    scalar_input_needing(field, None)
+}
+
+/// [`scalar_input`], disabled while the switch it needs is off (a whole
+/// number's only: the one kind [`NEEDS_SWITCH`] holds).
+fn scalar_input_needing(field: &AdminScalarFieldView, needs: Option<(String, bool)>) -> Markup {
     let name = field.form_name();
     let id = field_id(name);
     let help = help_id(field);
@@ -1065,7 +1111,9 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
                 .attr("step", "1")
                 .id(id)
                 .maybe_described_by(help)
-                .maybe_attr("data-saved", saved))
+                .maybe_attr("data-saved", saved)
+                .disabled(needs.as_ref().is_some_and(|(_, on)| !on))
+                .maybe_attr("data-needs-switch", needs.map(|(switch, _)| switch)))
         },
         SettingKindView::Bool => super::controls::switch(
             name,
@@ -1186,6 +1234,12 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
 /// what it's for, then its control, then anything more about it. A list of
 /// choices is a group of checkboxes, named by its label.
 fn scalar_field(field: &AdminScalarFieldView) -> Markup {
+    scalar_field_needing(field, None)
+}
+
+/// [`scalar_field`] for a setting that needs a switch (`needs`: the
+/// switch's id, and whether it is on; see [`NEEDS_SWITCH`]).
+fn scalar_field_needing(field: &AdminScalarFieldView, needs: Option<(String, bool)>) -> Markup {
     let help = help_id(field);
     let help_text = field.help.as_ref().map(|help| html! { (help) });
     let control_id = field_id(field.form_name());
@@ -1208,7 +1262,7 @@ fn scalar_field(field: &AdminScalarFieldView) -> Markup {
         } @else if field.locked.is_some() || field.kind == SettingKindView::Secret {
             (locked_input(field))
         } @else {
-            (scalar_input(field))
+            (scalar_input_needing(field, needs))
         }
         @if let Some(reason) = &field.locked {
             (ui::FieldNote::new(reason))
@@ -1726,7 +1780,7 @@ fn card_fields(
                 }))
             }
             @if let Some(heading) = field_subheading(&field.key) { h4 { (heading) } }
-            (scalar_field(field))
+            (scalar_field_needing(field, needed_switch(field, fields)))
         }
     }
 }
@@ -2174,6 +2228,13 @@ mod tests {
             ("server.max_body_bytes", E, Server, "server-engine"),
             (
                 "server.rate_limit_per_token_per_min",
+                E,
+                Server,
+                "server-engine",
+            ),
+            ("server.instance_rate_limit", E, Server, "server-engine"),
+            (
+                "server.instance_rate_limit_per_min",
                 E,
                 Server,
                 "server-engine",
@@ -3601,5 +3662,66 @@ mod tests {
             html.contains(r#"data-save-bar-message tabindex="-1" data-fx-focus>"#),
             "{html}"
         );
+    }
+
+    /// The instance's own rate limit: a switch named for what it does, and
+    /// its count, disabled (so not sent, so left as it is) while the switch
+    /// is off, and pointing at the switch for the page's script.
+    #[test]
+    fn the_instance_rate_limit_count_is_disabled_while_its_switch_is_off() {
+        let render = |on: &str| {
+            let mut data = full_view(SettingsTab::Server);
+            for field in &mut data.engine_fields {
+                if field.key == "server.instance_rate_limit" {
+                    field.kind = SettingKindView::Bool;
+                    field.value = on.to_string();
+                }
+                if field.key == "server.instance_rate_limit_per_min" {
+                    field.kind = SettingKindView::Integer {
+                        min: Some(1),
+                        max: Some(1_000_000),
+                    };
+                    field.value = "600".to_string();
+                }
+            }
+            settings_panel(&data, false).into_string()
+        };
+        let count = |html: &str| -> String {
+            let at = html
+                .find(r#"name="server.instance_rate_limit_per_min""#)
+                .unwrap_or_else(|| panic!("no count: {html}"));
+            let start = html[..at].rfind('<').unwrap();
+            let end = at + html[at..].find('>').unwrap();
+            html[start..=end].to_string()
+        };
+        let off = count(&render("false"));
+        assert!(off.contains("disabled"), "{off}");
+        assert!(
+            off.contains(r#"data-needs-switch="setting-server.instance_rate_limit""#),
+            "{off}"
+        );
+        let on = count(&render("true"));
+        assert!(!on.contains("disabled"), "{on}");
+        assert!(on.contains("data-needs-switch="), "{on}");
+
+        assert_eq!(
+            engine_setting_words("server.instance_rate_limit"),
+            Some((
+                "Limit monokulo's own requests",
+                Some("Off when the engine runs inside monokulo: only monokulo can call it.")
+            ))
+        );
+        assert_eq!(
+            engine_setting_words("server.instance_rate_limit_per_min").map(|(name, _)| name),
+            Some("Requests a minute for monokulo's own calls")
+        );
+        // In the engine's Server card, in this order.
+        let html = render("true");
+        let place = |key: &str| {
+            html.find(&format!(r#"name="{key}""#))
+                .unwrap_or_else(|| panic!("{key} isn't shown"))
+        };
+        assert!(place("server.rate_limit_per_token_per_min") < place("server.instance_rate_limit"));
+        assert!(place("server.instance_rate_limit") < place("server.instance_rate_limit_per_min"));
     }
 }

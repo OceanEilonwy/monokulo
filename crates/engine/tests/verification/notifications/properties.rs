@@ -259,7 +259,10 @@ mod zmq {
         let settings = crate::engine_settings::EngineSettings::load_with(
             crate::store::Store::open_in_memory().unwrap().into_shared(),
             None,
-            Arc::new(crate::http::rate_limit::RateLimiter::new(100_000)),
+            Arc::new(crate::http::rate_limit::ApiRateLimits::new(
+                100_000,
+                Some(100_000),
+            )),
             live_settings::Env::fixed(Vec::<(String, String)>::new()),
         )
         .await
