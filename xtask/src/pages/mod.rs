@@ -6,7 +6,8 @@
 //! Every input of the report is optional; the pages say what they have no
 //! data for. A build reads the artifacts (`inputs`), works out what the
 //! pages show (`model`) and renders a page per section (`render`), beside
-//! the site's stylesheet (`assets/styles.css`) and the report's script (`assets/coverage/`), the screenshot
+//! the site's stylesheet and the report's script (in the site's `assets/`, one
+//! level up, which every part shares: `site_assets`), the screenshot
 //! gallery (`gallery/`), the report pages the pages link and what those
 //! need (`reports/`) and a shields.io endpoint for the coverage badge
 //! (`badge.json`). Only one engine build of the property and fuzz runs is
@@ -47,7 +48,7 @@ const BADGE_BANDS: [(f64, &str); 3] = [(90.0, "brightgreen"), (80.0, "green"), (
 const BADGE_BELOW_BANDS: &str = "orange";
 const BADGE_UNKNOWN: &str = "lightgrey";
 /// What a build writes into `--out`, and so what a rebuild replaces there.
-const OUTPUTS: [&str; 12] = [
+const OUTPUTS: [&str; 11] = [
     "index.html",
     "tests.html",
     "coverage.html",
@@ -57,7 +58,6 @@ const OUTPUTS: [&str; 12] = [
     "live.html",
     "screens.html",
     "badge.json",
-    "assets",
     "gallery",
     "reports",
 ];
@@ -242,7 +242,7 @@ pub(crate) fn build(args: &[&str]) -> io::Result<Exit> {
         .as_ref()
         .map_or_else(Coverage::default, |c| c.shipping);
     write_json(&out.join("badge.json"), &badge(shipping))?;
-    site_assets::write(&out.join("assets"))?;
+    site_assets::write(&out.join(".."))?;
     let have: Vec<&str> = [
         ("coverage", report.coverage.is_some()),
         ("properties", report.properties.is_some()),
