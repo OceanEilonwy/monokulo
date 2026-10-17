@@ -452,17 +452,20 @@
   const pct = (ms, scale) => Math.min(100, (ms / Math.max(1, scale)) * 100);
   const barEnd = (bar, scale) => pct(bar.start_ms, scale) + pct(bar.span_ms, scale);
   // A segment's shapes, worked out by the server (`present::Shape`), placed
-  // in it in percent of its drawn length.
+  // in it in percent of its drawn length. Shapes back to back are one run,
+  // square where they meet (`Shape::meets`).
+  const meets = (a, b) => !!a && !!b && a.kind !== "thread" && b.kind !== "thread" && a.to_ms === b.from_ms;
   function shapesHTML(bar) {
     const span = bar.span_ms;
     const at = (ms) => (span ? ((ms - bar.start_ms) / span) * 100 : 0);
     const place = (from, to) => `left:${at(from).toFixed(2)}%;width:${(span ? at(to) - at(from) : 100).toFixed(2)}%`;
-    return bar.shapes.map((shape) => {
-      if (shape.kind === "fill") return `<i class="fill${shape.leftover ? " p2" : ""}" style="${place(shape.from_ms, shape.to_ms)}"></i>`;
+    return bar.shapes.map((shape, i) => {
+      const run = `${meets(bar.shapes[i - 1], shape) ? " meets-prev" : ""}${meets(shape, bar.shapes[i + 1]) ? " meets-next" : ""}`;
+      if (shape.kind === "fill") return `<i class="fill${shape.leftover ? " p2" : ""}${run}" style="${place(shape.from_ms, shape.to_ms)}"></i>`;
       if (shape.kind === "thread") return `<i class="thread${shape.band ? " band" : ""}" style="${place(shape.from_ms, shape.to_ms)}"></i>`;
       const band = shape.band_from != null;
       const join = band ? `;--join:${at(shape.band_from).toFixed(2)}%;--join-w:${(at(shape.to_ms) - at(shape.band_from)).toFixed(2)}%` : "";
-      return `<i class="work${shape.joined ? " joined" : band ? " band" : ""}" style="${place(shape.from_ms, shape.to_ms)}${join}"></i>`;
+      return `<i class="work${shape.joined ? " joined" : band ? " band" : ""}${run}" style="${place(shape.from_ms, shape.to_ms)}${join}"></i>`;
     }).join("");
   }
 

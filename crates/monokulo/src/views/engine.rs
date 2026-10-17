@@ -232,8 +232,11 @@ const ENGINE_STYLE: &str = r#"
 .bar .fill.p2 { background: repeating-linear-gradient(135deg, var(--tier) 0 4px, color-mix(in srgb, var(--tier) 40%, var(--paper-raised)) 4px 7px); }
 .bar .thread { top: calc(50% - 0.5px); height: 1px; background: var(--tier); }
 .bar .work { top: 0; bottom: 0; min-width: 3px; box-sizing: border-box; box-shadow: inset 0 0 0 1px var(--tier); border-radius: 2px; }
-.bar .fill:has(+ .work.joined) { border-radius: 2px 0 0 2px; }
-.bar .work.joined { border-radius: 0 2px 2px 0; }
+/* Shapes back to back (`Shape::meets`), a unit and an outline either way
+   round or two of a kind, are one run: square where they meet, rounded
+   only at the run's ends. */
+.bar .meets-prev { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.bar .meets-next { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 /* A gap between the two thresholds: split on a wide track, joined on a
    narrow one, where the same share is far fewer pixels. */
 @container (max-width: 480px) {
@@ -1021,12 +1024,26 @@ fn bar_div(bar: &Bar, scale_ms: u64) -> Markup {
         let width = if span == 0 { 100.0 } else { at(to) - left };
         format!("left:{left:.2}%;width:{width:.2}%")
     };
+    // Shapes back to back are one run: square where they meet.
+    let meets = |i: usize| {
+        let prev = i > 0 && bar.shapes[i - 1].meets(&bar.shapes[i]);
+        let next = bar
+            .shapes
+            .get(i + 1)
+            .is_some_and(|next| bar.shapes[i].meets(next));
+        match (prev, next) {
+            (true, true) => " meets-prev meets-next",
+            (true, false) => " meets-prev",
+            (false, true) => " meets-next",
+            (false, false) => "",
+        }
+    };
     html! {
         div class=(if bar.last { "bar last" } else { "bar" }) style=(format!("left:{:.2}%;width:{:.2}%", pct(bar.start_ms, scale_ms), pct(span, scale_ms))) title=(bar.title) {
-            @for shape in &bar.shapes {
+            @for (index, shape) in bar.shapes.iter().enumerate() {
                 @match shape {
                     Shape::Fill { from_ms, to_ms, leftover } => {
-                        i class=(if *leftover { "fill p2" } else { "fill" }) style=(place(*from_ms, *to_ms)) {}
+                        i class={ (if *leftover { "fill p2" } else { "fill" }) (meets(index)) } style=(place(*from_ms, *to_ms)) {}
                     }
                     Shape::Thread { from_ms, to_ms, band } => {
                         i class=(if *band { "thread band" } else { "thread" }) style=(place(*from_ms, *to_ms)) {}
@@ -1037,7 +1054,7 @@ fn bar_div(bar: &Bar, scale_ms: u64) -> Markup {
                             Some(from) => format!("{};--join:{:.2}%;--join-w:{:.2}%", place(*from_ms, *to_ms), at(*from), at(*to_ms) - at(*from)),
                             None => place(*from_ms, *to_ms),
                         };
-                        i class=(class) style=(style) {}
+                        i class={ (class) (meets(index)) } style=(style) {}
                     }
                 }
             }
@@ -1341,6 +1358,44 @@ mod tests {
             zero.contains(r#"style="left:30.00%;width:0.00%""#)
                 && zero.contains(r#"<i class="fill" style="left:0.00%;width:100.00%"></i>"#),
             "{zero}"
+        );
+        // Back to back, an outline, a unit, its pass-2 part and a joined
+        // outline are one run: each says which of its ends meets another.
+        let run = bar_div(
+            &bar(
+                0,
+                100,
+                vec![
+                    Shape::Work {
+                        from_ms: 0,
+                        to_ms: 40,
+                        joined: false,
+                        band_from: None,
+                    },
+                    Shape::Fill {
+                        from_ms: 40,
+                        to_ms: 60,
+                        leftover: false,
+                    },
+                    Shape::Fill {
+                        from_ms: 60,
+                        to_ms: 80,
+                        leftover: true,
+                    },
+                    Shape::Work {
+                        from_ms: 80,
+                        to_ms: 100,
+                        joined: true,
+                        band_from: None,
+                    },
+                ],
+            ),
+            100,
+        )
+        .into_string();
+        assert_eq!(
+            run,
+            r#"<div class="bar" style="left:0.00%;width:100.00%" title=""><i class="work meets-next" style="left:0.00%;width:40.00%"></i><i class="fill meets-prev meets-next" style="left:40.00%;width:20.00%"></i><i class="fill p2 meets-prev meets-next" style="left:60.00%;width:20.00%"></i><i class="work joined meets-prev" style="left:80.00%;width:20.00%"></i></div>"#
         );
     }
 

@@ -181,6 +181,23 @@ pub enum Shape {
     },
 }
 
+impl Shape {
+    /// Whether `next`, the shape after this one in its segment, starts
+    /// where this one ends: a unit and an outline (either way round), two
+    /// units or two outlines back to back. The two are drawn as one run,
+    /// square where they meet and rounded only at its ends, never two
+    /// pills side by side. A thread is a line, not a box: nothing meets it.
+    pub fn meets(&self, next: &Shape) -> bool {
+        match (self, next) {
+            (
+                Shape::Fill { to_ms, .. } | Shape::Work { to_ms, .. },
+                Shape::Fill { from_ms, .. } | Shape::Work { from_ms, .. },
+            ) => to_ms == from_ms,
+            _ => false,
+        }
+    }
+}
+
 /// A gap between a segment's pieces narrower than this share of the drawn
 /// scale is covered by the outline after it (joined); a wider one is
 /// crossed by a thread.

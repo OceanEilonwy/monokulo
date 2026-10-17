@@ -530,6 +530,44 @@ test('on a phone a gap between the thresholds is joined', async ({ page, context
   expect(blocks.work.height).toBe(blocks.fill.height);
 });
 
+// Shapes back to back in a segment are one run, `(    ][****)`: Chain's
+// tip request (outlined) runs straight into its unit (solid). Where they
+// meet, both are square and touch; the run's own ends stay rounded. The
+// page draws it on the server and again in its script: both, on a wide
+// track and a phone's.
+for (const width of [1280, 390]) {
+  for (const javaScriptEnabled of [false, true]) {
+    test(`${width}px, ${javaScriptEnabled ? 'drawn by the script' : 'as served'}: an outline and a unit back to back are one run`, async ({ browser }) => {
+      const context = await browser.newContext({ viewport: { width, height: 900 }, javaScriptEnabled });
+      const page = await context.newPage();
+      await openAsAdmin(page, context);
+      await expect(page.locator('#engine-round .track.t-chain .bar').first()).toBeVisible();
+      if (javaScriptEnabled) await expect(page.locator('#engine-timeline')).toBeVisible();
+      const runs = await page.evaluate(() => [...document.querySelectorAll('#engine-round .bar')].flatMap((bar) => {
+        const shapes = [...bar.children].map((el) => {
+          const s = getComputedStyle(el), box = el.getBoundingClientRect();
+          return { cls: el.className, left: box.left, right: box.right, tl: s.borderTopLeftRadius, bl: s.borderBottomLeftRadius, tr: s.borderTopRightRadius, br: s.borderBottomRightRadius };
+        });
+        return shapes.slice(1).map((next, i) => ({ lane: bar.closest('.track').className, prev: shapes[i], next }));
+      }));
+      const chain = runs.find((pair) => pair.lane.includes('t-chain'));
+      expect(chain, JSON.stringify(runs)).toBeTruthy();
+      expect(chain.prev.cls).toBe('work meets-next');
+      expect(chain.next.cls).toBe('fill meets-prev');
+      // Outer ends rounded, the shared edge square, no gap between them.
+      expect([chain.prev.tl, chain.prev.bl, chain.next.tr, chain.next.br]).toEqual(['2px', '2px', '2px', '2px']);
+      expect([chain.prev.tr, chain.prev.br, chain.next.tl, chain.next.bl]).toEqual(['0px', '0px', '0px', '0px']);
+      expect(Math.abs(chain.next.left - chain.prev.right)).toBeLessThanOrEqual(0.5);
+      // And every pair that meets anywhere on the page, square at the seam.
+      for (const pair of runs.filter((pair) => pair.prev.cls.includes('meets-next'))) {
+        expect(pair.next.cls, JSON.stringify(pair)).toContain('meets-prev');
+        expect([pair.prev.tr, pair.prev.br, pair.next.tl, pair.next.bl], JSON.stringify(pair)).toEqual(['0px', '0px', '0px', '0px']);
+      }
+      await context.close();
+    });
+  }
+}
+
 // The script's label rule, run on the cases the server's is tested with
 // (views/label_levels.json): one rule, two places, kept in step.
 test('the script stacks labels by the same rule as the server', async () => {
