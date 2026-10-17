@@ -229,8 +229,21 @@ impl<T: SettingValue> Setting<T> {
         }
     }
 
+    /// The declared default: what the setting is when nothing sets it and
+    /// the host gives no default of its own.
     pub fn default_value(&self) -> T {
         (self.default)()
+    }
+
+    /// The default in effect under `env`: the host's own default for this
+    /// setting ([`Env::with_defaults`]) if it gives one, otherwise the
+    /// declared default. `Registry::build` refuses a host default the
+    /// setting rejects, so a process that started never falls back past
+    /// one here.
+    pub fn default_in(&self, env: &Env) -> T {
+        env.default_for(self.key)
+            .and_then(|raw| self.parse(raw).ok())
+            .unwrap_or_else(|| self.default_value())
     }
 
     /// The admin page control, with this setting's bounds applied.
@@ -342,7 +355,7 @@ impl<T: SettingValue> Setting<T> {
             });
         }
         Resolved {
-            value: self.default_value(),
+            value: self.default_in(env),
             source: SettingSource::Default,
             problem,
         }
@@ -428,10 +441,15 @@ pub(crate) mod private {
         /// Parses and checks `raw`, returning the form to store.
         fn normalise(&self, raw: &str) -> Result<String, String>;
         fn resolve_view(&self, stored: Option<&str>, env: &Env) -> ResolvedView;
-        fn default_shown(&self) -> String;
-        /// The default in its stored form (unmasked), for the options
-        /// file `--init` writes.
-        fn default_stored(&self) -> String;
+        /// The default in effect under `env` ([`Setting::default_in`]),
+        /// as people see it.
+        fn default_shown(&self, env: &Env) -> String;
+        /// The default in effect under `env`, in its stored form
+        /// (unmasked), for the options file `--init` writes.
+        fn default_stored(&self, env: &Env) -> String;
+        /// Checks a host's own default for this setting
+        /// ([`Env::with_defaults`]) against the setting's rules.
+        fn check_given_default(&self, raw: &str) -> Result<(), String>;
         /// Checks the declaration itself: the default and example are
         /// valid, and bounds are only on whole numbers.
         fn check_declaration(&self) -> Result<(), String>;
@@ -452,12 +470,19 @@ pub(crate) mod private {
             }
         }
 
-        fn default_shown(&self) -> String {
-            self.default_value().render()
+        fn default_shown(&self, env: &Env) -> String {
+            self.default_in(env).render()
         }
 
-        fn default_stored(&self) -> String {
-            self.default_value().to_stored()
+        fn default_stored(&self, env: &Env) -> String {
+            self.default_in(env).to_stored()
+        }
+
+        fn check_given_default(&self, raw: &str) -> Result<(), String> {
+            if self.required {
+                return Err("a required setting has no default to replace".to_string());
+            }
+            self.parse(raw).map(|_| ())
         }
 
         fn check_declaration(&self) -> Result<(), String> {
@@ -536,6 +561,8 @@ pub struct Env {
     /// Variables the process sets itself ([`Env::with_var`]), over the
     /// environment's.
     given: Arc<HashMap<String, String>>,
+    /// The host's own defaults, by setting key ([`Env::with_defaults`]).
+    defaults: Arc<HashMap<String, String>>,
 }
 
 /// Names only: a variable's value may be a secret (an admin token).
@@ -543,10 +570,13 @@ impl std::fmt::Debug for Env {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut cli: Vec<&String> = self.cli.keys().collect();
         cli.sort();
+        let mut defaults: Vec<&String> = self.defaults.keys().collect();
+        defaults.sort();
         match &self.fixed {
             None => f
                 .debug_struct("Env")
                 .field("cli", &cli)
+                .field("defaults", &defaults)
                 .finish_non_exhaustive(),
             Some(vars) => {
                 let mut names: Vec<&String> = vars.keys().collect();
@@ -554,6 +584,7 @@ impl std::fmt::Debug for Env {
                 f.debug_struct("Env")
                     .field("vars", &names)
                     .field("cli", &cli)
+                    .field("defaults", &defaults)
                     .finish()
             }
         }
@@ -576,6 +607,7 @@ impl Env {
             )),
             cli: Arc::default(),
             given: Arc::default(),
+            defaults: Arc::default(),
         }
     }
 
@@ -602,6 +634,7 @@ impl Env {
                     fixed: Some(Arc::new(vars)),
                     cli: self.cli,
                     given: self.given,
+                    defaults: self.defaults,
                 }
             }
             _ => self,
@@ -613,6 +646,41 @@ impl Env {
     pub fn with_cli(mut self, values: HashMap<String, String>) -> Self {
         self.cli = Arc::new(values);
         self
+    }
+
+    /// This environment with the host's own defaults for the named
+    /// settings, by key and in their raw form: for a process that runs a
+    /// service whose declared defaults don't suit how it runs it (an
+    /// engine inside monokulo). It is only a default: the options file,
+    /// the command line and the environment still win over it.
+    /// `Registry::build` refuses one that names no setting, or that its
+    /// setting rejects.
+    pub fn with_defaults(mut self, defaults: &[(&str, &str)]) -> Self {
+        let mut all = (*self.defaults).clone();
+        for (key, raw) in defaults {
+            all.insert((*key).to_string(), (*raw).to_string());
+        }
+        self.defaults = Arc::new(all);
+        self
+    }
+
+    /// The host's own default for the setting `key`, raw, if it gives one.
+    pub fn default_for(&self, key: &str) -> Option<&str> {
+        self.defaults.get(key).map(String::as_str)
+    }
+
+    /// The host's own defaults, by key.
+    pub(crate) fn defaults(&self) -> &HashMap<String, String> {
+        &self.defaults
+    }
+
+    /// Nothing set at all, with this environment's host defaults: every
+    /// setting at the default in effect here.
+    pub(crate) fn defaults_only(&self) -> Env {
+        Env {
+            defaults: Arc::clone(&self.defaults),
+            ..Env::fixed(Vec::<(String, String)>::new())
+        }
     }
 
     /// The command-line value for the setting `key`. Unlike a variable, a
@@ -673,9 +741,15 @@ impl Snapshot {
     /// Nothing stored and nothing in the environment: every setting at its
     /// default.
     pub fn defaults() -> Self {
+        Snapshot::defaults_in(&Env::fixed(Vec::<(String, String)>::new()))
+    }
+
+    /// Nothing stored and nothing set, with `env`'s host defaults: every
+    /// setting at the default in effect under `env`.
+    pub(crate) fn defaults_in(env: &Env) -> Self {
         Snapshot {
             stored: HashMap::new(),
-            env: Env::fixed(Vec::<(String, String)>::new()),
+            env: env.defaults_only(),
         }
     }
 

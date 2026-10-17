@@ -464,6 +464,70 @@ async fn a_value_resolves_the_command_line_over_stored_over_default_and_reports_
     assert_eq!(snapshot.source(&SOFT), SettingSource::Default);
 }
 
+/// A host's own default replaces the declared one wherever a default
+/// shows: the value in effect, the admin page's "default", and what a save
+/// of that value counts as. Anything that sets the value still wins.
+#[tokio::test]
+async fn a_hosts_own_default_replaces_the_declared_one_but_not_a_set_value() {
+    let store = TestStore::with(&[]);
+    let h = booted(&store, no_env().with_defaults(&[("limits.soft", "45")])).await;
+    assert_eq!(h.limits.load().soft, 45);
+    let views = h.registry.describe();
+    assert_eq!(view(&views, "limits.soft").value, "45");
+    assert_eq!(view(&views, "limits.soft").default, "45");
+    assert_eq!(view(&views, "limits.soft").source, SettingSource::Default);
+    // Saving the host's default changes nothing: it is the default here.
+    let report = h
+        .registry
+        .save(vec![change("limits.soft", "45")])
+        .await
+        .unwrap();
+    assert!(report.changed.is_empty(), "{report:?}");
+    assert_eq!(SOFT.default_in(&no_env()), 60);
+
+    let store = TestStore::with(&[("limits.soft", "50")]);
+    let h = booted(&store, no_env().with_defaults(&[("limits.soft", "45")])).await;
+    assert_eq!(h.limits.load().soft, 50);
+    let env = options(&[("limits.soft", "70")]).with_defaults(&[("limits.soft", "45")]);
+    let h = booted(&store, env).await;
+    assert_eq!(h.limits.load().soft, 70);
+}
+
+/// A host's default that names no setting, or that its setting refuses,
+/// stops the process at start like any other bad value.
+#[tokio::test]
+async fn build_refuses_a_hosts_default_that_names_no_setting_or_is_invalid() {
+    for (defaults, expected) in [
+        (
+            &[("limits.softer", "45")][..],
+            "limits.softer, which isn't a setting",
+        ),
+        (
+            &[("scan.depth", "0")][..],
+            "the default given for scan.depth is invalid",
+        ),
+        (
+            &[("limits.soft", "lots")][..],
+            "the default given for limits.soft is invalid",
+        ),
+    ] {
+        let store = TestStore::with(&[]);
+        let mut builder = Registry::builder_with_env(
+            store as Arc<dyn SettingsStore>,
+            ALL,
+            no_env().with_defaults(defaults),
+        )
+        .await;
+        builder.section::<Scan>();
+        builder.section::<Limits>();
+        let error = match builder.build() {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("{defaults:?} was accepted"),
+        };
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
 #[tokio::test]
 async fn a_blank_environment_variable_is_unset() {
     let store = TestStore::with(&[]);
@@ -2737,6 +2801,7 @@ url = \"http://node:18081\"
             cli::with_settings(clap::Command::new("outer"), ALL, "outer.toml"),
             "engine",
             engine::ALL,
+            &Env::default(),
         );
         let matches = command
             .try_get_matches_from([
@@ -2756,7 +2821,12 @@ url = \"http://node:18081\"
             HashMap::from([("server.bind".to_string(), "0.0.0.0:9000".to_string())])
         );
         // Checked by the setting's own rules as it is parsed.
-        let command = cli::with_nested_settings(clap::Command::new("outer"), "engine", engine::ALL);
+        let command = cli::with_nested_settings(
+            clap::Command::new("outer"),
+            "engine",
+            engine::ALL,
+            &Env::default(),
+        );
         let refused = command
             .try_get_matches_from(["outer", "--engine-payment-confirmations", "0"])
             .unwrap_err()
@@ -2777,6 +2847,7 @@ url = \"http://node:18081\"
             "engine",
             "The engine's settings, when it runs inside outer.",
             engine::ALL,
+            &Env::default(),
         );
         assert!(text.contains("[server]\n"), "{text}");
         assert!(
@@ -2785,6 +2856,20 @@ url = \"http://node:18081\"
         );
         assert!(text.contains("[engine.payment]\n"), "{text}");
         assert!(text.contains("# confirmations = 10\n"), "{text}");
+        // The host's own default is the one written, and the one --help
+        // names.
+        let defaults = Env::default().with_defaults(&[("payment.confirmations", "2")]);
+        let hosted = render_init_nested("outer", ALL, "engine", "Inside.", engine::ALL, &defaults);
+        assert!(hosted.contains("# confirmations = 2\n"), "{hosted}");
+        let help = cli::with_nested_settings(
+            clap::Command::new("outer"),
+            "engine",
+            engine::ALL,
+            &defaults,
+        )
+        .render_long_help()
+        .to_string();
+        assert!(help.contains("[default: 2]"), "{help}");
         let uncommented = text.replace("# confirmations = 10", "confirmations = 7");
         let file = OptionsFile::in_memory(uncommented);
         read(&file.clone().leaving("engine"), ALL).unwrap();

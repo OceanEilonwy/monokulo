@@ -113,6 +113,13 @@ pub enum BuildError {
     DuplicateFlag(&'static str),
     #[error("the setting {key} is declared wrongly: {message}")]
     BadDeclaration { key: &'static str, message: String },
+    /// A default the host gives of its own ([`Env::with_defaults`]) names
+    /// no declared setting.
+    #[error("a default is given for {0}, which isn't a setting")]
+    UnknownDefault(String),
+    /// A default the host gives of its own is rejected by its setting.
+    #[error("the default given for {key} is invalid: {message}")]
+    BadDefault { key: String, message: String },
     #[error("section {section} reads {key}, which isn't declared")]
     UndeclaredKey {
         section: &'static str,
@@ -371,7 +378,7 @@ impl RegistryBuilder {
         self.entries.push(Arc::new(SectionEntry {
             reloadable,
             live: live.clone(),
-            defaults: defaults_of::<R::Config>(),
+            defaults: defaults_of::<R::Config>(&self.env),
             restart_only,
             staged: Mutex::new(None),
             prepared: Mutex::new(None),
@@ -398,6 +405,20 @@ impl RegistryBuilder {
                 .check_declaration()
                 .map_err(|message| BuildError::BadDeclaration {
                     key: setting.key(),
+                    message,
+                })?;
+        }
+
+        let mut given: Vec<_> = self.env.defaults().iter().collect();
+        given.sort();
+        for (key, raw) in given {
+            let setting = by_key
+                .get(key.as_str())
+                .ok_or_else(|| BuildError::UnknownDefault(key.clone()))?;
+            setting
+                .check_given_default(raw)
+                .map_err(|message| BuildError::BadDefault {
+                    key: key.clone(),
                     message,
                 })?;
         }
@@ -694,7 +715,7 @@ impl Registry {
             // change, so it isn't written into the file or the database.
             let differs = match (&value, old.get(key)) {
                 (Some(value), Some(stored)) => stored != value,
-                (Some(value), None) => *value != setting.default_stored(),
+                (Some(value), None) => *value != setting.default_stored(&inner.env),
                 (None, stored) => stored.is_some(),
             };
             if !differs {
@@ -907,7 +928,7 @@ impl Registry {
                     key,
                     env_var: setting.env_var(),
                     value: view.shown,
-                    default: setting.default_shown(),
+                    default: setting.default_shown(&inner.env),
                     source: view.source,
                     description: setting.description(),
                     kind: setting.kind(),
@@ -996,11 +1017,12 @@ pub fn read_sync_with_env<S: Section>(
 fn section_value<S: Section>(snapshot: &Snapshot) -> (S, Option<Vec<FieldError>>) {
     match S::from_snapshot(snapshot) {
         Ok(value) => (value, None),
-        Err(errors) => (defaults_of::<S>(), Some(errors)),
+        Err(errors) => (defaults_of::<S>(snapshot.env()), Some(errors)),
     }
 }
 
-/// The section with every setting at its default.
+/// The section with every setting at the default in effect under `env`
+/// (the host's own defaults over the declared ones).
 ///
 /// # Panics
 ///
@@ -1008,8 +1030,8 @@ fn section_value<S: Section>(snapshot: &Snapshot) -> (S, Option<Vec<FieldError>>
 /// declaration, the same for every run, and there is no value left to fall
 /// back to. Each crate's unit test that builds its registry hits this
 /// first, so it can't reach a release.
-fn defaults_of<S: Section>() -> S {
-    match S::from_snapshot(&Snapshot::defaults()) {
+fn defaults_of<S: Section>(env: &Env) -> S {
+    match S::from_snapshot(&Snapshot::defaults_in(env)) {
         Ok(value) => value,
         Err(errors) => panic!(
             "section {} rejects its own defaults: {}",

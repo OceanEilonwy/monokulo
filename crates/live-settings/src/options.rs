@@ -15,7 +15,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, Value};
 
-use crate::setting::{cli_flag, AnySetting, Applies};
+use crate::setting::{cli_flag, AnySetting, Applies, Env};
 use crate::store::{SettingsStore, StoreError};
 use crate::value::SettingKind;
 
@@ -658,19 +658,22 @@ pub fn render_init(program: &str, declared: &[&'static dyn AnySetting]) -> Strin
             out.push_str(&format!("#   {}{required}\n", secret.env_var()));
         }
     }
-    push_tables(&mut out, None, declared);
+    push_tables(&mut out, None, declared, &Env::default());
     out
 }
 
 /// [`render_init`], followed by the settings of a service that runs inside
 /// this process and keeps its options in this file under `[table.…]` (an
-/// embedded engine: `[engine.payment]`), introduced by `about`.
+/// embedded engine: `[engine.payment]`), introduced by `about`. Each nested
+/// setting shows the default in effect under `defaults`: the host's own
+/// ([`Env::with_defaults`]) where it gives one.
 pub fn render_init_nested(
     program: &str,
     declared: &[&'static dyn AnySetting],
     table: &str,
     about: &str,
     nested: &[&'static dyn AnySetting],
+    defaults: &Env,
 ) -> String {
     let mut out = render_init(program, declared);
     out.push_str("\n#\n");
@@ -678,13 +681,19 @@ pub fn render_init_nested(
         out.push_str(&format!("# {line}\n"));
     }
     out.push_str("#\n");
-    push_tables(&mut out, Some(table), nested);
+    push_tables(&mut out, Some(table), nested, defaults);
     out
 }
 
 /// Every setting of `declared` the file may hold, one table per key
-/// prefix, each under `table` if given, commented out with its default.
-fn push_tables(out: &mut String, table: Option<&str>, declared: &[&'static dyn AnySetting]) {
+/// prefix, each under `table` if given, commented out with the default in
+/// effect under `defaults`.
+fn push_tables(
+    out: &mut String,
+    table: Option<&str>,
+    declared: &[&'static dyn AnySetting],
+    defaults: &Env,
+) {
     let in_file: Vec<_> = declared.iter().filter(|s| s.sources().toml).collect();
     // Keys without a prefix come before the first table, as TOML needs.
     let mut groups: Vec<(&str, Vec<&&'static dyn AnySetting>)> = Vec::new();
@@ -719,7 +728,7 @@ fn push_tables(out: &mut String, table: Option<&str>, declared: &[&'static dyn A
             if !facts.is_empty() {
                 out.push_str(&format!("# {facts}\n"));
             }
-            let default = setting.default_stored();
+            let default = setting.default_stored(defaults);
             let shown = if default.is_empty() {
                 match setting.example() {
                     Some(example) => {
