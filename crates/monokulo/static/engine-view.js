@@ -67,6 +67,7 @@
   let mode = "live"; // live | paused | replay
   let replayTo = 0;
   let lastSeq = -1;
+  let shownSeq = -1; // the newest mark due when the events table was drawn
   let replayFetching = false;
   let source = null;
   let animationFrame = null, refreshTimer = null, stopped = false;
@@ -117,6 +118,7 @@
       clearEffects();
       showRefresh(false);
       lastSeq = marks.length ? marks[marks.length - 1].seq : -1;
+      shownSeq = -1;
       queue = [];
       tlDirty = true;
       // A reconnect while paused or replaying leaves the view where it is.
@@ -215,7 +217,10 @@
       }
     }
     draw(frame.view);
-    if (frame.marks.length) drawEvents();
+    // Not only this frame's marks: a slow machine plays only the newest of
+    // the frames due, and a hidden page keeps only its newest, so a reorg's
+    // last mark can come in a frame passed over for a round's events.
+    if (unshownMarks()) drawEvents();
   }
 
   // One request at a time: while one is out, a scrub only notes where it
@@ -604,13 +609,23 @@
 
   // ---- events table ----
   const filters = new Set(TIERS);
+  // Whether a mark due by now came after those the table was drawn with.
+  function unshownMarks() {
+    for (let i = marks.length - 1; i >= 0 && marks[i].seq > shownSeq; i--) {
+      if (marks[i].at_ms <= head) return true;
+    }
+    return false;
+  }
+
   function drawEvents() {
     const body = $("engine-events")?.tBodies[0];
     if (!body) return;
     const rows = [];
+    shownSeq = -1;
     for (let i = marks.length - 1; i >= 0 && rows.length < 60; i--) {
       const mark = marks[i];
       if (mark.at_ms > head) continue;
+      shownSeq = Math.max(shownSeq, mark.seq);
       if (mark.tier && !filters.has(mark.tier)) continue;
       rows.push(mark);
     }
