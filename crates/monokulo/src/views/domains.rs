@@ -354,7 +354,7 @@ fn domain_page(
 pub fn add_page(chrome: &PageChrome, store: &StoreRef, typed: &str, error: Option<&str>) -> Markup {
     let body = html! {
         form method="post" action=(format!("{}/domains", store.settings())) {
-            (super::settings::plain_card("domain", "Domain", html! {
+            (super::settings::plain_card("domain", "Your website", html! {
                 (ui::Setting::new("Domain", "new-domain", html! {
                     (ui::Input::new("domain")
                         .id("new-domain")
@@ -454,7 +454,9 @@ pub fn check_result(store: &StoreRef, domain: &DomainView, checked: bool) -> Mar
                     ))
                 } @else if checked {
                     (ui::Alert::new(html! {
-                        @if let Some(reason) = &domain.reason { (reason) " " }
+                        @if let Some(reason) = &domain.reason {
+                            (reason) @if !reason.ends_with(['.', '!', '?']) { "." } " "
+                        }
                         "DNS changes can take up to an hour to show."
                     }, ui::Tone::Error)
                     .title("Not found yet.")

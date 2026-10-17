@@ -412,18 +412,18 @@ pub async fn add_domain(
     refused(error).await
 }
 
-/// The store and one of its domains, or the answer when either isn't
+/// The store and one of its domains, or the status when either isn't
 /// there (or isn't `user`'s).
 async fn load_domain(
     state: &AppState,
     user: &crate::db::UserRow,
     id: &crate::db::ConnectionId,
     domain_id: String,
-) -> Result<(super::OwnedStore, StoreDomainRow), Response> {
+) -> Result<(super::OwnedStore, StoreDomainRow), StatusCode> {
     let row = match load_owned_connection(&state.db, user, id).await {
         Ok(Some(row)) => row,
-        Ok(None) => return Err(StatusCode::NOT_FOUND.into_response()),
-        Err(()) => return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(()) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     };
     let store_id = row.id.clone();
     match state
@@ -432,8 +432,8 @@ async fn load_domain(
         .await
     {
         Ok(Some(domain)) => Ok((row, domain)),
-        Ok(None) => Err(StatusCode::NOT_FOUND.into_response()),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
 
@@ -446,7 +446,7 @@ pub async fn record_page(
 ) -> Response {
     let (row, domain) = match load_domain(&state, &user, &id, domain_id).await {
         Ok(loaded) => loaded,
-        Err(response) => return response,
+        Err(status) => return status.into_response(),
     };
     let view = domain_view(domain, crate::now_unix(), None);
     store_page(&state, &user, &row, |chrome, store| {
@@ -465,7 +465,7 @@ pub async fn check_page(
 ) -> Response {
     let (row, domain) = match load_domain(&state, &user, &id, domain_id).await {
         Ok(loaded) => loaded,
-        Err(response) => return response,
+        Err(status) => return status.into_response(),
     };
     let checked = domain.last_checked_at.is_some();
     let view = domain_view(domain, crate::now_unix(), None);
@@ -500,7 +500,7 @@ pub async fn check_domain(
 ) -> Response {
     let (row, domain) = match load_domain(&state, &user, &id, domain_id.clone()).await {
         Ok(loaded) => loaded,
-        Err(response) => return response,
+        Err(status) => return status.into_response(),
     };
     let now = crate::now_unix();
     let wait = domain
