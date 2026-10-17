@@ -325,25 +325,28 @@ async fn an_email_another_account_has_or_one_that_isnt_an_address_is_refused() {
     assert!(html.contains("That is not an email address."), "{html}");
 }
 
-/// Changing the password needs the current one, and logs out every other
-/// session: someone else signed in as the merchant is out, the merchant
-/// stays in.
+/// Changing the password, on the Profile tab, needs the current one and
+/// the new one typed twice, and logs out every other session: someone else
+/// signed in as the merchant is out, the merchant stays in.
 #[tokio::test]
-async fn a_password_change_needs_the_current_one_and_logs_out_every_other_session() {
+async fn a_password_change_needs_the_current_one_typed_twice_and_logs_out_every_other_session() {
     let m = Merchant::new("pw@example.com").await;
     let elsewhere = m.log_in("pw@example.com", PASSWORD).await.unwrap();
-    let change = |current: &'static str, new: &'static str| {
-        [
-            ("tab", "security"),
-            ("current_password", current),
-            ("new_password", new),
-        ]
+    let change = |current: &str, new: &str, again: &str| {
+        let mut form = profile("pw@example.com", "system", "");
+        form.extend([
+            ("current_password", current.to_string()),
+            ("new_password", new.to_string()),
+            ("confirm_password", again.to_string()),
+        ]);
+        form
     };
+    let new = "a brand new passphrase";
 
     let (status, html) = m
         .post(
-            "/account/password",
-            &change("wrong password!", "a brand new passphrase"),
+            "/account/profile",
+            &fields(&change("wrong password!", new, new)),
         )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -352,26 +355,39 @@ async fn a_password_change_needs_the_current_one_and_logs_out_every_other_sessio
         html.contains(r#"<section id="card-password" class="settings-card is-failed""#),
         "{html}"
     );
+    assert!(
+        !html.contains("wrong password!"),
+        "a password is never sent back: {html}"
+    );
 
     let (status, html) = m
-        .post("/account/password", &change(PASSWORD, "short"))
+        .post(
+            "/account/profile",
+            &fields(&change(PASSWORD, "short", "short")),
+        )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(html.contains("at least 8 characters"), "{html}");
+
+    let (status, html) = m
+        .post(
+            "/account/profile",
+            &fields(&change(PASSWORD, new, "a brand new passphrasf")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        html.contains("The new password and its confirmation don't match."),
+        "{html}"
+    );
     assert!(m.signed_in(&elsewhere).await, "nothing changed yet");
 
     let (status, to) = m
-        .post(
-            "/account/password",
-            &change(PASSWORD, "a brand new passphrase"),
-        )
+        .post("/account/profile", &fields(&change(PASSWORD, new, new)))
         .await;
     assert_eq!(
         (status, to.as_str()),
-        (
-            StatusCode::SEE_OTHER,
-            "/account?tab=security&saved=password"
-        )
+        (StatusCode::SEE_OTHER, "/account?saved=password")
     );
     assert!(m
         .get(&to)
@@ -381,18 +397,60 @@ async fn a_password_change_needs_the_current_one_and_logs_out_every_other_sessio
     assert!(m.signed_in(&m.session).await, "the merchant stays in");
     assert!(!m.signed_in(&elsewhere).await, "everyone else is out");
     assert!(m.log_in("pw@example.com", PASSWORD).await.is_none());
-    assert!(m
-        .log_in("pw@example.com", "a brand new passphrase")
-        .await
-        .is_some());
+    assert!(m.log_in("pw@example.com", new).await.is_some());
 
+    // Left empty, the password cards' fields change nothing.
     let (_, to) = m
-        .post(
-            "/account/password",
-            &[("current_password", ""), ("new_password", "")],
-        )
+        .post("/account/profile", &fields(&change("", "", "")))
         .await;
-    assert_eq!(to, "/account?tab=security&saved=nothing");
+    assert_eq!(to, "/account?saved=nothing");
+}
+
+/// A theme and a password saved in one go: both change, and the password's
+/// change still logs everyone else out.
+#[tokio::test]
+async fn a_password_saves_with_the_rest_of_the_profile() {
+    let m = Merchant::new("both@example.com").await;
+    let elsewhere = m.log_in("both@example.com", PASSWORD).await.unwrap();
+    let new = "another fresh passphrase";
+    let mut form = profile("both@example.com", "dark", "");
+    form.extend([
+        ("current_password", PASSWORD.to_string()),
+        ("new_password", new.to_string()),
+        ("confirm_password", new.to_string()),
+    ]);
+    let (status, to) = m.post("/account/profile", &fields(&form)).await;
+    assert_eq!(
+        (status, to.as_str()),
+        (StatusCode::SEE_OTHER, "/account?saved=appearance,password")
+    );
+    let (_, html) = m.get(&to).await;
+    assert!(html_tag(&html).contains(r#"data-theme="dark""#), "{html}");
+    assert!(html.contains("<strong>Profile saved</strong>"), "{html}");
+    assert!(!m.signed_in(&elsewhere).await);
+    assert!(m.log_in("both@example.com", new).await.is_some());
+}
+
+/// Without JavaScript a new email asks again on a page of its own, which
+/// can't carry a password through: one sent with it is refused, and
+/// nothing changes.
+#[tokio::test]
+async fn a_new_email_without_its_confirmation_holds_back_a_password_change() {
+    let m = Merchant::new("order@example.com").await;
+    let new = "yet another passphrase";
+    let mut form = profile("renamed@example.com", "system", "");
+    form.extend([
+        ("current_password", PASSWORD.to_string()),
+        ("new_password", new.to_string()),
+        ("confirm_password", new.to_string()),
+    ]);
+    let (status, html) = m.post("/account/profile", &fields(&form)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        html.contains("Change the email first, then the password."),
+        "{html}"
+    );
+    assert!(m.log_in("order@example.com", PASSWORD).await.is_some());
 }
 
 #[tokio::test]
@@ -414,7 +472,7 @@ async fn signed_out_the_account_page_sends_a_browser_to_log_in() {
     let response = router
         .oneshot(
             Request::builder()
-                .uri("/account?tab=security")
+                .uri("/account?tab=wallets")
                 .header("accept", "text/html")
                 .body(Body::empty())
                 .unwrap(),
@@ -424,7 +482,7 @@ async fn signed_out_the_account_page_sends_a_browser_to_log_in() {
     assert_eq!(response.status(), StatusCode::FOUND);
     assert_eq!(
         response.headers()["location"],
-        "/dashboard/login?next=%2Faccount%3Ftab%3Dsecurity"
+        "/dashboard/login?next=%2Faccount%3Ftab%3Dwallets"
     );
 }
 

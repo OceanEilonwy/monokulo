@@ -1036,7 +1036,7 @@ impl Db {
         Ok(())
     }
 
-    /// `POST /account/password`: the new password's hash, and every one of
+    /// `POST /account/profile`, changing the password: the new password's hash, and every one of
     /// the user's sessions but `keep` (the one changing it) ended, in one
     /// transaction. Returns how many sessions were ended.
     pub fn change_password(

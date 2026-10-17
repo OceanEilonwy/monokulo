@@ -460,7 +460,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/setup/done/{id}", axum::routing::get(setup::done))
         .route("/account", axum::routing::get(account::page))
         .route("/account/profile", post(account::save_profile))
-        .route("/account/password", post(account::change_password))
         .route("/account/wallets/add", axum::routing::get(wallets::add))
         .route(
             "/account/wallets/name-check",
