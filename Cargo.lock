@@ -1127,7 +1127,6 @@ dependencies = [
  "clap",
  "futures-util",
  "hex",
- "hmac 0.13.0",
  "http-body",
  "http-body-util",
  "key-custody",
@@ -1156,7 +1155,6 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "zeroize",
  "zeromq",
 ]
 
@@ -4049,7 +4047,6 @@ checksum = "b9be42f50aa861c555654aa3a37f52f4b1074bacf4e48fe0ef7fa584e80f1f0f"
 name = "snp-attest"
 version = "0.1.0"
 dependencies = [
- "ecdsa",
  "hex",
  "libc",
  "p384",
