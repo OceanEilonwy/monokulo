@@ -2,7 +2,7 @@
 //! surface over `reqwest` + `rustls`.
 //!
 //! Every endpoint and field name used here was verified against a live public
-//! node (`node.hollingworth.xyz:18089`, restricted RPC) before being written, the
+//! node (`node.hollingworth.xyz:443`, restricted RPC) before being written, the
 //! same way `key_custody`'s crypto was verified against `monero-rs`'s own source
 //! rather than assumed from memory - see the `#[ignore]`d tests at the bottom of
 //! this file for the live proof.
@@ -3723,7 +3723,7 @@ mod live_node_tests {
     use super::*;
 
     const TEST_NODE_HOST: &str = "node.hollingworth.xyz";
-    const TEST_NODE_PORT: u16 = 18089;
+    const TEST_NODE_PORT: u16 = 443;
 
     /// The test node, or the mainnet node named by `ENGINE_LIVE_TEST_NODE`
     /// (`host:port`, TLS) when the usual one is down or behind.
