@@ -27,7 +27,7 @@
 use crate::kds;
 use crate::pinned_ark;
 use crate::report::{AttestationReport, Product, TcbVersion, SIGNING_KEY_VCEK};
-use ecdsa::signature::Verifier;
+use p384::ecdsa::signature::Verifier;
 use p384::ecdsa::{Signature as P384Signature, VerifyingKey as P384VerifyingKey};
 use x509_parser::certificate::X509Certificate;
 use x509_parser::pem::Pem;
@@ -678,7 +678,7 @@ mod tests {
         raw[0x34..0x38].copy_from_slice(&1u32.to_le_bytes());
 
         let sig: SigT =
-            ecdsa::signature::Signer::sign(&signing_key, &raw[..crate::report::SIGNED_LEN]);
+            p384::ecdsa::signature::Signer::sign(&signing_key, &raw[..crate::report::SIGNED_LEN]);
         let (r, s) = (sig.r().to_bytes(), sig.s().to_bytes());
 
         // Encode into the report's own little-endian, 72-byte-padded form.
@@ -798,7 +798,7 @@ mod tests {
         }
         raw[0x34..0x38].copy_from_slice(&1u32.to_le_bytes()); // sig_algo, for the parser
         let sig: SigT =
-            ecdsa::signature::Signer::sign(&signing_key, &raw[..crate::report::SIGNED_LEN]);
+            p384::ecdsa::signature::Signer::sign(&signing_key, &raw[..crate::report::SIGNED_LEN]);
         let (r, s) = (sig.r().to_bytes(), sig.s().to_bytes());
         for i in 0..48 {
             raw[0x2A0 + i] = r[47 - i];
