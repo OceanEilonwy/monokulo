@@ -1,7 +1,7 @@
 //! The new designs, built from the real ui components inside monokulo's
-//! real page chrome, with made-up data: the last check before they replace
-//! today's pages. Nothing here saves: a button that would change something
-//! goes to the screen it would lead to.
+//! real page chrome, with made-up data. The setup summary and the verified
+//! domains are the real views (`views::setup`, `views::domains`); the
+//! wallet card is on the real store settings page. Nothing here saves.
 //!
 //! ```sh
 //! cargo run -p monokulo --example design_demo
@@ -14,16 +14,15 @@ use axum::{extract::Query, response::Html, routing::get, Router};
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 use monokulo::db::Theme;
 use monokulo::http::{build_router, AppState};
+use monokulo::views::domains::{DomainStatus, DomainView, StoreRef};
 use monokulo::views::{self, Page, PageChrome};
 use serde::Deserialize;
 use ui::assets::icons;
 use ui::{
-    Alert, Button, ButtonType, ButtonVariant, Choice, ControlSize, CopyBlock, CopyValue, DataCell,
-    DataGrid, DataKind, Dialog, DialogActions, DialogPage, DialogTitle, Disclosure, DisclosureLook,
-    DnsRecord, Fact, Facts, FieldNote, FormActions, HelpTip, Hint, IconButton, IconLink, Input,
-    ItemCard, LinkButton, NoteTone, PageHeader, Row, Select, Setting, SettingLayout, Slot,
-    StatusBanner, TableBrowser, Tag, TagTone, TextArea, TipAnchor, Tone, WizardState, WizardStep,
-    WizardSteps,
+    Alert, Button, ButtonType, ButtonVariant, Choice, ControlSize, CopyBlock, DataCell, DataGrid,
+    DataKind, Dialog, DialogActions, DialogPage, DialogTitle, Disclosure, DisclosureLook, Fact,
+    Facts, FormActions, Hint, IconButton, IconLink, Input, LinkButton, PageHeader, Row, Select,
+    Slot, TableBrowser, Tag, TagTone, TextArea, Tone,
 };
 
 const ADDRESS: &str = "127.0.0.1:4400";
@@ -75,21 +74,6 @@ fn icon(svg: &'static str) -> Markup {
     html! { (PreEscaped(svg)) }
 }
 
-fn with_icon(svg: &'static str, words: &str) -> Markup {
-    html! { (icon(svg)) (words) }
-}
-
-fn then_icon(words: &str, svg: &'static str) -> Markup {
-    html! { (words) (icon(svg)) }
-}
-
-fn settings_crumbs(look: &Look) -> Vec<ui::Crumb> {
-    vec![
-        ui::Crumb::new(look.href("/"), STORE),
-        ui::Crumb::new(look.href("/domains/on"), "Settings"),
-    ]
-}
-
 // ---------------------------------------------------------------- index
 
 async fn index(Query(look): Query<Look>) -> Html<String> {
@@ -99,19 +83,11 @@ async fn index(Query(look): Query<Look>) -> Html<String> {
             &[("/setup-done", "The summary as facts")],
         ),
         (
-            "2. Store settings: Wallet",
-            &[("/wallet", "The stacked wallet setting")],
-        ),
-        (
             "3a. Verified domains",
             &[
                 ("/domains/on", "Restriction on, a domain in each state"),
                 ("/domains/off", "Restriction off, a domain verified"),
                 ("/domains/empty", "Nothing verified, no domains yet"),
-                (
-                    "/domains/allow-any",
-                    "Allow any website? (the dialog's own page)",
-                ),
             ],
         ),
         (
@@ -165,7 +141,11 @@ fn page(look: &Look, path: &str, title: &str, header: PageHeader, body: Markup) 
     Html(
         Page::new(format!("{title} - Design demo"), header)
             // The Query page takes the full width, as the Logs page does.
-            .class(if path.starts_with("/query") { "settings-page wrap-wide" } else { "settings-page" })
+            .class(if path.starts_with("/query") {
+                "settings-page wrap-wide"
+            } else {
+                "settings-page"
+            })
             .head(html! { style { (PreEscaped(DEMO_STYLE)) } })
             .render(&look.chrome(path), body)
             .into_string(),
@@ -183,11 +163,6 @@ const DEMO_STYLE: &str = r#"
 .query-label { margin: 0; font-size: var(--text-xs); font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .query-empty { text-align: center; }
 .query-empty .form-actions { justify-content: center; }
-.record-table-intro { margin: 0 0 var(--space-xs); font-size: var(--text-sm); font-weight: 700; }
-.check-panel { display: flex; align-items: center; gap: var(--space-md); }
-.check-spinner { flex: none; width: 1.6rem; height: 1.6rem; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: demo-spin .9s linear infinite; }
-@keyframes demo-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .check-spinner { animation: none; } }
 @media (max-width: 640px) {
   .query-band { grid-template-columns: minmax(0, 1fr); height: auto; }
   .query-band > .mk-table-browser { order: 2; }
@@ -196,452 +171,162 @@ const DEMO_STYLE: &str = r#"
 
 // ------------------------------------------------------ 1. setup done
 
+/// The real setup done page (`views::setup::done_page`).
 async fn setup_done(Query(look): Query<Look>) -> Html<String> {
-    let header = PageHeader::new(format!("{STORE} is set up"))
-        .progress(views::setup::steps(views::setup::Step::Done, None));
-    let fact = |term: &str, value: Markup| Fact {
-        term: term.into(),
-        value: value.into(),
+    let data = views::setup::DoneViewModel {
+        store_id: "rachels-handicrafts".into(),
+        name: STORE.into(),
+        site: DOMAIN.into(),
+        has_orders: false,
+        public_key: "pk_6c168c735d314966ac858a7a71de5eaf".into(),
+        base_currency: "AUD".into(),
+        wallet_name: STORE.into(),
+        wallet_network: "mainnet".into(),
+        skipped_backup: false,
+        plugin: None,
     };
-    let body = html! {
-        (Facts::new(vec![
-            fact("Status", html! { (Tag::new("Not taking payments yet").tone(TagTone::Unknown)) }),
-            fact("Wallet", html! { a href=(look.href("/wallet")) { (STORE) } " " (views::network_badge("mainnet")) }),
-            fact("Prices in", html! { "AUD" }),
-        ]))
-        (FormActions::new(
-            LinkButton::new(then_icon("Change in the store's settings", icons::ARROW_RIGHT), look.href("/wallet"))
-                .variant(ButtonVariant::Quiet)
-                .size(ControlSize::Compact),
-        ))
-        ul class="todo" {
-            li {
-                p {
-                    strong { "Add the checkout to your site" }
-                    (Hint::new(format!("A script tag and a button on {DOMAIN}, or a call from your server. The guide shows both, and how to verify the domain.")).inline(true))
-                }
-                (LinkButton::new("Open the guide", "#").variant(ButtonVariant::Primary))
-            }
-            li {
-                p {
-                    strong { "Take payments in person" }
-                    (Hint::new("The till runs in any browser: type an amount, show the QR code.").inline(true))
-                }
-                (LinkButton::new("Open the till", "#"))
-            }
-        }
-    };
-    page(&look, "/setup-done", "Setup done", header, body)
+    Html(views::setup::done_page(&look.chrome("/setup-done"), &data).into_string())
 }
 
-// ------------------------------------------------------- 2. the wallet
+// ------------------------------------------------ 3. verified domains
+//
+// The real views (`views::domains`) with made-up domains.
 
-async fn wallet(Query(look): Query<Look>) -> Html<String> {
-    let header = PageHeader::new("Settings").crumbs(vec![ui::Crumb::new(look.href("/"), STORE)]);
-    let picker = Select::new(
-        "wallet_id",
-        vec![
-            Choice::new("w_rh01", STORE)
-                .detail("47UhAM…3E32nS…qbLgRU")
-                .network("mainnet")
-                .current(true)
-                .note("this store only")
-                .selected(true),
-            Choice::new("w_ms02", "Market stall float")
-                .detail("48abcD…7fGh01…9xYzQ2")
-                .network("mainnet")
-                .note("used by 1 other store"),
-        ],
-    )
-    .id("store-wallet")
-    .required(true)
-    .attr("aria-describedby", "store-wallet-help");
+fn store_ref() -> StoreRef<'static> {
+    StoreRef {
+        id: "rachels-handicrafts",
+        name: STORE,
+    }
+}
+
+fn domain(
+    id: &str,
+    name: &str,
+    status: DomainStatus,
+    meta: &str,
+    reason: Option<&str>,
+) -> DomainView {
+    DomainView {
+        id: id.into(),
+        domain: name.into(),
+        status,
+        meta: meta.into(),
+        record_host: "_monokulo",
+        record_value: TOKEN.into(),
+        reason: reason.map(str::to_string),
+        wait: None,
+    }
+}
+
+fn all_states() -> Vec<DomainView> {
+    vec![
+        domain("d1", DOMAIN, DomainStatus::Verified, "Checked 3 h ago · checked again every day", None),
+        domain(
+            "d2",
+            "shop.rachelshandicrafts.com",
+            DomainStatus::Waiting,
+            "Added 10 min ago · checked 2 min ago",
+            Some("No TXT record at _monokulo.shop.rachelshandicrafts.com with the value monokulo-verify=6c16…5eaf was found."),
+        ),
+        domain(
+            "d3",
+            "old-shop.example",
+            DomainStatus::Failing,
+            "Record missing for 2h · still counts as verified for 2d 22h",
+            Some("The record was there, and went 2h ago. Publish it again within 2d 22h to keep the domain."),
+        ),
+        domain(
+            "d4",
+            "handicrafts.example",
+            DomainStatus::Lapsed,
+            "Record missing for 3d · it no longer counts",
+            Some("The record has been missing for 3d, so the domain no longer counts. Publish it again and check."),
+        ),
+    ]
+}
+
+fn domains_page(
+    look: &Look,
+    path: &str,
+    domains: &[DomainView],
+    restricted: bool,
+    can_restrict: bool,
+) -> Html<String> {
     let body = views::settings::plain_card(
-        "wallet",
-        "Wallet",
-        html! {
-            form method="get" action=(look.href("/wallet")) fx-submit-on-change {
-                (Setting::new("Wallet", "store-wallet", picker)
-                    .help(html! {
-                        "New payments go into this wallet, since " time datetime="2026-10-17T13:57" { "17 Oct, 13:57" }
-                        ". Only Mainnet wallets can be picked, because the store takes Mainnet payments."
-                    })
-                    .help_id("store-wallet-help")
-                    .layout(SettingLayout::Stacked))
-                // With JavaScript, picking a wallet asks at once.
-                (FormActions::new(Button::new("Change wallet").kind(ButtonType::Submit).attr("data-only", "no-script")))
-            }
-            (Disclosure::new(
-                "Wallet history (1 wallet)",
-                ui::Table::new(html! {
-                    tr aria-current="true" { td { a href="#" { (STORE) } } td { "17 Oct, 13:57" } td { "now" } td class="num" { "0" } }
-                })
-                .head(html! { tr { th { "Wallet" } th { "From" } th { "Until" } th class="num" { "Orders" } } })
-                .scroll(false),
-            ))
-        },
-    );
-    page(&look, "/wallet", "Wallet", header, body)
-}
-
-// ------------------------------------------------ 3a. verified domains
-
-#[derive(Clone, Copy, PartialEq)]
-enum Restriction {
-    On,
-    Off,
-    NothingVerified,
-}
-
-fn restriction_banner(look: &Look, restriction: Restriction) -> Markup {
-    let tip =
-        |text: &str| HelpTip::new("What this means", text.to_string()).anchor(TipAnchor::Container);
-    let banner = match restriction {
-        Restriction::On => StatusBanner::new("Only your verified domains can show this checkout.", Tone::Success)
-            .icon(icon(icons::LOCK))
-            .tip(tip("Browsers won't show this checkout on any other website, and orders started there are refused. Subdomains of a verified domain count. The till and payment links always work."))
-            .action(
-                // With JavaScript it asks first; without, its page asks.
-                LinkButton::new(with_icon(icons::LOCK_OPEN, "Allow any website"), look.href("/domains/allow-any"))
-                    .variant(ButtonVariant::Caution)
-                    .size(ControlSize::Compact)
-                    .attr("data-opens-dialog", "allow-any"),
-            ),
-        Restriction::Off => StatusBanner::new("Any website can show this checkout.", Tone::Warning)
-            .icon(icon(icons::LOCK_OPEN))
-            .tip(tip("Allow only your verified domains to stop other websites showing this checkout and taking orders for your store."))
-            .action(
-                LinkButton::new(with_icon(icons::LOCK, "Only allow my domains"), look.href("/domains/on"))
-                    .variant(ButtonVariant::Primary)
-                    .size(ControlSize::Compact),
-            ),
-        Restriction::NothingVerified => StatusBanner::new("Any website can show this checkout.", Tone::Warning)
-            .icon(icon(icons::LOCK_OPEN))
-            .tip(tip("A domain must be verified before you can allow only your own. Add one below and publish its DNS record."))
-            .action(
-                Button::new(with_icon(icons::LOCK, "Only allow my domains"))
-                    .variant(ButtonVariant::Primary)
-                    .size(ControlSize::Compact)
-                    .disabled(true),
-            ),
-    };
-    html! { (banner) }
-}
-
-fn allow_any_question(look: &Look) -> Markup {
-    html! {
-        (ui::Checks::new(vec![
-            ui::Check { mark: ui::CheckMark::Then, what: format!("Any website can show the checkout and start orders for {STORE}").into(), fix: None },
-            ui::Check { mark: ui::CheckMark::Then, what: "Your verified domains stay listed; turn the restriction back on any time".into(), fix: None },
-        ]))
-        (DialogActions::new(Slot::many([
-            Slot::from(Button::new("Cancel").attr("data-closes-dialog", "")),
-            Slot::from(LinkButton::new(with_icon(icons::LOCK_OPEN, "Allow any website"), look.href("/domains/off")).variant(ButtonVariant::Caution)),
-        ])))
-    }
-}
-
-enum DomainState {
-    Verified,
-    Waiting,
-    Failing,
-    Lapsed,
-}
-
-fn domain_card(look: &Look, name: &str, state: DomainState) -> Markup {
-    let remove = Slot::from(
-        Button::new(with_icon(icons::TRASH, "Remove"))
-            .variant(ButtonVariant::Danger)
-            .size(ControlSize::Compact),
-    );
-    let check = Slot::from(
-        LinkButton::new(
-            with_icon(icons::REFRESH, "Check again"),
-            look.href("/domains/check?state=missing"),
-        )
-        .size(ControlSize::Compact),
-    );
-    let (tag, meta, reason) = match state {
-        DomainState::Verified => (
-            Tag::new("Verified").tone(TagTone::Ok).icon(icon(icons::CHECK)),
-            "Checked 3 h ago · re-checked every 6 h".to_string(),
-            None,
-        ),
-        DomainState::Waiting => (
-            Tag::new("Not verified").tone(TagTone::Unknown),
-            "Added 10 min ago · checked 2 min ago, the record isn't there yet".to_string(),
-            Some(format!("The name servers have no TXT record at _monokulo.{name} yet.")),
-        ),
-        DomainState::Failing => (
-            Tag::new("Failing").tone(TagTone::Stalled),
-            "Record missing for 2 h · still counts as verified for 22 h".to_string(),
-            Some("The record was there, and went 2 h ago. Publish it again within 22 h to keep the domain.".to_string()),
-        ),
-        DomainState::Lapsed => (
-            Tag::new("No longer verified").tone(TagTone::Error),
-            "Record missing for 3 days · checkouts on it are refused".to_string(),
-            Some("The record has been missing for 3 days, so the domain no longer counts.".to_string()),
-        ),
-    };
-    let card = ItemCard::new(name.to_string())
-        .icon(icon(icons::GLOBE))
-        .status(tag)
-        .meta(meta);
-    let card = match reason {
-        None => card.actions(remove),
-        Some(reason) => card.actions(Slot::many([check, remove])).body(html! {
-            p class="record-table-intro" { "Publish this record, then check again:" }
-            (record(name))
-            (FieldNote::new(html! { (icon(icons::WARNING)) " " (reason) }).tone(NoteTone::Pending))
-        }),
-    };
-    html! { (card) }
-}
-
-fn record(domain: &str) -> Markup {
-    html! {
-        (DnsRecord::new(
-            "TXT",
-            CopyValue::new("_monokulo").copy_label(format!("Copy the host for {domain}")),
-            CopyValue::new(TOKEN).copy_label(format!("Copy the value for {domain}")),
-        ))
-    }
-}
-
-fn add_domain(primary: bool, look: &Look) -> Markup {
-    let button = LinkButton::new(
-        with_icon(icons::PLUS, "Add a domain"),
-        look.href("/domains/add"),
-    );
-    let button = if primary {
-        button.variant(ButtonVariant::Primary)
-    } else {
-        button
-    };
-    html! { (FormActions::new(button)) }
-}
-
-fn domains_card(look: &Look, restriction: Restriction, cards: Markup, empty: bool) -> Markup {
-    views::settings::plain_card(
         "verified-domains",
         "Verified domains",
-        html! {
-            (Hint::new("Prove you own the websites that show this store's checkout. A verified domain covers all of its subdomains."))
-            (restriction_banner(look, restriction))
-            @if empty {
-                div class="box query-empty" {
-                    p { strong { "No domains yet" } }
-                    (Hint::new(format!("Add the website your checkout runs on, like {DOMAIN}. It takes one DNS record and a few minutes.")))
-                    (add_domain(true, look))
-                }
-            } @else {
-                (cards)
-                (add_domain(restriction == Restriction::NothingVerified, look))
-            }
-        },
-    )
+        views::domains::domains_body(&store_ref(), domains, restricted, can_restrict),
+    );
+    page(look, path, "Verified domains", settings_header(look), body)
 }
 
 async fn domains_on(Query(look): Query<Look>) -> Html<String> {
-    let cards = html! {
-        (domain_card(&look, DOMAIN, DomainState::Verified))
-        (domain_card(&look, "shop.rachelshandicrafts.com", DomainState::Waiting))
-        (domain_card(&look, "old-shop.example", DomainState::Failing))
-        (domain_card(&look, "handicrafts.example", DomainState::Lapsed))
-    };
-    let body = html! {
-        (domains_card(&look, Restriction::On, cards, false))
-        (Dialog::new("allow-any", "allow-any-title", html! {
-            (DialogTitle::new("allow-any-title", "Allow any website to show this checkout?"))
-            (allow_any_question(&look))
-        }))
-    };
-    page(
-        &look,
-        "/domains/on",
-        "Verified domains",
-        settings_header(&look),
-        body,
-    )
+    domains_page(&look, "/domains/on", &all_states(), true, true)
 }
 
 async fn domains_off(Query(look): Query<Look>) -> Html<String> {
-    let cards = html! {
-        (domain_card(&look, DOMAIN, DomainState::Verified))
-        (domain_card(&look, "shop.rachelshandicrafts.com", DomainState::Waiting))
-    };
-    let body = domains_card(&look, Restriction::Off, cards, false);
-    page(
-        &look,
-        "/domains/off",
-        "Verified domains",
-        settings_header(&look),
-        body,
-    )
+    let mut domains = all_states();
+    domains.truncate(2);
+    domains_page(&look, "/domains/off", &domains, false, true)
 }
 
 async fn domains_empty(Query(look): Query<Look>) -> Html<String> {
-    let body = domains_card(&look, Restriction::NothingVerified, html! {}, true);
-    page(
-        &look,
-        "/domains/empty",
-        "Verified domains",
-        settings_header(&look),
-        body,
-    )
-}
-
-async fn allow_any_page(Query(look): Query<Look>) -> Html<String> {
-    let header =
-        PageHeader::new("Allow any website to show this checkout?").crumbs(settings_crumbs(&look));
-    let body = html! { (DialogPage::new(allow_any_question(&look))) };
-    page(
-        &look,
-        "/domains/allow-any",
-        "Allow any website?",
-        header,
-        body,
-    )
+    domains_page(&look, "/domains/empty", &[], false, false)
 }
 
 fn settings_header(look: &Look) -> PageHeader {
     PageHeader::new("Settings").crumbs(vec![ui::Crumb::new(look.href("/"), STORE)])
 }
 
-// ------------------------------------------------- 3b. add a domain
-
-fn add_steps(at: usize, domain: Option<&str>) -> Markup {
-    let state = |step| match step {
-        s if s < at => WizardState::Done,
-        s if s == at => WizardState::Current,
-        _ => WizardState::Next,
-    };
-    let step = |i: usize, label: &str, detail: &str| WizardStep {
-        label: label.into(),
-        detail: detail.into(),
-        done: usize::from(i < at),
-        tasks: 1,
-        state: state(i),
-    };
-    html! {
-        (WizardSteps::new("Adding a domain", vec![
-            step(0, "Domain", domain.unwrap_or("the website")),
-            step(1, "Add the record", "at your DNS provider"),
-            step(2, "Check", "we ask its name servers"),
-        ]))
-    }
-}
-
 async fn add(Query(look): Query<Look>) -> Html<String> {
     let error = look.state.as_deref() == Some("error");
-    let header = PageHeader::new("Add a domain")
-        .crumbs(settings_crumbs(&look))
-        .progress(add_steps(0, None));
-    let body = html! {
-        form method="get" action="/domains/record" {
-            @if let Some(theme) = &look.theme { input type="hidden" name="theme" value=(theme); }
-            (views::settings::plain_card("domain", "Domain", html! {
-                (Setting::new("Domain", "new-domain", html! {
-                    (Input::new("domain").id("new-domain").value(if error { "rachelshandicrafts" } else { "" })
-                        .placeholder(DOMAIN).invalid(error)
-                        .described_by(if error { "new-domain-help new-domain-problem" } else { "new-domain-help" }))
-                    @if error {
-                        (FieldNote::new("\"rachelshandicrafts\" has no dot. Type the whole domain, like rachelshandicrafts.com.")
-                            .tone(NoteTone::Problem).id("new-domain-problem"))
-                    }
-                })
-                .help("The website that shows your checkout. Its subdomains are covered too.")
-                .help_id("new-domain-help"))
-            }))
-            (FormActions::new(Slot::many([
-                Slot::from(LinkButton::new("Cancel", look.href("/domains/on"))),
-                Slot::from(Button::new(then_icon("Next", icons::ARROW_RIGHT)).variant(ButtonVariant::Primary).kind(ButtonType::Submit)),
-            ])))
-        }
+    let (typed, error) = if error {
+        (
+            "rachelshandicrafts",
+            Some("Enter a full domain, like shop.example."),
+        )
+    } else {
+        ("", None)
     };
-    page(&look, "/domains/add", "Add a domain", header, body)
+    Html(
+        views::domains::add_page(&look.chrome("/domains/add"), &store_ref(), typed, error)
+            .into_string(),
+    )
 }
 
 async fn record_step(Query(look): Query<Look>) -> Html<String> {
-    let header = PageHeader::new("Add the record")
-        .crumbs(settings_crumbs(&look))
-        .progress(add_steps(1, Some(DOMAIN)));
-    let providers = [
-        ("Cloudflare", "your domain › DNS › Records › Add record"),
-        ("Porkbun", "Domain Management › the domain › DNS"),
-        (
-            "Namecheap",
-            "Domain List › Manage › Advanced DNS › Add new record",
-        ),
-        ("GoDaddy", "My Products › the domain › DNS › Add New Record"),
-    ];
-    let body = html! {
-        p { "Sign in where you manage " strong { (DOMAIN) } "'s DNS, add a new record, and fill it in like this:" }
-        (record(DOMAIN))
-        (Hint::new(html! { "Some providers want the full name in Host: " code { "_monokulo." (DOMAIN) } ". TTL can stay at its default." }))
-        (Disclosure::new("Where to find DNS settings", html! {
-            ul { @for (provider, path) in providers { li { strong { (provider) } ": " (path) } } }
-        }))
-        (Hint::new("You can leave and come back: the domain waits in Settings as Not verified, showing this record and Check again."))
-        (FormActions::new(Slot::many([
-            Slot::from(LinkButton::new(with_icon(icons::ARROW_LEFT, "Back"), look.href("/domains/add"))),
-            Slot::from(LinkButton::new(then_icon("I've added it, check now", icons::ARROW_RIGHT), look.href("/domains/check?state=checking")).variant(ButtonVariant::Primary)),
-        ])))
-    };
-    page(&look, "/domains/record", "Add the record", header, body)
+    let domain = domain(
+        "d1",
+        DOMAIN,
+        DomainStatus::Waiting,
+        "",
+        Some("Not checked yet."),
+    );
+    Html(
+        views::domains::record_page(&look.chrome("/domains/record"), &store_ref(), &domain)
+            .into_string(),
+    )
 }
 
 async fn check_step(Query(look): Query<Look>) -> Html<String> {
-    let header = PageHeader::new("Check the record")
-        .crumbs(settings_crumbs(&look))
-        .progress(add_steps(2, Some(DOMAIN)));
-    let back = || {
-        Slot::from(LinkButton::new(
-            with_icon(icons::ARROW_LEFT, "Back to the record"),
-            look.href("/domains/record"),
-        ))
+    let (status, checked) = match look.state.as_deref() {
+        Some("verified") => (DomainStatus::Verified, true),
+        Some("missing") => (DomainStatus::Waiting, true),
+        _ => (DomainStatus::Waiting, false),
     };
-    let body = match look.state.as_deref() {
-        Some("verified") => html! {
-            (Alert::new(format!("It covers its subdomains too, like shop.{DOMAIN}. Keep the record: Monokulo checks it every 6 hours."), Tone::Success)
-                .title(format!("{DOMAIN} is verified."))
-                .icon(icon(icons::CHECK))
-                .block(true))
-            (FormActions::new(LinkButton::new(with_icon(icons::CHECK, "Done"), look.href("/domains/on")).variant(ButtonVariant::Primary)))
-        },
-        Some("missing") => html! {
-            (Alert::new(html! {
-                (DOMAIN) "'s name servers have no TXT record at " code { "_monokulo." (DOMAIN) } " holding " code { "monokulo-verify=6c16…5eaf" }
-                ". DNS changes can take up to an hour to show."
-            }, Tone::Error).title("Not found yet.").icon(icon(icons::WARNING)).block(true))
-            (Hint::new("Checking again by itself every 30 seconds while this page is open. Last checked at 14:02.").attr("data-only", "script"))
-            (Disclosure::new("Still not found?", html! {
-                ul {
-                    li { "Most providers add the domain to the Host for you: type just " code { "_monokulo" } ". Typing the full name there makes " code { "_monokulo." (DOMAIN) "." (DOMAIN) } "." }
-                    li { "Paste the value exactly, without quotes." }
-                    li { "Check you edited the DNS of the provider the domain points to." }
-                }
-            }))
-            (FormActions::new(Slot::many([
-                back(),
-                Slot::from(LinkButton::new(with_icon(icons::REFRESH, "Check again"), look.href("/domains/check?state=verified")).variant(ButtonVariant::Primary)),
-            ])))
-        },
-        _ => html! {
-            div class="box check-panel" role="status" {
-                span class="check-spinner" aria-hidden="true" {}
-                div {
-                    strong { "Checking " (DOMAIN) }
-                    (Hint::new(format!("Asking its name servers for the record at _monokulo.{DOMAIN}…")))
-                }
-            }
-            (FormActions::new(Slot::many([
-                back(),
-                Slot::from(Button::new("Checking…").variant(ButtonVariant::Primary).disabled(true).busy(true)),
-            ])))
-        },
-    };
-    page(&look, "/domains/check", "Check the record", header, body)
+    let reason = (status != DomainStatus::Verified).then_some(
+        "rachelshandicrafts.com's name servers have no TXT record at _monokulo.rachelshandicrafts.com holding monokulo-verify=6c16…5eaf.",
+    );
+    let domain = domain("d1", DOMAIN, status, "", reason);
+    Html(
+        views::domains::check_page(
+            &look.chrome("/domains/check"),
+            &store_ref(),
+            &domain,
+            checked,
+        )
+        .into_string(),
+    )
 }
 
 // ------------------------------------------------------- 4. the query
@@ -1028,11 +713,9 @@ async fn main() {
     let demo = Router::new()
         .route("/", get(index))
         .route("/setup-done", get(setup_done))
-        .route("/wallet", get(wallet))
         .route("/domains/on", get(domains_on))
         .route("/domains/off", get(domains_off))
         .route("/domains/empty", get(domains_empty))
-        .route("/domains/allow-any", get(allow_any_page))
         .route("/domains/add", get(add))
         .route("/domains/record", get(record_step))
         .route("/domains/check", get(check_step))

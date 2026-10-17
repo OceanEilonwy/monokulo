@@ -84,6 +84,7 @@ pub mod checkout;
 pub mod connect;
 pub mod controls;
 pub mod create_order;
+pub mod domains;
 pub mod engine;
 pub mod home;
 

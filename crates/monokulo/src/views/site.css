@@ -114,12 +114,6 @@ table[data-table="nodes"] td.card-meta { font-size: inherit; color: inherit; }
   .scan-figures dd { margin-bottom: var(--space-xs); }
 }
 .dns-record { display: grid; grid-template-columns: max-content 1fr; gap: 2px var(--space-sm); margin: var(--space-sm) 0 0; }
-.dns-record dt { color: var(--muted); font-size: var(--text-sm); }
-.dns-record dd { margin: 0; overflow-wrap: anywhere; }
-.domain-actions { white-space: nowrap; }
-.embed-restriction { display: grid; gap: var(--space-sm); justify-items: start; margin: 1em 0; }
-.embed-restriction p { margin: 0; }
-.domain-actions form { display: inline-block; margin: 0 var(--space-xs) var(--space-xs) 0; }
 /* The one-time "just deleted" row an admin table shows right after a real
    delete (`admin_invites.html.hbs`) - struck through and faded so it reads
    as gone-but-still-visible-for-confirmation, not a live row. */
@@ -535,3 +529,19 @@ table[data-table="wallets"] .card-unit { display: none; }
 @media (max-width: 640px) {
   [data-watch-live] { display: none; }
 }
+
+/* A store's verified domains (`views::domains`): the record's line above
+   it, the cards' list, and the box shown with none yet. */
+.record-intro { margin: 0 0 var(--space-xs); font-size: var(--text-sm); font-weight: 700; }
+.domain-list { margin: var(--space-md) 0; }
+.mk-item-card-actions > form { margin: 0; }
+.domains-empty { text-align: center; }
+.domains-empty .form-actions { justify-content: center; }
+/* The check page's result gives way to "Checking…" while a check runs
+   (fixi marks it aria-busy). */
+.domain-check > .check-busy { display: none; align-items: center; gap: var(--space-md); }
+.domain-check[aria-busy="true"] > .check-busy { display: flex; }
+.domain-check[aria-busy="true"] > .check-result { display: none; }
+.check-spinner { flex: none; width: 1.6rem; height: 1.6rem; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: check-spin .9s linear infinite; }
+@keyframes check-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .check-spinner { animation: none; } }

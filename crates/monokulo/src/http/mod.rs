@@ -499,8 +499,16 @@ pub fn build_router(state: AppState) -> Router {
             post(embed_domains::add_domain),
         )
         .route(
+            "/dashboard/stores/{id}/settings/domains/add",
+            axum::routing::get(embed_domains::add_form),
+        )
+        .route(
+            "/dashboard/stores/{id}/settings/domains/{domain_id}/record",
+            axum::routing::get(embed_domains::record_page),
+        )
+        .route(
             "/dashboard/stores/{id}/settings/domains/{domain_id}/check",
-            post(embed_domains::check_domain),
+            axum::routing::get(embed_domains::check_page).post(embed_domains::check_domain),
         )
         .route(
             "/dashboard/stores/{id}/settings/domains/{domain_id}/delete",
