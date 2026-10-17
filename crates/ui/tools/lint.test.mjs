@@ -10,6 +10,15 @@ test('shared controls are required in HTML, JSX and Maud', () => {
   assert.equal(inspect('x.html', '<button class="mk-btn">Save</button>').length, 0);
   assert.equal(inspect('x.tsx', 'const x = <input class="mk-input"/>;').length, 0);
 });
+test('a Rust value named like a control is not a Maud element', () => {
+  for (const source of [
+    'let button = if primary {\n    button.variant(ui::ButtonVariant::Primary)\n} else {\n    button\n};',
+    'let button = html.split("<button").last().unwrap();\nassert!(button.contains(" disabled"), "{button}");',
+  ]) {
+    assert.equal(inspect('x.rs', source).length, 0, source);
+  }
+  assert.ok(inspect('x.rs', 'button.save type="submit" { "Save" }').some(f => f.rule === 'shared-control'));
+});
 test('new CSS drift and inaccessible icon controls fail', () => {
   const rules = inspect('app.css', '.mk-btn { color: #fff; font-size: 17px; }').map(f => f.rule);
   assert.ok(rules.includes('component-override') && rules.includes('color-token') && rules.includes('type-token'));

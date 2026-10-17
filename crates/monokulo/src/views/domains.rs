@@ -202,7 +202,7 @@ pub fn card_only(store: &StoreRef, domain: &DomainView) -> Markup {
 /// top of the card: on (green), off (yellow, a warning), or off with
 /// nothing verified to allow (its button disabled). Allowing any website
 /// asks first with JavaScript; without, it posts straight away.
-pub fn restriction_banner(store: &StoreRef, restricted: bool, can_restrict: bool) -> Markup {
+fn restriction_banner(store: &StoreRef, restricted: bool, can_restrict: bool) -> Markup {
     banner(store, restricted, can_restrict, false)
 }
 

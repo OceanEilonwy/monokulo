@@ -11,10 +11,6 @@
     "count": 1,
     "snippet": "input type=\"file\" id=\"refund-image\" accept=\"image/*\" hidden;"
   },
-  "crates/monokulo/src/views/mod.rs:shared-control:8eaca04a98990e19": {
-    "count": 1,
-    "snippet": "button.starts_with(r#\"<summary class=\"acct-button\" aria-label=\"Account menu\" title=\"rachel.dz@example.org\"><svg class=\"acct-icon\"\"#), \"{"
-  },
   "crates/monokulo/src/views/site.css:type-token:7af55def3c50c2fd": {
     "count": 1,
     "snippet": "html, body { font-size: 15px }"
