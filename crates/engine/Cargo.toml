@@ -65,10 +65,6 @@ url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
 
 clap = "4.6.7"
-# Push notifications from the operator's own monerod (`--zmq-pub`), behind
-# the `zmq` feature (docs/monero_zmq.md). A pure-Rust ZeroMQ, so the binary
-# stays static: no `libzmq`, which is why the design ruled ZMQ out before.
-zeromq = { version = "0.6.0", default-features = false, features = ["tokio-runtime", "tcp-transport", "ipc-transport"], optional = true }
 
 [features]
 # Exploration entry points and fault/clock helpers; never enabled in production.
@@ -88,7 +84,10 @@ test-support = ["shared/test-support"]
 # safety net. Without this feature a node setting naming `zmq_pub` is
 # refused, so it can't be saved and silently ignored. On by default: every
 # build that ships has it (`--no-default-features` builds without).
-zmq = ["dep:zeromq"]
+# The subscriber is the engine's own (`zmtp`): ZMTP 3.0's SUB side with the
+# NULL mechanism, all a node's `--zmq-pub` needs, so the binary stays static
+# with no `libzmq`, which is why the design ruled ZMQ out before.
+zmq = []
 default = ["zmq"]
 
 # Pinning the engine's threads to CPUs and setting their niceness

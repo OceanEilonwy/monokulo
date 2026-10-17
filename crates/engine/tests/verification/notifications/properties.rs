@@ -170,8 +170,8 @@ fn all_polling_recovery_modes_run() {
 
 #[cfg(feature = "zmq")]
 mod zmq {
+    use super::super::test_publisher::Publisher;
     use super::*;
-    use zeromq::{PubSocket, Socket as _, SocketSend as _, ZmqMessage};
 
     /// These histories run on paused test time that only the test moves
     /// (`hold_virtual_clock`): the subscriber's pause before reconnecting
@@ -211,7 +211,7 @@ mod zmq {
             .await
             .unwrap();
     }
-    async fn send_until(publisher: &mut PubSocket, wakes: &NodeWakes, topic: &str) {
+    async fn send_until(publisher: &Publisher, wakes: &NodeWakes, topic: &str) {
         let before = wakes.announcements().unwrap().publishers[0].clone();
         let counted = || {
             let now = wakes.announcements().unwrap().publishers[0].clone();
@@ -222,12 +222,7 @@ mod zmq {
         // A frame sent before the subscription reaches the publisher is
         // dropped, so send again every 10ms of real time until one counts.
         loop {
-            publisher
-                .send(ZmqMessage::from(format!(
-                    "{topic}:deliberately ignored JSON"
-                )))
-                .await
-                .unwrap();
+            publisher.send(&format!("{topic}:deliberately ignored JSON"));
             let resend = std::time::Instant::now() + Duration::from_millis(10);
             while std::time::Instant::now() < resend {
                 if counted() {
@@ -244,18 +239,11 @@ mod zmq {
     async fn history(actions: Vec<(u8, bool, u8)>) {
         tokio::time::pause();
         let _clock = crate::property_support::hold_virtual_clock();
-        let mut publishers = [PubSocket::new(), PubSocket::new()];
-        let first = publishers[0]
-            .bind("tcp://127.0.0.1:0")
-            .await
-            .unwrap()
-            .to_string();
-        let second = publishers[1]
-            .bind("tcp://127.0.0.1:0")
-            .await
-            .unwrap()
-            .to_string();
-        let endpoints = [first, second];
+        let mut publishers = [
+            Publisher::bind("tcp://127.0.0.1:0").await,
+            Publisher::bind("tcp://127.0.0.1:0").await,
+        ];
+        let endpoints = publishers.each_ref().map(|p| p.endpoint().to_owned());
         let settings = crate::engine_settings::EngineSettings::load_with(
             crate::store::Store::open_in_memory().unwrap().into_shared(),
             None,
@@ -278,17 +266,16 @@ mod zmq {
             a.publishers.len() == 1 && a.publishers[0].connected
         })
         .await;
-        send_until(&mut publishers[0], &wakes, POOL_TOPIC).await;
+        send_until(&publishers[0], &wakes, POOL_TOPIC).await;
         let before = wakes.announcements().unwrap().publishers[0].clone();
         // A real transport disconnect and bind to the same endpoint: recovery
         // must happen without saving settings or replacing NodeWakes.
-        let old = std::mem::replace(&mut publishers[0], PubSocket::new());
-        drop(old);
+        publishers[0].close();
         until(&wakes, |a| {
             !a.publishers[0].connected && a.publishers[0].last_error.is_some()
         })
         .await;
-        publishers[0].bind(&endpoints[0]).await.unwrap();
+        publishers[0] = Publisher::bind(&endpoints[0]).await;
         // The listener set that error and started its pause in one poll, so
         // the pause is already waiting on the clock.
         // Tokio's timers fire on whole milliseconds after their deadline,
@@ -302,10 +289,10 @@ mod zmq {
             wakes.announcements().unwrap().publishers[0].pool_announcements
                 >= before.pool_announcements
         );
-        send_until(&mut publishers[0], &wakes, CHAIN_TOPIC).await;
+        send_until(&publishers[0], &wakes, CHAIN_TOPIC).await;
         // A pool frame on this same ordered connection acknowledges that all
         // earlier chain frames were processed before taking topic baselines.
-        send_until(&mut publishers[0], &wakes, POOL_TOPIC).await;
+        send_until(&publishers[0], &wakes, POOL_TOPIC).await;
         for (endpoint, duplicate, burst) in actions.into_iter().chain([(2, false, 1)]) {
             if endpoint == 2 {
                 save(&settings, None, false).await;
@@ -320,15 +307,12 @@ mod zmq {
                     && a.publishers[0].connected
             })
             .await;
-            send_until(&mut publishers[index], &wakes, POOL_TOPIC).await;
+            send_until(&publishers[index], &wakes, POOL_TOPIC).await;
             let before = wakes.announcements().unwrap().publishers[0].clone();
             for _ in 0..burst {
-                publishers[index]
-                    .send(ZmqMessage::from("json-minimal-txpool_addx:{}".to_owned()))
-                    .await
-                    .unwrap();
+                publishers[index].send("json-minimal-txpool_addx:{}");
             }
-            send_until(&mut publishers[index], &wakes, POOL_TOPIC).await;
+            send_until(&publishers[index], &wakes, POOL_TOPIC).await;
             let after = wakes.announcements().unwrap().publishers[0].clone();
             assert_eq!(
                 after.block_announcements, before.block_announcements,
@@ -337,11 +321,8 @@ mod zmq {
             assert!(after.pool_announcements > before.pool_announcements);
             // Previously configured publishers must no longer affect this one.
             let count = after.block_announcements;
-            publishers[1 - index]
-                .send(ZmqMessage::from(format!("{CHAIN_TOPIC}:{{}}")))
-                .await
-                .unwrap();
-            send_until(&mut publishers[index], &wakes, POOL_TOPIC).await;
+            publishers[1 - index].send(&format!("{CHAIN_TOPIC}:{{}}"));
+            send_until(&publishers[index], &wakes, POOL_TOPIC).await;
             assert_eq!(
                 wakes.announcements().unwrap().publishers[0].block_announcements,
                 count

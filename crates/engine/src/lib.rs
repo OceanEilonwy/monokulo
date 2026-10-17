@@ -66,6 +66,8 @@ pub mod threads;
 #[path = "../tests/verification/support/temp_db.rs"]
 pub(crate) mod verification_temp_db;
 pub mod work;
+#[cfg(feature = "zmq")]
+mod zmtp;
 
 /// Seconds since the Unix epoch: the one clock both services share.
 pub use shared::time::now_unix;
