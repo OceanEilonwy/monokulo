@@ -15,6 +15,7 @@
 //! truncated anyway. Answers come from other people's servers, so [`parse`]
 //! takes any bytes without panicking (`fuzz/fuzz_targets/dns_message.rs`).
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
@@ -334,36 +335,43 @@ fn within(name: &str, zone: &str) -> bool {
 }
 
 /// Where to look names up: the roots to start from, the resolvers to ask
-/// when they can't be reached, and how long to wait for each answer.
+/// when they can't be reached, how long to wait for each answer, and where
+/// a server's address is answered (port 53, unless `addresses` says).
 #[derive(Debug, Clone)]
 pub struct Resolver {
     roots: Vec<IpAddr>,
     fallback: Vec<IpAddr>,
-    port: u16,
     timeout: Duration,
+    addresses: HashMap<IpAddr, SocketAddr>,
 }
 
 impl Resolver {
-    /// The real one: the root servers on port 53, then the machine's
-    /// resolvers.
+    /// The real one: the root servers, then the machine's resolvers.
     pub fn system() -> Self {
         Resolver::new(
             ROOT_SERVERS.into_iter().map(IpAddr::V4).collect(),
             system_resolvers(),
-            53,
             Duration::from_secs(2),
         )
     }
 
-    /// `roots` to start from, `fallback` resolvers, every server on `port`,
-    /// `timeout` for each answer.
-    pub fn new(roots: Vec<IpAddr>, fallback: Vec<IpAddr>, port: u16, timeout: Duration) -> Self {
+    /// `roots` to start from, `fallback` resolvers, `timeout` for each
+    /// answer; every server on port 53.
+    pub fn new(roots: Vec<IpAddr>, fallback: Vec<IpAddr>, timeout: Duration) -> Self {
         Resolver {
             roots,
             fallback,
-            port,
             timeout,
+            addresses: HashMap::new(),
         }
+    }
+
+    /// Asks the servers at these IPs at the given socket addresses instead:
+    /// name servers played on one loopback address, each on its own port,
+    /// stand in for the internet's.
+    pub fn with_addresses(mut self, addresses: HashMap<IpAddr, SocketAddr>) -> Self {
+        self.addresses = addresses;
+        self
     }
 
     /// The TXT values published at `name`; none for a name with none, or
@@ -526,7 +534,11 @@ impl Resolver {
     ) -> Result<Message, DnsError> {
         let id: u16 = rand::random();
         let query = encode_query(id, name, record_type, recursion);
-        let address = SocketAddr::new(server, self.port);
+        let address = self
+            .addresses
+            .get(&server)
+            .copied()
+            .unwrap_or(SocketAddr::new(server, 53));
         let ours = |message: &Message| {
             message.response
                 && message.id == id
