@@ -68,6 +68,23 @@
   },
   {
     "component": "Button",
+    "html": "<button class=\"mk-btn\" type=\"button\" data-variant=\"caution\">Allow any website</button>",
+    "props": {
+      "block": false,
+      "busy": false,
+      "children": {
+        "$slot": [
+          "Allow any website"
+        ]
+      },
+      "disabled": false,
+      "kind": "button",
+      "variant": "caution"
+    },
+    "title": "Caution"
+  },
+  {
+    "component": "Button",
     "html": "<button class=\"mk-btn\" type=\"submit\" data-variant=\"primary\">Log in</button>",
     "props": {
       "block": false,
@@ -1574,6 +1591,706 @@
       }
     },
     "title": "An order"
+  },
+  {
+    "component": "StatusBanner",
+    "html": "<div class=\"mk-status-banner\" data-tone=\"success\"><span class=\"mk-status-banner-icon\" aria-hidden=\"true\">🔒</span><div class=\"mk-status-banner-title\"><strong>Only your verified domains can show this checkout.</strong><details class=\"help-tip\" data-anchor=\"container\" data-mk=\"1\" data-island=\"HelpTip\" data-props=\"{}\"><summary aria-label=\"What this means\" title=\"What this means\">?</summary><div class=\"help-tip-body\">Browsers won't show it on any other website, and orders started there are refused.</div></details></div><div class=\"mk-status-banner-action\"><button class=\"mk-btn\" type=\"button\" data-variant=\"caution\" data-size=\"compact\">Allow any website</button></div></div>",
+    "props": {
+      "action": {
+        "$slot": [
+          {
+            "$component": "Button",
+            "props": {
+              "block": false,
+              "busy": false,
+              "children": {
+                "$slot": [
+                  "Allow any website"
+                ]
+              },
+              "disabled": false,
+              "kind": "button",
+              "size": "compact",
+              "variant": "caution"
+            }
+          }
+        ]
+      },
+      "icon": {
+        "$slot": [
+          "🔒"
+        ]
+      },
+      "tip": {
+        "$slot": [
+          {
+            "$component": "HelpTip",
+            "props": {
+              "anchor": "container",
+              "children": {
+                "$slot": [
+                  "Browsers won't show it on any other website, and orders started there are refused."
+                ]
+              },
+              "label": "What this means",
+              "wide": false
+            }
+          }
+        ]
+      },
+      "title": "Only your verified domains can show this checkout.",
+      "tone": "success"
+    },
+    "title": "On"
+  },
+  {
+    "component": "StatusBanner",
+    "html": "<div class=\"mk-status-banner\" data-tone=\"notice\"><span class=\"mk-status-banner-icon\" aria-hidden=\"true\">🔓</span><div class=\"mk-status-banner-title\"><strong>Any website can show this checkout.</strong><details class=\"help-tip\" data-anchor=\"container\" data-mk=\"1\" data-island=\"HelpTip\" data-props=\"{}\"><summary aria-label=\"What this means\" title=\"What this means\">?</summary><div class=\"help-tip-body\">Allow only your verified domains to stop other websites showing it.</div></details></div><div class=\"mk-status-banner-action\"><button class=\"mk-btn\" type=\"button\" data-variant=\"primary\" data-size=\"compact\">Only allow my domains</button></div></div>",
+    "props": {
+      "action": {
+        "$slot": [
+          {
+            "$component": "Button",
+            "props": {
+              "block": false,
+              "busy": false,
+              "children": {
+                "$slot": [
+                  "Only allow my domains"
+                ]
+              },
+              "disabled": false,
+              "kind": "button",
+              "size": "compact",
+              "variant": "primary"
+            }
+          }
+        ]
+      },
+      "icon": {
+        "$slot": [
+          "🔓"
+        ]
+      },
+      "tip": {
+        "$slot": [
+          {
+            "$component": "HelpTip",
+            "props": {
+              "anchor": "container",
+              "children": {
+                "$slot": [
+                  "Allow only your verified domains to stop other websites showing it."
+                ]
+              },
+              "label": "What this means",
+              "wide": false
+            }
+          }
+        ]
+      },
+      "title": "Any website can show this checkout.",
+      "tone": "notice"
+    },
+    "title": "Off"
+  },
+  {
+    "component": "ItemCard",
+    "html": "<article class=\"mk-item-card\"><div class=\"mk-item-card-head\"><div class=\"mk-item-card-name\"><h4 class=\"mk-item-card-title\"><span class=\"mk-item-card-icon\" aria-hidden=\"true\">🌐</span><span>rachelshandicrafts.com</span></h4><span class=\"tag tag-ok\">Verified</span></div><div class=\"mk-item-card-actions\"><button class=\"mk-btn\" type=\"button\" data-variant=\"danger\" data-size=\"compact\">Remove</button></div></div><p class=\"mk-item-card-meta\">Checked 3 h ago · re-checked every 6 h</p></article>",
+    "props": {
+      "actions": {
+        "$slot": [
+          {
+            "$component": "Button",
+            "props": {
+              "block": false,
+              "busy": false,
+              "children": {
+                "$slot": [
+                  "Remove"
+                ]
+              },
+              "disabled": false,
+              "kind": "button",
+              "size": "compact",
+              "variant": "danger"
+            }
+          }
+        ]
+      },
+      "icon": {
+        "$slot": [
+          "🌐"
+        ]
+      },
+      "meta": {
+        "$slot": [
+          "Checked 3 h ago · re-checked every 6 h"
+        ]
+      },
+      "status": {
+        "$slot": [
+          {
+            "$component": "Tag",
+            "props": {
+              "children": {
+                "$slot": [
+                  "Verified"
+                ]
+              },
+              "tone": "ok"
+            }
+          }
+        ]
+      },
+      "title": {
+        "$slot": [
+          "rachelshandicrafts.com"
+        ]
+      }
+    },
+    "title": "Verified"
+  },
+  {
+    "component": "ItemCard",
+    "html": "<article class=\"mk-item-card\"><div class=\"mk-item-card-head\"><div class=\"mk-item-card-name\"><h4 class=\"mk-item-card-title\"><span class=\"mk-item-card-icon\" aria-hidden=\"true\">🌐</span><span>shop.rachelshandicrafts.com</span></h4><span class=\"tag tag-unknown\">Not verified</span></div><div class=\"mk-item-card-actions\"><button class=\"mk-btn\" type=\"button\" data-size=\"compact\">Check again</button><button class=\"mk-btn\" type=\"button\" data-variant=\"danger\" data-size=\"compact\">Remove</button></div></div><p class=\"mk-item-card-meta\">Added 10 min ago · the record isn't there yet</p><div class=\"mk-item-card-body\"><table class=\"table-stack mk-dns-record\"><thead><tr><th scope=\"col\">Type</th><th scope=\"col\">Host</th><th scope=\"col\">Value</th></tr></thead><tbody><tr><td data-label=\"Type\"><code>TXT</code></td><td data-label=\"Host\"><div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy the host&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;_monokulo&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">_monokulo</span><!--mk:2--></div></td><td data-label=\"Value\"><div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy the value&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;monokulo-verify=6c168c735d314966ac858a7a71de5eaf&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">monokulo-verify=6c168c735d314966ac858a7a71de5eaf</span><!--mk:2--></div></td></tr></tbody></table></div></article>",
+    "props": {
+      "actions": {
+        "$slot": [
+          {
+            "$component": "Button",
+            "props": {
+              "block": false,
+              "busy": false,
+              "children": {
+                "$slot": [
+                  "Check again"
+                ]
+              },
+              "disabled": false,
+              "kind": "button",
+              "size": "compact"
+            }
+          },
+          {
+            "$component": "Button",
+            "props": {
+              "block": false,
+              "busy": false,
+              "children": {
+                "$slot": [
+                  "Remove"
+                ]
+              },
+              "disabled": false,
+              "kind": "button",
+              "size": "compact",
+              "variant": "danger"
+            }
+          }
+        ]
+      },
+      "body": {
+        "$slot": [
+          {
+            "$component": "DnsRecord",
+            "props": {
+              "host": {
+                "$slot": [
+                  {
+                    "$component": "CopyValue",
+                    "props": {
+                      "copy_label": "Copy the host",
+                      "head": 8,
+                      "tail": 8,
+                      "truncate": "end",
+                      "value": "_monokulo"
+                    }
+                  }
+                ]
+              },
+              "record_type": "TXT",
+              "value": {
+                "$slot": [
+                  {
+                    "$component": "CopyValue",
+                    "props": {
+                      "copy_label": "Copy the value",
+                      "head": 8,
+                      "tail": 8,
+                      "truncate": "end",
+                      "value": "monokulo-verify=6c168c735d314966ac858a7a71de5eaf"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "icon": {
+        "$slot": [
+          "🌐"
+        ]
+      },
+      "meta": {
+        "$slot": [
+          "Added 10 min ago · the record isn't there yet"
+        ]
+      },
+      "status": {
+        "$slot": [
+          {
+            "$component": "Tag",
+            "props": {
+              "children": {
+                "$slot": [
+                  "Not verified"
+                ]
+              },
+              "tone": "unknown"
+            }
+          }
+        ]
+      },
+      "title": {
+        "$slot": [
+          "shop.rachelshandicrafts.com"
+        ]
+      }
+    },
+    "title": "Waiting, with what it needs"
+  },
+  {
+    "component": "DnsRecord",
+    "html": "<table class=\"table-stack mk-dns-record\"><thead><tr><th scope=\"col\">Type</th><th scope=\"col\">Host</th><th scope=\"col\">Value</th></tr></thead><tbody><tr><td data-label=\"Type\"><code>TXT</code></td><td data-label=\"Host\"><div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy the host&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;_monokulo&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">_monokulo</span><!--mk:2--></div></td><td data-label=\"Value\"><div class=\"mk-copy\" data-island=\"CopyValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy the value&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;monokulo-verify=6c168c735d314966ac858a7a71de5eaf&quot;}\"><span class=\"mk-copy-value mk-mono\" data-copy-value tabindex=\"0\" data-mk=\"1\">monokulo-verify=6c168c735d314966ac858a7a71de5eaf</span><!--mk:2--></div></td></tr></tbody></table>",
+    "props": {
+      "host": {
+        "$slot": [
+          {
+            "$component": "CopyValue",
+            "props": {
+              "copy_label": "Copy the host",
+              "head": 8,
+              "tail": 8,
+              "truncate": "end",
+              "value": "_monokulo"
+            }
+          }
+        ]
+      },
+      "record_type": "TXT",
+      "value": {
+        "$slot": [
+          {
+            "$component": "CopyValue",
+            "props": {
+              "copy_label": "Copy the value",
+              "head": 8,
+              "tail": 8,
+              "truncate": "end",
+              "value": "monokulo-verify=6c168c735d314966ac858a7a71de5eaf"
+            }
+          }
+        ]
+      }
+    },
+    "title": "A TXT record"
+  },
+  {
+    "component": "DataGrid",
+    "html": "<div class=\"mk-data-grid\" data-sticky-first=\"\"><div class=\"mk-data-grid-bar\"><span class=\"mk-data-grid-stats\">2 rows · 6 ms · monokulo</span></div><div class=\"mk-data-grid-scroll\" tabindex=\"0\" role=\"region\" aria-label=\"Query results\"><table><thead><tr><th scope=\"col\" class=\"mk-data-cell\">id</th><th scope=\"col\" class=\"mk-data-cell\">status</th><th scope=\"col\" class=\"mk-data-cell\">amount_fiat</th><th scope=\"col\" class=\"mk-data-cell\">payment_id</th><th scope=\"col\" class=\"mk-data-cell\">payload</th></tr></thead><tbody><tr><td class=\"mk-data-cell\">order_2282ae</td><td class=\"mk-data-cell\">paid</td><td class=\"mk-data-cell\" data-kind=\"number\">24.50</td><td class=\"mk-data-cell\" data-kind=\"null\">NULL</td><td class=\"mk-data-cell\"><div class=\"mk-data-long\"><span class=\"mk-data-value\">{&quot;event&quot;:&quot;order.paid&quot;,&quot;order&quot;:{&quot;id&quot;:&quot;order_2282ae&quot;}}</span><span class=\"mk-data-size\">1.8 KB</span><span class=\"mk-data-actions\"><button type=\"button\" class=\"mk-btn icon-only\" aria-label=\"Expand payload\" title=\"Expand payload\">⤢</button></span></div></td></tr><tr><td class=\"mk-data-cell\">order_77c0d1</td><td class=\"mk-data-cell\">confirmed</td><td class=\"mk-data-cell\" data-kind=\"number\">9.00</td><td class=\"mk-data-cell\" data-kind=\"null\">NULL</td><td class=\"mk-data-cell\"><div class=\"mk-data-long\"><span class=\"mk-data-value\">{&quot;event&quot;:&quot;order.confirmed&quot;,&quot;order&quot;:{&quot;id&quot;:&quot;order_77c0d1&quot;}}</span><span class=\"mk-data-size\">1.9 KB</span><span class=\"mk-data-actions\"><button type=\"button\" class=\"mk-btn icon-only\" aria-label=\"Expand payload\" title=\"Expand payload\">⤢</button></span></div></td></tr></tbody></table></div></div>",
+    "props": {
+      "caption": "Query results",
+      "children": {
+        "$slot": [
+          {
+            "$component": "Row",
+            "props": {
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "DataCell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "order_2282ae"
+                        ]
+                      },
+                      "header": false
+                    }
+                  },
+                  {
+                    "$component": "DataCell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "paid"
+                        ]
+                      },
+                      "header": false
+                    }
+                  },
+                  {
+                    "$component": "DataCell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "24.50"
+                        ]
+                      },
+                      "header": false,
+                      "kind": "number"
+                    }
+                  },
+                  {
+                    "$component": "DataCell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "NULL"
+                        ]
+                      },
+                      "header": false,
+                      "kind": "null"
+                    }
+                  },
+                  {
+                    "$component": "DataCell",
+                    "props": {
+                      "actions": {
+                        "$slot": [
+                          {
+                            "$component": "IconButton",
+                            "props": {
+                              "disabled": false,
+                              "icon": {
+                                "$slot": [
+                                  "⤢"
+                                ]
+                              },
+                              "kind": "button",
+                              "label": "Expand payload"
+                            }
+                          }
+                        ]
+                      },
+                      "children": {
+                        "$slot": [
+                          "{\"event\":\"order.paid\",\"order\":{\"id\":\"order_2282ae\"}}"
+                        ]
+                      },
+                      "header": false,
+                      "size": "1.8 KB"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "$component": "Row",
+            "props": {
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "DataCell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "order_77c0d1"
+                        ]
+                      },
+                      "header": false
+                    }
+                  },
+                  {
+                    "$component": "DataCell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "confirmed"
+                        ]
+                      },
+                      "header": false
+                    }
+                  },
+                  {
+                    "$component": "DataCell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "9.00"
+                        ]
+                      },
+                      "header": false,
+                      "kind": "number"
+                    }
+                  },
+                  {
+                    "$component": "DataCell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "NULL"
+                        ]
+                      },
+                      "header": false,
+                      "kind": "null"
+                    }
+                  },
+                  {
+                    "$component": "DataCell",
+                    "props": {
+                      "actions": {
+                        "$slot": [
+                          {
+                            "$component": "IconButton",
+                            "props": {
+                              "disabled": false,
+                              "icon": {
+                                "$slot": [
+                                  "⤢"
+                                ]
+                              },
+                              "kind": "button",
+                              "label": "Expand payload"
+                            }
+                          }
+                        ]
+                      },
+                      "children": {
+                        "$slot": [
+                          "{\"event\":\"order.confirmed\",\"order\":{\"id\":\"order_77c0d1\"}}"
+                        ]
+                      },
+                      "header": false,
+                      "size": "1.9 KB"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "head": {
+        "$slot": [
+          {
+            "$component": "Row",
+            "props": {
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "DataCell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "id"
+                        ]
+                      },
+                      "header": true
+                    }
+                  },
+                  {
+                    "$component": "DataCell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "status"
+                        ]
+                      },
+                      "header": true
+                    }
+                  },
+                  {
+                    "$component": "DataCell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "amount_fiat"
+                        ]
+                      },
+                      "header": true
+                    }
+                  },
+                  {
+                    "$component": "DataCell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "payment_id"
+                        ]
+                      },
+                      "header": true
+                    }
+                  },
+                  {
+                    "$component": "DataCell",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "payload"
+                        ]
+                      },
+                      "header": true
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "stats": {
+        "$slot": [
+          "2 rows · 6 ms · monokulo"
+        ]
+      },
+      "sticky_first": true
+    },
+    "title": "Rows, a long value in each"
+  },
+  {
+    "component": "TableBrowser",
+    "html": "<nav class=\"mk-table-browser\" aria-label=\"Tables\"><p class=\"mk-table-browser-label\">Tables</p><input class=\"mk-input\" type=\"text\" name=\"table-filter\" placeholder=\"Filter tables…\" aria-label=\"Filter tables\"><div class=\"mk-table-browser-list\"><details class=\"disclosure-compact\"><summary>stores<span class=\"tag tag-muted\">3</span></summary><div class=\"disclosure-body\"><dl class=\"facts\"><dt>id</dt><dd>TEXT</dd><dt>name</dt><dd>TEXT</dd></dl></div></details><details class=\"disclosure-compact\"><summary>sessions<span class=\"tag tag-muted\">4</span></summary><div class=\"disclosure-body\"><dl class=\"facts\"><dt>user_id</dt><dd>TEXT</dd><dt>token</dt><dd><span class=\"tag tag-muted\">hidden</span></dd></dl></div></details></div></nav>",
+    "props": {
+      "children": {
+        "$slot": [
+          {
+            "$component": "Disclosure",
+            "props": {
+              "alert": false,
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "Facts",
+                    "props": {
+                      "facts": [
+                        {
+                          "term": "id",
+                          "value": {
+                            "$slot": [
+                              "TEXT"
+                            ]
+                          }
+                        },
+                        {
+                          "term": "name",
+                          "value": {
+                            "$slot": [
+                              "TEXT"
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "look": "compact",
+              "open": false,
+              "summary": {
+                "$slot": [
+                  "stores",
+                  {
+                    "$component": "Tag",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "3"
+                        ]
+                      },
+                      "tone": "muted"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "$component": "Disclosure",
+            "props": {
+              "alert": false,
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "Facts",
+                    "props": {
+                      "facts": [
+                        {
+                          "term": "user_id",
+                          "value": {
+                            "$slot": [
+                              "TEXT"
+                            ]
+                          }
+                        },
+                        {
+                          "term": "token",
+                          "value": {
+                            "$slot": [
+                              {
+                                "$component": "Tag",
+                                "props": {
+                                  "children": {
+                                    "$slot": [
+                                      "hidden"
+                                    ]
+                                  },
+                                  "tone": "muted"
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "look": "compact",
+              "open": false,
+              "summary": {
+                "$slot": [
+                  "sessions",
+                  {
+                    "$component": "Tag",
+                    "props": {
+                      "children": {
+                        "$slot": [
+                          "4"
+                        ]
+                      },
+                      "tone": "muted"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "filter": {
+        "$slot": [
+          {
+            "$component": "Input",
+            "props": {
+              "disabled": false,
+              "invalid": false,
+              "kind": "text",
+              "label": "Filter tables",
+              "name": "table-filter",
+              "placeholder": "Filter tables…",
+              "readonly": false,
+              "required": false
+            }
+          }
+        ]
+      },
+      "label": "Tables"
+    },
+    "title": "Two tables"
   },
   {
     "component": "Dialog",
@@ -3233,6 +3950,66 @@
       "label": "Use TLS"
     },
     "title": "A checkbox"
+  },
+  {
+    "component": "Setting",
+    "html": "<div class=\"setting-field\" data-layout=\"stacked\" data-mk=\"1\" data-island=\"Setting\" data-props=\"{}\"><div class=\"setting-about\"><div class=\"setting-label-row\"><label class=\"setting-label\" for=\"book-setting-wallet\">Wallet</label><span class=\"changed-mark\">changed</span></div><p class=\"field-help\" id=\"book-setting-wallet-help\">New payments go into this wallet. Only Mainnet wallets can be picked.</p></div><div class=\"setting-control\"><div class=\"mk-select\" data-mk=\"1\" data-island=\"Select\" data-props=\"{&quot;search&quot;:&quot;auto&quot;}\"><select class=\"mk-input\" name=\"wallet\" id=\"book-setting-wallet\" data-mk=\"2\" aria-describedby=\"book-setting-wallet-help\"><option value=\"w_rh01\" selected data-label=\"Rachel's Handicrafts\" data-detail=\"47UhAM…qbLgRU\" data-network=\"mainnet\" data-chip=\"Current\" data-chip-tone=\"current\" data-note=\"this store only\">Rachel's Handicrafts (47UhAM…qbLgRU) [Mainnet] [Current] - this store only</option><option value=\"w_ms02\" data-label=\"Market stall float\" data-detail=\"48abcD…9xYzQ2\" data-network=\"mainnet\" data-note=\"used by 1 other store\">Market stall float (48abcD…9xYzQ2) [Mainnet] - used by 1 other store</option></select><!--mk:3--></div></div></div>",
+    "props": {
+      "children": {
+        "$slot": [
+          {
+            "$component": "Select",
+            "props": {
+              "aria-describedby": "book-setting-wallet-help",
+              "compact": false,
+              "disabled": false,
+              "id": "book-setting-wallet",
+              "name": "wallet",
+              "options": [
+                {
+                  "chip": "Current",
+                  "current": true,
+                  "data_label": "Rachel's Handicrafts",
+                  "detail": "47UhAM…qbLgRU",
+                  "disabled": false,
+                  "label": "Rachel's Handicrafts",
+                  "network": "mainnet",
+                  "note": "this store only",
+                  "selected": true,
+                  "text": "Rachel's Handicrafts (47UhAM…qbLgRU) [Mainnet] [Current] - this store only",
+                  "value": "w_rh01"
+                },
+                {
+                  "current": false,
+                  "data_label": "Market stall float",
+                  "detail": "48abcD…9xYzQ2",
+                  "disabled": false,
+                  "label": "Market stall float",
+                  "network": "mainnet",
+                  "note": "used by 1 other store",
+                  "selected": false,
+                  "text": "Market stall float (48abcD…9xYzQ2) [Mainnet] - used by 1 other store",
+                  "value": "w_ms02"
+                }
+              ],
+              "required": false,
+              "search": "auto"
+            }
+          }
+        ]
+      },
+      "group": false,
+      "help": {
+        "$slot": [
+          "New payments go into this wallet. Only Mainnet wallets can be picked."
+        ]
+      },
+      "help_id": "book-setting-wallet-help",
+      "id": "book-setting-wallet",
+      "label": "Wallet",
+      "layout": "stacked"
+    },
+    "title": "Stacked: a control that needs the width"
   },
   {
     "component": "Setting",

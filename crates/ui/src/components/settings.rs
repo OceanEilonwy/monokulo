@@ -170,6 +170,15 @@ component! {
     }
 }
 
+/// How a setting lays out its name and its control.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]
+pub enum SettingLayout {
+    /// The name and help above, the control across the whole card: a
+    /// control whose content needs the width (a wallet picker, a long
+    /// value such as an address or a URL).
+    Stacked,
+}
+
 component! {
     /// One setting: its name and what it's for on the left, its control on
     /// the right (a phone, or a wide control such as radio cards, a list of
@@ -197,6 +206,8 @@ component! {
         described_by: Option<String>,
         /// The label's own id, for a control that names itself by it.
         label_id: Option<String>,
+        /// Stacked: the control under the name, full width, at any width.
+        layout: Option<SettingLayout>,
         /// `data-*` attributes of the page's own, `hidden`.
         rest: Attrs,
     }
@@ -208,7 +219,7 @@ component! {
     html {
         div class="setting-field"
             class=join["setting-field", "is-changed" if b.changed]
-            role="group" if group aria-labelledby=(id) if group aria-describedby=[described_by] ..rest ref=root {
+            role="group" if group aria-labelledby=(id) if group aria-describedby=[described_by] data-layout=[layout] ..rest ref=root {
             div class="setting-about" {
                 div class="setting-label-row" {
                     @if group {
@@ -469,6 +480,33 @@ pub(super) fn setting_examples() -> Vec<(&'static str, Setting)> {
             )
             .help("Connect with https. Most nodes on port 18081 don't use it.")
             .help_id("book-setting-tls-help"),
+        ),
+        (
+            "Stacked: a control that needs the width",
+            Setting::new(
+                "Wallet",
+                "book-setting-wallet",
+                crate::Select::new(
+                    "wallet",
+                    vec![
+                        crate::Choice::new("w_rh01", "Rachel's Handicrafts")
+                            .detail("47UhAM…qbLgRU")
+                            .network("mainnet")
+                            .current(true)
+                            .note("this store only")
+                            .selected(true),
+                        crate::Choice::new("w_ms02", "Market stall float")
+                            .detail("48abcD…9xYzQ2")
+                            .network("mainnet")
+                            .note("used by 1 other store"),
+                    ],
+                )
+                .id("book-setting-wallet")
+                .attr("aria-describedby", "book-setting-wallet-help"),
+            )
+            .help("New payments go into this wallet. Only Mainnet wallets can be picked.")
+            .help_id("book-setting-wallet-help")
+            .layout(SettingLayout::Stacked),
         ),
         (
             "A group",

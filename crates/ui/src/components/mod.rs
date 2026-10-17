@@ -6,8 +6,10 @@ mod actions;
 mod chrome;
 mod content;
 mod copy;
+mod data;
 mod dialog;
 mod forms;
+mod items;
 mod select;
 mod settings;
 mod sortable;
@@ -18,8 +20,10 @@ pub use actions::*;
 pub use chrome::*;
 pub use content::*;
 pub use copy::*;
+pub use data::*;
 pub use dialog::*;
 pub use forms::*;
+pub use items::*;
 pub use select::*;
 pub use settings::*;
 pub use sortable::*;
@@ -97,6 +101,13 @@ pub fn catalogue() -> Vec<Specimens> {
         specimens(content::table_examples()),
         specimens(content::pagination_examples()),
         specimens(content::card_examples()),
+        specimens(items::status_banner_examples()),
+        specimens(items::item_card_examples()),
+        specimens(items::dns_record_examples()),
+        specimens(data::data_grid_examples()),
+        // Shown in DataGrid's example: a cell alone isn't a table.
+        specimens(Vec::<(&str, data::DataCell)>::new()),
+        specimens(data::table_browser_examples()),
         // Shown in Table's examples: a row or a cell alone isn't a table.
         specimens(Vec::<(&str, content::Row)>::new()),
         specimens(Vec::<(&str, content::Cell)>::new()),

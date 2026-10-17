@@ -8,6 +8,9 @@ pub enum ButtonVariant {
     Primary,
     /// An action that deletes or can't be undone.
     Danger,
+    /// An action that lowers a protection and can be undone ("Allow any
+    /// website"): the warning colour's words and edge, not a fill.
+    Caution,
     /// No border or fill, for actions beside other content.
     Quiet,
 }
@@ -73,6 +76,10 @@ pub(super) fn button_examples() -> Vec<(&'static str, Button)> {
         (
             "Quiet",
             Button::new("Discard").variant(ButtonVariant::Quiet),
+        ),
+        (
+            "Caution",
+            Button::new("Allow any website").variant(ButtonVariant::Caution),
         ),
         (
             "Submits its form",

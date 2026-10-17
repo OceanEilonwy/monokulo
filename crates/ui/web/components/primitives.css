@@ -22,6 +22,8 @@ textarea.mk-input { resize: vertical; }
 .mk-btn[data-variant="primary"]:hover { background: var(--btn-primary-hover); border-color: var(--btn-primary-hover); }
 .mk-btn[data-variant="danger"] { background: var(--btn-danger-bg); color: var(--btn-danger-ink); border-color: var(--btn-danger-bg); }
 .mk-btn[data-variant="danger"]:hover { border-color: var(--ink); }
+.mk-btn[data-variant="caution"], .mk-btn[data-variant="caution"]:hover { color: var(--warning); border-color: var(--warning); }
+.mk-btn[data-variant="caution"]:hover { background: var(--tint-warning); }
 .mk-btn[data-variant="quiet"] { background: transparent; border-color: transparent; color: var(--ink); }
 .mk-btn[data-variant="quiet"]:hover { background: var(--btn-hover-bg); }
 .mk-btn:disabled { opacity: .45; cursor: not-allowed; }

@@ -13,6 +13,9 @@
 .setting-field:has(> .setting-about) > .setting-control { flex: 100 1 12rem; max-width: 22rem; }
 .setting-field:has(> .setting-about) + .setting-field:has(> .setting-about) { margin-top: var(--space-md); padding-top: var(--space-md); border-top: 1px solid var(--line); }
 .setting-field:has(> .setting-control > :is(.radio-cards, .setting-choices, textarea, table, .table-scroll, .mk-sortable):first-child) > :is(.setting-about, .setting-control) { flex-basis: 100%; max-width: none; }
+/* A stacked setting (`SettingLayout::Stacked`): the control under the name
+   at any width, for a control whose content needs the room. */
+.setting-field[data-layout="stacked"] > :is(.setting-about, .setting-control) { flex-basis: 100%; max-width: none; }
 .setting-field[hidden] { display: none; }
 .setting-about { min-width: 0; }
 .setting-field .setting-label-row { margin: 0 0 var(--space-xs); line-height: 1.3; }
