@@ -260,6 +260,7 @@ async fn main() {
     let engine_state = EngineAppState {
         db: engine::store::Database::inline(Arc::clone(&store)),
         rate_limits: Arc::new(ApiRateLimits::new(1_000_000, Some(1_000_000))),
+        activity_stream: engine::activity::StreamTuning::DEFAULT,
         log_store: None,
         engine_token: Arc::new(
             shared::auth::RawToken::presented(shared::auth::TEST_ENGINE_TOKEN).hash(),

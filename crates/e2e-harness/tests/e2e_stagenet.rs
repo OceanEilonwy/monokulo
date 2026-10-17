@@ -179,6 +179,7 @@ async fn live_stagenet_payment_is_detected_end_to_end() {
     let app_state = AppState {
         db: engine::store::Database::inline(Arc::clone(&store)),
         rate_limits: Arc::new(ApiRateLimits::new(10_000, Some(10_000))),
+        activity_stream: engine::activity::StreamTuning::DEFAULT,
         settings: engine::engine_settings::EngineSettings::defaults(),
         log_store: None,
         engine_token: Arc::new(
