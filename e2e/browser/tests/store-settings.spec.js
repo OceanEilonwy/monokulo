@@ -163,7 +163,7 @@ test('the Verified domains form lays its field out like every other setting, and
   await card.getByLabel('Domain').fill('layout-check.example');
   await card.getByRole('button', { name: 'Add domain' }).click();
   const row = page.locator('#card-verified-domains tr', { hasText: 'layout-check.example' });
-  await expect(row).toContainText('_monokulo.layout-check.example');
+  await expect(row).toContainText('Host_monokulo');
   // Removing asks first, in a dialog.
   await row.getByRole('button', { name: 'Remove' }).click();
   await page.getByRole('dialog', { name: 'Remove layout-check.example?' }).getByRole('button', { name: 'Remove domain' }).click();
@@ -178,7 +178,7 @@ test('without JavaScript the Verified domains form still adds a domain', async (
   const card = page.locator('#card-verified-domains');
   await card.getByLabel('Domain').fill('nojs-check.example');
   await card.getByRole('button', { name: 'Add domain' }).click();
-  await expect(page.locator('#card-verified-domains tr', { hasText: 'nojs-check.example' })).toContainText('_monokulo.nojs-check.example');
+  await expect(page.locator('#card-verified-domains tr', { hasText: 'nojs-check.example' })).toContainText('Host_monokulo');
   // Removed again without the confirm (no JavaScript, no prompt).
   await page.locator('#card-verified-domains tr', { hasText: 'nojs-check.example' }).getByRole('button', { name: 'Remove' }).click();
   await expect(page.locator('#card-verified-domains')).not.toContainText('nojs-check.example');

@@ -155,7 +155,7 @@ pub(super) fn domain_views(rows: Vec<StoreDomainRow>, now: i64) -> Vec<EmbedDoma
                 ),
             };
             EmbedDomainView {
-                record_name: embed_domains::record_name(&row.domain),
+                record_host: embed_domains::RECORD_LABEL,
                 record_value: embed_domains::record_value(&row.token),
                 show_record: state != DomainState::Verified,
                 last_checked: row
@@ -1517,7 +1517,7 @@ mod tests {
         let row = shop(&state);
         let (_, html) = send(&router, "GET", &settings, &session, None).await;
         assert!(
-            html.contains("<code>_monokulo.shop.example</code>"),
+            html.contains("<dt>Host</dt><dd><code>_monokulo</code></dd>"),
             "got: {html}"
         );
         assert!(html.contains(&format!("<code>monokulo-verify={}</code>", row.token)));

@@ -68,7 +68,9 @@ pub struct EmbedDomainView {
     /// The TXT record to publish - shown until the domain is verified, and
     /// again while it's failing.
     pub show_record: bool,
-    pub record_name: String,
+    /// The record's host, relative to the domain as a DNS provider asks
+    /// for it: `_monokulo`.
+    pub record_host: &'static str,
     pub record_value: String,
     pub last_checked: String,
     /// The latest failed check's reason; `None` once verified.
@@ -998,7 +1000,7 @@ fn verified_domains_card(store: &StoreSettingsData) -> Markup {
                                     @if domain.show_record {
                                         dl class="dns-record" {
                                             dt { "Type" } dd { code { "TXT" } }
-                                            dt { "Name" } dd { code { (domain.record_name) } }
+                                            dt { "Host" } dd { code { (domain.record_host) } }
                                             dt { "Value" } dd { code { (domain.record_value) } }
                                         }
                                     }
@@ -1453,7 +1455,7 @@ mod tests {
                 state_label,
                 detail: None,
                 show_record,
-                record_name: format!("_monokulo.{name}"),
+                record_host: "_monokulo",
                 record_value: format!("monokulo-verify=token-{id}"),
                 last_checked: "never".to_string(),
                 last_error: None,
@@ -1470,7 +1472,10 @@ mod tests {
             !html.contains("monokulo-verify=token-d1"),
             "a verified domain doesn't need its record shown"
         );
-        assert!(html.contains("<code>_monokulo.new.example</code>"));
+        assert!(
+            html.contains("<dt>Host</dt><dd><code>_monokulo</code></dd>"),
+            "{html}"
+        );
         assert!(html.contains("<code>monokulo-verify=token-d2</code>"));
         assert!(html.contains(r#"action="/dashboard/stores/conn_1/settings/domains/d2/check""#));
         assert!(html.contains(r#"action="/dashboard/stores/conn_1/settings/domains/d1/delete""#));
