@@ -34,6 +34,7 @@ pub mod instance_admin;
 mod logs;
 mod order_events;
 mod orders;
+mod query;
 pub mod rate_limit;
 mod status_page;
 #[cfg(test)]
@@ -285,6 +286,9 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
             "/api/v1/admin/proof/{network}/anchor",
             delete(instance_admin::forget_anchor),
         )
+        // Its database, read-only, for monokulo's admin Query page.
+        .route("/api/v1/admin/query", post(query::run))
+        .route("/api/v1/admin/query/schema", get(query::schema))
         // This engine's logs, for monokulo's Logs page (structured_logging.md 3.3).
         .route("/api/v1/admin/logs", get(logs::list))
         .route("/api/v1/admin/logs/trace/{trace_id}", get(logs::trace))
