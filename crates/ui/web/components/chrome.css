@@ -1,6 +1,9 @@
 /* A page's column, and the bar's row lined up with it. */
 .wrap { max-width: 880px; margin: 0 auto; padding: 0 1.2rem; }
 .site-nav[data-width="wide"] .wrap { max-width: 1120px; }
+/* A page of data (the Logs and Query pages, `wrap-wide`), and the bar's
+   row lined up with it. */
+.wrap.wrap-wide, .site-nav[data-width="full"] .wrap { max-width: 1200px; }
 .site-nav { background: var(--chrome-bg); color: var(--chrome-ink); border-bottom: 3px solid var(--chrome-rule); }
 .site-nav-row {
   display: flex;

@@ -7,6 +7,8 @@ pub enum PageWidth {
     Normal,
     /// Room for side-by-side cards: the project's site.
     Wide,
+    /// Room for rows of data: the Logs and Query pages.
+    Full,
 }
 
 component! {
@@ -32,7 +34,7 @@ component! {
         toggle_id: String,
     }
     html {
-        nav class="site-nav" data-width="wide" if width == PageWidth::Wide {
+        nav class="site-nav" data-width=(width) if width != PageWidth::Normal {
             div class="wrap site-nav-row" {
                 a href=(home) class="site-nav-brand" { (brand) }
                 @if let Some(status) = status { (status) }

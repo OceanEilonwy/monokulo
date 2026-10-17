@@ -88,7 +88,7 @@ export type OrderState = "pending" | "unconfirmed" | "confirming" | "partial" | 
 /**
  * How wide a page's column is.
  */
-export type PageWidth = "normal" | "wide";
+export type PageWidth = "normal" | "wide" | "full";
 
 /**
  * A panel's look.
