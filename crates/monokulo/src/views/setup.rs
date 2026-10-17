@@ -6,7 +6,7 @@
 //! JavaScript except making a new wallet, whose recovery phrase is made in
 //! the browser.
 
-use maud::{html, Markup};
+use maud::{html, Markup, PreEscaped};
 
 use super::PageChrome;
 use ui::{WizardState, WizardStep as Segment, WizardSteps};
@@ -288,10 +288,42 @@ fn settings_link(id: &str) -> String {
     format!("/dashboard/stores/{id}/settings")
 }
 
+/// What the store is set up with, as facts: whether it takes payments yet
+/// (only said while a site has no orders, so nothing claims it does), the
+/// wallet and its network, the currency it prices in, and where to change
+/// them.
 fn summary(data: &DoneViewModel) -> Markup {
+    let fact = |term: &str, value: Markup| ui::Fact {
+        term: term.into(),
+        value: value.into(),
+    };
+    let not_yet = !data.site.is_empty() && !data.has_orders;
+    let facts: Vec<ui::Fact> = not_yet
+        .then(|| {
+            fact(
+                "Status",
+                html! { (ui::Tag::new("Not taking payments yet").tone(ui::TagTone::Unknown).attr("data-not-yet", "")) },
+            )
+        })
+        .into_iter()
+        .chain([
+            fact(
+                "Wallet",
+                html! { a href="/account?tab=wallets" { (data.wallet_name) } " " (super::network_badge(&data.wallet_network)) },
+            ),
+            fact("Prices in", html! { (data.base_currency) }),
+        ])
+        .collect();
     html! {
-        "Payments will go to " a href="/account?tab=wallets" { strong { (data.wallet_name) } } " " (super::network_badge(&data.wallet_network)) ", priced in "
-        (data.base_currency) ". " a href=(settings_link(&data.store_id)) { "Change these in the store's settings." }
+        (ui::Facts::new(facts).attr("data-store-summary", ""))
+        (ui::FormActions::new(
+            ui::LinkButton::new(
+                html! { "Change in the store's settings" (PreEscaped(ui::assets::icons::ARROW_RIGHT)) },
+                settings_link(&data.store_id),
+            )
+            .variant(ui::ButtonVariant::Quiet)
+            .size(ui::ControlSize::Compact),
+        ))
     }
 }
 
@@ -330,12 +362,7 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
     let header =
         ui::PageHeader::new(html! { (data.name) " " (title) }).progress(steps(Step::Done, None));
     let body = html! {
-        p class="store-summary" {
-            @if has_site && !data.has_orders {
-                (ui::Tag::new("Not taking payments yet").tone(ui::TagTone::Unknown).attr("data-not-yet", "")) " "
-            }
-            (summary(data))
-        }
+        (summary(data))
         @if data.skipped_backup { (skipped_warning()) }
         ul class="todo" {
             li {
@@ -654,6 +681,24 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("Your store's public key"), "{html}");
+        // The summary is facts: the status first, then the wallet with its
+        // network, the currency, and where to change them.
+        let summary = html
+            .split(r#"<dl class="facts" data-store-summary="">"#)
+            .nth(1)
+            .and_then(|rest| rest.split("</dl>").next())
+            .unwrap_or_else(|| panic!("the summary's facts in {html}"));
+        let terms: Vec<&str> = summary
+            .split("<dt>")
+            .skip(1)
+            .filter_map(|dt| dt.split("</dt>").next())
+            .collect();
+        assert_eq!(terms, ["Status", "Wallet", "Prices in"], "{summary}");
+        assert!(summary.contains("Not taking payments yet"), "{summary}");
+        assert!(
+            html.contains(r#"href="/dashboard/stores/c_1/settings" data-variant="quiet" data-size="compact">Change in the store's settings<svg"#),
+            "{html}"
+        );
         // Once an order was made, it no longer says so.
         let html = done_page(
             &chrome(),

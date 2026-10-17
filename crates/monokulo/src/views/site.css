@@ -356,8 +356,6 @@ input[aria-invalid="true"] { border-color: var(--error); }
 .skip-warning h2 { border-bottom: 0; margin-top: var(--space-sm); }
 
 /* Done: never "you can take payments" for a website; what's left, in order. */
-.store-summary { margin: var(--space-md) 0; }
-[data-not-yet] { margin-right: var(--space-xs); }
 .todo { list-style: none; padding: 0; margin: var(--space-md) 0; display: grid; gap: var(--space-sm); }
 .todo li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-md); align-items: center; padding: var(--space-md) var(--space-lg); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
 .todo li p { margin: 0; }

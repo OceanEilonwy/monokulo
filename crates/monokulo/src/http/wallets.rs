@@ -2046,7 +2046,11 @@ mod tests {
             html.contains(r#"<section id="card-wallet" class="settings-card""#),
             "{html}"
         );
-        assert!(html.contains("Payments go to"), "{html}");
+        assert!(
+            html.contains("New payments go into this wallet, since"),
+            "{html}"
+        );
+        assert!(html.contains(r#"data-layout="stacked""#), "{html}");
         assert!(
             html.contains(&format!(
                 r#"value="{}" selected data-label="Copper Heron""#,

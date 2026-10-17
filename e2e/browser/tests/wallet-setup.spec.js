@@ -347,7 +347,9 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   const section = page.locator('#card-wallet');
   // Shown in place, not behind an Edit button.
   await expect(section.getByRole('button', { name: /Edit/ })).toHaveCount(0);
-  await expect(section).toContainText(`Payments go to ${WALLET_NAME}`);
+  // The wallet setting is stacked: the dropdown spans the card under its
+  // help, which says since when payments go there.
+  await expect(section.locator('.setting-field[data-layout="stacked"]')).toContainText('New payments go into this wallet, since');
   const wallet = section.getByRole('combobox', { name: 'Wallet' });
   await expect(wallet).toContainText(WALLET_NAME);
   await expect(wallet.locator('.mk-current')).toHaveText('Current');
@@ -360,7 +362,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await captureCoverageStage(page, 'wallets-change-ask', test.info(), { group: 'wallets' });
   await section.getByRole('button', { name: 'Change to Cafe till' }).click();
   await expect(section.getByText('Changed to Cafe till.')).toBeVisible();
-  await expect(section).toContainText('Payments go to Cafe till');
+  await expect(section.getByRole('combobox', { name: 'Wallet' })).toContainText('Cafe till');
   await expect(section.getByRole('combobox', { name: 'Wallet' }).locator('.mk-current')).toHaveText('Current');
 
   const history = section.locator('details[data-disclosure="wallet-history"]');
@@ -383,7 +385,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await page.locator('#card-wallet').getByRole('combobox', { name: 'Wallet' }).click();
   await page.locator('#card-wallet').getByRole('option', { name: new RegExp(WALLET_NAME) }).click();
   await page.locator('#card-wallet').getByRole('button', { name: `Change to ${WALLET_NAME}` }).click();
-  await expect(page.locator('#card-wallet')).toContainText(`Payments go to ${WALLET_NAME}`);
+  await expect(page.locator('#card-wallet').getByRole('combobox', { name: 'Wallet' })).toContainText(WALLET_NAME);
 
   // Cafe till is used by nothing now: retired, its keys deleted, said at
   // the top of its page; then brought back with its keys.

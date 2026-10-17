@@ -449,11 +449,12 @@ fn key_storage_card(store: &StoreSettingsData, key_storage: &KeyStorageView) -> 
     )
 }
 
-/// "Wallet": which wallet the store takes payments into, a dropdown of the
-/// account's wallets to change it (the current one marked Current), and,
-/// collapsed, the wallets it used before. Picking another wallet asks first,
-/// saying what happens to the orders already open: an action of its own,
-/// not part of the settings form.
+/// "Wallet": which wallet the store takes payments into, as a full-width
+/// dropdown of the account's wallets (the current one marked Current, since
+/// when in the help), and, collapsed, the wallets it used before. Picking
+/// another wallet asks first, saying what happens to the orders already
+/// open: an action of its own, not part of the settings form. With
+/// JavaScript the pick posts at once; without, Change wallet does.
 fn wallet_card(store: &StoreSettingsData) -> Markup {
     let wallet = &store.wallet;
     let action = format!("/dashboard/stores/{}/settings/wallet", store.connection_id);
@@ -477,32 +478,34 @@ fn wallet_card(store: &StoreSettingsData) -> Markup {
             @if let Some(changed) = &wallet.changed {
                 (ui::Alert::new(changed.as_str(), ui::Tone::Success))
             }
-            @if let Some(current) = &wallet.current {
-                p class="settings-summary-line" {
-                    "Payments go to " strong { a href=(format!("/account/wallets/{}", current.id)) { (current.name) } }
-                    " since " (store.clock.time(current.since)) "."
-                }
-            } @else {
-                (ui::Hint::new("This store isn't linked to one of your wallets yet. Pick the one it takes payments into."))
-            }
             // Picking a wallet sends it at once (static/fx-glue.js), to ask.
             form method="post" action=(action) fx-submit-on-change {
-                (super::settings::Field::new("Wallet", "store-wallet")
-                    .help(None, html! { "The store takes new payments into the wallet picked here."
-                        @if wallet.current.is_some() { " A store can only change to a wallet on its own network." } })
-                    .render(html! {
-                        (Select::new(
-                            "wallet_id",
-                            picked
-                                .is_none()
-                                .then(|| Choice::prompt("Choose a wallet…", true))
-                                .into_iter()
-                                .chain(wallet.choices.iter().map(|choice| wallet_choice(choice, picked)))
-                                .collect::<Vec<_>>(),
-                        )
-                        .id("store-wallet")
-                        .required(true))
-                    }))
+                (ui::Setting::new(
+                    "Wallet",
+                    "store-wallet",
+                    Select::new(
+                        "wallet_id",
+                        picked
+                            .is_none()
+                            .then(|| Choice::prompt("Choose a wallet…", true))
+                            .into_iter()
+                            .chain(wallet.choices.iter().map(|choice| wallet_choice(choice, picked)))
+                            .collect::<Vec<_>>(),
+                    )
+                    .id("store-wallet")
+                    .required(true)
+                    .attr("aria-describedby", "store-wallet-help"),
+                )
+                .help(html! {
+                    @if let Some(current) = &wallet.current {
+                        "New payments go into this wallet, since " (store.clock.time(current.since))
+                        ". A store can only change to a wallet on its own network."
+                    } @else {
+                        "This store isn't linked to one of your wallets yet. Pick the one it takes payments into."
+                    }
+                })
+                .help_id("store-wallet-help")
+                .layout(ui::SettingLayout::Stacked))
                 @if let (Some(pending), Some(current)) = (&wallet.pending, &wallet.current) {
                     div class="change-confirm" role="status" {
                         h3 { "Change to " (pending.wallet_name) "?" }
@@ -518,7 +521,9 @@ fn wallet_card(store: &StoreSettingsData) -> Markup {
                         (ui::FormActions::new(confirm(format!("Use {}", pending.wallet_name))))
                     }
                 } @else {
-                    (ui::FormActions::new(ui::Button::new("Change wallet").kind(ui::ButtonType::Submit)))
+                    // With JavaScript, picking a wallet sends it.
+                    (ui::FormActions::new(ui::Button::new("Change wallet").kind(ui::ButtonType::Submit))
+                        .attr("data-only", "no-script"))
                 }
             }
             @if !wallet.history.is_empty() {
