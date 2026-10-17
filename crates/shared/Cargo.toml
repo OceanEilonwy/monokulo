@@ -35,7 +35,11 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 # moving this module here doesn't change its TLS/JSON behavior at all.
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
 reqwest-middleware = { version = "0.5.2", features = ["rustls", "json"] }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+# `sqlite_query`: the authorizer and progress handler (`hooks`) that keep
+# the Query page read-only and short, and where each result column comes
+# from (`column_metadata`), so a secret one is marked hidden, and its
+# declared type (`column_decltype`).
+rusqlite = { version = "0.40.2", features = ["bundled", "hooks", "column_metadata", "column_decltype"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"

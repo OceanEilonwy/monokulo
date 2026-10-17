@@ -28,6 +28,7 @@ pub mod resources;
 pub mod scaling;
 pub mod shutdown;
 pub mod sqlite;
+pub mod sqlite_query;
 pub mod supervise;
 pub mod time;
 #[cfg(any(test, feature = "test-support"))]
