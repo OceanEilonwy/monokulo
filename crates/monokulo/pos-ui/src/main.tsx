@@ -664,7 +664,7 @@ function App() {
           <div class="pos-status-row">
             <StatusTag order={order()} offline={offline() && !terminal(order())}/>
             <Show when={awaitingPayment(order())}>
-              <Countdown data-pos="time-left" total={Math.max(0, order().expires_at - order().created_at, order().expires_at - now())}
+              <Countdown compact data-pos="time-left" total={Math.max(0, order().expires_at - order().created_at, order().expires_at - now())}
                 remaining={Math.max(0, order().expires_at - now())} left={durationUntil(order().expires_at, now())}/>
             </Show>
           </div>
