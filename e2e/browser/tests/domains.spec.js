@@ -24,7 +24,7 @@ async function fits(page) {
 test('a domain is added on its own pages, and its check answers in place', async ({ page, context }) => {
   await login(context);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
-  await page.goto(fixture.base_url + settings + '#card-verified-domains');
+  await page.goto(fixture.base_url + settings + '?tab=connections#card-verified-domains');
   const card = page.locator('#card-verified-domains');
   // The banner says the state; nothing verified, its button can't be used.
   const banner = card.locator('.mk-status-banner');
@@ -70,7 +70,7 @@ test('a domain is added on its own pages, and its check answers in place', async
 
   // Back in Settings it waits as Not verified, with its record; its card's
   // Check again answers in the card.
-  await page.goto(fixture.base_url + settings + '#card-verified-domains');
+  await page.goto(fixture.base_url + settings + '?tab=connections#card-verified-domains');
   const domain = page.locator('article.mk-item-card', { hasText: 'layout-check.example' });
   await expect(domain.locator('.tag')).toHaveText('Not verified');
   await expect(domain.locator('table.mk-dns-record')).toBeVisible();
@@ -97,14 +97,14 @@ test('without JavaScript a domain is added, checked and removed by posting', asy
   await page.getByRole('button', { name: "I've added it, check now" }).click();
   await expect(page.locator('#domain-check')).toContainText('Not found yet.');
   // The card's Check again lands on the check page too: never a toast.
-  await page.goto(fixture.base_url + settings + '#card-verified-domains');
+  await page.goto(fixture.base_url + settings + '?tab=connections#card-verified-domains');
   const domain = page.locator('article.mk-item-card', { hasText: 'nojs-check.example' });
   await expect(domain.locator('.tag')).toHaveText('Not verified');
   await domain.getByRole('button', { name: 'Check again' }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'Check the record' })).toBeVisible();
   await expect(page.locator('#domain-check')).toContainText('Checked moments ago');
   // Removed without the question (no JavaScript, no dialog).
-  await page.goto(fixture.base_url + settings + '#card-verified-domains');
+  await page.goto(fixture.base_url + settings + '?tab=connections#card-verified-domains');
   await page.locator('article.mk-item-card', { hasText: 'nojs-check.example' }).getByRole('button', { name: 'Remove' }).click();
   await expect(page.locator('#card-verified-domains')).not.toContainText('nojs-check.example');
   await context.close();
@@ -123,7 +123,7 @@ test('on a phone the domain pages fit, and a card stacks its actions under its n
   const value = page.locator('table.mk-dns-record td[data-label="Value"]');
   expect((await value.boundingBox()).y).toBeGreaterThan((await host.boundingBox()).y);
   await captureCoverageStage(page, 'domains-record-phone', test.info(), { group: 'domains' });
-  await page.goto(fixture.base_url + settings + '#card-verified-domains');
+  await page.goto(fixture.base_url + settings + '?tab=connections#card-verified-domains');
   await fits(page);
   const domain = page.locator('article.mk-item-card', { hasText: 'phone-check.example' });
   const name = await domain.locator('.mk-item-card-title').boundingBox();

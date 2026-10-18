@@ -43,7 +43,7 @@ const webhook = (page, url) => card(page).locator('.wh').filter({ has: page.loca
 test('each webhook says how it is doing; the deliveries of one that needs you are open', async ({ page, context }) => {
   await login(context);
   await seed();
-  await page.goto(`${settings()}#card-webhooks`);
+  await page.goto(`${settings()}?tab=connections#card-webhooks`);
   await expect(card(page).locator('.card-meta')).toHaveText('3 webhooks');
 
   const healthy = webhook(page, 'https://bakery.example/hooks/monokulo');
@@ -111,7 +111,7 @@ test('each webhook says how it is doing; the deliveries of one that needs you ar
 test("the All deliveries page keeps Details and Send again in fixed columns, wide and on a phone", async ({ page, context }) => {
   await login(context);
   await seed();
-  await page.goto(`${settings()}#card-webhooks`);
+  await page.goto(`${settings()}?tab=connections#card-webhooks`);
   const href = await webhook(page, 'https://old-shop.example/?wc-api=monokulo').getByRole('link', { name: 'All deliveries for this webhook' }).getAttribute('href');
   await page.goto(fixture.base_url + href);
   const list = page.locator('.deliveries-page');
@@ -126,7 +126,7 @@ test("the All deliveries page keeps Details and Send again in fixed columns, wid
 test('Retry failed queues the given-up deliveries again and says so', async ({ page, context }) => {
   await login(context);
   await seed();
-  await page.goto(`${settings()}#card-webhooks`);
+  await page.goto(`${settings()}?tab=connections#card-webhooks`);
   const gaveUp = webhook(page, 'https://old-shop.example/?wc-api=monokulo');
   await gaveUp.getByRole('button', { name: 'Retry failed (1)' }).click();
   await expect(page.locator('#settings-toasts')).toContainText('Webhooks updated');
@@ -139,7 +139,7 @@ test('Retry failed queues the given-up deliveries again and says so', async ({ p
 test("a delivery's details open as a dialog, with its attempts, request and last response", async ({ page, context }) => {
   await login(context);
   await seed();
-  await page.goto(`${settings()}#card-webhooks`);
+  await page.goto(`${settings()}?tab=connections#card-webhooks`);
   const retrying = webhook(page, 'https://erp.bakery.example/payments/in');
   await retrying.getByRole('link', { name: 'Details' }).first().click();
   const dialog = page.getByRole('dialog', { name: 'Delivery of order.paid' });
@@ -170,7 +170,7 @@ test('a webhook with many deliveries pages through them in place, 20 at a time',
   await login(context);
   const response = await fetch(`${fixture.base_url}/__coverage/webhooks?many=45`, { method: 'POST' });
   expect(response.ok).toBe(true);
-  await page.goto(`${settings()}#card-webhooks`);
+  await page.goto(`${settings()}?tab=connections#card-webhooks`);
   const hook = webhook(page, 'https://bakery.example/hooks/monokulo');
   await hook.locator('details[data-disclosure="deliveries"] summary').click();
   const rows = hook.locator('.deliveries-results tbody tr');
@@ -178,7 +178,7 @@ test('a webhook with many deliveries pages through them in place, 20 at a time',
   const newest = await rows.first().locator('td[data-label="Order"]').innerText();
   await hook.getByRole('link', { name: 'Older →' }).click();
   // Swapped in place by fixi: still the settings page.
-  await expect(page).toHaveURL(/\/settings#card-webhooks$/);
+  await expect(page).toHaveURL(/\/settings\?tab=connections#card-webhooks$/);
   await expect(hook.getByRole('link', { name: '← Newer' })).toBeVisible();
   await expect(rows).toHaveCount(20);
   await expect(rows.first().locator('td[data-label="Order"]')).not.toHaveText(newest);
@@ -197,7 +197,7 @@ test('without JavaScript the deliveries page through the All deliveries page', a
   const page = await context.newPage();
   const response = await fetch(`${fixture.base_url}/__coverage/webhooks?many=25`, { method: 'POST' });
   expect(response.ok).toBe(true);
-  await page.goto(`${settings()}#card-webhooks`);
+  await page.goto(`${settings()}?tab=connections#card-webhooks`);
   // In the fold, closed while all is well.
   const older = webhook(page, 'https://bakery.example/hooks/monokulo').locator('a[rel="next"]');
   await expect(older).toHaveText('Older →');
@@ -213,7 +213,7 @@ test('without JavaScript the deliveries page through the All deliveries page', a
 test('a store with no webhooks offers to add one', async ({ page, context }) => {
   await login(context);
   await seed(true);
-  await page.goto(`${settings()}#card-webhooks`);
+  await page.goto(`${settings()}?tab=connections#card-webhooks`);
   await expect(card(page)).toContainText('No webhooks yet. Monokulo can tell your server when an order is paid, confirming or expired.');
   await expect(card(page).getByRole('button', { name: 'Add webhook' })).toBeVisible();
   await card(page).scrollIntoViewIfNeeded();
@@ -225,7 +225,7 @@ test('without JavaScript, Details and Delete are pages and Send again is a form'
   await login(context);
   const page = await context.newPage();
   await seed();
-  await page.goto(`${settings()}#card-webhooks`);
+  await page.goto(`${settings()}?tab=connections#card-webhooks`);
   const gaveUp = webhook(page, 'https://old-shop.example/?wc-api=monokulo');
   await gaveUp.getByRole('link', { name: 'Details' }).first().click();
   await expect(page).toHaveURL(/\/settings\/webhooks\/wh_[0-9a-f]+\/deliveries\/\d+$/);

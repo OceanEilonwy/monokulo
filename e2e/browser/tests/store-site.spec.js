@@ -31,11 +31,14 @@ async function connectPlugin() {
 test('a connected plugin locks the website; disconnecting it removes its webhook and unlocks the website, which then changes behind its own dialog', async ({ page, context }) => {
   await login(context);
   await connectPlugin();
-  await page.goto(settings());
+  // The website is on the General tab; the plugin and its webhook are on
+  // Connections.
+  await page.goto(`${settings()}?tab=general`);
   const store = page.locator('#card-store');
   await expect(store.locator('.locked-input input')).toHaveValue('shop.localhost');
   await expect(store.locator('#store-site-lock')).toHaveText('Set by WooCommerce · see Connections');
   await expect(store.locator('input[name="store_site"]')).toHaveCount(0);
+  await page.goto(`${settings()}?tab=connections`);
   const connections = page.locator('#card-connections');
   await expect(connections.locator('.int-meta')).toContainText('shop.localhost · plugin 0.4.0 · connected ');
   await expect(connections.locator('.int-meta')).toContainText('last order ');
@@ -57,6 +60,7 @@ test('a connected plugin locks the website; disconnecting it removes its webhook
   const after = page.locator('#card-connections');
   await expect(after.locator('h4')).toHaveText('Before');
   await expect(after).toContainText('No plugin is connected.');
+  await page.goto(`${settings()}?tab=general`);
   const site = page.locator('#card-store input[name="store_site"]');
   await expect(site).toHaveValue('shop.localhost');
 
@@ -93,6 +97,7 @@ test('without JavaScript the dialogs are pages', async ({ browser }) => {
   await page.getByLabel('Type “shop.localhost” to confirm').fill('shop.localhost');
   await page.getByRole('button', { name: 'Disconnect WooCommerce' }).click();
   await expect(page).toHaveURL(/\/settings\?saved=connections/);
+  await page.goto(`${settings()}?tab=general`);
   // Emptying the website and saving goes to the remove page.
   await page.locator('#card-store input[name="store_site"]').fill('');
   await page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }).click();
@@ -106,7 +111,7 @@ test('on a phone the Connections card stacks its button', async ({ page, context
   await login(context);
   await connectPlugin();
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(settings() + '#card-store');
+  await page.goto(`${settings()}?tab=connections`);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   const row = page.locator('#card-connections .int-rows li').first();
   const meta = await row.locator('.int-meta').boundingBox();
@@ -119,7 +124,7 @@ test('on a phone the Connections card stacks its button', async ({ page, context
 test('disconnecting waits while an order from the shop can be paid', async ({ page, context }) => {
   await login(context);
   await connectPlugin();
-  await page.goto(settings());
+  await page.goto(`${settings()}?tab=connections`);
   // An order from the shop can still be paid: the dialog waits.
   const order = await fetch(`${fixture.base_url}/__coverage/integration/order`, { method: 'POST' });
   expect(order.ok).toBe(true);

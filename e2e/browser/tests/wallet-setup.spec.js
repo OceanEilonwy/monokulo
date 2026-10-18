@@ -343,7 +343,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await page.getByRole('button', { name: 'Add wallet' }).click();
   await expect(page.getByText(/is added|already added this wallet/)).toBeVisible();
 
-  await page.goto(base + store + '/settings');
+  await page.goto(base + store + '/settings?tab=wallet');
   const section = page.locator('#card-wallet');
   // Shown in place, not behind an Edit button.
   await expect(section.getByRole('button', { name: /Edit/ })).toHaveCount(0);
@@ -381,7 +381,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await page.locator('details[data-disclosure="history"] summary').click();
   await expect(page.getByText('changed to another wallet')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Before' })).toBeVisible();
-  await page.goto(base + store + '/settings');
+  await page.goto(base + store + '/settings?tab=wallet');
   await page.locator('#card-wallet').getByRole('combobox', { name: 'Wallet' }).click();
   await page.locator('#card-wallet').getByRole('option', { name: new RegExp(WALLET_NAME) }).click();
   await page.locator('#card-wallet').getByRole('button', { name: `Change to ${WALLET_NAME}` }).click();
@@ -403,7 +403,7 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await captureCoverageStage(page, 'wallets-retired', test.info(), { group: 'wallets' });
   await page.goto(base + '/account?tab=wallets');
   await expect(page.getByText('Retired wallets (1)')).toBeVisible();
-  await page.goto(base + store + '/settings');
+  await page.goto(base + store + '/settings?tab=wallet');
   await page.locator('#card-wallet').getByRole('combobox', { name: 'Wallet' }).click();
   await expect(page.locator('#card-wallet').getByRole('option', { name: /Cafe till/ })).toHaveCount(0);
   await page.keyboard.press('Escape');

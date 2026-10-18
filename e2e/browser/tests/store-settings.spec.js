@@ -1,8 +1,9 @@
-// A store's settings page (crates/monokulo/src/views/store_settings.rs): its
-// settings are cards in one form with one save bar (the settings components,
+// A store's settings page (crates/monokulo/src/views/store_settings.rs): four
+// tabs, each a page of its own (`?tab=`). General's and Payments' settings
+// are cards in one form with one save bar (the settings components,
 // crates/ui); the wallet, the keys, the domains (domains.spec.js) and the
-// webhooks are cards of their own beside it. Every save works without
-// JavaScript too.
+// webhooks are cards of their own on the Wallet and Connections tabs. Every
+// save works without JavaScript too.
 const { test, expect } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
@@ -16,6 +17,7 @@ async function login(context) {
   await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
 }
 const store = '/dashboard/stores/coverage-store';
+const tab = (name) => `${fixture.base_url}${store}/settings?tab=${name}`;
 
 /** Records the settings components' events, across page loads. */
 async function recordEvents(page) {
@@ -32,10 +34,11 @@ test('a change marks its card and shows the save bar, and Discard puts it back',
   await login(context);
   await recordEvents(page);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
-  await page.goto(fixture.base_url + store + '/settings');
+  await page.goto(tab('general'));
+  await expect(page.locator('.mk-tabs[aria-label="Store settings"] a[aria-current="page"]')).toHaveText('General');
   const bar = page.locator('#save-bar');
-  const card = page.locator('#card-confirmation-thresholds');
-  const field = card.locator('input[name="confirmations_required"]');
+  const card = page.locator('#card-store');
+  const field = card.locator('input[name="payment_description"]');
   const saved = await field.inputValue();
   await expect(bar).toBeHidden();
   // No dialog open: every setting is in its card; only the website's
@@ -44,18 +47,18 @@ test('a change marks its card and shows the save bar, and Discard puts it back',
   await expect(page.locator('dialog:not(.confirm-dialog)')).toHaveCount(0);
   await captureCoverageStage(page, 'store-settings', test.info());
 
-  await field.fill('7');
+  await field.fill('Coffee and cake');
   await expect(card).toHaveClass(/is-dirty/);
   await expect(card.locator('[data-unsaved]')).toHaveText('1 unsaved');
   await expect(card.locator('.setting-field.is-changed .changed-mark').first()).toBeVisible();
   await expect(bar).toBeVisible();
-  await expect(bar).toContainText('1 unsaved change in Confirmation thresholds');
-  expect((await events(page, 'mk-dirty')).at(-1)).toEqual({ count: 1, groups: ['confirmation-thresholds'] });
+  await expect(bar).toContainText('1 unsaved change in Store');
+  expect((await events(page, 'mk-dirty')).at(-1)).toEqual({ count: 1, groups: ['store'] });
   await captureCoverageStage(page, 'store-settings-dirty', test.info());
 
   // A second card's change is named too.
   await page.locator('#card-diagnostics label.switch').click();
-  await expect(bar).toContainText('2 unsaved changes in Confirmation thresholds and Diagnostics');
+  await expect(bar).toContainText('2 unsaved changes in Store and Diagnostics');
 
   await card.getByRole('button', { name: 'Discard' }).click();
   await expect(field).toHaveValue(saved);
@@ -71,7 +74,7 @@ test('a change marks its card and shows the save bar, and Discard puts it back',
 test('a save says so on the card and in a toast; a refused one keeps what was typed', async ({ page, context }) => {
   await login(context);
   await recordEvents(page);
-  await page.goto(fixture.base_url + store + '/settings');
+  await page.goto(tab('payments'));
   const bar = page.locator('#save-bar');
   const card = page.locator('#card-confirmation-thresholds');
   const field = () => page.locator('#card-confirmation-thresholds input[name="confirmations_required"]');
@@ -117,7 +120,7 @@ test('without JavaScript the save bar is always there and saves, refused or not'
   const context = await browser.newContext({ javaScriptEnabled: false });
   await login(context);
   const page = await context.newPage();
-  await page.goto(fixture.base_url + store + '/settings');
+  await page.goto(tab('payments'));
   const bar = page.locator('#save-bar');
   await expect(bar).toBeVisible();
   const field = page.locator('#card-confirmation-thresholds input[name="confirmations_required"]');
