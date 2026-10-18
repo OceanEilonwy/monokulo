@@ -659,7 +659,7 @@ test('real share page grows its frame to the whole checkout, so nothing scrolls 
       // Side by side, the panel from the frame's edge and top: no margin
       // around it inside the card.
       expect(at.code, `${width}x${height}`).toBeGreaterThanOrEqual(at.panel.right);
-      expect(at.panel.left, `${width}x${height}`).toBeLessThanOrEqual(1);
+      expect(at.panel.left, `${width}x${height}`).toBeLessThanOrEqual(0);
       expect(at.panel.top, `${width}x${height}`).toBeLessThanOrEqual(0);
     }
     await expect.poll(() => page.evaluate(() => {
@@ -712,13 +712,14 @@ test('real checkout lays out by width and fades the code once paid', async ({ br
     const at = await measure(page);
     const size = `${width}x${height}`;
     if (layout === 'split') {
-      // The box is a column of its own from the page's top, the stage on
-      // it; the code beside it. The two keep together in the middle,
-      // however wide the screen.
-      expect(at.panel.left, size).toBeGreaterThan(0);
+      // The box is the whole left half, edge to edge and from the top, the
+      // stage on it; the code in the right half. The content keeps to a
+      // reading width beside the middle, however wide the screen.
+      expect(at.panel.left, size).toBeLessThanOrEqual(0);
       expect(at.panel.top, size).toBeLessThanOrEqual(0);
-      expect(at.grid.width, size).toBeLessThanOrEqual(1040);
-      expect(Math.abs(at.grid.left - (at.width - at.grid.right)), size).toBeLessThanOrEqual(1);
+      expect(Math.abs(at.panel.right - at.width / 2), size).toBeLessThanOrEqual(1);
+      expect(at.stage.width, size).toBeLessThanOrEqual(416);
+      expect(at.panel.right - at.stage.right, size).toBeLessThanOrEqual(33);
       expect(at.amount.top, size).toBeGreaterThanOrEqual(at.merchant.bottom - 1);
       expect(at.stage.right, size).toBeLessThanOrEqual(at.panel.right);
       expect(at.code.left, size).toBeGreaterThanOrEqual(at.panel.right);

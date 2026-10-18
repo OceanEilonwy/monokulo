@@ -171,14 +171,16 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
   .pay-wrap:not(.checkout-compact) .qr-wrap svg { width: 224px; height: 224px; }
 }
 /* A desktop screen (wide, with a pointer that hovers; a touch tablet keeps
-   the box): the box grows into a column of its own, with the stage and the
-   payments under the amount, beside the wallet's column. The two sit
-   together in the middle, the panel from the page's top to its bottom. */
+   the box): the page splits into two halves, the box grown into the whole
+   left one, with the stage and the payments under the amount; the right one
+   is the wallet's. Each half's content keeps to a reading width beside the
+   middle; the halves fill whatever holds the page (a window, a shop's frame,
+   the share page's card), edge to edge and top to bottom. */
 @media (min-width: 1000px) and (hover: hover) and (pointer: fine) {
-  body:has(.pay-wrap:not(.checkout-compact)) { padding: 0; }
-  .pay-wrap:not(.checkout-compact) { max-width: 1040px; }
-  .pay-wrap:not(.checkout-compact) .pay-grid { grid-template-columns: var(--space-xl) minmax(0, 1fr) var(--space-xl) var(--space-2xl) minmax(0, 1fr) var(--space-xl); grid-template-areas: ". merchant . . wallet ." ". amount . . wallet ." ". stage . . wallet ." ". payments . . wallet ." ". meta . . refund ."; column-gap: 0; }
-  .pay-wrap:not(.checkout-compact) .pay-panel { grid-column: 1 / 4; grid-row: 1 / -1; border: 0; border-inline-end: 1px solid var(--line); border-radius: var(--radius-lg); }
+  body { padding: 0; }
+  .pay-wrap:not(.checkout-compact) { max-width: none; }
+  .pay-wrap:not(.checkout-compact) .pay-grid { min-height: 100vh; min-height: 100dvh; grid-template-columns: minmax(var(--space-xl), 1fr) minmax(0, 26rem) var(--space-2xl) var(--space-2xl) minmax(0, 26rem) minmax(var(--space-xl), 1fr); grid-template-areas: ". merchant . . wallet ." ". amount . . wallet ." ". stage . . wallet ." ". payments . . wallet ." ". meta . . refund ."; column-gap: 0; }
+  .pay-wrap:not(.checkout-compact) .pay-panel { grid-column: 1 / 4; grid-row: 1 / -1; border: 0; border-inline-end: 1px solid var(--line); border-radius: 0; }
   .pay-wrap:not(.checkout-compact) .merchant { padding: var(--space-xl) 0 var(--space-lg); }
   .pay-wrap:not(.checkout-compact) .pay-amount { align-self: start; padding: var(--space-lg) 0 0; border-top: 1px solid var(--line); text-align: left; }
   .pay-wrap:not(.checkout-compact) .stage-slot { margin-top: var(--space-lg); }
