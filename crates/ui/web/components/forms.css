@@ -50,3 +50,23 @@ a.mk-launch-tile[href]:hover { background: var(--btn-hover-bg); border-color: va
 .mk-input-actions { position: absolute; top: 50%; right: var(--space-xs); transform: translateY(-50%); display: flex; gap: var(--space-xs); }
 .mk-input-actions > .mk-btn.icon-only { border-color: transparent; background: transparent; }
 .mk-input-actions > .mk-btn.icon-only:hover { background: var(--btn-hover-bg); }
+
+/* Rows a form edits (RowsEditor): each row's controls, its remove at the
+   right. A row marked to go is faded and struck; its button says Undo.
+   With the behaviour, the blank row waits behind Add. */
+.mk-rows { min-width: 0; margin: 0; padding: 0; border: 0; }
+.mk-rows [hidden] { display: none; }
+.mk-rows-list { display: grid; margin: 0; padding: 0; list-style: none; }
+.mk-rows-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); padding-block: var(--space-sm); border-top: 1px solid var(--line); }
+.mk-rows-row:first-child { border-top: 0; }
+.mk-rows-fields { flex: 1 1 16rem; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); min-width: 0; }
+.mk-rows-fields > .mk-input { width: 6.5rem; }
+.mk-rows-remove { display: inline-flex; align-items: center; gap: var(--space-xs); font-size: var(--text-sm); }
+.mk-rows-row:has([data-rows-remove]:checked) > .mk-rows-fields { opacity: .55; text-decoration: line-through; }
+.mk-rows-undo { display: none; }
+.mk-rows-row:has([data-rows-remove]:checked) .mk-rows-undo { display: inline; }
+.mk-rows-row:has([data-rows-remove]:checked) .mk-rows-toggle > svg { display: none; }
+.mk-rows[data-ready]:not([data-adding]) .mk-rows-new { display: none; }
+.mk-rows[data-adding] .mk-rows-add { display: none; }
+.mk-rows-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin-top: var(--space-sm); }
+.mk-rows-note { margin: 0; color: var(--muted); font-size: var(--text-sm); }

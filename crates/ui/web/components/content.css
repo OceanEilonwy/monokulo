@@ -206,3 +206,26 @@ details.disclosure-row > .disclosure-body { padding: var(--space-sm) var(--space
 .mk-card-foot { display: flex; justify-content: space-between; align-items: center; gap: var(--space-sm); margin-top: var(--space-sm); }
 .mk-card-foot small { min-width: 0; font-size: var(--text-xs); color: var(--muted); }
 .mk-card-foot > :last-child { flex: none; }
+
+/* A timeline event's mark (Timeline): a dot before what happened, in how it
+   went's colour; the words say it too. More about it under, muted. */
+.timeline li[data-tone] > span::before { content: ""; display: inline-block; width: .6em; height: .6em; margin-inline-end: var(--space-sm); border-radius: 50%; background: var(--muted); vertical-align: .05em; }
+.timeline li[data-tone="notice"] > span::before { background: var(--accent-text); }
+.timeline li[data-tone="success"] > span::before { background: var(--success); }
+.timeline li[data-tone="warning"] > span::before { background: var(--warning); }
+.timeline li[data-tone="error"] > span::before { background: var(--error); }
+.timeline-detail { display: block; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
+
+/* Nothing here yet (EmptyState): a dashed box, the icon in a round well,
+   what's missing in bold, what happens next muted, then the actions. */
+.mk-empty { display: flex; gap: var(--space-lg); align-items: flex-start; padding: var(--space-lg); border: 1px dashed var(--line-strong); border-radius: var(--radius-md); background: var(--paper-raised); }
+.mk-empty-icon { flex: none; display: grid; place-items: center; width: 2.5rem; height: 2.5rem; border-radius: 50%; background: var(--surface-sunken); color: var(--muted); }
+.mk-empty-body { display: grid; gap: var(--space-xs); min-width: 0; }
+.mk-empty-title { margin: 0; font-weight: 800; }
+.mk-empty-text { margin: 0; color: var(--muted); font-size: var(--text-sm); }
+.mk-empty-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-top: var(--space-sm); }
+
+/* A card's facts (Card's body), and a row of actions in its foot. */
+.mk-card-body { margin-top: var(--space-sm); padding-block: var(--space-sm); border-block: 1px solid var(--line); }
+.mk-card-body > .facts { margin: 0; }
+.mk-card-foot > .form-actions { margin: 0; }

@@ -1250,6 +1250,121 @@
     "title": "A wallet's history"
   },
   {
+    "component": "Timeline",
+    "html": "<ol class=\"timeline\"><li data-tone=\"success\"><time>14:31</time><span>Paid<small class=\"timeline-detail\">10 of 10 confirmations, at block 3,284,117</small></span></li><li data-tone=\"notice\"><time>14:09</time><span>Payment seen: 0.214 XMR<small class=\"timeline-detail\">In the mempool</small></span></li><li><time>14:02</time><span>Order created<small class=\"timeline-detail\">From the dashboard</small></span></li></ol>",
+    "props": {
+      "events": [
+        {
+          "detail": {
+            "$slot": [
+              "10 of 10 confirmations, at block 3,284,117"
+            ]
+          },
+          "tone": "success",
+          "what": {
+            "$slot": [
+              "Paid"
+            ]
+          },
+          "when": "14:31"
+        },
+        {
+          "detail": {
+            "$slot": [
+              "In the mempool"
+            ]
+          },
+          "tone": "notice",
+          "what": {
+            "$slot": [
+              "Payment seen: 0.214 XMR"
+            ]
+          },
+          "when": "14:09"
+        },
+        {
+          "detail": {
+            "$slot": [
+              "From the dashboard"
+            ]
+          },
+          "what": {
+            "$slot": [
+              "Order created"
+            ]
+          },
+          "when": "14:02"
+        }
+      ]
+    },
+    "title": "An order's payments, newest first"
+  },
+  {
+    "component": "EmptyState",
+    "html": "<div class=\"mk-empty\"><span class=\"mk-empty-icon\" aria-hidden=\"true\">⏱</span><div class=\"mk-empty-body\"><p class=\"mk-empty-title\">No payments have been made yet</p><p class=\"mk-empty-text\">Payments show here as soon as they reach the network. This order expires at 14:32.</p><div class=\"mk-empty-actions\"><a class=\"mk-btn\" href=\"#component-empty-state\" data-variant=\"primary\" data-size=\"compact\">Share payment link</a><a class=\"mk-btn\" href=\"#component-empty-state\" data-size=\"compact\">Open checkout</a></div></div></div>",
+    "props": {
+      "actions": {
+        "$slot": [
+          {
+            "$component": "LinkButton",
+            "props": {
+              "block": false,
+              "children": {
+                "$slot": [
+                  "Share payment link"
+                ]
+              },
+              "href": "#component-empty-state",
+              "size": "compact",
+              "variant": "primary"
+            }
+          },
+          {
+            "$component": "LinkButton",
+            "props": {
+              "block": false,
+              "children": {
+                "$slot": [
+                  "Open checkout"
+                ]
+              },
+              "href": "#component-empty-state",
+              "size": "compact"
+            }
+          }
+        ]
+      },
+      "icon": {
+        "$slot": [
+          "⏱"
+        ]
+      },
+      "text": {
+        "$slot": [
+          "Payments show here as soon as they reach the network. This order expires at 14:32."
+        ]
+      },
+      "title": {
+        "$slot": [
+          "No payments have been made yet"
+        ]
+      }
+    },
+    "title": "Waiting, with what to do"
+  },
+  {
+    "component": "EmptyState",
+    "html": "<div class=\"mk-empty\"><div class=\"mk-empty-body\"><p class=\"mk-empty-title\">No orders yet</p></div></div>",
+    "props": {
+      "title": {
+        "$slot": [
+          "No orders yet"
+        ]
+      }
+    },
+    "title": "Just the words"
+  },
+  {
     "component": "Table",
     "html": "<div class=\"table-scroll\"><table class=\"table-cards\"><thead><tr><th>Order</th><th>Status</th><th>Amount</th></tr></thead><tbody><tr><td class=\"card-title\">Coffee</td><td class=\"card-status\"><span class=\"tag state-paid\">Paid</span></td><td class=\"card-amount\">0.02 XMR</td></tr><tr><td class=\"card-title\">Tea</td><td class=\"card-status\"><span class=\"tag state-pending\"><span class=\"label-long\">Waiting for payment</span><span class=\"label-short\" aria-hidden=\"true\">Waiting</span></span></td><td class=\"card-amount\">0.01 XMR</td></tr></tbody></table></div>",
     "props": {
@@ -1530,6 +1645,112 @@
       "previous_label": "Previous"
     },
     "title": "Newest first, at the start"
+  },
+  {
+    "component": "Card",
+    "html": "<article class=\"mk-card\"><div class=\"mk-card-head\"><div><h3 class=\"mk-card-title\">Kafe Kolo</h3><p class=\"mk-card-sub\">kafekolo.example</p></div><span class=\"tag tag-ok\">Ready</span></div><div class=\"mk-card-body\"><dl class=\"facts\"><dt>Received</dt><dd>3.412 XMR</dd><dt>Orders in 24 h</dt><dd>7</dd><dt>Last order</dt><dd>12 min ago</dd></dl></div><div class=\"mk-card-foot\"><div class=\"form-actions\"><a class=\"mk-btn\" href=\"#component-card\" data-size=\"compact\">Open POS</a><a class=\"mk-btn\" href=\"#component-card\" data-size=\"compact\">Settings</a></div></div></article>",
+    "props": {
+      "action": {
+        "$slot": [
+          {
+            "$component": "FormActions",
+            "props": {
+              "children": {
+                "$slot": [
+                  {
+                    "$component": "LinkButton",
+                    "props": {
+                      "block": false,
+                      "children": {
+                        "$slot": [
+                          "Open POS"
+                        ]
+                      },
+                      "href": "#component-card",
+                      "size": "compact"
+                    }
+                  },
+                  {
+                    "$component": "LinkButton",
+                    "props": {
+                      "block": false,
+                      "children": {
+                        "$slot": [
+                          "Settings"
+                        ]
+                      },
+                      "href": "#component-card",
+                      "size": "compact"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "body": {
+        "$slot": [
+          {
+            "$component": "Facts",
+            "props": {
+              "facts": [
+                {
+                  "term": "Received",
+                  "value": {
+                    "$slot": [
+                      "3.412 XMR"
+                    ]
+                  }
+                },
+                {
+                  "term": "Orders in 24 h",
+                  "value": {
+                    "$slot": [
+                      "7"
+                    ]
+                  }
+                },
+                {
+                  "term": "Last order",
+                  "value": {
+                    "$slot": [
+                      "12 min ago"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "status": {
+        "$slot": [
+          {
+            "$component": "Tag",
+            "props": {
+              "children": {
+                "$slot": [
+                  "Ready"
+                ]
+              },
+              "tone": "ok"
+            }
+          }
+        ]
+      },
+      "subtitle": {
+        "$slot": [
+          "kafekolo.example"
+        ]
+      },
+      "title": {
+        "$slot": [
+          "Kafe Kolo"
+        ]
+      }
+    },
+    "title": "A store, with facts and actions"
   },
   {
     "component": "Card",
@@ -2926,6 +3147,158 @@
     "title": "A theme"
   },
   {
+    "component": "RowsEditor",
+    "html": "<fieldset class=\"mk-rows\" data-mk=\"1\" data-island=\"RowsEditor\" data-props=\"{&quot;rows&quot;:[{&quot;label&quot;:&quot;the 100 EUR tier&quot;,&quot;name&quot;:&quot;tier_0&quot;},{&quot;label&quot;:&quot;the 500 EUR tier&quot;,&quot;name&quot;:&quot;tier_1&quot;}]}\"><legend class=\"visually-hidden\">Confirmation tiers</legend><ul class=\"mk-rows-list\"><li class=\"mk-rows-row\"><div class=\"mk-rows-fields\">From <input class=\"mk-input\" type=\"text\" name=\"tier_0_amount\" value=\"100\" aria-label=\"From amount, EUR\" data-size=\"compact\"> EUR need <input class=\"mk-input\" type=\"text\" name=\"tier_0_confirmations\" value=\"5\" aria-label=\"Confirmations\" data-size=\"compact\"> confirmations</div><label class=\"mk-rows-remove\" data-mk=\"2\"><input type=\"checkbox\" name=\"tier_0\" value=\"remove\" data-rows-remove=\"\"><span>Remove</span><span class=\"visually-hidden\"> the 100 EUR tier</span></label><button class=\"mk-btn mk-rows-toggle\" data-size=\"compact\" type=\"button\" hidden=\"\" aria-label=\"Remove the 100 EUR tier\" aria-pressed=\"false\" data-mk=\"3\"><svg class=\"mk-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M6 6l12 12M18 6 6 18\"></path></svg><span class=\"mk-rows-undo\">Undo</span></button></li><li class=\"mk-rows-row\"><div class=\"mk-rows-fields\">From <input class=\"mk-input\" type=\"text\" name=\"tier_1_amount\" value=\"500\" aria-label=\"From amount, EUR\" data-size=\"compact\"> EUR need <input class=\"mk-input\" type=\"text\" name=\"tier_1_confirmations\" value=\"10\" aria-label=\"Confirmations\" data-size=\"compact\"> confirmations</div><label class=\"mk-rows-remove\" data-mk=\"2\"><input type=\"checkbox\" name=\"tier_1\" value=\"remove\" data-rows-remove=\"\"><span>Remove</span><span class=\"visually-hidden\"> the 500 EUR tier</span></label><button class=\"mk-btn mk-rows-toggle\" data-size=\"compact\" type=\"button\" hidden=\"\" aria-label=\"Remove the 500 EUR tier\" aria-pressed=\"false\" data-mk=\"3\"><svg class=\"mk-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M6 6l12 12M18 6 6 18\"></path></svg><span class=\"mk-rows-undo\">Undo</span></button></li><li class=\"mk-rows-row mk-rows-new\"><div class=\"mk-rows-fields\">From <input class=\"mk-input\" type=\"text\" name=\"new_amount\" aria-label=\"New tier's amount, EUR\" data-size=\"compact\"> EUR need <input class=\"mk-input\" type=\"text\" name=\"new_confirmations\" aria-label=\"New tier's confirmations\" data-size=\"compact\"> confirmations</div></li></ul><div class=\"mk-rows-foot\"><button class=\"mk-btn mk-rows-add\" data-size=\"compact\" type=\"button\" hidden=\"\" data-mk=\"4\"><svg class=\"mk-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 5v14M5 12h14\"></path></svg>Add a tier</button><p class=\"mk-rows-note\">2 of 5 tiers.</p></div></fieldset>",
+    "props": {
+      "add_label": "Add a tier",
+      "label": "Confirmation tiers",
+      "new_row": {
+        "$slot": [
+          "From ",
+          {
+            "$component": "Input",
+            "props": {
+              "disabled": false,
+              "invalid": false,
+              "kind": "text",
+              "label": "New tier's amount, EUR",
+              "name": "new_amount",
+              "readonly": false,
+              "required": false,
+              "size": "compact"
+            }
+          },
+          " EUR need ",
+          {
+            "$component": "Input",
+            "props": {
+              "disabled": false,
+              "invalid": false,
+              "kind": "text",
+              "label": "New tier's confirmations",
+              "name": "new_confirmations",
+              "readonly": false,
+              "required": false,
+              "size": "compact"
+            }
+          },
+          " confirmations"
+        ]
+      },
+      "note": {
+        "$slot": [
+          "2 of 5 tiers."
+        ]
+      },
+      "rows": [
+        {
+          "fields": {
+            "$slot": [
+              "From ",
+              {
+                "$component": "Input",
+                "props": {
+                  "disabled": false,
+                  "invalid": false,
+                  "kind": "text",
+                  "label": "From amount, EUR",
+                  "name": "tier_0_amount",
+                  "readonly": false,
+                  "required": false,
+                  "size": "compact",
+                  "value": "100"
+                }
+              },
+              " EUR need ",
+              {
+                "$component": "Input",
+                "props": {
+                  "disabled": false,
+                  "invalid": false,
+                  "kind": "text",
+                  "label": "Confirmations",
+                  "name": "tier_0_confirmations",
+                  "readonly": false,
+                  "required": false,
+                  "size": "compact",
+                  "value": "5"
+                }
+              },
+              " confirmations"
+            ]
+          },
+          "label": "the 100 EUR tier",
+          "name": "tier_0"
+        },
+        {
+          "fields": {
+            "$slot": [
+              "From ",
+              {
+                "$component": "Input",
+                "props": {
+                  "disabled": false,
+                  "invalid": false,
+                  "kind": "text",
+                  "label": "From amount, EUR",
+                  "name": "tier_1_amount",
+                  "readonly": false,
+                  "required": false,
+                  "size": "compact",
+                  "value": "500"
+                }
+              },
+              " EUR need ",
+              {
+                "$component": "Input",
+                "props": {
+                  "disabled": false,
+                  "invalid": false,
+                  "kind": "text",
+                  "label": "Confirmations",
+                  "name": "tier_1_confirmations",
+                  "readonly": false,
+                  "required": false,
+                  "size": "compact",
+                  "value": "10"
+                }
+              },
+              " confirmations"
+            ]
+          },
+          "label": "the 500 EUR tier",
+          "name": "tier_1"
+        }
+      ]
+    },
+    "title": "Tiers, with a blank one to add"
+  },
+  {
+    "component": "RowsEditor",
+    "html": "<fieldset class=\"mk-rows\" data-mk=\"1\" data-island=\"RowsEditor\" data-props=\"{&quot;rows&quot;:[{&quot;label&quot;:&quot;https://shop.example/hook&quot;,&quot;name&quot;:&quot;webhook_0&quot;}]}\"><legend class=\"visually-hidden\">Webhooks</legend><ul class=\"mk-rows-list\"><li class=\"mk-rows-row\"><div class=\"mk-rows-fields\">https://shop.example/hook</div><label class=\"mk-rows-remove\" data-mk=\"2\"><input type=\"checkbox\" name=\"webhook_0\" value=\"remove\" data-rows-remove=\"\"><span>Remove</span><span class=\"visually-hidden\"> https://shop.example/hook</span></label><button class=\"mk-btn mk-rows-toggle\" data-size=\"compact\" type=\"button\" hidden=\"\" aria-label=\"Remove https://shop.example/hook\" aria-pressed=\"false\" data-mk=\"3\"><svg class=\"mk-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M6 6l12 12M18 6 6 18\"></path></svg><span class=\"mk-rows-undo\">Undo</span></button></li></ul><div class=\"mk-rows-foot\"><p class=\"mk-rows-note\">1 of 1. Remove one to add another.</p></div></fieldset>",
+    "props": {
+      "add_label": "Add",
+      "label": "Webhooks",
+      "note": {
+        "$slot": [
+          "1 of 1. Remove one to add another."
+        ]
+      },
+      "rows": [
+        {
+          "fields": {
+            "$slot": [
+              "https://shop.example/hook"
+            ]
+          },
+          "label": "https://shop.example/hook",
+          "name": "webhook_0"
+        }
+      ]
+    },
+    "title": "At the limit"
+  },
+  {
     "component": "IconButton",
     "html": "<button type=\"button\" class=\"mk-btn icon-only\" aria-label=\"Send again\" title=\"Send again\">↻</button>",
     "props": {
@@ -3625,6 +3998,39 @@
     "title": "On the POS"
   },
   {
+    "component": "Countdown",
+    "html": "<div class=\"mk-countdown\" data-tone=\"normal\" data-mk=\"1\" data-island=\"Countdown\" data-props=\"{&quot;remaining&quot;:1754,&quot;soon&quot;:300,&quot;total&quot;:1800,&quot;urgent&quot;:60}\"><p class=\"mk-countdown-line\"><span><strong data-mk=\"2\">29m</strong><!--mk:3--> left to pay</span><span class=\"mk-countdown-note\">Price held until 14:32</span></p><progress class=\"mk-countdown-bar\" max=\"1800\" value=\"1754\" aria-hidden=\"true\" data-mk=\"4\"></progress><!--mk:5--></div>",
+    "props": {
+      "left": "29m",
+      "note": {
+        "$slot": [
+          "Price held until 14:32"
+        ]
+      },
+      "remaining": 1754,
+      "soon": 300,
+      "suffix": "left to pay",
+      "tone": "normal",
+      "total": 1800,
+      "urgent": 60
+    },
+    "title": "A payment's time, with when it ends"
+  },
+  {
+    "component": "Countdown",
+    "html": "<div class=\"mk-countdown\" data-tone=\"soon\" data-mk=\"1\" data-island=\"Countdown\" data-props=\"{&quot;remaining&quot;:291,&quot;soon&quot;:300,&quot;total&quot;:1800,&quot;urgent&quot;:60}\"><p class=\"mk-countdown-line\"><span><strong data-mk=\"2\">4m</strong><!--mk:3--> left to pay</span></p><progress class=\"mk-countdown-bar\" max=\"1800\" value=\"291\" aria-hidden=\"true\" data-mk=\"4\"></progress><!--mk:5--></div>",
+    "props": {
+      "left": "4m",
+      "remaining": 291,
+      "soon": 300,
+      "suffix": "left to pay",
+      "tone": "soon",
+      "total": 1800,
+      "urgent": 60
+    },
+    "title": "Running low"
+  },
+  {
     "component": "Tabs",
     "html": "<div class=\"mk-tabset\" data-mk=\"1\" data-island=\"Tabs\" data-props=\"{&quot;tabs&quot;:[{&quot;id&quot;:&quot;example-charge&quot;},{&quot;id&quot;:&quot;example-history&quot;},{&quot;id&quot;:&quot;example-terminal&quot;}]}\"><div class=\"mk-tabs\" aria-label=\"Example POS views\" data-mk=\"2\"><a href=\"#example-charge\" id=\"example-charge-tab\" data-mk=\"3\">Charge</a><a href=\"#example-history\" id=\"example-history-tab\" data-mk=\"3\">History</a><a href=\"#example-terminal\" id=\"example-terminal-tab\" data-mk=\"3\">Terminal</a></div><div class=\"mk-tab-panels\"><section id=\"example-charge\" data-tab-panel=\"\" data-mk=\"4\">Enter an amount to start a payment.</section><section id=\"example-history\" data-tab-panel=\"\" data-mk=\"4\">No payments yet.</section><section id=\"example-terminal\" data-tab-panel=\"\" data-mk=\"4\">This terminal is ready to receive payments.</section></div></div>",
     "props": {
@@ -3747,6 +4153,67 @@
       "value": "48xQ7v3Rk"
     },
     "title": "Short enough to show whole"
+  },
+  {
+    "component": "GroupedValue",
+    "html": "<div class=\"mk-grouped\" data-island=\"GroupedValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy address&quot;,&quot;value&quot;:&quot;8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf&quot;,&quot;void&quot;:false}\"><span class=\"visually-hidden\">8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf</span><span class=\"mk-grouped-value mk-mono\" aria-hidden=\"true\" data-mk=\"1\"><span>8FASi4</span><span>5ub7Qe</span><span>4ZE36U</span><span>T5G6cU</span><span>4ud8Fh</span><span>he4deS</span><span>4F3cw9</span><span>KTAb8d</span><span>LcukC7</span><span>edhDQ7</span><span>cn5d4g</span><span>EYkbUr</span><span>MWeWQL</span><span>GsCmrG</span><span>6dLaYy</span><span>NoVKf</span></span><!--mk:2--><p class=\"mk-grouped-hint\">Check your wallet shows 8FASi4 at the start and NoVKf at the end.</p></div>",
+    "props": {
+      "copy_label": "Copy address",
+      "groups": [
+        "8FASi4",
+        "5ub7Qe",
+        "4ZE36U",
+        "T5G6cU",
+        "4ud8Fh",
+        "he4deS",
+        "4F3cw9",
+        "KTAb8d",
+        "LcukC7",
+        "edhDQ7",
+        "cn5d4g",
+        "EYkbUr",
+        "MWeWQL",
+        "GsCmrG",
+        "6dLaYy",
+        "NoVKf"
+      ],
+      "hint": {
+        "$slot": [
+          "Check your wallet shows 8FASi4 at the start and NoVKf at the end."
+        ]
+      },
+      "value": "8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf",
+      "void": false
+    },
+    "title": "An address to pay, in sixes"
+  },
+  {
+    "component": "GroupedValue",
+    "html": "<div class=\"mk-grouped\" data-void=\"\" data-island=\"GroupedValue\" data-props=\"{&quot;copy_label&quot;:&quot;Copy&quot;,&quot;value&quot;:&quot;8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf&quot;,&quot;void&quot;:true}\"><span class=\"visually-hidden\">8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf</span><span class=\"mk-grouped-value mk-mono\" aria-hidden=\"true\" data-mk=\"1\"><span>8FASi4</span><span>5ub7Qe</span><span>4ZE36U</span><span>T5G6cU</span><span>4ud8Fh</span><span>he4deS</span><span>4F3cw9</span><span>KTAb8d</span><span>LcukC7</span><span>edhDQ7</span><span>cn5d4g</span><span>EYkbUr</span><span>MWeWQL</span><span>GsCmrG</span><span>6dLaYy</span><span>NoVKf</span></span><!--mk:2--></div>",
+    "props": {
+      "copy_label": "Copy",
+      "groups": [
+        "8FASi4",
+        "5ub7Qe",
+        "4ZE36U",
+        "T5G6cU",
+        "4ud8Fh",
+        "he4deS",
+        "4F3cw9",
+        "KTAb8d",
+        "LcukC7",
+        "edhDQ7",
+        "cn5d4g",
+        "EYkbUr",
+        "MWeWQL",
+        "GsCmrG",
+        "6dLaYy",
+        "NoVKf"
+      ],
+      "value": "8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf",
+      "void": true
+    },
+    "title": "No longer to be used"
   },
   {
     "component": "CopyBlock",

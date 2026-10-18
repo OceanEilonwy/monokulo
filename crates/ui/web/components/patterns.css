@@ -127,3 +127,17 @@ table.mk-dns-record td { vertical-align: middle; }
 .mk-table-browser-list { display: flex; flex-direction: column; gap: var(--space-xs); min-height: 0; overflow-y: auto; }
 .mk-table-browser-list summary .tag { margin-left: auto; }
 .mk-table-browser-list details.disclosure-compact > summary::after { margin-left: 0; }
+
+/* A value to check by eye (GroupedValue): centred groups, alternately
+   strong and muted, the first and last on the highlight; a full-width
+   Copy under them. The groups touch in the text (their gap is a margin),
+   so a selection is the value itself. */
+.mk-grouped { display: grid; gap: var(--space-md); min-width: 0; padding: var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); text-align: center; }
+.mk-grouped-value { font-size: var(--text-base); line-height: 1.75; letter-spacing: .02em; overflow-wrap: anywhere; -webkit-user-select: all; user-select: all; }
+.mk-grouped-value > span { display: inline-block; margin-inline: .45ch; color: var(--ink); font-weight: 700; }
+.mk-grouped-value > span:nth-child(even) { color: var(--muted); font-weight: 500; }
+.mk-grouped-value > span:is(:first-child, :last-child) { padding-inline: .3ch; border-radius: var(--radius-sm); background: var(--tint-highlight); color: var(--ink); font-weight: 700; }
+.mk-grouped > .mk-btn { width: 100%; }
+.mk-grouped > .mk-btn[data-copied] { background: var(--tint-success); border-color: var(--success); }
+.mk-grouped-hint { margin: 0; color: var(--muted); font-size: var(--text-sm); }
+.mk-grouped[data-void] > .mk-grouped-value { opacity: .6; text-decoration: line-through; }

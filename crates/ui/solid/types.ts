@@ -40,6 +40,11 @@ export type ConfirmWhen = "changed" | "emptied";
 export type ControlSize = "compact" | "touch";
 
 /**
+ * How near a [`Countdown`] is to its end.
+ */
+export type CountdownTone = "normal" | "soon" | "urgent";
+
+/**
  * What a grid cell holds, beyond plain text.
  */
 export type DataKind = "number" | "null" | "blob" | "hidden";
@@ -226,6 +231,26 @@ export interface Crumb {
 }
 
 /**
+ * One row of [`RowsEditor`].
+ */
+export interface EditorRow {
+  /**
+   * The name of the checkbox that removes it when the form is saved:
+   * unique among the rows.
+   */
+  readonly name: string;
+  /**
+   * What the row is, in a few words ("the 500 EUR tier"): its remove
+   * control says "Remove" and this.
+   */
+  readonly label: string;
+  /**
+   * Its controls, each labelled (`Input`s with `label`).
+   */
+  readonly fields: JSX.Element;
+}
+
+/**
  * One event of a [`Timeline`].
  */
 export interface Event {
@@ -234,6 +259,16 @@ export interface Event {
    */
   readonly when: string;
   readonly what: JSX.Element;
+  /**
+   * Under `what`, muted: more about it ("10 of 10 confirmations").
+   */
+  readonly detail?: JSX.Element;
+  /**
+   * How it went, as a mark before it: `Notice` for something that
+   * happened, `Success`, `Warning` or `Error` for how it ended; none for
+   * a plain step. The words say it; the mark only backs them up.
+   */
+  readonly tone?: Tone;
 }
 
 /**

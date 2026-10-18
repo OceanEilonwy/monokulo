@@ -256,3 +256,108 @@ pub(super) fn progress_steps_examples() -> Vec<(&'static str, ProgressSteps)> {
         ),
     ]
 }
+
+/// How near a [`Countdown`] is to its end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]
+pub enum CountdownTone {
+    /// Plenty of time.
+    Normal,
+    /// Under `soon` seconds left: the warning colour.
+    Soon,
+    /// Under `urgent` seconds left, or none: the error colour.
+    Urgent,
+}
+
+component! {
+    /// Time left before a deadline: how long, in words, what it's for, and
+    /// a bar that empties. Without JavaScript it shows the time the server
+    /// worked out ("29m") in the server's tone, and the page refreshing
+    /// moves it on. Once its island attaches it counts down each second
+    /// (m:ss), its bar steps each minute, and it turns `soon`, then
+    /// `urgent`, as time runs low; a screen reader hears it only as it
+    /// crosses those, never a ticking clock. At zero it sends
+    /// `mk-countdown-end` for a page script to follow.
+    pub struct Countdown {
+        /// How long it runs, in seconds: the full bar.
+        total: u64,
+        /// Seconds left as the server renders it: the behaviour counts on
+        /// from here by the browser's clock, so a wrong one can't skew it.
+        remaining: u64,
+        /// The same, in words ("29m").
+        left: String,
+        /// After the time: what it's the time for.
+        #[default(String::from("left"))]
+        suffix: String,
+        /// At the right, muted: when it ends ("Price held until 14:32").
+        note: Option<Slot>,
+        /// The tone as the server renders it ([`Countdown::toned`]).
+        #[default(CountdownTone::Normal)]
+        tone: CountdownTone,
+        /// Seconds left at which it turns `soon`.
+        #[default(300u64)]
+        soon: u64,
+        /// Seconds left at which it turns `urgent`.
+        #[default(60u64)]
+        urgent: u64,
+        rest: Attrs,
+    }
+    behaviour "countdown.behaviour.ts" {
+        uses(total, remaining, soon, urgent),
+        /// What's left, as minutes and seconds ("28:59").
+        clock: String,
+        /// Seconds left, rounded up to the minute: the bar's fill.
+        bar: u64,
+        /// `normal`, `soon` or `urgent`, as of now.
+        now: String,
+        /// What a screen reader hears, set as it crosses `soon`, `urgent`
+        /// and the end.
+        status: String,
+        ref root,
+    }
+    html {
+        div class="mk-countdown" data-tone=(tone) data-tone=(b.now) ..rest ref=root {
+            p class="mk-countdown-line" {
+                span {
+                    strong hidden="" if enhanced { (left) }
+                    @if enhanced { strong class="mk-countdown-clock" { (b.clock) } }
+                    " " (suffix)
+                }
+                @if let Some(note) = note { span class="mk-countdown-note" { (note) } }
+            }
+            progress class="mk-countdown-bar" max=(total) value=(remaining) value=(b.bar) aria-hidden="true" {}
+            @if enhanced { span class="visually-hidden" role="status" { (b.status) } }
+        }
+    }
+}
+
+impl Countdown {
+    /// Takes the tone `remaining` has against `soon` and `urgent`: what the
+    /// behaviour would show, for a page without it.
+    pub fn toned(mut self) -> Self {
+        self.tone = if self.remaining <= self.urgent {
+            CountdownTone::Urgent
+        } else if self.remaining <= self.soon {
+            CountdownTone::Soon
+        } else {
+            CountdownTone::Normal
+        };
+        self
+    }
+}
+
+pub(super) fn countdown_examples() -> Vec<(&'static str, Countdown)> {
+    vec![
+        (
+            "A payment's time, with when it ends",
+            Countdown::new(1800u64, 1754u64, "29m")
+                .suffix("left to pay")
+                .note("Price held until 14:32"),
+        ),
+        (
+            "Running low",
+            Countdown::new(1800u64, 291u64, "4m")
+                .suffix("left to pay")
+                .toned(),
+        ),
+    ]
+}

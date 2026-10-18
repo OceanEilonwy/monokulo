@@ -1,4 +1,4 @@
-use crate::{component, UiEnum};
+use crate::{component, Attrs, Slot, UiEnum};
 
 /// How a long value is shortened on screen. The whole value is always what
 /// is copied, and what focus reveals.
@@ -128,6 +128,96 @@ component! {
             }
         }
     }
+}
+
+component! {
+    /// A long value shown whole, for someone to check by eye against the
+    /// copy they paste: in groups of a few characters, alternately strong
+    /// and muted, the first and last group marked, and a Copy button under
+    /// it. An address to pay; a key's fingerprint. Build it with
+    /// [`GroupedValue::of`], which splits the value. A screen reader hears
+    /// the value whole, never group by group. Without JavaScript a tap
+    /// selects all of it; once its island attaches, the button copies it
+    /// and says so, and the value stays on screen as it was.
+    pub struct GroupedValue {
+        /// The whole value: what is copied, and what a screen reader hears.
+        value: String,
+        /// `value` in order, split into groups.
+        groups: Vec<String>,
+        /// The Copy button's words: what it copies ("Copy address").
+        #[default(String::from("Copy"))]
+        copy_label: String,
+        /// Under it: what to check ("Check your wallet shows 8FASi4 at the
+        /// start and NoVKf at the end").
+        hint: Option<Slot>,
+        /// Shown, but not to be used any more (an address an order no
+        /// longer takes payments at): struck through, faded, nothing to
+        /// copy it with.
+        #[default(false)]
+        void: bool,
+        rest: Attrs,
+    }
+    behaviour "grouped-value.behaviour.ts" {
+        uses(value),
+        /// The last copy went through: the button says so for a while.
+        copied: bool,
+        /// What the last copy did, for screen readers too.
+        status: String,
+        busy: bool,
+        fn copy,
+        ref shown,
+    }
+    html {
+        div class="mk-grouped" data-void="" if void ..rest {
+            span class="visually-hidden" { (value) }
+            span class="mk-grouped-value mk-mono" aria-hidden="true" ref=shown {
+                @for group in groups { span { (group) } }
+            }
+            @if enhanced {
+                @if !void {
+                    button class="mk-btn" type="button" data-copied="" if b.copied disabled[b.busy] on:click=copy {
+                        svg class="mk-icon" viewBox="0 0 24 24" aria-hidden="true" {
+                            @if b.copied { path d="M5 12l5 5L20 7" {} }
+                            @else { rect x="8" y="8" width="12" height="13" rx="2" {} path d="M16 8V3H3v13h5" {} }
+                        }
+                        @if b.copied { "Copied" } @else { (copy_label) }
+                    }
+                }
+                span class="visually-hidden" role="status" { (b.status) }
+            }
+            @if let Some(hint) = hint { p class="mk-grouped-hint" { (hint) } }
+        }
+    }
+}
+
+impl GroupedValue {
+    /// `value` in groups of `size` characters, the last one what's left.
+    pub fn of(value: impl Into<String>, size: usize) -> Self {
+        let value = value.into();
+        let chars: Vec<char> = value.chars().collect();
+        let groups: Vec<String> = chars
+            .chunks(size.max(1))
+            .map(|group| group.iter().collect::<String>())
+            .collect();
+        Self::new(value, groups)
+    }
+}
+
+const ADDRESS: &str = "8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf";
+
+pub(super) fn grouped_value_examples() -> Vec<(&'static str, GroupedValue)> {
+    vec![
+        (
+            "An address to pay, in sixes",
+            GroupedValue::of(ADDRESS, 6)
+                .copy_label("Copy address")
+                .hint("Check your wallet shows 8FASi4 at the start and NoVKf at the end."),
+        ),
+        (
+            "No longer to be used",
+            GroupedValue::of(ADDRESS, 6).void(true),
+        ),
+    ]
 }
 
 pub(super) fn copy_block_examples() -> Vec<(&'static str, CopyBlock)> {
