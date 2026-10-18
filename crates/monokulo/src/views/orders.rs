@@ -232,6 +232,11 @@ pub struct OrderDetailData {
     /// timestamp fields below - a merchant order id is caller-supplied free
     /// text, so it must stay ordinary escaped output, never `PreEscaped`.
     pub merchant_order_id: Option<String>,
+    /// Whether the checkout shows the payer `merchant_order_id`.
+    pub show_merchant_order_id: bool,
+    /// What the order is for, as it was created. Same caller-supplied-text
+    /// caveat as `merchant_order_id` above.
+    pub description: Option<String>,
     pub address: String,
     pub currency: String,
     pub amount: String,
@@ -305,10 +310,20 @@ pub fn live_fragment(order: &OrderDetailData, clock: &super::time::Clock) -> Mar
         fact(
             "Merchant Reference",
             match &order.merchant_order_id {
-                Some(reference) => html! { (reference) },
+                Some(reference) => html! {
+                    (reference)
+                    @if !order.show_merchant_order_id {
+                        " " span class="muted" { "(hidden from the payer)" }
+                    }
+                },
                 None => dash(),
             },
         ),
+    ];
+    if let Some(description) = &order.description {
+        facts.push(fact("Description", html! { (description) }));
+    }
+    facts.extend([
         fact("Address", html! { code { (order.address) } }),
         fact(
             "Amount",
@@ -338,7 +353,7 @@ pub fn live_fragment(order: &OrderDetailData, clock: &super::time::Clock) -> Mar
             "Base currency rate used",
             html! { (order.base_currency_rate_display) },
         ),
-    ];
+    ]);
     if let Some(at) = order.double_spend_detected_at {
         facts.push(fact("Double-spend detected at", clock.time(at)));
     }
@@ -670,6 +685,8 @@ mod tests {
             from_pos: false,
             order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
             merchant_order_id: None,
+            show_merchant_order_id: true,
+            description: None,
             address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
             currency: "XMR".to_string(),
             amount: "0.5".to_string(),

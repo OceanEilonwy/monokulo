@@ -444,6 +444,7 @@ async fn create_order(
             None,
             None,
             None,
+            None,
         )
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
@@ -613,6 +614,7 @@ async fn seed_webhooks(
                 status: Some("paid".to_string()),
                 txid: None,
                 merchant_order_id: None,
+                description: None,
                 xmr_amount_piconero: 81_245_310_000,
             };
             db.queue_order_event(&event, at, |store, metadata| {
@@ -765,6 +767,7 @@ async fn seed_webhooks(
                 status: event_type.strip_prefix("order.").map(str::to_string),
                 txid: None,
                 merchant_order_id: Some("gm-1042".to_string()),
+                description: None,
                 xmr_amount_piconero: 81_245_310_000,
             };
             let db = control.db.lock();
@@ -826,6 +829,7 @@ async fn plugin_order(
             Some("wc-1042".into()),
             None,
             None,
+            None,
         )
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
@@ -845,6 +849,7 @@ async fn plugin_order(
             1,
             true,
             Some("woocommerce"),
+            true,
         )
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({ "order_id": order.order_id })))
@@ -1085,6 +1090,7 @@ async fn mark_browser_created(
         1,
         false,
         None,
+        true,
     ) {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -1119,6 +1125,7 @@ async fn main() {
             &tenant.secret_token,
             shared::xmr_amount::Piconero(1_000_000_000),
             Some("Fixture order".into()),
+            None,
             None,
             None,
         )

@@ -40,6 +40,20 @@ pub struct CreateOrderRequest {
     /// convention this whole codebase already uses for an optional field.
     #[serde(default)]
     pub merchant_order_id: Option<String>,
+    /// What the order is for (`"Order #1042: Blue mug + 2 more"`), shown to
+    /// the payer on the checkout under the store's name. Plain text on one
+    /// line, up to 140 characters (`crate::stores::clean_description`);
+    /// trimmed, and empty is none. Passed to the engine with the order. An
+    /// order without one shows the store's payment description, if it has
+    /// one. Anyone with the payment link can read it.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Whether the checkout shows the payer `merchant_order_id`. `true`
+    /// when omitted; a shop whose reference means nothing to its customers
+    /// (the WooCommerce plugin's post ID) sends `false`. The dashboard and
+    /// webhooks show the reference either way.
+    #[serde(default)]
+    pub show_merchant_order_id: Option<bool>,
     /// The caller's key for this one purchase (up to 100 visible ASCII
     /// characters): a retry with the same key gets the order the first
     /// attempt made, never a second one. The WooCommerce plugin sends one
@@ -64,6 +78,10 @@ pub struct CreateOrderResponse {
     pub amount: String,
     pub currency: String,
     pub merchant_order_id: Option<String>,
+    /// The description the order was made with, after trimming.
+    pub description: Option<String>,
+    /// Whether the checkout shows the payer `merchant_order_id`.
+    pub show_merchant_order_id: bool,
     pub expires_at: i64,
 }
 
@@ -132,6 +150,20 @@ pub async fn create_order(
         ))
         .into_response();
     }
+    // What the order is for, which the payer reads: one line, bounded.
+    req.description = match req
+        .description
+        .as_deref()
+        .map(crate::stores::clean_description)
+        .transpose()
+    {
+        Ok(description) => description.flatten(),
+        Err(problem) => {
+            return ApiError::BadRequest(format!("description must be {}", problem.requirement()))
+                .into_response()
+        }
+    };
+    let show_merchant_order_id = req.show_merchant_order_id.unwrap_or(true);
     if req
         .idempotency_key
         .as_deref()
@@ -241,6 +273,7 @@ pub async fn create_order(
             &sk,
             shared::xmr_amount::Piconero(xmr_amount_piconero),
             req.merchant_order_id.clone(),
+            req.description.clone(),
             Some(resolution.confirmations_required),
             req.idempotency_key.as_ref().map(|key| format!("pay:{key}")),
         )
@@ -285,6 +318,7 @@ pub async fn create_order(
                         confirmations,
                         created_with_key,
                         Some(source),
+                        show_merchant_order_id,
                     )?;
                     if source == "woocommerce" {
                         db.integration_seen(&id, "woocommerce", &version, now_unix())?;
@@ -308,6 +342,8 @@ pub async fn create_order(
                 amount: req.amount,
                 currency: req.currency,
                 merchant_order_id: req.merchant_order_id,
+                description: req.description,
+                show_merchant_order_id,
                 expires_at: order.expires_at,
             })
             .into_response()
@@ -534,6 +570,115 @@ mod tests {
 
         let (status, _) = post(order("has space", "25.00")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// An order's description is checked, trimmed, echoed and passed to
+    /// the engine, which keeps it; the reference shows to the payer unless
+    /// the caller says otherwise. A description over 140 characters, or
+    /// with a line break, is a 400 naming the field.
+    #[tokio::test]
+    async fn an_orders_description_reaches_the_engine_and_bad_ones_are_refused() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "described@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let pk = create_connection(&router, &session_token).await;
+        let post = |body: serde_json::Value| {
+            let (router, pk) = (router.clone(), pk.clone());
+            async move {
+                let response = router
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri(format!("/pay/{pk}/orders"))
+                            .header("content-type", "application/json")
+                            .body(Body::from(body.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                (response.status(), body_text(response).await)
+            }
+        };
+        let order = |extra: serde_json::Value| {
+            let mut body = serde_json::json!({
+                "amount": "10.00",
+                "currency": TEST_CURRENCY,
+                "merchant_order_id": "1042",
+            });
+            body.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            body
+        };
+
+        let (status, body) =
+            post(order(serde_json::json!({ "description": "é".repeat(141) }))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body.contains("description must be at most 140 characters"),
+            "{body}"
+        );
+        let (status, body) = post(order(
+            serde_json::json!({ "description": "Blue mug\nRed mug" }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.contains("description must be one line"), "{body}");
+
+        let (status, body) = post(order(
+            serde_json::json!({ "description": format!("  {}  ", "é".repeat(140)) }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let created: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(created["description"], "é".repeat(140));
+        assert_eq!(created["show_merchant_order_id"], true);
+
+        let row = state
+            .db
+            .lock()
+            .get_store_connection_by_public_key(&pk)
+            .unwrap()
+            .unwrap();
+        let sk = crate::http::orders::decrypt_sk(&state.encryption_key, &row).unwrap();
+        let order_id = shared::ids::OrderId::new(created["order_id"].as_str().unwrap().to_string());
+        let detail = state
+            .engine
+            .client
+            .get_order_detail(&sk, &order_id)
+            .await
+            .unwrap();
+        assert_eq!(detail.order.description, Some("é".repeat(140)));
+        let metadata = state
+            .db
+            .lock()
+            .get_order_currency_metadata(&row.id, &order_id)
+            .unwrap()
+            .unwrap();
+        assert!(metadata.show_merchant_order_id);
+
+        // Blank is none; the reference can be kept off the checkout.
+        let (status, body) = post(order(
+            serde_json::json!({ "description": "   ", "show_merchant_order_id": false }),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let created: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(created["description"], serde_json::Value::Null);
+        assert_eq!(created["show_merchant_order_id"], false);
+        let order_id = shared::ids::OrderId::new(created["order_id"].as_str().unwrap().to_string());
+        let metadata = state
+            .db
+            .lock()
+            .get_order_currency_metadata(&row.id, &order_id)
+            .unwrap()
+            .unwrap();
+        assert!(!metadata.show_merchant_order_id);
     }
 
     /// Every static file a real page asks for is served, with the type its

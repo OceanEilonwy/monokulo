@@ -1,4 +1,6 @@
-//! A store's name and site, as the merchant types them (migration 0034).
+//! A store's name and site, as the merchant types them (migration 0034),
+//! and what a payment is for: an order's description, or the store's
+//! payment description in its place (migration 0041).
 //!
 //! A store's site is a host, not a page. Browsers send only the origin
 //! (scheme, host and port) in `Origin`, and trim a cross-site `Referer` to
@@ -22,6 +24,50 @@ pub fn clean_name(raw: &str) -> Result<String, &'static str> {
         return Err("A store name can be at most 60 characters.");
     }
     Ok(name)
+}
+
+/// The longest description an order, or a store's payment description,
+/// may have, in characters.
+pub const MAX_DESCRIPTION_CHARS: usize = 140;
+
+/// Why a description was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DescriptionProblem {
+    TooLong,
+    /// It holds a control character: a line break, a tab, or another that
+    /// would show as nothing or break the line the payer reads it on.
+    NotOneLine,
+}
+
+impl DescriptionProblem {
+    /// What a description must be, to follow "must be": "at most 140
+    /// characters".
+    pub fn requirement(self) -> &'static str {
+        match self {
+            DescriptionProblem::TooLong => "at most 140 characters",
+            DescriptionProblem::NotOneLine => {
+                "one line of plain text, without line breaks or other control characters"
+            }
+        }
+    }
+}
+
+/// What a payment is for, as typed: trimmed, `None` when that leaves
+/// nothing, and refused when it's longer than [`MAX_DESCRIPTION_CHARS`]
+/// (counted in Unicode scalar values) or isn't one line of plain text.
+/// The payer reads it on the checkout, so it's shown as typed, escaped.
+pub fn clean_description(raw: &str) -> Result<Option<String>, DescriptionProblem> {
+    let description = raw.trim();
+    if description.is_empty() {
+        return Ok(None);
+    }
+    if description.chars().count() > MAX_DESCRIPTION_CHARS {
+        return Err(DescriptionProblem::TooLong);
+    }
+    if description.chars().any(char::is_control) {
+        return Err(DescriptionProblem::NotOneLine);
+    }
+    Ok(Some(description.to_owned()))
 }
 
 /// What the merchant typed as the store's site, as the host it's kept as:
@@ -109,6 +155,28 @@ mod tests {
         assert!(normalize_site("ftp://shop.example").is_err());
         assert!(normalize_site("https://me:secret@shop.example").is_err());
         assert!(normalize_site("http://").is_err());
+    }
+
+    #[test]
+    fn a_description_is_one_trimmed_line_of_up_to_140_characters() {
+        assert_eq!(
+            clean_description("  Flat white, 2× croissant ").unwrap(),
+            Some("Flat white, 2× croissant".to_owned())
+        );
+        assert_eq!(clean_description("   ").unwrap(), None);
+        // Counted in characters, not bytes.
+        assert!(clean_description(&"é".repeat(MAX_DESCRIPTION_CHARS)).is_ok());
+        assert_eq!(
+            clean_description(&"x".repeat(MAX_DESCRIPTION_CHARS + 1)),
+            Err(DescriptionProblem::TooLong)
+        );
+        for broken in ["two\nlines", "a\ttab", "a\u{7}bell", "a\u{85}next line"] {
+            assert_eq!(
+                clean_description(broken),
+                Err(DescriptionProblem::NotOneLine),
+                "{broken:?}"
+            );
+        }
     }
 
     #[test]

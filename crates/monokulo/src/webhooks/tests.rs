@@ -132,6 +132,7 @@ fn event(seq: i64, store: &str, order: &str, event_type: &str) -> LoggedEvent {
         status: event_type.strip_prefix("order.").map(str::to_string),
         txid: None,
         merchant_order_id: None,
+        description: None,
         xmr_amount_piconero: 1_000_000_000_000,
     }
 }
@@ -686,7 +687,12 @@ async fn the_subscriber_queues_each_event_once_across_a_restart() {
     let (webhook, _) =
         add_webhook(&shop.state.db, &shop.store, "https://bakery.example/hook").await;
     let fiat = shop
-        .order(serde_json::json!({ "amount": "25.00", "currency": "USD", "merchant_order_id": "wc-1042" }))
+        .order(serde_json::json!({
+            "amount": "25.00",
+            "currency": "USD",
+            "merchant_order_id": "wc-1042",
+            "description": "Order #1042: Blue mug + 2 more",
+        }))
         .await;
     let xmr = shop
         .order(serde_json::json!({ "amount": "0.5", "currency": "XMR" }))
@@ -705,6 +711,7 @@ async fn the_subscriber_queues_each_event_once_across_a_restart() {
     assert_eq!(paid["status"], "paid");
     assert_eq!(paid["order_id"], fiat.as_str());
     assert_eq!(paid["merchant_order_id"], "wc-1042");
+    assert_eq!(paid["description"], "Order #1042: Blue mug + 2 more");
     assert_eq!(paid["amount"], "25.00");
     assert_eq!(paid["currency"], "USD");
     assert_eq!(paid["fx_source"], "coingecko");
@@ -727,6 +734,7 @@ async fn the_subscriber_queues_each_event_once_across_a_restart() {
     assert_eq!(expired["xmr_amount"], "0.500000000000");
     assert!(expired.get("fx_rate").is_none() && expired.get("fx_source").is_none());
     assert!(expired.get("merchant_order_id").is_none());
+    assert!(expired.get("description").is_none());
 
     // Monokulo is down while another order is paid.
     let later = shop

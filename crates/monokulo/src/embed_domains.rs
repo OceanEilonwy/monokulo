@@ -243,6 +243,18 @@ pub fn domain_of_site(site: &str) -> Option<String> {
     normalize_domain(&host).ok()
 }
 
+/// A store's site (`shop.example`), when one of `domains` that counts as
+/// verified at `now` covers it: the shop the checkout may tell the payer
+/// they're paying, since its owner proved they run it. `None` for a store
+/// without a site, or one whose site isn't verified.
+pub fn verified_site(site: &str, domains: &[StoreDomainRow], now: i64) -> Option<String> {
+    let host = domain_of_site(site)?;
+    domains
+        .iter()
+        .any(|row| DomainState::of(row, now).counts() && covers(&row.domain, &host))
+        .then(|| site.to_owned())
+}
+
 /// Adds the site's domain to a store as a domain waiting for DNS, so the
 /// merchant only has to publish the record. Skipped quietly when the site
 /// has no verifiable domain, or the store already has it or is full.
@@ -552,6 +564,29 @@ mod tests {
             policy.frame_ancestors(now).unwrap(),
             "frame-ancestors 'self' https://shop.example https://*.shop.example https://failing.example https://*.failing.example"
         );
+    }
+
+    /// The checkout names the store's site only while a verified domain
+    /// covers it: not while it waits for DNS, nor once it has lapsed.
+    #[test]
+    fn a_site_is_named_only_while_a_verified_domain_covers_it() {
+        let now = 1_000_000;
+        // `row` is a domain for shop.example.
+        let verified = [row(Some(1), None)];
+        assert_eq!(
+            verified_site("shop.example", &verified, now).as_deref(),
+            Some("shop.example")
+        );
+        assert_eq!(
+            verified_site("www.shop.example:8443", &verified, now).as_deref(),
+            Some("www.shop.example:8443")
+        );
+        assert_eq!(verified_site("evilshop.example", &verified, now), None);
+        assert_eq!(verified_site("", &verified, now), None);
+        let pending = [row(None, None)];
+        assert_eq!(verified_site("shop.example", &pending, now), None);
+        let lapsed = [row(Some(1), Some(now - GRACE_SECS))];
+        assert_eq!(verified_site("shop.example", &lapsed, now), None);
     }
 
     #[test]

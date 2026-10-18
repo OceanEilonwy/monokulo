@@ -32,6 +32,8 @@ struct BodyV2<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     merchant_order_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     amount: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     currency: Option<&'a str>,
@@ -70,6 +72,10 @@ pub fn body_v2(
             .merchant_order_id
             .as_deref()
             .filter(|id| !id.is_empty()),
+        description: event
+            .description
+            .as_deref()
+            .filter(|description| !description.is_empty()),
         amount: metadata.map(|m| m.amount.as_str()),
         currency: metadata.map(|m| m.currency.as_str()),
         xmr_amount: shared::xmr_amount::format_piconero_as_xmr(event.xmr_amount_piconero),
@@ -128,6 +134,7 @@ mod tests {
             base_currency: "EUR".into(),
             fx_provider_settings: Default::default(),
             wallet_id: None,
+            payment_description: String::new(),
         }
     }
 
@@ -142,6 +149,7 @@ mod tests {
             status: None,
             txid: None,
             merchant_order_id: Some("gm-1042".into()),
+            description: Some("Two sourdough loaves".into()),
             xmr_amount_piconero: 81_245_310_000,
         }
     }
@@ -164,6 +172,7 @@ mod tests {
             base_currency_piconero_per_unit: None,
             confirmations_required_applied: None,
             created_with_key: true,
+            show_merchant_order_id: true,
         }
     }
 
@@ -181,18 +190,19 @@ mod tests {
         );
         assert_eq!(
             body,
-            r#"{"api_version":2,"event_id":"evt_4be2d07a85c113e9","event":"order.paid","created_at":1760020320,"order_id":"5f01c9a7","status":"paid","merchant_order_id":"gm-1042","amount":"12.50","currency":"EUR","xmr_amount":"0.081245310000","fx_source":"coingecko","fx_rate":"153.84615385","store":{"id":"917701c2","name":"Bakery"}}"#
+            r#"{"api_version":2,"event_id":"evt_4be2d07a85c113e9","event":"order.paid","created_at":1760020320,"order_id":"5f01c9a7","status":"paid","merchant_order_id":"gm-1042","description":"Two sourdough loaves","amount":"12.50","currency":"EUR","xmr_amount":"0.081245310000","fx_source":"coingecko","fx_rate":"153.84615385","store":{"id":"917701c2","name":"Bakery"}}"#
         );
     }
 
     /// An order priced in XMR has no exchange rate: `fx_source` and
     /// `fx_rate` are left out; a double spend carries its `txid` and no
-    /// status; no merchant order id, none sent.
+    /// status; no merchant order id or description, none sent.
     #[test]
     fn an_xmr_orders_body_has_no_exchange_rate() {
         let mut detected = event("order.double_spend_detected");
         detected.txid = Some("ab12".into());
         detected.merchant_order_id = None;
+        detected.description = None;
         let body: serde_json::Value = serde_json::from_str(&body_v2(
             &detected,
             &store(),
@@ -203,7 +213,13 @@ mod tests {
         assert_eq!(body["currency"], "XMR");
         assert_eq!(body["xmr_amount"], "0.081245310000");
         assert_eq!(body["txid"], "ab12");
-        for absent in ["fx_source", "fx_rate", "status", "merchant_order_id"] {
+        for absent in [
+            "fx_source",
+            "fx_rate",
+            "status",
+            "merchant_order_id",
+            "description",
+        ] {
             assert!(body.get(absent).is_none(), "{absent}: {body}");
         }
     }

@@ -295,6 +295,10 @@ pub async fn create_order(
             &sk,
             shared::xmr_amount::Piconero(xmr_amount_piconero),
             merchant_order_id.clone(),
+            // The till takes an amount, not a list of items: nothing to
+            // describe, so the checkout shows the store's payment
+            // description, if it has one.
+            None,
             Some(resolution.confirmations_required),
             // The terminal's own key for this sale: a retry after a lost
             // answer (or a failed local write below) gets the same order.
@@ -351,6 +355,9 @@ pub async fn create_order(
                         // the key.
                         true,
                         Some("pos"),
+                        // The till's reference (often the customer's name)
+                        // is for the payer to see.
+                        true,
                     )
                 })
                 .await;
@@ -2721,6 +2728,7 @@ mod pure_logic_tests {
         OrderView {
             order_id: shared::ids::OrderId::new("pay_test".to_string()),
             merchant_order_id: None,
+            description: None,
             address: "addr".to_string(),
             xmr_amount_piconero: 1_000_000_000_000,
             amount_received_piconero: 0,

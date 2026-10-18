@@ -2,8 +2,8 @@
 //! settings form (`views::store_settings`), saved with its one save bar.
 //!
 //! The form carries every card's fields; only the cards whose values differ
-//! from what's saved are saved, in the page's order: the store's name and
-//! site, the base currency, the
+//! from what's saved are saved, in the page's order: the store's name,
+//! site and payment description, the base currency, the
 //! confirmation thresholds (the default in the engine, the custom ones
 //! here), the exchange rate providers, diagnostics. Every card is checked
 //! before anything is written, so a value one refuses saves nothing; only a
@@ -56,6 +56,8 @@ struct Plan {
     /// The store's name, and its site (empty: none).
     name: Option<String>,
     site: Option<String>,
+    /// The store's payment description (empty: none).
+    payment_description: Option<String>,
     base_currency: Option<String>,
     default_confirmations: Option<u64>,
     /// Thresholds to delete, and one to add (confirmations, amount).
@@ -68,6 +70,7 @@ impl Plan {
     fn is_empty(&self) -> bool {
         self.name.is_none()
             && self.site.is_none()
+            && self.payment_description.is_none()
             && self.base_currency.is_none()
             && self.default_confirmations.is_none()
             && self.thresholds.is_none()
@@ -251,6 +254,21 @@ async fn plan(
                 }
             }
             plan.site = Some(site);
+        }
+    }
+    // What the store's payments are for, which payers read: one line,
+    // bounded.
+    if let Some(raw) = form.get("payment_description") {
+        let description = crate::stores::clean_description(raw)
+            .map_err(|problem| {
+                (
+                    STORE,
+                    format!("A payment description must be {}.", problem.requirement()),
+                )
+            })?
+            .unwrap_or_default();
+        if description != row.payment_description {
+            plan.payment_description = Some(description);
         }
     }
 
@@ -492,6 +510,17 @@ async fn apply(
                 ))
             }
             Err(_) => return Err((StoreSection::Store, something_went_wrong())),
+        }
+    }
+    if let Some(description) = plan.payment_description {
+        let store_id = row.id.clone();
+        state
+            .db
+            .write(move |db| db.set_store_payment_description(&store_id, &description))
+            .await
+            .map_err(|_| (StoreSection::Store, something_went_wrong()))?;
+        if !saved.contains(&StoreSection::Store) {
+            saved.push(StoreSection::Store);
         }
     }
 

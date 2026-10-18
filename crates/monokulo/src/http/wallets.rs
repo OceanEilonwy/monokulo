@@ -1623,6 +1623,7 @@ mod tests {
                         None,
                         None,
                         None,
+                        None,
                     )
                     .await
                     .unwrap();
@@ -2036,6 +2037,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -2166,6 +2168,7 @@ mod tests {
             .create_order(
                 &sk,
                 shared::xmr_amount::Piconero(1_000_000),
+                None,
                 None,
                 None,
                 None,

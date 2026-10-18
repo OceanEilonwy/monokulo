@@ -914,11 +914,14 @@ impl EngineClient {
     /// of fiat at all any more, so `xmr_amount_piconero` here is the exact
     /// amount already computed from monokulo's own exchange rate -
     /// this is the only rate computation left in the whole system.
+    /// `description` is what the order is for, already checked
+    /// (`crate::stores::clean_description`): the engine keeps it as given.
     pub async fn create_order(
         &self,
         sk: &RawToken,
         xmr_amount_piconero: shared::xmr_amount::Piconero,
         merchant_order_id: Option<String>,
+        description: Option<String>,
         confirmations_required: Option<u64>,
         idempotency_key: Option<String>,
     ) -> Result<CreateOrderResponse, EngineClientError> {
@@ -928,6 +931,7 @@ impl EngineClient {
                 .json(&CreateOrderRequest {
                     xmr_amount_piconero: xmr_amount_piconero.get(),
                     merchant_order_id,
+                    description,
                     confirmations_required,
                     idempotency_key,
                 }),
@@ -1232,6 +1236,10 @@ pub struct WalletChangeAnswer {
 pub struct OrderView {
     pub order_id: shared::ids::OrderId,
     pub merchant_order_id: Option<String>,
+    /// What the order is for, as it was created; `None` when it was given
+    /// none.
+    #[serde(default)]
+    pub description: Option<String>,
     pub address: String,
     pub xmr_amount_piconero: u64,
     pub amount_received_piconero: u64,
@@ -1305,19 +1313,14 @@ struct PatchTenantRequest {
     confirmations_required: Option<u64>,
 }
 
-/// Mirrors the engine's own `public::CreateOrderRequest` - `description` is
-/// still left unset (nothing upstream of this client has a use for it yet),
-/// same `Option` field default-to-`None`-on-a-missing-key convention
-/// `PatchTenantRequest` already relies on. `merchant_order_id` used to be
-/// omitted the same way - a real gap, not a deliberate one: monokulo's
-/// own order-creation callers (`http::pay::create_order`,
-/// `http::orders::create_order`) had no way to pass one through at all,
-/// which is why every order's own `merchant_order_id` always showed as
-/// unset on the dashboard regardless of what a caller asked for.
+/// Mirrors the engine's own `orders::CreateOrderRequest`.
 #[derive(Serialize)]
 struct CreateOrderRequest {
     xmr_amount_piconero: u64,
     merchant_order_id: Option<String>,
+    /// What the order is for, shown to the payer on the checkout.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
     /// Mirrors the engine's own `public::CreateOrderRequest::confirmations_required` -
     /// `None` for every caller that doesn't need one (the engine's own
     /// tenant-level default still applies). Set by monokulo's own
@@ -1668,6 +1671,7 @@ mod tests {
                 &created.secret_token,
                 shared::xmr_amount::Piconero(100_000_000_000),
                 None,
+                None,
                 Some(3),
                 None,
             )
@@ -1708,6 +1712,7 @@ mod tests {
             .create_order(
                 &created.secret_token,
                 shared::xmr_amount::Piconero(100_000_000_000),
+                None,
                 None,
                 None,
                 None,
@@ -2107,6 +2112,7 @@ mod contract_tests {
                 amount,
                 Some("m-1".to_string()),
                 None,
+                None,
                 Some("idem-1".to_string()),
             )
             .await
@@ -2116,6 +2122,7 @@ mod contract_tests {
                 &sk,
                 amount,
                 Some("m-1".to_string()),
+                None,
                 None,
                 Some("idem-1".to_string()),
             )
@@ -2367,6 +2374,7 @@ mod contract_tests {
             .create_order(
                 &sk,
                 shared::xmr_amount::Piconero(1_000_000_000),
+                None,
                 None,
                 None,
                 None,

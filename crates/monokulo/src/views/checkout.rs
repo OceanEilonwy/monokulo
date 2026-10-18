@@ -34,6 +34,18 @@ pub struct CheckoutPaymentViewModel {
 /// The view model [`checkout_page`] takes.
 pub struct CheckoutViewModel {
     pub order_id: crate::db::OrderId,
+    /// Who the payer is paying: the store's name.
+    pub store_name: String,
+    /// What the payment is for: the order's description, or the store's
+    /// payment description when the order has none; `None` when neither
+    /// has one. Text the merchant typed, shown escaped.
+    pub description: Option<String>,
+    /// The order's merchant reference (`merchant_order_id`), only when its
+    /// creator chose to show it to the payer.
+    pub merchant_reference: Option<String>,
+    /// The store's site (`shop.example`), only while a verified domain
+    /// covers it (`crate::embed_domains::verified_site`).
+    pub merchant_site: Option<String>,
     pub status_label: String,
     pub status: super::DisplayStatus,
     pub address: String,
@@ -802,6 +814,10 @@ mod tests {
     fn test_checkout_view_model(is_terminal: bool) -> CheckoutViewModel {
         CheckoutViewModel {
             order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
+            store_name: "Corner shop".to_string(),
+            description: None,
+            merchant_reference: None,
+            merchant_site: None,
             status_label: if is_terminal { "Paid".to_string() } else { "Waiting for payment".to_string() },
             status: if is_terminal { shared::order_status::OrderStatus::Paid.into() } else { shared::order_status::OrderStatus::Pending.into() },
             address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
