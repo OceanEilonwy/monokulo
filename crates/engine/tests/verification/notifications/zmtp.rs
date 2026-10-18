@@ -274,8 +274,16 @@ async fn subscribes_over_tcp_and_unix_sockets() {
     let _ = std::fs::remove_dir_all(directory);
 }
 
+/// A fresh directory under `/tmp` on Unix: macOS's own temporary directory
+/// (`/var/folders/...`) is long enough to push a socket path in it past the
+/// 104 bytes `sun_path` holds.
 fn tempfile_directory() -> std::path::PathBuf {
-    let directory = std::env::temp_dir().join(format!("engine-zmtp-{}", uuid::Uuid::new_v4()));
+    let parent = if cfg!(unix) {
+        std::path::PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
+    };
+    let directory = parent.join(format!("engine-zmtp-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&directory).unwrap();
     directory
 }
