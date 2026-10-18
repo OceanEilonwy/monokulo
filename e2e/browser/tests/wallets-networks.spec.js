@@ -95,9 +95,9 @@ test("a wallet's page shows its network beside its name", async ({ page, context
 test("the dashboard shows each store's wallet with its network", async ({ page, context }) => {
   await login(context);
   await page.goto(fixture.base_url + '/');
-  const row = page.locator('tr', { hasText: 'shop.localhost' }).first();
-  await expect(row).toContainText('Cake – shop takings');
-  await expect(row.locator('.tag-network.is-main')).toHaveText('Mainnet');
+  const card = page.locator('[data-store]', { hasText: 'shop.localhost' }).first();
+  await expect(card).toContainText('Cake – shop takings');
+  await expect(card.locator('.tag-network.is-main')).toHaveText('Mainnet');
   await captureCoverageStage(page, 'wallets-networks-dashboard', test.info(), { group: GROUP });
 });
 
@@ -114,7 +114,7 @@ test('pickers show each wallet with its network, and a store changes only within
   await page.keyboard.press('Escape');
 
   // A store changes only to a wallet on its own network.
-  await page.goto(fixture.base_url + `/dashboard/stores/${fixture.connection_id}/settings`);
+  await page.goto(fixture.base_url + `/dashboard/stores/${fixture.connection_id}/settings?tab=wallet`);
   const section = page.locator('#card-wallet');
   await expect(section).toContainText('A store can only change to a wallet on its own network.');
   await section.getByRole('combobox', { name: 'Wallet' }).click();

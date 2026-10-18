@@ -221,7 +221,7 @@ test('a store settings save that is refused shows why on its card, and an action
   await finishStoreSetup(page);
   await page.goto(base + '/');
   const store = await page.locator('[data-store]', { hasText: 'sections.example.com' }).first().locator('a[data-store-link]').getAttribute('href');
-  await page.goto(base + store + '/settings');
+  await page.goto(base + store + '/settings?tab=connections');
 
   // An action: its card says what it did, once.
   const webhooks = page.locator('#card-webhooks');
@@ -230,11 +230,14 @@ test('a store settings save that is refused shows why on its card, and an action
   await expect(webhooks.getByRole('heading', { name: 'Webhook created' })).toBeVisible();
   await expect(page.locator('#settings-toasts')).toContainText('Webhook created');
 
-  // A setting the engine is asked about, refused: the card says why.
+  // A setting the engine is asked about, refused: the card says why, on
+  // its own tab, and the action's card (on Connections) isn't shown it.
+  await page.goto(base + store + '/settings?tab=payments');
   const card = page.locator('#card-confirmation-thresholds');
   await card.locator('input[name="confirmations_required"]').fill('abc');
   await page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }).click();
   await expect(card.locator('[role="alert"]')).toContainText('Enter a whole number');
   await expect(card).toHaveClass(/is-failed/);
+  await expect(page.locator('.mk-tabs[aria-label="Store settings"] a[aria-current="page"]')).toHaveText('Payments');
   await expect(page.locator('#card-webhooks [role="alert"]')).toHaveCount(0);
 });

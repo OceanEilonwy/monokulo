@@ -228,4 +228,5 @@ details.disclosure-row > .disclosure-body { padding: var(--space-sm) var(--space
 /* A card's facts (Card's body), and a row of actions in its foot. */
 .mk-card-body { margin-top: var(--space-sm); padding-block: var(--space-sm); border-block: 1px solid var(--line); }
 .mk-card-body > .facts { margin: 0; }
-.mk-card-foot > .form-actions { margin: 0; }
+/* A row of actions wraps on a narrow card rather than holding its width. */
+.mk-card-foot > .form-actions { margin: 0; flex: 0 1 auto; min-width: 0; }

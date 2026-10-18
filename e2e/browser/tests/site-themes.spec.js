@@ -96,9 +96,11 @@ test('the site, the POS and the hosted payment page share one theme, light and d
       expect(await fitsSmallPhone(page)).toBe(0);
 
       // Buttons are neutral; the page's one orange button is the save
-      // bar's Save, shown once something changes.
-      await page.goto(base + store + '/settings');
+      // bar's Save, shown once something changes. Webhooks are on the
+      // Connections tab, the diagnostics switch on General.
+      await page.goto(base + store + '/settings?tab=connections');
       expect(await background(page.getByRole('button', { name: 'Add webhook' }))).toBe(expected.button);
+      await page.goto(base + store + '/settings?tab=general');
       const logs = page.locator('#card-diagnostics label.switch');
       await logs.click();
       expect(await background(page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }))).toBe(ORANGE);

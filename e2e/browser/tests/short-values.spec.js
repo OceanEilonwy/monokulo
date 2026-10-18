@@ -3,8 +3,8 @@
 // to #14): the short text is what shows; a double-click and a copy take
 // exactly the whole value; a screen reader gets the whole value; the browser's
 // find matches it; and an order ID link is still a link, underlined, that
-// opens the order. On the dashboard's public key and order IDs and the
-// orders list.
+// opens the order. On an order's own page and the order IDs on the
+// dashboard and the orders list.
 const { test, expect } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
 
@@ -44,30 +44,27 @@ const shortOf = (value, prefix = '') => {
   return `${prefix}${body.slice(0, 6)}…${body.slice(-6)}`;
 };
 
-test("the dashboard's public key shows short, and copies, reads and finds whole", async ({ page, browserName }) => {
+test("an order's ID at the top of its page shows short, and copies, reads and finds whole", async ({ page, browserName }) => {
   await watchCopies(page);
-  await page.goto(fixture.base_url + '/');
-  const value = page.locator('tr', { hasText: 'shop.localhost' }).first().locator('.short-value');
-  const publicKey = await value.getAttribute('title');
-  expect(publicKey).toMatch(/^pk_[0-9a-f]{48}$/);
+  await page.goto(`${fixture.base_url}/dashboard/stores/coverage-store/orders/${orderId}`);
+  const value = page.locator('.order-title-id .short-value');
+  await expect(value).toHaveAttribute('title', orderId);
   // Shown short, with one ellipsis.
-  await expect(value.locator('.short-value-text')).toHaveText(shortOf(publicKey, 'pk_'));
+  await expect(value.locator('.short-value-text')).toHaveText(shortOf(orderId.replace(/^order_/, '')));
   await expect(value.locator('.short-value-text')).toBeVisible();
   expect(await value.evaluate((el) => el.getBoundingClientRect().width)).toBeLessThan(200);
-  // A double-click and a copy take the whole key and nothing else.
+  // A double-click and a copy take the whole ID and nothing else.
   await value.dblclick();
-  expect(await page.evaluate(() => String(document.getSelection()))).toBe(publicKey);
+  expect(await page.evaluate(() => String(document.getSelection()))).toBe(orderId);
   await page.keyboard.press('ControlOrMeta+c');
-  expect(await copied(page, browserName)).toBe(publicKey);
-  // A screen reader reads the whole key, never the short one.
-  const cell = value.locator('xpath=ancestor::td');
-  const read = await cell.ariaSnapshot();
-  expect(read).toContain(publicKey);
+  expect(await copied(page, browserName)).toBe(orderId);
+  // A screen reader reads the whole ID, never the short one.
+  const read = await page.locator('.order-title-id').ariaSnapshot();
+  expect(read).toContain(orderId);
   expect(read).not.toContain('…');
-  await expect(page.getByText(publicKey, { exact: true })).toHaveCount(1);
-  // The browser's find matches the whole key, or any part of it.
+  // The browser's find matches the whole ID, or any part of it.
   await page.evaluate(() => getSelection().removeAllRanges());
-  expect(await page.evaluate((key) => window.find(key.slice(10, 30)), publicKey)).toBe(true);
+  expect(await page.evaluate((id) => window.find(id.slice(10, 30)), orderId)).toBe(true);
   expect(await page.evaluate(() => getSelection().anchorNode.parentElement.className)).toBe('short-value-full');
 });
 
