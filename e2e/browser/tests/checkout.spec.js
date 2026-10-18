@@ -121,23 +121,24 @@ test('real checkout keeps retry and camera upload paths after failures', async (
   await expect(page.locator('#refund-field')).not.toHaveClass(/is-saved/);
 });
 
-test('real checkout copies and selects payment address at narrow and wide widths', async ({ page, context, request }) => {
+test('real checkout shows the whole payment address in groups, copies it, and keeps it whole at narrow and wide widths', async ({ page, context, request }) => {
   const url = await checkoutUrl(request);
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: fixture.base_url });
   await page.goto(url);
-  // Shortened on screen once the Copy button is there; the whole stays to
-  // select and to copy.
-  const value = page.locator('[data-address] [data-copy-value]');
-  const full = await value.textContent();
+  // The whole address on screen, in groups of six, the ends named to check.
+  const block = page.locator('.address-block .mk-grouped');
+  const full = await block.locator('.visually-hidden').first().textContent();
   expect(full.length).toBeGreaterThan(24);
-  await expect(page.locator('[data-address]')).toContainText('…');
-  await page.getByRole('button', { name: 'Copy payment address' }).click();
-  await expect(page.locator('[data-address] [role=status]')).toHaveText('Copied');
+  const shown = block.locator('.mk-grouped-value');
+  expect(await shown.textContent()).toBe(full);
+  await expect(shown.locator('span').first()).toHaveText(full.slice(0, 6));
+  await expect(block.locator('.mk-grouped-hint')).toContainText(`shows ${full.slice(0, 6)} at the start`);
+  await page.getByRole('button', { name: 'Copy address' }).click();
+  await expect(block.locator('[role=status]')).toHaveText('Copied');
+  await expect(block.getByRole('button', { name: 'Copied' })).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(full);
-  // Clicking the shortened form shows and selects the whole.
-  await page.locator('[data-address]').getByText('…').click();
-  await expect(value).toBeFocused();
-  expect(await page.evaluate(() => getSelection().toString())).toBe(full);
+  // Copying never changes what's shown.
+  expect(await shown.textContent()).toBe(full);
   for (const width of [320, 700, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     const geometry = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, viewport: innerWidth,
@@ -401,15 +402,17 @@ test('real checkout copies the payment address without the Clipboard API, as ove
     Object.defineProperty(Navigator.prototype, 'clipboard', { get: () => undefined });
   });
   await page.goto(url);
-  const address = await page.locator('[data-address] [data-copy-value]').textContent();
-  // The selection, copied the old way.
-  await page.getByRole('button', { name: 'Copy payment address' }).click();
-  await expect(page.locator('[data-address] [role=status]')).toHaveText('Copied');
+  const block = page.locator('.address-block .mk-grouped');
+  const address = await block.locator('.visually-hidden').first().textContent();
+  // The groups selected, which read as the address itself, and copied the
+  // old way.
+  await page.getByRole('button', { name: 'Copy address' }).click();
+  await expect(block.locator('[role=status]')).toHaveText('Copied');
   expect(await page.evaluate(() => getSelection().toString())).toBe(address);
   // Where the browser refuses that too: left selected, and said so.
   await page.evaluate(() => { document.execCommand = () => false; });
-  await page.getByRole('button', { name: 'Copy payment address' }).click();
-  await expect(page.locator('[data-address] [role=status]')).toContainText('copy the full value');
+  await page.getByRole('button', { name: 'Copy address' }).click();
+  await expect(block.locator('[role=status]')).toContainText('copy the full value');
   expect(await page.evaluate(() => getSelection().toString())).toBe(address);
 });
 
@@ -688,18 +691,20 @@ test('real checkout leads with the stage in one column and fades the code once p
     // (a short landscape screen): the stage heads the column beside the code.
     if (columns === 1) expect(layout, `${width}x${height}`).toMatchObject({ stageAbove: true, beside: false });
     else expect(layout, `${width}x${height}`).toMatchObject({ beside: true, stageTop: true });
-    await expect(page.locator('.stage-expiry')).toHaveText(/left$/);
+    await expect(page.locator('#live-pay .mk-countdown')).toContainText('left to pay');
   }
   // The code stays black on white while it's payable.
   expect(await page.evaluate(() => getComputedStyle(document.querySelector('.qr-wrap svg path')).fill)).toBe('rgb(0, 0, 0)');
   await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/paid`);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
-  // Paid: the code and the address fade in place (the copy button goes),
+  // Paid: the code fades and the address is struck through in place (the
+  // copy button goes),
   // and the progress bar takes the paid colour (--state-paid-border).
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   await expect.poll(() => page.evaluate(() => Number(getComputedStyle(document.querySelector('.qr-wrap svg')).opacity))).toBeLessThan(0.2);
-  await expect(page.locator('.address-block')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Copy payment address' })).toBeHidden();
+  await expect(page.locator('.address-block .mk-grouped[data-void]')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Copy address' })).toBeHidden();
+  await expect(page.locator('#live-pay .mk-countdown')).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.getElementById('progress-fill')).backgroundColor)).toBe('rgb(26, 127, 55)');
   await captureCoverageStage(page, 'checkout-paid-faded', test.info());
 });
