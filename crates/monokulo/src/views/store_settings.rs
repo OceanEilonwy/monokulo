@@ -897,7 +897,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
             (wallet_card(store))
             (super::settings::form(
                 &format!("/dashboard/stores/{}/settings", store.connection_id),
-                Save::Reload,
+                Save::Page,
                 "Store settings",
                 html! {
                     (store_card(store))

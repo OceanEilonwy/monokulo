@@ -240,7 +240,7 @@ fn profile_panel(data: &AccountViewModel) -> Markup {
     };
     super::settings::form(
         "/account/profile",
-        Save::Reload,
+        Save::Page,
         "Profile",
         html! {
             input type="hidden" name="tab" value="profile";

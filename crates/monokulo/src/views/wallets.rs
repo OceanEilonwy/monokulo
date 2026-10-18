@@ -919,7 +919,7 @@ fn details_card(data: &DetailViewModel) -> Markup {
         name_input = name_input.attr("data-saved", w.name.as_str());
     }
     html! {
-        (settings::form(&format!("/account/wallets/{}/rename", w.id), Save::Reload, "Details", html! {
+        (settings::form(&format!("/account/wallets/{}/rename", w.id), Save::Page, "Details", html! {
             (Card::new("details", "Details")
                 .failed(refusal.is_some(), refusal)
                 .saved(matches!(data.rename, Some(RenameOutcome::Saved)).then_some(""), false)

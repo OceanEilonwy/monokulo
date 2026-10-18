@@ -22,38 +22,6 @@ function showCard(name: string): boolean {
   return true;
 }
 
-// A save that reloads the page (a plain POST, without fixi) brings a new
-// page, which the browser shows from the top. The card on screen when Save
-// was pressed, and how far down the window it was, are kept for the page
-// the save answers with, which scrolls that card back to the same place.
-const PLACE = 'mk-settings-place';
-
-interface Place { path: string; card?: string; top: number; y: number; at: number }
-
-function rememberPlace(form: HTMLFormElement) {
-  const card = Array.from(form.querySelectorAll<HTMLElement>('.settings-card[id]'))
-    .find(card => card.getBoundingClientRect().bottom > 0);
-  const place: Place = { path: location.pathname, card: card?.id, top: card?.getBoundingClientRect().top ?? 0, y: window.scrollY, at: Date.now() };
-  try {
-    sessionStorage.setItem(PLACE, JSON.stringify(place));
-  } catch {}
-}
-
-/** The place a save on this page left, if it's this save's. */
-function placeLeft(): Place | undefined {
-  try {
-    const place = JSON.parse(sessionStorage.getItem(PLACE) ?? 'null') as Place | null;
-    if (place && place.path === location.pathname && Date.now() - place.at < 60_000) return place;
-  } catch {}
-  return undefined;
-}
-
-function returnTo(place: Place) {
-  const card = place.card ? document.getElementById(place.card) : null;
-  if (card) window.scrollBy(0, card.getBoundingClientRect().top - place.top);
-  else window.scrollTo(0, place.y);
-}
-
 /** What the page says about the save it answers, once its cards are in. */
 function settle(host: HTMLElement, store: FormStore) {
   const bar = store.form.querySelector('.save-bar');
@@ -80,10 +48,6 @@ export function setup(props: SettingsFormProps): SettingsFormBehaviour {
       const form = element as HTMLFormElement;
       const store = createStore(form, props.label);
       onCleanup(() => store.dispose());
-      // Back where a save that reloaded the page left off: now, and again
-      // once the cards are in.
-      const place = placeLeft();
-      if (place) returnTo(place);
       const listen = <K extends string>(target: EventTarget, name: K, handler: (event: Event) => void, capture = false) => {
         target.addEventListener(name, handler, capture);
         onCleanup(() => target.removeEventListener(name, handler, capture));
@@ -140,7 +104,6 @@ export function setup(props: SettingsFormProps): SettingsFormBehaviour {
           return;
         }
         store.setSaving(true);
-        if (!form.hasAttribute('fx-action') && !store.goAfterSave) rememberPlace(form);
         // Save turns busy and disabled now, not at Solid's next update: a
         // second press as the first is sent finds it so.
         flush();
@@ -172,12 +135,6 @@ export function setup(props: SettingsFormProps): SettingsFormBehaviour {
       // Once its cards are in (they attach after the form), and fixi's
       // glue has put the rest of a swap's answer in place.
       const timer = setTimeout(() => {
-        if (place) {
-          returnTo(place);
-          try {
-            sessionStorage.removeItem(PLACE);
-          } catch {}
-        }
         if (host) settle(host, store);
         const href = previousGo.get(document);
         previousGo.delete(document);

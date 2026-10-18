@@ -113,30 +113,45 @@ test('a save says so on the card and in a toast; a refused one keeps what was ty
   await expect(page).toHaveURL(/\?saved=confirmation-thresholds$/);
 });
 
-// A save that reloads the page comes back where it was, not at the top:
-// the card that was on screen is where it was on screen.
-test('a save keeps the card being edited where it was on screen', async ({ page, context }) => {
+// A save swaps the page it answers with in where the page is scrolled
+// (Save::Page), without loading it: the card being edited stays where it
+// was on screen, saved or refused.
+test('a save keeps the card being edited where it was on screen, without reloading the page', async ({ page, context }) => {
   await login(context);
   await page.setViewportSize({ width: 1280, height: 600 });
   await page.goto(fixture.base_url + store + '/settings');
+  await page.evaluate(() => { window.__samePage = true; });
   const bar = page.locator('#save-bar');
-  const card = page.locator('#card-diagnostics');
-  const toggle = card.locator('label.switch');
-  await card.evaluate((el) => window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - 200));
-  const before = await card.evaluate((el) => el.getBoundingClientRect().top);
-  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  const at = (card) => card.evaluate((el) => Math.round(el.getBoundingClientRect().top));
+  const scrollTo = (card) => card.evaluate((el) => window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY - 200, behavior: 'instant' }));
 
+  const diagnostics = page.locator('#card-diagnostics');
+  await scrollTo(diagnostics);
+  const before = await at(diagnostics);
+  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
   for (const _ of ['on', 'off']) {
-    await toggle.click();
+    await diagnostics.locator('label.switch').click();
+    // The last save's toast goes first, so this one's is waited for.
+    await page.locator('#settings-toasts .toast').evaluateAll((all) => all.forEach((toast) => toast.remove()));
     await bar.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page).toHaveURL(/\?saved=diagnostics$/);
     await expect(page.locator('#settings-toasts .toast-success')).toBeVisible();
-    await expect.poll(() => card.evaluate((el) => Math.round(el.getBoundingClientRect().top))).toBe(Math.round(before));
+    expect(await at(diagnostics)).toBe(before);
   }
 
-  // A page opened afresh starts at the top, as ever.
-  await page.goto(fixture.base_url + store + '/settings');
-  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  // Refused: the page refusing it comes in the same way, at the same address.
+  const thresholds = page.locator('#card-confirmation-thresholds');
+  await scrollTo(thresholds);
+  const refusedAt = await at(thresholds);
+  const url = page.url();
+  await thresholds.locator('input[name="confirmations_required"]').fill('721');
+  await bar.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(thresholds).toHaveClass(/is-failed/);
+  expect(page.url()).toBe(url);
+  expect(await at(thresholds)).toBe(refusedAt);
+  await thresholds.getByRole('button', { name: 'Discard' }).click();
+
+  expect(await page.evaluate(() => window.__samePage)).toBe(true);
 });
 
 test('without JavaScript the save bar is always there and saves, refused or not', async ({ browser }) => {

@@ -29,21 +29,25 @@ pub enum Save<'a> {
     /// With fixi, swapping the answer into `target` (a selector), so the
     /// page isn't reloaded; without JavaScript, a plain POST.
     Fixi { target: &'a str },
-    /// A plain POST, and the page it redirects to: for a page whose save
-    /// changes more than the form (the nav, the heading).
-    Reload,
+    /// With fixi, the whole page the save answers with (the page it
+    /// redirects to, or the page refusing it) swapped in where the page
+    /// is scrolled (fx-glue.js `fx-swap="page"`): for a page whose save
+    /// changes more than the form (the nav, the heading). Without
+    /// JavaScript, the same as a plain POST.
+    Page,
 }
 
 /// The page's settings form, a real `<form method="post" id="settings-form">`
 /// posting to `action`. `label` names what has unsaved changes when leaving
 /// is asked about ("Abuse protection has unsaved changes"). One per page.
 pub fn form(action: &str, save: Save, label: &str, body: Markup) -> Markup {
-    let target = match save {
-        Save::Fixi { target } => Some(target.to_string()),
-        Save::Reload => None,
+    let (target, swap) = match save {
+        Save::Fixi { target } => (target, None),
+        Save::Page => ("main", Some("page")),
     };
     ui::SettingsForm::new(action, label, body)
-        .maybe_fixi_target(target)
+        .fixi_target(target)
+        .maybe_fixi_swap(swap.map(str::to_string))
         .render()
 }
 
@@ -348,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn a_form_saves_with_fixi_or_reloads_as_its_page_asks() {
+    fn a_form_saves_its_section_or_its_page_as_its_page_asks() {
         let fixi = markup(form(
             "/x",
             Save::Fixi {
@@ -361,10 +365,10 @@ mod tests {
             fixi,
             r##"<div class="mk-settings-form" data-label="Payments" data-mk="1" data-island="SettingsForm"><form method="post" action="/x" id="settings-form" fx-action="/x" fx-method="POST" fx-target="#settings-panel" data-mk="2">body</form></div>"##
         );
-        let reload = markup(form("/y", Save::Reload, "Profile", html! {}));
+        let page = markup(form("/y", Save::Page, "Profile", html! {}));
         assert_eq!(
-            reload,
-            r#"<div class="mk-settings-form" data-label="Profile" data-mk="1" data-island="SettingsForm"><form method="post" action="/y" id="settings-form" data-mk="2"></form></div>"#
+            page,
+            r#"<div class="mk-settings-form" data-label="Profile" data-mk="1" data-island="SettingsForm"><form method="post" action="/y" id="settings-form" fx-action="/y" fx-method="POST" fx-target="main" fx-swap="page" data-mk="2"></form></div>"#
         );
     }
 

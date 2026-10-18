@@ -32,12 +32,14 @@ component! {
     /// The page's settings form: one per page. `label` names what has
     /// unsaved changes when leaving is asked about ("Abuse protection has
     /// unsaved changes"). With `fixi_target`, a save swaps its answer into
-    /// that element without reloading; without, it's a plain POST and the
-    /// page it redirects to.
+    /// that element without reloading, the way `fixi_swap` says (fixi's
+    /// `fx-swap`; the site's glue adds `page`, for an answer that is the
+    /// whole page); without, it's a plain POST and the page it redirects to.
     pub struct SettingsForm {
         action: String,
         label: String,
         fixi_target: Option<String>,
+        fixi_swap: Option<String>,
         /// The cards, the save bar and anything else the form sends.
         children: Slot,
         #[default(FormMethod::Post)]
@@ -54,7 +56,7 @@ component! {
     html {
         div class="mk-settings-form" data-label=(label) ref=host {
             form method=(method) action=(action) id=(form_id) fx-action=(action) if fixi_target
-                fx-method="POST" if fixi_target fx-target=[fixi_target] ref=form {
+                fx-method="POST" if fixi_target fx-target=[fixi_target] fx-swap=[fixi_swap] ref=form {
                 (children)
             }
         }

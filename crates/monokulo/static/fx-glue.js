@@ -15,6 +15,12 @@
 //                    Last-Event-ID, and pause it while the tab is hidden;
 //                    a named "done" event ends it for good. While a stream
 //                    is open, the page's Reload button ([data-reload]) is hidden.
+//   fx-swap="page"   the answer is a whole page (a save's redirect,
+//                    followed, or the page refusing it): its body and
+//                    title replace this page's in place, so the page stays
+//                    scrolled where it was, and the address bar shows the
+//                    page redirected to. A redirect to another page goes
+//                    there instead.
 // and on a form:
 //   fx-submit-on-change  submit when a select, checkbox or date changes.
 //
@@ -67,8 +73,27 @@
     if (box) box.hidden = true;
   }
 
+  // fx-swap="page": what a plain POST would show, without loading it.
+  // fetch has followed the redirect already. The scripts in the new body
+  // don't run again: the page's own already listen on the document.
+  function swapPage(cfg) {
+    var response = cfg.response;
+    var url = response.redirected ? new URL(response.url) : null;
+    if (url && url.pathname !== location.pathname) {
+      location.assign(url.href);
+      return;
+    }
+    var page = new DOMParser().parseFromString(cfg.text, "text/html");
+    document.title = page.title;
+    // A copy: adopting each node takes it out of the live list.
+    var nodes = Array.prototype.slice.call(page.body.childNodes);
+    document.body.replaceChildren.apply(document.body, nodes.map(function (node) { return document.adoptNode(node); }));
+    if (url && url.href !== location.href) history.replaceState(history.state, "", url.href);
+  }
+
   document.addEventListener("fx:config", function (evt) {
     var elt = evt.target, cfg = evt.detail.cfg;
+    if (cfg.swap === "page") cfg.swap = swapPage;
     // A submit another script cancelled (a confirm() the user declined)
     // isn't sent; fixi itself doesn't look.
     if (cfg.trigger && cfg.trigger.type === "submit" && cfg.trigger.defaultPrevented) {
