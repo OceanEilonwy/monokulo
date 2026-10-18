@@ -648,6 +648,14 @@ test('real share page grows its frame to the whole checkout, so nothing scrolls 
     await page.goto(`${url}/share`);
     const frame = page.frameLocator('#checkout-frame');
     await expect(frame.locator('#checkout-root')).toBeVisible();
+    // The frame is the card: its own rounded border rounds its content off,
+    // with nothing around it clipping it.
+    const edges = await page.evaluate(() => {
+      const frame = document.getElementById('checkout-frame');
+      return { radius: getComputedStyle(frame).borderTopLeftRadius, clip: getComputedStyle(frame.parentElement).overflow };
+    });
+    expect(edges.radius).not.toBe('0px');
+    expect(edges.clip).toBe('visible');
     // On a desktop screen the page is as wide as the checkout's two columns
     // need, and the frame shows them side by side.
     if (width >= 1000) {

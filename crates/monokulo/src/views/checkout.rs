@@ -825,18 +825,22 @@ pub struct CheckoutShareViewModel {
     pub found: bool,
 }
 
-/// The title and the framed checkout are one card on the page. The card's
-/// surface is the checkout's own background (`--paper-raised`), so the
-/// frame's edge doesn't show and the payment reads as one panel. Square:
-/// rounded corners would clip the framed page's own edges. Wide enough on
-/// a desktop screen for the checkout's two columns (1000px).
+/// The framed checkout is the card on the page: the frame itself has the
+/// border and the rounded corners, so it rounds its own content off inside
+/// them (a parent clipping a frame to rounded corners leaves its square
+/// corners showing in some browsers). Its surface is the checkout's own
+/// background (`--paper-raised`). Wide enough on a desktop screen for the
+/// checkout's two columns (1000px).
 const SHARE_STYLE: &str = r#"
 .wrap.share-wrap { max-width: 1080px; }
-.share-card { margin-top: var(--space-md); background: var(--paper-raised); border: 1px solid var(--line); }
+.share-card { margin-top: var(--space-md); }
 .share-frame {
+  box-sizing: border-box;
   width: 100%;
   display: block;
-  border: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--paper-raised);
   height: 620px;
 }
 "#;
@@ -868,7 +872,9 @@ const SHARE_SCRIPT: &str = r#"
         below += (parseFloat(body.paddingBottom) || 0) + (parseFloat(body.borderBottomWidth) || 0);
       }
       var height = Math.ceil(el.getBoundingClientRect().bottom + win.scrollY + below);
-      if (height) frame.style.height = height + "px";
+      // The frame's own border is inside its height (border-box).
+      var edge = getComputedStyle(frame);
+      if (height) frame.style.height = (height + (parseFloat(edge.borderTopWidth) || 0) + (parseFloat(edge.borderBottomWidth) || 0)) + "px";
     } catch (e) { /* not ready yet, or something unexpected - keep the CSS fallback */ }
   }
   frame.addEventListener("load", function () {

@@ -122,14 +122,14 @@ test('the site, the POS and the hosted payment page share one theme, light and d
       await expect(page.locator('.pos-top .pos-mode')).toHaveText('POS');
       expect(await background(page.locator('.pos-top'))).toBe(expected.bar);
 
-      // The hosted payment page: the card and the framed checkout are one
-      // surface, in the theme the merchant chose.
+      // The hosted payment page: the frame (the card) and the checkout in it
+      // are one surface, in the theme the merchant chose.
       await page.goto(`${base}/pay/${publicKey}/orders/${orderId}/share`);
       const frame = page.frameLocator('#checkout-frame');
       await expect(frame.locator('#checkout-root')).toBeVisible();
       await expect(frame.locator('html')).toHaveAttribute('data-theme', theme);
       await expect(frame.locator('#status-badge')).toHaveClass(/state-pending/);
-      expect(await background(page.locator('.share-card'))).toBe(await background(frame.locator('body')));
+      expect(await background(page.locator('#checkout-frame'))).toBe(await background(frame.locator('body')));
       if (theme === 'light') await captureCoverageStage(page, 'hosted-payment-page', test.info(), { group: 'hosted-payment' });
     }
   } finally {
