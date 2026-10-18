@@ -299,6 +299,10 @@ component! {
         /// Seconds left at which it turns `urgent`.
         #[default(60u64)]
         urgent: u64,
+        /// Small, beside or under something else (an order's status on the
+        /// POS): smaller type, the same shape.
+        #[default(false)]
+        compact: bool,
         rest: Attrs,
     }
     behaviour "countdown.behaviour.ts" {
@@ -315,7 +319,7 @@ component! {
         ref root,
     }
     html {
-        div class="mk-countdown" data-tone=(tone) data-tone=(b.now) ..rest ref=root {
+        div class="mk-countdown" data-tone=(tone) data-tone=(b.now) data-size="compact" if compact ..rest ref=root {
             p class="mk-countdown-line" {
                 span {
                     strong hidden="" if enhanced { (left) }
@@ -358,6 +362,10 @@ pub(super) fn countdown_examples() -> Vec<(&'static str, Countdown)> {
             Countdown::new(1800u64, 291u64, "4m")
                 .suffix("left to pay")
                 .toned(),
+        ),
+        (
+            "Small, under an order's status",
+            Countdown::new(3600u64, 1380u64, "23m").compact(true),
         ),
     ]
 }

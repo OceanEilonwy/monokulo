@@ -4030,6 +4030,7 @@
     "component": "Countdown",
     "html": "<div class=\"mk-countdown\" data-tone=\"normal\" data-mk=\"1\" data-island=\"Countdown\" data-props=\"{&quot;remaining&quot;:1754,&quot;soon&quot;:300,&quot;total&quot;:1800,&quot;urgent&quot;:60}\"><p class=\"mk-countdown-line\"><span><strong data-mk=\"2\">29m</strong><!--mk:3--> left to pay</span><span class=\"mk-countdown-note\">Price held until 14:32</span></p><progress class=\"mk-countdown-bar\" max=\"1800\" value=\"1754\" aria-hidden=\"true\" data-mk=\"4\"></progress><!--mk:5--></div>",
     "props": {
+      "compact": false,
       "left": "29m",
       "note": {
         "$slot": [
@@ -4049,6 +4050,7 @@
     "component": "Countdown",
     "html": "<div class=\"mk-countdown\" data-tone=\"soon\" data-mk=\"1\" data-island=\"Countdown\" data-props=\"{&quot;remaining&quot;:291,&quot;soon&quot;:300,&quot;total&quot;:1800,&quot;urgent&quot;:60}\"><p class=\"mk-countdown-line\"><span><strong data-mk=\"2\">4m</strong><!--mk:3--> left to pay</span></p><progress class=\"mk-countdown-bar\" max=\"1800\" value=\"291\" aria-hidden=\"true\" data-mk=\"4\"></progress><!--mk:5--></div>",
     "props": {
+      "compact": false,
       "left": "4m",
       "remaining": 291,
       "soon": 300,
@@ -4058,6 +4060,21 @@
       "urgent": 60
     },
     "title": "Running low"
+  },
+  {
+    "component": "Countdown",
+    "html": "<div class=\"mk-countdown\" data-tone=\"normal\" data-size=\"compact\" data-mk=\"1\" data-island=\"Countdown\" data-props=\"{&quot;remaining&quot;:1380,&quot;soon&quot;:300,&quot;total&quot;:3600,&quot;urgent&quot;:60}\"><p class=\"mk-countdown-line\"><span><strong data-mk=\"2\">23m</strong><!--mk:3--> left</span></p><progress class=\"mk-countdown-bar\" max=\"3600\" value=\"1380\" aria-hidden=\"true\" data-mk=\"4\"></progress><!--mk:5--></div>",
+    "props": {
+      "compact": true,
+      "left": "23m",
+      "remaining": 1380,
+      "soon": 300,
+      "suffix": "left",
+      "tone": "normal",
+      "total": 3600,
+      "urgent": 60
+    },
+    "title": "Small, under an order's status"
   },
   {
     "component": "StepScale",
