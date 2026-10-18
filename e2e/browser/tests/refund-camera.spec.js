@@ -21,17 +21,18 @@ test.use({
   permissions: async ({ browserName }, use) => use(CAMERAS[browserName].permissions),
 });
 
-/** The page side of holdUpCode: replaces getUserMedia with a camera that
- * sees the code. Safe to run twice in one document: it checks the
- * mediaDevices the page has now, not a flag of its own, as in WebKit the
- * init script can run before there is one (a run where the second call
- * then did nothing showed the mock's test pattern). */
+/** The page side of holdUpCode: makes getUserMedia a camera that sees the
+ * code. It patches MediaDevices' prototype, which is there from the start
+ * of every document, not the page's mediaDevices: in WebKit the init
+ * script can run before the page has one, and a run that patched the
+ * object showed the mock's test pattern. Safe to run twice in one
+ * document. */
 function holdUp(code) {
-  const devices = navigator.mediaDevices;
-  if (!devices || devices.getUserMedia.holdsCode) return;
-  const camera = devices.getUserMedia.bind(devices);
-  const holdsCode = async constraints => {
-    const device = await camera(constraints);
+  const proto = window.MediaDevices && window.MediaDevices.prototype;
+  if (!proto || !proto.getUserMedia || proto.getUserMedia.holdsCode) return;
+  const camera = proto.getUserMedia;
+  const holdsCode = async function (constraints) {
+    const device = await camera.call(this, constraints);
     const canvas = Object.assign(document.createElement('canvas'), { width: 640, height: 480 });
     const context = canvas.getContext('2d');
     const image = new Image();
@@ -47,7 +48,7 @@ function holdUp(code) {
     return new MediaStream([track]);
   };
   holdsCode.holdsCode = true;
-  devices.getUserMedia = holdsCode;
+  proto.getUserMedia = holdsCode;
 }
 
 const heldUp = new WeakMap();
