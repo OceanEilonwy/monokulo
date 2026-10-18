@@ -146,7 +146,9 @@ test('real POS payment card copies the address and saves a refund address', asyn
   await context.grantPermissions(CLIPBOARD_PERMISSIONS[browserName]);
   await page.goto(posUrl());
   const card = page.locator('.pos-pay-card');
-  await expect(card.locator('.mk-stage-msg')).toContainText(/(59m|1h) left/);
+  // The stage says what to do; the time left is under the status.
+  await expect(card.locator('.mk-stage-msg')).toHaveText('Send the exact amount below. Scan the code with your wallet, or copy the address.');
+  await expect(page.locator('[data-pos="time-left"] .mk-countdown-clock')).toHaveText(/^(59:\d\d|60:00)$/);
   const address = await card.locator('.pos-address [data-copy-value]').textContent();
   await card.getByRole('button', { name: 'Copy payment address' }).click();
   await expect(card.locator('.pos-address [role="status"]')).toHaveText('Copied');
@@ -360,7 +362,7 @@ test('a delayed order read cannot undo a live payment, but a later reorg can', a
   await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
   // No monotonic-status assumption: a subsequent stream snapshot may regress.
   await page.evaluate(order => window.__status({ ...order, is_terminal: false }), initial);
-  await expect(page.locator('.mk-stage-msg')).toContainText('Send 0.001 XMR.');
+  await expect(page.locator('.mk-stage-msg')).toHaveText('Send the exact amount below. Scan the code with your wallet, or copy the address.');
   await expect(page.getByRole('button', { name: 'Cancel order' })).toBeVisible();
 });
 
@@ -627,7 +629,7 @@ test('payment waiting on the store\'s confirmations shows its progress', async (
   await page.keyboard.type('30000000000');
   await page.getByRole('button', { name: 'Charge' }).click();
   await expect(page.locator('.pos-pay-card')).toBeVisible();
-  const heading = await page.locator('.pos-order-heading p').textContent();
+  const heading = await page.locator('.pos-order-heading h1 + p').textContent();
   const list = await (await request.get(`${posUrl()}/orders`, { headers: { cookie: `session=${fixture.session}` } })).json();
   const order = list.orders.find(o => !o.backgrounded && o.status === 'pending');
   expect(heading).toContain(order.order_id.slice(-4));
@@ -689,15 +691,22 @@ test('payment countdown keeps ticking down while the customer finds their wallet
   const start = new Date();
   await pauseClockAt(page, start);
   await page.goto(posUrl());
-  // In the stage's message.
-  const expiry = page.locator('.mk-stage-msg');
-  await expect(expiry).toContainText(/(59m|1h) left/);
+  // Under the status, with a bar that empties; the stage's message leaves
+  // the time to it.
+  const expiry = page.locator('.pos-status-row [data-pos="time-left"]');
+  const clock = expiry.locator('.mk-countdown-clock');
+  const bar = expiry.locator('progress');
+  await expect(clock).toHaveText(/^(59:\d\d|60:00)$/);
+  await expect(page.locator('.mk-stage-msg')).not.toContainText(' left');
+  const full = Number(await bar.getAttribute('value'));
   await page.clock.runFor(20 * 60 * 1000);
-  await expect(expiry).toContainText(/(39|40)m left/);
-  // To half a minute before it expires. The message follows a clock that
-  // ticks every 15s, so it shows between 30 and 45 seconds left.
+  await expect(clock).toHaveText(/^(39|40):\d\d$/);
+  expect(Number(await bar.getAttribute('value'))).toBeLessThan(full);
+  // To half a minute before it expires (the order's deadline is in whole
+  // seconds, so a second either way).
   await page.clock.runFor(order.expires_at * 1000 - 30_000 - (await page.evaluate(() => Date.now())));
-  await expect(expiry).toContainText('less than a minute left');
+  await expect(clock).toHaveText(/^0:(29|30|31)$/);
+  await expect(expiry).toHaveAttribute('data-tone', 'urgent');
 });
 
 test('merchant moves between the keypad, the stack and the order list', async ({ page, request }) => {

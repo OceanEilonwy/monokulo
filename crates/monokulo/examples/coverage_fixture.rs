@@ -1205,7 +1205,9 @@ async fn main() {
         &order.order_id,
         None,
         Some("Fixture order"),
-        1,
+        // Recorded as the order is made, as the POS does: the time left to
+        // pay runs from here.
+        monokulo::now_unix(),
     )
     .expect("create fixture POS order");
     // Bound first so the exchange rate stand-in below can live on this same
