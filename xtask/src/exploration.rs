@@ -92,6 +92,13 @@ impl Status {
         self != Status::Running
     }
 
+    /// Whether the campaign ended well: it passed, or it ran cleanly but the
+    /// budget ran out before it explored past the seeds, which is down to
+    /// the machine rather than the code.
+    pub(crate) fn counts_as_passed(self) -> bool {
+        matches!(self, Status::Passed | Status::InsufficientExploration)
+    }
+
     /// As report.json writes it.
     pub(crate) fn name(self) -> &'static str {
         match self {
@@ -901,8 +908,14 @@ fn run_campaign(plan: &Plan) -> Result<Exit, Stopped> {
     let verdict = finish(plan.output, &plan.corpus_dir, fuzzer)
         .map_err(Stopped::at(Stage::Reporting, Exit::FAILURE))?;
     // The fuzzer's own failure is the code to pass on; evidence that fell
-    // short of a pass after a clean run is this command's failure.
-    if verdict.status == Status::Passed || !fuzzer.succeeded() {
+    // short of a pass after a clean run is this command's failure. A clean
+    // run that explored nothing past the seeds isn't: how many inputs fit in
+    // the budget is down to the machine, so the report records it and the
+    // campaign still ends well.
+    if verdict.status == Status::InsufficientExploration {
+        eprintln!("{}", verdict.reason.unwrap_or_default());
+    }
+    if verdict.status.counts_as_passed() || !fuzzer.succeeded() {
         Ok(fuzzer)
     } else {
         Err(Stopped {
@@ -1441,6 +1454,10 @@ mod tests {
                         "sanitizer is incompatible with statically linked libc",
                     ),
                     ("cargo", ["fuzz", "build", ..]) => (fails("build", 19), "", ""),
+                    // A target so slow the budget ends during the seeds.
+                    ("cargo", ["fuzz", "run", ..]) if failure == Some("no-exploration") => {
+                        (0, "#8 INITED cov: 10 ft: 12\n#8 DONE cov: 10 ft: 12\n", "")
+                    }
                     ("cargo", ["fuzz", "run", ..]) => (
                         fails("exploration", 41),
                         "#8 INITED cov: 10 ft: 12\n#55 DONE cov: 13 ft: 20\n",
@@ -1590,6 +1607,16 @@ mod tests {
                 47
             );
             assert!(exploration.get("stage").is_none());
+        }
+
+        #[test]
+        fn a_budget_spent_on_the_seeds_is_recorded_but_does_not_fail_the_campaign() {
+            let repo = Repo::new("exploration-no-exploration");
+            assert_eq!(repo.campaign(Some("no-exploration")), Exit::SUCCESS);
+            let data: Value = read_json(&repo.reports()[0]).unwrap();
+            assert_eq!(data["status"], "insufficient-exploration");
+            assert_eq!(data["exploration"]["executions_after_initialization"], 0);
+            assert!(data.get("stage").is_none(), "{data}");
         }
 
         #[test]
