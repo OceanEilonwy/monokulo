@@ -364,14 +364,12 @@ impl Report {
 
     /// Whether every test, collector and fuzz campaign passed. A live
     /// test that failed while a service it needs was down doesn't count
-    /// against the code.
+    /// against the code, nor does a campaign whose budget ran out before
+    /// it explored past the seeds.
     pub(super) fn all_passed(&self) -> bool {
         self.cases.iter().all(|c| c.status != TestStatus::Failed)
             && self.coverage.as_ref().is_none_or(|c| c.passed)
-            && self
-                .fuzz
-                .iter()
-                .all(|f| f.status == crate::exploration::Status::Passed)
+            && self.fuzz.iter().all(|f| f.status.counts_as_passed())
             && self
                 .live
                 .as_ref()

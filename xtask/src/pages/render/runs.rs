@@ -326,7 +326,7 @@ pub(super) fn fuzzing(report: &Report) -> Markup {
     };
     let failed = targets
         .iter()
-        .filter(|t| t.status != Status::Passed)
+        .filter(|t| !t.status.counts_as_passed())
         .count();
     let sum = |f: fn(&FuzzTarget) -> Option<u64>| targets.iter().filter_map(f).sum::<u64>();
     let reached: Vec<&FuzzTarget> = targets.iter().filter(|t| t.cases > 0).collect();
