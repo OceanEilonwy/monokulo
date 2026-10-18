@@ -1092,6 +1092,9 @@ pub(super) async fn change_wallet(
 pub(super) struct OrderView {
     order_id: crate::store::OrderId,
     merchant_order_id: Option<String>,
+    /// What the order is for, as monokulo created it; `None` when it gave
+    /// none.
+    description: Option<String>,
     address: String,
     xmr_amount_piconero: u64,
     amount_received_piconero: u64,
@@ -1123,6 +1126,7 @@ fn build_order_view(order: Order, now: i64, grace_period_seconds: i64) -> OrderV
     OrderView {
         order_id: order.id,
         merchant_order_id: order.merchant_order_id,
+        description: order.description,
         address: order.address,
         xmr_amount_piconero: order.xmr_amount_piconero,
         amount_received_piconero: order.amount_received_piconero,

@@ -110,7 +110,8 @@ impl OrderEventSpan {
 
 impl Store {
     /// Adds an event about `order_id` to the log, with `fields` and the
-    /// order's `order_id`, `merchant_order_id` and `xmr_amount_piconero`.
+    /// order's `order_id`, `merchant_order_id`, `description` and
+    /// `xmr_amount_piconero`.
     /// Called in the transaction that makes the change it announces, so the
     /// two land together or not at all. Returns its `seq`.
     pub fn append_order_event(
@@ -120,12 +121,17 @@ impl Store {
         fields: &[(&str, &str)],
         now: i64,
     ) -> Result<i64> {
-        let (tenant_id, merchant_order_id, xmr_amount): (TenantId, Option<String>, i64) = self
+        let (tenant_id, merchant_order_id, description, xmr_amount): (
+            TenantId,
+            Option<String>,
+            Option<String>,
+            i64,
+        ) = self
             .conn
             .query_row(
-                "SELECT tenant_id, merchant_order_id, xmr_amount_piconero FROM orders WHERE id = ?1",
+                "SELECT tenant_id, merchant_order_id, description, xmr_amount_piconero FROM orders WHERE id = ?1",
                 params![order_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?
             .ok_or(StoreError::NotFound)?;
@@ -135,6 +141,7 @@ impl Store {
             .collect();
         payload.insert("order_id".into(), order_id.as_str().into());
         payload.insert("merchant_order_id".into(), merchant_order_id.into());
+        payload.insert("description".into(), description.into());
         payload.insert("xmr_amount_piconero".into(), xmr_amount.into());
         let event_id = format!("evt_{}", uuid::Uuid::new_v4().simple());
         self.conn
