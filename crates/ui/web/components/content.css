@@ -225,6 +225,13 @@ details.disclosure-row > .disclosure-body { padding: var(--space-sm) var(--space
 .mk-empty-text { margin: 0; color: var(--muted); font-size: var(--text-sm); }
 .mk-empty-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-top: var(--space-sm); }
 
+/* Avatar: a letter on ink, or a picture on paper once it loads. */
+.mk-avatar { position: relative; flex: none; display: inline-grid; place-items: center; width: 2.5rem; height: 2.5rem; overflow: hidden; border-radius: var(--radius-md); background: var(--ink); color: var(--paper-raised); font-weight: 800; font-size: var(--text-base); line-height: 1; }
+.mk-avatar-image { display: none; width: 100%; height: 100%; padding: 15%; object-fit: contain; }
+.mk-avatar[data-loaded] { background: var(--paper-raised); box-shadow: inset 0 0 0 1px var(--line); }
+.mk-avatar[data-loaded] .mk-avatar-initial { display: none; }
+.mk-avatar[data-loaded] .mk-avatar-image { display: block; }
+
 /* A card's facts (Card's body), and a row of actions in its foot. */
 .mk-card-body { margin-top: var(--space-sm); padding-block: var(--space-sm); border-block: 1px solid var(--line); }
 .mk-card-body > .facts { margin: 0; }

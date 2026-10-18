@@ -312,6 +312,20 @@ export interface RadioCard {
 }
 
 /**
+ * One step of a [`StepScale`].
+ */
+export interface ScaleStep {
+  /**
+   * On the step: what it is ("5 conf").
+   */
+  readonly label: string;
+  /**
+   * Under where it starts ("100 EUR").
+   */
+  readonly from: string;
+}
+
+/**
  * An option as the enhanced button and list draw it (`select.behaviour.ts`).
  */
 export interface SelectItem {

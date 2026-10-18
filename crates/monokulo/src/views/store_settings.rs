@@ -783,6 +783,21 @@ fn confirmation_tiers(store: &StoreSettingsData) -> Markup {
     } else {
         format!("{count} of 5 tiers.")
     };
+    // The ladder as a picture: the default from nothing, then each tier
+    // from its amount.
+    let scale = ui::StepScale::new(
+        std::iter::once(ui::ScaleStep {
+            label: format!("{} conf", store.confirmations_required),
+            from: format!("0 {currency}"),
+        })
+        .chain(tiers.iter().map(|tier| ui::ScaleStep {
+            label: format!("{} conf", tier.confirmations_required),
+            from: tier.unit_amount.clone(),
+        }))
+        .collect::<Vec<_>>(),
+    )
+    .end("and up")
+    .attr("data-scale", "tiers");
     let mut editor = ui::RowsEditor::new("Confirmation tiers", rows)
         .add_label("Add a tier")
         .note(note)
@@ -791,6 +806,7 @@ fn confirmation_tiers(store: &StoreSettingsData) -> Markup {
         editor = editor.new_row(new_row);
     }
     html! {
+        (scale)
         p class="tier-default" {
             strong { (below) } ": the default, "
             (confirmations(store.confirmations_required)) " "
@@ -844,6 +860,7 @@ fn confirmations_card(store: &StoreSettingsData) -> Markup {
                     "least its amount, in " (store.base_currency) ", for its confirmations; smaller orders take the "
                     "default. A block comes about every 2 minutes. Up to 5 tiers."
                 })
+                .stacked()
                 .render(confirmation_tiers(store)))
         },
     )

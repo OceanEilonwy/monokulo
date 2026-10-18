@@ -474,6 +474,7 @@ fn event_prop(event: &str) -> String {
         "keyup" => "KeyUp",
         "mousedown" => "MouseDown",
         "pointerdown" => "PointerDown",
+        "load" => "Load",
         other => panic!("add `{other}` to solid::event_prop"),
     };
     format!("on{camel}")

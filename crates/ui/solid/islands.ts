@@ -3,6 +3,7 @@
 
 import { attachHelpTip } from './HelpTip';
 import { attachSortableList } from './SortableList';
+import { attachAvatar } from './Avatar';
 import { attachDialog } from './Dialog';
 import { attachRowsEditor } from './RowsEditor';
 import { attachSelect } from './Select';
@@ -23,6 +24,7 @@ import { attachStatusDot } from './StatusDot';
 export const islands: Record<string, (root: Element, props: never) => () => void> = {
   HelpTip: attachHelpTip,
   SortableList: attachSortableList,
+  Avatar: attachAvatar,
   Dialog: attachDialog,
   RowsEditor: attachRowsEditor,
   Select: attachSelect,

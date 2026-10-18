@@ -70,4 +70,5 @@ pub mod icons {
     pub const POS: &str = include_str!("../web/icons/pos.svg").trim_ascii();
     pub const SHARE: &str = include_str!("../web/icons/share.svg").trim_ascii();
     pub const WALLET: &str = include_str!("../web/icons/wallet.svg").trim_ascii();
+    pub const EXTERNAL: &str = include_str!("../web/icons/external.svg").trim_ascii();
 }

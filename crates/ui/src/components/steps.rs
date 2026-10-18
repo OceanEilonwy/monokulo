@@ -361,3 +361,59 @@ pub(super) fn countdown_examples() -> Vec<(&'static str, Countdown)> {
         ),
     ]
 }
+
+/// One step of a [`StepScale`].
+#[derive(Clone, Debug, UiRecord)]
+pub struct ScaleStep {
+    /// On the step: what it is ("5 conf").
+    pub label: String,
+    /// Under where it starts ("100 EUR").
+    pub from: String,
+}
+
+component! {
+    /// A range in steps, left to right, each a shade stronger than the
+    /// last, with where each starts under it: confirmations by order
+    /// amount, prices by quantity. The steps are as wide as each other,
+    /// not to scale, so a far step doesn't squash the rest. A picture of
+    /// what the words near it say, so screen readers skip it.
+    pub struct StepScale {
+        steps: Vec<ScaleStep>,
+        /// Under the end: where the last step stops ("and up").
+        end: Option<String>,
+        rest: Attrs,
+    }
+    html {
+        div class="mk-scale" aria-hidden="true" ..rest {
+            @for step in steps {
+                div class="mk-scale-step" {
+                    span class="mk-scale-bar" { (step.label) }
+                    span class="mk-scale-from" { (step.from) }
+                }
+            }
+            @if let Some(end) = end { span class="mk-scale-end" { (end) } }
+        }
+    }
+}
+
+pub(super) fn step_scale_examples() -> Vec<(&'static str, StepScale)> {
+    let step = |label: &str, from: &str| ScaleStep {
+        label: label.into(),
+        from: from.into(),
+    };
+    vec![
+        (
+            "Confirmations by order amount",
+            StepScale::new(vec![
+                step("1 conf", "0 EUR"),
+                step("5 conf", "100"),
+                step("10 conf", "500"),
+            ])
+            .end("and up"),
+        ),
+        (
+            "One step",
+            StepScale::new(vec![step("1 conf", "0 EUR")]).end("and up"),
+        ),
+    ]
+}

@@ -1,7 +1,7 @@
 //! `GET /dashboard/stores/{id}` - `http::orders::store_detail`/
 //! `render_store_detail_page`.
 
-use maud::{html, Markup};
+use maud::{html, Markup, PreEscaped};
 
 use super::orders::{lookup_payment_card, orders_table, OrderRowViewModel};
 use super::PageChrome;
@@ -202,9 +202,9 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                         a class="store-site" href=(crate::stores::site_link(&store.site)) title=(store.site) { (store.site) }
                     }
                 }
-                (ui::LinkButton::new(html! { "Settings " span aria-hidden="true" { "→" } }, format!("/dashboard/stores/{}/settings", store.connection_id))
+                (ui::LinkButton::new(html! { (PreEscaped(ui::assets::icons::SETTINGS)) "Settings" }, format!("/dashboard/stores/{}/settings", store.connection_id))
                     .attr("data-store-link", "settings"))
-                (ui::LinkButton::new(html! { "Help " (super::external_link_icon()) }, super::DOCS_URL)
+                (ui::LinkButton::new(html! { (PreEscaped(ui::assets::icons::EXTERNAL)) "Help" }, super::DOCS_URL)
                     .attr("target", "_blank")
                     .attr("rel", "noopener")
                     .attr("data-store-link", "help"))
@@ -469,15 +469,16 @@ mod tests {
         // Help is the docs, in a new tab.
         assert!(
             html.contains(&format!(
-                r#"<a class="mk-btn" href="{}" target="_blank" rel="noopener" data-store-link="help">Help "#,
-                crate::views::DOCS_URL
+                r#"<a class="mk-btn" href="{}" target="_blank" rel="noopener" data-store-link="help">{}Help</a>"#,
+                crate::views::DOCS_URL,
+                ui::assets::icons::EXTERNAL
             )),
             "expected Help to link to the docs: {html}"
         );
         assert!(html.find("class=\"store-header-status\"").unwrap() < help);
         assert!(
-            html.contains("Settings <span aria-hidden=\"true\">→</span>"),
-            "expected the Settings arrow: {html}"
+            html.contains(&format!("{}Settings</a>", ui::assets::icons::SETTINGS)),
+            "expected the gear before Settings: {html}"
         );
         // The POS needs JavaScript: its tile is a link only with it.
         assert!(html.contains(r#"<a class="mk-launch-tile" href="/dashboard/stores/conn_1/pos" data-only="script">"#), "{html}");

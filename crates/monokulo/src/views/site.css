@@ -185,7 +185,8 @@ button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px
    the site-wide `input[type=text] { width: 100% }` default, which would
    otherwise stretch it to the full cell. */
 [data-input="confirmations"] { width: 4.5em; }
-/* The confirmation tiers: the default above them, in the same words. */
+/* The confirmation tiers: the scale, then the default above them, in the same words. */
+[data-scale="tiers"] { margin-bottom: var(--space-md); }
 .tier-default { margin: 0 0 var(--space-xs); }
 [data-list="tiers"] .mk-rows-new .mk-input[name="new_unit_amount"] { width: 8em; }
 .rule { border: none; border-top: 2px dashed var(--line); margin: 1.6em 0; }

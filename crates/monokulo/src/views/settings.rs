@@ -220,6 +220,7 @@ pub struct Field<'a> {
     group: bool,
     chip: Option<Markup>,
     help: Option<(Option<&'a str>, Markup)>,
+    layout: Option<ui::SettingLayout>,
 }
 
 impl<'a> Field<'a> {
@@ -231,6 +232,7 @@ impl<'a> Field<'a> {
             group: false,
             chip: None,
             help: None,
+            layout: None,
         }
     }
 
@@ -255,6 +257,13 @@ impl<'a> Field<'a> {
         self
     }
 
+    /// The control under the name, full width, at any width: one whose
+    /// content needs the room.
+    pub fn stacked(mut self) -> Self {
+        self.layout = Some(ui::SettingLayout::Stacked);
+        self
+    }
+
     /// The setting around `control` (and anything under it).
     pub fn render(self, control: Markup) -> Markup {
         let help_id = self
@@ -267,6 +276,7 @@ impl<'a> Field<'a> {
             .maybe_help(self.help.map(|(_, help)| ui::Slot::from(help)))
             .maybe_described_by(help_id.clone().filter(|_| self.group))
             .maybe_help_id(help_id)
+            .maybe_layout(self.layout)
             .render()
     }
 }
