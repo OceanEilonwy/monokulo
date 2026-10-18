@@ -41,12 +41,15 @@ Monokulo's address from its own URL.
 +      amount: receipt.total,          // "13.50"
 +      currency: "EUR",
 +      merchantOrderId: receipt.id,    // "gm-1042", for step 5
++      description: `Geomart order ${receipt.id}`,
 +    });
 ```
 
 `merchantOrderId` is Geomart's own order id. The webhook in step 5 carries
 it back as `merchant_order_id`, so the shop finds its order without keeping
-Monokulo's.
+Monokulo's. The shopper sees **Geomart**, then "Geomart order gm-1042" and
+the reference at the top of the checkout, so they know what they're paying
+for.
 
 ### Step 4 · Show the checkout
 

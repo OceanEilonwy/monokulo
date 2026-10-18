@@ -13,10 +13,12 @@ you pass `endpoint`.
 | `amount` | number or string, required | The price, in `currency`. |
 | `currency` | string, required | `"XMR"`, or a currency the store's exchange rate provider prices (`"EUR"`). |
 | `merchantOrderId` | string, optional | Your own order or cart id, kept with the order and shown on its page in the dashboard. |
+| `description` | string, optional | What the order is for, shown to the payer under your store's name. Up to 140 characters, plain text. Anyone with the payment link can read it. |
+| `showMerchantOrderId` | boolean, optional, default true | Set false to keep `merchantOrderId` off the checkout; it still shows in the dashboard and in webhooks. |
 | `endpoint` | string, optional | Monokulo's address, if it can't be read from the script tag. |
 
 Resolves to `{ orderId, address, xmrAmountPiconero, amount, currency,
-merchantOrderId, expiresAt, endpoint, publicKey }`. Rejects with an `Error`
+merchantOrderId, description, expiresAt, endpoint, publicKey }`. Rejects with an `Error`
 carrying Monokulo's message. If Monokulo asks a busy visitor for a proof of
 work, the library solves it and tries again by itself.
 
