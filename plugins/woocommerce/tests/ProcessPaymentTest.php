@@ -214,7 +214,7 @@ class ProcessPaymentTest extends WP_UnitTestCase {
 		$sent_body = json_decode( $this->captured_request['args']['body'], true );
 		$this->assertIsArray( $sent_body, 'Request body should be valid JSON.' );
 		$this->assertSame(
-			array( 'amount', 'currency', 'merchant_order_id', 'idempotency_key' ),
+			array( 'amount', 'currency', 'merchant_order_id', 'show_merchant_order_id', 'description', 'idempotency_key' ),
 			array_keys( $sent_body ),
 			'Exactly the shape of Monokulo\'s CreateOrderRequest.'
 		);
@@ -230,6 +230,15 @@ class ProcessPaymentTest extends WP_UnitTestCase {
 		);
 		$this->assertSame( 'USD', $sent_body['currency'] );
 		$this->assertSame( (string) $order->get_id(), $sent_body['merchant_order_id'] );
+		$this->assertFalse(
+			$sent_body['show_merchant_order_id'],
+			'The post ID is not the order number the customer knows, so the checkout leaves it out.'
+		);
+		$this->assertSame(
+			'Order #' . $order->get_order_number(),
+			$sent_body['description'],
+			'An order without items is named by its number alone.'
+		);
 
 		// --- The redirect WooCommerce receives back. ---
 		$this->assertSame( 'success', $result['result'] );
@@ -243,6 +252,35 @@ class ProcessPaymentTest extends WP_UnitTestCase {
 		// The one fact 1.5.4's webhook receiver will need later, recorded now.
 		$order = wc_get_order( $order->get_id() );
 		$this->assertSame( 'pay_deadbeef', $order->get_meta( '_monokulo_order_id' ) );
+	}
+
+	/**
+	 * The description names the order by the number the customer knows and
+	 * its first item, counting the rest, and is cut to Monokulo's 140
+	 * characters with "…".
+	 */
+	public function test_the_description_names_the_order_and_its_first_item() {
+		$order = $this->create_real_order();
+		foreach ( array( 'Blue mug', 'Red mug', 'Tea towel' ) as $name ) {
+			$item = new WC_Order_Item_Product();
+			$item->set_name( $name );
+			$order->add_item( $item );
+		}
+		$order->save();
+		$this->assertSame(
+			'Order #' . $order->get_order_number() . ': Blue mug + 2 more',
+			WC_Gateway_Monokulo::order_description( $order )
+		);
+
+		$long = $this->create_real_order();
+		$item = new WC_Order_Item_Product();
+		$item->set_name( str_repeat( 'é', 200 ) );
+		$long->add_item( $item );
+		$long->save();
+		$description = WC_Gateway_Monokulo::order_description( $long );
+		$this->assertSame( 140, mb_strlen( $description, 'UTF-8' ) );
+		$this->assertStringStartsWith( 'Order #' . $long->get_order_number() . ': éé', $description );
+		$this->assertStringEndsWith( 'é…', $description );
 	}
 
 	/**

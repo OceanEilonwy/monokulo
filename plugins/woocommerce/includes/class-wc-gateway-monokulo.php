@@ -110,7 +110,13 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * `order_source`). A store has no platform of its own; the order says
 	 * where it came from. Keep the version with the plugin header's.
 	 */
-	const CLIENT = 'woocommerce/0.1.0';
+	const CLIENT = 'woocommerce/0.2.0';
+
+	/**
+	 * The longest order description Monokulo accepts, in characters
+	 * (`crates/monokulo/src/stores.rs`, `MAX_DESCRIPTION_CHARS`).
+	 */
+	const MAX_DESCRIPTION_CHARS = 140;
 
 	/**
 	 * The `admin-post.php` action name this gateway registers as `return_url`
@@ -757,10 +763,11 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * (`crates/monokulo/src/http/pay.rs::create_order`) with
 	 * `Authorization: Bearer {secret key}`, `Monokulo-Client: woocommerce/…`
 	 * (so the order shows as the plugin's) and a JSON body of
-	 * `{amount, currency, merchant_order_id}`. Monokulo prices the amount into
-	 * XMR with its own exchange rate and returns
-	 * `{order_id, address, xmr_amount_piconero, amount, currency,
-	 * merchant_order_id, expires_at}`.
+	 * `{amount, currency, merchant_order_id, show_merchant_order_id,
+	 * description, idempotency_key}`. Monokulo prices the amount into XMR with
+	 * its own exchange rate and returns `{order_id, address,
+	 * xmr_amount_piconero, amount, currency, merchant_order_id, description,
+	 * show_merchant_order_id, expires_at}`.
 	 *
 	 * Every failure throws a plain, customer-safe `Exception` (see
 	 * `process_payment()` for why throwing is the contract); the detail -
@@ -788,19 +795,26 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		$amount      = self::format_amount( $order->get_total(), $currency );
 
 		$body = array(
-			'amount'            => $amount,
-			'currency'          => $currency,
+			'amount'                 => $amount,
+			'currency'               => $currency,
 			// The order's own numeric id, not `get_order_number()` - the
 			// latter is filterable (some plugins prefix it, e.g. "WC-1042")
 			// and only ever meant for human display, whereas this value
 			// exists so a merchant can match a Monokulo order back to this
 			// store's order later, and shows on Monokulo's order page.
-			'merchant_order_id' => (string) $order->get_id(),
+			'merchant_order_id'      => (string) $order->get_id(),
+			// That id is the order's post ID, not the order number the
+			// customer sees in their emails and account, so it would only
+			// confuse them on the checkout: Monokulo keeps it for the
+			// dashboard and webhooks, and the description below names the
+			// order by its number instead.
+			'show_merchant_order_id' => false,
+			'description'            => self::order_description( $order ),
 			// One key per order and total: a retry after a timeout or a lost
 			// answer gets the Monokulo order the first attempt made, never a
 			// second one with a second address. A changed total is a new
 			// purchase, so it gets a new key.
-			'idempotency_key'   => self::idempotency_key( $order->get_id(), $amount, $currency ),
+			'idempotency_key'        => self::idempotency_key( $order->get_id(), $amount, $currency ),
 		);
 
 		$response = wp_remote_post(
@@ -861,6 +875,42 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		}
 
 		return $decoded;
+	}
+
+	/**
+	 * What the customer is paying for, as Monokulo's checkout shows it under
+	 * the store's name: "Order #1042: Blue mug", with " + 2 more" when the
+	 * order has other items, and just "Order #1042" when it has none. The
+	 * order number is `get_order_number()`, the one the customer sees in
+	 * their emails and account. Cut to Monokulo's 140 characters, ending in
+	 * "…", and made one line (Monokulo refuses line breaks and other control
+	 * characters).
+	 *
+	 * @param WC_Order $order The order.
+	 * @return string
+	 */
+	public static function order_description( WC_Order $order ) {
+		$description = sprintf(
+			/* translators: %s: the order number */
+			__( 'Order #%s', 'monokulo' ),
+			$order->get_order_number()
+		);
+		$items = array_values( $order->get_items() );
+		if ( $items ) {
+			$description .= ': ' . $items[0]->get_name();
+			if ( count( $items ) > 1 ) {
+				$description .= sprintf(
+					/* translators: %d: how many other items the order has */
+					__( ' + %d more', 'monokulo' ),
+					count( $items ) - 1
+				);
+			}
+		}
+		$description = trim( preg_replace( '/\p{Cc}+/u', ' ', $description ) );
+		if ( mb_strlen( $description, 'UTF-8' ) > self::MAX_DESCRIPTION_CHARS ) {
+			$description = rtrim( mb_substr( $description, 0, self::MAX_DESCRIPTION_CHARS - 1, 'UTF-8' ) ) . '…';
+		}
+		return $description;
 	}
 
 	/**
