@@ -175,15 +175,16 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 @media (min-width: 1200px) {
   body { padding: 0; }
   .pay-wrap:not(.checkout-compact) { max-width: none; }
-  .pay-wrap:not(.checkout-compact) .pay-grid { min-height: 100vh; min-height: 100dvh; grid-template-columns: minmax(var(--space-xl), 1fr) minmax(0, 30rem) var(--space-3xl) var(--space-3xl) minmax(0, 30rem) minmax(var(--space-xl), 1fr); grid-template-areas: ". merchant . . wallet ." ". amount . . wallet ." ". stage . . wallet ." ". payments . . wallet ." ". meta . . refund ."; column-gap: 0; }
+  .pay-wrap:not(.checkout-compact) .pay-grid { min-height: 100vh; min-height: 100dvh; grid-template-columns: minmax(var(--space-xl), 1fr) minmax(0, 26rem) var(--space-2xl) var(--space-2xl) minmax(0, 26rem) minmax(var(--space-xl), 1fr); grid-template-areas: ". merchant . . wallet ." ". amount . . wallet ." ". stage . . wallet ." ". payments . . wallet ." ". meta . . refund ."; column-gap: 0; }
   .pay-wrap:not(.checkout-compact) .pay-panel { grid-column: 1 / 4; grid-row: 1 / -1; border: 0; border-inline-end: 1px solid var(--line); border-radius: 0; }
-  .pay-wrap:not(.checkout-compact) .merchant { padding: var(--space-3xl) 0 var(--space-xl); }
-  .pay-wrap:not(.checkout-compact) .pay-amount { align-self: start; padding: var(--space-xl) 0 0; border-top: 1px solid var(--line); text-align: left; }
-  .pay-wrap:not(.checkout-compact) .amount { font-size: clamp(1.15rem, 9cqi, 2.75rem); }
-  .pay-wrap:not(.checkout-compact) .pay-wallet { margin-top: var(--space-3xl); }
-  .pay-wrap:not(.checkout-compact) .qr-wrap svg { width: 260px; height: 260px; }
-  .pay-wrap:not(.checkout-compact) .meta { align-self: end; margin-bottom: var(--space-2xl); }
-  .pay-wrap:not(.checkout-compact) .pay-refund { margin-bottom: var(--space-2xl); }
+  .pay-wrap:not(.checkout-compact) .merchant { padding: var(--space-2xl) 0 var(--space-lg); }
+  .pay-wrap:not(.checkout-compact) .pay-amount { align-self: start; padding: var(--space-lg) 0 0; border-top: 1px solid var(--line); text-align: left; }
+  .pay-wrap:not(.checkout-compact) .stage-slot { margin-top: var(--space-lg); }
+  .pay-wrap:not(.checkout-compact) .pay-wallet { margin-top: var(--space-2xl); }
+  .pay-wrap:not(.checkout-compact) .qr-wrap svg { width: 224px; height: 224px; }
+  .pay-wrap:not(.checkout-compact) .section { margin-top: var(--space-lg); padding-top: var(--space-lg); }
+  .pay-wrap:not(.checkout-compact) .meta { align-self: end; margin-bottom: var(--space-xl); }
+  .pay-wrap:not(.checkout-compact) .pay-refund { margin-bottom: var(--space-xl); }
   /* On the panel the table's header row takes the page's own surface, not
      the panel's, so it still reads as a header. */
   .pay-wrap:not(.checkout-compact) .pay-payments { --table-head-bg: var(--paper-raised); }
