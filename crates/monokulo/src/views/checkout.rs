@@ -117,6 +117,12 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .pay-grid { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "stage" "primary" "secondary"; align-items: start; gap: 0; max-width: 460px; margin-inline: auto; text-align: center; }
 .pay-grid > * { min-width: 0; }
 .stage-slot { grid-area: stage; margin-bottom: .9em; }
+/* Who is asking, over everything, as wide as the column(s) under it. */
+.merchant { max-width: 460px; margin: 0 auto .9em; padding-bottom: .8em; border-bottom: 1px solid var(--line); text-align: left; }
+.merchant h2 { display: flex; align-items: center; gap: var(--space-sm); margin: 0; font-size: var(--text-lg); overflow-wrap: anywhere; }
+.merchant .hint { margin: .2em 0 0; overflow-wrap: anywhere; }
+.merchant .hint svg { width: 1em; height: 1em; color: var(--success); vertical-align: -.1em; }
+.merchant-for { margin: .3em 0 0; overflow-wrap: anywhere; }
 /* The amount sizes itself to this column (`cqi`). */
 .pay-col-primary { grid-area: primary; container-type: inline-size; }
 .pay-col-secondary { grid-area: secondary; }
@@ -124,6 +130,7 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
    then heads the second column, beside the code. */
 @media (orientation: landscape) and (max-height: 760px) and (min-width: 560px) {
   .pay-grid { max-width: 760px; grid-template-columns: minmax(0, 290px) minmax(0, 1fr); grid-template-areas: "primary stage" "primary secondary"; column-gap: 2rem; text-align: left; }
+  .merchant { max-width: 760px; }
   .pay-col-primary { text-align: center; }
   .qr-wrap svg { width: min(208px, 46vh); height: auto; }
 }
@@ -188,6 +195,8 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .checkout-compact { max-width: 100%; }
 .checkout-compact .pay-grid { grid-template-columns: 1fr; grid-template-areas: "stage" "primary" "secondary"; gap: 0; max-width: none; text-align: center; }
 .checkout-compact .stage-slot { margin-bottom: .5em; }
+.checkout-compact .merchant { max-width: none; margin-bottom: .5em; padding-bottom: .4em; }
+.checkout-compact .merchant .hint { margin: 0; }
 .checkout-compact .pay-col-secondary { font-size: .9em; }
 .checkout-compact .qr-wrap { margin-bottom: .5em; }
 .checkout-compact .qr-wrap svg { width: min(42vh, 208px); height: auto; }
@@ -201,6 +210,38 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .checkout-compact .countdown-slot { margin-bottom: .5em; }
 .checkout-compact .field-help { font-size: .7em; }
 "#;
+
+/// Who is asking to be paid, and for what: the store's name, its site once
+/// a verified domain covers it, what the order is for and the merchant's
+/// reference, when they're set. A payment link opened from a message
+/// would otherwise be anyone asking for money. In a compact frame (a shop's
+/// own checkout, which says all this already) it's one line.
+fn merchant_header(data: &CheckoutViewModel) -> Markup {
+    html! {
+        header class="merchant" {
+            @if data.is_compact {
+                (ui::Hint::new(html! {
+                    strong { (data.store_name) }
+                    @if let Some(reference) = &data.merchant_reference { " · " (reference) }
+                }))
+            } @else {
+                (ui::Heading::new(html! { (PreEscaped(ui::assets::icons::STORE)) (data.store_name) }))
+                @if let Some(site) = &data.merchant_site {
+                    (ui::Hint::new(html! {
+                        (site) " " (PreEscaped(ui::assets::icons::CHECK))
+                        span class="visually-hidden" { " (a verified domain)" }
+                    }).attr("data-merchant", "site"))
+                }
+                @if let Some(description) = &data.description {
+                    p class="merchant-for" { (description) }
+                }
+                @if let Some(reference) = &data.merchant_reference {
+                    (ui::Hint::new(html! { "Reference " span class="mk-mono" { (reference) } }))
+                }
+            }
+        }
+    }
+}
 
 /// The order's event stream, routed part by part, with the page's own
 /// options.
@@ -259,6 +300,7 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                 span id="checkout-stream" hidden fx-action=(events_url(data)) fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect fx-own-errors {}
             }
 
+            (merchant_header(data))
             div class="pay-grid" {
                 (live_status(data))
                 div class="pay-col-primary" {
@@ -971,6 +1013,47 @@ mod tests {
         assert!(page.contains(
             &fragment[fragment.find("<span").unwrap()..fragment.find("</span>").unwrap()]
         ));
+    }
+
+    /// The payer sees who is asking and for what before anything else:
+    /// the store's name, its verified site, what the order is for and the
+    /// merchant's reference, each escaped, merchant-typed text.
+    #[test]
+    fn the_checkout_names_who_is_asking_and_for_what() {
+        let mut data = test_checkout_view_model(false);
+        data.description = Some("2× Yirgacheffe <250g>".to_string());
+        data.merchant_reference = Some("INV-2041".to_string());
+        data.merchant_site = Some("corner.example".to_string());
+        let html = checkout_page(&chrome(), &data).into_string();
+        let header = html
+            .find(r#"<header class="merchant">"#)
+            .expect("the header");
+        assert!(header < html.find(r#"class="pay-grid""#).unwrap(), "{html}");
+        assert!(html.contains("</svg>Corner shop</h2>"), "{html}");
+        assert!(
+            html.contains(r#"<p class="hint" data-merchant="site">corner.example "#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<p class="merchant-for">2× Yirgacheffe &lt;250g&gt;</p>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"Reference <span class="mk-mono">INV-2041</span>"#),
+            "{html}"
+        );
+
+        // Nothing set but the store: just its name.
+        let html = checkout_page(&chrome(), &test_checkout_view_model(false)).into_string();
+        assert!(html.contains("</svg>Corner shop</h2></header>"), "{html}");
+
+        // A compact frame: one line, the name and the reference.
+        data.is_compact = true;
+        let html = checkout_page(&chrome(), &data).into_string();
+        assert!(
+            html.contains(r#"<header class="merchant"><p class="hint"><strong>Corner shop</strong> · INV-2041</p></header>"#),
+            "{html}"
+        );
     }
 
     #[test]
