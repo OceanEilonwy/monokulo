@@ -109,7 +109,7 @@ pub fn website_field(view: &SiteView, shown: &str) -> Markup {
             (ui::Setting::new("Your website", "store-site", html! {
                 (ui::LockedValue::new(view.site.as_str()).id("store-site").described_by("store-site-lock"))
                 (ui::FieldNote::new(html! {
-                    "Set by " (active.name) " · " a href="#card-connections" { "see Connections" }
+                    "Set by " (active.name) " · " a href=(format!("{}?tab=connections#card-connections", view.settings())) { "see Connections" }
                 }).id("store-site-lock"))
             }))
         },
@@ -542,7 +542,7 @@ mod tests {
         );
         assert!(
             field.contains(
-                r##"Set by WooCommerce · <a href="#card-connections">see Connections</a>"##
+                r##"Set by WooCommerce · <a href="/dashboard/stores/c_1/settings?tab=connections#card-connections">see Connections</a>"##
             ),
             "{field}"
         );

@@ -60,7 +60,10 @@ impl<'a> Paths<'a> {
         Paths { store_id }
     }
     pub fn settings(&self) -> String {
-        format!("/dashboard/stores/{}/settings#card-webhooks", self.store_id)
+        format!(
+            "/dashboard/stores/{}/settings?tab=connections#card-webhooks",
+            self.store_id
+        )
     }
     pub fn add(&self) -> String {
         format!("/dashboard/stores/{}/settings/webhooks", self.store_id)

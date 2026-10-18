@@ -337,7 +337,7 @@ pub async fn disconnect_form(
         };
     let Some(active) = view.active.as_ref().filter(|a| a.id == integration) else {
         return super::dashboard::redirect_303(&format!(
-            "/dashboard/stores/{id}/settings#card-connections"
+            "/dashboard/stores/{id}/settings?tab=connections#card-connections"
         ));
     };
     crate::views::store_site::disconnect_page(&chrome, &view, active, None).into_response()
@@ -360,7 +360,7 @@ pub async fn disconnect_submit(
         };
     let Some(active) = view.active.as_ref().filter(|a| a.id == integration) else {
         return super::dashboard::redirect_303(&format!(
-            "/dashboard/stores/{id}/settings#card-connections"
+            "/dashboard/stores/{id}/settings?tab=connections#card-connections"
         ));
     };
     let refuse = |message: String| {

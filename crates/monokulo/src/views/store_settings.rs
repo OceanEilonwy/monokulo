@@ -109,6 +109,8 @@ pub struct StoreSettingsData {
     pub client_logging: bool,
     /// The wallet it takes payments into, and the ones it could change to.
     pub wallet: StoreWalletView,
+    /// The tab shown ([`StoreTab::pick`]).
+    pub tab: StoreTab,
 }
 
 /// "Wallet": the wallet a store takes payments into, the others it could
@@ -212,6 +214,77 @@ impl StoreSection {
             StoreSection::Webhooks => "webhooks",
             StoreSection::Diagnostics => "diagnostics",
         }
+    }
+}
+
+/// The page's tabs, each a page of its own (`?tab=`), each the cards of one
+/// job: the store itself, how it takes payments, where they go, and what
+/// it's connected to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreTab {
+    General,
+    Payments,
+    Wallet,
+    Connections,
+}
+
+impl StoreTab {
+    pub const ALL: [StoreTab; 4] = [
+        StoreTab::General,
+        StoreTab::Payments,
+        StoreTab::Wallet,
+        StoreTab::Connections,
+    ];
+
+    /// What `?tab=` names it by.
+    pub fn id(self) -> &'static str {
+        match self {
+            StoreTab::General => "general",
+            StoreTab::Payments => "payments",
+            StoreTab::Wallet => "wallet",
+            StoreTab::Connections => "connections",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            StoreTab::General => "General",
+            StoreTab::Payments => "Payments",
+            StoreTab::Wallet => "Wallet",
+            StoreTab::Connections => "Connections",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|tab| tab.id() == id)
+    }
+
+    /// The tab a card is on.
+    pub fn of(section: StoreSection) -> Self {
+        match section {
+            StoreSection::Store | StoreSection::BaseCurrency | StoreSection::Diagnostics => {
+                StoreTab::General
+            }
+            StoreSection::Confirmations | StoreSection::FxProvider => StoreTab::Payments,
+            StoreSection::Wallet | StoreSection::KeyStorage => StoreTab::Wallet,
+            StoreSection::Connections | StoreSection::Domains | StoreSection::Webhooks => {
+                StoreTab::Connections
+            }
+        }
+    }
+
+    /// The tab to show: the one asked for, else the one the save or action
+    /// the page answers was on (so it lands where it was done), else
+    /// General.
+    pub fn pick(asked: Option<StoreTab>, outcome: Option<&StoreOutcome>) -> Self {
+        let done = match outcome {
+            Some(StoreOutcome::Saved(sections)) => sections.first().copied(),
+            Some(StoreOutcome::Refused { section, .. }) => Some(*section),
+            _ => None,
+        };
+        asked
+            .or(done.map(StoreTab::of))
+            .unwrap_or(StoreTab::General)
     }
 }
 
@@ -603,8 +676,8 @@ fn base_currency_card(store: &StoreSettingsData) -> Markup {
         "Base currency",
         Field::new("Base currency", "base-currency")
             .help(None, html! {
-                "What custom threshold amounts below are denominated in. Changing this deletes every "
-                "custom threshold this store currently has - an amount in a currency you're no longer using means nothing."
+                "What the confirmation tiers' amounts (on the Payments tab) are in. Changing this deletes every "
+                "custom tier this store has - an amount in a currency you're no longer using means nothing."
             })
             .render(html! {
                 (Select::new(
@@ -621,8 +694,98 @@ fn base_currency_card(store: &StoreSettingsData) -> Markup {
     )
 }
 
+/// About how long `confirmations` blocks take: one every 2 minutes.
+fn wait(confirmations: u64) -> String {
+    match confirmations * 2 {
+        0 => "no wait".to_string(),
+        minutes if minutes < 90 => format!("about {minutes} min"),
+        minutes => format!("about {} h", (minutes + 30) / 60),
+    }
+}
+
+/// The tiers, smallest amount first under the default: each removable, and
+/// a blank one to add while there's room (one per save).
+fn confirmation_tiers(store: &StoreSettingsData) -> Markup {
+    let currency = store.base_currency.as_str();
+    let mut tiers: Vec<&ConfirmationThresholdView> = store.confirmation_thresholds.iter().collect();
+    tiers.sort_by(|a, b| {
+        let amount =
+            |t: &ConfirmationThresholdView| t.unit_amount.parse::<f64>().unwrap_or(f64::MAX);
+        amount(a).total_cmp(&amount(b))
+    });
+    let confirmations = |n: u64| {
+        if n == 1 {
+            "1 confirmation".to_string()
+        } else {
+            format!("{n} confirmations")
+        }
+    };
+    let below = tiers.first().map_or_else(
+        || "Every order".to_string(),
+        |lowest| format!("Under {} {currency}", lowest.unit_amount),
+    );
+    let rows = tiers
+        .iter()
+        .map(|tier| {
+            let name = format!("delete_{}", tier.id);
+            ui::EditorRow {
+                label: format!("the {} {currency} tier", tier.unit_amount),
+                fields: html! {
+                    strong { "From " (tier.unit_amount) " " (currency) }
+                    span { (confirmations(tier.confirmations_required)) }
+                    span class="muted" { (wait(tier.confirmations_required)) }
+                }
+                .into(),
+                removed: store.ticked(&name, false),
+                name,
+            }
+        })
+        .collect::<Vec<_>>();
+    let new_row = (!store.confirmation_thresholds_at_max).then(|| {
+        html! {
+            "From"
+            (ui::Input::new("new_unit_amount")
+                .value(store.shown("new_unit_amount", ""))
+                .label(format!("New tier's amount ({currency})"))
+                .attr("inputmode", "decimal")
+                .maybe_attr("data-saved", store.saved_attr("")))
+            (currency) " need"
+            (ui::Input::new("new_confirmations_required")
+                .value(store.shown("new_confirmations_required", ""))
+                .label("New tier's confirmations")
+                .attr("data-input", "confirmations")
+                .attr("size", "3")
+                .attr("maxlength", "3")
+                .attr("inputmode", "numeric")
+                .maybe_attr("data-saved", store.saved_attr("")))
+            "confirmations"
+        }
+    });
+    let count = store.confirmation_thresholds.len();
+    let note = if store.confirmation_thresholds_at_max {
+        "5 of 5 tiers. Remove one to add another.".to_string()
+    } else {
+        format!("{count} of 5 tiers.")
+    };
+    let mut editor = ui::RowsEditor::new("Confirmation tiers", rows)
+        .add_label("Add a tier")
+        .note(note)
+        .attr("data-list", "tiers");
+    if let Some(new_row) = new_row {
+        editor = editor.new_row(new_row);
+    }
+    html! {
+        p class="tier-default" {
+            strong { (below) } ": the default, "
+            (confirmations(store.confirmations_required)) " "
+            span class="muted" { "(" (wait(store.confirmations_required)) ")" }
+        }
+        (editor)
+    }
+}
+
 /// "Confirmation thresholds": the default, accepting unconfirmed payments,
-/// and the custom ones (each can be deleted, and one added, per save).
+/// and the tiers by amount (each can be removed, and one added, per save).
 fn confirmations_card(store: &StoreSettingsData) -> Markup {
     let default = store.confirmations_required.to_string();
     let zero_conf = store.ticked("zero_conf_enabled", store.zero_conf_enabled);
@@ -659,58 +822,13 @@ fn confirmations_card(store: &StoreSettingsData) -> Markup {
                     "coin). Add a custom threshold to keep larger orders requiring real confirmations."
                 })
                 .render(super::controls::switch("zero_conf_enabled", "zero-conf", zero_conf, Some("zero-conf-help"), store.saved_box(store.zero_conf_enabled).map(|s| s == "on"))))
-            (Field::group("Custom thresholds", "custom-thresholds")
-                .help(Some("custom-thresholds-help"), html! {
-                    "Each custom threshold makes an order of at least its amount (in this store's base currency) "
-                    "require its number of confirmations. Up to 5; tick Delete to remove one when you save."
+            (Field::group("Confirmations by order amount", "confirmation-tiers")
+                .help(Some("confirmation-tiers-help"), html! {
+                    "Bigger orders can wait for more blocks before they count as paid. Each tier asks an order of at "
+                    "least its amount, in " (store.base_currency) ", for its confirmations; smaller orders take the "
+                    "default. A block comes about every 2 minutes. Up to 5 tiers."
                 })
-                .render(html! {
-                    (ui::Table::new(html! {
-                            @for threshold in &store.confirmation_thresholds {
-                                @let name = format!("delete_{}", threshold.id);
-                                tr {
-                                    td data-label=(format!("Amount ({})", store.base_currency)) { (threshold.unit_amount) }
-                                    td data-label="Confirmations required" { (threshold.confirmations_required) }
-                                    td {
-                                        (ui::Checkbox::new()
-                                            .text("Delete")
-                                            .name(name.as_str())
-                                            .checked(store.ticked(&name, false))
-                                            .maybe_attr("data-saved", store.saved_box(false)))
-                                    }
-                                }
-                            }
-                            tr class="new-threshold-row" {
-                                @if store.confirmation_thresholds_at_max {
-                                    td colspan="3" class="muted" { "Maximum of 5 custom thresholds reached - delete one to add another." }
-                                } @else {
-                                    td {
-                                        (ui::Input::new("new_unit_amount")
-                                            .value(store.shown("new_unit_amount", ""))
-                                            .placeholder(format!("Minimum Amount ({})", store.base_currency))
-                                            .label(format!("New threshold's amount ({})", store.base_currency))
-                                            .maybe_attr("data-saved", store.saved_attr("")))
-                                    }
-                                    td {
-                                        (ui::Input::new("new_confirmations_required")
-                                            .value(store.shown("new_confirmations_required", ""))
-                                            .placeholder("# Confirmations")
-                                            .label("New threshold's confirmations")
-                                            .attr("data-input", "confirmations")
-                                            .attr("size", "3")
-                                            .attr("maxlength", "3")
-                                            .attr("inputmode", "numeric")
-                                            .maybe_attr("data-saved", store.saved_attr("")))
-                                    }
-                                    td class="muted" { "New" }
-                                }
-                            }
-                    })
-                    .head(html! { tr { th { "Amount (" (store.base_currency) ")" } th { "Confirmations required" } th { "Delete" } } })
-                    .look(ui::TableLook::Stack)
-                    .scroll(false)
-                    .attr("data-table", "thresholds"))
-                }))
+                .render(confirmation_tiers(store)))
         },
     )
 }
@@ -883,6 +1001,42 @@ fn save_bar(store: &StoreSettingsData) -> Markup {
     )
 }
 
+/// The tabs, links to the page's own other tabs. A store with no wallet
+/// can't take payments, and its Wallet tab says so.
+fn tab_links(store: &StoreSettingsData) -> Markup {
+    let links = StoreTab::ALL
+        .into_iter()
+        .map(|tab| ui::TabLink {
+            href: format!(
+                "/dashboard/stores/{}/settings?tab={}",
+                store.connection_id,
+                tab.id()
+            ),
+            label: tab.label().to_string(),
+            current: tab == store.tab,
+            count: (tab == StoreTab::Wallet && store.wallet.current.is_none())
+                .then(|| "No wallet".to_string()),
+        })
+        .collect::<Vec<_>>();
+    html! { (ui::TabLinks::new("Store settings", links)) }
+}
+
+/// The settings form of a tab: its cards, saved together with the save
+/// bar. It says which tab it is, so a save that changed nothing comes back
+/// to it.
+fn settings_form(store: &StoreSettingsData, cards: Markup) -> Markup {
+    super::settings::form(
+        &format!("/dashboard/stores/{}/settings", store.connection_id),
+        Save::Reload,
+        "Store settings",
+        html! {
+            input type="hidden" name="tab" value=(store.tab.id());
+            (cards)
+            (save_bar(store))
+        },
+    )
+}
+
 pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
     let header = match &data.store {
         Some(store) => ui::PageHeader::new("Settings").crumbs(super::store_crumbs(
@@ -894,26 +1048,29 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
     };
     let body = html! {
         @if let Some(store) = &data.store {
-            (wallet_card(store))
-            (super::settings::form(
-                &format!("/dashboard/stores/{}/settings", store.connection_id),
-                Save::Reload,
-                "Store settings",
-                html! {
+            (tab_links(store))
+            @match store.tab {
+                StoreTab::General => (settings_form(store, html! {
                     (store_card(store))
                     (base_currency_card(store))
+                    (diagnostics_card(store))
+                })),
+                StoreTab::Payments => (settings_form(store, html! {
                     (confirmations_card(store))
                     (fx_provider_card(store))
-                    (diagnostics_card(store))
-                    (save_bar(store))
+                })),
+                StoreTab::Wallet => {
+                    (wallet_card(store))
+                    @if let Some(key_storage) = &store.key_storage {
+                        (key_storage_card(store, key_storage))
+                    }
                 },
-            ))
-            (super::store_site::connections_card(&store.sites))
-            @if let Some(key_storage) = &store.key_storage {
-                (key_storage_card(store, key_storage))
+                StoreTab::Connections => {
+                    (super::store_site::connections_card(&store.sites))
+                    (verified_domains_card(store))
+                    (webhooks_card(store))
+                },
             }
-            (verified_domains_card(store))
-            (webhooks_card(store))
             (toast_region(store.toast().as_ref(), false))
             (super::store_site::dialogs(&store.sites))
             (super::webhooks::dialogs(&store.webhooks))
@@ -962,6 +1119,7 @@ mod tests {
 
     fn base_store() -> StoreSettingsData {
         StoreSettingsData {
+            tab: StoreTab::General,
             clock: crate::views::time::Clock::utc(0),
             connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
@@ -1020,7 +1178,7 @@ mod tests {
                 },
             ],
             haveno_settings: Some(HavenoSettingsView::from(&settings)),
-            ..base_store()
+            ..on(StoreTab::Payments)
         };
         page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string()
     }
@@ -1030,7 +1188,7 @@ mod tests {
         let html = page(
             &chrome(),
             &StoreSettingsViewModel {
-                store: Some(base_store()),
+                store: Some(on(StoreTab::Payments)),
             },
         )
         .into_string();
@@ -1114,6 +1272,14 @@ mod tests {
         assert!(!html.contains("<script>x</script>"), "got: {html}");
     }
 
+    /// The base store, on `tab`.
+    fn on(tab: StoreTab) -> StoreSettingsData {
+        StoreSettingsData {
+            tab,
+            ..base_store()
+        }
+    }
+
     fn render(store: StoreSettingsData) -> String {
         page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string()
     }
@@ -1142,67 +1308,139 @@ mod tests {
     /// The settings are cards of one form with one save bar; what has a
     /// button of its own (the wallet, the domains, the webhooks) is a card
     /// outside it.
+    /// Four tabs, each a page of its own: General and Payments each their
+    /// settings form's cards with its save bar; Wallet and Connections the
+    /// actions' cards. The current tab is marked.
     #[test]
-    fn the_settings_are_one_form_and_the_actions_are_cards_beside_it() {
-        let html = render(base_store());
-        let at = |needle: &str| {
-            html.find(needle)
-                .unwrap_or_else(|| panic!("{needle} in {html}"))
+    fn each_tab_shows_its_own_cards() {
+        let tab = |tab: StoreTab| render(on(tab));
+        let order = |html: &str, needles: &[&str]| {
+            let at: Vec<usize> = needles
+                .iter()
+                .map(|needle| {
+                    html.find(needle)
+                        .unwrap_or_else(|| panic!("{needle} in {html}"))
+                })
+                .collect();
+            assert!(
+                at.windows(2).all(|pair| pair[0] < pair[1]),
+                "{needles:?} in order: {html}"
+            );
         };
-        let wallet = at(r#"<section id="card-wallet" class="settings-card""#);
-        let form = at(
-            r#"<form method="post" action="/dashboard/stores/conn_1/settings" id="settings-form""#,
+        let form =
+            r#"<form method="post" action="/dashboard/stores/conn_1/settings" id="settings-form""#;
+
+        let html = tab(StoreTab::General);
+        assert!(html.contains(r#"<nav class="mk-tabs" aria-label="Store settings"><a href="/dashboard/stores/conn_1/settings?tab=general" aria-current="page">General</a><a href="/dashboard/stores/conn_1/settings?tab=payments">Payments</a><a href="/dashboard/stores/conn_1/settings?tab=wallet">Wallet<span class="mk-tab-count">No wallet</span></a><a href="/dashboard/stores/conn_1/settings?tab=connections">Connections</a></nav>"#), "{html}");
+        order(
+            &html,
+            &[
+                form,
+                r#"<input type="hidden" name="tab" value="general">"#,
+                r#"<section id="card-store""#,
+                r#"<section id="card-base-currency""#,
+                r#"<section id="card-diagnostics""#,
+                r#"<div id="save-bar""#,
+            ],
         );
-        let base = at(r#"<section id="card-base-currency""#);
-        let confirmations = at(r#"<section id="card-confirmation-thresholds""#);
-        let fx = at(r#"<section id="card-fx-provider""#);
-        let diagnostics = at(r#"<section id="card-diagnostics""#);
-        let bar = at(r#"<div id="save-bar""#);
-        let end = form + html[form..].find("</form></div>").expect("the form's end");
-        let domains = at(r#"<section id="card-verified-domains" class="settings-card""#);
-        let webhooks = at(r#"<section id="card-webhooks" class="settings-card""#);
-        assert!(
-            wallet < form
-                && form < base
-                && base < confirmations
-                && confirmations < fx
-                && fx < diagnostics
-                && diagnostics < bar
-                && bar < end
-                && end < domains
-                && domains < webhooks,
-            "{html}"
-        );
-        // Only the website's confirm dialogs, and one orange button: the
-        // bar's Save.
+        for other in [
+            "card-confirmation-thresholds",
+            "card-fx-provider",
+            "card-wallet",
+            "card-verified-domains",
+            "card-webhooks",
+        ] {
+            assert!(
+                !html.contains(&format!(r#"id="{other}""#)),
+                "{other} on General: {html}"
+            );
+        }
+        // The website's confirm dialogs, and one orange button: the bar's Save.
         assert_eq!(html.matches("<dialog").count(), 2, "{html}");
-        assert!(
-            html.contains(r#"<dialog id="website-dialog" class="settings-dialog confirm-dialog""#),
+        assert_eq!(
+            html.matches("btn-primary").count() + html.matches(r#"data-variant="primary""#).count(),
+            1,
             "{html}"
         );
         assert!(
             html.contains(
-                r#"<dialog id="website-remove-dialog" class="settings-dialog confirm-dialog""#
+                r#"<a class="mk-btn" href="/dashboard/stores/conn_1/settings" data-discard-all"#
             ),
             "{html}"
         );
-        assert!(!html.contains("settings-dialogs"), "{html}");
-        // The settings form's one primary is Save; the Verified domains
-        // card, an action of its own, has its own next step.
-        let (before, rest) = html
-            .split_once(r#"<section id="card-verified-domains""#)
-            .unwrap();
-        let after = rest.split_once("</section>").unwrap().1;
-        let outside = format!("{before}{after}");
-        assert_eq!(
-            outside.matches("btn-primary").count()
-                + outside.matches(r#"data-variant="primary""#).count(),
-            1,
+
+        let html = tab(StoreTab::Payments);
+        assert!(html.contains(r#"<a href="/dashboard/stores/conn_1/settings?tab=payments" aria-current="page">Payments</a>"#), "{html}");
+        order(
+            &html,
+            &[
+                form,
+                r#"<input type="hidden" name="tab" value="payments">"#,
+                r#"<section id="card-confirmation-thresholds""#,
+                r#"<section id="card-fx-provider""#,
+                r#"<div id="save-bar""#,
+            ],
+        );
+        assert!(!html.contains(r#"id="card-store""#), "{html}");
+
+        let html = tab(StoreTab::Wallet);
+        assert!(
+            html.contains(r#"<section id="card-wallet" class="settings-card""#),
             "{html}"
         );
-        assert!(html.contains(r#"<a class="mk-btn" href="/dashboard/stores/conn_1/settings" data-discard-all data-mk="5">Discard changes</a>"#), "{html}");
+        assert!(!html.contains(form), "no settings form on Wallet: {html}");
+
+        let html = tab(StoreTab::Connections);
+        order(
+            &html,
+            &[
+                r#"<section id="card-verified-domains" class="settings-card""#,
+                r#"<section id="card-webhooks" class="settings-card""#,
+            ],
+        );
+        assert!(
+            !html.contains(form),
+            "no settings form on Connections: {html}"
+        );
     }
 
+    /// A save or an action lands on its card's tab, unless a tab was asked
+    /// for; a plain load is on General.
+    #[test]
+    fn the_tab_shown_is_the_one_asked_for_or_the_one_just_saved_on() {
+        let saved = |sections: Vec<StoreSection>| Some(StoreOutcome::Saved(sections));
+        assert_eq!(StoreTab::pick(None, None), StoreTab::General);
+        assert_eq!(
+            StoreTab::pick(None, saved(vec![StoreSection::Wallet]).as_ref()),
+            StoreTab::Wallet
+        );
+        assert_eq!(
+            StoreTab::pick(None, saved(vec![StoreSection::Webhooks]).as_ref()),
+            StoreTab::Connections
+        );
+        assert_eq!(
+            StoreTab::pick(
+                None,
+                Some(&StoreOutcome::Refused {
+                    section: StoreSection::FxProvider,
+                    message: String::new(),
+                    saved: Vec::new()
+                })
+            ),
+            StoreTab::Payments
+        );
+        assert_eq!(
+            StoreTab::pick(
+                Some(StoreTab::Payments),
+                saved(vec![StoreSection::Wallet]).as_ref()
+            ),
+            StoreTab::Payments
+        );
+        assert_eq!(
+            StoreTab::pick(None, Some(&StoreOutcome::Unchanged)),
+            StoreTab::General
+        );
+    }
     #[test]
     fn a_refused_save_shows_why_on_its_card_and_keeps_what_was_sent() {
         let store = StoreSettingsData {
@@ -1224,7 +1462,7 @@ mod tests {
                 ("switches".to_string(), "client_logging".to_string()),
                 ("client_logging".to_string(), "true".to_string()),
             ]),
-            ..base_store()
+            ..on(StoreTab::Payments)
         };
         let html = render(store);
         assert!(
@@ -1233,7 +1471,11 @@ mod tests {
             ),
             "{html}"
         );
-        assert!(html.contains(r#"<div class="card-body"><p class="error" role="alert" data-mk="6">Enter a whole number of confirmations.</p>"#), "{html}");
+        assert!(
+            html.contains(r#"<div class="card-body"><p class="error" role="alert""#)
+                && html.contains(">Enter a whole number of confirmations.</p>"),
+            "{html}"
+        );
         assert!(
             html.contains(
                 r#"name="confirmations_required" id="confirmations-required" value="abc""#
@@ -1241,9 +1483,10 @@ mod tests {
             "{html}"
         );
         assert!(html.contains(r#"data-saved="10""#), "{html}");
+        // The tier marked to remove stays marked.
         assert!(
             html.contains(
-                r#"<input type="checkbox" name="delete_t1" value="on" checked data-saved="off">"#
+                r#"<input type="checkbox" name="delete_t1" value="remove" data-rows-remove="" checked>"#
             ),
             "{html}"
         );
@@ -1251,7 +1494,6 @@ mod tests {
             html.contains(r#"name="new_unit_amount" value="9""#),
             "{html}"
         );
-        assert!(html.contains(r#"name="client_logging" value="true" id="client-logging" checked aria-describedby="client-logging-help" data-saved="off">"#), "{html}");
         assert!(
             html.contains(r#"<div id="save-bar" class="save-bar is-failed""#),
             "{html}"
@@ -1294,7 +1536,7 @@ mod tests {
                 message: "Enter a webhook URL.".to_string(),
                 saved: Vec::new(),
             }),
-            ..base_store()
+            ..on(StoreTab::Connections)
         });
         assert!(
             html.contains(
@@ -1317,7 +1559,7 @@ mod tests {
 
     #[test]
     fn the_restriction_banner_needs_a_verified_domain_to_turn_on() {
-        let html = render(base_store());
+        let html = render(on(StoreTab::Connections));
         let off = banner(&html);
         assert!(
             off.contains(r#"<input type="hidden" name="restricted" value="on">"#),
@@ -1341,7 +1583,7 @@ mod tests {
 
         let html = render(StoreSettingsData {
             embed_can_restrict: true,
-            ..base_store()
+            ..on(StoreTab::Connections)
         });
         let off = banner(&html);
         let button = off.split("<button").last().unwrap();
@@ -1355,7 +1597,7 @@ mod tests {
         let html = render(StoreSettingsData {
             embed_can_restrict: true,
             embed_restricted: true,
-            ..base_store()
+            ..on(StoreTab::Connections)
         });
         let on = banner(&html);
         assert!(on.contains(r#"data-tone="success""#), "{on}");
@@ -1379,7 +1621,7 @@ mod tests {
 
     #[test]
     fn verified_domains_are_cards_with_their_actions_at_the_top() {
-        let html = render(base_store());
+        let html = render(on(StoreTab::Connections));
         assert!(html.contains(r#"<section id="card-verified-domains" class="settings-card" aria-labelledby="card-verified-domains-title"><header class="card-head"><h3 id="card-verified-domains-title">Verified domains</h3>"#));
         assert!(html.contains("<strong>No domains yet</strong>"), "{html}");
         // With nothing verified, adding a domain is the card's primary.
@@ -1419,7 +1661,7 @@ mod tests {
                 ),
             ],
             embed_can_restrict: true,
-            ..base_store()
+            ..on(StoreTab::Connections)
         });
         let card = |id: &str| {
             html.split(&format!(r#"id="domain-{id}""#))
@@ -1492,22 +1734,21 @@ mod tests {
         );
     }
 
+    /// The default heads the tiers, in the same words, and has no remove:
+    /// it's set in its own field.
     #[test]
-    fn the_default_threshold_row_has_no_delete_control() {
-        let html = page(
-            &chrome(),
-            &StoreSettingsViewModel {
-                store: Some(base_store()),
-            },
-        )
-        .into_string();
+    fn the_default_heads_the_tiers_without_a_remove() {
+        let html = render(on(StoreTab::Payments));
         assert!(html.contains("Default confirmations"));
         assert!(html.contains(r#"value="10""#));
+        assert!(
+            html.contains(r#"<p class="tier-default"><strong>Every order</strong>: the default, 10 confirmations <span class="muted">(about 20 min)</span></p>"#),
+            "{html}"
+        );
     }
-
     #[test]
     fn accepting_unconfirmed_payments_is_a_switch() {
-        let html = render(base_store());
+        let html = render(on(StoreTab::Payments));
         assert!(
             html.contains(r#"<input type="hidden" name="switches" value="zero_conf_enabled">"#),
             "{html}"
@@ -1515,7 +1756,7 @@ mod tests {
         assert!(html.contains(r#"<input type="checkbox" role="switch" name="zero_conf_enabled" value="true" id="zero-conf" aria-describedby="zero-conf-help">"#), "{html}");
         let html = render(StoreSettingsData {
             zero_conf_enabled: true,
-            ..base_store()
+            ..on(StoreTab::Payments)
         });
         assert!(
             html.contains(r#"name="zero_conf_enabled" value="true" id="zero-conf" checked"#),
@@ -1525,44 +1766,96 @@ mod tests {
 
     #[test]
     fn confirmations_required_input_is_narrow_and_capped_at_three_digits() {
-        let html = render(base_store());
+        let html = render(on(StoreTab::Payments));
         assert!(html.contains(r#"name="confirmations_required" id="confirmations-required" value="10" aria-describedby="confirmations-required-help" required data-input="confirmations" size="3" maxlength="3" inputmode="numeric""#), "got: {html}");
     }
 
+    /// A tier is added in the blank row, each control named for screen
+    /// readers; the note says how many there are of how many.
     #[test]
-    fn a_custom_threshold_is_added_in_the_tables_last_row() {
-        let html = render(base_store());
-        assert!(html.contains("<th>Delete</th>"), "got: {html}");
-        assert!(html.contains(r#"<tr class="new-threshold-row"><td><input class="mk-input" type="text" name="new_unit_amount" value="" placeholder="Minimum Amount (XMR)""#), "got: {html}");
+    fn a_tier_is_added_in_the_blank_row() {
+        let html = render(on(StoreTab::Payments));
         assert!(
-            html.contains(r##"placeholder="# Confirmations""##),
-            "got: {html}"
+            html.contains(r#"data-island="RowsEditor""#) && html.contains(r#"data-list="tiers""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<li class="mk-rows-row mk-rows-new">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input class="mk-input" type="text" name="new_unit_amount" value="" aria-label="New tier's amount (XMR)" inputmode="decimal">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"aria-label="New tier's confirmations""#),
+            "{html}"
+        );
+        assert!(html.contains(">Add a tier</button>"), "{html}");
+        assert!(
+            html.contains(r#"<p class="mk-rows-note">0 of 5 tiers.</p>"#),
+            "{html}"
         );
     }
-
+    /// Tiers read smallest first under the default, each with about how
+    /// long it waits, and each can be removed even at the limit, when
+    /// there's no blank row to add another.
     #[test]
-    fn existing_thresholds_are_deleted_by_ticking_them_even_at_the_limit() {
+    fn tiers_read_smallest_first_and_can_be_removed_even_at_the_limit() {
+        let tier = |id: &str, amount: &str, confirmations| ConfirmationThresholdView {
+            id: id.to_string(),
+            unit_amount: amount.to_string(),
+            confirmations_required: confirmations,
+        };
         let store = StoreSettingsData {
-            confirmation_thresholds: vec![ConfirmationThresholdView {
-                id: "threshold_1".to_string(),
-                unit_amount: "50.00".to_string(),
-                confirmations_required: 20,
-            }],
+            confirmation_thresholds: vec![
+                tier("threshold_2", "500", 30),
+                tier("threshold_1", "50.00", 20),
+            ],
             confirmation_thresholds_at_max: true,
-            ..base_store()
+            ..on(StoreTab::Payments)
         };
         let html = render(store);
-        assert!(html.contains("Maximum of 5 custom thresholds reached"));
         assert!(
-            html.contains(r#"<input type="checkbox" name="delete_threshold_1" value="on">"#),
-            "got: {html}"
+            html.contains("<strong>Under 50.00 XMR</strong>: the default"),
+            "{html}"
+        );
+        let small = html
+            .find("<strong>From 50.00 XMR</strong>")
+            .expect("the 50 tier");
+        let big = html
+            .find("<strong>From 500 XMR</strong>")
+            .expect("the 500 tier");
+        assert!(small < big, "{html}");
+        assert!(
+            html.contains(
+                r#"<span>20 confirmations</span><span class="muted">about 40 min</span>"#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<span>30 confirmations</span><span class="muted">about 60 min</span>"#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="checkbox" name="delete_threshold_1" value="remove" data-rows-remove="">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"aria-label="Remove the 50.00 XMR tier""#),
+            "{html}"
+        );
+        assert!(
+            html.contains("5 of 5 tiers. Remove one to add another."),
+            "{html}"
         );
         assert!(!html.contains("new_unit_amount"), "{html}");
     }
-
     #[test]
     fn says_when_the_webhooks_could_not_be_read() {
-        let mut store = base_store();
+        let mut store = on(StoreTab::Connections);
         store.webhooks.unavailable = true;
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
         assert!(html.contains("read this store's webhooks"), "{html}");
@@ -1572,7 +1865,7 @@ mod tests {
 
     #[test]
     fn shows_the_webhook_signing_secret_exactly_once_after_creation() {
-        let mut store = base_store();
+        let mut store = on(StoreTab::Connections);
         store.webhooks.created_secret = Some("whsec_abc123".to_string());
         store.outcome = Some(StoreOutcome::Saved(vec![StoreSection::Webhooks]));
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();

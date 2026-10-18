@@ -185,13 +185,9 @@ button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px
    the site-wide `input[type=text] { width: 100% }` default, which would
    otherwise stretch it to the full cell. */
 [data-input="confirmations"] { width: 4.5em; }
-/* Highlight the entry row while keeping it in the same table. */
-[data-table="thresholds"] .new-threshold-row td {
-  background: var(--tint-highlight);
-  border-top: 3px solid var(--accent);
-  padding-block: var(--space-sm);
-}
-[data-table="thresholds"] .new-threshold-row [data-input="confirmations"] { width: min(100%, 11em); }
+/* The confirmation tiers: the default above them, in the same words. */
+.tier-default { margin: 0 0 var(--space-xs); }
+[data-list="tiers"] .mk-rows-new .mk-input[name="new_unit_amount"] { width: 8em; }
 .rule { border: none; border-top: 2px dashed var(--line); margin: 1.6em 0; }
 .steps { padding-left: 1.4em; }
 .steps li { margin: 0.5em 0; }

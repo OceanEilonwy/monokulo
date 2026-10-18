@@ -248,6 +248,10 @@ export interface EditorRow {
    * Its controls, each labelled (`Input`s with `label`).
    */
   readonly fields: JSX.Element;
+  /**
+   * Marked to remove already: as a refused save sent it.
+   */
+  readonly removed: boolean;
 }
 
 /**
