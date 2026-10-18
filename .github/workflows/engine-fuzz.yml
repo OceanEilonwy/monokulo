@@ -22,7 +22,9 @@ jobs:
     needs: tooling
     name: fuzz ${{ matrix.target }} (${{ matrix.features || 'default' }})
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The build, replaying the corpus (up to the budget again) and the
+    # budget itself, which counts from the end of the replay.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -62,6 +64,7 @@ jobs:
           name: engine-fuzz-${{ matrix.target }}-${{ matrix.features || 'default' }}-${{ github.run_id }}
           path: |
             fuzz/corpus/
+            fuzz/corpus-restored/
             fuzz/artifacts/
             fuzz/seeds/
             target/engine-exploration/

@@ -1,0 +1,80 @@
+name: engine fuzz corpus prune
+
+# Minimizes each target's saved corpus on ci/fuzz once a day. Every fuzz run
+# adds what it found, and nothing else takes inputs away, so the corpus a
+# campaign replays before it explores keeps growing: on 2026-10-17 portfolio's
+# 1,466 inputs took its whole 900 s, of which libFuzzer kept 1,141, and
+# notifications kept 251 of 1,278. `cargo fuzz cmin` keeps the inputs that
+# together reach everything the corpus reaches.
+
+on:
+  schedule:
+    - cron: '20 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Named like engine-fuzz.yml's job, as rust-cache keys a cache by the job's
+  # id: this one restores the fuzz runs' build.
+  fuzz:
+    name: prune ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [scheduler, resources, inputs, queue, mempool, status, history, notifications, portfolio, dns_message]
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-10-02
+      FUZZ_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-10-02
+          components: rust-src
+      # The fuzz runs' build (see the job's id); they save it.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+          key: fuzz-
+          save-if: 'false'
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz@0.13.2
+      - name: Restore the saved corpus
+        run: .github/scripts/restore-fuzz-corpus.sh "$FUZZ_TARGET"
+      - name: Minimize
+        # The same build as a campaign's (cargo xtask engine fuzz). An input
+        # that now crashes or times out is left out, as it reaches nothing.
+        run: |
+          [ -s "fuzz/corpus-restored/$FUZZ_TARGET" ] || exit 0
+          cargo fuzz cmin --fuzz-dir fuzz --target x86_64-unknown-linux-gnu "$FUZZ_TARGET" \
+            -- -timeout=120 -rss_limit_mb=4096
+          echo "$FUZZ_TARGET: kept $(find "fuzz/corpus/$FUZZ_TARGET" -type f | wc -l) of $(wc -l < "fuzz/corpus-restored/$FUZZ_TARGET") inputs" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-prune-${{ matrix.target }}-${{ github.run_id }}
+          path: |
+            fuzz/corpus/
+            fuzz/corpus-restored/
+          if-no-files-found: ignore
+
+  save:
+    # One job writes ci/fuzz, so the ten targets don't race each other.
+    name: save the pruned corpus to ci/fuzz
+    needs: fuzz
+    if: always() && github.ref == 'refs/heads/main' && needs.fuzz.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: fuzz-prune-*
+          path: ${{ runner.temp }}/prune-artifacts
+      - run: .github/scripts/save-pruned-fuzz-corpus.sh "$RUNNER_TEMP/prune-artifacts"

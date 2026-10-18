@@ -2,7 +2,9 @@
 # Adds the corpus inputs the fuzz jobs found to the ci/fuzz branch, an
 # orphan branch that holds only corpus/<target>/<input>. libFuzzer names an
 # input by the hash of its bytes and keeps only inputs that added coverage,
-# so adding the new names is a union. The reviewed seeds are in main already.
+# so adding the new names is a union. The reviewed seeds are in main already,
+# and the inputs a job restored (fuzz/corpus-restored/<target>) aren't added
+# back, so an input pruned from ci/fuzz since then stays pruned.
 # Usage: save-fuzz-corpus.sh <directory the fuzz artifacts were downloaded to>
 set -euo pipefail
 
@@ -25,10 +27,13 @@ for attempt in 1 2 3 4 5; do
   for corpus in "$artifacts"/*/fuzz/corpus/*/; do
     [ -d "$corpus" ] || continue
     target=$(basename "$corpus")
+    restored="$corpus../../corpus-restored/$target"
     mkdir -p "$work/tree/corpus/$target"
     for input in "$corpus"*; do
       [ -f "$input" ] || continue
-      case $(basename "$input") in reviewed-*) continue ;; esac
+      name=$(basename "$input")
+      case $name in reviewed-*) continue ;; esac
+      if [ -f "$restored" ] && grep -qxF "$name" "$restored"; then continue; fi
       cp -n "$input" "$work/tree/corpus/$target/"
     done
   done
