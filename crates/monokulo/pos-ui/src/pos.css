@@ -128,13 +128,16 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .pos-order-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
   .pos-order-heading > div { min-width: 0; }
   .pos-order-heading h1 { font-size: var(--text-xl); font-weight: 800; letter-spacing: -.025em; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pos-order-heading p { margin-top: 2px; font-size: var(--text-xs); color: var(--muted); }
+  .pos-order-heading h1 + p { margin-top: 2px; font-size: var(--text-xs); color: var(--muted); }
   .pos-pay-card {
     display: flex; flex-direction: column; gap: 6px; padding: 12px 14px 12px; border: 2px solid var(--pos-border); border-radius: 8px;
     background: var(--paper-raised);
   }
   /* Beside the heading: the status at a glance. */
   .pos-status-row { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  /* Under the status, as wide as it: the time left to pay, small. */
+  .pos-status-row .mk-countdown { align-self: stretch; gap: 2px; }
+  .pos-status-row .mk-countdown-line { justify-content: flex-end; font-size: var(--text-xs); }
   /* A code that shouldn't be paid: the same order, too faint to scan. */
   .is-spent .pos-qr svg { opacity: .14; filter: grayscale(1); }
   .is-spent .pos-address { opacity: .55; }

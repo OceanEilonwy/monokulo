@@ -8,7 +8,7 @@ import ARROW_LEFT from '@monokulo/ui/icons/arrow-left.svg?raw';
 import { applyTheme, type Theme } from './theme';
 import { createTimeline, routeOf, watchPage } from './timeline';
 import '@monokulo/ui/components.css';
-import { Button, Card, CopyValue, Dialog, DialogActions, DialogTitle, Field, IconButton, Input, ProgressSteps, SegmentedControl, ShortValue, type ProgressStep, type StepProgress } from '@monokulo/ui/solid';
+import { Button, Card, CopyValue, Countdown, Dialog, DialogActions, DialogTitle, Field, IconButton, Input, ProgressSteps, SegmentedControl, ShortValue, type ProgressStep, type StepProgress } from '@monokulo/ui/solid';
 import './pos.css';
 
 type Order = {
@@ -174,14 +174,13 @@ function stageSteps(o: Order): ProgressStep[] {
 }
 
 /** The stage's words: a short title, then what to do now. */
-function stageMessage(o: Order, at: number): [string, string] {
-  const received = trimXmr(o.received_xmr || '0'), total = trimXmr(o.xmr_amount), rest = trimXmr(o.remaining_xmr || o.xmr_amount);
-  const left = `${durationUntil(o.expires_at, at)} left`;
+function stageMessage(o: Order): [string, string] {
+  const received = trimXmr(o.received_xmr || '0'), total = trimXmr(o.xmr_amount);
   if (o.cancelled_at) return ['Cancelled', o.status === 'pending' ? 'If money still arrives at its address, it will show in the order for review.' : 'Payment activity arrived after this order was cancelled. Review it in the order details.'];
   switch (stateOf(o)) {
     case 'double-spend': return ['Payment reversed', o.error || 'Double spend detected. Do not treat this payment as paid.'];
-    case 'pending': return [`Send ${total} XMR`, `Scan the code or copy the address. ${left}`];
-    case 'partial': return [`Send the remaining ${rest} XMR`, `${received} of ${total} XMR received. This new code asks for the rest. ${left}`];
+    case 'pending': return ['Send the exact amount below', 'Scan the code with your wallet, or copy the address.'];
+    case 'partial': return ['Send the remaining amount below', `${received} of ${total} XMR received. This new code asks for the rest.`];
     case 'unconfirmed': return ['Waiting for confirmation', 'Payment seen. Waiting for its first confirmation.'];
     case 'confirming': return ['Confirming', `${o.confirmations} of ${o.confirmations_required} confirmations.`];
     case 'paid': return ['Paid', `${trimXmr(o.received_xmr || o.xmr_amount)} XMR received${o.confirmations_required ? ' and confirmed' : ''}.`];
@@ -194,7 +193,7 @@ function stageMessage(o: Order, at: number): [string, string] {
 /** The stage at the top of the payment card, in every state (the checkout
  * shows the same): where the order is, and what to do now. */
 function Stage(props: { order: Order }) {
-  const message = () => stageMessage(props.order, now());
+  const message = () => stageMessage(props.order);
   return <ProgressSteps compact label="Payment progress" steps={stageSteps(props.order)} state={stateOf(props.order)}
     title={message()[0]} message={message()[1]}/>;
 }
@@ -660,10 +659,14 @@ function App() {
       <main class="pos-payment">
         <div class="pos-order-heading">
           <div><h1><Label order={order()}/></h1><p>{order().merchant_order_id ? 'Reference · ' : ''}Order <OrderId order={order()}/></p></div>
-          {/* The status at a glance; the stage in the card says the rest,
-              the time left included. */}
+          {/* The status at a glance, and while it can be paid, the time left
+              to pay it; the stage in the card says the rest. */}
           <div class="pos-status-row">
             <StatusTag order={order()} offline={offline() && !terminal(order())}/>
+            <Show when={awaitingPayment(order())}>
+              <Countdown data-pos="time-left" total={Math.max(0, order().expires_at - order().created_at, order().expires_at - now())}
+                remaining={Math.max(0, order().expires_at - now())} left={durationUntil(order().expires_at, now())}/>
+            </Show>
           </div>
         </div>
         <PaymentCard order={order()}/>
