@@ -13,10 +13,14 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fmt, fs,
-    io::{self, Read, Write},
+    io::{self, BufRead, Write},
     path::{Path, PathBuf},
     process::Command,
-    sync::{Arc, LazyLock},
+    sync::{
+        mpsc::{self, RecvTimeoutError},
+        Arc, LazyLock,
+    },
+    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -24,7 +28,7 @@ pub(crate) const HELP: &str = "\
         engine fuzz TARGET [SECONDS] [zmq]\n\
                       One fuzz campaign (scheduler, resources, inputs, queue, mempool, status, history,\n\
                       notifications, portfolio or dns_message): reviewed seeds copied into the corpus, a calibrated\n\
-                      build, then libFuzzer for SECONDS, with its evidence under\n\
+                      build, then libFuzzer exploring for SECONDS once it has replayed the corpus, with its evidence under\n\
                       target/engine-exploration/fuzz (ENGINE_FUZZ_SEED sets the seed; needs cargo-fuzz)\n\
         engine properties [default|zmq]\n\
                       The engine's and key custody's property tests (PROPTEST_CASES, ENGINE_PROOF_CASES and\n\
@@ -230,6 +234,8 @@ fn corpus(dir: &Path) -> Corpus {
 static SAMPLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"#(\d+)\s+(INITED|NEW|REDUCE|DONE).*?cov:\s*(\d+)\s+ft:\s*(\d+)").unwrap()
 });
+/// What libFuzzer prints when it finishes on `Sink::Explore`'s signal.
+const STOPPED: &str = "INFO: libFuzzer: exiting as requested";
 static STAT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"stat::([a-z_]+):\s*(\d+)").unwrap());
 
 /// One of libFuzzer's progress lines.
@@ -267,11 +273,25 @@ fn summarize(log: &str) -> Exploration {
         })
         .collect();
     let initial = samples.iter().find(|s| s.phase == "INITED").cloned();
-    let last = samples.last().cloned();
-    let stats = STAT
+    let stats: BTreeMap<String, u64> = STAT
         .captures_iter(log)
         .map(|c| (c[1].to_string(), number(&c[2])))
         .collect();
+    // A run stopped once its budget was spent prints no DONE line: it ends
+    // where the last progress line left it, after the executions its final
+    // stats count.
+    let stopped = log.contains(STOPPED);
+    let last = samples
+        .last()
+        .cloned()
+        .map(|s| match stats.get("number_of_executed_units") {
+            Some(&executions) if stopped && s.phase != "DONE" => Sample {
+                executions: executions.max(s.executions),
+                phase: "STOPPED".into(),
+                ..s
+            },
+            _ => s,
+        });
     let delta = |field: fn(&Sample) -> u64| match (&initial, &last) {
         (Some(i), Some(f)) => Some(
             i64::try_from(field(f)).unwrap_or(i64::MAX)
@@ -307,7 +327,10 @@ fn evidence_status(exploration: &Exploration, exit: Exit) -> Verdict {
         );
     }
     let delta = exploration.executions_after_initialization;
-    let done = exploration.last.as_ref().is_some_and(|s| s.phase == "DONE");
+    let done = exploration
+        .last
+        .as_ref()
+        .is_some_and(|s| s.phase == "DONE" || s.phase == "STOPPED");
     if exploration.initial.is_none() || !done || delta.is_none_or(|d| d < 0) {
         return verdict(
             Status::InvalidEvidence,
@@ -317,7 +340,7 @@ fn evidence_status(exploration: &Exploration, exit: Exit) -> Verdict {
     if delta == Some(0) {
         return verdict(
             Status::InsufficientExploration,
-            "No inputs explored after initialization; increase the budget.",
+            "No inputs explored after initialization: replaying the corpus outlasted the time allowed for it; prune the corpus.",
         );
     }
     Verdict {
@@ -399,6 +422,26 @@ pub(crate) enum Sink<'a> {
     /// Stdout and stderr together in a file and on our stdout at once
     /// (`2>&1 | tee`).
     Tee(&'a Path),
+    /// A libFuzzer run teed like `Tee`, asked to stop (SIGUSR1, which
+    /// `-handle_usr1=1` turns into a graceful exit) once it has explored for
+    /// the given time past `INITED`: the budget is spent exploring, however
+    /// long replaying the corpus took.
+    Explore(&'a Path, Duration),
+}
+
+/// libFuzzer's line once it has replayed the corpus and starts exploring.
+const INITED: &str = "\tINITED ";
+
+/// Asks a libFuzzer run started with `-handle_usr1=1` to finish.
+fn ask_to_stop(pid: u32) {
+    #[cfg(unix)]
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        // SAFETY: kill(2) on our own child, which hasn't been waited for, so
+        // its pid can't have been reused.
+        unsafe { libc::kill(pid, libc::SIGUSR1) };
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
 }
 
 /// How a run ended. `exit` is `None` when it ran out its time limit and was
@@ -451,22 +494,46 @@ impl Runner for Processes {
                     None => Some(child.wait()?),
                 }))
             }
-            Sink::Tee(log) => {
-                let (mut reader, writer) = io::pipe()?;
+            Sink::Tee(log) | Sink::Explore(log, _) => {
+                let explore = match sink {
+                    Sink::Explore(_, after_init) => Some(after_init),
+                    _ => None,
+                };
+                let (reader, writer) = io::pipe()?;
                 let mut child = command.stdout(writer.try_clone()?).stderr(writer).spawn()?;
                 // The command holds the pipe's write ends; dropping it leaves
                 // the child as their only owner, so the read below ends when
                 // the child does.
                 drop(command);
                 let mut file = fs::File::create(log)?;
-                let mut buffer = [0u8; 8192];
+                let mut reader = io::BufReader::new(reader);
+                let mut line = Vec::new();
+                // Dropping `finished` wakes the timer before its time is up,
+                // so it never signals a child that has already ended.
+                let (finished, ended) = mpsc::channel::<()>();
+                let mut ended = Some(ended);
+                let mut timer = None;
                 loop {
-                    let n = reader.read(&mut buffer)?;
-                    if n == 0 {
+                    line.clear();
+                    if reader.read_until(b'\n', &mut line)? == 0 {
                         break;
                     }
-                    file.write_all(&buffer[..n])?;
-                    io::stdout().write_all(&buffer[..n])?;
+                    file.write_all(&line)?;
+                    io::stdout().write_all(&line)?;
+                    let inited = String::from_utf8_lossy(&line).contains(INITED);
+                    let start = explore.filter(|_| inited).zip(ended.take_if(|_| inited));
+                    if let Some((after_init, ended)) = start {
+                        let pid = child.id();
+                        timer = Some(thread::spawn(move || {
+                            if ended.recv_timeout(after_init) == Err(RecvTimeoutError::Timeout) {
+                                ask_to_stop(pid);
+                            }
+                        }));
+                    }
+                }
+                drop(finished);
+                if let Some(timer) = timer {
+                    timer.join().ok();
                 }
                 Ok(done(Some(child.wait()?)))
             }
@@ -507,7 +574,17 @@ impl Tools {
     /// A program run to a log file and our own output at once, returning
     /// its exit code.
     fn tee(&self, spec: &Spec, log: &Path) -> io::Result<Exit> {
-        self.run(spec, Sink::Tee(log), None)?
+        self.ended(spec, Sink::Tee(log))
+    }
+
+    /// A libFuzzer run teed like [`Tools::tee`], stopped once it has
+    /// explored for `after_init` (`Sink::Explore`).
+    fn explore(&self, spec: &Spec, log: &Path, after_init: Duration) -> io::Result<Exit> {
+        self.ended(spec, Sink::Explore(log, after_init))
+    }
+
+    fn ended(&self, spec: &Spec, sink: Sink) -> io::Result<Exit> {
+        self.run(spec, sink, None)?
             .exit
             .ok_or_else(|| io::Error::other("a run with no time limit timed out"))
     }
@@ -832,11 +909,11 @@ fn check_lockfile(plan: &Plan) -> Result<(), Stopped> {
     }
 }
 
-/// `cargo fuzz build` or `cargo fuzz run` for the campaign's target.
-fn cargo_fuzz(plan: &Plan, verb: &str, host: &str) -> Spec {
+/// `cargo fuzz build` for the campaign's target.
+fn cargo_fuzz_build(plan: &Plan, host: &str) -> Spec {
     let mut spec = plan.tools.spec("cargo", plan.root).args([
         "fuzz",
-        verb,
+        "build",
         "--fuzz-dir",
         "fuzz",
         "--target",
@@ -869,7 +946,7 @@ fn run_campaign(plan: &Plan) -> Result<Exit, Stopped> {
     let built = plan
         .tools
         .tee(
-            &cargo_fuzz(plan, "build", &host),
+            &cargo_fuzz_build(plan, &host),
             &plan.output.join("build.log"),
         )
         .map_err(Stopped::at(Stage::Build, Exit::FAILURE))?;
@@ -893,25 +970,43 @@ fn run_campaign(plan: &Plan) -> Result<Exit, Stopped> {
         .join(format!("fuzz/target/{host}/release/{}", c.target));
     calibrate(plan.output, &plan.seeds, &binary, c.timeout, &calibration)
         .map_err(Stopped::at(Stage::Calibration, Exit::FAILURE))?;
-    let explore = cargo_fuzz(plan, "run", &host).arg("--").args([
-        format!("-max_total_time={}", c.seconds),
-        format!("-max_len={}", c.max_len),
-        format!("-timeout={}", c.timeout),
-        "-rss_limit_mb=4096".into(),
-        format!("-seed={}", c.seed),
-        "-print_final_stats=1".into(),
-    ]);
+    // The built fuzzer itself, as `cargo fuzz run` would start it, so the
+    // stop signal reaches libFuzzer rather than cargo. The budget is the
+    // time spent exploring: replaying a large corpus can take most of it,
+    // so libFuzzer's own limit allows as long again for that and the run is
+    // stopped once it has explored for the budget.
+    let artifacts = plan.root.join("fuzz/artifacts").join(c.target);
+    fs::create_dir_all(&artifacts)
+        .map_err(|e| Stopped::at(Stage::Exploration, Exit::FAILURE)(at(&artifacts, e)))?;
+    let explore = plan
+        .tools
+        .spec(&binary.to_string_lossy(), plan.root)
+        .args([
+            format!("-artifact_prefix={}/", artifacts.display()),
+            format!("-max_total_time={}", 2 * c.seconds),
+            format!("-max_len={}", c.max_len),
+            format!("-timeout={}", c.timeout),
+            "-rss_limit_mb=4096".into(),
+            format!("-seed={}", c.seed),
+            "-print_final_stats=1".into(),
+            "-handle_usr1=1".into(),
+        ])
+        .arg(plan.corpus_dir.to_string_lossy());
     let fuzzer = plan
         .tools
-        .tee(&explore, &plan.output.join("fuzzer.log"))
+        .explore(
+            &explore,
+            &plan.output.join("fuzzer.log"),
+            Duration::from_secs(c.seconds),
+        )
         .map_err(Stopped::at(Stage::Exploration, Exit::FAILURE))?;
     let verdict = finish(plan.output, &plan.corpus_dir, fuzzer)
         .map_err(Stopped::at(Stage::Reporting, Exit::FAILURE))?;
     // The fuzzer's own failure is the code to pass on; evidence that fell
     // short of a pass after a clean run is this command's failure. A clean
-    // run that explored nothing past the seeds isn't: how many inputs fit in
-    // the budget is down to the machine, so the report records it and the
-    // campaign still ends well.
+    // run that explored nothing past the seeds isn't: replaying the corpus
+    // took longer than the time allowed for it, which pruning the corpus
+    // fixes, so the report records it and the campaign still ends well.
     if verdict.status == Status::InsufficientExploration {
         eprintln!("{}", verdict.reason.unwrap_or_default());
     }
@@ -1255,6 +1350,19 @@ mod tests {
                 "#8 INITED cov: 10 ft: 12\n#9 DONE cov: 11 ft: 13\n",
                 Status::Passed,
             ),
+            // Stopped once its budget was spent: no DONE line, the final
+            // stats count the executions.
+            (
+                "#8 INITED cov: 10 ft: 12\n#9 NEW cov: 11 ft: 13\n\
+                 ==7== INFO: libFuzzer: exiting as requested\n\
+                 stat::number_of_executed_units: 900\n",
+                Status::Passed,
+            ),
+            (
+                "#8 INITED cov: 10 ft: 12\n#9 NEW cov: 11 ft: 13\n\
+                 ==7== INFO: libFuzzer: exiting as requested\n",
+                Status::InvalidEvidence,
+            ),
         ] {
             let s = Scratch::new("exploration-finish");
             write_json(
@@ -1402,6 +1510,48 @@ mod tests {
         }
 
         #[test]
+        fn an_exploring_run_is_asked_to_stop_once_its_time_past_inited_is_up() {
+            let s = Scratch::new("exploration-explore");
+            let log = s.join("fuzzer.log");
+            // Like libFuzzer with -handle_usr1=1: a slow replay, INITED, then
+            // exploring until the signal asks it to finish.
+            let fuzzer = sh(
+                "trap 'echo \"INFO: libFuzzer: exiting as requested\"; exit 0' USR1; \
+                 sleep 0.3; printf '#8\tINITED cov: 1 ft: 1\n'; while :; do sleep 0.05; done",
+            );
+            let started = Instant::now();
+            let done = Processes
+                .run(
+                    &fuzzer,
+                    Sink::Explore(&log, Duration::from_millis(200)),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(done.exit, Some(Exit::SUCCESS));
+            assert!(started.elapsed() >= Duration::from_millis(500));
+            let log = fs::read_to_string(log).unwrap();
+            assert!(
+                log.ends_with(&format!("INITED cov: 1 ft: 1\n{STOPPED}\n")),
+                "{log}"
+            );
+        }
+
+        #[test]
+        fn a_run_that_ends_by_itself_is_not_held_for_its_exploring_time() {
+            let s = Scratch::new("exploration-explore-ends");
+            let started = Instant::now();
+            let done = Processes
+                .run(
+                    &sh("printf '#8\tINITED cov: 1 ft: 1\n'; echo '#9 DONE cov: 1 ft: 1'; exit 4"),
+                    Sink::Explore(&s.join("fuzzer.log"), Duration::from_secs(60)),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(done.exit, Some(Exit::new(4)));
+            assert!(started.elapsed() < Duration::from_secs(30));
+        }
+
+        #[test]
         fn a_run_past_its_limit_is_stopped_and_has_no_exit() {
             let s = Scratch::new("exploration-limit");
             let done = Processes
@@ -1448,22 +1598,28 @@ mod tests {
                     ("cargo", ["fuzz", "--version"]) if failure == Some("no-cargo-fuzz") => {
                         (101, "", "no such command: fuzz")
                     }
-                    ("cargo", ["fuzz", "build" | "run", ..]) if musl_default => (
+                    ("cargo", ["fuzz", "build", ..]) if musl_default => (
                         42,
                         "",
                         "sanitizer is incompatible with statically linked libc",
                     ),
                     ("cargo", ["fuzz", "build", ..]) => (fails("build", 19), "", ""),
-                    // A target so slow the budget ends during the seeds.
-                    ("cargo", ["fuzz", "run", ..]) if failure == Some("no-exploration") => {
-                        (0, "#8 INITED cov: 10 ft: 12\n#8 DONE cov: 10 ft: 12\n", "")
-                    }
-                    ("cargo", ["fuzz", "run", ..]) => (
-                        fails("exploration", 41),
-                        "#8 INITED cov: 10 ft: 12\n#55 DONE cov: 13 ft: 20\n",
-                        "",
-                    ),
                     ("cargo", _) => (0, "test tool version", ""),
+                    // The built fuzzer, exploring. A corpus so slow to replay
+                    // that libFuzzer's own limit ends the run at INITED.
+                    (_, args) if args.contains(&"-handle_usr1=1") => match failure {
+                        Some("no-exploration") => {
+                            (0, "#8 INITED cov: 10 ft: 12\n#8 DONE cov: 10 ft: 12\n", "")
+                        }
+                        // Stopped once the budget was spent.
+                        _ => (
+                            fails("exploration", 41),
+                            "#8 INITED cov: 10 ft: 12\n#40 NEW cov: 13 ft: 20\n\
+                             ==1== INFO: libFuzzer: exiting as requested\n\
+                             stat::number_of_executed_units: 55\n",
+                            "",
+                        ),
+                    },
                     // The built fuzzer, replaying a seed.
                     _ => (fails("calibration", 23), "", ""),
                 }
@@ -1491,6 +1647,13 @@ mod tests {
                     Sink::Tee(log) => {
                         fs::write(log, &both)?;
                         io::stdout().write_all(both.as_bytes())?;
+                    }
+                    Sink::Explore(log, after_init) => {
+                        // libFuzzer's own limit leaves as long again for
+                        // replaying the corpus.
+                        let limit = format!("-max_total_time={}", 2 * after_init.as_secs());
+                        assert!(spec.args.contains(&limit), "{:?}", spec.args);
+                        fs::write(log, &both)?;
                     }
                     Sink::Capture | Sink::Inherit => {}
                 }
