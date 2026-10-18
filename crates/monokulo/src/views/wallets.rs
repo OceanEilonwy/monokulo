@@ -976,10 +976,7 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
                 @if data.history.is_empty() {
                     (ui::Hint::new("Nothing yet."))
                 } @else {
-                    (ui::Timeline::new(data.history.iter().map(|event| ui::Event {
-                        when: event.when.clone(),
-                        what: event.what.clone().into(),
-                    }).collect::<Vec<_>>()))
+                    (ui::Timeline::new(data.history.iter().map(|event| ui::Event::new(event.when.clone(), event.what.clone())).collect::<Vec<_>>()))
                 }
             },
         ).attr("data-disclosure", "history"))
