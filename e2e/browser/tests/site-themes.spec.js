@@ -31,7 +31,7 @@ const background = (locator) => locator.evaluate((el) => getComputedStyle(el).ba
  * admin rate limit, which the specs before it use heavily. */
 async function aStore(page, base) {
   await page.goto(base + '/');
-  const existing = page.getByRole('link', { name: 'view →' }).first();
+  const existing = page.locator('a[data-store-link]').first();
   if (await existing.count()) return existing.getAttribute('href');
   return connectStore(page, 'theme.example.com');
 }

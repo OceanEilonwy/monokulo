@@ -256,7 +256,7 @@ async function connectStore(page, site) {
   await createStore(page, site);
   await finishStoreSetup(page);
   await page.goto(base + '/');
-  return page.locator('tr', { hasText: site }).first().getByRole('link', { name: 'view →' }).getAttribute('href');
+  return page.locator('[data-store]', { hasText: site }).first().locator('a[data-store-link]').getAttribute('href');
 }
 
 /**
