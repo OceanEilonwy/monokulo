@@ -29,7 +29,7 @@ permissions:
   contents: read
 jobs:
   components:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v7
@@ -51,7 +51,7 @@ jobs:
   # The Solid components, stylebook sections and equivalence fixtures are
   # generated from crates/ui: what is committed must be what it writes.
   generated:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust

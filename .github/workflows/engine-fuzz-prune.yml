@@ -20,7 +20,7 @@ jobs:
   # id: this one restores the fuzz runs' build.
   fuzz:
     name: prune ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -67,7 +67,7 @@ jobs:
     name: save the pruned corpus to ci/fuzz
     needs: fuzz
     if: always() && github.ref == 'refs/heads/main' && needs.fuzz.result != 'skipped'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     permissions:
       contents: write

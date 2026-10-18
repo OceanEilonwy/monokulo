@@ -17,7 +17,7 @@ permissions:
 jobs:
   mutations:
     name: named defects and boundaries (${{ matrix.features }})
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 45
     strategy:
       fail-fast: false

@@ -21,7 +21,7 @@ jobs:
   fuzz:
     needs: tooling
     name: fuzz ${{ matrix.target }} (${{ matrix.features || 'default' }})
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # The build, replaying the corpus (up to the budget again) and the
     # budget itself, which counts from the end of the replay.
     timeout-minutes: 60
@@ -72,7 +72,7 @@ jobs:
 
   interleavings:
     name: exhaustive serialized effect orders (${{ matrix.features || 'default' }})
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -100,7 +100,7 @@ jobs:
     name: save the corpus to ci/fuzz
     needs: fuzz
     if: always() && github.ref == 'refs/heads/main' && needs.fuzz.result != 'skipped'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     permissions:
       contents: write
@@ -117,7 +117,7 @@ jobs:
     name: propose crashing inputs as seeds
     needs: fuzz
     if: always() && github.ref == 'refs/heads/main' && needs.fuzz.result == 'failure'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     permissions:
       contents: write

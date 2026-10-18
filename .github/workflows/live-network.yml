@@ -45,7 +45,7 @@ concurrency:
 jobs:
   live:
     name: live network tests
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # A cold build of every live test, Tor's bootstrap and stagenet
     # payments that wait on real blocks.
     timeout-minutes: 180

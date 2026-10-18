@@ -47,7 +47,7 @@ jobs:
     # architecture is supported by adding an entry here: the site lists
     # every openwrt-repo-* artifact, and its dropdown offers each one.
     name: build the openwrt package (${{ matrix.release }}, ${{ matrix.arch }})
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 45
     strategy:
       fail-fast: false

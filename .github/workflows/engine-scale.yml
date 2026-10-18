@@ -13,7 +13,7 @@ jobs:
     # Capacity and latency depend on hardware. They are recorded for review;
     # the scale tests (platform.yml's Engine scale tests) are the
     # machine-independent merge check.
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7

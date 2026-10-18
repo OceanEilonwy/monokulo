@@ -85,15 +85,15 @@ jobs:
       matrix:
         include:
           # Ubuntu 22.04's glibc, so the binaries run on older distributions too.
-          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
-          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: blacksmith-4vcpu-ubuntu-2204, target: x86_64-unknown-linux-gnu }
+          - { os: blacksmith-4vcpu-ubuntu-2204-arm, target: aarch64-unknown-linux-gnu }
+          - { os: blacksmith-6vcpu-macos-15, target: aarch64-apple-darwin }
           # Built on Intel, not cross-built on Apple silicon: RandomX's CMake
           # picks its JIT sources from the machine it builds on.
-          - { os: macos-15-intel, target: x86_64-apple-darwin }
+          - { os: blacksmith-6vcpu-macos-15, target: x86_64-apple-darwin }
           # Needs the Microsoft Visual C++ runtime (vcruntime140.dll), which
           # RandomX links and nearly every Windows machine has.
-          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: blacksmith-4vcpu-windows-2025, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
     # One limit for every platform, enough for the slowest (Windows) to
     # build without a Rust cache.
@@ -170,11 +170,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
-          - { os: macos-latest, target: aarch64-apple-darwin }
-          - { os: macos-latest, target: x86_64-apple-darwin }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: blacksmith-4vcpu-ubuntu-2204, target: x86_64-unknown-linux-gnu }
+          - { os: blacksmith-4vcpu-ubuntu-2204-arm, target: aarch64-unknown-linux-gnu }
+          - { os: blacksmith-6vcpu-macos-15, target: aarch64-apple-darwin }
+          - { os: blacksmith-6vcpu-macos-15, target: x86_64-apple-darwin }
+          - { os: blacksmith-4vcpu-windows-2025, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     permissions:
@@ -234,7 +234,7 @@ jobs:
     name: build the docker image
     needs: [lint, coverage]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 45
     permissions:
       contents: read
@@ -297,7 +297,7 @@ jobs:
     name: github release
     needs: [monokulo, key-custody-cli]
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
     steps:
@@ -332,7 +332,7 @@ jobs:
     name: update the latest-main prerelease
     needs: [monokulo, key-custody-cli]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
     # One update at a time; a newer push waits for the one before it.
