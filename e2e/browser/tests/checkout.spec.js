@@ -654,8 +654,16 @@ test('real share page grows its frame to the whole checkout, so nothing scrolls 
       const at = await page.evaluate(() => {
         const doc = document.getElementById('checkout-frame').contentDocument;
         const panel = doc.querySelector('.pay-panel').getBoundingClientRect();
-        return { panel: { left: panel.left, top: panel.top, right: panel.right }, code: doc.querySelector('.qr-wrap').getBoundingClientRect().left };
+        const wallet = doc.querySelector('.pay-wallet').getBoundingClientRect();
+        return {
+          panel: { left: panel.left, top: panel.top, right: panel.right },
+          code: doc.querySelector('.qr-wrap').getBoundingClientRect().left,
+          gutters: [doc.querySelector('.merchant').getBoundingClientRect().left, doc.documentElement.clientWidth - wallet.right],
+        };
       });
+      // The card is narrower than the two columns' reading width, so they
+      // fill it: only the least gutter at either side.
+      for (const gutter of at.gutters) expect(gutter, `${width}x${height}`).toBeLessThanOrEqual(25);
       // Side by side, the panel from the frame's edge and top: no margin
       // around it inside the card.
       expect(at.code, `${width}x${height}`).toBeGreaterThanOrEqual(at.panel.right);
@@ -696,7 +704,7 @@ test('real checkout lays out by width and fades the code once paid', async ({ br
   const measure = on => on.evaluate(() => {
     const box = selector => document.querySelector(selector).getBoundingClientRect();
     const [grid, panel, merchant, amount, stage, code] = ['.pay-grid', '.pay-panel', '.merchant', '#live-amount', '#live-status .mk-stage', '.qr-wrap'].map(box);
-    return { width: innerWidth, grid, panel, merchant, amount, stage, code };
+    return { width: innerWidth, rem: getComputedStyle(document.documentElement).fontSize, grid, panel, merchant, amount, stage, code };
   });
   // With a mouse: the split from 1000px. A touch tablet keeps the box.
   const tablet = await browser.newContext({ viewport: { width: 1180, height: 820 }, isMobile: true, hasTouch: true });
@@ -718,7 +726,7 @@ test('real checkout lays out by width and fades the code once paid', async ({ br
       expect(at.panel.left, size).toBeLessThanOrEqual(0);
       expect(at.panel.top, size).toBeLessThanOrEqual(0);
       expect(Math.abs(at.panel.right - at.width / 2), size).toBeLessThanOrEqual(1);
-      expect(at.stage.width, size).toBeLessThanOrEqual(416);
+      expect(at.stage.width, size).toBeLessThanOrEqual(36 * parseFloat(at.rem));
       expect(at.panel.right - at.stage.right, size).toBeLessThanOrEqual(33);
       expect(at.amount.top, size).toBeGreaterThanOrEqual(at.merchant.bottom - 1);
       expect(at.stage.right, size).toBeLessThanOrEqual(at.panel.right);

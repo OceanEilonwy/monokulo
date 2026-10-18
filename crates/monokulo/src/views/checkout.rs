@@ -179,7 +179,7 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 @media (min-width: 1000px) and (hover: hover) and (pointer: fine) {
   body { padding: 0; }
   .pay-wrap:not(.checkout-compact) { max-width: none; }
-  .pay-wrap:not(.checkout-compact) .pay-grid { min-height: 100vh; min-height: 100dvh; grid-template-columns: minmax(var(--space-xl), 1fr) minmax(0, 26rem) var(--space-2xl) var(--space-2xl) minmax(0, 26rem) minmax(var(--space-xl), 1fr); grid-template-areas: ". merchant . . wallet ." ". amount . . wallet ." ". stage . . wallet ." ". payments . . wallet ." ". meta . . refund ."; column-gap: 0; }
+  .pay-wrap:not(.checkout-compact) .pay-grid { min-height: 100vh; min-height: 100dvh; grid-template-columns: minmax(var(--space-xl), 1fr) minmax(0, 36rem) var(--space-2xl) var(--space-2xl) minmax(0, 36rem) minmax(var(--space-xl), 1fr); grid-template-areas: ". merchant . . wallet ." ". amount . . wallet ." ". stage . . wallet ." ". payments . . wallet ." ". meta . . refund ."; column-gap: 0; }
   .pay-wrap:not(.checkout-compact) .pay-panel { grid-column: 1 / 4; grid-row: 1 / -1; border: 0; border-inline-end: 1px solid var(--line); border-radius: 0; }
   .pay-wrap:not(.checkout-compact) .merchant { padding: var(--space-xl) 0 var(--space-lg); }
   .pay-wrap:not(.checkout-compact) .pay-amount { align-self: start; padding: var(--space-lg) 0 0; border-top: 1px solid var(--line); text-align: left; }
@@ -827,11 +827,12 @@ pub struct CheckoutShareViewModel {
 
 /// The title and the framed checkout are one card on the page. The card's
 /// surface is the checkout's own background (`--paper-raised`), so the
-/// frame's edge doesn't show and the payment reads as one panel. Wide
-/// enough on a desktop screen for the checkout's two columns (1000px).
+/// frame's edge doesn't show and the payment reads as one panel. Square:
+/// rounded corners would clip the framed page's own edges. Wide enough on
+/// a desktop screen for the checkout's two columns (1000px).
 const SHARE_STYLE: &str = r#"
 .wrap.share-wrap { max-width: 1080px; }
-.share-card { margin-top: var(--space-md); background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
+.share-card { margin-top: var(--space-md); background: var(--paper-raised); border: 1px solid var(--line); }
 .share-frame {
   width: 100%;
   display: block;
