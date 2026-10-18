@@ -26,6 +26,9 @@ use super::{
 pub(super) struct CreateOrderRequest {
     merchant_order_id: Option<String>,
     xmr_amount_piconero: u64,
+    /// What the order is for, shown to the payer on monokulo's checkout.
+    /// Kept as given: monokulo checks it (one line, at most 140
+    /// characters) before calling here.
     description: Option<String>,
     /// A per-order confirmation-count override. Set by monokulo's
     /// amount-tiered "Confirmation Thresholds" feature, which resolves the
