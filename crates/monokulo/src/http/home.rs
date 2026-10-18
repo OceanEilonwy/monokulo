@@ -89,22 +89,34 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
         let (health, health_label) = health_of_tenant_lookup(&tenant_result);
         let display_name = row.name.clone();
 
-        stores.push(HomeStoreRow {
+        let mut store = HomeStoreRow {
             connection_id: row.id.clone(),
             display_name: display_name.clone(),
             site: row.site.clone(),
-            public_key: row.tenant_public_key.clone(),
             health,
             health_label,
             wallet: row.wallet_id.as_ref().and_then(|id| {
                 let w = wallets.iter().find(|w| &w.wallet.id == id)?;
                 Some((w.wallet.name.clone(), w.wallet.network.clone()))
             }),
-        });
+            received_xmr: "0".to_string(),
+            orders_last_day: 0,
+            last_order_at: None,
+        };
 
         if let Ok(orders) = state.engine.client.list_orders(&sk).await {
+            let day_ago = crate::now_unix() - 24 * 3600;
+            let mut received: u128 = 0;
+            for o in &orders {
+                received += o.amount_received_piconero as u128;
+                if o.created_at >= day_ago {
+                    store.orders_last_day += 1;
+                }
+                store.last_order_at = store.last_order_at.max(Some(o.created_at));
+            }
+            store.received_xmr = format_piconero_as_xmr(received);
+            total_received_piconero += received;
             for o in orders {
-                total_received_piconero += o.amount_received_piconero as u128;
                 // Filled in below for the orders that make the list.
                 all_orders.push(HomeOrderRow {
                     connection_id: row.id.clone(),
@@ -117,6 +129,7 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
                 });
             }
         }
+        stores.push(store);
     }
 
     all_orders.sort_by_key(|order| std::cmp::Reverse(order.created_at));

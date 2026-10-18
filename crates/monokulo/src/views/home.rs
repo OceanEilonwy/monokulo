@@ -20,12 +20,17 @@ pub struct HomeStoreRow {
     pub display_name: String,
     /// Its site's host; empty for a store with no site.
     pub site: String,
-    pub public_key: String,
     pub health: String,
     pub health_label: String,
     /// The wallet it takes payments into: its name and network. `None`
     /// for a store not yet matched to one of the account's wallets.
     pub wallet: Option<(String, String)>,
+    /// XMR detected across its latest orders (the engine lists 50).
+    pub received_xmr: String,
+    /// Its orders made in the last 24 hours, of those.
+    pub orders_last_day: usize,
+    /// When its latest order was made, if it has one.
+    pub last_order_at: Option<i64>,
 }
 
 /// One order row on the home page - like an orders-list row but
@@ -69,19 +74,17 @@ pub fn page(chrome: &PageChrome, data: &HomeViewModel) -> Markup {
             }))
 
             h2 { "Your stores" }
-            (ui::FormActions::new(ui::LinkButton::new(html! { (PreEscaped(icons::PLUS)) "Add another store" }, "/setup")))
-            // On a phone each store is a card: its name and health, its
-            // wallet and link, then its site.
-            (ui::Table::new(ui::Slot::many(data.stores.iter().map(store_row)))
-                .head(ui::Row::new(ui::Slot::many([
-                    ui::Cell::new("Store").header(true).into(),
-                    ui::Cell::new("Wallet").header(true).into(),
-                    ui::Cell::new("Site").header(true).optional(true).into(),
-                    ui::Cell::new("Public key").header(true).optional(true).into(),
-                    ui::Cell::new("Status").header(true).into(),
-                    ui::Slot::from(ui::Cell::new("").header(true)),
-                ])))
-                .look(ui::TableLook::Cards))
+            // A card each: its name and health, what it's taking, and what
+            // to do with it; adding another is the last of them.
+            div class="mk-card-grid" data-list="stores" {
+                @for store in &data.stores { (store_card(chrome, store)) }
+                (ui::LaunchTile::new(
+                    "Add another store",
+                    "Connect a WooCommerce shop, or your own site.",
+                    html! { (PreEscaped(icons::PLUS)) },
+                )
+                .href("/setup"))
+            }
 
             h2 { "Recent orders" }
             @if data.recent_orders.is_empty() {
@@ -121,26 +124,79 @@ pub fn page(chrome: &PageChrome, data: &HomeViewModel) -> Markup {
     super::Page::new("Home - Monokulo", header).render(chrome, body)
 }
 
-fn store_row(store: &HomeStoreRow) -> ui::Slot {
-    ui::Row::new(ui::Slot::many([
-        ui::Cell::new(store.display_name.as_str()).part(ui::CellPart::Title).into(),
-        ui::Cell::new(html! {
-            @if let Some((name, network)) = &store.wallet {
-                (super::network_icon(network)) " " (name)
-            } @else {
-                span class="muted" { "Not linked yet" }
-            }
+/// A store as a card: its name (to its page) and health, its site; then
+/// its wallet and how it's doing, with the till, a new order and its
+/// settings to hand. A store with no wallet can't take payments, so it
+/// says so, and linking one is what it offers.
+fn store_card(chrome: &PageChrome, store: &HomeStoreRow) -> ui::Card {
+    let base = format!("/dashboard/stores/{}", store.connection_id);
+    let link = |icon: &str, label: &str, href: String| {
+        ui::Slot::from(
+            ui::LinkButton::new(html! { (PreEscaped(icon)) (label) }, href)
+                .size(ui::ControlSize::Compact),
+        )
+    };
+    let settings = ui::LinkButton::new(
+        html! { (PreEscaped(icons::SETTINGS)) "Settings" },
+        format!("{base}/settings"),
+    )
+    .size(ui::ControlSize::Compact)
+    .attr("aria-label", format!("{} settings", store.display_name));
+    let fact = |term: &str, value: Markup| ui::Fact {
+        term: term.to_string(),
+        value: value.into(),
+    };
+    let card = ui::Card::new(html! { a href=(base) data-store-link { (store.display_name) } })
+        .subtitle(if store.site.is_empty() {
+            "No website"
+        } else {
+            store.site.as_str()
         })
-        .part(ui::CellPart::Detail)
-        .into(),
-        ui::Cell::new(store.site.as_str()).part(ui::CellPart::Meta).into(),
-        ui::Cell::new(html! { code { (super::short_id(&store.public_key)) } }).optional(true).into(),
-        ui::Cell::new(super::store_detail::health_tag(&store.health, &store.health_label)).part(ui::CellPart::Status).into(),
-        ui::Slot::from(ui::Cell::new(html! {
-            a class="nowrap" href=(format!("/dashboard/stores/{}", store.connection_id)) { "view →" }
-        }).part(ui::CellPart::When)),
-    ]))
-    .into()
+        .status(super::store_detail::health_tag(
+            &store.health,
+            &store.health_label,
+        ))
+        .attr("data-store", store.connection_id.as_str());
+    match &store.wallet {
+        Some((name, network)) => card
+            .body(ui::Facts::new(vec![
+                fact(
+                    "Wallet",
+                    html! { (super::network_icon(network)) " " (name) },
+                ),
+                fact(
+                    "Received",
+                    html! { (super::trim_xmr(&store.received_xmr)) " XMR" },
+                ),
+                fact("Orders in 24 h", html! { (store.orders_last_day) }),
+                fact(
+                    "Last order",
+                    html! {
+                        @if let Some(at) = store.last_order_at { (chrome.clock.relative(at)) }
+                        @else { span class="muted" { "None yet" } }
+                    },
+                ),
+            ]))
+            .action(ui::FormActions::new(ui::Slot::many([
+                link(icons::POS, "Open POS", format!("{base}/pos")),
+                link(icons::ORDER_NEW, "New order", format!("{base}/orders/new")),
+                settings.into(),
+            ]))),
+        None => card
+            .body(ui::Hint::new(
+                "This store can't take payments until a wallet is linked.",
+            ))
+            .action(ui::FormActions::new(ui::Slot::many([
+                ui::LinkButton::new(
+                    html! { (PreEscaped(icons::WALLET)) "Link a wallet" },
+                    format!("{base}/settings?tab=wallet"),
+                )
+                .variant(ui::ButtonVariant::Primary)
+                .size(ui::ControlSize::Compact)
+                .into(),
+                settings.into(),
+            ]))),
+    }
 }
 
 fn order_row(chrome: &PageChrome, order: &HomeOrderRow) -> ui::Slot {
@@ -200,22 +256,34 @@ mod tests {
         );
     }
 
+    fn store(wallet: Option<(String, String)>) -> HomeStoreRow {
+        HomeStoreRow {
+            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+            display_name: "Kafe Kolo".to_string(),
+            site: "kafekolo.example".to_string(),
+            health: "ok".to_string(),
+            health_label: "healthy".to_string(),
+            wallet,
+            received_xmr: "3.412000000000".to_string(),
+            orders_last_day: 7,
+            last_order_at: Some(chrome().clock.now() - 720),
+        }
+    }
+
+    /// Each store is a card: its name to its page, health and site; its
+    /// wallet and how it's doing; the till, a new order and its settings,
+    /// each with its icon. Adding another store is the grid's last tile.
     #[test]
-    fn lists_stores_and_recent_orders_when_present() {
+    fn lists_stores_as_cards_and_recent_orders_when_present() {
         let data = HomeViewModel {
             has_stores: true,
-            stores: vec![HomeStoreRow {
-                connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
-                display_name: "shop.example.com".to_string(),
-                site: "shop.example.com".to_string(),
-                public_key: "pk_abc123".to_string(),
-                health: "ok".to_string(),
-                health_label: "healthy".to_string(),
-                wallet: Some(("Feather test".to_string(), "stagenet".to_string())),
-            }],
+            stores: vec![store(Some((
+                "Feather test".to_string(),
+                "stagenet".to_string(),
+            )))],
             recent_orders: vec![HomeOrderRow {
                 connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
-                display_name: "shop.example.com".to_string(),
+                display_name: "Kafe Kolo".to_string(),
                 order_id: shared::ids::OrderId::new("pay_xyz".to_string()),
                 status: shared::order_status::OrderStatus::Paid.into(),
                 amount: "25.00".to_string(),
@@ -225,40 +293,89 @@ mod tests {
             total_received_xmr: "1.234567890123".to_string(),
         };
         let html = page(&chrome(), &data).into_string();
-        assert!(html.contains("pk_abc123"));
+        assert!(html.contains(r#"<div class="mk-card-grid" data-list="stores"><article class="mk-card" data-store="conn_1">"#), "{html}");
+        assert!(html.contains(r#"<h3 class="mk-card-title"><a href="/dashboard/stores/conn_1" data-store-link>Kafe Kolo</a></h3><p class="mk-card-sub">kafekolo.example</p>"#), "{html}");
+        assert!(html.contains("tag-ok"));
         assert!(
-            html.contains(r#"<td class="card-detail"><span class="tag-network is-test" data-size="icon" title="Stagenet">"#)
-                && html.contains("</span></span> Feather test</td>"),
+            html.contains(r#"<dt>Wallet</dt><dd><span class="tag-network is-test" data-size="icon" title="Stagenet">"#)
+                && html.contains("</span></span> Feather test</dd>"),
             "the store's wallet, with its network: {html}"
         );
+        assert!(
+            html.contains("<dt>Received</dt><dd>3.412 XMR</dd>"),
+            "{html}"
+        );
+        assert!(html.contains("<dt>Orders in 24 h</dt><dd>7</dd>"), "{html}");
+        assert!(
+            html.contains("<dt>Last order</dt><dd>12 min ago</dd>"),
+            "{html}"
+        );
+        for (href, label) in [
+            ("/dashboard/stores/conn_1/pos", "Open POS"),
+            ("/dashboard/stores/conn_1/orders/new", "New order"),
+            ("/dashboard/stores/conn_1/settings", "Settings"),
+        ] {
+            let at = html
+                .find(&format!(r#"href="{href}""#))
+                .unwrap_or_else(|| panic!("{href}: {html}"));
+            let link = &html[at..at + html[at..].find("</a>").unwrap()];
+            assert!(
+                link.contains("<svg") && link.contains(label),
+                "{label} with its icon: {link}"
+            );
+        }
+        assert!(
+            html.contains(r#"aria-label="Kafe Kolo settings""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<a class="mk-launch-tile" href="/setup""#),
+            "{html}"
+        );
         assert!(html.contains("1.234567890123"));
-        assert!(html.contains("tag-ok"));
-        assert!(html.contains(r#"href="/dashboard/stores/conn_1""#));
-        assert!(html.contains("pay_xyz"));
         assert!(html.contains(r#"href="/dashboard/stores/conn_1/orders/pay_xyz""#));
     }
 
-    /// A real public key and order id are long: each shows as
-    /// `views::short_id` writes it, the whole in reach, the order id a
-    /// plain link.
+    /// A store with no wallet can't take payments: its card says so and
+    /// offers to link one, the page's one primary action, instead of its
+    /// figures and the till.
     #[test]
-    fn a_long_public_key_and_order_id_are_shortened_with_the_whole_in_reach() {
-        let public_key = format!("pk_b4c4e8{}3fa21c", "0".repeat(36));
+    fn a_store_without_a_wallet_offers_to_link_one() {
+        let data = HomeViewModel {
+            has_stores: true,
+            stores: vec![store(None)],
+            recent_orders: vec![],
+            total_received_xmr: "0".to_string(),
+        };
+        let html = page(&chrome(), &data).into_string();
+        assert!(
+            html.contains("This store can't take payments until a wallet is linked."),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"href="/dashboard/stores/conn_1/settings?tab=wallet""#),
+            "{html}"
+        );
+        assert_eq!(
+            html.matches(r#"data-variant="primary""#).count(),
+            1,
+            "{html}"
+        );
+        assert!(!html.contains("Open POS"), "{html}");
+        assert!(!html.contains("<dt>Received</dt>"), "{html}");
+    }
+
+    /// A long order id shows as `views::short_id` writes it, the whole in
+    /// reach, a plain link.
+    #[test]
+    fn a_long_order_id_is_shortened_with_the_whole_in_reach() {
         let order_id = "order_a8723b2e45b0d44ea8723b2e45b0d44e";
         let data = HomeViewModel {
             has_stores: true,
-            stores: vec![HomeStoreRow {
-                connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
-                display_name: "shop.example.com".to_string(),
-                site: "shop.example.com".to_string(),
-                public_key: public_key.clone(),
-                health: "ok".to_string(),
-                health_label: "healthy".to_string(),
-                wallet: None,
-            }],
+            stores: vec![store(None)],
             recent_orders: vec![HomeOrderRow {
                 connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
-                display_name: "shop.example.com".to_string(),
+                display_name: "Kafe Kolo".to_string(),
                 order_id: shared::ids::OrderId::new(order_id.to_string()),
                 status: shared::order_status::OrderStatus::Paid.into(),
                 amount: "25.00".to_string(),
@@ -268,9 +385,6 @@ mod tests {
             total_received_xmr: "0".to_string(),
         };
         let html = page(&chrome(), &data).into_string();
-        assert!(html.contains(&format!(
-            r#"<td class="col-optional"><code><span class="short-value" title="{public_key}"><span class="short-value-text" aria-hidden="true">pk_b4c4e8…3fa21c</span><span class="short-value-full">{public_key}</span></span></code></td>"#
-        )), "{html}");
         assert!(html.contains(&format!(
             r#"<a href="/dashboard/stores/conn_1/orders/{order_id}"><span class="short-value" title="{order_id}"><span class="short-value-text" aria-hidden="true">a8723b…b0d44e</span><span class="short-value-full">{order_id}</span></span></a>"#
         )), "{html}");

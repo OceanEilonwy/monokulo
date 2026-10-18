@@ -235,7 +235,7 @@ test("a caller's traceparent (as the WooCommerce plugin sends it) is followed th
   await createStore(page, 'traced.example.com');
   await expect(page.getByRole('heading', { name: 'traced.example.com is set up' })).toBeVisible();
   await page.goto(base + '/');
-  const store = await page.locator('tr', { hasText: 'traced.example.com' }).first().getByRole('link', { name: 'view →' }).getAttribute('href');
+  const store = await page.locator('[data-store]', { hasText: 'traced.example.com' }).first().locator('a[data-store-link]').getAttribute('href');
   await page.goto(base + store);
   const publicKey = (await page.locator('tr', { hasText: 'Public key' }).locator('code').textContent()).trim();
 

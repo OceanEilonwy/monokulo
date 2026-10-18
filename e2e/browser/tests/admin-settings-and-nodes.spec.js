@@ -241,7 +241,7 @@ test('the Monero nodes tab is marked while the only node of a network stores use
   await signInAsAdmin(page);
   // A store on stagenet (the spec before this one made it, if it ran).
   await page.goto(base + '/');
-  if (!(await page.getByRole('link', { name: 'view →' }).count())) await connectStore(page, 'marker.example.com');
+  if (!(await page.locator('a[data-store-link]').count())) await connectStore(page, 'marker.example.com');
   const marked = async () => {
     await openSettingsTab(page, 'general');
     return (await page.locator('#settings-tabs a', { hasText: 'Monero nodes' }).locator('.tab-marker').count()) > 0;

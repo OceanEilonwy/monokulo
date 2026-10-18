@@ -220,7 +220,7 @@ test('a store settings save that is refused shows why on its card, and an action
   await createStore(page, 'sections.example.com');
   await finishStoreSetup(page);
   await page.goto(base + '/');
-  const store = await page.locator('tr', { hasText: 'sections.example.com' }).first().getByRole('link', { name: 'view →' }).getAttribute('href');
+  const store = await page.locator('[data-store]', { hasText: 'sections.example.com' }).first().locator('a[data-store-link]').getAttribute('href');
   await page.goto(base + store + '/settings');
 
   // An action: its card says what it did, once.
