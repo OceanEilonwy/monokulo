@@ -55,7 +55,10 @@
 .card-spacer { flex: 1; }
 .card-meta { font-size: var(--text-sm); color: var(--muted); }
 .card-state { display: contents; }
-.card-head .card-discard { margin: 0; padding: var(--space-xs) var(--space-md); font-size: var(--text-sm); font-weight: 600; }
+/* Discard is taller than the title; its negative margin keeps it from
+   setting the head's height, so the cards below don't move as it comes
+   and goes. */
+.card-head .card-discard { margin: calc(-1 * var(--space-xs)) 0; padding: var(--space-xs) var(--space-md); font-size: var(--text-sm); font-weight: 600; }
 .card-discard[hidden] { display: none; }
 .card-body { padding: var(--space-lg); min-width: 0; }
 .card-body > .hint:first-child { margin-top: 0; margin-bottom: var(--space-lg); }

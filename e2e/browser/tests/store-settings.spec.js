@@ -113,6 +113,32 @@ test('a save says so on the card and in a toast; a refused one keeps what was ty
   await expect(page).toHaveURL(/\?saved=confirmation-thresholds$/);
 });
 
+// A save that reloads the page comes back where it was, not at the top:
+// the card that was on screen is where it was on screen.
+test('a save keeps the card being edited where it was on screen', async ({ page, context }) => {
+  await login(context);
+  await page.setViewportSize({ width: 1280, height: 600 });
+  await page.goto(fixture.base_url + store + '/settings');
+  const bar = page.locator('#save-bar');
+  const card = page.locator('#card-diagnostics');
+  const toggle = card.locator('label.switch');
+  await card.evaluate((el) => window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - 200));
+  const before = await card.evaluate((el) => el.getBoundingClientRect().top);
+  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+
+  for (const _ of ['on', 'off']) {
+    await toggle.click();
+    await bar.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page).toHaveURL(/\?saved=diagnostics$/);
+    await expect(page.locator('#settings-toasts .toast-success')).toBeVisible();
+    await expect.poll(() => card.evaluate((el) => Math.round(el.getBoundingClientRect().top))).toBe(Math.round(before));
+  }
+
+  // A page opened afresh starts at the top, as ever.
+  await page.goto(fixture.base_url + store + '/settings');
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+});
+
 test('without JavaScript the save bar is always there and saves, refused or not', async ({ browser }) => {
   const context = await browser.newContext({ javaScriptEnabled: false });
   await login(context);

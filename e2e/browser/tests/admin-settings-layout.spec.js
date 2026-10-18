@@ -226,3 +226,26 @@ test('the count of monokulo\'s own requests follows its switch, and saves either
   await saveEngineSettings(page, { 'server.instance_rate_limit_per_min': before });
   await expectSaved(page);
 });
+
+// A save swaps the tab in without moving it: the setting being edited is
+// where it was on screen, though its card's Discard gives way to the time
+// it was saved.
+test('a save leaves the setting being edited where it was on screen', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 700 });
+  await signInAsAdmin(page);
+  await openSettingsTab(page, 'payments');
+  const input = page.locator('input[name="webhooks.max_attempts"]');
+  await input.evaluate((el) => window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - 300));
+  const top = () => input.evaluate((el) => Math.round(el.getBoundingClientRect().top));
+  const before = await top();
+  const saved = await input.inputValue();
+  for (const value of [String(Number(saved) + 1), saved]) {
+    await input.fill(value);
+    await expect(page.locator('.settings-card', { has: input }).locator('[data-card-discard]')).toBeVisible();
+    expect(await top()).toBe(before);
+    await pressSave(page);
+    await expectSaved(page);
+    await expect(input).toHaveValue(value);
+    expect(await top()).toBe(before);
+  }
+});
