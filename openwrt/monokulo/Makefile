@@ -61,11 +61,19 @@ endef
 
 # LuCI reads its menu and ACLs at login; drop its caches so Services >
 # Monokulo shows up (or goes) without a reboot.
+#
+# On an upgrade, restart monokulo so the new binary runs: the SDK's own
+# script (default_postinst, which runs before this) only calls start, and
+# procd leaves a running instance alone when its command line is unchanged,
+# so the old binary would keep running until the next reboot.
 define Package/monokulo/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 rm -f /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null
 /etc/init.d/rpcd reload 2>/dev/null
+if [ "$${PKG_UPGRADE}" = 1 ] && /etc/init.d/monokulo running; then
+	/etc/init.d/monokulo restart
+fi
 exit 0
 endef
 

@@ -3,6 +3,7 @@
 'require form';
 'require rpc';
 'require uci';
+'require ui';
 
 // Services > Monokulo: whether monokulo (with the engine inside it) is
 // running, and the settings it starts with. Everything else (Monero nodes, stores, abuse
@@ -13,6 +14,13 @@ var callServiceList = rpc.declare({
 	method: 'list',
 	params: [ 'name' ],
 	expect: { '': {} }
+});
+
+var callInitAction = rpc.declare({
+	object: 'luci',
+	method: 'setInitAction',
+	params: [ 'name', 'action' ],
+	expect: { result: false }
 });
 
 function instances() {
@@ -52,6 +60,20 @@ return view.extend({
 				text += ' &middot; <a href="' + url + '" target="_blank" rel="noreferrer">' + _('Open monokulo') + '</a>';
 			}
 			return text;
+		};
+
+		o = s.option(form.Button, '_restart', _('Restart'),
+			_('Stops monokulo and starts it again with the settings saved here. Checkouts open in a browser reconnect on their own.'));
+		o.inputtitle = _('Restart monokulo');
+		o.inputstyle = 'reload';
+		o.onclick = function() {
+			return callInitAction('monokulo', 'restart').then(function(ok) {
+				if (!ok)
+					throw new Error(_('the restart was refused'));
+				window.location.reload();
+			}).catch(function(e) {
+				ui.addNotification(null, E('p', _('Couldn’t restart monokulo: %s').format(e.message)), 'danger');
+			});
 		};
 
 		o = s.option(form.DummyValue, '_secrets', _('Secrets'));

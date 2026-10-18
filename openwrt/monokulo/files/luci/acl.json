@@ -8,6 +8,9 @@
 			"uci": [ "monokulo" ]
 		},
 		"write": {
+			"ubus": {
+				"luci": [ "setInitAction" ]
+			},
 			"uci": [ "monokulo" ]
 		}
 	}
