@@ -20,11 +20,11 @@
 </p>
 
 <p align="center">
-  <a href="https://oceaneilonwy.github.io/monokulo/#install"><b>Install</b></a> ·
+  <a href="https://monokulo.com/#install"><b>Install</b></a> ·
   <a href="https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main"><b>Downloads</b></a> ·
-  <a href="https://oceaneilonwy.github.io/monokulo/"><b>Docs</b></a> ·
-  <a href="https://oceaneilonwy.github.io/monokulo/testing/"><b>How it's tested</b></a> ·
-  <a href="plugins/woocommerce"><b>WooCommerce</b></a>
+  <a href="https://monokulo.com/docs"><b>Docs</b></a> ·
+  <a href="https://monokulo.com/testing"><b>How it's tested</b></a> ·
+  <a href="https://monokulo.com//docs/woocommerce/"><b>WooCommerce</b></a>
 </p>
 
 ## Why Monokulo
