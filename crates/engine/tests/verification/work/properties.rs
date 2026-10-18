@@ -221,6 +221,49 @@ fn a_replaced_payment_block_recorded_from_its_header_cannot_settle_the_order() {
     });
 }
 
+/// Likewise unrecorded, a block the node placed the payment in is dropped
+/// by a shorter chain: no recorded block differs and no block at that
+/// height comes to be recorded, yet the payment mustn't keep its height.
+#[test]
+fn a_payment_block_dropped_by_a_shorter_chain_unconfirms_the_payment() {
+    use crate::exploration_rpc::Rpc;
+    runtime().block_on(async {
+        let mut h = Harness::new().await;
+        h.pool(true);
+        h.check().await;
+        h.apply(&Event::CustodyOnline(false)).await;
+        h.restart();
+        h.apply(&Event::CallFailures(Rpc::Blocks.bit() | Rpc::Headers.bit()))
+            .await;
+        h.mine(1, false);
+        h.mine(3, true);
+        h.tick().await;
+        assert_eq!(
+            h.snapshot().payments[0].height,
+            Some(4),
+            "the node named the block"
+        );
+        assert_eq!(
+            h.store().lock().max_scanned_height(NETWORK).unwrap(),
+            Some(2),
+            "before the frontier recorded it"
+        );
+        h.replace_branch(4, 1, Destination::Gone, 0);
+        assert_eq!(h.model.height(), 3, "the chain ends below the payment");
+        h.apply(&Event::CallFailures(0)).await;
+        for _ in 0..h.model.blocks.len() + 16 {
+            h.tick().await.into_result().unwrap();
+            if h.snapshot().payments[0].height.is_none() {
+                break;
+            }
+        }
+        let snapshot = h.snapshot();
+        assert_eq!(snapshot.payments[0].height, None, "{snapshot:?}");
+        assert_eq!(snapshot.status, OrderStatus::Unconfirmed);
+        h.check().await;
+    });
+}
+
 async fn tenant_failure_history(
     tenant_count: usize,
     failing_index: Option<usize>,
@@ -639,6 +682,8 @@ fn reviewed_engine_history_seeds_replay() {
             "../../../../../fuzz/seeds/history/lost-keys-catch-up-behind-an-empty-frontier-later-payment"
         )
         .as_slice(),
+        include_bytes!("../../../../../fuzz/seeds/history/payment-block-dropped-by-a-shorter-chain")
+            .as_slice(),
     ] {
         crate::work::history::explore(data);
     }
