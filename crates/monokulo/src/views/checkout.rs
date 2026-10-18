@@ -170,21 +170,21 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
   .pay-wrap:not(.checkout-compact) .pay-wallet { text-align: center; }
   .pay-wrap:not(.checkout-compact) .qr-wrap svg { width: 224px; height: 224px; }
 }
-/* A wide screen: the box grows into the whole left half, with the stage
-   and the payments under the amount; the right half is the wallet's. */
-@media (min-width: 1200px) {
-  body { padding: 0; }
+/* A desktop screen (wide, with a pointer that hovers; a touch tablet keeps
+   the box): the box grows into a column of its own, with the stage and the
+   payments under the amount, beside the wallet's column. The two sit
+   together in the middle, as wide as they need. */
+@media (min-width: 1000px) and (hover: hover) and (pointer: fine) {
   .pay-wrap:not(.checkout-compact) { max-width: none; }
-  .pay-wrap:not(.checkout-compact) .pay-grid { min-height: 100vh; min-height: 100dvh; grid-template-columns: minmax(var(--space-xl), 1fr) minmax(0, 26rem) var(--space-2xl) var(--space-2xl) minmax(0, 26rem) minmax(var(--space-xl), 1fr); grid-template-areas: ". merchant . . wallet ." ". amount . . wallet ." ". stage . . wallet ." ". payments . . wallet ." ". meta . . refund ."; column-gap: 0; }
-  .pay-wrap:not(.checkout-compact) .pay-panel { grid-column: 1 / 4; grid-row: 1 / -1; border: 0; border-inline-end: 1px solid var(--line); border-radius: 0; }
-  .pay-wrap:not(.checkout-compact) .merchant { padding: var(--space-2xl) 0 var(--space-lg); }
+  .pay-wrap:not(.checkout-compact) .pay-grid { justify-content: center; grid-template-columns: var(--space-xl) minmax(0, 26rem) var(--space-xl) var(--space-2xl) minmax(0, 26rem) var(--space-xl); grid-template-areas: ". merchant . . wallet ." ". amount . . wallet ." ". stage . . wallet ." ". payments . . wallet ." ". meta . . refund ."; column-gap: 0; }
+  .pay-wrap:not(.checkout-compact) .pay-panel { grid-column: 1 / 4; grid-row: 1 / -1; border-radius: var(--radius-lg); }
+  .pay-wrap:not(.checkout-compact) .merchant { padding: var(--space-xl) 0 var(--space-lg); }
   .pay-wrap:not(.checkout-compact) .pay-amount { align-self: start; padding: var(--space-lg) 0 0; border-top: 1px solid var(--line); text-align: left; }
   .pay-wrap:not(.checkout-compact) .stage-slot { margin-top: var(--space-lg); }
-  .pay-wrap:not(.checkout-compact) .pay-wallet { margin-top: var(--space-2xl); }
+  .pay-wrap:not(.checkout-compact) .pay-wallet { margin-top: var(--space-xl); }
   .pay-wrap:not(.checkout-compact) .qr-wrap svg { width: 224px; height: 224px; }
   .pay-wrap:not(.checkout-compact) .section { margin-top: var(--space-lg); padding-top: var(--space-lg); }
-  .pay-wrap:not(.checkout-compact) .meta { align-self: end; margin-bottom: var(--space-xl); }
-  .pay-wrap:not(.checkout-compact) .pay-refund { margin-bottom: var(--space-xl); }
+  .pay-wrap:not(.checkout-compact) .meta { align-self: end; margin-bottom: var(--space-lg); }
   /* On the panel the table's header row takes the page's own surface, not
      the panel's, so it still reads as a header. */
   .pay-wrap:not(.checkout-compact) .pay-payments { --table-head-bg: var(--paper-raised); }
@@ -824,9 +824,9 @@ pub struct CheckoutShareViewModel {
 /// The title and the framed checkout are one card on the page. The card's
 /// surface is the checkout's own background (`--paper-raised`), so the
 /// frame's edge doesn't show and the payment reads as one panel. Wide
-/// enough on a desktop screen for the checkout's two halves (1200px).
+/// enough on a desktop screen for the checkout's two columns (1000px).
 const SHARE_STYLE: &str = r#"
-.wrap.share-wrap { max-width: 1440px; }
+.wrap.share-wrap { max-width: 1080px; }
 .share-card { margin-top: var(--space-md); background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
 .share-frame {
   width: 100%;

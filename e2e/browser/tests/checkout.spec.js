@@ -648,6 +648,15 @@ test('real share page grows its frame to the whole checkout, so nothing scrolls 
     await page.goto(`${url}/share`);
     const frame = page.frameLocator('#checkout-frame');
     await expect(frame.locator('#checkout-root')).toBeVisible();
+    // On a desktop screen the page is as wide as the checkout's two columns
+    // need, and the frame shows them side by side.
+    if (width >= 1000) {
+      const beside = await page.evaluate(() => {
+        const doc = document.getElementById('checkout-frame').contentDocument;
+        return doc.querySelector('.qr-wrap').getBoundingClientRect().left >= doc.querySelector('.pay-panel').getBoundingClientRect().right;
+      });
+      expect(beside, `${width}x${height}`).toBe(true);
+    }
     await expect.poll(() => page.evaluate(() => {
       const doc = document.getElementById('checkout-frame').contentDocument;
       return doc.documentElement.scrollHeight - doc.documentElement.clientHeight;
@@ -676,23 +685,34 @@ test('real checkout payment problems as the customer sees them (UI stages)', asy
   }
 });
 
-test('real checkout lays out by width and fades the code once paid', async ({ page, request }) => {
+test('real checkout lays out by width and fades the code once paid', async ({ browser, page, request }) => {
   const url = await checkoutUrl(request);
   const orderId = url.split('/').pop();
-  const measure = () => page.evaluate(() => {
+  const measure = on => on.evaluate(() => {
     const box = selector => document.querySelector(selector).getBoundingClientRect();
     const [panel, merchant, amount, stage, code] = ['.pay-panel', '.merchant', '#live-amount', '#live-status .mk-stage', '.qr-wrap'].map(box);
     return { width: innerWidth, panel, merchant, amount, stage, code };
   });
-  for (const [width, height, layout] of [[390, 844, 'one'], [844, 390, 'two'], [820, 1180, 'two'], [1180, 820, 'two'], [1440, 900, 'split']]) {
+  // With a mouse: the split from 1000px. A touch tablet keeps the box.
+  const tablet = await browser.newContext({ viewport: { width: 1180, height: 820 }, isMobile: true, hasTouch: true });
+  const touch = await tablet.newPage();
+  await touch.goto(url);
+  const onTablet = await measure(touch);
+  await tablet.close();
+  expect(onTablet.amount.left, 'touch 1180x820').toBeGreaterThanOrEqual(onTablet.merchant.right - 1);
+  expect(onTablet.stage.top, 'touch 1180x820').toBeGreaterThanOrEqual(onTablet.panel.bottom);
+  for (const [width, height, layout] of [[390, 844, 'one'], [844, 390, 'two'], [820, 1180, 'two'], [1180, 820, 'split'], [1440, 900, 'split'], [1920, 1080, 'split']]) {
     await page.setViewportSize({ width, height });
     await page.goto(url);
-    const at = await measure();
+    const at = await measure(page);
     const size = `${width}x${height}`;
     if (layout === 'split') {
-      // The box is the whole left half, the stage on it; the code is right of it.
-      expect(Math.abs(at.panel.right - at.width / 2), size).toBeLessThanOrEqual(1);
-      expect(at.panel.top, size).toBeLessThanOrEqual(0);
+      // The box is a column of its own, the stage on it; the code beside
+      // it. The two keep together in the middle, however wide the screen.
+      expect(at.panel.left, size).toBeGreaterThan(0);
+      expect(at.panel.top, size).toBeGreaterThan(0);
+      expect(at.panel.width, size).toBeLessThanOrEqual(480);
+      expect(Math.abs(at.panel.left - (at.width - at.code.right)), size).toBeLessThanOrEqual(160);
       expect(at.amount.top, size).toBeGreaterThanOrEqual(at.merchant.bottom - 1);
       expect(at.stage.right, size).toBeLessThanOrEqual(at.panel.right);
       expect(at.code.left, size).toBeGreaterThanOrEqual(at.panel.right);
