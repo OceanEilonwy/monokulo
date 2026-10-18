@@ -143,6 +143,9 @@ component! {
         title: String,
         /// The rest of the line.
         message: Slot,
+        /// More about the step under way, under the line (a payment's
+        /// confirmations bar while it's at Confirm).
+        detail: Option<Slot>,
         /// The colours: an order's state.
         state: Option<crate::OrderState>,
         /// The POS's size: smaller type, the same shape.
@@ -176,6 +179,7 @@ component! {
                 }
             }
             p class="mk-stage-msg" role="status" { strong { (title) "." } " " (message) }
+            @if let Some(detail) = detail { div class="mk-stage-detail" { (detail) } }
         }
     }
 }
@@ -221,6 +225,16 @@ pub(super) fn progress_steps_examples() -> Vec<(&'static str, ProgressSteps)> {
                 "Payment seen; 3 of 10 confirmations.",
                 OrderState::Confirming,
             ),
+        ),
+        (
+            "Confirming, with its bar",
+            payment(
+                vec![step("Send", Done), step("Confirm", Now), step("Paid", Todo)],
+                "Confirming",
+                "1 of 3 confirmations.",
+                OrderState::Confirming,
+            )
+            .detail("0.42 XMR received, 1 of 3 confirmations"),
         ),
         (
             "Paid, counted as soon as seen",

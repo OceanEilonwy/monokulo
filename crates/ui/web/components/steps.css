@@ -33,6 +33,8 @@
 .mk-track > .step-fail .mk-track-dot { background: var(--state-border); border-color: var(--state-border); color: var(--paper-raised); }
 .mk-track > .step-todo { opacity: .85; }
 .mk-stage-msg { margin: 0; font-size: var(--text-sm); line-height: 1.4; }
+/* More about the step under way, ruled off under the line. */
+.mk-stage-detail { margin-top: var(--space-sm); padding-top: var(--space-sm); border-top: 1px solid color-mix(in srgb, currentColor 25%, transparent); font-size: var(--text-sm); }
 .mk-stage[data-size="compact"] { padding: var(--space-sm); }
 .mk-stage[data-size="compact"] .mk-track > li { font-size: var(--text-2xs); }
 .mk-stage[data-size="compact"] .mk-stage-msg { font-size: var(--text-xs); }

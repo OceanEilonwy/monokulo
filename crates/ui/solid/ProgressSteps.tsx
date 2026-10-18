@@ -12,7 +12,7 @@ import type { OrderState, ProgressStep } from './types';
  * the same place and shape in every state, so nothing moves as it
  * changes. The colours follow `state`; the words say it all.
  */
-export interface ProgressStepsProps extends Omit<JSX.IntrinsicElements["div"], "class" | "classList" | "compact" | "data-size" | "label" | "message" | "state" | "steps" | "style" | "title"> {
+export interface ProgressStepsProps extends Omit<JSX.IntrinsicElements["div"], "class" | "classList" | "compact" | "data-size" | "detail" | "label" | "message" | "state" | "steps" | "style" | "title"> {
   /**
    * What the steps are of ("Payment progress").
    */
@@ -26,6 +26,11 @@ export interface ProgressStepsProps extends Omit<JSX.IntrinsicElements["div"], "
    * The rest of the line.
    */
   message: JSX.Element;
+  /**
+   * More about the step under way, under the line (a payment's
+   * confirmations bar while it's at Confirm).
+   */
+  detail?: JSX.Element;
   /**
    * The colours: an order's state.
    */
@@ -44,7 +49,7 @@ export interface ProgressStepsProps extends Omit<JSX.IntrinsicElements["div"], "
  * changes. The colours follow `state`; the words say it all.
  */
 export function ProgressSteps(props: ProgressStepsProps): JSX.Element {
-  const rest = omit(props, "label", "steps", "title", "message", "state", "compact");
+  const rest = omit(props, "label", "steps", "title", "message", "detail", "state", "compact");
   return (
     <div class={tokens(`mk-stage`, props.state != null && `state-${props.state}`)} data-size={(props.compact ?? false) ? `compact` : undefined} {...rest}>
       <ol class="mk-track" aria-label={props.label}>
@@ -116,6 +121,13 @@ export function ProgressSteps(props: ProgressStepsProps): JSX.Element {
         {" "}
         {props.message}
       </p>
+      {props.detail != null ? (
+        <div class="mk-stage-detail">
+          {props.detail}
+        </div>
+      ) : (
+        null
+      )}
     </div>
   );
 }

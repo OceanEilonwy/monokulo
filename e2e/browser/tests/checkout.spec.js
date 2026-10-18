@@ -164,7 +164,7 @@ test('real compact checkout keeps the refund controls inside a full width field'
   await captureCoverageStage(page, 'checkout-compact', test.info());
 });
 
-test('real tall checkout keeps one background and a readable progress bar', async ({ page, request }) => {
+test('real tall checkout keeps one background', async ({ page, request }) => {
   const url = await checkoutUrl(request);
   await page.setViewportSize({ width: 700, height: 1400 });
   await page.goto(url);
@@ -172,12 +172,10 @@ test('real tall checkout keeps one background and a readable progress bar', asyn
     html: getComputedStyle(document.documentElement).backgroundColor,
     body: getComputedStyle(document.body).backgroundColor,
     bodyHeight: document.body.getBoundingClientRect().height,
-    barHeight: document.querySelector('.progress-bar').getBoundingClientRect().height,
     viewportHeight: innerHeight,
   }));
   expect(layout.html).toBe(layout.body);
   expect(layout.bodyHeight).toBeGreaterThanOrEqual(layout.viewportHeight);
-  expect(layout.barHeight).toBeGreaterThanOrEqual(14);
 });
 
 test('real checkout renders a paid order without opening a live stream', async ({ page, request }) => {
@@ -523,10 +521,13 @@ test('real checkout follows the customer payment from the mempool to confirmed a
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   // The payment is listed by a shortened txid, not yet confirmed.
   await expect(page.locator('[data-table="payments"]')).toContainText(`test-p…`);
-  await expect(page.locator('.progress-fill')).toHaveAttribute('style', /width: 0%/);
+  // At Confirm, the confirmations bar is in the stage, readable.
+  await expect(page.locator('#live-status .mk-stage-detail .progress-fill')).toHaveAttribute('style', /width: 0%/);
+  expect((await page.locator('#progress-bar').boundingBox()).height).toBeGreaterThanOrEqual(8);
   await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/confirm`);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
-  await expect(page.locator('.progress-fill')).toHaveAttribute('style', /width: 100%/);
+  // Paid: nothing left to count, so the bar goes with the step.
+  await expect(page.locator('#progress-bar')).toHaveCount(0);
   await captureCoverageStage(page, 'checkout-paid-live', test.info());
 });
 
@@ -675,37 +676,65 @@ test('real checkout payment problems as the customer sees them (UI stages)', asy
   }
 });
 
-test('real checkout leads with the stage in one column and fades the code once paid', async ({ page, request }) => {
+test('real checkout lays out by width and fades the code once paid', async ({ page, request }) => {
   const url = await checkoutUrl(request);
   const orderId = url.split('/').pop();
-  for (const [width, height, columns] of [[390, 844, 1], [820, 1180, 1], [1280, 800, 1], [844, 390, 2]]) {
+  const measure = () => page.evaluate(() => {
+    const box = selector => document.querySelector(selector).getBoundingClientRect();
+    const [panel, merchant, amount, stage, code] = ['.pay-panel', '.merchant', '#live-amount', '#live-status .mk-stage', '.qr-wrap'].map(box);
+    return { width: innerWidth, panel, merchant, amount, stage, code };
+  });
+  for (const [width, height, layout] of [[390, 844, 'one'], [844, 390, 'two'], [820, 1180, 'two'], [1180, 820, 'two'], [1440, 900, 'split']]) {
     await page.setViewportSize({ width, height });
     await page.goto(url);
-    const layout = await page.evaluate(() => {
-      const stage = document.querySelector('#live-status .mk-stage').getBoundingClientRect();
-      const code = document.querySelector('.qr-wrap').getBoundingClientRect();
-      const refund = document.querySelector('.pay-col-secondary').getBoundingClientRect();
-      return { stageAbove: stage.bottom <= code.top, beside: refund.left >= code.right, stageTop: stage.top < code.bottom };
-    });
-    // One column: the stage over the code, the rest under it. Two columns
-    // (a short landscape screen): the stage heads the column beside the code.
-    if (columns === 1) expect(layout, `${width}x${height}`).toMatchObject({ stageAbove: true, beside: false });
-    else expect(layout, `${width}x${height}`).toMatchObject({ beside: true, stageTop: true });
-    await expect(page.locator('#live-pay .mk-countdown')).toContainText('left to pay');
+    const at = await measure();
+    const size = `${width}x${height}`;
+    if (layout === 'split') {
+      // The box is the whole left half, the stage on it; the code is right of it.
+      expect(Math.abs(at.panel.right - at.width / 2), size).toBeLessThanOrEqual(1);
+      expect(at.panel.top, size).toBeLessThanOrEqual(0);
+      expect(at.amount.top, size).toBeGreaterThanOrEqual(at.merchant.bottom - 1);
+      expect(at.stage.right, size).toBeLessThanOrEqual(at.panel.right);
+      expect(at.code.left, size).toBeGreaterThanOrEqual(at.panel.right);
+    } else {
+      // The box holds who is asking and how much, over the stage and the code.
+      expect(at.stage.top, size).toBeGreaterThanOrEqual(at.panel.bottom);
+      expect(at.code.top, size).toBeGreaterThanOrEqual(at.panel.bottom);
+      expect(at.amount.bottom, size).toBeLessThanOrEqual(at.panel.bottom + 1);
+      if (layout === 'one') {
+        // Stacked: the amount under who is asking; the stage over the code.
+        expect(at.amount.top, size).toBeGreaterThanOrEqual(at.merchant.bottom - 1);
+        expect(at.stage.bottom, size).toBeLessThanOrEqual(at.code.top);
+      } else {
+        // Side by side: how much beside who is asking; the stage beside the code.
+        expect(at.amount.left, size).toBeGreaterThanOrEqual(at.merchant.right - 1);
+        expect(at.stage.left, size).toBeGreaterThanOrEqual(at.code.right);
+      }
+    }
+    await expect(page.locator('#live-amount .mk-countdown')).toContainText('left to pay');
   }
   // The code stays black on white while it's payable.
   expect(await page.evaluate(() => getComputedStyle(document.querySelector('.qr-wrap svg path')).fill)).toBe('rgb(0, 0, 0)');
-  await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/paid`);
+  await customerSends(request, orderId, 1, 20);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
   // Paid: the code fades and the address is struck through in place (the
-  // copy button goes),
-  // and the progress bar takes the paid colour (--state-paid-border).
+  // copy button goes), and nothing is left to count.
   await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   await expect.poll(() => page.evaluate(() => Number(getComputedStyle(document.querySelector('.qr-wrap svg')).opacity))).toBeLessThan(0.2);
   await expect(page.locator('.address-block .mk-grouped[data-void]')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Copy address' })).toBeHidden();
-  await expect(page.locator('#live-pay .mk-countdown')).toHaveCount(0);
-  await expect.poll(() => page.evaluate(() => getComputedStyle(document.getElementById('progress-fill')).backgroundColor)).toBe('rgb(26, 127, 55)');
+  await expect(page.locator('#live-amount .mk-countdown')).toHaveCount(0);
+  await expect(page.locator('#progress-bar')).toHaveCount(0);
+  // The payment is listed on the left half, its header row in a surface of
+  // its own, not the panel's.
+  await expect(page.locator('[data-table="payments"]')).toBeVisible();
+  const surfaces = await page.evaluate(() => ({
+    panel: getComputedStyle(document.querySelector('.pay-panel')).backgroundColor,
+    head: getComputedStyle(document.querySelector('[data-table="payments"] th')).backgroundColor,
+    onPanel: document.querySelector('[data-table="payments"]').getBoundingClientRect().right <= document.querySelector('.pay-panel').getBoundingClientRect().right,
+  }));
+  expect(surfaces.onPanel).toBe(true);
+  expect(surfaces.head).not.toBe(surfaces.panel);
   await captureCoverageStage(page, 'checkout-paid-faded', test.info());
 });
 

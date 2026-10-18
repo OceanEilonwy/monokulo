@@ -3942,6 +3942,41 @@
   },
   {
     "component": "ProgressSteps",
+    "html": "<div class=\"mk-stage state-confirming\"><ol class=\"mk-track\" aria-label=\"Payment progress\"><li class=\"step-done\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m4.5 12.5 5 5 10-11\"></path></svg></span><span class=\"mk-track-name\">Send<span class=\"visually-hidden\">, done</span></span></li><li class=\"step-now\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Confirm<span class=\"visually-hidden\">, now</span></span></li><li class=\"step-todo\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Paid<span class=\"visually-hidden\">, to come</span></span></li></ol><p class=\"mk-stage-msg\" role=\"status\"><strong>Confirming.</strong> 1 of 3 confirmations.</p><div class=\"mk-stage-detail\">0.42 XMR received, 1 of 3 confirmations</div></div>",
+    "props": {
+      "compact": false,
+      "detail": {
+        "$slot": [
+          "0.42 XMR received, 1 of 3 confirmations"
+        ]
+      },
+      "label": "Payment progress",
+      "message": {
+        "$slot": [
+          "1 of 3 confirmations."
+        ]
+      },
+      "state": "confirming",
+      "steps": [
+        {
+          "label": "Send",
+          "progress": "done"
+        },
+        {
+          "label": "Confirm",
+          "progress": "now"
+        },
+        {
+          "label": "Paid",
+          "progress": "todo"
+        }
+      ],
+      "title": "Confirming"
+    },
+    "title": "Confirming, with its bar"
+  },
+  {
+    "component": "ProgressSteps",
     "html": "<div class=\"mk-stage state-paid\"><ol class=\"mk-track\" aria-label=\"Payment progress\"><li class=\"step-done\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m4.5 12.5 5 5 10-11\"></path></svg></span><span class=\"mk-track-name\">Send<span class=\"visually-hidden\">, done</span></span></li><li class=\"step-done\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m4.5 12.5 5 5 10-11\"></path></svg></span><span class=\"mk-track-name\">Paid<span class=\"visually-hidden\">, done</span></span></li></ol><p class=\"mk-stage-msg\" role=\"status\"><strong>Paid.</strong> Thank you.</p></div>",
     "props": {
       "compact": false,

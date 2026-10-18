@@ -112,41 +112,40 @@ pub struct CheckoutViewModel {
 const CHECKOUT_STYLE: &str = r#"
 html { background: var(--paper-raised); }
 body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(--paper-raised); }
-.pay-wrap { max-width: 720px; margin: 0 auto; }
-/* One column, the stage above the code, whenever it fits the screen. */
-.pay-grid { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "stage" "primary" "secondary"; align-items: start; gap: 0; max-width: 460px; margin-inline: auto; text-align: center; }
+.pay-wrap { max-width: 460px; margin: 0 auto; }
+/* One grid at every width: only where its parts sit changes, so the page
+   reads in the same order everywhere. The panel behind who is asking and
+   how much is a part of its own: their box on a narrow screen, the whole
+   left half on a wide one. */
+.pay-grid { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "merchant" "amount" "stage" "wallet" "payments" "refund" "meta"; text-align: center; }
 .pay-grid > * { min-width: 0; }
-.stage-slot { grid-area: stage; margin-bottom: .9em; }
-/* Who is asking, over everything, as wide as the column(s) under it. */
-.merchant { display: flex; align-items: center; gap: var(--space-md); max-width: 460px; margin: 0 auto .9em; padding: var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-sunken); text-align: left; }
+.pay-panel { grid-row: merchant-start / amount-end; grid-column: merchant-start / amount-end; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-sunken); }
+/* Who is asking. */
+.merchant { grid-area: merchant; display: flex; align-items: center; gap: var(--space-md); padding: var(--space-md) var(--space-md) var(--space-sm); text-align: left; }
 .merchant:has(.merchant-for) { align-items: flex-start; }
 .merchant-about { display: grid; gap: 2px; min-width: 0; }
 .merchant h2 { margin: 0; padding: 0; border: 0; font-size: var(--text-base); font-weight: 800; overflow-wrap: anywhere; }
 .merchant .hint { margin: 0; font-size: var(--text-xs); overflow-wrap: anywhere; }
 .merchant .hint svg { width: 1em; height: 1em; color: var(--success); vertical-align: -.1em; }
 .merchant-for { margin: 0; font-size: var(--text-sm); overflow-wrap: anywhere; }
-/* The amount sizes itself to this column (`cqi`). */
-.pay-col-primary { grid-area: primary; container-type: inline-size; }
-.pay-col-secondary { grid-area: secondary; }
-/* Two columns only where one can't fit: a short landscape screen. The stage
-   then heads the second column, beside the code. */
-@media (orientation: landscape) and (max-height: 760px) and (min-width: 560px) {
-  .pay-grid { max-width: 760px; grid-template-columns: minmax(0, 290px) minmax(0, 1fr); grid-template-areas: "primary stage" "primary secondary"; column-gap: 2rem; text-align: left; }
-  .merchant { max-width: 760px; }
-  .pay-col-primary { text-align: center; }
-  .qr-wrap svg { width: min(208px, 46vh); height: auto; }
-}
-/* One line, number and unit together: the size follows the column's width
+/* How much, and the time left to pay it, under who is asking. The amount
+   sizes itself to this box (`cqi`). */
+.pay-amount { grid-area: amount; container-type: inline-size; margin-inline: var(--space-md); padding: var(--space-sm) 0 var(--space-md); border-top: 1px solid var(--line); text-align: left; }
+.stage-slot { grid-area: stage; margin-top: var(--space-lg); }
+.pay-wallet { grid-area: wallet; margin-top: var(--space-lg); }
+.pay-payments { grid-area: payments; }
+.pay-payments:empty { display: none; }
+.pay-refund { grid-area: refund; }
+/* One line, number and unit together: the size follows the box's width
    (cqi), between a floor that still fits a 280px frame and the full size. */
-.amount { font-size: clamp(1.15rem, 9cqi, 2.2rem); font-weight: 700; margin: 0.2em 0 0.1em; letter-spacing: -0.01em; white-space: nowrap; }
+.amount { font-size: clamp(1.15rem, 9cqi, 2.2rem); font-weight: 700; margin: .1em 0 0; letter-spacing: -0.01em; white-space: nowrap; }
 .amount-unit { font-size: 0.7em; font-weight: 700; color: var(--muted); }
 .amount-label { display: block; color: var(--muted); font-size: 0.8em; }
-.fiat-amount { color: var(--muted); margin-bottom: 1.2em; }
-/* The time left belongs to the amount: under it, before the code. */
-.countdown-slot { margin: -.6em 0 1.2em; text-align: left; }
+.fiat-amount { color: var(--muted); }
+.countdown-slot { margin-top: var(--space-sm); text-align: left; }
 .qr-wrap { margin: 0 auto 1.2em; display: flex; justify-content: center; }
 .qr-wrap svg { width: 208px; height: 208px; }
-.address-block { text-align: left; margin: 0 0 1.4em; }
+.address-block { text-align: left; }
 .address-label { display: block; color: var(--muted); font-size: 0.8em; margin: 0 0 0.35em; }
 .section {
   text-align: left;
@@ -154,14 +153,41 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
   padding-top: 1.4em;
   border-top: 1px solid var(--line);
 }
-.pay-grid > .pay-col-primary > .section:first-child,
-.pay-grid > .pay-col-secondary > .section:first-child { margin-top: 0; padding-top: 0; border-top: none; }
-.progress-row { display: flex; justify-content: space-between; font-size: 0.85em; margin-bottom: 0.4em; }
-.progress-bar { border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; height: 1em; background: var(--paper); }
-.progress-fill { height: 100%; background: var(--accent); }
-/* Paid: the progress bar takes the paid colour. Follows the live status. */
-#checkout-root[data-status="paid"] .progress-fill { background: var(--state-paid-border); }
-#checkout-root[data-status="overpaid"] .progress-fill { background: var(--state-overpaid-border); }
+/* The confirmations, in the stage while the payment is at Confirm. */
+.progress-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-xs) var(--space-md); margin-bottom: var(--space-xs); }
+.progress-row > :first-child { font-weight: 700; }
+.progress-bar { border: 1px solid var(--state-border, var(--line)); border-radius: var(--radius-sm); overflow: hidden; height: .65rem; background: var(--paper-raised); }
+.progress-fill { height: 100%; background: var(--state-border, var(--accent)); }
+/* Wide enough for two: who is asking on the left of the box, how much on
+   its right; under it the code and address, beside the stage and the
+   refund address. */
+@media (min-width: 600px) {
+  .pay-wrap:not(.checkout-compact) { max-width: 1060px; }
+  .pay-wrap:not(.checkout-compact) .pay-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: auto auto auto auto 1fr; grid-template-areas: "merchant amount" "wallet stage" "wallet payments" "wallet refund" "wallet meta"; column-gap: var(--space-xl); text-align: left; }
+  .pay-wrap:not(.checkout-compact) .merchant { padding: var(--space-lg) 0 var(--space-lg) var(--space-lg); }
+  .pay-wrap:not(.checkout-compact) .pay-amount { align-self: center; margin: 0; padding: var(--space-lg) var(--space-lg) var(--space-lg) 0; border-top: 0; text-align: right; }
+  .pay-wrap:not(.checkout-compact) :is(.stage-slot, .pay-wallet) { margin-top: var(--space-xl); }
+  .pay-wrap:not(.checkout-compact) .pay-wallet { text-align: center; }
+  .pay-wrap:not(.checkout-compact) .qr-wrap svg { width: 224px; height: 224px; }
+}
+/* A wide screen: the box grows into the whole left half, with the stage
+   and the payments under the amount; the right half is the wallet's. */
+@media (min-width: 1200px) {
+  body { padding: 0; }
+  .pay-wrap:not(.checkout-compact) { max-width: none; }
+  .pay-wrap:not(.checkout-compact) .pay-grid { min-height: 100vh; min-height: 100dvh; grid-template-columns: minmax(var(--space-xl), 1fr) minmax(0, 30rem) var(--space-3xl) var(--space-3xl) minmax(0, 30rem) minmax(var(--space-xl), 1fr); grid-template-areas: ". merchant . . wallet ." ". amount . . wallet ." ". stage . . wallet ." ". payments . . wallet ." ". meta . . refund ."; column-gap: 0; }
+  .pay-wrap:not(.checkout-compact) .pay-panel { grid-column: 1 / 4; grid-row: 1 / -1; border: 0; border-inline-end: 1px solid var(--line); border-radius: 0; }
+  .pay-wrap:not(.checkout-compact) .merchant { padding: var(--space-3xl) 0 var(--space-xl); }
+  .pay-wrap:not(.checkout-compact) .pay-amount { align-self: start; padding: var(--space-xl) 0 0; border-top: 1px solid var(--line); text-align: left; }
+  .pay-wrap:not(.checkout-compact) .amount { font-size: clamp(1.15rem, 9cqi, 2.75rem); }
+  .pay-wrap:not(.checkout-compact) .pay-wallet { margin-top: var(--space-3xl); }
+  .pay-wrap:not(.checkout-compact) .qr-wrap svg { width: 260px; height: 260px; }
+  .pay-wrap:not(.checkout-compact) .meta { align-self: end; margin-bottom: var(--space-2xl); }
+  .pay-wrap:not(.checkout-compact) .pay-refund { margin-bottom: var(--space-2xl); }
+  /* On the panel the table's header row takes the page's own surface, not
+     the panel's, so it still reads as a header. */
+  .pay-wrap:not(.checkout-compact) .pay-payments { --table-head-bg: var(--paper-raised); }
+}
 .qr-wrap svg { background: var(--qr-bg); }
 /* A code that shouldn't be paid (the payment is in, or the order is over):
    still plainly the same order, too faint for a wallet's camera. The address
@@ -172,8 +198,8 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 @keyframes qr-new { from { box-shadow: 0 0 0 6px color-mix(in srgb, var(--state-partial-border) 55%, transparent); } to { box-shadow: 0 0 0 22px transparent; } }
 @media (prefers-reduced-motion: reduce) { .qr-new svg { animation: none; } }
 .qr-note { margin: -.6em 0 1.2em; font-size: .75em; color: var(--muted); }
-[data-table="payments"] { font-size: 0.8em; margin-top: 1.2em; }
-.meta { margin-top: 1.4em; font-size: 0.8em; color: var(--muted); text-align: left; }
+[data-table="payments"] { font-size: 0.8em; }
+.meta { grid-area: meta; margin-top: 1.4em; font-size: 0.8em; color: var(--muted); text-align: left; }
 .refresh-toggle { margin: 0 0 .5em; text-align: right; font-size: .85em; }
 /* The scan and image buttons wait, hidden, for the script that works them;
    the saved tick sits beside them, so the text stops short of all three. */
@@ -195,21 +221,18 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .refund-camera { width: 100%; max-height: 16em; background: var(--media-bg); }
 .scan-error { color: var(--error); }
 .checkout-compact { max-width: 100%; }
-.checkout-compact .pay-grid { grid-template-columns: 1fr; grid-template-areas: "stage" "primary" "secondary"; gap: 0; max-width: none; text-align: center; }
-.checkout-compact .stage-slot { margin-bottom: .5em; }
-.checkout-compact .merchant { max-width: none; margin-bottom: .5em; padding: var(--space-sm) var(--space-md); }
+.checkout-compact :is(.stage-slot, .pay-wallet) { margin-top: .5em; }
+.checkout-compact .merchant { padding: var(--space-sm) var(--space-md) var(--space-xs); }
 .checkout-compact .merchant .hint { font-size: var(--text-sm); }
-.checkout-compact .pay-col-secondary { font-size: .9em; }
-.checkout-compact .qr-wrap { margin-bottom: .5em; }
-.checkout-compact .qr-wrap svg { width: min(42vh, 208px); height: auto; }
+.checkout-compact .pay-amount { padding: var(--space-xs) 0 var(--space-sm); }
+.checkout-compact .pay-refund { font-size: .9em; }
 .checkout-compact .section { margin-top: .7em; padding-top: .7em; }
-.checkout-compact .meta, .checkout-compact [data-table="payments"] { display: none; }
+.checkout-compact .meta, .checkout-compact .pay-payments { display: none; }
 .checkout-compact .amount { font-size: clamp(1.1rem, 8cqi, 1.8rem); font-weight: 800; margin: .1em 0; }
-.checkout-compact .fiat-amount { font-size: .8em; margin-bottom: .4em; }
+.checkout-compact .fiat-amount { font-size: .8em; }
 .checkout-compact .qr-wrap { margin-bottom: .3em; }
 .checkout-compact .qr-wrap svg { width: min(29vh, 158px); height: auto; }
-.checkout-compact .address-block { margin-bottom: .5em; }
-.checkout-compact .countdown-slot { margin-bottom: .5em; }
+.checkout-compact .countdown-slot { margin-top: .3em; }
 .checkout-compact .field-help { font-size: .7em; }
 "#;
 
@@ -309,48 +332,46 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                 span id="checkout-stream" hidden fx-action=(events_url(data)) fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect fx-own-errors {}
             }
 
-            (merchant_header(data))
+            // In reading order; the stylesheet places each part by width.
             div class="pay-grid" {
+                div class="pay-panel" aria-hidden="true" {}
+                (merchant_header(data))
+                (live_amount(data))
                 (live_status(data))
-                div class="pay-col-primary" {
-                    (live_pay(data))
-
+                div class="pay-wallet" {
+                    (live_code(data))
                     (live_address(data))
                 }
-                div class="pay-col-secondary" {
-                    (live_progress(data))
+                (live_payments(data))
 
-                    @if data.refund_enabled { div class="section" {
-                        form method="post" id="refund-form" action=(format!("/pay/{}/orders/{}/refund-address{}", data.pk, data.order_id, data.query_suffix))
-                            fx-action=(format!("/pay/{}/orders/{}/refund-address{}", data.pk, data.order_id, data.query_suffix))
-                            fx-method="POST" fx-trigger="refund:save" fx-swap="none" fx-own-errors {
-                                label for="refund_address" { "Refund address " (ui::Hint::new("(optional)").inline(true)) }
-                                @if let Some(error) = &data.refund_address_error {
-                                    (ui::Alert::new(error.as_str(), ui::Tone::Error))
-                                }
-                                div id="refund-field" class=(if data.refund_address.is_some() { "refund-field is-saved" } else { "refund-field" }) {
-                                    (ui::Input::new("refund_address")
-                                        .id("refund_address")
-                                        .value(data.refund_address.as_deref().unwrap_or(""))
-                                        .placeholder("Your Monero refund address")
-                                        .autocomplete("off")
-                                        .attr("spellcheck", "false")
-                                        .actions(refund_actions(data)))
-                                    input type="file" id="refund-image" accept="image/*" hidden;
-                                }
-                                video id="refund-camera" class="refund-camera" autoplay playsinline hidden {}
-                                p id="scan-error" class="scan-error" role="alert" hidden {}
-                                (ui::FieldNote::new(html! { "If this order needs a refund, this address is recorded for the merchant to use. "
-                                    "Refunds are not sent automatically." }))
-                                noscript { (ui::FormActions::new(ui::Button::new("Save").kind(ui::ButtonType::Submit))) }
-                        }
-                    } }
-
-                    (live_payments(data))
-
-                    div class="meta" {
-                        "Order ID: " (data.order_id)
+                @if data.refund_enabled { div class="section pay-refund" {
+                    form method="post" id="refund-form" action=(format!("/pay/{}/orders/{}/refund-address{}", data.pk, data.order_id, data.query_suffix))
+                        fx-action=(format!("/pay/{}/orders/{}/refund-address{}", data.pk, data.order_id, data.query_suffix))
+                        fx-method="POST" fx-trigger="refund:save" fx-swap="none" fx-own-errors {
+                            label for="refund_address" { "Refund address " (ui::Hint::new("(optional)").inline(true)) }
+                            @if let Some(error) = &data.refund_address_error {
+                                (ui::Alert::new(error.as_str(), ui::Tone::Error))
+                            }
+                            div id="refund-field" class=(if data.refund_address.is_some() { "refund-field is-saved" } else { "refund-field" }) {
+                                (ui::Input::new("refund_address")
+                                    .id("refund_address")
+                                    .value(data.refund_address.as_deref().unwrap_or(""))
+                                    .placeholder("Your Monero refund address")
+                                    .autocomplete("off")
+                                    .attr("spellcheck", "false")
+                                    .actions(refund_actions(data)))
+                                input type="file" id="refund-image" accept="image/*" hidden;
+                            }
+                            video id="refund-camera" class="refund-camera" autoplay playsinline hidden {}
+                            p id="scan-error" class="scan-error" role="alert" hidden {}
+                            (ui::FieldNote::new(html! { "If this order needs a refund, this address is recorded for the merchant to use. "
+                                "Refunds are not sent automatically." }))
+                            noscript { (ui::FormActions::new(ui::Button::new("Save").kind(ui::ButtonType::Submit))) }
                     }
+                } }
+
+                div class="meta" {
+                    "Order ID: " (data.order_id)
                 }
             }
         }
@@ -372,10 +393,10 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
 /// else (QR code, address, the refund form mid-edit) is left untouched.
 pub fn live_fragment(data: &CheckoutViewModel) -> Markup {
     html! {
+        (live_amount(data))
         (live_status(data))
-        (live_pay(data))
+        (live_code(data))
         (live_address(data))
-        (live_progress(data))
         (live_payments(data))
     }
 }
@@ -384,10 +405,10 @@ pub fn live_fragment(data: &CheckoutViewModel) -> Markup {
 /// that routes each to its element (`http::checkout::checkout_events`).
 pub fn live_parts(data: &CheckoutViewModel) -> [(&'static str, Markup); 5] {
     [
+        ("live-amount", live_amount(data)),
         ("live-status", live_status(data)),
-        ("live-pay", live_pay(data)),
+        ("live-code", live_code(data)),
         ("live-address", live_address(data)),
-        ("live-progress", live_progress(data)),
         ("live-payments", live_payments(data)),
     ]
 }
@@ -517,10 +538,40 @@ fn live_status(data: &CheckoutViewModel) -> Markup {
     } else {
         shown
     };
+    let mut stage = ui::ProgressSteps::new("Payment progress", steps, title, message).state(state);
+    if at_confirm(data) {
+        stage = stage.detail(confirmations_bar(data));
+    }
     html! {
         div id="live-status" class="stage-slot" data-live {
             span id="status-badge" class=(format!("sr-only state-{shown}")) { (data.status_label) }
-            (ui::ProgressSteps::new("Payment progress", steps, title, message).state(state))
+            (stage)
+        }
+    }
+}
+
+/// Whether the payment is at Confirm: seen, and counting its confirmations
+/// (a store that counts it as soon as it's seen has no Confirm step).
+fn at_confirm(data: &CheckoutViewModel) -> bool {
+    data.confirmations_required > 0
+        && data.double_spend_detected_at.is_none()
+        && matches!(
+            data.status,
+            DisplayStatus::Order(OrderStatus::Unconfirmed | OrderStatus::Confirming)
+        )
+}
+
+/// The confirmations so far, in the stage while the payment is at Confirm.
+fn confirmations_bar(data: &CheckoutViewModel) -> Markup {
+    html! {
+        div class="progress-row" {
+            span id="confirmations-label" { (data.confirmations) " / " (data.confirmations_required) " confirmations" }
+            span id="received-label" { (super::trim_xmr(&data.amount_received_xmr)) " XMR received" }
+        }
+        div class="progress-bar" id="progress-bar" role="progressbar" aria-labelledby="confirmations-label"
+            aria-valuemin="0" aria-valuemax=(data.confirmations_required) aria-valuenow=(data.confirmations)
+            aria-valuetext=(format!("{} of {} confirmations", data.confirmations, data.confirmations_required)) {
+            div class="progress-fill" id="progress-fill" style=(format!("width: {}%", data.progress_percent)) {}
         }
     }
 }
@@ -552,12 +603,10 @@ fn refund_actions(data: &CheckoutViewModel) -> ui::Slot {
     ])
 }
 
-/// The part of the payment column that follows the order: the amount and
-/// its QR code, always in the same place. After a partial payment the
-/// amount is what's left and the code is redrawn for it; once the code
-/// shouldn't be paid (the payment is in, or the order is over) it fades
-/// (`.is-spent`), so nothing invites a second payment.
-fn live_pay(data: &CheckoutViewModel) -> Markup {
+/// How much, and the time left to pay it: with who is asking, in the box
+/// at the top (the left half, on a wide screen). After a partial payment
+/// it's what's left; once nothing more is due, the order's total.
+fn live_amount(data: &CheckoutViewModel) -> Markup {
     let due = super::trim_xmr(&data.amount_due_xmr);
     let total = super::trim_xmr(&data.xmr_amount);
     let partial = data.status == DisplayStatus::Order(OrderStatus::Partial);
@@ -569,10 +618,10 @@ fn live_pay(data: &CheckoutViewModel) -> Markup {
         ("Order total", total)
     };
     html! {
-        div id="live-pay" data-live {
+        div class="pay-amount" id="live-amount" data-live {
             span class="amount-label" id="amount-label" { (label) }
             // The number and its unit never split; the font shrinks with
-            // the frame instead (see `.amount`).
+            // the box instead (see `.amount`).
             div class="amount" id="xmr-amount" aria-labelledby="amount-label" {
                 span class="amount-value" { (amount) } " " span class="amount-unit" { "XMR" }
             }
@@ -583,6 +632,19 @@ fn live_pay(data: &CheckoutViewModel) -> Markup {
             @if awaiting_payment(data) {
                 div class="countdown-slot" { (countdown(data)) }
             }
+        }
+    }
+}
+
+/// The QR code, always in the same place. After a partial payment it's
+/// redrawn for what's left; once it shouldn't be paid (the payment is in,
+/// or the order is over) it fades (`.is-spent`), so nothing invites a
+/// second payment.
+fn live_code(data: &CheckoutViewModel) -> Markup {
+    let due = super::trim_xmr(&data.amount_due_xmr);
+    let partial = data.status == DisplayStatus::Order(OrderStatus::Partial);
+    html! {
+        div id="live-code" data-live {
             @if partial {
                 div class="qr-wrap qr-new" { (data.qr_code_svg) }
                 p class="qr-note" { "Wallets that read payment codes fill in " (due) " XMR for you." }
@@ -659,22 +721,6 @@ fn live_address(data: &CheckoutViewModel) -> Markup {
     }
 }
 
-fn live_progress(data: &CheckoutViewModel) -> Markup {
-    html! {
-        div class="section" id="live-progress" data-live {
-            div class="progress-row" {
-                span id="confirmations-label" { (data.confirmations) " / " (data.confirmations_required) " confirmations" }
-                span id="received-label" { (super::trim_xmr(&data.amount_received_xmr)) " XMR received" }
-            }
-            div class="progress-bar" id="progress-bar" role="progressbar" aria-labelledby="confirmations-label"
-                aria-valuemin="0" aria-valuemax=(data.confirmations_required) aria-valuenow=(data.confirmations)
-                aria-valuetext=(format!("{} of {} confirmations", data.confirmations, data.confirmations_required)) {
-                div class="progress-fill" id="progress-fill" style=(format!("width: {}%", data.progress_percent)) {}
-            }
-        }
-    }
-}
-
 fn live_payments(data: &CheckoutViewModel) -> Markup {
     let rows = data.payments.iter().map(|payment| {
         ui::Slot::from(ui::Row::new(ui::Slot::many([
@@ -691,7 +737,7 @@ fn live_payments(data: &CheckoutViewModel) -> Markup {
         ])))
     });
     html! {
-        div id="live-payments" data-live {
+        div class="pay-payments" id="live-payments" data-live {
             @if !data.payments.is_empty() {
                 div class="section" {
                     (ui::Table::new(ui::Slot::many(rows))
@@ -776,9 +822,10 @@ pub struct CheckoutShareViewModel {
 
 /// The title and the framed checkout are one card on the page. The card's
 /// surface is the checkout's own background (`--paper-raised`), so the
-/// frame's edge doesn't show and the payment reads as one panel.
+/// frame's edge doesn't show and the payment reads as one panel. Wide
+/// enough on a desktop screen for the checkout's two halves (1200px).
 const SHARE_STYLE: &str = r#"
-.share-wrap { max-width: 840px; }
+.wrap.share-wrap { max-width: 1440px; }
 .share-card { margin-top: var(--space-md); background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
 .share-frame {
   width: 100%;
@@ -995,10 +1042,10 @@ mod tests {
         }];
         let fragment = live_fragment(&data).into_string();
         for id in [
+            "live-amount",
             "live-status",
-            "live-pay",
+            "live-code",
             "live-address",
-            "live-progress",
             "live-payments",
         ] {
             assert!(
@@ -1037,7 +1084,7 @@ mod tests {
         let header = html
             .find(r#"<header class="merchant">"#)
             .expect("the header");
-        assert!(header < html.find(r#"class="pay-grid""#).unwrap(), "{html}");
+        assert!(header < html.find(r#"id="live-amount""#).unwrap(), "{html}");
         assert!(html.contains("<h2>Corner shop</h2>"), "{html}");
         // The store's letter, and its verified site's icon to show once it loads.
         assert!(
@@ -1202,6 +1249,51 @@ mod tests {
         }
     }
 
+    /// The confirmations bar is in the stage, and only while the payment is
+    /// at Confirm: nothing to count before it's seen, nothing once it's in.
+    #[test]
+    fn the_confirmations_bar_shows_in_the_stage_only_at_confirm() {
+        for (status, shown) in [
+            ("pending", false),
+            ("partial", false),
+            ("unconfirmed", true),
+            ("confirming", true),
+            ("paid", false),
+            ("overpaid", false),
+            ("expired", false),
+        ] {
+            let mut data = test_checkout_view_model(false);
+            data.status = super::DisplayStatus::named(status);
+            data.confirmations_required = 3;
+            data.confirmations = 1;
+            data.progress_percent = 33;
+            let html = checkout_page(&chrome(), &data).into_string();
+            assert_eq!(
+                html.contains(r#"id="progress-bar""#),
+                shown,
+                "{status}: {html}"
+            );
+            if shown {
+                let stage = html
+                    .find(r#"<div class="mk-stage-detail">"#)
+                    .expect("the stage's detail");
+                assert!(
+                    stage > html.find(r#"class="mk-stage-msg""#).unwrap(),
+                    "{html}"
+                );
+                assert!(html[stage..].starts_with(r#"<div class="mk-stage-detail"><div class="progress-row"><span id="confirmations-label">1 / 3 confirmations</span>"#), "{html}");
+                assert!(html.contains(r#"style="width: 33%""#), "{html}");
+            }
+        }
+
+        // Counted as soon as it's seen: no Confirm step, so no bar.
+        let mut data = test_checkout_view_model(false);
+        data.status = super::DisplayStatus::named("unconfirmed");
+        data.confirmations_required = 0;
+        let html = checkout_page(&chrome(), &data).into_string();
+        assert!(!html.contains(r#"id="progress-bar""#), "{html}");
+    }
+
     #[test]
     fn the_track_has_no_confirm_step_when_one_payment_is_enough() {
         let mut data = test_checkout_view_model(false);
@@ -1264,7 +1356,9 @@ mod tests {
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(!html.contains("id=\"refund_address\""));
         assert!(!html.contains(&crate::assets::url("jsQR.js")));
-        assert!(html.contains("id=\"confirmations-label\""));
+        // The rest of the page is all there.
+        assert!(html.contains("id=\"live-status\""));
+        assert!(html.contains("Order ID: "));
     }
 
     #[test]

@@ -1321,9 +1321,10 @@ mod tests {
         assert!(html.contains(&crate::assets::url("checkout.js")));
         assert!(html.contains("Auto Refresh: ON"));
         assert!(html.contains(r#"<noscript><meta http-equiv="refresh" content="60""#));
+        // Nothing to count yet: the confirmations bar waits for Confirm.
         assert!(
-            html.contains("style=\"width: 0%\""),
-            "expected a real, already-computed progress-bar fill, got: {html}"
+            !html.contains("id=\"progress-bar\""),
+            "expected no confirmations bar before the payment is seen, got: {html}"
         );
     }
 
@@ -1686,19 +1687,19 @@ mod tests {
         assert_eq!(
             targets,
             [
+                r##"{"target":"#live-amount","swap":"outerHTML"}"##,
                 r##"{"target":"#live-status","swap":"outerHTML"}"##,
-                r##"{"target":"#live-pay","swap":"outerHTML"}"##,
+                r##"{"target":"#live-code","swap":"outerHTML"}"##,
                 r##"{"target":"#live-address","swap":"outerHTML"}"##,
-                r##"{"target":"#live-progress","swap":"outerHTML"}"##,
                 r##"{"target":"#live-payments","swap":"outerHTML"}"##,
             ]
         );
         assert!(
-            first[0]
+            first[1]
                 .1
                 .starts_with(r#"<div id="live-status" class="stage-slot" data-live"#),
             "{}",
-            first[0].1
+            first[1].1
         );
 
         assert!(engine
