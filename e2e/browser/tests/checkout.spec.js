@@ -651,11 +651,16 @@ test('real share page grows its frame to the whole checkout, so nothing scrolls 
     // On a desktop screen the page is as wide as the checkout's two columns
     // need, and the frame shows them side by side.
     if (width >= 1000) {
-      const beside = await page.evaluate(() => {
+      const at = await page.evaluate(() => {
         const doc = document.getElementById('checkout-frame').contentDocument;
-        return doc.querySelector('.qr-wrap').getBoundingClientRect().left >= doc.querySelector('.pay-panel').getBoundingClientRect().right;
+        const panel = doc.querySelector('.pay-panel').getBoundingClientRect();
+        return { panel: { left: panel.left, top: panel.top, right: panel.right }, code: doc.querySelector('.qr-wrap').getBoundingClientRect().left };
       });
-      expect(beside, `${width}x${height}`).toBe(true);
+      // Side by side, the panel from the frame's edge and top: no margin
+      // around it inside the card.
+      expect(at.code, `${width}x${height}`).toBeGreaterThanOrEqual(at.panel.right);
+      expect(at.panel.left, `${width}x${height}`).toBeLessThanOrEqual(1);
+      expect(at.panel.top, `${width}x${height}`).toBeLessThanOrEqual(0);
     }
     await expect.poll(() => page.evaluate(() => {
       const doc = document.getElementById('checkout-frame').contentDocument;
@@ -690,8 +695,8 @@ test('real checkout lays out by width and fades the code once paid', async ({ br
   const orderId = url.split('/').pop();
   const measure = on => on.evaluate(() => {
     const box = selector => document.querySelector(selector).getBoundingClientRect();
-    const [panel, merchant, amount, stage, code] = ['.pay-panel', '.merchant', '#live-amount', '#live-status .mk-stage', '.qr-wrap'].map(box);
-    return { width: innerWidth, panel, merchant, amount, stage, code };
+    const [grid, panel, merchant, amount, stage, code] = ['.pay-grid', '.pay-panel', '.merchant', '#live-amount', '#live-status .mk-stage', '.qr-wrap'].map(box);
+    return { width: innerWidth, grid, panel, merchant, amount, stage, code };
   });
   // With a mouse: the split from 1000px. A touch tablet keeps the box.
   const tablet = await browser.newContext({ viewport: { width: 1180, height: 820 }, isMobile: true, hasTouch: true });
@@ -707,12 +712,13 @@ test('real checkout lays out by width and fades the code once paid', async ({ br
     const at = await measure(page);
     const size = `${width}x${height}`;
     if (layout === 'split') {
-      // The box is a column of its own, the stage on it; the code beside
-      // it. The two keep together in the middle, however wide the screen.
+      // The box is a column of its own from the page's top, the stage on
+      // it; the code beside it. The two keep together in the middle,
+      // however wide the screen.
       expect(at.panel.left, size).toBeGreaterThan(0);
-      expect(at.panel.top, size).toBeGreaterThan(0);
-      expect(at.panel.width, size).toBeLessThanOrEqual(480);
-      expect(Math.abs(at.panel.left - (at.width - at.code.right)), size).toBeLessThanOrEqual(160);
+      expect(at.panel.top, size).toBeLessThanOrEqual(0);
+      expect(at.grid.width, size).toBeLessThanOrEqual(1040);
+      expect(Math.abs(at.grid.left - (at.width - at.grid.right)), size).toBeLessThanOrEqual(1);
       expect(at.amount.top, size).toBeGreaterThanOrEqual(at.merchant.bottom - 1);
       expect(at.stage.right, size).toBeLessThanOrEqual(at.panel.right);
       expect(at.code.left, size).toBeGreaterThanOrEqual(at.panel.right);
