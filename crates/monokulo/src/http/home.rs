@@ -409,6 +409,7 @@ mod tests {
                         10,
                         false,
                         None,
+                        true,
                     )
                 })
                 .await

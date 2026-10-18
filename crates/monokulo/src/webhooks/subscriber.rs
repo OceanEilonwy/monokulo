@@ -44,6 +44,8 @@ struct WireEvent {
     txid: Option<String>,
     #[serde(default)]
     merchant_order_id: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
     xmr_amount_piconero: u64,
 }
 
@@ -72,6 +74,7 @@ pub fn parse_event(id: &str, data: &str) -> Result<LoggedEvent, String> {
         status: wire.status,
         txid: wire.txid,
         merchant_order_id: wire.merchant_order_id,
+        description: wire.description,
         xmr_amount_piconero: wire.xmr_amount_piconero,
     })
 }

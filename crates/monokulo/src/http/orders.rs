@@ -446,6 +446,8 @@ async fn order_detail_data(
                 from_pos,
                 order_id: detail.order.order_id,
                 merchant_order_id: detail.order.merchant_order_id,
+                show_merchant_order_id: metadata.as_ref().is_none_or(|m| m.show_merchant_order_id),
+                description: detail.order.description,
                 address: detail.order.address,
                 currency,
                 amount,
@@ -1019,6 +1021,7 @@ pub(super) async fn render_store_settings_page_with(
             connection_id: row.id,
             display_name: row.name.clone(),
             site: row.site.clone(),
+            payment_description: row.payment_description.clone(),
             sites,
             confirmations_required,
             fx_provider_options,
@@ -1148,6 +1151,10 @@ async fn render_create_order_page(
         merchant_order_id: submitted
             .map(|form| form.merchant_order_id.clone())
             .unwrap_or_default(),
+        description: submitted
+            .map(|form| form.description.clone())
+            .unwrap_or_default(),
+        show_merchant_order_id: submitted.is_none_or(CreateOrderForm::shows_merchant_order_id),
         request_key,
     };
     views::create_order::page(&chrome, &data).into_response()
@@ -1163,11 +1170,32 @@ pub struct CreateOrderForm {
     /// means unset" handling `amount`/`currency` above already get.
     #[serde(default)]
     pub merchant_order_id: String,
+    /// What the order is for, for the payer; blank is none, the same as
+    /// `merchant_order_id`.
+    #[serde(default)]
+    pub description: String,
+    /// The "Show the reference to the payer" switch: `Some("true")` when
+    /// on, absent when off.
+    #[serde(default)]
+    pub show_merchant_order_id: Option<String>,
+    /// The switches the form had (`views::controls::switch`), so an
+    /// absent switch reads as off only when the form drew it.
+    #[serde(default)]
+    pub switches: Option<String>,
     /// One per rendering of the form (a hidden field): the order's
     /// idempotency key, so submitting twice (a retry after a timeout, a
     /// double click) makes one order.
     #[serde(default)]
     pub request_key: String,
+}
+
+impl CreateOrderForm {
+    /// Whether the checkout shows the payer the reference: the switch is
+    /// on, or a form without it (a script) left the default.
+    fn shows_merchant_order_id(&self) -> bool {
+        self.show_merchant_order_id.is_some()
+            || self.switches.as_deref() != Some("show_merchant_order_id")
+    }
 }
 
 /// `POST /dashboard/stores/{id}/orders/new` - creates a real order
@@ -1208,6 +1236,8 @@ pub async fn create_order(
                 form.amount.trim(),
                 form.currency.trim(),
                 form.merchant_order_id.trim(),
+                form.description.trim(),
+                form.shows_merchant_order_id(),
             ))
             .expect("strings serialize");
             format!("dash:{}", hex::encode(Sha256::digest(payload)))
@@ -1336,6 +1366,20 @@ pub async fn create_order(
             Some(trimmed.to_string())
         }
     };
+    let description = match crate::stores::clean_description(&form.description) {
+        Ok(description) => description,
+        Err(problem) => {
+            return render_create_order_page(
+                &state,
+                row,
+                &user,
+                Some(&form),
+                Some(format!("What it's for must be {}.", problem.requirement())),
+            )
+            .await
+        }
+    };
+    let show_merchant_order_id = form.shows_merchant_order_id();
 
     let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
@@ -1365,6 +1409,7 @@ pub async fn create_order(
             &sk,
             shared::xmr_amount::Piconero(xmr_amount_piconero),
             merchant_order_id,
+            description,
             Some(resolution.confirmations_required),
             request_key.clone(),
         )
@@ -1411,6 +1456,7 @@ pub async fn create_order(
                         // the key.
                         true,
                         Some("dashboard"),
+                        show_merchant_order_id,
                     )
                 })
                 .await;
@@ -3043,6 +3089,87 @@ mod tests {
             "expected the real exchange rate used (the identity rate) on the page, got: {html}"
         );
         assert!(html.contains("xmr"), "expected the real rate provider (\"xmr\", from the identity provider) on the page, got: {html}");
+    }
+
+    /// The form's "What it's for" and "Show the reference to the payer":
+    /// one too long comes back with what was typed and the switch as it
+    /// was; a good one makes an order whose page shows its description,
+    /// and its reference marked as hidden from the payer.
+    #[tokio::test]
+    async fn the_create_order_form_describes_the_order_and_can_hide_its_reference() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "order-describe@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let path = format!("/dashboard/stores/{connection_id}/orders/new");
+        let too_long = "x".repeat(141);
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                &path,
+                &session_token,
+                &[
+                    ("amount", "10.00"),
+                    ("currency", TEST_CURRENCY),
+                    ("description", &too_long),
+                    ("merchant_order_id", "inv-77"),
+                    // The switch drawn, and off.
+                    ("switches", "show_merchant_order_id"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(
+            html.contains("What it's for must be at most 140 characters."),
+            "{html}"
+        );
+        assert!(html.contains(&format!(r#"value="{too_long}""#)), "{html}");
+        assert!(
+            html.contains(r#"id="show-merchant-order-id" aria-describedby"#),
+            "the switch stays off: {html}"
+        );
+
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                &path,
+                &session_token,
+                &[
+                    ("amount", "10.00"),
+                    ("currency", TEST_CURRENCY),
+                    ("description", "  Table 4: two coffees "),
+                    ("merchant_order_id", "inv-77"),
+                    ("switches", "show_merchant_order_id"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let location = response.headers()["location"].to_str().unwrap().to_string();
+        let html = body_text(
+            router
+                .oneshot(
+                    Request::builder()
+                        .uri(location)
+                        .header("authorization", format!("Bearer {session_token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(html.contains(">Description</th>"), "{html}");
+        assert!(html.contains("Table 4: two coffees"), "{html}");
+        assert!(html.contains("inv-77"), "{html}");
+        assert!(html.contains("(hidden from the payer)"), "{html}");
     }
 
     #[tokio::test]
@@ -5779,6 +5906,8 @@ mod tests {
             from_pos: false,
             order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
             merchant_order_id: None,
+            show_merchant_order_id: true,
+            description: None,
             address: "addr".to_string(),
             currency: "XMR".to_string(),
             amount: "0.5".to_string(),

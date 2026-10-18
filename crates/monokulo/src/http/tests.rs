@@ -1494,6 +1494,104 @@ async fn a_store_with_no_site_has_a_name_only() {
     );
 }
 
+/// The Store card's payment description: shown after the website, refused
+/// with a line break (the card says why and keeps what was typed), saved
+/// trimmed, and cleared by emptying it.
+#[tokio::test]
+async fn a_stores_payment_description_is_saved_from_its_settings() {
+    let (state, _engine) = test_state_with_real_engine().await;
+    let router = build_router(state.clone());
+    let cookie = signed_up_and_logged_in_session_cookie(
+        &router,
+        "described-store@example.com",
+        "correct horse battery staple",
+    )
+    .await;
+    let made = crate::http::test_support::set_up_store_with_keys(
+        &router,
+        &cookie,
+        &[
+            ("store_name", "Corner shop"),
+            ("store_site", "corner.example"),
+            ("view_key_hex", TEST_VIEW_KEY_HEX),
+            ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+        ],
+    )
+    .await;
+    let store = crate::http::test_support::store_made(&made);
+    let settings = format!("/dashboard/stores/{store}/settings");
+    let page = body_text(cookie_get(&router, &settings, &cookie).await).await;
+    let website = page.find("Your website (optional)").unwrap();
+    let description = page.find("Payment description (optional)").unwrap();
+    assert!(website < description, "{page}");
+    assert!(
+        page.contains("when an order has no description of its own"),
+        "{page}"
+    );
+
+    let saved_description = |state: &AppState| {
+        state
+            .db
+            .lock()
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(store.clone()))
+            .unwrap()
+            .unwrap()
+            .payment_description
+    };
+    let refused = router
+        .clone()
+        .oneshot(cookie_form_request(
+            &settings,
+            &cookie,
+            &[("payment_description", "Coffee\nand cake")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let html = body_text(refused).await;
+    assert!(
+        html.contains("A payment description must be one line of plain text"),
+        "{html}"
+    );
+    assert!(html.contains("Coffee\nand cake"), "kept: {html}");
+    assert_eq!(saved_description(&state), "");
+
+    let saved = router
+        .clone()
+        .oneshot(cookie_form_request(
+            &settings,
+            &cookie,
+            &[("payment_description", "  Coffee and cake  ")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+    assert!(saved.headers()["location"]
+        .to_str()
+        .unwrap()
+        .ends_with("?saved=store"));
+    assert_eq!(saved_description(&state), "Coffee and cake");
+    let page = body_text(cookie_get(&router, &settings, &cookie).await).await;
+    assert!(
+        page.contains(
+            r#"name="payment_description" id="payment-description" value="Coffee and cake""#
+        ),
+        "{page}"
+    );
+
+    let cleared = router
+        .clone()
+        .oneshot(cookie_form_request(
+            &settings,
+            &cookie,
+            &[("payment_description", "")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(cleared.status(), StatusCode::SEE_OTHER);
+    assert_eq!(saved_description(&state), "");
+}
+
 /// The store step says what's wrong and keeps what was typed; a site any
 /// store on the instance has is refused, linking to it when it's yours.
 #[tokio::test]

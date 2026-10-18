@@ -145,6 +145,14 @@ const MIGRATIONS: &[(i64, &str)] = &[
         39,
         include_str!("../migrations/0039_pos_order_change_trigger.sql"),
     ),
+    (
+        40,
+        include_str!("../migrations/0040_order_show_merchant_order_id.sql"),
+    ),
+    (
+        41,
+        include_str!("../migrations/0041_store_payment_description.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -666,8 +674,8 @@ fn store_domain_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreDomai
 
 /// A `store_connections` row, from a query selecting `id, user_id, site,
 /// tenant_public_key, tenant_secret_token_encrypted, created_at_utc,
-/// fx_providers, base_currency, fx_provider_settings, wallet_id, name` in
-/// that order.
+/// fx_providers, base_currency, fx_provider_settings, wallet_id, name,
+/// payment_description` in that order.
 fn store_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreConnectionRow> {
     Ok(StoreConnectionRow {
         id: row.get(0)?,
@@ -681,6 +689,7 @@ fn store_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreConnectionRo
         fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(8)?),
         wallet_id: row.get(9)?,
         name: row.get(10)?,
+        payment_description: row.get(11)?,
     })
 }
 
@@ -754,6 +763,10 @@ pub struct StoreConnectionRow {
     /// The wallet this store takes payments into (migration 0031); `None`
     /// for a store made before wallets, until it's matched to one.
     pub wallet_id: Option<WalletId>,
+    /// What the store's payments are for, shown on the checkout when an
+    /// order has no description of its own (migration 0041); empty for
+    /// none.
+    pub payment_description: String,
 }
 
 /// How a wallet came to monokulo (`wallets.origin`).
@@ -893,6 +906,9 @@ pub struct OrderCurrencyMetadataRow {
     /// page using the public embed library - see migration
     /// `0021_order_created_with_key.sql`.
     pub created_with_key: bool,
+    /// Whether the checkout shows the payer the order's merchant reference
+    /// (migration `0040_order_show_merchant_order_id.sql`).
+    pub show_merchant_order_id: bool,
 }
 
 /// An `order_currency_metadata` row, columns in the order both queries
@@ -910,6 +926,7 @@ fn metadata_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrderCurrencyMetada
         base_currency_piconero_per_unit: row.get(8)?,
         confirmations_required_applied: row.get::<_, Option<Unsigned<u64>>>(9)?.map(|v| v.0),
         created_with_key: row.get(10)?,
+        show_merchant_order_id: row.get(11)?,
     })
 }
 
@@ -1349,6 +1366,19 @@ impl Db {
             params![id, wallet_id, created_at],
         )?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// A store's payment description (empty for none).
+    pub fn set_store_payment_description(
+        &self,
+        id: &ConnectionId,
+        description: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE store_connections SET payment_description = ?2 WHERE id = ?1",
+            params![id, description],
+        )?;
         Ok(())
     }
 
@@ -1865,7 +1895,7 @@ impl Db {
     ) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
+                "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description
                  FROM store_connections WHERE id = ?1",
                 params![id],
                 |row| {
@@ -1908,7 +1938,7 @@ impl Db {
         user_id: &UserId,
     ) -> Result<Vec<StoreConnectionRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
+            "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description
              FROM store_connections WHERE user_id = ?1 ORDER BY created_at_utc DESC",
         )?;
         let rows = stmt
@@ -1934,6 +1964,9 @@ impl Db {
     /// specifically when the order's own currency already was the base
     /// currency (see `confirmation_thresholds::Resolution`), never merely
     /// "not recorded".
+    ///
+    /// `show_merchant_order_id` is whether the checkout shows the payer the
+    /// order's merchant reference.
     #[allow(clippy::too_many_arguments)]
     pub fn create_order_currency_metadata(
         &self,
@@ -1949,6 +1982,7 @@ impl Db {
         confirmations_required_applied: u64,
         created_with_key: bool,
         source: Option<&str>,
+        show_merchant_order_id: bool,
     ) -> Result<()> {
         // An amount too large for SQLite is refused (a conversion error), not
         // wrapped or panicked on.
@@ -1956,8 +1990,8 @@ impl Db {
             "INSERT INTO order_currency_metadata
                 (connection_id, order_id, currency, amount, piconero_per_unit, provider, created_at_utc,
                  store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied, created_with_key,
-                 source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 source, show_merchant_order_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT (connection_id, order_id) DO NOTHING",
             params![
                 connection_id,
@@ -1972,6 +2006,7 @@ impl Db {
                 Unsigned(confirmations_required_applied),
                 created_with_key,
                 source,
+                show_merchant_order_id,
             ],
         )?;
         Ok(())
@@ -1989,7 +2024,8 @@ impl Db {
         self.conn
             .query_row(
                 "SELECT connection_id, order_id, currency, amount, piconero_per_unit, provider, created_at_utc,
-                        store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied, created_with_key
+                        store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied, created_with_key,
+                        show_merchant_order_id
                  FROM order_currency_metadata WHERE connection_id = ?1 AND order_id = ?2",
                 params![connection_id, order_id],
                 metadata_row,
@@ -2023,7 +2059,8 @@ impl Db {
     ) -> Result<std::collections::HashMap<OrderId, OrderCurrencyMetadataRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT connection_id, order_id, currency, amount, piconero_per_unit, provider, created_at_utc,
-                    store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied, created_with_key
+                    store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied, created_with_key,
+                    show_merchant_order_id
              FROM order_currency_metadata WHERE connection_id = ?1 AND order_id = ?2",
         )?;
         let mut rows = std::collections::HashMap::new();
@@ -2117,7 +2154,7 @@ impl Db {
     ) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
+                "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description
                  FROM store_connections WHERE tenant_public_key = ?1",
                 params![tenant_public_key],
                 |row| {
@@ -2137,7 +2174,7 @@ impl Db {
         }
         self.conn
             .query_row(
-                "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
+                "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description
                  FROM store_connections WHERE site = ?1",
                 params![site],
                 store_from_row,
@@ -2496,7 +2533,7 @@ impl Db {
     /// into `store_domains` yet (see migration `0020_embed_restriction.sql`).
     pub fn list_store_connections_awaiting_domain_import(&self) -> Result<Vec<StoreConnectionRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name
+            "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description
              FROM store_connections WHERE domains_imported = 0",
         )?;
         let rows = stmt.query_map([], store_from_row)?;
@@ -4152,6 +4189,7 @@ mod tests {
             10,
             false,
             None,
+            true,
         );
         assert!(matches!(stored, Err(DbError::Sqlite(_))), "{stored:?}");
     }
@@ -4173,6 +4211,7 @@ mod tests {
             10,
             false,
             None,
+            true,
         )
         .unwrap();
 
@@ -4254,6 +4293,7 @@ mod tests {
             10,
             false,
             None,
+            true,
         )
         .unwrap();
         db.create_order_currency_metadata(
@@ -4269,6 +4309,7 @@ mod tests {
             10,
             false,
             None,
+            true,
         )
         .unwrap();
 
@@ -4309,6 +4350,7 @@ mod tests {
             10,
             false,
             None,
+            true,
         )
         .unwrap();
         db.create_order_currency_metadata(
@@ -4324,6 +4366,7 @@ mod tests {
             10,
             false,
             None,
+            true,
         )
         .unwrap();
 

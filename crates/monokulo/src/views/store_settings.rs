@@ -63,6 +63,9 @@ pub struct StoreSettingsData {
     pub display_name: String,
     /// Its site's host; empty when it has none.
     pub site: String,
+    /// What its payments are for, shown on the checkout when an order has
+    /// no description of its own; empty when it has none.
+    pub payment_description: String,
     /// The website and the plugins connected to the store
     /// (`views::store_site`).
     pub sites: super::store_site::SiteView,
@@ -641,12 +644,13 @@ fn wallets_label(n: usize) -> String {
     }
 }
 
-/// "Store": its name, and its website, optional. Any store takes payments
-/// at the till; a website lets it show the checkout on its pages and
-/// connect the WooCommerce plugin.
+/// "Store": its name, its website, optional, and its payment description,
+/// optional. Any store takes payments at the till; a website lets it show
+/// the checkout on its pages and connect the WooCommerce plugin.
 fn store_card(store: &StoreSettingsData) -> Markup {
     let name = store.shown("store_name", &store.display_name);
     let site = store.shown("store_site", &store.site);
+    let payment_description = store.shown("payment_description", &store.payment_description);
     settings_card(
         store,
         StoreSection::Store,
@@ -663,6 +667,18 @@ fn store_card(store: &StoreSettingsData) -> Markup {
                         .maybe_attr("data-saved", store.saved_attr(&store.display_name)))
                 }))
             (super::store_site::website_field(&store.sites, &site))
+            (Field::new("Payment description (optional)", "payment-description")
+                .help(None, html! {
+                    "Shown to the payer under your store's name when an order has no description of its own. "
+                    "Up to 140 characters. Anyone with a payment link can read it."
+                })
+                .render(html! {
+                    (ui::Input::new("payment_description")
+                        .id("payment-description")
+                        .value(payment_description.as_str())
+                        .attr("maxlength", crate::stores::MAX_DESCRIPTION_CHARS.to_string())
+                        .maybe_attr("data-saved", store.saved_attr(&store.payment_description)))
+                }))
         },
     )
 }
@@ -1124,6 +1140,7 @@ mod tests {
             connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             site: "shop.example.com".to_string(),
+            payment_description: String::new(),
             sites: crate::views::store_site::SiteView {
                 store_id: "conn_1".into(),
                 store_name: "shop.example.com".into(),

@@ -489,6 +489,7 @@ mod tests {
             base_currency: "XMR".to_string(),
             fx_provider_settings: FxProviderSettings::default(),
             wallet_id: None,
+            payment_description: String::new(),
         }
     }
 

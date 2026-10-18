@@ -413,13 +413,22 @@ async fn build_checkout_view(
             .await;
 
     let (id, order_id) = (row.id.clone(), detail.order.order_id.clone());
-    let (amount, currency) = match state
+    let (metadata, domains) = state
         .db
-        .read(move |db| db.get_order_currency_metadata(&id, &order_id))
+        .read(move |db| {
+            Ok::<_, crate::db::DbError>((
+                db.get_order_currency_metadata(&id, &order_id)
+                    .ok()
+                    .flatten(),
+                db.list_store_domains(&id).unwrap_or_default(),
+            ))
+        })
         .await
-    {
-        Ok(Some(metadata)) => (metadata.amount, metadata.currency),
-        _ => ("—".to_string(), "".to_string()),
+        .unwrap_or_default();
+    let header = merchant_header(row, &detail.order, metadata.as_ref(), &domains);
+    let (amount, currency) = match metadata {
+        Some(metadata) => (metadata.amount, metadata.currency),
+        None => ("—".to_string(), "".to_string()),
     };
 
     let (status_text, _, is_terminal) = crate::views::order_state(detail.order.status);
@@ -442,6 +451,10 @@ async fn build_checkout_view(
     };
     CheckoutViewModel {
         order_id: detail.order.order_id.clone(),
+        store_name: header.store_name,
+        description: header.description,
+        merchant_reference: header.merchant_reference,
+        merchant_site: header.merchant_site,
         status_label: status_text.to_string(),
         status: detail.order.status.into(),
         address: detail.order.address.clone(),
@@ -493,6 +506,41 @@ async fn build_checkout_view(
                 is_zero_conf: p.block_height.is_none(),
             })
             .collect(),
+    }
+}
+
+/// What the checkout's header tells the payer about who they're paying
+/// and for what.
+struct MerchantHeader {
+    store_name: String,
+    description: Option<String>,
+    merchant_reference: Option<String>,
+    merchant_site: Option<String>,
+}
+
+/// The header for `order` of `row`: the order's description, else the
+/// store's payment description; the merchant reference unless its creator
+/// hid it (an order monokulo has no record of shows it, as every order did
+/// before it could be hidden); the site only while it's verified.
+fn merchant_header(
+    row: &StoreConnectionRow,
+    order: &OrderView,
+    metadata: Option<&crate::db::OrderCurrencyMetadataRow>,
+    domains: &[crate::db::StoreDomainRow],
+) -> MerchantHeader {
+    let shown = metadata.is_none_or(|m| m.show_merchant_order_id);
+    MerchantHeader {
+        store_name: row.name.clone(),
+        description: [order.description.as_deref(), Some(&row.payment_description)]
+            .into_iter()
+            .flatten()
+            .find(|description| !description.is_empty())
+            .map(str::to_owned),
+        merchant_reference: order
+            .merchant_order_id
+            .clone()
+            .filter(|reference| shown && !reference.is_empty()),
+        merchant_site: crate::embed_domains::verified_site(&row.site, domains, crate::now_unix()),
     }
 }
 
@@ -951,6 +999,7 @@ mod tests {
         let mut order = crate::engine_client::OrderView {
             order_id: shared::ids::OrderId::new("pay_test".to_string()),
             merchant_order_id: None,
+            description: None,
             address: "address".to_string(),
             xmr_amount_piconero: 500_000_000_000,
             amount_received_piconero: 200_000_000_000,
@@ -1070,6 +1119,116 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string()
+    }
+
+    /// What the checkout tells the payer about who they're paying: the
+    /// store's name; the order's description, or the store's payment
+    /// description when it has none; the reference unless its creator hid
+    /// it; the site only once its domain is verified.
+    #[tokio::test]
+    async fn the_checkout_says_who_is_paid_and_for_what() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "checkout-header@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let pk = create_connection(&router, &session_token).await;
+        let store = {
+            let key = pk.clone();
+            state
+                .db
+                .read(move |db| db.get_store_connection_by_public_key(&key))
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        let store_id = store.id.clone();
+        state
+            .db
+            .write(move |db| db.set_store_payment_description(&store_id, "Coffee and cake"))
+            .await
+            .unwrap();
+        let post = |body: serde_json::Value| {
+            let (router, pk) = (router.clone(), pk.clone());
+            async move {
+                let response = router
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri(format!("/pay/{pk}/orders"))
+                            .header("content-type", "application/json")
+                            .body(Body::from(body.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                crate::db::OrderId::new(
+                    body_json(response).await["order_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string(),
+                )
+            }
+        };
+        let view = |order_id: crate::db::OrderId| {
+            let (state, pk) = (state.clone(), pk.clone());
+            async move {
+                let Ok((row, sk, detail)) = super::load_order(&state, &pk, &order_id).await else {
+                    panic!("the order loads");
+                };
+                super::build_checkout_view(
+                    &state,
+                    &pk,
+                    &row,
+                    &sk,
+                    detail,
+                    None,
+                    &CheckoutOptions::default(),
+                )
+                .await
+            }
+        };
+
+        let described = post(serde_json::json!({
+            "amount": "1", "currency": TEST_CURRENCY,
+            "description": "Two flat whites", "merchant_order_id": "A-17",
+        }))
+        .await;
+        let shown = view(described.clone()).await;
+        assert_eq!(shown.store_name, store.name);
+        assert_eq!(shown.description.as_deref(), Some("Two flat whites"));
+        assert_eq!(shown.merchant_reference.as_deref(), Some("A-17"));
+        // Its domain is still waiting for DNS.
+        assert_eq!(shown.merchant_site, None);
+
+        let plain = post(serde_json::json!({
+            "amount": "1", "currency": TEST_CURRENCY,
+            "merchant_order_id": "8812", "show_merchant_order_id": false,
+        }))
+        .await;
+        let shown = view(plain).await;
+        assert_eq!(shown.description.as_deref(), Some("Coffee and cake"));
+        assert_eq!(shown.merchant_reference, None);
+
+        let store_id = store.id.clone();
+        state
+            .db
+            .write(move |db| {
+                for domain in db.list_store_domains(&store_id)? {
+                    db.record_store_domain_check(&domain.id, crate::now_unix(), None)?;
+                }
+                Ok::<_, crate::db::DbError>(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            view(described).await.merchant_site.as_deref(),
+            Some("shop.example.com")
+        );
     }
 
     #[tokio::test]

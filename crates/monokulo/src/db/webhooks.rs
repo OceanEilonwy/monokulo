@@ -146,6 +146,8 @@ pub struct LoggedEvent {
     pub status: Option<String>,
     pub txid: Option<String>,
     pub merchant_order_id: Option<String>,
+    /// What the order is for, as it was created.
+    pub description: Option<String>,
     pub xmr_amount_piconero: u64,
 }
 

@@ -357,6 +357,7 @@ async fn store_with_deliveries(
             status: event_type.strip_prefix("order.").map(str::to_string),
             txid: None,
             merchant_order_id: None,
+            description: None,
             xmr_amount_piconero: 1,
         };
         db.queue_order_event(&event, now - 600, |store, metadata| {
@@ -1102,6 +1103,7 @@ async fn a_webhooks_deliveries_page_twenty_at_a_time() {
                 status: Some("paid".into()),
                 txid: None,
                 merchant_order_id: None,
+                description: None,
                 xmr_amount_piconero: 1,
             };
             db.queue_order_event(&event, 1000, |store, metadata| {

@@ -29,6 +29,11 @@ pub struct CreateOrderData {
     pub amount: String,
     pub currency: String,
     pub merchant_order_id: String,
+    /// What the order is for, shown to the payer.
+    pub description: String,
+    /// The "Show the reference to the payer" switch: on unless a rejected
+    /// submission turned it off.
+    pub show_merchant_order_id: bool,
     /// The hidden per-form idempotency key (see `http::orders::create_order`).
     pub request_key: String,
 }
@@ -65,10 +70,28 @@ pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
                 (ui::FieldNote::new(html! { "\"XMR\" always works, with no provider needed. Any other currency here comes from this "
                     "store's own exchange rate provider (in this store's settings)." }))
             }
+            label for="description" { "What it's for " (ui::Hint::new("(optional)").inline(true)) }
+            (ui::Input::new("description")
+                .id("description")
+                .value(data.description.as_str())
+                .attr("maxlength", crate::stores::MAX_DESCRIPTION_CHARS.to_string())
+                .described_by("description-note"))
+            (ui::FieldNote::new(html! { "Shown to the payer under your store's name. Up to 140 characters. Anyone with the "
+                "payment link can read it. Empty uses the store's payment description." })
+                .id("description-note"))
             label for="merchant_order_id" { "Merchant Reference " (ui::Hint::new("(optional)").inline(true)) }
             (ui::Input::new("merchant_order_id").id("merchant_order_id").value(data.merchant_order_id.as_str()))
             (ui::FieldNote::new(html! { "Your own order/cart id, if you have one - shown on this order's detail page so you can "
                 "match it back to your own records." }))
+            label for="show-merchant-order-id" { "Show the reference to the payer" }
+            (super::controls::switch(
+                "show_merchant_order_id",
+                "show-merchant-order-id",
+                data.show_merchant_order_id,
+                Some("show-merchant-order-id-note"),
+                None,
+            ))
+            (ui::FieldNote::new("Turn off for internal IDs.").id("show-merchant-order-id-note"))
             (ui::FormActions::new(ui::Button::new("Create order").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)))
         }
     };
@@ -99,6 +122,8 @@ mod tests {
             amount: "10.00".to_string(),
             currency: String::new(),
             merchant_order_id: String::new(),
+            description: String::new(),
+            show_merchant_order_id: true,
             request_key: "key-1".to_string(),
         }
     }
@@ -113,6 +138,8 @@ mod tests {
                 amount: "25.50".to_string(),
                 currency: "USD".to_string(),
                 merchant_order_id: "table 4".to_string(),
+                description: "Two coffees".to_string(),
+                show_merchant_order_id: false,
                 request_key: "kept-key".to_string(),
                 order_creation_error: Some("try again".to_string()),
                 ..data()
@@ -122,6 +149,11 @@ mod tests {
         assert!(html.contains(r#"value="25.50""#), "{html}");
         assert!(html.contains(r#"<option value="USD" selected>"#), "{html}");
         assert!(html.contains(r#"value="table 4""#), "{html}");
+        assert!(html.contains(r#"value="Two coffees""#), "{html}");
+        assert!(
+            html.contains(r#"name="show_merchant_order_id" value="true" id="show-merchant-order-id" aria-describedby"#),
+            "{html}"
+        );
         assert!(
             html.contains(r#"name="request_key" value="kept-key""#),
             "{html}"
@@ -133,6 +165,17 @@ mod tests {
         let html = page(&chrome(), &data()).into_string();
         assert!(html.contains("Merchant Reference"));
         assert!(html.contains(r#"name="merchant_order_id""#));
+        // What it's for comes first; the switch, on, after the reference.
+        let description = html.find(r#"name="description""#).unwrap();
+        let reference = html.find(r#"name="merchant_order_id""#).unwrap();
+        let switch = html.find(r#"name="show_merchant_order_id""#).unwrap();
+        assert!(description < reference && reference < switch, "{html}");
+        assert!(html.contains(r#"maxlength="140""#), "{html}");
+        assert!(html.contains("Show the reference to the payer"), "{html}");
+        assert!(
+            html.contains(r#"id="show-merchant-order-id" checked"#),
+            "{html}"
+        );
         assert!(html.contains(r#"action="/dashboard/stores/conn_1/orders/new""#));
     }
 
