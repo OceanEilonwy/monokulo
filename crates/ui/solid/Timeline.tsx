@@ -6,26 +6,35 @@ import type { JSX } from '@solidjs/web';
 import type { Event } from './types';
 
 /**
- * What happened to something, in order, each with when.
+ * What happened to something, in order, each with when, what, and
+ * optionally more about it and a mark for how it went.
  */
 export interface TimelineProps {
   events: readonly Event[];
 }
 
 /**
- * What happened to something, in order, each with when.
+ * What happened to something, in order, each with when, what, and
+ * optionally more about it and a mark for how it went.
  */
 export function Timeline(props: TimelineProps): JSX.Element {
   return (
     <ol class="timeline">
       <For each={props.events}>
         {(event) => (
-          <li>
+          <li data-tone={event.tone}>
             <time>
               {event.when}
             </time>
             <span>
               {event.what}
+              {event.detail != null ? (
+                <small class="timeline-detail">
+                  {event.detail}
+                </small>
+              ) : (
+                null
+              )}
             </span>
           </li>
         )}

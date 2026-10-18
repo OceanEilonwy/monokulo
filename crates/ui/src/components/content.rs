@@ -601,35 +601,128 @@ pub struct Event {
     /// When ("12 Oct, 14:02").
     pub when: String,
     pub what: Slot,
+    /// Under `what`, muted: more about it ("10 of 10 confirmations").
+    pub detail: Option<Slot>,
+    /// How it went, as a mark before it: `Notice` for something that
+    /// happened, `Success`, `Warning` or `Error` for how it ended; none for
+    /// a plain step. The words say it; the mark only backs them up.
+    pub tone: Option<Tone>,
+}
+
+impl Event {
+    /// An event with nothing more to say about it.
+    pub fn new(when: impl Into<String>, what: impl Into<Slot>) -> Self {
+        Self {
+            when: when.into(),
+            what: what.into(),
+            detail: None,
+            tone: None,
+        }
+    }
+
+    pub fn detail(mut self, detail: impl Into<Slot>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    pub fn tone(mut self, tone: Tone) -> Self {
+        self.tone = Some(tone);
+        self
+    }
 }
 
 component! {
-    /// What happened to something, in order, each with when.
+    /// What happened to something, in order, each with when, what, and
+    /// optionally more about it and a mark for how it went.
     pub struct Timeline {
         events: Vec<Event>,
     }
     html {
         ol class="timeline" {
             @for event in events {
-                li { time { (event.when) } span { (event.what) } }
+                li data-tone=[event.tone] {
+                    time { (event.when) }
+                    span {
+                        (event.what)
+                        @if let Some(detail) = event.detail { small class="timeline-detail" { (detail) } }
+                    }
+                }
             }
         }
     }
 }
 
 pub(super) fn timeline_examples() -> Vec<(&'static str, Timeline)> {
-    let event = |when: &str, what: &str| Event {
-        when: when.into(),
-        what: what.into(),
-    };
-    vec![(
-        "A wallet's history",
-        Timeline::new(vec![
-            event("12 Oct, 14:02", "Added"),
-            event("12 Oct, 14:09", "Backup checked"),
-            event("13 Oct, 09:41", "First payment"),
-        ]),
-    )]
+    vec![
+        (
+            "A wallet's history",
+            Timeline::new(vec![
+                Event::new("12 Oct, 14:02", "Added"),
+                Event::new("12 Oct, 14:09", "Backup checked"),
+                Event::new("13 Oct, 09:41", "First payment"),
+            ]),
+        ),
+        (
+            "An order's payments, newest first",
+            Timeline::new(vec![
+                Event::new("14:31", "Paid")
+                    .detail("10 of 10 confirmations, at block 3,284,117")
+                    .tone(Tone::Success),
+                Event::new("14:09", "Payment seen: 0.214 XMR")
+                    .detail("In the mempool")
+                    .tone(Tone::Notice),
+                Event::new("14:02", "Order created").detail("From the dashboard"),
+            ]),
+        ),
+    ]
+}
+
+component! {
+    /// Where a list or a record would be, when there's nothing in it yet:
+    /// an icon, what's missing in bold, what happens next, and what to do
+    /// about it. "No payments have been made yet", "No orders yet".
+    pub struct EmptyState {
+        /// What's missing, in a few words.
+        title: Slot,
+        /// Before the words: an inline SVG (`assets::icons::CLOCK`).
+        icon: Option<Slot>,
+        /// Under the title, muted: what happens next, or why it's empty.
+        text: Option<Slot>,
+        /// Under that: links or buttons, the one that helps most first.
+        actions: Option<Slot>,
+        rest: Attrs,
+    }
+    html {
+        div class="mk-empty" ..rest {
+            @if let Some(icon) = icon { span class="mk-empty-icon" aria-hidden="true" { (icon) } }
+            div class="mk-empty-body" {
+                p class="mk-empty-title" { (title) }
+                @if let Some(text) = text { p class="mk-empty-text" { (text) } }
+                @if let Some(actions) = actions { div class="mk-empty-actions" { (actions) } }
+            }
+        }
+    }
+}
+
+pub(super) fn empty_state_examples() -> Vec<(&'static str, EmptyState)> {
+    vec![
+        (
+            "Waiting, with what to do",
+            EmptyState::new("No payments have been made yet")
+                .icon("⏱")
+                .text("Payments show here as soon as they reach the network. This order expires at 14:32.")
+                .actions(Slot::many([
+                    crate::LinkButton::new("Share payment link", "#component-empty-state")
+                        .variant(crate::ButtonVariant::Primary)
+                        .size(crate::ControlSize::Compact)
+                        .into(),
+                    crate::LinkButton::new("Open checkout", "#component-empty-state")
+                        .size(crate::ControlSize::Compact)
+                        .into(),
+                ])),
+        ),
+        ("Just the words", EmptyState::new("No orders yet")),
+    ]
 }
 
 /// How a table changes on a phone.
@@ -891,8 +984,9 @@ pub(super) fn pagination_examples() -> Vec<(&'static str, Pagination)> {
 
 component! {
     /// One thing in a list of them, as a card: a title and a line under it,
-    /// its status at the right, a figure (an amount), and a foot with a
-    /// detail and what to do with it. An order on the POS's list.
+    /// its status at the right, a figure (an amount) or a few facts, and a
+    /// foot with a detail and what to do with it. An order on the POS's
+    /// list; a store on the dashboard's.
     pub struct Card {
         title: Slot,
         subtitle: Option<Slot>,
@@ -900,6 +994,8 @@ component! {
         status: Option<Slot>,
         /// The figure: an amount.
         amount: Option<Slot>,
+        /// Under the head (and the figure): a few facts about it (`Facts`).
+        body: Option<Slot>,
         /// Muted, at the foot's left.
         detail: Option<Slot>,
         /// At the foot's right: a link or a button.
@@ -916,6 +1012,7 @@ component! {
                 @if let Some(status) = status { (status) }
             }
             @if let Some(amount) = amount { p class="mk-card-amount" { (amount) } }
+            @if let Some(body) = body { div class="mk-card-body" { (body) } }
             div class="mk-card-foot" {
                 @if let Some(detail) = detail { small { (detail) } }
                 @if let Some(action) = action { (action) }
@@ -925,21 +1022,46 @@ component! {
 }
 
 pub(super) fn card_examples() -> Vec<(&'static str, Card)> {
-    vec![(
-        "An order",
-        Card::new("Table 4")
-            .subtitle("Created 14:02")
-            .status(
-                Tag::new("Waiting for payment")
-                    .state(OrderState::Pending)
-                    .short("Waiting"),
-            )
-            .amount("0.42 XMR")
-            .detail("Expires in 52 min")
-            .action(
-                crate::LinkButton::new("Open", "#component-card")
-                    .variant(crate::ButtonVariant::Quiet)
-                    .size(crate::ControlSize::Compact),
-            ),
-    )]
+    let fact = |term: &str, value: &str| Fact {
+        term: term.into(),
+        value: value.into(),
+    };
+    vec![
+        (
+            "A store, with facts and actions",
+            Card::new("Kafe Kolo")
+                .subtitle("kafekolo.example")
+                .status(Tag::new("Ready").tone(TagTone::Ok))
+                .body(Facts::new(vec![
+                    fact("Received", "3.412 XMR"),
+                    fact("Orders in 24 h", "7"),
+                    fact("Last order", "12 min ago"),
+                ]))
+                .action(crate::FormActions::new(Slot::many([
+                    crate::LinkButton::new("Open POS", "#component-card")
+                        .size(crate::ControlSize::Compact)
+                        .into(),
+                    crate::LinkButton::new("Settings", "#component-card")
+                        .size(crate::ControlSize::Compact)
+                        .into(),
+                ]))),
+        ),
+        (
+            "An order",
+            Card::new("Table 4")
+                .subtitle("Created 14:02")
+                .status(
+                    Tag::new("Waiting for payment")
+                        .state(OrderState::Pending)
+                        .short("Waiting"),
+                )
+                .amount("0.42 XMR")
+                .detail("Expires in 52 min")
+                .action(
+                    crate::LinkButton::new("Open", "#component-card")
+                        .variant(crate::ButtonVariant::Quiet)
+                        .size(crate::ControlSize::Compact),
+                ),
+        ),
+    ]
 }

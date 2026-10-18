@@ -535,6 +535,151 @@ pub(super) fn radio_cards_examples() -> Vec<(&'static str, RadioCards)> {
     )]
 }
 
+/// One row of [`RowsEditor`].
+#[derive(Clone, Debug, UiRecord)]
+pub struct EditorRow {
+    /// The name of the checkbox that removes it when the form is saved:
+    /// unique among the rows.
+    pub name: String,
+    /// What the row is, in a few words ("the 500 EUR tier"): its remove
+    /// control says "Remove" and this.
+    pub label: String,
+    /// Its controls, each labelled (`Input`s with `label`).
+    pub fields: Slot,
+}
+
+component! {
+    /// Rows of a list a form edits: each row's controls, a way to remove
+    /// it, and a blank row to add one, up to a limit the form keeps. A row
+    /// that can't be removed (a default) goes before it, on its own.
+    /// Without JavaScript a row's Remove is a checkbox the save applies,
+    /// and the blank row is there to fill in. Once its island attaches,
+    /// Remove marks the row at once (pressed again, it puts it back; the
+    /// save still applies it), and the blank row waits behind an Add
+    /// button. Each change is an `input` event on the checkbox, so a
+    /// settings form sees it.
+    pub struct RowsEditor {
+        /// What the rows are, for screen readers.
+        label: String,
+        rows: Vec<EditorRow>,
+        /// A blank row's controls, to add one; none at the limit.
+        new_row: Option<Slot>,
+        /// The add button's words.
+        #[default(String::from("Add"))]
+        add_label: String,
+        /// Under the rows, muted: how many of how many, or why no more.
+        note: Option<Slot>,
+        rest: Attrs,
+    }
+    behaviour "rows-editor.behaviour.ts" {
+        uses(rows),
+        /// The blank row is showing.
+        adding: bool,
+        fn toggle(String),
+        fn add,
+        ref root,
+    }
+    html {
+        fieldset class="mk-rows" data-ready="" if enhanced data-adding="" if b.adding ..rest ref=root {
+            legend class="visually-hidden" { (label) }
+            ul class="mk-rows-list" {
+                @for row in rows {
+                    li class="mk-rows-row" {
+                        div class="mk-rows-fields" { (row.fields) }
+                        label class="mk-rows-remove" hidden="" if enhanced {
+                            input type="checkbox" name=(row.name) value="remove" data-rows-remove="";
+                            span { "Remove" }
+                            span class="visually-hidden" { " " (row.label) }
+                        }
+                        // Hidden until the behaviour works it: in a list,
+                        // the server renders what it attaches to.
+                        button class="mk-btn mk-rows-toggle" data-size="compact" type="button" hidden="" if !enhanced
+                            aria-label={ "Remove " (row.label) } aria-pressed="false" on:click=toggle(row.name) {
+                            svg class="mk-icon" viewBox="0 0 24 24" aria-hidden="true" { path d="M6 6l12 12M18 6 6 18" {} }
+                            span class="mk-rows-undo" { "Undo" }
+                        }
+                    }
+                }
+                @if let Some(new_row) = new_row {
+                    li class="mk-rows-row mk-rows-new" { div class="mk-rows-fields" { (new_row) } }
+                }
+            }
+            div class="mk-rows-foot" {
+                // Hidden until the behaviour works it, so the island needn't
+                // carry the blank row to know there is one.
+                @if new_row {
+                    button class="mk-btn mk-rows-add" data-size="compact" type="button" hidden="" if !enhanced on:click=add {
+                        svg class="mk-icon" viewBox="0 0 24 24" aria-hidden="true" { path d="M12 5v14M5 12h14" {} }
+                        (add_label)
+                    }
+                }
+                @if let Some(note) = note { p class="mk-rows-note" { (note) } }
+            }
+        }
+    }
+}
+
+pub(super) fn rows_editor_examples() -> Vec<(&'static str, RowsEditor)> {
+    let tier = |name: &str, label: &str, from: &str, count: &str| EditorRow {
+        name: name.into(),
+        label: label.into(),
+        fields: Slot::many([
+            Slot::from("From "),
+            Input::new(format!("{name}_amount"))
+                .value(from)
+                .label("From amount, EUR")
+                .size(ControlSize::Compact)
+                .into(),
+            Slot::from(" EUR need "),
+            Input::new(format!("{name}_confirmations"))
+                .value(count)
+                .label("Confirmations")
+                .size(ControlSize::Compact)
+                .into(),
+            Slot::from(" confirmations"),
+        ]),
+    };
+    vec![
+        (
+            "Tiers, with a blank one to add",
+            RowsEditor::new(
+                "Confirmation tiers",
+                vec![
+                    tier("tier_0", "the 100 EUR tier", "100", "5"),
+                    tier("tier_1", "the 500 EUR tier", "500", "10"),
+                ],
+            )
+            .new_row(Slot::many([
+                Slot::from("From "),
+                Input::new("new_amount")
+                    .label("New tier's amount, EUR")
+                    .size(ControlSize::Compact)
+                    .into(),
+                Slot::from(" EUR need "),
+                Input::new("new_confirmations")
+                    .label("New tier's confirmations")
+                    .size(ControlSize::Compact)
+                    .into(),
+                Slot::from(" confirmations"),
+            ]))
+            .add_label("Add a tier")
+            .note("2 of 5 tiers."),
+        ),
+        (
+            "At the limit",
+            RowsEditor::new(
+                "Webhooks",
+                vec![EditorRow {
+                    name: "webhook_0".into(),
+                    label: "https://shop.example/hook".into(),
+                    fields: "https://shop.example/hook".into(),
+                }],
+            )
+            .note("1 of 1. Remove one to add another."),
+        ),
+    ]
+}
+
 component! {
     /// A button showing only an icon: its name, required, is what screen
     /// readers say and what hovering shows.

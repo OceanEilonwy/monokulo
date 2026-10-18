@@ -340,3 +340,75 @@ for (const theme of ['light', 'dark']) {
     });
   }
 }
+
+test('a grouped value copies the whole value, says so for a while, and stays whole on screen', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto('/#component-grouped-value');
+  const example = page.locator('#component-grouped-value-1');
+  const shown = example.locator('.mk-grouped-value');
+  const before = await shown.innerHTML();
+  const whole = await example.locator('.visually-hidden').first().textContent();
+  // The groups hold the value with nothing between them: a selection of
+  // them is the value.
+  expect(await shown.textContent()).toBe(whole);
+  await expect(shown.locator('span')).toHaveCount(16);
+  await example.getByRole('button', { name: 'Copy address' }).click();
+  await expect(example.getByRole('button', { name: 'Copied' })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(whole);
+  expect(await shown.innerHTML()).toBe(before);
+  await expect(example.getByRole('button', { name: 'Copy address' })).toBeVisible({ timeout: 6000 });
+  // A value no longer to be used has nothing to copy it with.
+  await expect(page.locator('#component-grouped-value-2 button')).toHaveCount(0);
+});
+
+test('rows mark removal at once and undo it, and the blank row waits behind Add', async ({ page }) => {
+  await page.goto('/#component-rows-editor');
+  const editor = page.locator('#component-rows-editor-1');
+  const box = editor.locator('input[data-rows-remove][name="tier_1"]');
+  const remove = editor.getByRole('button', { name: 'Remove the 500 EUR tier' });
+  await expect(box).toBeHidden();
+  await expect(editor.locator('.mk-rows-new')).toBeHidden();
+  await remove.click();
+  await expect(box).toBeChecked();
+  await expect(remove).toHaveAttribute('aria-pressed', 'true');
+  await expect(remove).toContainText('Undo');
+  await remove.click();
+  await expect(box).not.toBeChecked();
+  await editor.getByRole('button', { name: 'Add a tier' }).click();
+  await expect(editor.locator('.mk-rows-new')).toBeVisible();
+  await expect(editor.getByRole('textbox', { name: "New tier's amount, EUR" })).toBeFocused();
+  await expect(editor.getByRole('button', { name: 'Add a tier' })).toBeHidden();
+});
+
+test('without JavaScript rows remove with a checkbox, the blank row is there, and a countdown shows the server\'s time', async ({ browser }) => {
+  const { context, page } = await noScript(browser);
+  const editor = page.locator('#component-rows-editor-1');
+  await expect(editor.locator('.mk-rows-toggle')).toHaveCount(2);
+  await expect(editor.locator('.mk-rows-toggle').first()).toBeHidden();
+  const box = editor.getByRole('checkbox', { name: /Remove the 500 EUR tier/ });
+  await box.check();
+  await expect(box).toBeChecked();
+  await expect(editor.locator('.mk-rows-new')).toBeVisible();
+  await expect(page.locator('#component-countdown-1')).toContainText('29m left to pay');
+  await context.close();
+});
+
+test('a countdown counts on from the seconds it was given, and turns as time runs low', async ({ page }) => {
+  await page.clock.install();
+  await page.goto('/#component-countdown');
+  const first = page.locator('#component-countdown-1 .mk-countdown');
+  await expect(first.locator('.mk-countdown-clock')).toHaveText('29:14');
+  await expect(first).toHaveAttribute('data-tone', 'normal');
+  await page.clock.runFor(3000);
+  await expect(first.locator('.mk-countdown-clock')).toHaveText('29:11');
+  const low = page.locator('#component-countdown-2 .mk-countdown');
+  await expect(low).toHaveAttribute('data-tone', 'soon');
+  await page.clock.runFor(235_000);
+  await expect(low).toHaveAttribute('data-tone', 'urgent');
+  await expect(low.getByRole('status')).toHaveText('1 minute left.');
+  const ended = low.evaluate(el => new Promise(resolve => el.addEventListener('mk-countdown-end', () => resolve(true), { once: true })));
+  await page.clock.runFor(60_000);
+  expect(await ended).toBe(true);
+  await expect(low.getByRole('status')).toHaveText('Time is up.');
+  await expect(low.locator('progress')).toHaveAttribute('value', '0');
+});

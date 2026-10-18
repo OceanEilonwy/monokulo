@@ -64,4 +64,10 @@ pub mod icons {
     pub const COPY: &str = include_str!("../web/icons/copy.svg").trim_ascii();
     pub const ARROW_LEFT: &str = include_str!("../web/icons/arrow-left.svg").trim_ascii();
     pub const ARROW_RIGHT: &str = include_str!("../web/icons/arrow-right.svg").trim_ascii();
+    pub const CLOCK: &str = include_str!("../web/icons/clock.svg").trim_ascii();
+    pub const SETTINGS: &str = include_str!("../web/icons/settings.svg").trim_ascii();
+    pub const ORDER_NEW: &str = include_str!("../web/icons/order-new.svg").trim_ascii();
+    pub const POS: &str = include_str!("../web/icons/pos.svg").trim_ascii();
+    pub const SHARE: &str = include_str!("../web/icons/share.svg").trim_ascii();
+    pub const WALLET: &str = include_str!("../web/icons/wallet.svg").trim_ascii();
 }

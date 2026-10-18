@@ -6,10 +6,11 @@ import type { JSX } from '@solidjs/web';
 
 /**
  * One thing in a list of them, as a card: a title and a line under it,
- * its status at the right, a figure (an amount), and a foot with a
- * detail and what to do with it. An order on the POS's list.
+ * its status at the right, a figure (an amount) or a few facts, and a
+ * foot with a detail and what to do with it. An order on the POS's
+ * list; a store on the dashboard's.
  */
-export interface CardProps extends Omit<JSX.IntrinsicElements["article"], "action" | "amount" | "class" | "classList" | "detail" | "status" | "style" | "subtitle" | "title"> {
+export interface CardProps extends Omit<JSX.IntrinsicElements["article"], "action" | "amount" | "body" | "class" | "classList" | "detail" | "status" | "style" | "subtitle" | "title"> {
   title: JSX.Element;
   subtitle?: JSX.Element;
   /**
@@ -20,6 +21,10 @@ export interface CardProps extends Omit<JSX.IntrinsicElements["article"], "actio
    * The figure: an amount.
    */
   amount?: JSX.Element;
+  /**
+   * Under the head (and the figure): a few facts about it (`Facts`).
+   */
+  body?: JSX.Element;
   /**
    * Muted, at the foot's left.
    */
@@ -32,11 +37,12 @@ export interface CardProps extends Omit<JSX.IntrinsicElements["article"], "actio
 
 /**
  * One thing in a list of them, as a card: a title and a line under it,
- * its status at the right, a figure (an amount), and a foot with a
- * detail and what to do with it. An order on the POS's list.
+ * its status at the right, a figure (an amount) or a few facts, and a
+ * foot with a detail and what to do with it. An order on the POS's
+ * list; a store on the dashboard's.
  */
 export function Card(props: CardProps): JSX.Element {
-  const rest = omit(props, "title", "subtitle", "status", "amount", "detail", "action");
+  const rest = omit(props, "title", "subtitle", "status", "amount", "body", "detail", "action");
   return (
     <article class="mk-card" {...rest}>
       <div class="mk-card-head">
@@ -64,6 +70,13 @@ export function Card(props: CardProps): JSX.Element {
         <p class="mk-card-amount">
           {props.amount}
         </p>
+      ) : (
+        null
+      )}
+      {props.body != null ? (
+        <div class="mk-card-body">
+          {props.body}
+        </div>
       ) : (
         null
       )}

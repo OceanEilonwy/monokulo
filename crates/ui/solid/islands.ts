@@ -4,9 +4,12 @@
 import { attachHelpTip } from './HelpTip';
 import { attachSortableList } from './SortableList';
 import { attachDialog } from './Dialog';
+import { attachRowsEditor } from './RowsEditor';
 import { attachSelect } from './Select';
+import { attachCountdown } from './Countdown';
 import { attachTabs } from './Tabs';
 import { attachCopyValue } from './CopyValue';
+import { attachGroupedValue } from './GroupedValue';
 import { attachCopyBlock } from './CopyBlock';
 import { attachSettingsForm } from './SettingsForm';
 import { attachSettingsCard } from './SettingsCard';
@@ -21,9 +24,12 @@ export const islands: Record<string, (root: Element, props: never) => () => void
   HelpTip: attachHelpTip,
   SortableList: attachSortableList,
   Dialog: attachDialog,
+  RowsEditor: attachRowsEditor,
   Select: attachSelect,
+  Countdown: attachCountdown,
   Tabs: attachTabs,
   CopyValue: attachCopyValue,
+  GroupedValue: attachGroupedValue,
   CopyBlock: attachCopyBlock,
   SettingsForm: attachSettingsForm,
   SettingsCard: attachSettingsCard,

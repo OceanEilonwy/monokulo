@@ -275,10 +275,10 @@ the up or down arrow&quot;).</td></tr><tr><th scope="row"><code>rest</code></th>
     }
   }
 ]} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;ul class=&quot;checks&quot;&gt;&lt;li class=&quot;ok&quot;&gt;&lt;span class=&quot;mark&quot; aria-hidden=&quot;true&quot;&gt;✓&lt;/span&gt;&lt;span&gt;&lt;span class=&quot;visually-hidden&quot;&gt;Done: &lt;/span&gt;No plugin is connected to it&lt;/span&gt;&lt;/li&gt;&lt;li class=&quot;no&quot;&gt;&lt;span class=&quot;mark&quot; aria-hidden=&quot;true&quot;&gt;✕&lt;/span&gt;&lt;span&gt;&lt;span class=&quot;visually-hidden&quot;&gt;Not yet: &lt;/span&gt;No order from shop.example.com can still be paid&lt;span class=&quot;fix&quot;&gt;2 can be paid until about 14:20&lt;/span&gt;&lt;/span&gt;&lt;/li&gt;&lt;li class=&quot;then&quot;&gt;&lt;span class=&quot;mark&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;&lt;span&gt;Checkouts embedded on shop.example.com stop loading&lt;/span&gt;&lt;/li&gt;&lt;/ul&gt;</code></pre></details></figure></div></section>
-<section class="book-section" id="component-timeline"><h2>Timeline</h2><p>What happened to something, in order, each with when.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>events</code></th><td><code>Vec&lt;Event&gt;</code></td><td>Required. One event of a [<code>Timeline</code>].</td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-timeline-1"><figcaption>A wallet's history</figcaption><div class="book-example"><ol class="timeline"><li><time>12 Oct, 14:02</time><span>Added</span></li><li><time>12 Oct, 14:09</time><span>Backup checked</span></li><li><time>13 Oct, 09:41</time><span>First payment</span></li></ol></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Timeline::new(vec![
-    Event { when: &quot;12 Oct, 14:02&quot;.into(), what: &quot;Added&quot;.into() },
-    Event { when: &quot;12 Oct, 14:09&quot;.into(), what: &quot;Backup checked&quot;.into() },
-    Event { when: &quot;13 Oct, 09:41&quot;.into(), what: &quot;First payment&quot;.into() },
+<section class="book-section" id="component-timeline"><h2>Timeline</h2><p>What happened to something, in order, each with when, what, and optionally more about it and a mark for how it went.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>events</code></th><td><code>Vec&lt;Event&gt;</code></td><td>Required. One event of a [<code>Timeline</code>].</td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-timeline-1"><figcaption>A wallet's history</figcaption><div class="book-example"><ol class="timeline"><li><time>12 Oct, 14:02</time><span>Added</span></li><li><time>12 Oct, 14:09</time><span>Backup checked</span></li><li><time>13 Oct, 09:41</time><span>First payment</span></li></ol></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Timeline::new(vec![
+    Event { when: &quot;12 Oct, 14:02&quot;.into(), what: &quot;Added&quot;.into(), detail: None, tone: None },
+    Event { when: &quot;12 Oct, 14:09&quot;.into(), what: &quot;Backup checked&quot;.into(), detail: None, tone: None },
+    Event { when: &quot;13 Oct, 09:41&quot;.into(), what: &quot;First payment&quot;.into(), detail: None, tone: None },
 ])</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Timeline events={[
   {
     &quot;what&quot;: {
@@ -304,7 +304,106 @@ the up or down arrow&quot;).</td></tr><tr><th scope="row"><code>rest</code></th>
     },
     &quot;when&quot;: &quot;13 Oct, 09:41&quot;
   }
-]} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;ol class=&quot;timeline&quot;&gt;&lt;li&gt;&lt;time&gt;12 Oct, 14:02&lt;/time&gt;&lt;span&gt;Added&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;time&gt;12 Oct, 14:09&lt;/time&gt;&lt;span&gt;Backup checked&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;time&gt;13 Oct, 09:41&lt;/time&gt;&lt;span&gt;First payment&lt;/span&gt;&lt;/li&gt;&lt;/ol&gt;</code></pre></details></figure></div></section>
+]} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;ol class=&quot;timeline&quot;&gt;&lt;li&gt;&lt;time&gt;12 Oct, 14:02&lt;/time&gt;&lt;span&gt;Added&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;time&gt;12 Oct, 14:09&lt;/time&gt;&lt;span&gt;Backup checked&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;time&gt;13 Oct, 09:41&lt;/time&gt;&lt;span&gt;First payment&lt;/span&gt;&lt;/li&gt;&lt;/ol&gt;</code></pre></details></figure><figure class="book-specimen" id="component-timeline-2"><figcaption>An order's payments, newest first</figcaption><div class="book-example"><ol class="timeline"><li data-tone="success"><time>14:31</time><span>Paid<small class="timeline-detail">10 of 10 confirmations, at block 3,284,117</small></span></li><li data-tone="notice"><time>14:09</time><span>Payment seen: 0.214 XMR<small class="timeline-detail">In the mempool</small></span></li><li><time>14:02</time><span>Order created<small class="timeline-detail">From the dashboard</small></span></li></ol></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Timeline::new(vec![
+    Event { when: &quot;14:31&quot;.into(), what: &quot;Paid&quot;.into(), detail: Some(&quot;10 of 10 confirmations, at block 3,284,117&quot;.into()), tone: Some(Tone::Success) },
+    Event { when: &quot;14:09&quot;.into(), what: &quot;Payment seen: 0.214 XMR&quot;.into(), detail: Some(&quot;In the mempool&quot;.into()), tone: Some(Tone::Notice) },
+    Event { when: &quot;14:02&quot;.into(), what: &quot;Order created&quot;.into(), detail: Some(&quot;From the dashboard&quot;.into()), tone: None },
+])</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Timeline events={[
+  {
+    &quot;detail&quot;: {
+      &quot;$slot&quot;: [
+        &quot;10 of 10 confirmations, at block 3,284,117&quot;
+      ]
+    },
+    &quot;tone&quot;: &quot;success&quot;,
+    &quot;what&quot;: {
+      &quot;$slot&quot;: [
+        &quot;Paid&quot;
+      ]
+    },
+    &quot;when&quot;: &quot;14:31&quot;
+  },
+  {
+    &quot;detail&quot;: {
+      &quot;$slot&quot;: [
+        &quot;In the mempool&quot;
+      ]
+    },
+    &quot;tone&quot;: &quot;notice&quot;,
+    &quot;what&quot;: {
+      &quot;$slot&quot;: [
+        &quot;Payment seen: 0.214 XMR&quot;
+      ]
+    },
+    &quot;when&quot;: &quot;14:09&quot;
+  },
+  {
+    &quot;detail&quot;: {
+      &quot;$slot&quot;: [
+        &quot;From the dashboard&quot;
+      ]
+    },
+    &quot;what&quot;: {
+      &quot;$slot&quot;: [
+        &quot;Order created&quot;
+      ]
+    },
+    &quot;when&quot;: &quot;14:02&quot;
+  }
+]} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;ol class=&quot;timeline&quot;&gt;&lt;li data-tone=&quot;success&quot;&gt;&lt;time&gt;14:31&lt;/time&gt;&lt;span&gt;Paid&lt;small class=&quot;timeline-detail&quot;&gt;10 of 10 confirmations, at block 3,284,117&lt;/small&gt;&lt;/span&gt;&lt;/li&gt;&lt;li data-tone=&quot;notice&quot;&gt;&lt;time&gt;14:09&lt;/time&gt;&lt;span&gt;Payment seen: 0.214 XMR&lt;small class=&quot;timeline-detail&quot;&gt;In the mempool&lt;/small&gt;&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;time&gt;14:02&lt;/time&gt;&lt;span&gt;Order created&lt;small class=&quot;timeline-detail&quot;&gt;From the dashboard&lt;/small&gt;&lt;/span&gt;&lt;/li&gt;&lt;/ol&gt;</code></pre></details></figure></div></section>
+<section class="book-section" id="component-empty-state"><h2>EmptyState</h2><p>Where a list or a record would be, when there's nothing in it yet: an icon, what's missing in bold, what happens next, and what to do about it. &quot;No payments have been made yet&quot;, &quot;No orders yet&quot;.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>title</code></th><td><code>Slot</code></td><td>Required. What's missing, in a few words.</td></tr><tr><th scope="row"><code>icon</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Before the words: an inline SVG (<code>assets::icons::CLOCK</code>).</td></tr><tr><th scope="row"><code>text</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Under the title, muted: what happens next, or why it's empty.</td></tr><tr><th scope="row"><code>actions</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Under that: links or buttons, the one that helps most first.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-empty-state-1"><figcaption>Waiting, with what to do</figcaption><div class="book-example"><div class="mk-empty"><span class="mk-empty-icon" aria-hidden="true">⏱</span><div class="mk-empty-body"><p class="mk-empty-title">No payments have been made yet</p><p class="mk-empty-text">Payments show here as soon as they reach the network. This order expires at 14:32.</p><div class="mk-empty-actions"><a class="mk-btn" href="#component-empty-state" data-variant="primary" data-size="compact">Share payment link</a><a class="mk-btn" href="#component-empty-state" data-size="compact">Open checkout</a></div></div></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>EmptyState::new(&quot;No payments have been made yet&quot;)
+    .icon(&quot;⏱&quot;)
+    .text(&quot;Payments show here as soon as they reach the network. This order expires at 14:32.&quot;)
+    .actions(Slot::many([LinkButton::new(&quot;Share payment link&quot;, &quot;#component-empty-state&quot;)
+        .variant(ButtonVariant::Primary)
+        .size(ControlSize::Compact), LinkButton::new(&quot;Open checkout&quot;, &quot;#component-empty-state&quot;)
+        .size(ControlSize::Compact)]))</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;EmptyState title={{
+  &quot;$slot&quot;: [
+    &quot;No payments have been made yet&quot;
+  ]
+}} icon={{
+  &quot;$slot&quot;: [
+    &quot;⏱&quot;
+  ]
+}} text={{
+  &quot;$slot&quot;: [
+    &quot;Payments show here as soon as they reach the network. This order expires at 14:32.&quot;
+  ]
+}} actions={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;LinkButton&quot;,
+      &quot;props&quot;: {
+        &quot;block&quot;: false,
+        &quot;children&quot;: {
+          &quot;$slot&quot;: [
+            &quot;Share payment link&quot;
+          ]
+        },
+        &quot;href&quot;: &quot;#component-empty-state&quot;,
+        &quot;size&quot;: &quot;compact&quot;,
+        &quot;variant&quot;: &quot;primary&quot;
+      }
+    },
+    {
+      &quot;$component&quot;: &quot;LinkButton&quot;,
+      &quot;props&quot;: {
+        &quot;block&quot;: false,
+        &quot;children&quot;: {
+          &quot;$slot&quot;: [
+            &quot;Open checkout&quot;
+          ]
+        },
+        &quot;href&quot;: &quot;#component-empty-state&quot;,
+        &quot;size&quot;: &quot;compact&quot;
+      }
+    }
+  ]
+}} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;mk-empty&quot;&gt;&lt;span class=&quot;mk-empty-icon&quot; aria-hidden=&quot;true&quot;&gt;⏱&lt;/span&gt;&lt;div class=&quot;mk-empty-body&quot;&gt;&lt;p class=&quot;mk-empty-title&quot;&gt;No payments have been made yet&lt;/p&gt;&lt;p class=&quot;mk-empty-text&quot;&gt;Payments show here as soon as they reach the network. This order expires at 14:32.&lt;/p&gt;&lt;div class=&quot;mk-empty-actions&quot;&gt;&lt;a class=&quot;mk-btn&quot; href=&quot;#component-empty-state&quot; data-variant=&quot;primary&quot; data-size=&quot;compact&quot;&gt;Share payment link&lt;/a&gt;&lt;a class=&quot;mk-btn&quot; href=&quot;#component-empty-state&quot; data-size=&quot;compact&quot;&gt;Open checkout&lt;/a&gt;&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;</code></pre></details></figure><figure class="book-specimen" id="component-empty-state-2"><figcaption>Just the words</figcaption><div class="book-example"><div class="mk-empty"><div class="mk-empty-body"><p class="mk-empty-title">No orders yet</p></div></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>EmptyState::new(&quot;No orders yet&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;EmptyState title={{
+  &quot;$slot&quot;: [
+    &quot;No orders yet&quot;
+  ]
+}} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;mk-empty&quot;&gt;&lt;div class=&quot;mk-empty-body&quot;&gt;&lt;p class=&quot;mk-empty-title&quot;&gt;No orders yet&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;</code></pre></details></figure></div></section>
 <section class="book-section" id="component-table"><h2>Table</h2><p>A table, in a box of its own that scrolls sideways when it's wider than the page. On a phone a column whose cells are <code>optional</code> goes, and <code>look</code> reshapes the rest. A page styling its columns names the table with <code>data-table</code>.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>children</code></th><td><code>Slot</code></td><td>Required. The rows: <code>Row</code>s (or a page's <code>tr</code>s).</td></tr><tr><th scope="row"><code>head</code></th><td><code>Option&lt;Slot&gt;</code></td><td>The header row.</td></tr><tr><th scope="row"><code>look</code></th><td><code>TableLook (plain | cards | stack | facts)</code></td><td>How a table changes on a phone. Default: plain.</td></tr><tr><th scope="row"><code>caption</code></th><td><code>Option&lt;String&gt;</code></td><td>For screen readers: what the table is.</td></tr><tr><th scope="row"><code>scroll</code></th><td><code>bool</code></td><td>Without its scroll box: a table already narrow enough. Default: true.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-table-1"><figcaption>Orders, cards on a phone</figcaption><div class="book-example"><div class="table-scroll"><table class="table-cards"><thead><tr><th>Order</th><th>Status</th><th>Amount</th></tr></thead><tbody><tr><td class="card-title">Coffee</td><td class="card-status"><span class="tag state-paid">Paid</span></td><td class="card-amount">0.02 XMR</td></tr><tr><td class="card-title">Tea</td><td class="card-status"><span class="tag state-pending"><span class="label-long">Waiting for payment</span><span class="label-short" aria-hidden="true">Waiting</span></span></td><td class="card-amount">0.01 XMR</td></tr></tbody></table></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Table::new(Slot::many([Row::new(Slot::many([Cell::new(&quot;Coffee&quot;)
     .part(CellPart::Title), Cell::new(Tag::new(&quot;Paid&quot;)
     .state(OrderState::Paid))
@@ -377,7 +476,112 @@ the up or down arrow&quot;).</td></tr><tr><th scope="row"><code>rest</code></th>
     .status(&quot;Page 2 of 5&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Pagination label=&quot;Invite pages&quot; previous=&quot;#component-pagination&quot; next=&quot;#component-pagination&quot; status=&quot;Page 2 of 5&quot; /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;nav class=&quot;mk-pagination&quot; aria-label=&quot;Invite pages&quot;&gt;&lt;a href=&quot;#component-pagination&quot; rel=&quot;prev&quot;&gt;← Previous&lt;/a&gt;&lt;span class=&quot;mk-pagination-status&quot;&gt;Page 2 of 5&lt;/span&gt;&lt;a href=&quot;#component-pagination&quot; rel=&quot;next&quot;&gt;Next →&lt;/a&gt;&lt;/nav&gt;</code></pre></details></figure><figure class="book-specimen" id="component-pagination-2"><figcaption>Newest first, at the start</figcaption><div class="book-example"><nav class="mk-pagination" aria-label="Orders pages"><a href="#component-pagination" rel="next">Older →</a></nav></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Pagination::new(&quot;Orders pages&quot;)
     .next(&quot;#component-pagination&quot;)
     .next_label(&quot;Older&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Pagination label=&quot;Orders pages&quot; next=&quot;#component-pagination&quot; next_label=&quot;Older&quot; /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;nav class=&quot;mk-pagination&quot; aria-label=&quot;Orders pages&quot;&gt;&lt;a href=&quot;#component-pagination&quot; rel=&quot;next&quot;&gt;Older →&lt;/a&gt;&lt;/nav&gt;</code></pre></details></figure></div></section>
-<section class="book-section" id="component-card"><h2>Card</h2><p>One thing in a list of them, as a card: a title and a line under it, its status at the right, a figure (an amount), and a foot with a detail and what to do with it. An order on the POS's list.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>title</code></th><td><code>Slot</code></td><td>Required.</td></tr><tr><th scope="row"><code>subtitle</code></th><td><code>Option&lt;Slot&gt;</code></td><td></td></tr><tr><th scope="row"><code>status</code></th><td><code>Option&lt;Slot&gt;</code></td><td>At the head's right: a <code>Tag</code>.</td></tr><tr><th scope="row"><code>amount</code></th><td><code>Option&lt;Slot&gt;</code></td><td>The figure: an amount.</td></tr><tr><th scope="row"><code>detail</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Muted, at the foot's left.</td></tr><tr><th scope="row"><code>action</code></th><td><code>Option&lt;Slot&gt;</code></td><td>At the foot's right: a link or a button.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-card-1"><figcaption>An order</figcaption><div class="book-example"><article class="mk-card"><div class="mk-card-head"><div><h3 class="mk-card-title">Table 4</h3><p class="mk-card-sub">Created 14:02</p></div><span class="tag state-pending"><span class="label-long">Waiting for payment</span><span class="label-short" aria-hidden="true">Waiting</span></span></div><p class="mk-card-amount">0.42 XMR</p><div class="mk-card-foot"><small>Expires in 52 min</small><a class="mk-btn" href="#component-card" data-variant="quiet" data-size="compact">Open</a></div></article></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Card::new(&quot;Table 4&quot;)
+<section class="book-section" id="component-card"><h2>Card</h2><p>One thing in a list of them, as a card: a title and a line under it, its status at the right, a figure (an amount) or a few facts, and a foot with a detail and what to do with it. An order on the POS's list; a store on the dashboard's.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>title</code></th><td><code>Slot</code></td><td>Required.</td></tr><tr><th scope="row"><code>subtitle</code></th><td><code>Option&lt;Slot&gt;</code></td><td></td></tr><tr><th scope="row"><code>status</code></th><td><code>Option&lt;Slot&gt;</code></td><td>At the head's right: a <code>Tag</code>.</td></tr><tr><th scope="row"><code>amount</code></th><td><code>Option&lt;Slot&gt;</code></td><td>The figure: an amount.</td></tr><tr><th scope="row"><code>body</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Under the head (and the figure): a few facts about it (<code>Facts</code>).</td></tr><tr><th scope="row"><code>detail</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Muted, at the foot's left.</td></tr><tr><th scope="row"><code>action</code></th><td><code>Option&lt;Slot&gt;</code></td><td>At the foot's right: a link or a button.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-card-1"><figcaption>A store, with facts and actions</figcaption><div class="book-example"><article class="mk-card"><div class="mk-card-head"><div><h3 class="mk-card-title">Kafe Kolo</h3><p class="mk-card-sub">kafekolo.example</p></div><span class="tag tag-ok">Ready</span></div><div class="mk-card-body"><dl class="facts"><dt>Received</dt><dd>3.412 XMR</dd><dt>Orders in 24 h</dt><dd>7</dd><dt>Last order</dt><dd>12 min ago</dd></dl></div><div class="mk-card-foot"><div class="form-actions"><a class="mk-btn" href="#component-card" data-size="compact">Open POS</a><a class="mk-btn" href="#component-card" data-size="compact">Settings</a></div></div></article></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Card::new(&quot;Kafe Kolo&quot;)
+    .subtitle(&quot;kafekolo.example&quot;)
+    .status(Tag::new(&quot;Ready&quot;)
+        .tone(TagTone::Ok))
+    .body(Facts::new(vec![
+        Fact { term: &quot;Received&quot;.into(), value: &quot;3.412 XMR&quot;.into() },
+        Fact { term: &quot;Orders in 24 h&quot;.into(), value: &quot;7&quot;.into() },
+        Fact { term: &quot;Last order&quot;.into(), value: &quot;12 min ago&quot;.into() },
+    ]))
+    .action(FormActions::new(Slot::many([LinkButton::new(&quot;Open POS&quot;, &quot;#component-card&quot;)
+        .size(ControlSize::Compact), LinkButton::new(&quot;Settings&quot;, &quot;#component-card&quot;)
+        .size(ControlSize::Compact)])))</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Card title={{
+  &quot;$slot&quot;: [
+    &quot;Kafe Kolo&quot;
+  ]
+}} subtitle={{
+  &quot;$slot&quot;: [
+    &quot;kafekolo.example&quot;
+  ]
+}} status={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;Tag&quot;,
+      &quot;props&quot;: {
+        &quot;children&quot;: {
+          &quot;$slot&quot;: [
+            &quot;Ready&quot;
+          ]
+        },
+        &quot;tone&quot;: &quot;ok&quot;
+      }
+    }
+  ]
+}} body={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;Facts&quot;,
+      &quot;props&quot;: {
+        &quot;facts&quot;: [
+          {
+            &quot;term&quot;: &quot;Received&quot;,
+            &quot;value&quot;: {
+              &quot;$slot&quot;: [
+                &quot;3.412 XMR&quot;
+              ]
+            }
+          },
+          {
+            &quot;term&quot;: &quot;Orders in 24 h&quot;,
+            &quot;value&quot;: {
+              &quot;$slot&quot;: [
+                &quot;7&quot;
+              ]
+            }
+          },
+          {
+            &quot;term&quot;: &quot;Last order&quot;,
+            &quot;value&quot;: {
+              &quot;$slot&quot;: [
+                &quot;12 min ago&quot;
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}} action={{
+  &quot;$slot&quot;: [
+    {
+      &quot;$component&quot;: &quot;FormActions&quot;,
+      &quot;props&quot;: {
+        &quot;children&quot;: {
+          &quot;$slot&quot;: [
+            {
+              &quot;$component&quot;: &quot;LinkButton&quot;,
+              &quot;props&quot;: {
+                &quot;block&quot;: false,
+                &quot;children&quot;: {
+                  &quot;$slot&quot;: [
+                    &quot;Open POS&quot;
+                  ]
+                },
+                &quot;href&quot;: &quot;#component-card&quot;,
+                &quot;size&quot;: &quot;compact&quot;
+              }
+            },
+            {
+              &quot;$component&quot;: &quot;LinkButton&quot;,
+              &quot;props&quot;: {
+                &quot;block&quot;: false,
+                &quot;children&quot;: {
+                  &quot;$slot&quot;: [
+                    &quot;Settings&quot;
+                  ]
+                },
+                &quot;href&quot;: &quot;#component-card&quot;,
+                &quot;size&quot;: &quot;compact&quot;
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;article class=&quot;mk-card&quot;&gt;&lt;div class=&quot;mk-card-head&quot;&gt;&lt;div&gt;&lt;h3 class=&quot;mk-card-title&quot;&gt;Kafe Kolo&lt;/h3&gt;&lt;p class=&quot;mk-card-sub&quot;&gt;kafekolo.example&lt;/p&gt;&lt;/div&gt;&lt;span class=&quot;tag tag-ok&quot;&gt;Ready&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;mk-card-body&quot;&gt;&lt;dl class=&quot;facts&quot;&gt;&lt;dt&gt;Received&lt;/dt&gt;&lt;dd&gt;3.412 XMR&lt;/dd&gt;&lt;dt&gt;Orders in 24 h&lt;/dt&gt;&lt;dd&gt;7&lt;/dd&gt;&lt;dt&gt;Last order&lt;/dt&gt;&lt;dd&gt;12 min ago&lt;/dd&gt;&lt;/dl&gt;&lt;/div&gt;&lt;div class=&quot;mk-card-foot&quot;&gt;&lt;div class=&quot;form-actions&quot;&gt;&lt;a class=&quot;mk-btn&quot; href=&quot;#component-card&quot; data-size=&quot;compact&quot;&gt;Open POS&lt;/a&gt;&lt;a class=&quot;mk-btn&quot; href=&quot;#component-card&quot; data-size=&quot;compact&quot;&gt;Settings&lt;/a&gt;&lt;/div&gt;&lt;/div&gt;&lt;/article&gt;</code></pre></details></figure><figure class="book-specimen" id="component-card-2"><figcaption>An order</figcaption><div class="book-example"><article class="mk-card"><div class="mk-card-head"><div><h3 class="mk-card-title">Table 4</h3><p class="mk-card-sub">Created 14:02</p></div><span class="tag state-pending"><span class="label-long">Waiting for payment</span><span class="label-short" aria-hidden="true">Waiting</span></span></div><p class="mk-card-amount">0.42 XMR</p><div class="mk-card-foot"><small>Expires in 52 min</small><a class="mk-btn" href="#component-card" data-variant="quiet" data-size="compact">Open</a></div></article></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Card::new(&quot;Table 4&quot;)
     .subtitle(&quot;Created 14:02&quot;)
     .status(Tag::new(&quot;Waiting for payment&quot;)
         .state(OrderState::Pending)
@@ -1100,6 +1304,161 @@ file). Their own names say what they do.</td></tr><tr><th scope="row"><code>rest
     &quot;value&quot;: &quot;dark&quot;
   }
 ]} compact /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;radio-cards is-compact&quot;&gt;&lt;label class=&quot;radio-card&quot;&gt;&lt;input type=&quot;radio&quot; name=&quot;book_theme&quot; value=&quot;system&quot; checked&gt;System&lt;/label&gt;&lt;label class=&quot;radio-card&quot;&gt;&lt;input type=&quot;radio&quot; name=&quot;book_theme&quot; value=&quot;light&quot;&gt;Light&lt;/label&gt;&lt;label class=&quot;radio-card&quot;&gt;&lt;input type=&quot;radio&quot; name=&quot;book_theme&quot; value=&quot;dark&quot;&gt;Dark&lt;/label&gt;&lt;/div&gt;</code></pre></details></figure></div></section>
+<section class="book-section" id="component-rows-editor"><h2>RowsEditor</h2><p>Rows of a list a form edits: each row's controls, a way to remove it, and a blank row to add one, up to a limit the form keeps. A row that can't be removed (a default) goes before it, on its own. Without JavaScript a row's Remove is a checkbox the save applies, and the blank row is there to fill in. Once its island attaches, Remove marks the row at once (pressed again, it puts it back; the save still applies it), and the blank row waits behind an Add button. Each change is an <code>input</code> event on the checkbox, so a settings form sees it.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>label</code></th><td><code>String</code></td><td>Required. What the rows are, for screen readers.</td></tr><tr><th scope="row"><code>rows</code></th><td><code>Vec&lt;EditorRow&gt;</code></td><td>Required. One row of [<code>RowsEditor</code>].</td></tr><tr><th scope="row"><code>new_row</code></th><td><code>Option&lt;Slot&gt;</code></td><td>A blank row's controls, to add one; none at the limit.</td></tr><tr><th scope="row"><code>add_label</code></th><td><code>String</code></td><td>The add button's words. Default: &quot;Add&quot;.</td></tr><tr><th scope="row"><code>note</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Under the rows, muted: how many of how many, or why no more.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-rows-editor-1"><figcaption>Tiers, with a blank one to add</figcaption><div class="book-example"><fieldset class="mk-rows" data-mk="1" data-island="RowsEditor" data-props="{&quot;rows&quot;:[{&quot;label&quot;:&quot;the 100 EUR tier&quot;,&quot;name&quot;:&quot;tier_0&quot;},{&quot;label&quot;:&quot;the 500 EUR tier&quot;,&quot;name&quot;:&quot;tier_1&quot;}]}"><legend class="visually-hidden">Confirmation tiers</legend><ul class="mk-rows-list"><li class="mk-rows-row"><div class="mk-rows-fields">From <input class="mk-input" type="text" name="tier_0_amount" value="100" aria-label="From amount, EUR" data-size="compact"> EUR need <input class="mk-input" type="text" name="tier_0_confirmations" value="5" aria-label="Confirmations" data-size="compact"> confirmations</div><label class="mk-rows-remove" data-mk="2"><input type="checkbox" name="tier_0" value="remove" data-rows-remove=""><span>Remove</span><span class="visually-hidden"> the 100 EUR tier</span></label><button class="mk-btn mk-rows-toggle" data-size="compact" type="button" hidden="" aria-label="Remove the 100 EUR tier" aria-pressed="false" data-mk="3"><svg class="mk-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg><span class="mk-rows-undo">Undo</span></button></li><li class="mk-rows-row"><div class="mk-rows-fields">From <input class="mk-input" type="text" name="tier_1_amount" value="500" aria-label="From amount, EUR" data-size="compact"> EUR need <input class="mk-input" type="text" name="tier_1_confirmations" value="10" aria-label="Confirmations" data-size="compact"> confirmations</div><label class="mk-rows-remove" data-mk="2"><input type="checkbox" name="tier_1" value="remove" data-rows-remove=""><span>Remove</span><span class="visually-hidden"> the 500 EUR tier</span></label><button class="mk-btn mk-rows-toggle" data-size="compact" type="button" hidden="" aria-label="Remove the 500 EUR tier" aria-pressed="false" data-mk="3"><svg class="mk-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg><span class="mk-rows-undo">Undo</span></button></li><li class="mk-rows-row mk-rows-new"><div class="mk-rows-fields">From <input class="mk-input" type="text" name="new_amount" aria-label="New tier's amount, EUR" data-size="compact"> EUR need <input class="mk-input" type="text" name="new_confirmations" aria-label="New tier's confirmations" data-size="compact"> confirmations</div></li></ul><div class="mk-rows-foot"><button class="mk-btn mk-rows-add" data-size="compact" type="button" hidden="" data-mk="4"><svg class="mk-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>Add a tier</button><p class="mk-rows-note">2 of 5 tiers.</p></div></fieldset></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>RowsEditor::new(&quot;Confirmation tiers&quot;, vec![
+    EditorRow { name: &quot;tier_0&quot;.into(), label: &quot;the 100 EUR tier&quot;.into(), fields: Slot::many([&quot;From &quot;, Input::new(&quot;tier_0_amount&quot;)
+        .value(&quot;100&quot;)
+        .label(&quot;From amount, EUR&quot;)
+        .size(ControlSize::Compact), &quot; EUR need &quot;, Input::new(&quot;tier_0_confirmations&quot;)
+        .value(&quot;5&quot;)
+        .label(&quot;Confirmations&quot;)
+        .size(ControlSize::Compact), &quot; confirmations&quot;]).into() },
+    EditorRow { name: &quot;tier_1&quot;.into(), label: &quot;the 500 EUR tier&quot;.into(), fields: Slot::many([&quot;From &quot;, Input::new(&quot;tier_1_amount&quot;)
+        .value(&quot;500&quot;)
+        .label(&quot;From amount, EUR&quot;)
+        .size(ControlSize::Compact), &quot; EUR need &quot;, Input::new(&quot;tier_1_confirmations&quot;)
+        .value(&quot;10&quot;)
+        .label(&quot;Confirmations&quot;)
+        .size(ControlSize::Compact), &quot; confirmations&quot;]).into() },
+])
+    .new_row(Slot::many([&quot;From &quot;, Input::new(&quot;new_amount&quot;)
+        .label(&quot;New tier's amount, EUR&quot;)
+        .size(ControlSize::Compact), &quot; EUR need &quot;, Input::new(&quot;new_confirmations&quot;)
+        .label(&quot;New tier's confirmations&quot;)
+        .size(ControlSize::Compact), &quot; confirmations&quot;]))
+    .add_label(&quot;Add a tier&quot;)
+    .note(&quot;2 of 5 tiers.&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;RowsEditor label=&quot;Confirmation tiers&quot; rows={[
+  {
+    &quot;fields&quot;: {
+      &quot;$slot&quot;: [
+        &quot;From &quot;,
+        {
+          &quot;$component&quot;: &quot;Input&quot;,
+          &quot;props&quot;: {
+            &quot;disabled&quot;: false,
+            &quot;invalid&quot;: false,
+            &quot;kind&quot;: &quot;text&quot;,
+            &quot;label&quot;: &quot;From amount, EUR&quot;,
+            &quot;name&quot;: &quot;tier_0_amount&quot;,
+            &quot;readonly&quot;: false,
+            &quot;required&quot;: false,
+            &quot;size&quot;: &quot;compact&quot;,
+            &quot;value&quot;: &quot;100&quot;
+          }
+        },
+        &quot; EUR need &quot;,
+        {
+          &quot;$component&quot;: &quot;Input&quot;,
+          &quot;props&quot;: {
+            &quot;disabled&quot;: false,
+            &quot;invalid&quot;: false,
+            &quot;kind&quot;: &quot;text&quot;,
+            &quot;label&quot;: &quot;Confirmations&quot;,
+            &quot;name&quot;: &quot;tier_0_confirmations&quot;,
+            &quot;readonly&quot;: false,
+            &quot;required&quot;: false,
+            &quot;size&quot;: &quot;compact&quot;,
+            &quot;value&quot;: &quot;5&quot;
+          }
+        },
+        &quot; confirmations&quot;
+      ]
+    },
+    &quot;label&quot;: &quot;the 100 EUR tier&quot;,
+    &quot;name&quot;: &quot;tier_0&quot;
+  },
+  {
+    &quot;fields&quot;: {
+      &quot;$slot&quot;: [
+        &quot;From &quot;,
+        {
+          &quot;$component&quot;: &quot;Input&quot;,
+          &quot;props&quot;: {
+            &quot;disabled&quot;: false,
+            &quot;invalid&quot;: false,
+            &quot;kind&quot;: &quot;text&quot;,
+            &quot;label&quot;: &quot;From amount, EUR&quot;,
+            &quot;name&quot;: &quot;tier_1_amount&quot;,
+            &quot;readonly&quot;: false,
+            &quot;required&quot;: false,
+            &quot;size&quot;: &quot;compact&quot;,
+            &quot;value&quot;: &quot;500&quot;
+          }
+        },
+        &quot; EUR need &quot;,
+        {
+          &quot;$component&quot;: &quot;Input&quot;,
+          &quot;props&quot;: {
+            &quot;disabled&quot;: false,
+            &quot;invalid&quot;: false,
+            &quot;kind&quot;: &quot;text&quot;,
+            &quot;label&quot;: &quot;Confirmations&quot;,
+            &quot;name&quot;: &quot;tier_1_confirmations&quot;,
+            &quot;readonly&quot;: false,
+            &quot;required&quot;: false,
+            &quot;size&quot;: &quot;compact&quot;,
+            &quot;value&quot;: &quot;10&quot;
+          }
+        },
+        &quot; confirmations&quot;
+      ]
+    },
+    &quot;label&quot;: &quot;the 500 EUR tier&quot;,
+    &quot;name&quot;: &quot;tier_1&quot;
+  }
+]} new_row={{
+  &quot;$slot&quot;: [
+    &quot;From &quot;,
+    {
+      &quot;$component&quot;: &quot;Input&quot;,
+      &quot;props&quot;: {
+        &quot;disabled&quot;: false,
+        &quot;invalid&quot;: false,
+        &quot;kind&quot;: &quot;text&quot;,
+        &quot;label&quot;: &quot;New tier's amount, EUR&quot;,
+        &quot;name&quot;: &quot;new_amount&quot;,
+        &quot;readonly&quot;: false,
+        &quot;required&quot;: false,
+        &quot;size&quot;: &quot;compact&quot;
+      }
+    },
+    &quot; EUR need &quot;,
+    {
+      &quot;$component&quot;: &quot;Input&quot;,
+      &quot;props&quot;: {
+        &quot;disabled&quot;: false,
+        &quot;invalid&quot;: false,
+        &quot;kind&quot;: &quot;text&quot;,
+        &quot;label&quot;: &quot;New tier's confirmations&quot;,
+        &quot;name&quot;: &quot;new_confirmations&quot;,
+        &quot;readonly&quot;: false,
+        &quot;required&quot;: false,
+        &quot;size&quot;: &quot;compact&quot;
+      }
+    },
+    &quot; confirmations&quot;
+  ]
+}} add_label=&quot;Add a tier&quot; note={{
+  &quot;$slot&quot;: [
+    &quot;2 of 5 tiers.&quot;
+  ]
+}} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;fieldset class=&quot;mk-rows&quot; data-mk=&quot;1&quot; data-island=&quot;RowsEditor&quot; data-props=&quot;{&amp;quot;rows&amp;quot;:[{&amp;quot;label&amp;quot;:&amp;quot;the 100 EUR tier&amp;quot;,&amp;quot;name&amp;quot;:&amp;quot;tier_0&amp;quot;},{&amp;quot;label&amp;quot;:&amp;quot;the 500 EUR tier&amp;quot;,&amp;quot;name&amp;quot;:&amp;quot;tier_1&amp;quot;}]}&quot;&gt;&lt;legend class=&quot;visually-hidden&quot;&gt;Confirmation tiers&lt;/legend&gt;&lt;ul class=&quot;mk-rows-list&quot;&gt;&lt;li class=&quot;mk-rows-row&quot;&gt;&lt;div class=&quot;mk-rows-fields&quot;&gt;From &lt;input class=&quot;mk-input&quot; type=&quot;text&quot; name=&quot;tier_0_amount&quot; value=&quot;100&quot; aria-label=&quot;From amount, EUR&quot; data-size=&quot;compact&quot;&gt; EUR need &lt;input class=&quot;mk-input&quot; type=&quot;text&quot; name=&quot;tier_0_confirmations&quot; value=&quot;5&quot; aria-label=&quot;Confirmations&quot; data-size=&quot;compact&quot;&gt; confirmations&lt;/div&gt;&lt;label class=&quot;mk-rows-remove&quot; data-mk=&quot;2&quot;&gt;&lt;input type=&quot;checkbox&quot; name=&quot;tier_0&quot; value=&quot;remove&quot; data-rows-remove=&quot;&quot;&gt;&lt;span&gt;Remove&lt;/span&gt;&lt;span class=&quot;visually-hidden&quot;&gt; the 100 EUR tier&lt;/span&gt;&lt;/label&gt;&lt;button class=&quot;mk-btn mk-rows-toggle&quot; data-size=&quot;compact&quot; type=&quot;button&quot; hidden=&quot;&quot; aria-label=&quot;Remove the 100 EUR tier&quot; aria-pressed=&quot;false&quot; data-mk=&quot;3&quot;&gt;&lt;svg class=&quot;mk-icon&quot; viewBox=&quot;0 0 24 24&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M6 6l12 12M18 6 6 18&quot;&gt;&lt;/path&gt;&lt;/svg&gt;&lt;span class=&quot;mk-rows-undo&quot;&gt;Undo&lt;/span&gt;&lt;/button&gt;&lt;/li&gt;&lt;li class=&quot;mk-rows-row&quot;&gt;&lt;div class=&quot;mk-rows-fields&quot;&gt;From &lt;input class=&quot;mk-input&quot; type=&quot;text&quot; name=&quot;tier_1_amount&quot; value=&quot;500&quot; aria-label=&quot;From amount, EUR&quot; data-size=&quot;compact&quot;&gt; EUR need &lt;input class=&quot;mk-input&quot; type=&quot;text&quot; name=&quot;tier_1_confirmations&quot; value=&quot;10&quot; aria-label=&quot;Confirmations&quot; data-size=&quot;compact&quot;&gt; confirmations&lt;/div&gt;&lt;label class=&quot;mk-rows-remove&quot; data-mk=&quot;2&quot;&gt;&lt;input type=&quot;checkbox&quot; name=&quot;tier_1&quot; value=&quot;remove&quot; data-rows-remove=&quot;&quot;&gt;&lt;span&gt;Remove&lt;/span&gt;&lt;span class=&quot;visually-hidden&quot;&gt; the 500 EUR tier&lt;/span&gt;&lt;/label&gt;&lt;button class=&quot;mk-btn mk-rows-toggle&quot; data-size=&quot;compact&quot; type=&quot;button&quot; hidden=&quot;&quot; aria-label=&quot;Remove the 500 EUR tier&quot; aria-pressed=&quot;false&quot; data-mk=&quot;3&quot;&gt;&lt;svg class=&quot;mk-icon&quot; viewBox=&quot;0 0 24 24&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M6 6l12 12M18 6 6 18&quot;&gt;&lt;/path&gt;&lt;/svg&gt;&lt;span class=&quot;mk-rows-undo&quot;&gt;Undo&lt;/span&gt;&lt;/button&gt;&lt;/li&gt;&lt;li class=&quot;mk-rows-row mk-rows-new&quot;&gt;&lt;div class=&quot;mk-rows-fields&quot;&gt;From &lt;input class=&quot;mk-input&quot; type=&quot;text&quot; name=&quot;new_amount&quot; aria-label=&quot;New tier's amount, EUR&quot; data-size=&quot;compact&quot;&gt; EUR need &lt;input class=&quot;mk-input&quot; type=&quot;text&quot; name=&quot;new_confirmations&quot; aria-label=&quot;New tier's confirmations&quot; data-size=&quot;compact&quot;&gt; confirmations&lt;/div&gt;&lt;/li&gt;&lt;/ul&gt;&lt;div class=&quot;mk-rows-foot&quot;&gt;&lt;button class=&quot;mk-btn mk-rows-add&quot; data-size=&quot;compact&quot; type=&quot;button&quot; hidden=&quot;&quot; data-mk=&quot;4&quot;&gt;&lt;svg class=&quot;mk-icon&quot; viewBox=&quot;0 0 24 24&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M12 5v14M5 12h14&quot;&gt;&lt;/path&gt;&lt;/svg&gt;Add a tier&lt;/button&gt;&lt;p class=&quot;mk-rows-note&quot;&gt;2 of 5 tiers.&lt;/p&gt;&lt;/div&gt;&lt;/fieldset&gt;</code></pre></details></figure><figure class="book-specimen" id="component-rows-editor-2"><figcaption>At the limit</figcaption><div class="book-example"><fieldset class="mk-rows" data-mk="1" data-island="RowsEditor" data-props="{&quot;rows&quot;:[{&quot;label&quot;:&quot;https://shop.example/hook&quot;,&quot;name&quot;:&quot;webhook_0&quot;}]}"><legend class="visually-hidden">Webhooks</legend><ul class="mk-rows-list"><li class="mk-rows-row"><div class="mk-rows-fields">https://shop.example/hook</div><label class="mk-rows-remove" data-mk="2"><input type="checkbox" name="webhook_0" value="remove" data-rows-remove=""><span>Remove</span><span class="visually-hidden"> https://shop.example/hook</span></label><button class="mk-btn mk-rows-toggle" data-size="compact" type="button" hidden="" aria-label="Remove https://shop.example/hook" aria-pressed="false" data-mk="3"><svg class="mk-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg><span class="mk-rows-undo">Undo</span></button></li></ul><div class="mk-rows-foot"><p class="mk-rows-note">1 of 1. Remove one to add another.</p></div></fieldset></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>RowsEditor::new(&quot;Webhooks&quot;, vec![
+    EditorRow { name: &quot;webhook_0&quot;.into(), label: &quot;https://shop.example/hook&quot;.into(), fields: &quot;https://shop.example/hook&quot;.into() },
+])
+    .note(&quot;1 of 1. Remove one to add another.&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;RowsEditor label=&quot;Webhooks&quot; rows={[
+  {
+    &quot;fields&quot;: {
+      &quot;$slot&quot;: [
+        &quot;https://shop.example/hook&quot;
+      ]
+    },
+    &quot;label&quot;: &quot;https://shop.example/hook&quot;,
+    &quot;name&quot;: &quot;webhook_0&quot;
+  }
+]} note={{
+  &quot;$slot&quot;: [
+    &quot;1 of 1. Remove one to add another.&quot;
+  ]
+}} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;fieldset class=&quot;mk-rows&quot; data-mk=&quot;1&quot; data-island=&quot;RowsEditor&quot; data-props=&quot;{&amp;quot;rows&amp;quot;:[{&amp;quot;label&amp;quot;:&amp;quot;https://shop.example/hook&amp;quot;,&amp;quot;name&amp;quot;:&amp;quot;webhook_0&amp;quot;}]}&quot;&gt;&lt;legend class=&quot;visually-hidden&quot;&gt;Webhooks&lt;/legend&gt;&lt;ul class=&quot;mk-rows-list&quot;&gt;&lt;li class=&quot;mk-rows-row&quot;&gt;&lt;div class=&quot;mk-rows-fields&quot;&gt;https://shop.example/hook&lt;/div&gt;&lt;label class=&quot;mk-rows-remove&quot; data-mk=&quot;2&quot;&gt;&lt;input type=&quot;checkbox&quot; name=&quot;webhook_0&quot; value=&quot;remove&quot; data-rows-remove=&quot;&quot;&gt;&lt;span&gt;Remove&lt;/span&gt;&lt;span class=&quot;visually-hidden&quot;&gt; https://shop.example/hook&lt;/span&gt;&lt;/label&gt;&lt;button class=&quot;mk-btn mk-rows-toggle&quot; data-size=&quot;compact&quot; type=&quot;button&quot; hidden=&quot;&quot; aria-label=&quot;Remove https://shop.example/hook&quot; aria-pressed=&quot;false&quot; data-mk=&quot;3&quot;&gt;&lt;svg class=&quot;mk-icon&quot; viewBox=&quot;0 0 24 24&quot; aria-hidden=&quot;true&quot;&gt;&lt;path d=&quot;M6 6l12 12M18 6 6 18&quot;&gt;&lt;/path&gt;&lt;/svg&gt;&lt;span class=&quot;mk-rows-undo&quot;&gt;Undo&lt;/span&gt;&lt;/button&gt;&lt;/li&gt;&lt;/ul&gt;&lt;div class=&quot;mk-rows-foot&quot;&gt;&lt;p class=&quot;mk-rows-note&quot;&gt;1 of 1. Remove one to add another.&lt;/p&gt;&lt;/div&gt;&lt;/fieldset&gt;</code></pre></details></figure></div></section>
 <section class="book-section" id="component-icon-button"><h2>IconButton</h2><p>A button showing only an icon: its name, required, is what screen readers say and what hovering shows.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>label</code></th><td><code>String</code></td><td>Required. What it does (&quot;Send again&quot;).</td></tr><tr><th scope="row"><code>icon</code></th><td><code>Slot</code></td><td>Required. The icon: an inline SVG.</td></tr><tr><th scope="row"><code>kind</code></th><td><code>ButtonType (button | submit | reset)</code></td><td>What a button does in its form. Default: button.</td></tr><tr><th scope="row"><code>disabled</code></th><td><code>bool</code></td><td>Default: false.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-icon-button-1"><figcaption>Send again</figcaption><div class="book-example"><button type="button" class="mk-btn icon-only" aria-label="Send again" title="Send again">↻</button></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>IconButton::new(&quot;Send again&quot;, &quot;↻&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;IconButton label=&quot;Send again&quot; icon={{
   &quot;$slot&quot;: [
     &quot;↻&quot;
@@ -1644,6 +2003,16 @@ monospace detail, a network badge, a chip, a note.</td></tr><tr><th scope="row">
     &quot;Scan the code.&quot;
   ]
 }} state=&quot;pending&quot; compact /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;mk-stage state-pending&quot; data-size=&quot;compact&quot;&gt;&lt;ol class=&quot;mk-track&quot; aria-label=&quot;Payment progress&quot;&gt;&lt;li class=&quot;step-now&quot;&gt;&lt;span class=&quot;mk-track-dot&quot; aria-hidden=&quot;true&quot;&gt;&lt;/span&gt;&lt;span class=&quot;mk-track-name&quot;&gt;Send&lt;span class=&quot;visually-hidden&quot;&gt;, now&lt;/span&gt;&lt;/span&gt;&lt;/li&gt;&lt;li class=&quot;step-todo&quot;&gt;&lt;span class=&quot;mk-track-dot&quot; aria-hidden=&quot;true&quot;&gt;&lt;/span&gt;&lt;span class=&quot;mk-track-name&quot;&gt;Confirm&lt;span class=&quot;visually-hidden&quot;&gt;, to come&lt;/span&gt;&lt;/span&gt;&lt;/li&gt;&lt;li class=&quot;step-todo&quot;&gt;&lt;span class=&quot;mk-track-dot&quot; aria-hidden=&quot;true&quot;&gt;&lt;/span&gt;&lt;span class=&quot;mk-track-name&quot;&gt;Paid&lt;span class=&quot;visually-hidden&quot;&gt;, to come&lt;/span&gt;&lt;/span&gt;&lt;/li&gt;&lt;/ol&gt;&lt;p class=&quot;mk-stage-msg&quot; role=&quot;status&quot;&gt;&lt;strong&gt;Send 0.42 XMR.&lt;/strong&gt; Scan the code.&lt;/p&gt;&lt;/div&gt;</code></pre></details></figure></div></section>
+<section class="book-section" id="component-countdown"><h2>Countdown</h2><p>Time left before a deadline: how long, in words, what it's for, and a bar that empties. Without JavaScript it shows the time the server worked out (&quot;29m&quot;) in the server's tone, and the page refreshing moves it on. Once its island attaches it counts down each second (m:ss), its bar steps each minute, and it turns <code>soon</code>, then <code>urgent</code>, as time runs low; a screen reader hears it only as it crosses those, never a ticking clock. At zero it sends <code>mk-countdown-end</code> for a page script to follow.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>total</code></th><td><code>number</code></td><td>Required. How long it runs, in seconds: the full bar.</td></tr><tr><th scope="row"><code>remaining</code></th><td><code>number</code></td><td>Required. Seconds left as the server renders it: the behaviour counts on
+from here by the browser's clock, so a wrong one can't skew it.</td></tr><tr><th scope="row"><code>left</code></th><td><code>String</code></td><td>Required. The same, in words (&quot;29m&quot;).</td></tr><tr><th scope="row"><code>suffix</code></th><td><code>String</code></td><td>After the time: what it's the time for. Default: &quot;left&quot;.</td></tr><tr><th scope="row"><code>note</code></th><td><code>Option&lt;Slot&gt;</code></td><td>At the right, muted: when it ends (&quot;Price held until 14:32&quot;).</td></tr><tr><th scope="row"><code>tone</code></th><td><code>CountdownTone (normal | soon | urgent)</code></td><td>The tone as the server renders it ([<code>Countdown::toned</code>]). Default: normal.</td></tr><tr><th scope="row"><code>soon</code></th><td><code>number</code></td><td>Seconds left at which it turns <code>soon</code>. Default: 300.</td></tr><tr><th scope="row"><code>urgent</code></th><td><code>number</code></td><td>Seconds left at which it turns <code>urgent</code>. Default: 60.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-countdown-1"><figcaption>A payment's time, with when it ends</figcaption><div class="book-example"><div class="mk-countdown" data-tone="normal" data-mk="1" data-island="Countdown" data-props="{&quot;remaining&quot;:1754,&quot;soon&quot;:300,&quot;total&quot;:1800,&quot;urgent&quot;:60}"><p class="mk-countdown-line"><span><strong data-mk="2">29m</strong><!--mk:3--> left to pay</span><span class="mk-countdown-note">Price held until 14:32</span></p><progress class="mk-countdown-bar" max="1800" value="1754" aria-hidden="true" data-mk="4"></progress><!--mk:5--></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Countdown::new(1800, 1754, &quot;29m&quot;)
+    .suffix(&quot;left to pay&quot;)
+    .note(&quot;Price held until 14:32&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Countdown total={1800} remaining={1754} left=&quot;29m&quot; suffix=&quot;left to pay&quot; note={{
+  &quot;$slot&quot;: [
+    &quot;Price held until 14:32&quot;
+  ]
+}} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;mk-countdown&quot; data-tone=&quot;normal&quot; data-mk=&quot;1&quot; data-island=&quot;Countdown&quot; data-props=&quot;{&amp;quot;remaining&amp;quot;:1754,&amp;quot;soon&amp;quot;:300,&amp;quot;total&amp;quot;:1800,&amp;quot;urgent&amp;quot;:60}&quot;&gt;&lt;p class=&quot;mk-countdown-line&quot;&gt;&lt;span&gt;&lt;strong data-mk=&quot;2&quot;&gt;29m&lt;/strong&gt;&lt;!--mk:3--&gt; left to pay&lt;/span&gt;&lt;span class=&quot;mk-countdown-note&quot;&gt;Price held until 14:32&lt;/span&gt;&lt;/p&gt;&lt;progress class=&quot;mk-countdown-bar&quot; max=&quot;1800&quot; value=&quot;1754&quot; aria-hidden=&quot;true&quot; data-mk=&quot;4&quot;&gt;&lt;/progress&gt;&lt;!--mk:5--&gt;&lt;/div&gt;</code></pre></details></figure><figure class="book-specimen" id="component-countdown-2"><figcaption>Running low</figcaption><div class="book-example"><div class="mk-countdown" data-tone="soon" data-mk="1" data-island="Countdown" data-props="{&quot;remaining&quot;:291,&quot;soon&quot;:300,&quot;total&quot;:1800,&quot;urgent&quot;:60}"><p class="mk-countdown-line"><span><strong data-mk="2">4m</strong><!--mk:3--> left to pay</span></p><progress class="mk-countdown-bar" max="1800" value="291" aria-hidden="true" data-mk="4"></progress><!--mk:5--></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Countdown::new(1800, 291, &quot;4m&quot;)
+    .suffix(&quot;left to pay&quot;)
+    .tone(CountdownTone::Soon)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;Countdown total={1800} remaining={291} left=&quot;4m&quot; suffix=&quot;left to pay&quot; tone=&quot;soon&quot; /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;mk-countdown&quot; data-tone=&quot;soon&quot; data-mk=&quot;1&quot; data-island=&quot;Countdown&quot; data-props=&quot;{&amp;quot;remaining&amp;quot;:291,&amp;quot;soon&amp;quot;:300,&amp;quot;total&amp;quot;:1800,&amp;quot;urgent&amp;quot;:60}&quot;&gt;&lt;p class=&quot;mk-countdown-line&quot;&gt;&lt;span&gt;&lt;strong data-mk=&quot;2&quot;&gt;4m&lt;/strong&gt;&lt;!--mk:3--&gt; left to pay&lt;/span&gt;&lt;/p&gt;&lt;progress class=&quot;mk-countdown-bar&quot; max=&quot;1800&quot; value=&quot;291&quot; aria-hidden=&quot;true&quot; data-mk=&quot;4&quot;&gt;&lt;/progress&gt;&lt;!--mk:5--&gt;&lt;/div&gt;</code></pre></details></figure></div></section>
 <section class="book-section" id="component-tabs"><h2>Tabs</h2><p>Panels of one page, one shown at a time. Without JavaScript every panel shows, and the tabs are links to them. Once its island attaches, the tabs are a tablist: one panel at a time, picked with a click or the arrow keys, Home and End. Each pick sends <code>mk-tab</code> (<code>{id}</code>, the panel shown) from the tabs, for a page script to follow.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>label</code></th><td><code>String</code></td><td>Required. What the tabs are of.</td></tr><tr><th scope="row"><code>tabs</code></th><td><code>Vec&lt;Tab&gt;</code></td><td>Required. One tab of [<code>Tabs</code>]: its label and the panel it shows.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-tabs-1"><figcaption>A POS's views</figcaption><div class="book-example"><div class="mk-tabset" data-mk="1" data-island="Tabs" data-props="{&quot;tabs&quot;:[{&quot;id&quot;:&quot;example-charge&quot;},{&quot;id&quot;:&quot;example-history&quot;},{&quot;id&quot;:&quot;example-terminal&quot;}]}"><div class="mk-tabs" aria-label="Example POS views" data-mk="2"><a href="#example-charge" id="example-charge-tab" data-mk="3">Charge</a><a href="#example-history" id="example-history-tab" data-mk="3">History</a><a href="#example-terminal" id="example-terminal-tab" data-mk="3">Terminal</a></div><div class="mk-tab-panels"><section id="example-charge" data-tab-panel="" data-mk="4">Enter an amount to start a payment.</section><section id="example-history" data-tab-panel="" data-mk="4">No payments yet.</section><section id="example-terminal" data-tab-panel="" data-mk="4">This terminal is ready to receive payments.</section></div></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>Tabs::new(&quot;Example POS views&quot;, vec![
     Tab { id: &quot;example-charge&quot;.into(), label: &quot;Charge&quot;.into(), panel: &quot;Enter an amount to start a payment.&quot;.into() },
     Tab { id: &quot;example-history&quot;.into(), label: &quot;History&quot;.into(), panel: &quot;No payments yet.&quot;.into() },
@@ -1722,6 +2091,85 @@ is copied, and what focus reveals. Default: end.</td></tr><tr><th scope="row"><c
     .truncate(Truncate::Segments)
     .segments(&quot;0:8,32:8,-8:8&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;CopyValue value=&quot;order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789&quot; copy_label=&quot;Copy segmented example&quot; truncate=&quot;segments&quot; segments=&quot;0:8,32:8,-8:8&quot; /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;mk-copy&quot; data-island=&quot;CopyValue&quot; data-props=&quot;{&amp;quot;copy_label&amp;quot;:&amp;quot;Copy segmented example&amp;quot;,&amp;quot;head&amp;quot;:8,&amp;quot;segments&amp;quot;:&amp;quot;0:8,32:8,-8:8&amp;quot;,&amp;quot;tail&amp;quot;:8,&amp;quot;truncate&amp;quot;:&amp;quot;segments&amp;quot;,&amp;quot;value&amp;quot;:&amp;quot;order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789&amp;quot;}&quot;&gt;&lt;span class=&quot;mk-copy-value mk-mono&quot; data-copy-value tabindex=&quot;0&quot; data-mk=&quot;1&quot;&gt;order_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789&lt;/span&gt;&lt;!--mk:2--&gt;&lt;/div&gt;</code></pre></details></figure><figure class="book-specimen" id="component-copy-value-4"><figcaption>Short enough to show whole</figcaption><div class="book-example"><div class="mk-copy" data-island="CopyValue" data-props="{&quot;copy_label&quot;:&quot;Copy wallet id&quot;,&quot;head&quot;:8,&quot;tail&quot;:8,&quot;truncate&quot;:&quot;end&quot;,&quot;value&quot;:&quot;48xQ7v3Rk&quot;}"><span class="mk-copy-value mk-mono" data-copy-value tabindex="0" data-mk="1">48xQ7v3Rk</span><!--mk:2--></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>CopyValue::new(&quot;48xQ7v3Rk&quot;)
     .copy_label(&quot;Copy wallet id&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;CopyValue value=&quot;48xQ7v3Rk&quot; copy_label=&quot;Copy wallet id&quot; /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;mk-copy&quot; data-island=&quot;CopyValue&quot; data-props=&quot;{&amp;quot;copy_label&amp;quot;:&amp;quot;Copy wallet id&amp;quot;,&amp;quot;head&amp;quot;:8,&amp;quot;tail&amp;quot;:8,&amp;quot;truncate&amp;quot;:&amp;quot;end&amp;quot;,&amp;quot;value&amp;quot;:&amp;quot;48xQ7v3Rk&amp;quot;}&quot;&gt;&lt;span class=&quot;mk-copy-value mk-mono&quot; data-copy-value tabindex=&quot;0&quot; data-mk=&quot;1&quot;&gt;48xQ7v3Rk&lt;/span&gt;&lt;!--mk:2--&gt;&lt;/div&gt;</code></pre></details></figure></div></section>
+<section class="book-section" id="component-grouped-value"><h2>GroupedValue</h2><p>A long value shown whole, for someone to check by eye against the copy they paste: in groups of a few characters, alternately strong and muted, the first and last group marked, and a Copy button under it. An address to pay; a key's fingerprint. Build it with [<code>GroupedValue::of</code>], which splits the value. A screen reader hears the value whole, never group by group. Without JavaScript a tap selects all of it; once its island attaches, the button copies it and says so, and the value stays on screen as it was.</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>value</code></th><td><code>String</code></td><td>Required. The whole value: what is copied, and what a screen reader hears.</td></tr><tr><th scope="row"><code>groups</code></th><td><code>Vec&lt;String&gt;</code></td><td>Required. <code>value</code> in order, split into groups.</td></tr><tr><th scope="row"><code>copy_label</code></th><td><code>String</code></td><td>The Copy button's words: what it copies (&quot;Copy address&quot;). Default: &quot;Copy&quot;.</td></tr><tr><th scope="row"><code>hint</code></th><td><code>Option&lt;Slot&gt;</code></td><td>Under it: what to check (&quot;Check your wallet shows 8FASi4 at the
+start and NoVKf at the end&quot;).</td></tr><tr><th scope="row"><code>void</code></th><td><code>bool</code></td><td>Shown, but not to be used any more (an address an order no
+longer takes payments at): struck through, faded, nothing to
+copy it with. Default: false.</td></tr><tr><th scope="row"><code>rest</code></th><td><code>Attrs</code></td><td></td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-grouped-value-1"><figcaption>An address to pay, in sixes</figcaption><div class="book-example"><div class="mk-grouped" data-island="GroupedValue" data-props="{&quot;copy_label&quot;:&quot;Copy address&quot;,&quot;value&quot;:&quot;8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf&quot;,&quot;void&quot;:false}"><span class="visually-hidden">8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf</span><span class="mk-grouped-value mk-mono" aria-hidden="true" data-mk="1"><span>8FASi4</span><span>5ub7Qe</span><span>4ZE36U</span><span>T5G6cU</span><span>4ud8Fh</span><span>he4deS</span><span>4F3cw9</span><span>KTAb8d</span><span>LcukC7</span><span>edhDQ7</span><span>cn5d4g</span><span>EYkbUr</span><span>MWeWQL</span><span>GsCmrG</span><span>6dLaYy</span><span>NoVKf</span></span><!--mk:2--><p class="mk-grouped-hint">Check your wallet shows 8FASi4 at the start and NoVKf at the end.</p></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>GroupedValue::new(&quot;8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf&quot;, vec![
+    &quot;8FASi4&quot;,
+    &quot;5ub7Qe&quot;,
+    &quot;4ZE36U&quot;,
+    &quot;T5G6cU&quot;,
+    &quot;4ud8Fh&quot;,
+    &quot;he4deS&quot;,
+    &quot;4F3cw9&quot;,
+    &quot;KTAb8d&quot;,
+    &quot;LcukC7&quot;,
+    &quot;edhDQ7&quot;,
+    &quot;cn5d4g&quot;,
+    &quot;EYkbUr&quot;,
+    &quot;MWeWQL&quot;,
+    &quot;GsCmrG&quot;,
+    &quot;6dLaYy&quot;,
+    &quot;NoVKf&quot;,
+])
+    .copy_label(&quot;Copy address&quot;)
+    .hint(&quot;Check your wallet shows 8FASi4 at the start and NoVKf at the end.&quot;)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;GroupedValue value=&quot;8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf&quot; groups={[
+  &quot;8FASi4&quot;,
+  &quot;5ub7Qe&quot;,
+  &quot;4ZE36U&quot;,
+  &quot;T5G6cU&quot;,
+  &quot;4ud8Fh&quot;,
+  &quot;he4deS&quot;,
+  &quot;4F3cw9&quot;,
+  &quot;KTAb8d&quot;,
+  &quot;LcukC7&quot;,
+  &quot;edhDQ7&quot;,
+  &quot;cn5d4g&quot;,
+  &quot;EYkbUr&quot;,
+  &quot;MWeWQL&quot;,
+  &quot;GsCmrG&quot;,
+  &quot;6dLaYy&quot;,
+  &quot;NoVKf&quot;
+]} copy_label=&quot;Copy address&quot; hint={{
+  &quot;$slot&quot;: [
+    &quot;Check your wallet shows 8FASi4 at the start and NoVKf at the end.&quot;
+  ]
+}} /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;mk-grouped&quot; data-island=&quot;GroupedValue&quot; data-props=&quot;{&amp;quot;copy_label&amp;quot;:&amp;quot;Copy address&amp;quot;,&amp;quot;value&amp;quot;:&amp;quot;8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf&amp;quot;,&amp;quot;void&amp;quot;:false}&quot;&gt;&lt;span class=&quot;visually-hidden&quot;&gt;8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf&lt;/span&gt;&lt;span class=&quot;mk-grouped-value mk-mono&quot; aria-hidden=&quot;true&quot; data-mk=&quot;1&quot;&gt;&lt;span&gt;8FASi4&lt;/span&gt;&lt;span&gt;5ub7Qe&lt;/span&gt;&lt;span&gt;4ZE36U&lt;/span&gt;&lt;span&gt;T5G6cU&lt;/span&gt;&lt;span&gt;4ud8Fh&lt;/span&gt;&lt;span&gt;he4deS&lt;/span&gt;&lt;span&gt;4F3cw9&lt;/span&gt;&lt;span&gt;KTAb8d&lt;/span&gt;&lt;span&gt;LcukC7&lt;/span&gt;&lt;span&gt;edhDQ7&lt;/span&gt;&lt;span&gt;cn5d4g&lt;/span&gt;&lt;span&gt;EYkbUr&lt;/span&gt;&lt;span&gt;MWeWQL&lt;/span&gt;&lt;span&gt;GsCmrG&lt;/span&gt;&lt;span&gt;6dLaYy&lt;/span&gt;&lt;span&gt;NoVKf&lt;/span&gt;&lt;/span&gt;&lt;!--mk:2--&gt;&lt;p class=&quot;mk-grouped-hint&quot;&gt;Check your wallet shows 8FASi4 at the start and NoVKf at the end.&lt;/p&gt;&lt;/div&gt;</code></pre></details></figure><figure class="book-specimen" id="component-grouped-value-2"><figcaption>No longer to be used</figcaption><div class="book-example"><div class="mk-grouped" data-void="" data-island="GroupedValue" data-props="{&quot;copy_label&quot;:&quot;Copy&quot;,&quot;value&quot;:&quot;8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf&quot;,&quot;void&quot;:true}"><span class="visually-hidden">8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf</span><span class="mk-grouped-value mk-mono" aria-hidden="true" data-mk="1"><span>8FASi4</span><span>5ub7Qe</span><span>4ZE36U</span><span>T5G6cU</span><span>4ud8Fh</span><span>he4deS</span><span>4F3cw9</span><span>KTAb8d</span><span>LcukC7</span><span>edhDQ7</span><span>cn5d4g</span><span>EYkbUr</span><span>MWeWQL</span><span>GsCmrG</span><span>6dLaYy</span><span>NoVKf</span></span><!--mk:2--></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>GroupedValue::new(&quot;8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf&quot;, vec![
+    &quot;8FASi4&quot;,
+    &quot;5ub7Qe&quot;,
+    &quot;4ZE36U&quot;,
+    &quot;T5G6cU&quot;,
+    &quot;4ud8Fh&quot;,
+    &quot;he4deS&quot;,
+    &quot;4F3cw9&quot;,
+    &quot;KTAb8d&quot;,
+    &quot;LcukC7&quot;,
+    &quot;edhDQ7&quot;,
+    &quot;cn5d4g&quot;,
+    &quot;EYkbUr&quot;,
+    &quot;MWeWQL&quot;,
+    &quot;GsCmrG&quot;,
+    &quot;6dLaYy&quot;,
+    &quot;NoVKf&quot;,
+])
+    .void(true)</code></pre><p class="book-source-label">Solid</p><pre><code>&lt;GroupedValue value=&quot;8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf&quot; groups={[
+  &quot;8FASi4&quot;,
+  &quot;5ub7Qe&quot;,
+  &quot;4ZE36U&quot;,
+  &quot;T5G6cU&quot;,
+  &quot;4ud8Fh&quot;,
+  &quot;he4deS&quot;,
+  &quot;4F3cw9&quot;,
+  &quot;KTAb8d&quot;,
+  &quot;LcukC7&quot;,
+  &quot;edhDQ7&quot;,
+  &quot;cn5d4g&quot;,
+  &quot;EYkbUr&quot;,
+  &quot;MWeWQL&quot;,
+  &quot;GsCmrG&quot;,
+  &quot;6dLaYy&quot;,
+  &quot;NoVKf&quot;
+]} void /&gt;</code></pre><p class="book-source-label">HTML</p><pre><code>&lt;div class=&quot;mk-grouped&quot; data-void=&quot;&quot; data-island=&quot;GroupedValue&quot; data-props=&quot;{&amp;quot;copy_label&amp;quot;:&amp;quot;Copy&amp;quot;,&amp;quot;value&amp;quot;:&amp;quot;8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf&amp;quot;,&amp;quot;void&amp;quot;:true}&quot;&gt;&lt;span class=&quot;visually-hidden&quot;&gt;8FASi45ub7Qe4ZE36UT5G6cU4ud8Fhhe4deS4F3cw9KTAb8dLcukC7edhDQ7cn5d4gEYkbUrMWeWQLGsCmrG6dLaYyNoVKf&lt;/span&gt;&lt;span class=&quot;mk-grouped-value mk-mono&quot; aria-hidden=&quot;true&quot; data-mk=&quot;1&quot;&gt;&lt;span&gt;8FASi4&lt;/span&gt;&lt;span&gt;5ub7Qe&lt;/span&gt;&lt;span&gt;4ZE36U&lt;/span&gt;&lt;span&gt;T5G6cU&lt;/span&gt;&lt;span&gt;4ud8Fh&lt;/span&gt;&lt;span&gt;he4deS&lt;/span&gt;&lt;span&gt;4F3cw9&lt;/span&gt;&lt;span&gt;KTAb8d&lt;/span&gt;&lt;span&gt;LcukC7&lt;/span&gt;&lt;span&gt;edhDQ7&lt;/span&gt;&lt;span&gt;cn5d4g&lt;/span&gt;&lt;span&gt;EYkbUr&lt;/span&gt;&lt;span&gt;MWeWQL&lt;/span&gt;&lt;span&gt;GsCmrG&lt;/span&gt;&lt;span&gt;6dLaYy&lt;/span&gt;&lt;span&gt;NoVKf&lt;/span&gt;&lt;/span&gt;&lt;!--mk:2--&gt;&lt;/div&gt;</code></pre></details></figure></div></section>
 <section class="book-section" id="component-copy-block"><h2>CopyBlock</h2><p>Lines to copy whole: a command, a config file, a key. Without JavaScript it is a <code>pre</code> to select. Once its island attaches, a Copy button over its top right copies it; with <code>comment</code> (&quot;#&quot;), a note after that marker is left out (the marker starting a line or after a space: <code>#</code> inside a word stays).</p><div class="mk-table-scroll"><table class="mk-table book-props"><caption>Props</caption><thead><tr><th scope="col">Prop</th><th scope="col">Type</th><th scope="col">About</th></tr></thead><tbody><tr><th scope="row"><code>code</code></th><td><code>String</code></td><td>Required.</td></tr><tr><th scope="row"><code>copy_label</code></th><td><code>String</code></td><td>The Copy button's accessible name: what it copies. Default: &quot;Copy to clipboard&quot;.</td></tr><tr><th scope="row"><code>comment</code></th><td><code>Option&lt;String&gt;</code></td><td>A line comment's marker: what follows it isn't copied.</td></tr></tbody></table></div><div class="book-specimens"><figure class="book-specimen" id="component-copy-block-1"><figcaption>A command with a note</figcaption><div class="book-example"><div class="mk-copy-block" data-island="CopyBlock" data-props="{&quot;comment&quot;:&quot;#&quot;,&quot;copy_label&quot;:&quot;Copy the key commands&quot;}"><pre data-mk="1"><code>umask 077
 openssl rand -hex 32 &gt; monokulo.key   # keep this file safe</code></pre><!--mk:2--></div></div><details class="book-source"><summary>Rust, Solid and HTML</summary><p class="book-source-label">Rust</p><pre><code>CopyBlock::new(&quot;umask 077\nopenssl rand -hex 32 &gt; monokulo.key   # keep this file safe&quot;)
     .copy_label(&quot;Copy the key commands&quot;)
