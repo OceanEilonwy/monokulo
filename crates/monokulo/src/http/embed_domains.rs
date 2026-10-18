@@ -1675,6 +1675,8 @@ mod tests {
         let session = session_for(&router, "domains@example.com").await;
         let id = create_store(&router, &session).await;
         let settings = format!("/dashboard/stores/{id}/settings");
+        // Verified domains are on the Connections tab.
+        let connections = format!("{settings}?tab=connections");
         let store_page = format!("/dashboard/stores/{id}");
 
         // The store's own site is already on its list, waiting for DNS.
@@ -1747,7 +1749,7 @@ mod tests {
             "got: {html}"
         );
         // It waits in Settings, with its record, until it's verified.
-        let (_, html) = send(&router, "GET", &settings, &session, None).await;
+        let (_, html) = send(&router, "GET", &connections, &session, None).await;
         assert!(
             html.contains(&format!("monokulo-verify={}", row.token)),
             "got: {html}"
@@ -1795,7 +1797,7 @@ mod tests {
             "got: {html}"
         );
         assert!(!html.contains("toast-success"), "got: {html}");
-        let (_, html) = send(&router, "GET", &settings, &session, None).await;
+        let (_, html) = send(&router, "GET", &connections, &session, None).await;
         assert!(
             html.contains("No TXT record at _monokulo.shop.example"),
             "got: {html}"
@@ -1818,7 +1820,7 @@ mod tests {
         embed_domains::check_and_record(&state.db, dns.as_ref(), &row, now)
             .await
             .unwrap();
-        let (_, html) = send(&router, "GET", &settings, &session, None).await;
+        let (_, html) = send(&router, "GET", &connections, &session, None).await;
         assert!(html.contains(">Verified</span>"), "got: {html}");
         assert!(
             !html.contains(&format!("monokulo-verify={}", row.token)),
@@ -1938,6 +1940,8 @@ mod tests {
         let session = session_for(&router, "in-place@example.com").await;
         let id = create_store(&router, &session).await;
         let settings = format!("/dashboard/stores/{id}/settings");
+        // Verified domains are on the Connections tab.
+        let connections = format!("{settings}?tab=connections");
         let row = state
             .db
             .lock()
@@ -2001,7 +2005,10 @@ mod tests {
             "{fragment}"
         );
         assert!(
-            fragment.contains(&format!(r##"href="{settings}#domain-{}""##, row.id)),
+            fragment.contains(&format!(
+                r##"href="{settings}?tab=connections#domain-{}""##,
+                row.id
+            )),
             "{fragment}"
         );
         assert!(
@@ -2011,7 +2018,7 @@ mod tests {
 
         // The banner can turn the restriction on now; Allow any website
         // turns it off.
-        let (_, html) = send(&router, "GET", &settings, &session, None).await;
+        let (_, html) = send(&router, "GET", &connections, &session, None).await;
         assert!(
             html.contains("Any website can show this checkout."),
             "{html}"
@@ -2026,7 +2033,7 @@ mod tests {
             .await,
             format!("{settings}?saved=verified-domains#card-verified-domains")
         );
-        let (_, html) = send(&router, "GET", &settings, &session, None).await;
+        let (_, html) = send(&router, "GET", &connections, &session, None).await;
         assert!(
             html.contains("Only your verified domains can show this checkout."),
             "{html}"
@@ -2039,7 +2046,7 @@ mod tests {
             "restricted=off",
         )
         .await;
-        let (_, html) = send(&router, "GET", &settings, &session, None).await;
+        let (_, html) = send(&router, "GET", &connections, &session, None).await;
         assert!(
             html.contains("Any website can show this checkout."),
             "{html}"
@@ -2059,6 +2066,8 @@ mod tests {
         let session = session_for(&router, "dns-outage@example.com").await;
         let id = create_store(&router, &session).await;
         let settings = format!("/dashboard/stores/{id}/settings");
+        // Verified domains are on the Connections tab.
+        let connections = format!("{settings}?tab=connections");
         let store_page = format!("/dashboard/stores/{id}");
         let row = state
             .db
@@ -2082,7 +2091,7 @@ mod tests {
             .0,
             StatusCode::SEE_OTHER
         );
-        let (_, html) = send(&router, "GET", &settings, &session, None).await;
+        let (_, html) = send(&router, "GET", &connections, &session, None).await;
         assert!(
             html.contains("The DNS lookup failed: timed out"),
             "got: {html}"

@@ -52,7 +52,8 @@ pub struct FailingDomainWarning {
 /// The one-line reminder left once the "any website" warning is
 /// dismissed; also what fixi swaps in for the warning on Dismiss.
 pub fn compact_embed_warning(connection_id: &str) -> Markup {
-    let settings = format!("/dashboard/stores/{connection_id}/settings#verified-domains");
+    let settings =
+        format!("/dashboard/stores/{connection_id}/settings?tab=connections#card-verified-domains");
     html! {
         (ui::Alert::new(html! { a href=(settings) { "Verify your domains" } }, ui::Tone::Warning)
             .title("Any website can show this store's checkout.")
@@ -75,7 +76,8 @@ pub struct StoreDetailViewModel {
 }
 
 fn embed_warnings(connection_id: &str, warnings: &EmbedWarnings) -> Markup {
-    let settings = format!("/dashboard/stores/{connection_id}/settings#verified-domains");
+    let settings =
+        format!("/dashboard/stores/{connection_id}/settings?tab=connections#card-verified-domains");
     let dismiss = format!("/dashboard/stores/{connection_id}/embed-warning/dismiss");
     html! {
         @if warnings.shown_nowhere {
@@ -309,7 +311,9 @@ mod tests {
         .into_string();
         assert!(html.contains(r#"<div class="warning" id="embed-warning"><strong class="alert-title">Any website can show this store's checkout</strong>"#), "got: {html}");
         assert!(html.contains(r#"action="/dashboard/stores/conn_1/embed-warning/dismiss""#));
-        assert!(html.contains(r#"href="/dashboard/stores/conn_1/settings#verified-domains""#));
+        assert!(html.contains(
+            r#"href="/dashboard/stores/conn_1/settings?tab=connections#card-verified-domains""#
+        ));
 
         let store = StoreDetailData {
             wallet: None,

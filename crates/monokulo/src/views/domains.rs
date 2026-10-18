@@ -53,6 +53,11 @@ impl StoreRef<'_> {
         format!("/dashboard/stores/{}/settings", self.id)
     }
 
+    /// The settings tab the Verified domains card is on.
+    fn connections(&self) -> String {
+        format!("{}?tab=connections", self.settings())
+    }
+
     fn domain(&self, domain_id: &str) -> String {
         format!("{}/domains/{domain_id}", self.settings())
     }
@@ -60,7 +65,7 @@ impl StoreRef<'_> {
     fn crumbs(&self) -> Vec<ui::Crumb> {
         super::crumbs(&[
             (&format!("/dashboard/stores/{}", self.id), self.name),
-            (&self.settings(), "Settings"),
+            (&self.connections(), "Settings"),
         ])
     }
 }
@@ -373,7 +378,7 @@ pub fn add_page(chrome: &PageChrome, store: &StoreRef, typed: &str, error: Optio
                 .help_id("new-domain-help"))
             }))
             (ui::FormActions::new(ui::Slot::many([
-                ui::Slot::from(ui::LinkButton::new("Cancel", format!("{}#card-verified-domains", store.settings()))),
+                ui::Slot::from(ui::LinkButton::new("Cancel", format!("{}#card-verified-domains", store.connections()))),
                 ui::Slot::from(ui::Button::new(then_icon("Next", icons::ARROW_RIGHT)).variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)),
             ])))
         }
@@ -449,7 +454,7 @@ pub fn check_result(store: &StoreRef, domain: &DomainView, checked: bool) -> Mar
                     .icon(icon(icons::CHECK))
                     .block(true))
                     (ui::FormActions::new(
-                        ui::LinkButton::new(with_icon(icons::CHECK, "Done"), format!("{}#domain-{}", store.settings(), domain.id))
+                        ui::LinkButton::new(with_icon(icons::CHECK, "Done"), format!("{}#domain-{}", store.connections(), domain.id))
                             .variant(ui::ButtonVariant::Primary),
                     ))
                 } @else if checked {
@@ -570,7 +575,9 @@ mod tests {
         let html = check_result(&store(), &domain(DomainStatus::Verified), true).into_string();
         assert!(html.contains("shop.example is verified."), "{html}");
         assert!(
-            html.contains(r##"href="/dashboard/stores/conn_1/settings#domain-d1""##),
+            html.contains(
+                r##"href="/dashboard/stores/conn_1/settings?tab=connections#domain-d1""##
+            ),
             "{html}"
         );
         assert!(!html.contains("data-recheck"), "{html}");

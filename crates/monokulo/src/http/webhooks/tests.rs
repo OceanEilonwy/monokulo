@@ -302,7 +302,7 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
     let page = body_text(
         get(
             &router,
-            &format!("/dashboard/stores/{connection_id}/settings"),
+            &format!("/dashboard/stores/{connection_id}/settings?tab=connections"),
             &session_token,
         )
         .await,
@@ -403,7 +403,7 @@ async fn the_card_shows_each_webhooks_health_and_its_deliveries() {
     let html = body_text(
         get(
             &router,
-            &format!("/dashboard/stores/{store}/settings"),
+            &format!("/dashboard/stores/{store}/settings?tab=connections"),
             &session,
         )
         .await,
@@ -519,7 +519,7 @@ async fn a_healthy_webhooks_deliveries_stay_folded_and_an_empty_card_offers_to_a
     let html = body_text(
         get(
             &router,
-            &format!("/dashboard/stores/{store}/settings"),
+            &format!("/dashboard/stores/{store}/settings?tab=connections"),
             &session,
         )
         .await,
@@ -543,7 +543,7 @@ async fn a_healthy_webhooks_deliveries_stay_folded_and_an_empty_card_offers_to_a
     let html = body_text(
         get(
             &router2,
-            &format!("/dashboard/stores/{empty}/settings"),
+            &format!("/dashboard/stores/{empty}/settings?tab=connections"),
             &other,
         )
         .await,
@@ -803,7 +803,9 @@ async fn creating_a_webhook_with_a_malformed_header_line_shows_a_clear_error_and
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/dashboard/stores/{connection_id}/settings"))
+                .uri(format!(
+                    "/dashboard/stores/{connection_id}/settings?tab=connections"
+                ))
                 .header("authorization", format!("Bearer {session_token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -857,7 +859,9 @@ async fn creating_a_webhook_shows_its_signing_secret_once_and_lists_it_afterward
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/dashboard/stores/{connection_id}/settings"))
+                .uri(format!(
+                    "/dashboard/stores/{connection_id}/settings?tab=connections"
+                ))
                 .header("authorization", format!("Bearer {session_token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -961,7 +965,9 @@ async fn deleting_a_webhook_removes_it_from_the_list() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/dashboard/stores/{connection_id}/settings"))
+                .uri(format!(
+                    "/dashboard/stores/{connection_id}/settings?tab=connections"
+                ))
                 .header("authorization", format!("Bearer {session_token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -998,7 +1004,9 @@ async fn deleting_a_webhook_removes_it_from_the_list() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/dashboard/stores/{connection_id}/settings"))
+                .uri(format!(
+                    "/dashboard/stores/{connection_id}/settings?tab=connections"
+                ))
                 .header("authorization", format!("Bearer {session_token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -1111,7 +1119,7 @@ async fn a_webhooks_deliveries_page_twenty_at_a_time() {
     let html = body_text(
         get(
             &router,
-            &format!("/dashboard/stores/{store}/settings"),
+            &format!("/dashboard/stores/{store}/settings?tab=connections"),
             &session,
         )
         .await,
@@ -1125,7 +1133,7 @@ async fn a_webhooks_deliveries_page_twenty_at_a_time() {
     let html = body_text(
         get(
             &router,
-            &format!("/dashboard/stores/{store}/settings"),
+            &format!("/dashboard/stores/{store}/settings?tab=connections"),
             &session,
         )
         .await,

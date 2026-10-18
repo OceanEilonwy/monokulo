@@ -5,7 +5,7 @@ import { createRoot, onCleanup, getOwner, runWithOwner, createRenderEffect, For,
 import type { Accessor } from 'solid-js';
 import { insert, registerDelegatedRoot, unregisterDelegatedRoot } from '@solidjs/web';
 import type { JSX } from '@solidjs/web';
-import { mark, marks, on, setAttr } from './runtime';
+import { mark, marks, on, setAttr, tokens } from './runtime';
 import { setup } from '../web/components/rows-editor.behaviour';
 import type { EditorRow } from './types';
 
@@ -75,7 +75,7 @@ export function RowsEditor(props: RowsEditorProps): JSX.Element {
                 {row.fields}
               </div>
               <label class="mk-rows-remove" hidden={enhanced ? `` : undefined}>
-                <input type="checkbox" name={row.name} value="remove" data-rows-remove="" />
+                <input type="checkbox" name={row.name} value="remove" data-rows-remove="" checked={row.removed} />
                 <span>
                   Remove
                 </span>
@@ -84,7 +84,7 @@ export function RowsEditor(props: RowsEditorProps): JSX.Element {
                   {row.label}
                 </span>
               </label>
-              <button class="mk-btn mk-rows-toggle" data-size="compact" type="button" hidden={!(enhanced) ? `` : undefined} aria-label={`Remove ${row.label}`} aria-pressed="false" onClick={(event: Event) => b.toggle(row.name, event)}>
+              <button class="mk-btn mk-rows-toggle" data-size="compact" type="button" hidden={!(enhanced) ? `` : undefined} aria-label={`Remove ${row.label}`} aria-pressed={tokens(row.removed && `true`, !(row.removed) && `false`)} onClick={(event: Event) => b.toggle(row.name, event)}>
                 <svg class="mk-icon" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M6 6l12 12M18 6 6 18"></path>
                 </svg>

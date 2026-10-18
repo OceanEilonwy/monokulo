@@ -2040,7 +2040,7 @@ mod tests {
             .await
             .unwrap();
 
-        let settings = format!("/dashboard/stores/{store}/settings");
+        let settings = format!("/dashboard/stores/{store}/settings?tab=wallet");
         let html = body_text(get(&router, &settings, &cookie).await).await;
         assert!(
             html.contains(r#"<section id="card-wallet" class="settings-card""#),
@@ -2244,7 +2244,7 @@ mod tests {
         let page = body_text(
             get(
                 &router,
-                &format!("/dashboard/stores/{store}/settings"),
+                &format!("/dashboard/stores/{store}/settings?tab=wallet"),
                 &cookie,
             )
             .await,

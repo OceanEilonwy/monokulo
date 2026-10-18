@@ -3148,7 +3148,7 @@
   },
   {
     "component": "RowsEditor",
-    "html": "<fieldset class=\"mk-rows\" data-mk=\"1\" data-island=\"RowsEditor\" data-props=\"{&quot;rows&quot;:[{&quot;label&quot;:&quot;the 100 EUR tier&quot;,&quot;name&quot;:&quot;tier_0&quot;},{&quot;label&quot;:&quot;the 500 EUR tier&quot;,&quot;name&quot;:&quot;tier_1&quot;}]}\"><legend class=\"visually-hidden\">Confirmation tiers</legend><ul class=\"mk-rows-list\"><li class=\"mk-rows-row\"><div class=\"mk-rows-fields\">From <input class=\"mk-input\" type=\"text\" name=\"tier_0_amount\" value=\"100\" aria-label=\"From amount, EUR\" data-size=\"compact\"> EUR need <input class=\"mk-input\" type=\"text\" name=\"tier_0_confirmations\" value=\"5\" aria-label=\"Confirmations\" data-size=\"compact\"> confirmations</div><label class=\"mk-rows-remove\" data-mk=\"2\"><input type=\"checkbox\" name=\"tier_0\" value=\"remove\" data-rows-remove=\"\"><span>Remove</span><span class=\"visually-hidden\"> the 100 EUR tier</span></label><button class=\"mk-btn mk-rows-toggle\" data-size=\"compact\" type=\"button\" hidden=\"\" aria-label=\"Remove the 100 EUR tier\" aria-pressed=\"false\" data-mk=\"3\"><svg class=\"mk-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M6 6l12 12M18 6 6 18\"></path></svg><span class=\"mk-rows-undo\">Undo</span></button></li><li class=\"mk-rows-row\"><div class=\"mk-rows-fields\">From <input class=\"mk-input\" type=\"text\" name=\"tier_1_amount\" value=\"500\" aria-label=\"From amount, EUR\" data-size=\"compact\"> EUR need <input class=\"mk-input\" type=\"text\" name=\"tier_1_confirmations\" value=\"10\" aria-label=\"Confirmations\" data-size=\"compact\"> confirmations</div><label class=\"mk-rows-remove\" data-mk=\"2\"><input type=\"checkbox\" name=\"tier_1\" value=\"remove\" data-rows-remove=\"\"><span>Remove</span><span class=\"visually-hidden\"> the 500 EUR tier</span></label><button class=\"mk-btn mk-rows-toggle\" data-size=\"compact\" type=\"button\" hidden=\"\" aria-label=\"Remove the 500 EUR tier\" aria-pressed=\"false\" data-mk=\"3\"><svg class=\"mk-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M6 6l12 12M18 6 6 18\"></path></svg><span class=\"mk-rows-undo\">Undo</span></button></li><li class=\"mk-rows-row mk-rows-new\"><div class=\"mk-rows-fields\">From <input class=\"mk-input\" type=\"text\" name=\"new_amount\" aria-label=\"New tier's amount, EUR\" data-size=\"compact\"> EUR need <input class=\"mk-input\" type=\"text\" name=\"new_confirmations\" aria-label=\"New tier's confirmations\" data-size=\"compact\"> confirmations</div></li></ul><div class=\"mk-rows-foot\"><button class=\"mk-btn mk-rows-add\" data-size=\"compact\" type=\"button\" hidden=\"\" data-mk=\"4\"><svg class=\"mk-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 5v14M5 12h14\"></path></svg>Add a tier</button><p class=\"mk-rows-note\">2 of 5 tiers.</p></div></fieldset>",
+    "html": "<fieldset class=\"mk-rows\" data-mk=\"1\" data-island=\"RowsEditor\" data-props=\"{&quot;rows&quot;:[{&quot;label&quot;:&quot;the 100 EUR tier&quot;,&quot;name&quot;:&quot;tier_0&quot;,&quot;removed&quot;:false},{&quot;label&quot;:&quot;the 500 EUR tier&quot;,&quot;name&quot;:&quot;tier_1&quot;,&quot;removed&quot;:false}]}\"><legend class=\"visually-hidden\">Confirmation tiers</legend><ul class=\"mk-rows-list\"><li class=\"mk-rows-row\"><div class=\"mk-rows-fields\">From <input class=\"mk-input\" type=\"text\" name=\"tier_0_amount\" value=\"100\" aria-label=\"From amount, EUR\" data-size=\"compact\"> EUR need <input class=\"mk-input\" type=\"text\" name=\"tier_0_confirmations\" value=\"5\" aria-label=\"Confirmations\" data-size=\"compact\"> confirmations</div><label class=\"mk-rows-remove\" data-mk=\"2\"><input type=\"checkbox\" name=\"tier_0\" value=\"remove\" data-rows-remove=\"\"><span>Remove</span><span class=\"visually-hidden\"> the 100 EUR tier</span></label><button class=\"mk-btn mk-rows-toggle\" data-size=\"compact\" type=\"button\" hidden=\"\" aria-label=\"Remove the 100 EUR tier\" aria-pressed=\"false\" data-mk=\"3\"><svg class=\"mk-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M6 6l12 12M18 6 6 18\"></path></svg><span class=\"mk-rows-undo\">Undo</span></button></li><li class=\"mk-rows-row\"><div class=\"mk-rows-fields\">From <input class=\"mk-input\" type=\"text\" name=\"tier_1_amount\" value=\"500\" aria-label=\"From amount, EUR\" data-size=\"compact\"> EUR need <input class=\"mk-input\" type=\"text\" name=\"tier_1_confirmations\" value=\"10\" aria-label=\"Confirmations\" data-size=\"compact\"> confirmations</div><label class=\"mk-rows-remove\" data-mk=\"2\"><input type=\"checkbox\" name=\"tier_1\" value=\"remove\" data-rows-remove=\"\"><span>Remove</span><span class=\"visually-hidden\"> the 500 EUR tier</span></label><button class=\"mk-btn mk-rows-toggle\" data-size=\"compact\" type=\"button\" hidden=\"\" aria-label=\"Remove the 500 EUR tier\" aria-pressed=\"false\" data-mk=\"3\"><svg class=\"mk-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M6 6l12 12M18 6 6 18\"></path></svg><span class=\"mk-rows-undo\">Undo</span></button></li><li class=\"mk-rows-row mk-rows-new\"><div class=\"mk-rows-fields\">From <input class=\"mk-input\" type=\"text\" name=\"new_amount\" aria-label=\"New tier's amount, EUR\" data-size=\"compact\"> EUR need <input class=\"mk-input\" type=\"text\" name=\"new_confirmations\" aria-label=\"New tier's confirmations\" data-size=\"compact\"> confirmations</div></li></ul><div class=\"mk-rows-foot\"><button class=\"mk-btn mk-rows-add\" data-size=\"compact\" type=\"button\" hidden=\"\" data-mk=\"4\"><svg class=\"mk-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 5v14M5 12h14\"></path></svg>Add a tier</button><p class=\"mk-rows-note\">2 of 5 tiers.</p></div></fieldset>",
     "props": {
       "add_label": "Add a tier",
       "label": "Confirmation tiers",
@@ -3228,7 +3228,8 @@
             ]
           },
           "label": "the 100 EUR tier",
-          "name": "tier_0"
+          "name": "tier_0",
+          "removed": false
         },
         {
           "fields": {
@@ -3267,7 +3268,8 @@
             ]
           },
           "label": "the 500 EUR tier",
-          "name": "tier_1"
+          "name": "tier_1",
+          "removed": false
         }
       ]
     },
@@ -3275,13 +3277,13 @@
   },
   {
     "component": "RowsEditor",
-    "html": "<fieldset class=\"mk-rows\" data-mk=\"1\" data-island=\"RowsEditor\" data-props=\"{&quot;rows&quot;:[{&quot;label&quot;:&quot;https://shop.example/hook&quot;,&quot;name&quot;:&quot;webhook_0&quot;}]}\"><legend class=\"visually-hidden\">Webhooks</legend><ul class=\"mk-rows-list\"><li class=\"mk-rows-row\"><div class=\"mk-rows-fields\">https://shop.example/hook</div><label class=\"mk-rows-remove\" data-mk=\"2\"><input type=\"checkbox\" name=\"webhook_0\" value=\"remove\" data-rows-remove=\"\"><span>Remove</span><span class=\"visually-hidden\"> https://shop.example/hook</span></label><button class=\"mk-btn mk-rows-toggle\" data-size=\"compact\" type=\"button\" hidden=\"\" aria-label=\"Remove https://shop.example/hook\" aria-pressed=\"false\" data-mk=\"3\"><svg class=\"mk-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M6 6l12 12M18 6 6 18\"></path></svg><span class=\"mk-rows-undo\">Undo</span></button></li></ul><div class=\"mk-rows-foot\"><p class=\"mk-rows-note\">1 of 1. Remove one to add another.</p></div></fieldset>",
+    "html": "<fieldset class=\"mk-rows\" data-mk=\"1\" data-island=\"RowsEditor\" data-props=\"{&quot;rows&quot;:[{&quot;label&quot;:&quot;https://shop.example/hook&quot;,&quot;name&quot;:&quot;webhook_0&quot;,&quot;removed&quot;:true}]}\"><legend class=\"visually-hidden\">Webhooks</legend><ul class=\"mk-rows-list\"><li class=\"mk-rows-row\"><div class=\"mk-rows-fields\">https://shop.example/hook</div><label class=\"mk-rows-remove\" data-mk=\"2\"><input type=\"checkbox\" name=\"webhook_0\" value=\"remove\" data-rows-remove=\"\" checked><span>Remove</span><span class=\"visually-hidden\"> https://shop.example/hook</span></label><button class=\"mk-btn mk-rows-toggle\" data-size=\"compact\" type=\"button\" hidden=\"\" aria-label=\"Remove https://shop.example/hook\" aria-pressed=\"true\" data-mk=\"3\"><svg class=\"mk-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M6 6l12 12M18 6 6 18\"></path></svg><span class=\"mk-rows-undo\">Undo</span></button></li></ul><div class=\"mk-rows-foot\"><p class=\"mk-rows-note\">1 of 1, marked to remove: saving makes room for another.</p></div></fieldset>",
     "props": {
       "add_label": "Add",
       "label": "Webhooks",
       "note": {
         "$slot": [
-          "1 of 1. Remove one to add another."
+          "1 of 1, marked to remove: saving makes room for another."
         ]
       },
       "rows": [
@@ -3292,11 +3294,12 @@
             ]
           },
           "label": "https://shop.example/hook",
-          "name": "webhook_0"
+          "name": "webhook_0",
+          "removed": true
         }
       ]
     },
-    "title": "At the limit"
+    "title": "At the limit, one marked to remove"
   },
   {
     "component": "IconButton",

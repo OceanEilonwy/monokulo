@@ -1034,17 +1034,19 @@ mod tests {
         let settings = format!("/dashboard/stores/{id}/settings");
         let page = body_text(get(&router, &settings, &cookie).await).await;
         assert!(
-            page.contains(
-                r##"Set by WooCommerce · <a href="#card-connections">see Connections</a>"##
-            ),
+            page.contains(&format!(
+                r##"Set by WooCommerce · <a href="{settings}?tab=connections#card-connections">see Connections</a>"##
+            )),
             "{page}"
         );
         assert!(!page.contains(r#"name="store_site""#), "{page}");
+        let connections =
+            body_text(get(&router, &format!("{settings}?tab=connections"), &cookie).await).await;
         assert!(
-            page.contains("shop.example.com · plugin 0.4.0 · connected "),
-            "{page}"
+            connections.contains("shop.example.com · plugin 0.4.0 · connected "),
+            "{connections}"
         );
-        assert!(page.contains("no orders yet"), "{page}");
+        assert!(connections.contains("no orders yet"), "{connections}");
         // A site sent anyway changes nothing; the website page refuses.
         router
             .clone()
@@ -1138,7 +1140,9 @@ mod tests {
             page.contains(r#"name="store_site" id="store-site" value="shop.example.com""#),
             "{page}"
         );
-        assert!(page.contains("<h4>Before</h4>"), "{page}");
+        let connections =
+            body_text(get(&router, &format!("{settings}?tab=connections"), &cookie).await).await;
+        assert!(connections.contains("<h4>Before</h4>"), "{connections}");
 
         // Connecting again: a new active row, with the new key.
         let again = router

@@ -24,7 +24,7 @@ use axum::response::{IntoResponse, Response};
 
 use crate::db::UserRow;
 use crate::engine_client::EngineClientError;
-use crate::views::store_settings::{StoreOutcome, StoreSection};
+use crate::views::store_settings::{StoreOutcome, StoreSection, StoreTab};
 
 use super::dashboard::redirect_303;
 use super::orders::{
@@ -105,6 +105,14 @@ pub async fn save(
             return refused(&state, row, &user, sent, section, message, Vec::new()).await;
         }
     };
+    // The tab the form was on, for a save that changed nothing to come
+    // back to (one that saved something comes back to its card's).
+    let tab = sent
+        .iter()
+        .rev()
+        .find(|(key, _)| key == "tab")
+        .and_then(|(_, tab)| StoreTab::from_id(tab))
+        .map_or_else(String::new, |tab| format!("&tab={}", tab.id()));
     let website = plan.website.take().map(|request| {
         let mut query = url::form_urlencoded::Serializer::new(String::new());
         match request {
@@ -116,7 +124,8 @@ pub async fn save(
     if plan.is_empty() {
         drop(policy);
         return redirect_303(
-            &website.unwrap_or_else(|| format!("/dashboard/stores/{id}/settings?saved=nothing")),
+            &website
+                .unwrap_or_else(|| format!("/dashboard/stores/{id}/settings?saved=nothing{tab}")),
         );
     }
 

@@ -546,6 +546,8 @@ pub struct EditorRow {
     pub label: String,
     /// Its controls, each labelled (`Input`s with `label`).
     pub fields: Slot,
+    /// Marked to remove already: as a refused save sent it.
+    pub removed: bool,
 }
 
 component! {
@@ -587,14 +589,14 @@ component! {
                     li class="mk-rows-row" {
                         div class="mk-rows-fields" { (row.fields) }
                         label class="mk-rows-remove" hidden="" if enhanced {
-                            input type="checkbox" name=(row.name) value="remove" data-rows-remove="";
+                            input type="checkbox" name=(row.name) value="remove" data-rows-remove="" checked[row.removed];
                             span { "Remove" }
                             span class="visually-hidden" { " " (row.label) }
                         }
                         // Hidden until the behaviour works it: in a list,
                         // the server renders what it attaches to.
                         button class="mk-btn mk-rows-toggle" data-size="compact" type="button" hidden="" if !enhanced
-                            aria-label={ "Remove " (row.label) } aria-pressed="false" on:click=toggle(row.name) {
+                            aria-label={ "Remove " (row.label) } aria-pressed=join["true" if row.removed, "false" if !row.removed] on:click=toggle(row.name) {
                             svg class="mk-icon" viewBox="0 0 24 24" aria-hidden="true" { path d="M6 6l12 12M18 6 6 18" {} }
                             span class="mk-rows-undo" { "Undo" }
                         }
@@ -638,6 +640,7 @@ pub(super) fn rows_editor_examples() -> Vec<(&'static str, RowsEditor)> {
                 .into(),
             Slot::from(" confirmations"),
         ]),
+        removed: false,
     };
     vec![
         (
@@ -666,16 +669,17 @@ pub(super) fn rows_editor_examples() -> Vec<(&'static str, RowsEditor)> {
             .note("2 of 5 tiers."),
         ),
         (
-            "At the limit",
+            "At the limit, one marked to remove",
             RowsEditor::new(
                 "Webhooks",
                 vec![EditorRow {
                     name: "webhook_0".into(),
                     label: "https://shop.example/hook".into(),
                     fields: "https://shop.example/hook".into(),
+                    removed: true,
                 }],
             )
-            .note("1 of 1. Remove one to add another."),
+            .note("1 of 1, marked to remove: saving makes room for another."),
         ),
     ]
 }

@@ -1487,12 +1487,10 @@ async fn a_store_with_no_site_has_a_name_only() {
     assert!(!done.contains("Not taking payments yet"), "{done}");
     let dashboard = body_text(cookie_get(&router, "/", &cookie).await).await;
     assert!(
-        dashboard.contains(r#"<td class="card-title">Saturday market stall</td>"#),
-        "{dashboard}"
-    );
-    assert!(
-        dashboard.contains(r#"<td class="card-meta"></td>"#),
-        "an empty Site: {dashboard}"
+        dashboard.contains(&format!(
+            r#"<h3 class="mk-card-title"><a href="/dashboard/stores/{store_id}" data-store-link>Saturday market stall</a></h3><p class="mk-card-sub">No website</p>"#
+        )),
+        "no website: {dashboard}"
     );
 }
 

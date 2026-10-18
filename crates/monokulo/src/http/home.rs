@@ -429,12 +429,20 @@ mod tests {
             let html = body_text(response).await;
 
             assert!(
-                html.contains(&public_key),
-                "expected the store's public key listed, got: {html}"
+                html.contains(&format!(
+                    r#"<article class="mk-card" data-store="{connection_id}">"#
+                )),
+                "expected the store's card, got: {html}"
             );
             assert!(
-                html.contains(&format!("/dashboard/stores/{connection_id}")),
+                html.contains(&format!(
+                    r#"<a href="/dashboard/stores/{connection_id}" data-store-link>"#
+                )),
                 "expected a link to the store, got: {html}"
+            );
+            assert!(
+                html.contains("<dt>Orders in 24 h</dt><dd>1</dd>"),
+                "the seeded order counts on the store's card, got: {html}"
             );
             assert!(
                 html.contains(&order_id),

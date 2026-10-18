@@ -35,7 +35,7 @@ use crate::views::orders::{
 use super::dashboard::redirect_302;
 use super::fx::FxRequest;
 use super::{AppState, AuthedUser};
-use crate::views::store_settings::{StoreOutcome, StoreSection};
+use crate::views::store_settings::{StoreOutcome, StoreSection, StoreTab};
 
 /// Looks up `store_connections` row `id` and confirms it belongs to `user`.
 /// `Ok(None)` covers *both* "no such row" and "exists but belongs to someone
@@ -711,6 +711,8 @@ async fn render_store_detail_page(
 #[derive(Default, Deserialize)]
 pub struct StoreSettingsQuery {
     saved: Option<String>,
+    /// The tab to show (`StoreTab::from_id`).
+    tab: Option<String>,
 }
 
 pub async fn store_settings(
@@ -739,6 +741,7 @@ pub async fn store_settings(
         &user,
         PageState {
             outcome,
+            tab: query.tab.as_deref().and_then(StoreTab::from_id),
             ..Default::default()
         },
     )
@@ -775,6 +778,8 @@ pub(super) async fn render_store_settings_page(
         PageState {
             outcome,
             created_webhook_signing_secret,
+            // On the action's own card's tab, whatever came of it.
+            tab: from.map(StoreTab::of),
             ..Default::default()
         },
     )
@@ -789,6 +794,8 @@ pub(super) struct PageState {
     pub(super) sent: Option<Vec<(String, String)>>,
     pub(super) created_webhook_signing_secret: Option<String>,
     pub(super) wallet: WalletState,
+    /// The tab asked for; else the one the outcome was on.
+    pub(super) tab: Option<StoreTab>,
 }
 
 /// What the Wallet section shows beyond the store's wallets: a change
@@ -888,7 +895,9 @@ pub(super) async fn render_store_settings_page_with(
         sent,
         created_webhook_signing_secret,
         wallet: wallet_state,
+        tab,
     } = page;
+    let tab = StoreTab::pick(tab, outcome.as_ref());
     let chrome = super::page_chrome(
         state,
         Some(user),
@@ -1028,6 +1037,7 @@ pub(super) async fn render_store_settings_page_with(
             key_storage,
             client_logging,
             wallet,
+            tab,
         }),
     };
     let refused = matches!(
@@ -1609,6 +1619,7 @@ pub async fn change_store_wallet(
                     pending: Some(pending),
                     changed: None,
                 },
+                tab: Some(StoreTab::Wallet),
                 ..Default::default()
             },
         )
@@ -2278,7 +2289,9 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
+                    .uri(format!(
+                        "/dashboard/stores/{connection_id}/settings?tab=connections"
+                    ))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2546,8 +2559,8 @@ mod tests {
         )
         .await;
         let (connection_id, _pk) = create_connection(&router, &session).await;
-        let settings_uri = format!("/dashboard/stores/{connection_id}/settings");
-        let fx_uri = settings_uri.clone();
+        let fx_uri = format!("/dashboard/stores/{connection_id}/settings");
+        let settings_uri = format!("{fx_uri}?tab=payments");
 
         let html = get_with_bearer(&router, &settings_uri, &session).await;
         assert!(
@@ -2743,7 +2756,7 @@ mod tests {
 
         let html = get_with_bearer(
             &router,
-            &format!("/dashboard/stores/{connection_id}/settings"),
+            &format!("/dashboard/stores/{connection_id}/settings?tab=payments"),
             &session,
         )
         .await;
@@ -3276,7 +3289,8 @@ mod tests {
         );
 
         let settings_uri = format!("/dashboard/stores/{connection_id}/settings");
-        let html = get_page(&router, &session_token, &settings_uri).await;
+        let wallet_tab = format!("{settings_uri}?tab=wallet");
+        let html = get_page(&router, &session_token, &wallet_tab).await;
         assert!(
             html.contains(r#"<section id="card-key-storage" class="settings-card" aria-labelledby="card-key-storage-title"><header class="card-head"><h3 id="card-key-storage-title">Key storage</h3>"#),
             "{html}"
@@ -3358,7 +3372,7 @@ mod tests {
 
         // Straight after the move (which empties the status cache), as the
         // redirect lands.
-        let html = get_page(&router, &session_token, &settings_uri).await;
+        let html = get_page(&router, &session_token, &wallet_tab).await;
         assert!(html.contains("AMD SEV-SNP confidential machine"), "{html}");
         assert!(
             html.contains(r#"<option value="plain" selected>"#),
@@ -3504,7 +3518,7 @@ mod tests {
         assert!(!get_page(
             &router,
             &session_token,
-            &format!("/dashboard/stores/{connection_id}/settings")
+            &format!("/dashboard/stores/{connection_id}/settings?tab=wallet")
         )
         .await
         .contains("Key storage"));
@@ -3547,7 +3561,9 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
+                    .uri(format!(
+                        "/dashboard/stores/{connection_id}/settings?tab=payments"
+                    ))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -3587,7 +3603,9 @@ mod tests {
         let settings = router
             .oneshot(
                 Request::builder()
-                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
+                    .uri(format!(
+                        "/dashboard/stores/{connection_id}/settings?tab=payments"
+                    ))
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -3620,7 +3638,9 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
+                    .uri(format!(
+                        "/dashboard/stores/{connection_id}/settings?tab=payments"
+                    ))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -3849,6 +3869,14 @@ mod tests {
             response.headers().get("location").unwrap(),
             &format!("{settings}?saved=nothing")
         );
+        // Sent from a tab's form, it comes back to that tab.
+        let mut fields = everything("EUR", "3");
+        fields.push(("tab", "payments"));
+        let response = send(&fields).await.unwrap();
+        assert_eq!(
+            response.headers().get("location").unwrap(),
+            &format!("{settings}?saved=nothing&tab=payments")
+        );
 
         // A refused card saves nothing, the base currency included.
         let response = send(&everything("USD", "abc")).await.unwrap();
@@ -3870,9 +3898,13 @@ mod tests {
             ),
             "what was sent: {html}"
         );
-        assert!(html.contains(r#"data-saved="EUR""#), "{html}");
-        let html = body_text(page(settings.clone()).await.unwrap()).await;
-        assert!(html.contains("Amount (EUR)"), "{html}");
+        let html = body_text(page(format!("{settings}?tab=general")).await.unwrap()).await;
+        assert!(
+            html.contains(r#"<option value="EUR" selected data-label="Euro""#),
+            "the base currency wasn't saved either: {html}"
+        );
+        let html = body_text(page(format!("{settings}?tab=payments")).await.unwrap()).await;
+        assert!(html.contains("New tier's amount (EUR)"), "{html}");
 
         // A new base currency deletes the custom thresholds: they aren't
         // changed in the same save.
@@ -3964,7 +3996,9 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
+                    .uri(format!(
+                        "/dashboard/stores/{connection_id}/settings?tab=payments"
+                    ))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -3995,7 +4029,9 @@ mod tests {
         let page = router
             .oneshot(
                 Request::builder()
-                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
+                    .uri(format!(
+                        "/dashboard/stores/{connection_id}/settings?tab=payments"
+                    ))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -4427,7 +4463,9 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
+                    .uri(format!(
+                        "/dashboard/stores/{connection_id}/settings?tab=payments"
+                    ))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -4436,17 +4474,19 @@ mod tests {
             .unwrap();
         let html = body_text(page).await;
         assert!(
-            html.contains(">50</td>"),
+            html.contains("<strong>From 50 "),
             "expected the canonical threshold amount shown, got: {html}"
         );
         assert!(
-            html.contains(&format!("name=\"delete_{threshold_id}\"")),
-            "expected a real delete checkbox for the new threshold in the condensed table, got: {html}"
+            html.contains(&format!(
+                r#"<input type="checkbox" name="delete_{threshold_id}" value="remove" data-rows-remove="">"#
+            )),
+            "expected a real remove checkbox on the new tier, got: {html}"
         );
 
-        // The condensed table's own single Save button posts every row's
-        // state (default + delete checkboxes + a possible new row) to one
-        // route, not a per-row delete form - see `save_confirmation_thresholds`'s
+        // The Payments form's single Save button posts every tier's state
+        // (default + remove checkboxes + a possible new tier) to one route,
+        // not a per-row delete form - see `save_confirmation_thresholds`'s
         // own doc comment.
         let delete_field = format!("delete_{threshold_id}");
         let delete_response = router
@@ -4456,7 +4496,7 @@ mod tests {
                 &session_token,
                 &[
                     ("confirmations_required", "10"),
-                    (delete_field.as_str(), "on"),
+                    (delete_field.as_str(), "remove"),
                 ],
             ))
             .await
@@ -4478,7 +4518,9 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
+                    .uri(format!(
+                        "/dashboard/stores/{connection_id}/settings?tab=payments"
+                    ))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -4601,7 +4643,9 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
+                    .uri(format!(
+                        "/dashboard/stores/{connection_id}/settings?tab=payments"
+                    ))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -4609,9 +4653,9 @@ mod tests {
             .await
             .unwrap();
         let html = body_text(page).await;
-        let pos_10 = html.find(">10</td>").expect("canonical 10 shown");
-        let pos_50 = html.find(">50</td>").expect("canonical 50 shown");
-        let pos_100 = html.find(">100</td>").expect("canonical 100 shown");
+        let pos_10 = html.find("<strong>From 10 ").expect("canonical 10 shown");
+        let pos_50 = html.find("<strong>From 50 ").expect("canonical 50 shown");
+        let pos_100 = html.find("<strong>From 100 ").expect("canonical 100 shown");
         assert!(
             pos_10 < pos_50 && pos_50 < pos_100,
             "expected ascending amount order, got: {html}"
@@ -5028,8 +5072,11 @@ mod tests {
         assert_eq!(metadata.confirmations_required_applied, Some(10));
     }
 
+    /// The default is the line above the tiers, never a tier of its own:
+    /// it has no remove checkbox, before or after a tier is added, and
+    /// says which orders it covers.
     #[tokio::test]
-    async fn the_default_threshold_has_no_delete_control_and_is_not_a_row_in_the_custom_table() {
+    async fn the_default_threshold_has_no_remove_control_and_is_not_a_tier() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -5040,26 +5087,62 @@ mod tests {
         )
         .await;
         let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let page = || async {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(format!(
+                            "/dashboard/stores/{connection_id}/settings?tab=payments"
+                        ))
+                        .header("authorization", format!("Bearer {session_token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            body_text(response).await
+        };
 
-        let page = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
-                    .header("authorization", format!("Bearer {session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let html = body_text(page).await;
+        let html = page().await;
         assert!(
             html.contains("Default confirmations"),
-            "expected the default threshold's own row, got: {html}"
+            "expected the default threshold's own field, got: {html}"
+        );
+        assert!(
+            html.contains(
+                r#"<p class="tier-default"><strong>Every order</strong>: the default, 10 confirmations "#
+            ),
+            "with no tiers the default covers every order, got: {html}"
         );
         assert!(
             !html.contains("name=\"delete_"),
-            "a fresh store has no custom thresholds, so no delete checkbox should exist yet, got: {html}"
+            "a fresh store has no custom thresholds, so no remove checkbox should exist yet, got: {html}"
+        );
+
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/stores/{connection_id}/settings"),
+                &session_token,
+                &[
+                    ("new_unit_amount", "50"),
+                    ("new_confirmations_required", "20"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let html = page().await;
+        assert!(
+            html.contains(r#"<p class="tier-default"><strong>Under 50 "#),
+            "the default covers the orders below the lowest tier, got: {html}"
+        );
+        assert_eq!(
+            html.matches("name=\"delete_").count(),
+            1,
+            "only the tier is removable, not the default: {html}"
         );
     }
 
