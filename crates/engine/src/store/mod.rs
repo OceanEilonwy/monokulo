@@ -2526,6 +2526,26 @@ impl Store {
         Ok(rows)
     }
 
+    /// Whether one of `network`'s payments is recorded at a block above
+    /// `height` that the height counts for, as [`Self::payments_at_height`].
+    pub fn payment_claims_height_above(
+        &self,
+        network: monero::Network,
+        height: u64,
+    ) -> Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM order_payments op
+                 JOIN orders o ON o.id = op.order_id
+                 JOIN tenants t ON t.id = o.tenant_id
+                 WHERE op.block_height > ?2 AND t.network = ?1
+                   AND (op.voided_at_utc IS NULL OR op.superseded_by IS NOT NULL))",
+                params![shared::network::SqlNetwork(network), sql_height(height)?],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
     pub fn unconfirmed_payments_page(
         &self,
         network: monero::Network,

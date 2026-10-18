@@ -140,18 +140,30 @@ impl<'a> Chain<'a> {
     /// binary search over the stored window, O(log depth) lookups. When the
     /// recorded chain ends at the node's tip and the node gave the tip's id
     /// with its height, that one comparison costs no lookup at all.
+    ///
+    /// A payment can claim a block nothing recorded (the vanished-payment
+    /// check took the node's word for its height). If the node's chain has
+    /// since shrunk below it, no recorded block differs and no block at that
+    /// height is ever committed to clear it: the claimed block is gone, so
+    /// the chain forks just above the tip. (With blocks recorded above the
+    /// tip, the comparison at the tip says whether the node is merely behind.)
     pub(crate) async fn detect(&self, tip: u64) -> Result<Option<u64>, ScannerError> {
         let pending = self.pending_branch_fork(tip).await?;
         let depth = self.reorg_check_depth;
-        let rows = self
+        let (rows, claimed) = self
             .db(move |s, network| -> Result<_, crate::store::StoreError> {
-                let Some(high_water) = s.max_scanned_height(network)? else {
-                    return Ok(Vec::new());
+                let high_water = s.max_scanned_height(network)?;
+                let claimed = high_water.is_none_or(|high_water| high_water <= tip)
+                    && s.payment_claims_height_above(network, tip)?;
+                let Some(high_water) = high_water else {
+                    return Ok((Vec::new(), claimed));
                 };
                 let check = high_water.min(tip);
-                s.scanned_blocks_between(network, check.saturating_sub(depth), check)
+                let rows = s.scanned_blocks_between(network, check.saturating_sub(depth), check)?;
+                Ok((rows, claimed))
             })
             .await?;
+        let pending = pending.into_iter().chain(claimed.then_some(tip + 1)).min();
         let (Some(first), Some(last)) = (rows.first(), rows.last()) else {
             return Ok(pending);
         };
