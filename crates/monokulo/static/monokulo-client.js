@@ -154,6 +154,12 @@
         // when the caller doesn't have one (the server's own `#[serde(default)]`
         // treats a missing key the same as an explicit `null`).
         merchant_order_id: params.merchantOrderId || undefined,
+        // Optional - what the order is for, shown to the payer under the
+        // store's name; the store's payment description when left out.
+        description: params.description || undefined,
+        // Optional - false keeps merchantOrderId off the checkout; the
+        // server shows it when this is left out.
+        show_merchant_order_id: typeof params.showMerchantOrderId === "boolean" ? params.showMerchantOrderId : undefined,
       }),
     })
       .then(function (response) {
@@ -177,6 +183,7 @@
           amount: data.amount,
           currency: data.currency,
           merchantOrderId: data.merchant_order_id,
+          description: data.description,
           expiresAt: data.expires_at,
           endpoint: endpoint,
           publicKey: publicKey,

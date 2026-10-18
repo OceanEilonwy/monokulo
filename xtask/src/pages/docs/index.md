@@ -13,8 +13,10 @@ anything.
    address:
    `<script src="https://pay.example/static/monokulo-client.js"></script>`.
 3. **Create an order** when the customer checks out:
-   `Monokulo.createOrder({ publicKey, amount, currency, merchantOrderId })`.
-   A server can make the order itself instead, with the store's secret key.
+   `Monokulo.createOrder({ publicKey, amount, currency, merchantOrderId, description })`.
+   `description` is optional: what the order is for, shown to the customer
+   on the checkout. A server can make the order itself instead, with the
+   store's secret key.
 4. **Show the checkout**: `Monokulo.mount("#pay", order, { onPaid })` puts
    Monokulo's payment page in yours.
 5. **Handle the paid webhook** on your server: `order.paid`, signed, with

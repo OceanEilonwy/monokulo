@@ -34,12 +34,13 @@ test('merchant site creates an order, mounts the checkout, and is told once when
   await openShop(page);
   // No endpoint given: the library infers monokulo's origin from its own script tag.
   const order = await page.evaluate(async publicKey => {
-    const created = await window.Monokulo.createOrder({ publicKey, amount: '0.5', currency: 'XMR', merchantOrderId: 'cart-1042' });
+    const created = await window.Monokulo.createOrder({ publicKey, amount: '0.5', currency: 'XMR', merchantOrderId: 'cart-1042', description: 'Two prints' });
     window.Monokulo.mount('#pay', created, { onStatusChange: window.track('change'), onPaid: window.track('paid'), onExpired: window.track('expired') });
     return created;
   }, fixture.public_key);
   expect(order.endpoint).toBe(fixture.base_url);
   expect(order.merchantOrderId).toBe('cart-1042');
+  expect(order.description).toBe('Two prints');
   expect(order.currency).toBe('XMR');
   await expect(page.frameLocator('#pay iframe').locator('#checkout-root')).toHaveAttribute('data-status', 'pending');
   await expect.poll(() => page.evaluate(() => window.events)).toEqual([['change', 'pending']]);

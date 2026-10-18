@@ -197,6 +197,7 @@ async function checkout() {
       amount: receipt.total,          // "13.50"
       currency: "EUR",
       merchantOrderId: receipt.id,    // "gm-1042"
+      description: `Geomart order ${receipt.id}`,
     });
     Monokulo.mount("#pay", order, {
       theme: "light",

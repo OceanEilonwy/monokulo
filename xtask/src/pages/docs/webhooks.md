@@ -44,6 +44,7 @@ plus the headers you added. The body:
   "order_id": "5f01c9a7d2e14b88a3e0f9c6d1e21b07",
   "status": "paid",
   "merchant_order_id": "gm-1042",
+  "description": "Two sourdough loaves",
   "amount": "12.50",
   "currency": "EUR",
   "xmr_amount": "0.081245310000",
@@ -62,7 +63,8 @@ plus the headers you added. The body:
 | `order_id` | Monokulo's id for the order: `createOrder` gave it to your page as `orderId`. |
 | `status` | The order's new status. On `order.<status>` events only. |
 | `txid` | The transaction concerned. On the two double-spend events only. |
-| `merchant_order_id` | Your own order id, when you passed one (`merchantOrderId`). |
+| `merchant_order_id` | Your own order id, when you passed one (`merchantOrderId`). Sent even when the checkout doesn't show it (`showMerchantOrderId: false`). |
+| `description` | What the order is for, when you gave it one (`description`). Not the store's payment description. |
 | `amount`, `currency` | The price as you set it, fiat or XMR, as a decimal string. |
 | `xmr_amount` | What the customer was asked to pay, in XMR with 12 decimals. |
 | `fx_source`, `fx_rate` | Who priced the order and the rate used: 1 XMR in `currency`, a decimal string with up to 8 decimals. Not there for orders priced in XMR. |

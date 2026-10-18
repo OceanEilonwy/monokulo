@@ -57,6 +57,18 @@ paid. It's listed with the store's other webhooks in its settings, under
 *Webhooks*, with how its deliveries went. See
 [When is an order really paid?](../paid/)
 
+## What your customer sees
+
+At the top of Monokulo's checkout, your customer sees the store's name and
+what they're paying for: "Order #1042: Blue mug + 2 more", the order number
+they know from WooCommerce's emails and their account, then the first item
+and how many others.
+
+The plugin also sends the order's WordPress post ID as its reference, so
+you can find the order from Monokulo's dashboard and webhooks. The customer
+never sees that number anywhere else, and it often isn't their order
+number, so the checkout doesn't show it.
+
 ## Test first
 
 Take payments into a **stagenet** wallet while you try it, with free test
