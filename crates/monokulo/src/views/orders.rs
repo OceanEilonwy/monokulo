@@ -4,7 +4,9 @@
 
 use maud::{html, Markup, PreEscaped};
 
-use super::PageChrome;
+use shared::exchange_rate::format_piconero_as_xmr;
+
+use super::{DisplayStatus, OrderStatus, PageChrome};
 
 /// One row of the orders list page - just the fields the table shows, not
 /// the full engine `OrderView`.
@@ -262,9 +264,8 @@ pub struct OrderDetailViewModel {
 const PAGE_STYLE: &str = r#"
 .kv-table th { width: 14em; }
 /* Codes (address, ids, txids) break anywhere; words and badges never do. */
-.kv-table td, [data-table="payments"] td { overflow-wrap: anywhere; }
-.kv-table td code, [data-table="payments"] td code { word-break: break-all; }
-[data-table="payments"] th { min-width: 8em; }
+.kv-table td { overflow-wrap: anywhere; }
+.kv-table td code { word-break: break-all; }
 /* The order's id in the title: its type, at the title's size, no box. */
 .order-title-id { font-family: var(--font-mono); font-weight: 600; letter-spacing: 0; }
 .mk-btn .share-icon { width: 1.1em; height: 1.1em; flex: none; }
@@ -276,14 +277,17 @@ const PAGE_STYLE: &str = r#"
 /// `<a href>` to the payment link either way. Where the native Web Share API
 /// is available, this hands the link to the device's own share sheet
 /// instead of just navigating.
-const SHARE_SCRIPT: &str = r#"(function () {
-  var link = document.getElementById("share-payment-link");
-  if (!link || typeof navigator.share !== "function") return;
-  link.addEventListener("click", function (event) {
+const SHARE_SCRIPT: &str = r##"(function () {
+  if (typeof navigator.share !== "function") return;
+  // The header's Share, and the empty Activity's (which the live part
+  // replaces, so the click is caught where it lands).
+  document.addEventListener("click", function (event) {
+    var link = event.target.closest && event.target.closest("#share-payment-link, [data-share-link]");
+    if (!link) return;
     event.preventDefault();
     navigator.share({ title: "Pay this Monero order", url: link.href }).catch(function () {});
   });
-})();"#;
+})();"##;
 
 /// The part of the order detail page that changes as the order does:
 /// its fields and payments. Streamed as a whole to replace itself
@@ -351,35 +355,147 @@ pub fn live_fragment(order: &OrderDetailData, clock: &super::time::Clock) -> Mar
         fact("Updated at", clock.time(order.updated_at)),
         fact("Scan range", order.scan_range_display.clone()),
     ]);
-    let payments = order.payments.iter().map(|payment| {
-        ui::Slot::from(ui::Row::new(ui::Slot::many([
-            ui::Cell::new(html! { code { (payment.txid) } }).into(),
-            ui::Cell::new(payment.output_index.to_string()).into(),
-            ui::Cell::new(payment.amount_piconero.to_string()).into(),
-            ui::Cell::new(clock.time(payment.first_seen_at)).into(),
-            ui::Cell::new(payment.block_height_display.clone()).into(),
-            ui::Slot::from(ui::Cell::new(html! {
-                (clock.time_or_dash(payment.voided_at))
-                @if payment.superseded {
-                    " " span class="muted" { "(the same output, paid in another transaction, is the one counted)" }
-                }
-            })),
-        ])))
-    });
     html! {
         div id="order-live" {
             (ui::Table::new(ui::Slot::many(facts))
                 .look(ui::TableLook::Facts)
                 .scroll(false))
-            h2 { "Payments" }
-            (ui::Table::new(ui::Slot::many(payments))
-                .head(ui::Row::new(ui::Slot::many(
-                    ["Txid", "Output index", "Amount (piconero)", "First seen", "Block height", "Voided at"]
-                        .map(|name| ui::Slot::from(ui::Cell::new(name).header(true))),
-                )))
-                .attr("data-table", "payments"))
+            h2 { "Activity" }
+            (activity(order, clock))
         }
     }
+}
+
+/// What has happened to the order, newest first: its payments as they were
+/// seen and reversed, and how it ended. Until a payment arrives there's
+/// nothing to tell, so it says so, and what the merchant can do meanwhile.
+fn activity(order: &OrderDetailData, clock: &super::time::Clock) -> Markup {
+    if order.payments.is_empty() {
+        let (title, text) = match order.status {
+            DisplayStatus::Order(OrderStatus::Expired) => (
+                "No payments were made",
+                html! { "This order expired at " (clock.time(order.expires_at)) " before any payment arrived. There's nothing to refund." },
+            ),
+            DisplayStatus::Cancelled => (
+                "No payments were made",
+                html! { "This order was cancelled before any payment arrived." },
+            ),
+            _ => (
+                "No payments have been made yet",
+                html! {
+                    "This order is waiting for " (super::trim_xmr(&format_piconero_as_xmr(order.xmr_amount_piconero))) " XMR. "
+                    "Payments show here as soon as they reach the network; this page updates by itself. "
+                    "It expires at " (clock.time(order.expires_at)) "."
+                },
+            ),
+        };
+        let open = matches!(
+            order.status,
+            DisplayStatus::Order(OrderStatus::Pending | OrderStatus::Partial)
+        );
+        let mut empty = ui::EmptyState::new(title)
+            .icon(html! { (PreEscaped(ui::assets::icons::CLOCK)) })
+            .text(text)
+            .attr("data-empty", "payments");
+        if open {
+            empty = empty.actions(ui::Slot::many([
+                ui::LinkButton::new(
+                    html! { (PreEscaped(ui::assets::icons::SHARE)) "Share payment link" },
+                    order.payment_link.as_str(),
+                )
+                .variant(ui::ButtonVariant::Primary)
+                .size(ui::ControlSize::Compact)
+                .attr("data-share-link", "")
+                .attr("target", "_blank")
+                .attr("rel", "noopener")
+                .into(),
+                ui::LinkButton::new("Open checkout", order.payment_link.as_str())
+                    .size(ui::ControlSize::Compact)
+                    .attr("target", "_blank")
+                    .attr("rel", "noopener")
+                    .into(),
+            ]));
+        }
+        return html! {
+            (empty)
+            (ui::Hint::new(html! { "Created " (clock.time(order.created_at)) }))
+        };
+    }
+
+    let xmr = |piconero: u64| format!("{} XMR", super::trim_xmr(&format_piconero_as_xmr(piconero)));
+    // (when, event): sorted newest first below.
+    let mut events: Vec<(i64, ui::Event)> = Vec::new();
+    events.push((
+        order.created_at,
+        ui::Event::new(clock.text(order.created_at), "Order created").detail(html! {
+            (super::display_amount(&order.amount, &order.currency))
+            @if order.from_pos { " · taken on the POS" }
+        }),
+    ));
+    for payment in &order.payments {
+        let detail = html! {
+            (ui::CopyValue::new(payment.txid.as_str())
+                .copy_label("Copy transaction id")
+                .truncate(ui::Truncate::Middle))
+            "Output " (payment.output_index) " · block " (payment.block_height_display) " · "
+            (payment.amount_piconero) " piconero"
+        };
+        events.push((
+            payment.first_seen_at,
+            ui::Event::new(
+                clock.text(payment.first_seen_at),
+                format!("Payment seen: {}", xmr(payment.amount_piconero)),
+            )
+            .detail(detail)
+            .tone(ui::Tone::Notice),
+        ));
+        if let Some(at) = payment.voided_at {
+            let event = if payment.superseded {
+                ui::Event::new(
+                    clock.text(at),
+                    format!("Payment replaced: {}", xmr(payment.amount_piconero)),
+                )
+                .detail("The same output, paid in another transaction, is the one counted.")
+            } else {
+                ui::Event::new(
+                    clock.text(at),
+                    format!("Payment reversed: {}", xmr(payment.amount_piconero)),
+                )
+                .detail("A double spend was detected, so it doesn't count.")
+                .tone(ui::Tone::Error)
+            };
+            events.push((at, event));
+        }
+    }
+    let ended = match order.status {
+        DisplayStatus::Order(OrderStatus::Paid) => Some(("Paid", ui::Tone::Success)),
+        DisplayStatus::Order(OrderStatus::Overpaid) => {
+            Some(("Paid, with extra", ui::Tone::Success))
+        }
+        DisplayStatus::Order(OrderStatus::Expired) => Some(("Expired", ui::Tone::Warning)),
+        DisplayStatus::Cancelled => Some(("Cancelled", ui::Tone::Warning)),
+        _ => None,
+    };
+    if let Some((what, tone)) = ended {
+        let at = if order.status == DisplayStatus::Order(OrderStatus::Expired) {
+            order.expires_at
+        } else {
+            order.updated_at
+        };
+        events.push((
+            at,
+            ui::Event::new(clock.text(at), what)
+                .detail(format!(
+                    "{} received, {} of {} confirmations",
+                    xmr(order.amount_received_piconero),
+                    order.confirmations,
+                    order.confirmations_required_display
+                ))
+                .tone(tone),
+        ));
+    }
+    events.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    html! { (ui::Timeline::new(events.into_iter().map(|(_, event)| event).collect::<Vec<_>>())) }
 }
 
 pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
@@ -643,6 +759,101 @@ mod tests {
         assert!(
             !html.contains("share-payment-link"),
             "no order means no share button to enhance"
+        );
+    }
+
+    fn payment(txid: &str, amount_piconero: u64, first_seen_at: i64) -> PaymentRowViewModel {
+        PaymentRowViewModel {
+            txid: txid.to_string(),
+            output_index: 1,
+            amount_piconero,
+            first_seen_at,
+            block_height_display: maud::html! { "3284108" },
+            voided_at: None,
+            superseded: false,
+        }
+    }
+
+    /// Before anything arrives the activity has nothing to tell: it says
+    /// so, how much it waits for and until when, and offers the payment
+    /// link to share - never an empty table.
+    #[test]
+    fn an_order_with_no_payments_says_none_have_been_made_and_offers_its_link() {
+        let order = test_order_detail_data(None);
+        let html = live_fragment(&order, &chrome().clock).into_string();
+        assert!(html.contains(r#"data-empty="payments""#), "{html}");
+        assert!(html.contains("No payments have been made yet"), "{html}");
+        assert!(
+            html.contains("This order is waiting for 0.5 XMR."),
+            "{html}"
+        );
+        assert!(html.contains("Share payment link"), "{html}");
+        assert!(
+            html.contains(&format!(r#"href="{}""#, order.payment_link)),
+            "{html}"
+        );
+        assert!(!html.contains(r#"class="timeline""#), "{html}");
+    }
+
+    /// An order that ended with nothing paid says so, with nothing to
+    /// share: the link would only invite a payment it won't take.
+    #[test]
+    fn an_expired_order_with_no_payments_says_none_were_made_and_offers_nothing() {
+        let order = OrderDetailData {
+            status: shared::order_status::OrderStatus::Expired.into(),
+            ..test_order_detail_data(None)
+        };
+        let html = live_fragment(&order, &chrome().clock).into_string();
+        assert!(html.contains("No payments were made"), "{html}");
+        assert!(html.contains("There's nothing to refund."), "{html}");
+        assert!(!html.contains("Share payment link"), "{html}");
+    }
+
+    /// Payments are the timeline, newest first: each seen, a reversed one
+    /// marked as an error at the time it was voided, the order's creation
+    /// last, every transaction's id whole to copy.
+    #[test]
+    fn payments_read_newest_first_with_a_reversal_marked() {
+        let reversed = PaymentRowViewModel {
+            voided_at: Some(1300),
+            ..payment("aaaa1111", 50_000_000_000, 1100)
+        };
+        let order = OrderDetailData {
+            status: shared::order_status::OrderStatus::Partial.into(),
+            amount_received_piconero: 200_000_000_000,
+            payments: vec![reversed, payment("bbbb2222", 200_000_000_000, 1200)],
+            ..test_order_detail_data(None)
+        };
+        let html = live_fragment(&order, &chrome().clock).into_string();
+        assert!(!html.contains(r#"data-empty="payments""#), "{html}");
+        let at = |text: &str| {
+            html.find(text)
+                .unwrap_or_else(|| panic!("{text} in {html}"))
+        };
+        assert!(at("Payment reversed: 0.05 XMR") < at("Payment seen: 0.2 XMR"));
+        assert!(at("Payment seen: 0.2 XMR") < at("Payment seen: 0.05 XMR"));
+        assert!(at("Payment seen: 0.05 XMR") < at("Order created"));
+        assert!(html.contains(r#"<li data-tone="error">"#), "{html}");
+        assert!(html.contains("bbbb2222"), "{html}");
+    }
+
+    /// A paid order ends its timeline with how it ended, in the success
+    /// tone.
+    #[test]
+    fn a_paid_order_ends_its_timeline_paid() {
+        let order = OrderDetailData {
+            status: shared::order_status::OrderStatus::Paid.into(),
+            amount_received_piconero: 500_000_000_000,
+            confirmations: 10,
+            updated_at: 1500,
+            payments: vec![payment("cccc3333", 500_000_000_000, 1200)],
+            ..test_order_detail_data(None)
+        };
+        let html = live_fragment(&order, &chrome().clock).into_string();
+        assert!(html.contains(r#"<li data-tone="success">"#), "{html}");
+        assert!(
+            html.contains("0.5 XMR received, 10 of 10 confirmations"),
+            "{html}"
         );
     }
 }
